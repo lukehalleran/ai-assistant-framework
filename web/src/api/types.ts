@@ -138,3 +138,44 @@ export interface ActionDecisionResponse {
   outcome: ActionOutcome
   message: ChatMessage
 }
+
+// ---- Curation Center (docs/AUTONOMOUS_CURATION_DESIGN.md) ----
+
+export interface CurationItemChange {
+  store: string
+  doc_id: string
+  change_type: string
+  before: Record<string, unknown>
+  after: Record<string, unknown>
+}
+
+export interface CurationProposal {
+  proposal_id: string
+  curator: string
+  created_at: string
+  instrument: 'read_time' | 'metadata' | 'additive' | 'delete'
+  confidence: 'deterministic' | 'dual_llm' | 'single_llm'
+  title: string
+  evidence: string
+  items: CurationItemChange[]
+  batch: boolean
+  status: 'pending' | 'applied' | 'dismissed' | 'failed' | 'undone'
+  status_detail: string
+  resolved_at: string | null
+}
+
+export interface CurationQueueResponse {
+  proposals: CurationProposal[]
+  max_mode: string
+}
+
+export interface CurationScanReport {
+  started_at: string
+  finished_at: string
+  curators_run: string[]
+  proposals_queued: number
+  proposals_shadowed: number
+  sentinel_failures: { name: string; passed: boolean; detail: string }[]
+  halted_curators: Record<string, string>
+  errors: Record<string, string>
+}

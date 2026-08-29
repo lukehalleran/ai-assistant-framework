@@ -79,6 +79,44 @@ class TestUsableDecisionAnswer:
         )
         assert controller._usable_decision_answer(narration) is None
 
+    # --- 2026-08-28 regression: the live turn-8 narration shipped as the
+    # final response. It defeated the old guard twice: the promissory check
+    # scanned only the first 150 chars ("Let me aim…" sat just past the
+    # window) AND 'aim' wasn't in the substring verb list.
+
+    LIVE_NARRATION = (
+        "The first round of results missed the mark — they're about government "
+        "disclosure and privacy regulations, not patient-to-doctor disclosure "
+        "behavior. Let me aim at the actual research on patients withholding "
+        "or delaying disclosure of sensitive symptoms."
+    )
+
+    def test_live_midloop_narration_rejected(self, controller):
+        assert controller._usable_decision_answer(self.LIVE_NARRATION) is None
+
+    def test_promissory_past_head_window_rejected(self, controller):
+        # Plan phrasing ANYWHERE in the text rejects — not just the opener.
+        tail_plan = LONG_ANSWER + " I'll search for the specific numbers next."
+        assert controller._usable_decision_answer(tail_plan) is None
+
+    def test_loop_meta_opener_rejected(self, controller):
+        meta = (
+            "That round of results didn't return anything on-topic at all. "
+            + LONG_ANSWER
+        )
+        assert controller._usable_decision_answer(meta) is None
+
+    def test_let_me_know_closing_still_passes(self, controller):
+        # Conversational closers are NOT tool-intent plans.
+        friendly = LONG_ANSWER + " Let me know if you want the citations."
+        assert controller._usable_decision_answer(friendly) == friendly
+
+    def test_results_mentioned_in_body_still_passes(self, controller):
+        # "results" deep in a real answer must not trip the head-anchored
+        # loop-meta check.
+        body = LONG_ANSWER + " The survey results support this interpretation overall."
+        assert controller._usable_decision_answer(body) == body
+
     def test_reasoning_block_only_rejected(self, controller):
         # sanitize_for_storage strips the tagged block; nothing substantive remains.
         leak = f"<reasoning>{LONG_ANSWER}</reasoning>"

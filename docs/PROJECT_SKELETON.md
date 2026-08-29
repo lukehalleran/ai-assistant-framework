@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-08-21 (usage-audit fix batch)
+**Last Updated**: 2026-08-29 (curation engine, grounding floor, de-escalation batch, gate/trigger paste hardening; see CLAUDE.md dated entries for the 08-26 → 08-29 batches)
 
 ---
 
@@ -97,6 +97,20 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `knowledge/visual_retrieval.py` - CLIP text→image retrieval + base64 loading **[NEW 2026-05]**
 - `knowledge/document_generator.py` - Structured markdown report/summary generation from web search + ChromaDB sources **[NEW 2026-05]**
 - `knowledge/daemon_notes_manager.py` - Daemon self-notes for future sessions (decisions, architecture, risks, next steps) **[NEW 2026-05]**
+- `memory/stance_classifier.py` - Deterministic epistemic-stance core (objective/appraisal/reported/inferred/unknown): triple/utterance classification, evaluative lexicon, unresolved-referent scoping, capture-tone mapping **[NEW 2026-08-23]**
+- `core/insight/types.py` - Insight-mode data models: InsightIntent, FacetQuery/FacetPlan, EvidenceItem, ClaimAssessment, Assessment (worst-of verdict ordering) **[NEW 2026-08-23]**
+- `core/insight/detector.py` - Deterministic regex detection of theme-sweep / personal-theme-doc / explicit-assessment shapes + `detect_insight_statement()` for the consent offer **[NEW 2026-08-23]**
+- `core/insight/facets.py` - Strict-JSON LLM decomposition of a theme into 4-6 facet queries incl. mandatory counter-evidence facet (deterministic fallback) **[NEW 2026-08-23]**
+- `core/insight/sweep.py` - UNGATED cross-store evidence sweep (chroma + corpus keyword scan + graph 1-hop + MemoryExpander; capped, timeout returns partial) **[NEW 2026-08-23]**
+- `core/insight/provenance.py` - Per-item stance labels (user-stated / users-own-note / assistant-inferred / extracted-fact / graph-edge) + interpretation/appraisal markers **[NEW 2026-08-23]**
+- `core/insight/assessor.py` - Adversarial strict-JSON claim assessment; must seek refuting evidence; failure → "insufficient", never fail-agree **[NEW 2026-08-23]**
+- `core/insight/synthesizer.py` - Streamed synthesis with hard-coded invariants (quote+date, denominator caveat, counter-evidence visible, MI-shaped close) **[NEW 2026-08-23]**
+- `scripts/backfill_stance.py` - Stance backfill for existing facts + graph edges (dry-run default, daemon-guard, pre-image backups, hard classification sentinel) **[NEW 2026-08-23]**
+- `utils/narrative_staleness.py` - Correction-staleness flag for the cached narrative context: correction signal ≥0.6 marks it stale, narrative reads append a CAUTION line until a fresh save clears it (lenient derived state, never raises) **[NEW 2026-08-23]**
+- `scripts/repair_zelphex_duration_claims.py` - Owner-run "day 8" duration data repair: annotates affected conversations + supersedes the junk fact via the deployed add_fact path (pre-image backup; APPLIED 08-24) **[NEW 2026-08-24]**
+- `memory/curation/` - Autonomous curation engine (docs/AUTONOMOUS_CURATION_DESIGN.md): `types.py` (proposals/dispositions), `engine.py` (scan orchestration, sentinel batch-abort, anomaly halt, rate cap), `curators/` (error_sentinels, junk_facts, stream_artifacts, temporal_staleness — all deployed-predicate), `adapters.py`, `journal.py` (append-only audit + undo pre-images), `service.py`; quarantine-not-delete; ceiling `curation.max_mode="queue"` **[NEW 2026-08-28]**
+- `api/routes/curation.py` - Curation Center API (queue/scan/apply/dismiss/undo/activity) backing the SPA 🧹 view **[NEW 2026-08-28]**
+- `core/grounding_check.py` - Factual-grounding floor: GROUNDING_ACCURACY_CLAUSE (5 emotional instruction blocks), deterministic claim-shape prefilter, verifier (fail-open; head+tail query slices for pastes; advice-shaped-verdict demotion), visible ⚠️ correction builder **[NEW 2026-08-28]**
 - `memory/memory_interface.py` - Protocol contracts
 
 The incomplete V2 `memory/coordinator.py` has been deleted.
@@ -5123,6 +5137,7 @@ daemon/
 │   ├── backup_manager.py      # Shutdown-phase backups of the memory stores (JSON always, chroma interval-throttled, retention+prune) [NEW 2026-07-14]
 │   ├── log_rotation.py        # Startup log bounding: rotate turn_records/daily_notes, archive audit log, gzip+prune daemon_debug archives [NEW 2026-07-14]
 │   ├── daemon_guard.py        # Live-Daemon detection for store-writing scripts: daemon_running() resolves each main.py candidate's /proc/<pid>/cwd against the repo root (replaces the pgrep-cmdline "Daemon_v1" grep a relative-path launch defeated); all 8 store-writing scripts delegate, old heuristic kept as import-failure fallback [NEW 2026-08-21]
+│   ├── narrative_staleness.py # Correction-staleness flag for the cached narrative context (mark_stale/is_stale/clear over data/narrative_stale.json; CAUTION line appended by corpus_manager.get_narrative_context until a fresh save) [NEW 2026-08-23]
 │   └── python_fs_guard.py     # Python filesystem guard: 10 monkey-patches (os/shutil delete/move/copy-overwrite), ContextVar agent mode [NEW 2026-05]
 │
 ├── knowledge/

@@ -54,6 +54,7 @@ from config.app_config import (
     FILE_UPLOAD_CSV_FORMULA_PREFIXES,
     FILE_UPLOAD_IMAGE_DIR,
 )
+import io
 
 logger = get_logger("file_processor")
 
@@ -271,7 +272,6 @@ class FileProcessor:
         Progressively reduces quality and resolution until it fits.
         """
         from PIL import Image
-        import io
 
         img = Image.open(io.BytesIO(file_bytes))
         original_size = len(file_bytes)

@@ -6,6 +6,15 @@ and freeze the machine. Also lowers process priority (nice) on Linux.
 """
 import os
 
+# Test/prod isolation sentinel (2026-08-28). Consumers:
+#  - utils/logging_utils.configure_logging: redirects the file sink to
+#    logs/test_debug.log (a pytest import of main/gui.launch used to ROTATE
+#    the live daemon's log and write test output into daemon_debug.log)
+#  - utils/turn_telemetry.record_turn: stamps records with test_env=true so
+#    telemetry analysis can exclude test traffic (the 08-28 retrospective
+#    found benchmark/test rows mixed un-flagged into turn_records.jsonl)
+os.environ.setdefault("DAEMON_TEST_MODE", "1")
+
 # Cap parallelism BEFORE any torch/numpy imports.
 # Default: half the cores, minimum 2, so the system stays responsive.
 _max_threads = str(max(2, os.cpu_count() // 2))
@@ -171,3 +180,21 @@ def _sandbox_learned_relations(tmp_path, monkeypatch):
     monkeypatch.setattr(_lr, "_store", None)  # fresh singleton per test
     yield
     _lr._store = None
+
+
+# Curation sandbox (2026-08-28): the engine's default queue/journal paths are
+# PROD files (data/curation_queue.json, logs/curation_audit.jsonl). Tests
+# always get tmp defaults + a fresh service singleton — the 08-22 test-state-
+# pollution lesson applied from day one.
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_curation(tmp_path, monkeypatch):
+    import memory.curation.engine as _ce
+    import memory.curation.journal as _cj
+    import memory.curation.service as _cs
+    monkeypatch.setattr(_ce, "_DEFAULT_QUEUE_PATH",
+                        str(tmp_path / "curation_queue.json"))
+    monkeypatch.setattr(_cj, "_DEFAULT_JOURNAL_PATH",
+                        str(tmp_path / "curation_audit.jsonl"))
+    monkeypatch.setattr(_cs, "_engine", None)
+    yield
+    _cs._engine = None

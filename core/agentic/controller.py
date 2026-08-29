@@ -660,6 +660,15 @@ class AgenticSearchController:
             # response — the second full-context synthesis call is skipped.
             _decision_answer_text: Optional[str] = None
 
+            # One-shot: a decision-round timeout with NOTHING gathered yet on a
+            # tool-triggered session dispatches the requested search
+            # deterministically instead of "answering with current context"
+            # (2026-08-27: an explicit "can we do a web search" turn hit the
+            # 75s timeout and ended with zero tools, then spent 280s
+            # synthesizing an answer it had no evidence for). A SECOND timeout
+            # falls through to synthesis as before.
+            _timeout_fallback_used = False
+
             # Wall-clock budget for the rounds-2-N loop. A slow/misbehaving model
             # (observed 2026-07-24: kimi-3 narrating tool intent in prose instead
             # of emitting XML markers, ~55-60s/round) could otherwise run every
@@ -734,6 +743,49 @@ class AgenticSearchController:
                     tool_choice=_round_tool_choice,
                     tools_override=_round_tools_override,
                 )
+
+                # Decision-round timeout with nothing gathered: the user's
+                # request explicitly triggered the tool loop, so a stalled
+                # decision call must not silently become "answer from context".
+                # Substitute a deterministic web search from the trigger's own
+                # seed terms (or the query itself) — once.
+                from config.app_config import AGENTIC_TIMEOUT_TOOL_FALLBACK
+                if (
+                    decisions
+                    and getattr(decisions[0], "timed_out", False)
+                    and not session.rounds
+                    and not _timeout_fallback_used
+                    and AGENTIC_TIMEOUT_TOOL_FALLBACK
+                    and fetch_url_available
+                ):
+                    _timeout_fallback_used = True
+                    _fb_terms = [
+                        t.strip()
+                        for t in (initial_search_terms or [])
+                        if t and t.strip()
+                    ][:2] or [self._fallback_terms_from_query(query)]
+                    logger.warning(
+                        f"[AgenticSearch] Decision round timed out with zero "
+                        f"tools dispatched — running the requested search "
+                        f"deterministically: {_fb_terms}"
+                    )
+                    yield ProgressEvent(
+                        event_type="round_start",
+                        message="Model stalled — running the requested search directly",
+                        round_number=session.current_round,
+                        metadata={"terms": _fb_terms},
+                    )
+                    decisions = [
+                        SearchDecision(
+                            wants_search=True,
+                            search_query=t,
+                            search_reason=(
+                                "decision-round timeout — dispatching the "
+                                "explicitly requested search deterministically"
+                            ),
+                        )
+                        for t in _fb_terms
+                    ]
 
                 # Dispatch action proposals BEFORE honoring done signal.
                 # The model often sends propose_action + signal_done together;
@@ -1266,11 +1318,14 @@ class AgenticSearchController:
         except asyncio.TimeoutError:
             logger.warning(
                 f"[AgenticSearch] Decision generation timed out after "
-                f"{AGENTIC_ROUND_TIMEOUT_S:.0f}s — answering with current context"
+                f"{AGENTIC_ROUND_TIMEOUT_S:.0f}s"
             )
-            # Treat a stalled decision call as an implicit "ready to answer";
-            # the loop exits into final synthesis with what was gathered.
-            return [SearchDecision(wants_answer=True)]
+            # Marked timed_out so the loop can distinguish a stalled decision
+            # call from the model's own ready-to-answer signal: on a
+            # tool-triggered session with nothing gathered yet, the loop
+            # dispatches the requested tool deterministically instead of
+            # answering with current context.
+            return [SearchDecision(wants_answer=True, timed_out=True)]
         except Exception as e:
             logger.error(f"[AgenticSearch] Decision generation failed: {e}")
             # On error, signal to answer with current context
@@ -1367,12 +1422,32 @@ class AgenticSearchController:
             )
             return response
 
-    # Openers that mark a decision-round text as a PLAN, not an answer —
-    # promissory narration must go through the real synthesis call.
-    _PROMISSORY_OPENERS = (
-        'let me pull', 'let me grab', 'let me run', 'let me check',
-        'let me search', 'let me query', 'let me look',
-        "i'll hit", "i'll search", "i'll check", "i'll look",
+    # Promissory tool-intent phrasing marks a decision-round text as a PLAN,
+    # not an answer — it must go through the real synthesis call. 2026-08-28
+    # live failure: "The first round of results missed the mark — … Let me aim
+    # at the actual research on …" shipped (and stored) as the FINAL response.
+    # It defeated the old guard twice: the check scanned only the first 150
+    # chars (the "Let me…" sat just past the window) and 'aim' wasn't in the
+    # substring verb list. Now: a word-bounded regex over the WHOLE text —
+    # a plan sentence anywhere means the model didn't finish; rejecting only
+    # costs the synthesis-call latency, never correctness. "let me know" and
+    # bare "I'll" without a tool-intent verb deliberately do NOT match.
+    _PROMISSORY_RE = re.compile(
+        r"\b(?:let\s+me|i'?ll|i\s+will|i'?m\s+going\s+to|gonna)\s+"
+        r"(?:pull|grab|run|re-?run|check|search|re-?search|query|look|aim|"
+        r"dig|find|fetch|try|retry|refine|adjust|narrow|broaden|redo|"
+        r"verify|target)\b",
+        re.IGNORECASE,
+    )
+    # Loop-meta narration about the quality of prior tool ROUNDS ("The first
+    # round of results missed the mark…") — commentary on the search process,
+    # not an answer to the user. Head-anchored: real answers can mention
+    # "results" later in the body, but round-postmortems open with it.
+    _LOOP_META_RE = re.compile(
+        r"\b(?:first|second|third|next|another|last|that|this)\s+round\s+of\b"
+        r"|\bmissed\s+the\s+mark\b"
+        r"|\bresults?\s+(?:missed|didn'?t\s+(?:return|match|help)|came\s+back\s+empty)\b",
+        re.IGNORECASE,
     )
 
     def _usable_decision_answer(self, text: str) -> Optional[str]:
@@ -1401,8 +1476,18 @@ class AgenticSearchController:
                 "(no terminal punctuation) — falling back to synthesis call"
             )
             return None
-        _head = sanitized[:150].lower()
-        if any(m in _head for m in self._PROMISSORY_OPENERS):
+        if self._PROMISSORY_RE.search(sanitized):
+            logger.info(
+                "[AgenticSearch] Decision answer contains promissory "
+                "tool-intent phrasing — plan, not answer; falling back to "
+                "synthesis call"
+            )
+            return None
+        if self._LOOP_META_RE.search(sanitized[:200]):
+            logger.info(
+                "[AgenticSearch] Decision answer opens with loop-meta "
+                "narration about prior rounds — falling back to synthesis call"
+            )
             return None
         return sanitized
 
@@ -2064,6 +2149,24 @@ What would you like to do?""")
         if len(query.split()) > 6:
             return "Try a shorter, more focused query"
         return "Try alternative phrasing or broader terms"
+
+    @staticmethod
+    def _fallback_terms_from_query(query: str) -> str:
+        """Distill a search string from the raw query for the decision-timeout
+        fallback: strip the search-request preamble ("can we do a web search
+        and attempt to confirm ...") so the searchable content remains."""
+        q = (query or "").strip()
+        _PREAMBLE_RE = re.compile(
+            r"^(?:(?:hey|hi|ok(?:ay)?|so|please|also)[,\s]+)*"
+            r"(?:can|could|would|will)?\s*(?:you|we)?\s*"
+            r"(?:please\s+)?(?:do|run|try|perform)?\s*"
+            r"(?:a\s+)?(?:web\s+|internet\s+|online\s+)?search(?:es)?\s*"
+            r"(?:and\s+(?:attempt\s+to\s+|try\s+to\s+)?)?"
+            r"(?:to\s+)?(?:confirm|verify|find(?:\s+out)?|check|look\s+up)?\s*",
+            re.IGNORECASE,
+        )
+        stripped = _PREAMBLE_RE.sub("", q, count=1).strip(" ?.!,")
+        return stripped if len(stripped.split()) >= 2 else q.strip(" ?.!,")
 
     def _format_search_context(self, round_number, query, content):
         return self._formatter.format_search_context(round_number, query, content)

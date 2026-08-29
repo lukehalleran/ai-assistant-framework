@@ -202,14 +202,23 @@ def compute_trusted_diff(*, worker_repo: str | Path, trusted_baseline_repo: str 
     # 1. fresh trusted checkout from the supervisor's baseline clone (NOT the worker's)
     _run(["git", *_GIT_HARDENED, "clone", "--no-hardlinks", "--no-local", "--quiet",
           f"file://{trusted_baseline_repo.resolve()}", str(work_dir)], check=True, env=env)
+    # check=True throughout: a failed checkout would silently diff against the
+    # clone's HEAD instead of base_sha, and a failed diff would return "" —
+    # which reads as "no changes", a silent PASS in a review path (2026-08-28).
     _run(["git", "-C", str(work_dir), *_GIT_HARDENED, "checkout", "--quiet", base_sha],
-         check=False, env=env)
+         check=True, env=env)
     # 2. overlay the worker's worktree (its .git is excluded → cannot run code)
     _overlay_worktree(src=worker_repo, dst=work_dir)
     # 3. diff with the TRUSTED .git
-    _run(["git", "-C", str(work_dir), *_GIT_HARDENED, "add", "-A"], check=False, env=env)
+    _run(["git", "-C", str(work_dir), *_GIT_HARDENED, "add", "-A"], check=True, env=env)
     proc = _run(["git", "-C", str(work_dir), *_GIT_HARDENED, "diff", "--cached", base_sha],
                 check=False, env=env)
+    # git diff exits 0 here (no --exit-code); any non-zero status is a real
+    # failure, never "differences found" — refuse to hand back an empty diff.
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"trusted diff failed (exit {proc.returncode}): "
+            f"{(proc.stderr or '')[:300]}")
     return proc.stdout or ""
 
 

@@ -548,6 +548,12 @@ class MultiStageGateSystem:
     # memories forced in and 21 rendered.
     # Tests: tests/unit/test_gate_min_results_cap.py (9)
 
+    # Forced-backfill QUALITY floor [2026-08-23]: forced items must still score
+    # above threshold − GATE_FORCED_FLOOR_MARGIN (env, default 0.05) — fail-soft
+    # means "don't starve an ordinary turn", not "force junk in"; 0 natural
+    # passes now renders fewer-but-honest memories.
+    # Tests: tests/unit/test_gate_forced_quality_floor.py
+
     async def filter_semantic_chunks(query, chunks) -> List[Dict]: ...
     async def filter_wiki_content(query, wiki_content) -> Tuple[bool, str]: ...
     # Wiki + semantic-chunk paths stay on the MiniLM gate embedder against the
@@ -1302,7 +1308,11 @@ def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, 
     hub (~797/889 edges) can't dump the whole personal neighbourhood (pets/project terms) into
     unrelated queries; only seed entities fan out. Honours read-time TTL: stale transient edges
     (past their per-relation horizon, via GraphMemory._edge_is_stale_transient -> relation_classifier)
-    are dropped from traversal + scoring (no deletion; a fresh mention refreshes last_seen)."""
+    are dropped from traversal + scoring (no deletion; a fresh mention refreshes last_seen).
+    Stance [2026-08-23]: edges with EXPLICIT appraisal/inferred stance metadata are excluded.
+    Min-mentions evidence bar [2026-08-23]: candidates with mention_count below
+    GRAPH_EXPANSION_MIN_MENTIONS (default 2; env-overridable, 0 disables) are skipped —
+    single-mention nodes never become expansion terms (nodes without the field pass)."""
 
 # Ingestion (memory_storage.py:_ingest_fact_to_graph):
 # Called after each add_fact(). _is_graph_worthy_object() rejects:
@@ -1332,6 +1342,48 @@ def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, 
 # Anchored (never mass import), 1-hop, capped (5/entity, 50/run, 25 new nodes/run);
 # taxonomic relations forward-only (reverse instance_of = category-member junk fan-in).
 # Idempotent via wikidata_qid metadata stamp. Config: wikidata_enrichment YAML section.
+```
+
+---
+
+## Stance / Epistemic Tagging **[NEW 2026-08-23]**
+
+```python
+# memory/stance_classifier.py — single-source deterministic stance core
+# Stances: objective / appraisal / reported / inferred / unknown
+# LEGACY_STANCE_DEFAULT = "unknown" (untagged data; consumers conservative:
+#   suppression only on EXPLICIT appraisal/inferred, standing-granting needs
+#   EXPLICIT non-elevated evidence)
+# EVALUATIVE_LEXICON — thick evaluative terms (evil, abusive, toxic, worthless...)
+
+classify_triple_stance(subject, relation, obj, source_text)  # lexicon hits OVERRIDE LLM-proposed stance
+classify_utterance_stance(text)
+scope_unresolved_referent(subject, ...)   # "she is abusive" → "user's unnamed referent"/
+                                          # "user's last partner"; NEVER fuzzy-binds to a named entity
+classify_for_storage(...)                 # write-path entry point
+effective_stance(metadata)                # read-side resolution incl. legacy default
+capture_tone_from_level(tone_level)       # shutdown LLM path joins triples to the session
+                                          # corpus entry's is_heavy_topic (unmatched → unknown)
+
+# Write path: llm_fact_extractor triples carry "stance"; fact_extractor._clean_triple keeps
+#   evaluative pronoun-subject triples user-scoped; memory_storage forwards stance+capture_tone
+#   into fact metadata and GraphEdge.metadata; role subjects → verbatim entity_type="role"
+#   graph nodes (bypass alias resolver)
+# Consumers:
+#   graph_utils.rank_expansion_candidates — excludes explicit appraisal/inferred edges ("evil" leak fix)
+#   GraphEdge.to_natural_language — appraisals: "you described X as '...' (your words at the
+#     time, DATE)"; settled: "you've consistently described..."; inferred: "(assistant inference)";
+#     memory_retriever._present_fact_content applies the same rewrite at the retrieval boundary
+#   cross_deduplicator._find_fact_contradictions — skips explicit-appraisal facts (perspectives coexist)
+#   user_profile.add_fact — stores stance; explicit appraisals never enter quick profile;
+#     deterministic lexicon backstop when no stance passed
+#   graph_memory.add_relation — appraisal_days/appraisal_tones distinct-ISO-day tracking;
+#     ≥3 distinct non-elevated days → settled=True (elevated/unknown days never count)
+# Backfill: scripts/backfill_stance.py (dry-run default; refuses --apply while Daemon runs;
+#   pre-image backups to data/backups/stance_backfill_<ts>/; hard sentinel: casey|is|evil must
+#   classify appraisal. Dry-run validated 2026-08-23: 3268 facts / 20 appraisal, 987 edges)
+# Tests: tests/unit/test_stance_classifier.py, test_stance_write_path.py,
+#   test_stance_consumers.py, test_appraisal_settledness.py, test_backfill_stance.py
 ```
 
 ---
@@ -1592,8 +1644,21 @@ def extract_claims_from_text(text, entity_resolver=None) -> List[ClaimKey]
 
 # Cascade triggers:
 # 1. Orchestrator: after correction detection
+#    [2026-08-23] This whole post-response pipeline (corrections/confirmations → truth events →
+#    staleness cascade) was DEAD on the GUI path (only the unused process_user_query ran it —
+#    same class as the 08-18 escalation bug): orchestrator.run_post_response_detectors() is now
+#    PUBLIC and called per turn from gui/handlers._write_turn_telemetry. New terse-numeric-swap
+#    correction pattern ("6 weeks off vryalr not 1.") + detect_correction_signal() (message-level,
+#    fact-list-independent). Tests: tests/unit/test_correction_gui_wiring.py
 # 2. Cross-deduplicator: after contradiction clusters (losers SUPERSEDED, not deleted [2026-08-03])
 # 3. Shutdown: claims extracted at summary creation time
+
+# Narrative staleness flag [2026-08-23] — utils/narrative_staleness.py (NEW):
+# detect_correction_signal() ≥ 0.6 → mark_stale() (atomic data/narrative_stale.json, keeps
+# EARLIEST mark); corpus_manager.get_narrative_context() appends a CAUTION line while
+# is_stale(narrative_mtime); a fresh narrative save clear()s it — corrected claims stop
+# re-entering prompts via stale [TEMPORAL GROUNDING]. Lenient derived state (corrupt = not
+# stale, never raises). Tests: tests/unit/test_narrative_staleness.py
 
 # Config:
 STALENESS_ENABLED = True
@@ -1684,6 +1749,7 @@ TRUTH_SCORE_MAX = 0.95
 GATE_REL_THRESHOLD = 0.18            # MiniLM space (wiki/semantic-chunk gate paths)
 GATE_REL_THRESHOLD_RETRIEVAL = 0.60  # bge space (memory/summary gating; deictic floor 0.61)
 GATE_COSINE_THRESHOLD = float(os.getenv("GATE_COSINE_THRESHOLD", "0.50"))  # gate_system.py DEFAULT_THRESHOLD
+GATE_FORCED_FLOOR_MARGIN = 0.05      # [2026-08-23] forced-minimum backfill quality floor: never force items below threshold − margin (env var in gate_system.py)
 
 # Collection boosts (live config.yaml memory.collection_boosts)
 COLLECTION_BOOSTS = {
@@ -1741,6 +1807,7 @@ GRAPH_SCORING_BOOST_ENABLED = True       # Graph-boosted memory scoring
 GRAPH_SCORING_BOOST_CAP = 0.15          # Max graph bonus (0.05 per entity)
 GRAPH_QUERY_EXPANSION_ENABLED = True     # Append neighbors to search query
 GRAPH_QUERY_EXPANSION_MAX_TERMS = 8      # Max neighbor names appended
+GRAPH_EXPANSION_MIN_MENTIONS = 2         # [2026-08-23] evidence bar for expansion candidates: single-mention nodes never become expansion terms (env-overridable in graph_utils.py; 0 disables)
 
 # Personal Notes Gate [NEW 2026-03-20]
 PERSONAL_NOTES_GATE_THRESHOLD = 0.45     # Post-gate threshold for Obsidian notes (general gate is 0.18)
@@ -1852,6 +1919,46 @@ PERSONALITY_MAX_CHARS = 15000          # Hard cap on personality text
 # Summarization (env-driven, defined in memory/ modules, not app_config.py)
 SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))          # memory_consolidator.py
 SUMMARIZE_AT_SHUTDOWN_ONLY = True   # env SUMMARIZE_AT_SHUTDOWN_ONLY, memory_storage.py
+
+# Insight / Evidence-Assembly Mode [NEW 2026-08-23] (YAML: insight_mode: → schema.py InsightModeSection)
+INSIGHT_MODE_ENABLED = True            # Master toggle
+INSIGHT_MAX_FACETS = 6                 # Facet queries per decomposition (incl. mandatory counter-evidence facet)
+INSIGHT_PER_FACET_CAP = 10             # Evidence items per facet
+INSIGHT_TOTAL_EVIDENCE_CAP = 80        # Global evidence cap
+INSIGHT_EVIDENCE_SNIPPET_CHARS = 280   # Per-item snippet length
+INSIGHT_KEYWORD_SCAN_MAX = 50          # Max corpus keyword-scan hits
+INSIGHT_EXPAND_TOP_K = 3               # Top conversation hits expanded via MemoryExpander
+INSIGHT_EXPAND_WINDOW = 2              # Expansion window per hit
+INSIGHT_DECOMPOSE_MAX_TOKENS = 700     # Facet-decomposition LLM budget
+INSIGHT_SYNTHESIS_MAX_TOKENS = 2600    # Synthesis LLM budget
+INSIGHT_SWEEP_TIMEOUT_S = 45           # Sweep timeout (partial results returned)
+INSIGHT_OFFER_ENABLED = True           # Consent-offer arming (max 1/session)
+INSIGHT_DOC_ON_AGREEMENT = True        # Save doc on agree/partial assessment
+
+# Stance / Epistemic Tagging [NEW 2026-08-23] — memory/stance_classifier.py (no YAML section;
+# single-source deterministic core). Stances: objective/appraisal/reported/inferred/unknown;
+# LEGACY_STANCE_DEFAULT = "unknown" (untagged data — consumers act conservatively).
+# Backfill: scripts/backfill_stance.py (dry-run default, daemon-guard, pre-image backups)
+
+# Factual-Grounding Floor [NEW 2026-08-28] (YAML: grounding_check: → GROUNDING_* constants)
+GROUNDING_CHECK_ENABLED = True         # Post-generation check, ALL tones (review gate skips CONCERN+)
+GROUNDING_CONFIDENCE_THRESHOLD = 0.85  # Verifier confidence required to append a ⚠️ correction
+GROUNDING_TIMEOUT_S = 5.0              # Verifier timeout — fail-open (never blocks the shown reply)
+GROUNDING_MIN_RESPONSE_CHARS = 40      # Skip tiny replies
+# core/grounding_check.py: claim-shape prefilter → gpt-4o-mini verifier (head+tail 2500+2500 query
+# slices so pasted source docs are visible; advice-shaped "please verify" verdicts demoted to
+# no-flag) → visible "> ⚠️ Correction:" appended to display AND storage (gentle wording CONCERN+).
+
+# Autonomous Curation Engine [NEW 2026-08-28] (YAML: curation: → memory/curation/; SPA 🧹 view)
+# Shutdown-phase scan by deployed-predicate curators (error sentinels, junk facts, stream
+# artifacts, temporal staleness); quarantine-not-delete; sentinel batch-abort; anomaly halt;
+# ceiling curation.max_mode="queue" (auto locked). API: api/routes/curation.py.
+# Docs: docs/AUTONOMOUS_CURATION_DESIGN.md.
+
+# Escalation de-escalation [2026-08-28] (YAML: escalation_tracker.distress_grounding_max = 3)
+# Floored (distress_sticky_floor) turns HOLD consecutive_distress_count (never increment);
+# sustained-distress GROUNDING steps down to GENTLE_REENGAGEMENT after the budget; floor STAGE
+# disabled once TONE_FLOOR_CHAIN_MAX spent (allow_sticky_floor threading).
 
 # Models
 DEFAULT_MODEL_NAME = config["models"]["default"]   # yaml: "llama" (local fallback)
@@ -2633,6 +2740,60 @@ Available Tools:
 # Followed by a Tool Selection Guidelines table (task type → best tool), email-by-name
 # and fetch_url-vs-search directives, a {max_rounds} tool budget, multi-tool-per-response
 # permission, and a Query Reformulation playbook for sparse search results.
+```
+
+---
+
+## Insight / Evidence-Assembly Mode **[NEW 2026-08-23]**
+
+```python
+# core/insight/ — turn-owning mode PARALLEL to agentic search (theme sweeps / self-assessment)
+# types.py       — InsightIntent, FacetQuery/FacetPlan, EvidenceItem, ClaimAssessment, Assessment
+#                  (worst-of verdict ordering: disagree > insufficient > partial > agree;
+#                  document allowed only on agree/partial)
+# detector.py    — deterministic regex: theme-sweep ("gather everything I've said about X"),
+#                  personal-theme doc ("...for my therapist" → wants_document=True), explicit
+#                  assessment ("check this against what I've told you" / "am I right that...");
+#                  detect_insight_statement() feeds the consent offer
+# facets.py      — one strict-JSON LLM call → 4-6 facet queries incl. MANDATORY counter-evidence
+#                  facet; deterministic fallback
+# sweep.py       — UNGATED cross-store sweep (conversations/summaries/reflections/facts/
+#                  obsidian_notes/threads via chroma query_collection + corpus_manager.
+#                  search_keyword + graph 1-hop w/ hub/stale/appraisal-edge skips + MemoryExpander
+#                  around top hits; generous caps replace cosine gating — the per-doc gate can't
+#                  pass low-pairwise-similarity/high-collective-signal sets; timeout → partial)
+# provenance.py  — stance labels (user-stated / users-own-note / assistant-inferred /
+#                  extracted-fact / graph-edge) + "[assistant's interpretation, not your words]"
+#                  and "[value judgment — an appraisal, not an objective fact]" markers
+# assessor.py    — adversarial strict-JSON assessment; MUST seek refuting evidence; any failure
+#                  → "insufficient", never fail-agree
+# synthesizer.py — streamed synthesis, hard-coded invariants: quote+date every point, no value
+#                  judgments in system voice, mandatory denominator caveat (corpus over-samples
+#                  distress days — record-frequency ≠ life-frequency), counter-evidence visible,
+#                  MI-shaped close; elevated tone → therapist framing
+
+# Gate (core/agentic/gate.py): insight detection runs BEFORE Tier-3 detect_document_intent
+#   (personal-theme docs → insight, not web research); always veto_exempt;
+#   AgenticDecision.insight_intent. Consent offer: maybe_arm_insight_offer(query, tone_level)
+#   — one-shot slot, max 1/session, non-elevated tone only; handlers inject [INSIGHT OFFER];
+#   terse affirmation next turn runs veto-exempt; anything else drops the offer permanently.
+# Handler (gui/handlers._run_insight_mode): decompose → sweep (8s keepalive heartbeats) →
+#   label → (assess) → stream synthesis → optional doc save via
+#   DocumentGenerator.save_prewritten() (prewritten markdown + frontmatter + versioned file +
+#   index.json; no research, no LLM, never enters reference_docs);
+#   response_mode="insight-assembly"; any exception → fall through to agentic/enhanced.
+# memory/corpus_manager.search_keyword(terms, start, end, max_results, context_chars,
+#   include_entry) — read-only word-boundary case-insensitive episodic scan; query and
+#   response scanned separately for speaker attribution; newest-first; junk-filtered.
+#   include_entry=True (2026-08-26) attaches the raw corpus entry per hit — also powers
+#   the LIVE-path keyword anchor: memory_retriever.get_memories injects up to
+#   KEYWORD_ANCHOR_MAX_HITS=3 exact-match memories when a query proper noun
+#   (utils/query_checker.extract_rare_proper_nouns) is absent from the entire semantic
+#   pool (KEYWORD_ANCHOR_ENABLED env; obsidian _keyword_search floors proper-noun hits
+#   at 0.75; tests/unit/test_keyword_anchor_retrieval.py).
+# Config: insight_mode YAML section → INSIGHT_* constants (see Configuration Constants)
+# Tests: tests/unit/test_insight_gate.py, test_insight_sweep.py, test_insight_provenance.py,
+#   test_insight_assessor.py, test_insight_mode_handler.py, test_corpus_keyword_search.py
 ```
 
 ---

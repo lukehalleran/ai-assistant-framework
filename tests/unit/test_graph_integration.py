@@ -757,7 +757,10 @@ class TestExpansionTTL:
         g = GraphMemory(persist_path=str(tmp_path / "ttl_graph.json"))
         for eid, dn in [("biscuit", "Biscuit"), ("golden_retriever", "Golden Retriever"),
                         ("playful", "Playful"), ("napping", "Napping")]:
-            g.add_entity(GraphNode(entity_id=eid, display_name=dn, entity_type="other"))
+            # mention_count=2 clears the expansion evidence bar
+            # (GRAPH_EXPANSION_MIN_MENTIONS) — these tests pin TTL semantics only
+            g.add_entity(GraphNode(entity_id=eid, display_name=dn,
+                                   entity_type="other", mention_count=2))
         now = datetime.now()
         old = now - timedelta(days=10)
         # durable (never expires) + fresh transient (kept) + stale transient (dropped)

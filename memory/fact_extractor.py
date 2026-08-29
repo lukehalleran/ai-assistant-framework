@@ -21,6 +21,10 @@ Module Contract:
     with metadata: fact_scope="entity", entity_type (spaCy NER), user_connection (possessive patterns)
     Entity facts require min confidence of ENTITY_FACT_MIN_CONFIDENCE (default 0.55)
     Controlled by ENTITY_FACTS_ENABLED toggle
+  - LONG-OBJECT SALVAGE (2026-08-26): objects over FACT_OBJECT_MAX_CHARS (env, 300)
+    recover the recipient from a salutation ("Hi Morgan,\n<email body>" ->
+    email_sent=Morgan) via _salvage_long_object before the drop; shared with the LLM
+    path (which had NO length cap — the 2026-06-15 email-as-object fact entered there)
   - JUNK/POLARITY GUARDS (2026-08-02): _is_junk_object() (wired into _clean_triple) drops
     adverbial/temporal/negation-fragment objects ("for a bit", "yesterday", "not good",
     profanity-intensifier rants) — schedule relations exempt; communication/status/access
@@ -29,6 +33,11 @@ Module Contract:
     positive-preference triples the source text negates ("hate my life" ≠ likes|my life);
     the _canonicalize_preferences "i like " rewrite requires the object in the clause
     directly after the trigger (a bare substring hit used to rewrite ANY co-occurring triple)
+  - STANCE REFERENT SCOPING (2026-08-23): in _clean_triple, an EVALUATIVE object with a
+    pronoun/role subject ("she is abusive", "my last partner was toxic") re-scopes to a
+    user-owned subject (memory/stance_classifier.scope_unresolved_referent) BEFORE the
+    stop-subject drop — the appraisal is preserved user-scoped instead of dropped, and
+    can never fuzzy-bind to a named entity; non-evaluative pronoun subjects still drop
   - SCHEDULE EXTRACTION (2026-05): Structured schedule/calendar event extraction.
     5 pattern categories: work_schedule, class_schedule, exam_date, shift_pattern, day_off.
     Past-tense guard blocks "worked", "had class", "work was". Negation patterns trigger
@@ -52,6 +61,7 @@ Enhanced (2026-03):
 - Entity metadata: fact_scope, entity_type, user_connection added to MemoryNode
 - Helper functions: _detect_entity_type(), _detect_user_connection()
 """
+import os
 import re
 import uuid
 from datetime import datetime
@@ -229,6 +239,40 @@ def _polarity_conflict(source_text: str, rel: str, obj: str) -> bool:
     pattern = _NEG_PREF_GOVERNORS + r"\s+(?:\w+\s+){0,2}?" + re.escape(o)
     return re.search(pattern, text_l) is not None
 
+# Long-object salvage (2026-08-26). A pasted/quoted message body can become a
+# fact OBJECT wholesale — the live incident was a ~700-char email stored as
+# `user | email_sent | "Hi Morgan, I wanted to reach out …"` (2026-06-15,
+# pre-dating the 300-char cap): the recipient name was buried in an object no
+# embedding can match and no entity resolution can see, so no `Morgan` graph
+# node was ever created. When the object blows the cap, a salutation gives us
+# the one durable datum the text still contains — the recipient — so
+# `user | email_sent | Morgan` survives instead of dropping the whole triple.
+# The name group is deliberately case-SENSITIVE (only the salutation verb is
+# case-insensitive): a lowercase word after "hi" is not a name.
+_SALUTATION_RE = re.compile(
+    r"^\s*(?i:hi|hey|hello|dear|good\s+(?:morning|afternoon|evening))\s+"
+    r"([A-Z][a-zA-Z'’-]+(?:\s+[A-Z][a-zA-Z'’-]+)?)\s*(?:[,.!\n:;—-]|$)"
+)
+
+
+def _fact_object_max_chars() -> int:
+    """Object length cap shared by both extraction paths (env
+    ``FACT_OBJECT_MAX_CHARS``, default 300 — the pre-existing _clean_triple
+    cap; the LLM path had NO cap until 2026-08-26)."""
+    try:
+        return int(os.getenv("FACT_OBJECT_MAX_CHARS", "300"))
+    except ValueError:
+        return 300
+
+
+def _salvage_long_object(obj_orig: str) -> Optional[str]:
+    """Recover the recipient name from an over-long message-body object
+    ("Hi Morgan,\\nI wanted to reach out …" → "Morgan"). None when the text has
+    no salutation — the caller drops the triple as before."""
+    m = _SALUTATION_RE.match((obj_orig or "").strip())
+    return m.group(1) if m else None
+
+
 def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str,str,str]]:
     """Return a cleaned/normalized (s,r,o) or None to drop the triple."""
     if not subj or not obj or not rel:
@@ -241,6 +285,20 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
     s = subj_orig.lower()
     r = re.sub(r"\s+", " ", rel).strip(" .,:;\"'`").lower()
     o = obj_orig.lower()
+
+    # Stance referent scoping (2026-08-23): an EVALUATIVE object with a
+    # pronoun/role subject ("she is abusive", "my last partner was toxic")
+    # re-scopes to a user-owned subject string instead of being dropped as a
+    # stop-subject. It must NEVER fuzzy-bind to a named entity — the appraisal
+    # belongs to the user's unresolved referent, not to whoever a resolver
+    # would guess (memory/stance_classifier.py; the casey/she incident class).
+    try:
+        from memory.stance_classifier import scope_unresolved_referent
+        _scoped = scope_unresolved_referent(s, o)
+        if _scoped:
+            s = _scoped
+    except Exception:
+        pass
 
     # Drop trivial subjects/objects
     if s in _STOP_SUBJECTS or o in _STOP_OBJECTS:
@@ -259,7 +317,15 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
     # Basic content length sanity
     if len(s) < 2 or len(o) < 2:
         return None
-    if len(s) > 120 or len(o) > 300:
+    # Over-cap objects: try the salutation salvage before dropping — the
+    # recipient of a pasted message is durable signal (see _SALUTATION_RE).
+    if len(o) > _fact_object_max_chars():
+        salvaged = _salvage_long_object(obj_orig)
+        if not salvaged:
+            return None
+        obj_orig = salvaged
+        o = salvaged.lower()
+    if len(s) > 120 or len(o) > _fact_object_max_chars():
         return None
 
     # Upgrade relation 'is' -> 'is_a' when object starts with article (generic)

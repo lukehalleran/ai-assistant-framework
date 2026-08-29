@@ -56,9 +56,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
-from core.wiki_util import get_wiki_snippet, clean_query
+from core.wiki_util import get_wiki_snippet, clean_query, looks_like_disambiguation_text
 from knowledge.semantic_search import semantic_search_with_neighbors
 from .formatter import _parse_bool
+import time as _t
 
 logger = logging.getLogger("prompt_context_gatherer")
 
@@ -89,18 +90,45 @@ USER_UPLOADS_MAX_AGE_DAYS = int(os.getenv("USER_UPLOADS_MAX_AGE_DAYS", "7"))
 USER_UPLOADS_MIN_RELEVANCE = float(os.getenv("USER_UPLOADS_MIN_RELEVANCE", "0.62"))
 
 
-def _upload_is_live(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:
-    """An upload surfaces while fresh (recent = active working material) OR
-    when clearly relevant to the current query. Undated legacy docs must
-    clear the relevance bar."""
-    if doc.get('relevance_score', 0.0) >= USER_UPLOADS_MIN_RELEVANCE:
-        return True
+def _upload_is_fresh(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     ts_raw = doc.get('metadata', {}).get('timestamp', '')
     try:
         ts = datetime.fromisoformat(str(ts_raw))
         return ((now or datetime.now()) - ts).days <= USER_UPLOADS_MAX_AGE_DAYS
     except (ValueError, TypeError):
         return False
+
+
+def _upload_is_image_stub(doc: Dict[str, Any]) -> bool:
+    """An image upload has no retrievable text — its stored doc is a stub
+    ("User uploaded image: PXL_....jpg (image/jpeg, N bytes)")."""
+    meta = doc.get('metadata', {}) or {}
+    if str(meta.get('content_type', meta.get('mime_type', ''))).startswith('image/'):
+        return True
+    return str(doc.get('content', '')).lstrip().startswith('User uploaded image:')
+
+
+def _upload_is_live(
+    doc: Dict[str, Any],
+    now: Optional[datetime] = None,
+    query: str = "",
+) -> bool:
+    """An upload surfaces while fresh (recent = active working material) OR
+    when clearly relevant to the current query. Undated legacy docs must
+    clear the relevance bar.
+
+    Image stubs are the exception (2026-08-27): their stored text is a
+    filename+bytes line, so "relevance" against it is embedding noise — two
+    year-old photos cleared the 0.62 bar on a long emotional message (for the
+    second time; the bar was raised to 0.62 on 2026-08-14 for the SAME two
+    photos). A non-fresh image upload therefore needs explicit visual intent
+    in the query, never a text-relevance score.
+    """
+    if _upload_is_image_stub(doc):
+        return _upload_is_fresh(doc, now) or _query_wants_visual(query, None)
+    if doc.get('relevance_score', 0.0) >= USER_UPLOADS_MIN_RELEVANCE:
+        return True
+    return _upload_is_fresh(doc, now)
 
 
 def _note_text_substance(content) -> int:
@@ -138,31 +166,94 @@ _VISUAL_JUNK_IDS = frozenset({
     "image", "photo", "picture", "scene", "moment",
 })
 
-# Keywords indicating the user wants to *see* something.
-_VISUAL_INTENT_WORDS = frozenset({
-    "show", "see", "photo", "photos", "picture", "pictures",
-    "image", "images", "look", "pic", "pics",
+# Nouns that name imagery — sufficient on their own in a SHORT message.
+# NOT sufficient at any length: a long paste mentions imagery incidentally —
+# the 2026-08-28 memory-ingest turn contained "Screenshot saved." (narration
+# of an OSCAR drop confirmation) and a literal "image" placeholder from a
+# pasted email client, fired this gate, and a handwritten-notes photo was
+# attached to the final synthesis and narrated ("those SVM notes are real
+# work") in a crisis-logistics reply. In a long message the noun must sit in
+# a short request-shaped line (see _long_message_visual_request).
+_VISUAL_NOUN_WORDS = frozenset({
+    "photo", "photos", "picture", "pictures", "image", "images",
+    "pic", "pics", "screenshot", "screenshots", "selfie", "selfies",
 })
+# Verbs that only SUGGEST visual intent. In a short message ("show me
+# Mochi") they carry the signal; in a long one they are incidental English
+# ("the two options I see are...") — a 700-word pasted email containing
+# "I see" fired this gate on 2026-08-27, the entity filter matched "luke"
+# in the email SIGNATURE, and two cat photos were attached to the final
+# synthesis and narrated into a medical-withdrawal reply.
+_VISUAL_WEAK_VERBS = frozenset({"show", "see", "look", "watch"})
+_VISUAL_WEAK_VERB_MAX_WORDS = 15
 
 # Intents that legitimately want imagery even without an explicit "show me"
 # (e.g. "what does my cat look like", "what did the kitchen look like before").
+# Length-capped too: a long pasted message classified as recall is reciting
+# content, not asking to see something.
 _VISUAL_OK_INTENTS = frozenset({"factual_recall", "temporal_recall"})
+_VISUAL_INTENT_MAX_WORDS = 30
+
+# Combined vocabulary, kept for callers/tests that reference it.
+_VISUAL_INTENT_WORDS = _VISUAL_NOUN_WORDS | _VISUAL_WEAK_VERBS
+
+# Verbs that make a noun-bearing line an actual request to SEE something
+# ("show me the screenshot", "pull up that photo") rather than narration
+# ("Screenshot saved."). Used only for the long-message escape hatch.
+_VISUAL_REQUEST_VERBS = frozenset({
+    "show", "see", "look", "watch", "pull", "display", "find",
+    "recall", "remember", "view", "open", "attach", "send", "share",
+})
+_VISUAL_SENTENCE_MAX_WORDS = 15
+
+
+def _long_message_visual_request(query: str) -> bool:
+    """In a long message, visual intent must be its own short request line.
+
+    Splits on sentence/line boundaries and passes only when some short
+    sentence contains a visual noun AND either a request verb or a question
+    mark — "Show me the screenshot" appended after a paste qualifies;
+    "Screenshot saved." (narration) does not.
+    """
+    for sent in re.split(r"[.!?\n]+", query):
+        stoks = [re.sub(r"[^\w]", "", w.lower()) for w in sent.split()]
+        if not stoks or len(stoks) > _VISUAL_SENTENCE_MAX_WORDS:
+            continue
+        sset = set(stoks)
+        if sset & _VISUAL_NOUN_WORDS and (
+            sset & _VISUAL_REQUEST_VERBS or "?" in sent
+        ):
+            return True
+    return False
 
 
 def _query_wants_visual(query: str, intent_type: Optional[str]) -> bool:
     """Gate for *automatic* visual-memory injection.
 
     A bare entity mention is not enough — a photo only surfaces when the user
-    actually signals they want to see something (a visual-intent word) or the
-    turn is a recall intent that naturally wants imagery. This stops a name that
-    merely appears in passing (especially inside a path/identifier, e.g.
-    ``/home/lukeh/...`` matching the entity ``luke``) from pulling a photo into
-    an unrelated technical message.
+    actually signals they want to see something (a visual noun in a short
+    message, a show/see/look verb in a SHORT message, or — in a long paste —
+    a short request-shaped line naming imagery) or the turn is a short
+    recall-intent message that naturally wants imagery. This stops a name
+    that merely appears in passing (``/home/lukeh/...`` matching the entity
+    ``luke``, an email signature "Luke Halleran", or "Screenshot saved."
+    narration inside pasted content) from pulling a photo into an unrelated
+    message. Under-fires by design.
     """
-    words = {re.sub(r"[^\w]", "", w.lower()) for w in query.split()}
-    if words & _VISUAL_INTENT_WORDS:
+    tokens = [re.sub(r"[^\w]", "", w.lower()) for w in query.split()]
+    words = set(tokens)
+    n = len(tokens)
+    if words & _VISUAL_NOUN_WORDS:
+        if n <= _VISUAL_INTENT_MAX_WORDS:
+            return True
+        if _long_message_visual_request(query):
+            return True
+    if words & _VISUAL_WEAK_VERBS and n <= _VISUAL_WEAK_VERB_MAX_WORDS:
         return True
-    return (intent_type or "") in _VISUAL_OK_INTENTS
+    return (
+        (intent_type or "") in _VISUAL_OK_INTENTS
+        and n <= _VISUAL_INTENT_MAX_WORDS
+    )
 
 
 def _cfg_int(key: str, default_val: int) -> int:
@@ -177,6 +268,11 @@ def _cfg_int(key: str, default_val: int) -> int:
 PROMPT_MAX_WIKI = _cfg_int("prompt_max_wiki", 3)
 PROMPT_MAX_DREAMS = _cfg_int("prompt_max_dreams", 3)
 PROMPT_MAX_SEMANTIC = _cfg_int("prompt_max_semantic", 10)
+
+# The self-docs auto-seed source: only chunks originating here may render
+# under [DAEMON DOCUMENTATION] (see get_reference_docs origin gate).
+from pathlib import Path as _Path
+_SELF_DOCS_DIR = str(_Path(__file__).resolve().parents[2] / "docs")
 
 # Feature flags
 DREAMS_ENABLED = _parse_bool(os.getenv("DREAMS_ENABLED", "1"))
@@ -382,6 +478,26 @@ class KnowledgeRetrievalMixin:
 
             # Filter OUT user uploads -- they appear in [USER UPLOADED ITEMS] instead
             docs = [d for d in docs if d.get('metadata', {}).get('type') != 'user_upload']
+
+            # Positive origin gate (2026-08-28): [DAEMON DOCUMENTATION]
+            # instructs the model these are docs about ITS OWN architecture,
+            # but the collection also holds legacy user material ingested
+            # WITHOUT type='user_upload' (54 OMSA course-transcript titles /
+            # 206 chunks) — survival-models lecture transcripts rendered as
+            # self-knowledge on a health-research turn. Self-docs are
+            # auto-seeded exclusively from the repo docs/ tree, so require
+            # that origin; chunks with NO file_path are kept (fail-open for
+            # legacy seeds of real docs).
+            def _is_self_doc(d):
+                fp = str((d.get('metadata', {}) or {}).get('file_path') or '')
+                return (not fp) or fp.startswith(_SELF_DOCS_DIR)
+            pre_origin = len(docs)
+            docs = [d for d in docs if _is_self_doc(d)]
+            if pre_origin != len(docs):
+                logger.debug(
+                    f"[ContextGatherer] Dropped {pre_origin - len(docs)} "
+                    "non-self-doc chunk(s) from [DAEMON DOCUMENTATION]"
+                )
             docs = docs[:limit]
 
             # Track doc IDs for citations
@@ -419,7 +535,6 @@ class KnowledgeRetrievalMixin:
 
     def _any_user_uploads_exist(self) -> bool:
         """Cheap existence probe for type='user_upload' docs; fails open."""
-        import time as _t
         if self._uploads_exist_cache is True:
             return True
         if (self._uploads_exist_cache is False
@@ -466,9 +581,10 @@ class KnowledgeRetrievalMixin:
             uploads = [d for d in docs if d.get('metadata', {}).get('type') == 'user_upload']
 
             # Staleness gate (2026-08-05): months-old homework docs/photos
-            # were injected every turn — see _upload_is_live.
+            # were injected every turn — see _upload_is_live. Query threaded
+            # (2026-08-27) so non-fresh image stubs require visual intent.
             before = len(uploads)
-            uploads = [d for d in uploads if _upload_is_live(d)]
+            uploads = [d for d in uploads if _upload_is_live(d, query=query)]
             if len(uploads) < before:
                 logger.debug(
                     f"[ContextGatherer] Dropped {before - len(uploads)} stale/irrelevant "
@@ -1190,6 +1306,25 @@ class KnowledgeRetrievalMixin:
                         'wiki_knowledge', query, n_results=limit
                     )
                     if results:
+                        # Drop disambiguation-page chunks — the embedded corpus
+                        # contains them as plain text and they carry no content
+                        # ("Feel may refer to:" reached [BACKGROUND KNOWLEDGE],
+                        # 2026-08-28); the live-API fallback already drops them
+                        # via page.is_disambiguation.
+                        pre_disambig = len(results)
+                        results = [
+                            r for r in results
+                            if not looks_like_disambiguation_text(
+                                r.get('content', ''),
+                                r.get('metadata', {}).get('title', ''),
+                            )
+                        ]
+                        if pre_disambig != len(results):
+                            logger.debug(
+                                f"[ContextGatherer] Dropped {pre_disambig - len(results)} "
+                                "wiki disambiguation chunk(s)"
+                            )
+                    if results:
                         # Track wiki titles for session enrichment
                         from knowledge.wiki_tracker import WikiArticleTracker
                         for r in results:
@@ -1274,6 +1409,19 @@ class KnowledgeRetrievalMixin:
                        if r.get("similarity", 0) >= SEMANTIC_CHUNKS_GATE_THRESHOLD]
             if pre_gate != len(results):
                 logger.debug(f"Semantic chunks gate: {pre_gate} -> {len(results)} (threshold={SEMANTIC_CHUNKS_GATE_THRESHOLD})")
+            if not results:
+                return []
+
+            # Drop disambiguation-page chunks (same corpus, same junk class as
+            # the wiki_knowledge path — "X may refer to:" carries no content)
+            pre_disambig = len(results)
+            results = [r for r in results
+                       if not looks_like_disambiguation_text(
+                           r.get("content", ""), r.get("title", ""))]
+            if pre_disambig != len(results):
+                logger.debug(
+                    f"Semantic chunks disambiguation filter: {pre_disambig} -> {len(results)}"
+                )
             if not results:
                 return []
 

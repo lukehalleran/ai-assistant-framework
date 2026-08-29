@@ -52,6 +52,7 @@ from pathlib import Path
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -498,7 +499,6 @@ class DailyNotesGenerator:
     def _extract_main_quest(self, llm_response: str) -> str:
         """Extract main quest title from LLM response for frontmatter."""
         # Look for "## Main Quest: [Title]"
-        import re
         match = re.search(r'## Main Quest:\s*(.+?)(?:\n|$)', llm_response)
         if match:
             return match.group(1).strip()

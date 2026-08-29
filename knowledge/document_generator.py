@@ -20,6 +20,10 @@ Module Contract
   - GeneratedDocument dataclass with path, title, sources, metadata
   - Markdown file written to documents/{type}s/{slug}-{date}.md
   - Index entry appended to documents/index.json
+- save_prewritten(markdown, *, topic, doc_type, title?, source_types?) [2026-08-23]:
+  saves an ALREADY-WRITTEN body (insight/evidence-assembly mode) — frontmatter +
+  versioned file + index entry only; NO research pipeline, NO LLM call, never
+  enters reference_docs
 - Key behaviors:
   - Parallel source gathering with graceful degradation per provider
   - Source deduplication by URL/title, capped at DOCUMENT_MAX_SOURCES
@@ -346,6 +350,68 @@ class DocumentGenerator:
             f"[DocGen] Generated {doc_type}: '{title}' -> {path} "
             f"({word_count} words, {len(sources)} sources, {sections_count} sections)"
         )
+        return result
+
+    def save_prewritten(
+        self,
+        markdown: str,
+        *,
+        topic: str,
+        doc_type: Literal["report", "summary"] = "summary",
+        title: str | None = None,
+        source_types: list[str] | None = None,
+    ) -> GeneratedDocument:
+        """Save an ALREADY-WRITTEN markdown body as a versioned document.
+
+        Used by the insight/evidence-assembly mode (2026-08-23): the synthesis
+        text is authored upstream with its own provenance discipline, so this
+        path runs NO research pipeline and NO LLM call — just frontmatter +
+        versioned write + index entry, the same disk artifacts generate()
+        produces. Deliberately does NOT touch reference_docs (generated docs
+        never enter retrieval).
+        """
+        if not (markdown or "").strip():
+            raise ValueError("save_prewritten: empty document body")
+
+        topic = self._clip_topic(topic)
+        resolved_title = (title or "").strip() or self._extract_title(markdown, topic)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        frontmatter = self._build_frontmatter(
+            resolved_title, doc_type, topic, None, [], now
+        )
+        full_doc = frontmatter + "\n" + markdown
+        path = self._write_versioned_file(doc_type, topic, full_doc)
+
+        word_count = len(markdown.split())
+        index_entry = {
+            "id": path.stem,
+            "path": str(path.resolve().relative_to(self.repo_root.resolve())) if self.repo_root else str(path),
+            "title": resolved_title,
+            "type": doc_type,
+            "topic": topic,
+            "focus": None,
+            "created": now,
+            "status": "draft",
+            "sources_count": 0,
+            "source_types": sorted(set(source_types or [])),
+            "model": "",
+            "version": 1,
+        }
+        self._update_index(index_entry)
+
+        result = GeneratedDocument(
+            path=str(path),
+            title=resolved_title,
+            doc_type=doc_type,
+            topic=topic,
+            focus=None,
+            sources=[],
+            created_at=now,
+            sections_count=len(re.findall(r"^#{1,3}\s", markdown, re.MULTILINE)),
+            word_count=word_count,
+        )
+        logger.info(f"[DocGen] Saved prewritten {doc_type}: '{resolved_title}' -> {path}")
         return result
 
     # ------------------------------------------------------------------

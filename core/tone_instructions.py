@@ -27,6 +27,7 @@ from utils.logging_utils import get_logger
 from utils.tone_detector import CrisisLevel
 from utils.emotional_context import EmotionalContext
 from utils.need_detector import NeedType
+from core.grounding_check import GROUNDING_ACCURACY_CLAUSE
 
 logger = get_logger("tone_instructions")
 
@@ -84,7 +85,8 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
             "- Validate their feelings and acknowledge the difficulty\n"
             "- Offer perspective or gentle suggestions if appropriate\n"
             "- Be warm and empathetic, but don't over-therapize\n"
-            "- Focus on their specific situation, not generic coping advice"
+            "- Focus on their specific situation, not generic coping advice\n"
+            + GROUNDING_ACCURACY_CLAUSE
         )
         return style_modifier + base_instructions if style_modifier else base_instructions
     elif tone_level == CrisisLevel.CONCERN:
@@ -97,7 +99,8 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
             "- \"That sucks\" + brief validation is often sufficient\n"
             "- Don't offer unsolicited advice or try to solve their problem\n"
             "- Match their energy - if they're venting, let them vent\n"
-            "- Only expand if they explicitly ask for more"
+            "- Only expand if they explicitly ask for more\n"
+            + GROUNDING_ACCURACY_CLAUSE
         )
         return style_modifier + base_instructions if style_modifier else base_instructions
     else:  # CrisisLevel.CONVERSATIONAL
@@ -179,6 +182,10 @@ The user is expressing emotional state, not seeking analysis.
 - Avoid immediate problem-solving or reframes
 - "I hear you" before "here's what I think"
 """
+        # Accuracy floor rides the addon only when the base tone block
+        # (MEDIUM/CONCERN) didn't already carry it — no duplicate clause.
+        if GROUNDING_ACCURACY_CLAUSE not in base:
+            presence_addon += GROUNDING_ACCURACY_CLAUSE + "\n"
         return base + presence_addon
 
     elif ctx.need_type == NeedType.PERSPECTIVE:

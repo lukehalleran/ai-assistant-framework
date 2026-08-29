@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from api.routes import actions, chat, debug, files, models, settings, system
+from api.routes import actions, chat, curation, debug, files, models, settings, system
 from api.state import AppState
 from utils.logging_utils import get_logger
 
@@ -88,6 +88,7 @@ def create_app(orchestrator, start_background: bool = True) -> FastAPI:
     app.include_router(system.router)
     app.include_router(debug.router)
     app.include_router(settings.router)
+    app.include_router(curation.router)
 
     try:
         from utils.health_check import add_health_endpoint

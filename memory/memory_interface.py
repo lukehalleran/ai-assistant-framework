@@ -1,7 +1,10 @@
 #core/memory_interface
 import json
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from memory.procedural_skill import ProceduralSkill
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum

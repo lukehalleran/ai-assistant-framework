@@ -815,7 +815,6 @@ class SynthesisFilter:
         it entirely — see _stage_5_coherence_judge). The regex still matches the
         rating anywhere for robustness. Falls back to WEAK on parse failure.
         """
-        import re
 
         # Primary: find last "Rating: LEVEL" anywhere in response
         matches = re.findall(

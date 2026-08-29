@@ -4,8 +4,11 @@
 Module Contract
 - Purpose: Persistent user profile manager that aggregates facts across sessions. Provides categorized storage, conflict resolution, and profile export in ChatGPT-style format. ENHANCED: Hybrid retrieval (2/3 semantic + 1/3 recent) for query-relevant fact selection.
 - Inputs:
-  - add_fact(relation, value, confidence, source_excerpt, category?) → bool
-  - add_facts_batch(facts: List[Dict]) → int
+  - add_fact(relation, value, confidence, source_excerpt, category?, timestamp?, stance?) → bool
+    [2026-08-23]: stance is the extractor's epistemic tag; an EXPLICIT
+    "appraisal" is stored tagged but never promoted into the quick profile,
+    with a deterministic lexicon backstop when the caller passes none
+  - add_facts_batch(facts: List[Dict]) → int  (forwards each fact's "stance")
   - get_category(category: ProfileCategory) → List[Dict]
   - get_relevant_facts(query: str, category: ProfileCategory, limit: int) → List[Dict] [NEW: hybrid retrieval]
   - get_context_injection(max_tokens: int, query: str) → str [UPDATED: uses query for semantic relevance; timestamps formatted as relative labels via format_relative_timestamp(); includes source_excerpt as (said: "...") when available]
@@ -173,7 +176,8 @@ class UserProfile:
                  confidence: float = 0.7,
                  source_excerpt: str = "",
                  category: ProfileCategory = None,
-                 timestamp: datetime = None) -> bool:
+                 timestamp: datetime = None,
+                 stance: str = "") -> bool:
         """
         Add a fact to the profile using append-only storage.
 
@@ -188,6 +192,10 @@ class UserProfile:
 
         Args:
             timestamp: Optional timestamp to preserve from imports (defaults to now)
+            stance: Optional epistemic tag from the extractor (2026-08-23).
+                An EXPLICIT "appraisal" ("I'm a failure") is stored with its
+                tag but never promoted into the always-rendered quick profile —
+                a value judgment is the user's take at the time, not identity.
 
         Returns True if fact was added/updated, False if rejected.
         """
@@ -223,6 +231,16 @@ class UserProfile:
                 timestamp = datetime.fromisoformat(timestamp)
             except (ValueError, AttributeError):
                 timestamp = datetime.now()
+
+        # Deterministic stance backstop: even when the caller passes none, a
+        # thick-evaluative value on a user fact is an appraisal (single source
+        # of truth in memory/stance_classifier.py).
+        if not stance:
+            try:
+                from memory.stance_classifier import classify_triple_stance
+                stance = classify_triple_stance("user", relation, value).stance
+            except Exception:
+                stance = ""
 
         fact = ProfileFact(
             relation=relation,
@@ -261,6 +279,8 @@ class UserProfile:
                     same_relation_current.append(i)
 
             fact_dict = fact.to_dict()
+            if stance and stance != "objective":
+                fact_dict["stance"] = stance
 
             if exact_match_idx is not None:
                 # Case 1: Same (relation, value) — confirmation: boost confidence + truth
@@ -340,7 +360,10 @@ class UserProfile:
             # quick_profile value ("your time") kept rendering in every
             # prompt's Quick Profile block. _update_quick_profile filters by
             # relation itself — the category gate was redundant AND leaky.
-            self._update_quick_profile(relation, value)
+            # EXPLICIT appraisals never promote (2026-08-23): a value judgment
+            # ("I'm a failure") must not become always-rendered identity.
+            if stance != "appraisal":
+                self._update_quick_profile(relation, value)
 
             # Prune ephemeral facts if category exceeds soft cap
             self._prune_category(cat_key)
@@ -414,8 +437,10 @@ class UserProfile:
             confidence = fact.get("confidence", 0.7)
             source = fact.get("source_excerpt", "")
             timestamp = fact.get("timestamp")  # Preserve original timestamp if provided
+            stance = fact.get("stance", "")  # extractor stance tag (2026-08-23)
 
-            if self.add_fact(relation, value, confidence, source, timestamp=timestamp):
+            if self.add_fact(relation, value, confidence, source,
+                             timestamp=timestamp, stance=stance):
                 added += 1
 
         if added > 0:

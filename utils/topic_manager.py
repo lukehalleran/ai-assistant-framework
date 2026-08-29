@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, List, Set, Tuple
 
 from utils.logging_utils import get_logger
+import re as _re
 
 # Optional spaCy NER for stage 2 entity extraction
 _spacy_nlp = None
@@ -302,7 +303,6 @@ class TopicManager:
 
         # Guardrail: if the "topic" is essentially the whole utterance, prefer 'general'
         def _norm(s: str) -> str:
-            import re as _re
             return _re.sub(r"[^a-z0-9]+"," ", s.lower()).strip()
 
         norm_q = _norm(text)

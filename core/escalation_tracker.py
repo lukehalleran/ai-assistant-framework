@@ -32,8 +32,22 @@ Integration:
 from enum import Enum
 from typing import List, Optional, Dict, Any
 from utils.logging_utils import get_logger
+import re
 
 logger = get_logger("escalation_tracker")
+
+
+def _accuracy_clause() -> str:
+    """Factual-grounding floor appended to the escalation instruction blocks
+    (2026-08-28: GROUNDING PRESENCE endorsed a discredited theory as "closer
+    to truth" — brevity modes constrained length but said nothing about
+    accuracy). Lazy import + fail-safe: this module is on the safety-critical
+    path and must never break if the clause source is unavailable."""
+    try:
+        from core.grounding_check import GROUNDING_ACCURACY_CLAUSE
+        return GROUNDING_ACCURACY_CLAUSE
+    except Exception:
+        return ""
 
 
 class ResponseStrategy(Enum):
@@ -108,6 +122,7 @@ class EscalationTracker:
         deescalation_window: int = 2,
         max_history: int = 10,
         distress_threshold: int = 5,
+        distress_grounding_max: int = 3,
     ):
         """
         Args:
@@ -118,11 +133,22 @@ class EscalationTracker:
                 before a mild-but-persistent spiral upgrades to grounding. Set
                 higher than escalation_threshold so pure-CONCERN sessions only
                 ground after a genuinely sustained run.
+            distress_grounding_max: Consecutive turns the sustained-distress
+                upgrade may hold GROUNDING before stepping down to
+                GENTLE_REENGAGEMENT (with the distress counter reset, so a
+                fresh sustained run is required to re-ground). Without a
+                budget the upgrade had NO exit for CONCERN-only sessions —
+                the counter never resets while turns stay CONCERN, so
+                GROUNDING latched indefinitely and GENTLE_REENGAGEMENT was
+                unreachable (2026-08-28: grounded on a jokey turn, no path
+                down). Same doctrine as TONE_FLOOR_CHAIN_MAX. Elevated-path
+                (ELEVATED/CRISIS) grounding is never budgeted.
         """
         self.escalation_threshold = escalation_threshold
         self.deescalation_window = deescalation_window
         self.max_history = max_history
         self.distress_threshold = distress_threshold
+        self.distress_grounding_max = distress_grounding_max
 
         # State
         self.tone_history: List = []  # List[ToneLevel]
@@ -133,6 +159,10 @@ class EscalationTracker:
         self.ignored_suggestion_count: int = 0
         self.current_strategy: ResponseStrategy = ResponseStrategy.VALIDATE_AND_SUGGEST
 
+        # Distress-path grounding bookkeeping (see distress_grounding_max)
+        self._distress_ground_streak: int = 0
+        self._post_ground_calm: int = 0
+
         # Need type history for de-escalation nuance
         self._last_need_type: Optional[str] = None
 
@@ -141,6 +171,7 @@ class EscalationTracker:
         tone_level,
         user_message: str,
         need_type: Optional[str] = None,
+        tone_trigger: Optional[str] = None,
     ) -> ResponseStrategy:
         """
         Update tracker with a new message and return the recommended strategy.
@@ -149,6 +180,13 @@ class EscalationTracker:
             tone_level: ToneLevel from context pipeline
             user_message: The user's message text (for engagement detection)
             need_type: Optional NeedType value string ("PRESENCE", "PERSPECTIVE", "NEUTRAL")
+            tone_trigger: The tone detector's trigger string for this level.
+                A floor-produced level ("distress_sticky_floor") is CARRIED
+                tone, not fresh evidence — it holds the distress counter but
+                never increments it. Without this, four floored jokey turns
+                accumulated to the distress threshold and GROUNDING fired on
+                a joke (2026-08-28) — a derived signal feeding another derived
+                signal, the tone-floor self-latch class.
 
         Returns:
             Recommended ResponseStrategy for this turn
@@ -176,8 +214,11 @@ class EscalationTracker:
         # Distress counter (CONCERN-inclusive) resets immediately on any
         # non-distress (CONVERSATIONAL) turn — a genuine casual turn breaks the
         # spiral. Maintained separately from consecutive_elevated_count.
+        # Floor-produced levels hold the counter without incrementing it:
+        # only ORGANIC distress turns may advance toward the threshold.
         if is_distress:
-            self.consecutive_distress_count += 1
+            if (tone_trigger or "") != "distress_sticky_floor":
+                self.consecutive_distress_count += 1
         else:
             self.consecutive_distress_count = 0
 
@@ -258,11 +299,55 @@ class EscalationTracker:
             and current_tone in distress_levels
             and self.consecutive_distress_count >= self.distress_threshold
         ):
-            logger.debug(
-                f"[EscalationTracker] Sustained distress "
-                f"({self.consecutive_distress_count} >= {self.distress_threshold}) → GROUNDING_PRESENCE"
-            )
-            strategy = ResponseStrategy.GROUNDING_PRESENCE
+            if self._distress_ground_streak >= self.distress_grounding_max:
+                # Grounding has held for the full budget without an ELEVATED/
+                # CRISIS spike — step down and require a FRESH sustained run
+                # to re-ground (counter reset). Without this the upgrade
+                # re-fired every CONCERN turn forever: the counter never
+                # resets while turns stay CONCERN, so GROUNDING latched and
+                # GENTLE_REENGAGEMENT was unreachable for CONCERN-only
+                # sessions (2026-08-28).
+                logger.debug(
+                    f"[EscalationTracker] Distress-grounding budget exhausted "
+                    f"({self._distress_ground_streak} >= {self.distress_grounding_max}) "
+                    f"→ GENTLE_REENGAGEMENT (distress counter reset)"
+                )
+                strategy = ResponseStrategy.GENTLE_REENGAGEMENT
+                self.consecutive_distress_count = 0
+                self._distress_ground_streak = 0
+                self._post_ground_calm = 0
+            else:
+                logger.debug(
+                    f"[EscalationTracker] Sustained distress "
+                    f"({self.consecutive_distress_count} >= {self.distress_threshold}) → GROUNDING_PRESENCE"
+                )
+                strategy = ResponseStrategy.GROUNDING_PRESENCE
+                self._distress_ground_streak += 1
+                self._post_ground_calm = 0
+        elif self._distress_ground_streak > 0:
+            # Exiting a distress-path grounding stretch. Mirror the elevated
+            # path's de-escalation: calm turns get GENTLE_REENGAGEMENT for
+            # the de-escalation window (PERSPECTIVE shift gets full
+            # engagement immediately, same nuance as the elevated path)
+            # before snapping back to VALIDATE_AND_SUGGEST.
+            if (
+                strategy == ResponseStrategy.VALIDATE_AND_SUGGEST
+                and current_tone not in distress_levels
+            ):
+                self._post_ground_calm += 1
+                if (
+                    self._post_ground_calm <= self.deescalation_window
+                    and need_type != "PERSPECTIVE"
+                ):
+                    strategy = ResponseStrategy.GENTLE_REENGAGEMENT
+                else:
+                    self._distress_ground_streak = 0
+                    self._post_ground_calm = 0
+            elif strategy != ResponseStrategy.GENTLE_REENGAGEMENT:
+                # Elevated path took over (spike) or some other strategy —
+                # clear the distress-path bookkeeping.
+                self._distress_ground_streak = 0
+                self._post_ground_calm = 0
 
         return strategy
 
@@ -383,7 +468,6 @@ class EscalationTracker:
         Returns:
             List of extracted suggestion strings
         """
-        import re
 
         suggestions = []
 
@@ -449,7 +533,8 @@ class EscalationTracker:
                 "It is completely fine to ask nothing and simply sit with what they said.\n"
                 "- If you do ask anything, let it open outward or toward footing "
                 "(rest, the next small thing), never further into the pain.\n"
-                "- Silence and brevity can be more powerful than paragraphs."
+                "- Silence and brevity can be more powerful than paragraphs.\n"
+                + _accuracy_clause()
             )
         elif self.current_strategy == ResponseStrategy.QUIET_COMPANIONSHIP:
             return (
@@ -461,7 +546,8 @@ class EscalationTracker:
                 "- No suggestions, no reframes, no coping strategies.\n"
                 "- Do NOT ask a probing question. No excavation. Presence, not inquiry.\n"
                 "- Don't try to be helpful -- just be present.\n"
-                "- Less is more. The relationship itself is the support."
+                "- Less is more. The relationship itself is the support.\n"
+                + _accuracy_clause()
             )
         elif self.current_strategy == ResponseStrategy.GENTLE_REENGAGEMENT:
             return (
@@ -537,6 +623,7 @@ class EscalationTracker:
             "velocity": self.get_escalation_velocity(),
             "history_length": len(self.tone_history),
             "last_suggestions_count": len(self.last_suggestions),
+            "distress_ground_streak": self._distress_ground_streak,
         }
 
     def reset(self) -> None:
@@ -549,3 +636,5 @@ class EscalationTracker:
         self.ignored_suggestion_count = 0
         self.current_strategy = ResponseStrategy.VALIDATE_AND_SUGGEST
         self._last_need_type = None
+        self._distress_ground_streak = 0
+        self._post_ground_calm = 0

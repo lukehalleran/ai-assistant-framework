@@ -12,7 +12,10 @@ Public entry points most call sites use:
       -> batch gate memories. min_results (2026-08-21) caps the GATE_MIN_MEMORIES
       fail-soft floor to the caller's real budget (intent max_mems) — the floor
       can only be lowered, so below-threshold backfill never exceeds what the
-      caller will render.
+      caller will render. Forced-minimum backfill also has a QUALITY floor
+      (2026-08-23): candidates more than GATE_FORCED_FLOOR_MARGIN (env, 0.05)
+      below the effective threshold are never forced in — 0 natural passes now
+      yields fewer-but-honest memories instead of a full floor of junk adds.
 - MultiStageGateSystem.filter_wiki_content(...)     -> filter a wiki article
 - MultiStageGateSystem.filter_semantic_chunks(...)  -> score semantic chunks
 - GatedPromptBuilder.build_gated_prompt(...)        -> prompt build w/ gating
@@ -53,6 +56,7 @@ from config.app_config import (
 )
 from utils.logging_utils import log_and_time, get_logger
 from utils.query_checker import is_deictic_followup
+import re as _re
 
 logger = get_logger(__name__)
 logger.debug("gate_system.py loaded — cosine similarity gating active")
@@ -258,7 +262,6 @@ def wiki_title_candidates(q: str) -> list[str]:
 
     # Heuristic simplification: drop 'current' and temporal tails to improve hits
     def _simplify_title(s: str) -> str:
-        import re as _re
         t = (s or "").strip()
         t = _re.sub(r"^(current|new|latest|recent|modern)\s+", "", t, flags=_re.IGNORECASE)
         t = _re.sub(r"\s+in\s+the\s+\d{1,2}(st|nd|rd|th)\s+century\b", "", t, flags=_re.IGNORECASE)
@@ -1076,6 +1079,24 @@ class MultiStageGateSystem:
             if query_entities:
                 logger.debug(f"[Batch Gate] Extracted entities from query: {query_entities}")
 
+            # Threshold is loop-invariant (space + deictic only) — hoisted so the
+            # forced-minimum backfill below can reuse it for its quality floor.
+            if space == "retrieval":
+                # honors per-intent overrides via delta translation
+                threshold = self.gate_system.effective_retrieval_threshold()
+                if is_deictic:
+                    # bge-space equivalent of the 0.20 MiniLM floor (quantile-matched)
+                    threshold = max(threshold, GATE_DEICTIC_MIN_RETRIEVAL)
+            else:
+                threshold = self.gate_system.cosine_threshold
+                if is_deictic:
+                    # Keep a floor for deictic follow-ups but allow env override; default to 0.25
+                    try:
+                        deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.20"))  # Reduced from 0.25
+                    except (ValueError, TypeError):
+                        deictic_min = 0.20
+                    threshold = max(threshold, deictic_min)
+
             for mem, sim, content in zip(to_gate, similarities, contents):
                 truth = float(mem.get("metadata", {}).get("truth_score", 0.5))
                 base_score = cosine_weight * float(sim) + truth_weight * truth
@@ -1089,22 +1110,6 @@ class MultiStageGateSystem:
                         f"[Batch Gate] Entity boost applied: +{entity_boost:.2f} "
                         f"(base={base_score:.3f} -> boosted={score:.3f})"
                     )
-
-                if space == "retrieval":
-                    # honors per-intent overrides via delta translation
-                    threshold = self.gate_system.effective_retrieval_threshold()
-                    if is_deictic:
-                        # bge-space equivalent of the 0.20 MiniLM floor (quantile-matched)
-                        threshold = max(threshold, GATE_DEICTIC_MIN_RETRIEVAL)
-                else:
-                    threshold = self.gate_system.cosine_threshold
-                    if is_deictic:
-                        # Keep a floor for deictic follow-ups but allow env override; default to 0.25
-                        try:
-                            deictic_min = float(os.getenv("GATE_DEICTIC_MIN", "0.20"))  # Reduced from 0.25
-                        except (ValueError, TypeError):
-                            deictic_min = 0.20
-                        threshold = max(threshold, deictic_min)
 
                 if score >= threshold:
                     mem["relevance_score"] = float(score)
@@ -1144,10 +1149,29 @@ class MultiStageGateSystem:
                 # Sort by blended score (descending)
                 all_scored.sort(key=lambda x: x[1], reverse=True)
 
+                # Quality floor (2026-08-23): fail-soft means "don't starve an
+                # ordinary turn", not "force in anything". Backfill stops at
+                # threshold − margin — near-misses may be rescued, but a turn
+                # whose candidates are all far below threshold renders fewer
+                # (or zero) memories instead of exam scores / git commits.
+                try:
+                    floor_margin = float(os.getenv("GATE_FORCED_FLOOR_MARGIN", "0.05"))
+                except (TypeError, ValueError):
+                    floor_margin = 0.05
+                quality_floor = threshold - floor_margin
+
                 # Add top-scoring memories until we hit minimum
                 gated_ids = {id(m) for m in gated}  # Use id() for identity check
                 for mem, blended_score, cosine_sim, ent_boost in all_scored:
                     if len(gated) >= MIN_GATED_MEMORIES:
+                        break
+                    if blended_score < quality_floor:
+                        logger.info(
+                            f"[Batch Gate] Backfill stopped at quality floor "
+                            f"{quality_floor:.3f} (threshold {threshold:.3f} − "
+                            f"margin {floor_margin:.2f}); best remaining blended="
+                            f"{blended_score:.3f}"
+                        )
                         break
                     if id(mem) not in gated_ids:
                         mem["relevance_score"] = float(blended_score)

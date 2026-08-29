@@ -179,6 +179,33 @@ class GraphEdge(BaseModel):
         src = source_display or self.source_id
         tgt = target_display or self.target_id
         rel = self.relation.replace("_", " ")
+
+        # Stance-aware rendering (2026-08-23): an EXPLICIT appraisal/inferred
+        # edge is never asserted in system voice — "casey is evil" renders as
+        # "you described Casey as 'evil'". Legacy (no stance tag) and objective
+        # edges render byte-identically to before.
+        _stance = (self.metadata or {}).get("stance")
+        if _stance in ("appraisal", "inferred"):
+            _date = ""
+            try:
+                if self.last_seen:
+                    _date = self.last_seen.strftime("%Y-%m-%d")
+            except Exception:
+                _date = ""
+            _when = f", {_date}" if _date else ""
+            if _stance == "appraisal":
+                if (self.metadata or {}).get("settled"):
+                    sentence = (f"you've consistently described {src} as "
+                                f"'{rel} {tgt}' (your assessment{_when})")
+                else:
+                    sentence = (f"you described {src} as '{rel} {tgt}' "
+                                f"(your words at the time{_when})")
+            else:
+                sentence = f"{src} {rel} {tgt} (assistant inference{_when})"
+            if with_attribution:
+                return f"{sentence} (from relationship data)"
+            return sentence
+
         base_sentence = f"{src} {rel} {tgt}"
 
         if with_attribution:

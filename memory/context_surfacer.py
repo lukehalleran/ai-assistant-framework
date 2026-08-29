@@ -14,7 +14,12 @@ categorize_relation() from user_profile_schema.py.
 import json
 import re
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from memory.surfacing_models import (
+        CrossDomainCandidate, DomainCluster, ProactiveInsight,
+    )
 
 from utils.logging_utils import get_logger
 

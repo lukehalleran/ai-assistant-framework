@@ -26,8 +26,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-cov fpdf2
+          pip install pytest pytest-asyncio pytest-cov fpdf2 ruff
           python -m spacy download en_core_web_sm
+
+      - name: Lint (bug-focused floor — rules in pyproject [tool.ruff])
+        run: python -m ruff check .
 
       - name: Run fast test suite
         run: |

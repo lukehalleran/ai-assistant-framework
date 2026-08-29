@@ -21,6 +21,11 @@ Module Contract
   - is_meta_conversational(q) -> bool  [memory/recall markers: "do you recall", "we talked about"]
   - extract_temporal_window(q) -> int  [days from temporal markers: "yesterday"=1, "last week"=7]
   - keyword_tokens(q, min_len) -> List[str]  [salient words for gating]
+  - extract_rare_proper_nouns(q, max_terms) -> List[str]  [name-shaped tokens a bge
+    embedding can't anchor on — feeds the keyword-anchor retrieval fallback
+    (memory_retriever) and the obsidian keyword proper-noun floor, 2026-08-26;
+    sentence-initial tokens excluded, days/months/common capitals stoplisted,
+    adjacent names merge ("Jordan Vale"), UNDER-fires by design]
   - _is_heavy_topic_heuristic(q) -> bool  [keyword-based heavy topic detection]
   - _classify_heavy_topic_llm(q, model_manager) -> bool  [async LLM-based heavy topic check]
   - extract_thread_keywords(text) -> Set[str]  [salient keywords for thread matching]
@@ -38,6 +43,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
+import re
+from datetime import datetime
 
 logger = get_logger("query_checker")
 
@@ -323,7 +330,6 @@ def is_deictic(query: str) -> bool:
         return True
 
     # "watched it", "saw it", "read it" etc. are deictic follow-ups
-    import re
     if re.search(r'\b(watched|saw|read|heard|looked at|checked|finished|started)\s+(it|that|this)\b', ql):
         return True
 
@@ -385,7 +391,6 @@ def extract_temporal_window(q: str) -> int:
             max_days = max(max_days, days)
 
     # Also check for explicit date references (e.g., "Nov 1st", "November 1")
-    import re
 
     # Pattern: Month name/abbreviation + day number (with optional suffixes like "st", "nd", "rd", "th")
     date_pattern = r'\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|september|oct|october|nov|november|dec|december)\s*\d{1,2}(?:st|nd|rd|th)?\b'
@@ -409,6 +414,97 @@ def extract_temporal_window(q: str) -> int:
 def keyword_tokens(q: str, min_len: int = 3) -> List[str]:
     ql = _normalize(q)
     return [t for t in ql.split() if len(t) >= min_len]
+
+
+# --- Rare-proper-noun extraction (2026-08-26) -------------------------------
+# In bge space a rare name contributes almost nothing to a query embedding —
+# "get appointment scheduled with Morgan for Friday" retrieved appointment-vibe
+# docs, none containing Morgan, and the live memory path had no keyword channel
+# (the corpus keyword scan existed only inside insight mode). This detector
+# feeds the keyword-anchor fallback in memory_retriever.get_memories and the
+# proper-noun floor in obsidian_manager._keyword_search.
+
+_PROPER_NOUN_STOPWORDS = frozenset(w.lower() for w in (
+    # days / months (the Morgan query itself contained "Friday")
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December",
+    "Today", "Tomorrow", "Yesterday",
+    # conversational capitals / interjections
+    "I", "Idk", "Ok", "Okay", "Lol", "Lmao", "Omg", "Btw", "Imo", "Tbh",
+    "God", "Jesus", "Christ",
+    # self-reference — anchoring "Daemon" would pull half the corpus
+    "Daemon",
+    # common capitalized words that aren't discriminative alone
+    "American", "America", "English", "Internet", "Google", "YouTube", "Reddit",
+))
+
+
+def extract_rare_proper_nouns(q: str, max_terms: int = 3) -> List[str]:
+    """Capitalized name-shaped tokens a semantic embedding can't anchor on.
+
+    Rules (conservative — deliberately UNDER-fires, since a miss costs
+    nothing while a false positive injects wrong-topic memories):
+      - TitleCase / interior-capital token ("Morgan", "Reeves"), len >= 3,
+        not ALL-CAPS (emphasis: "SO much evidence")
+      - possessives stripped ("Morgan's" -> "Morgan")
+      - sentence-initial tokens excluded (no dictionary distinguishes
+        "Morgan" from "Please" there) unless the same token also appears
+        capitalized mid-sentence in the message
+      - days/months/common capitalized words stoplisted
+    Returns at most ``max_terms`` terms in order of first appearance.
+    """
+    if not q or not q.strip():
+        return []
+
+    token_re = re.compile(r"^[A-Z][a-zA-Z'’-]{2,}$")
+    # Walk word tokens plus sentence-boundary punctuation so we know which
+    # tokens sit in a position where capitalization is expected anyway.
+    pieces = re.findall(r"[A-Za-z'’-]+|[.!?\n]", q)
+    # A period after a title abbreviation is not a sentence boundary —
+    # otherwise "Dr. Goldsman" reads as sentence-initial and is dropped.
+    _title_abbrevs = {"dr", "mr", "mrs", "ms", "prof", "st"}
+
+    found: List[str] = []
+    seen_lower: set = set()
+    sentence_initial = True
+    prev_word: str = ""
+    prev_accepted = False  # previous piece was an accepted proper-noun token
+
+    for tok in pieces:
+        if tok in (".", "!", "?", "\n"):
+            if not (tok == "." and prev_word.lower() in _title_abbrevs):
+                sentence_initial = True
+            prev_accepted = False
+            continue
+        is_initial = sentence_initial
+        sentence_initial = False
+        prev_word, was_prev_accepted = tok, prev_accepted
+        prev_accepted = False
+
+        surface = tok.removesuffix("'s").removesuffix("’s").rstrip("'’-")
+        if not token_re.match(surface):
+            continue
+        if surface.isupper():
+            continue
+        low = surface.lower()
+        if low in _PROPER_NOUN_STOPWORDS:
+            continue
+        # Adjacent proper nouns form one phrase ("Jordan Vale") — a single
+        # word-boundary phrase scan beats two scans hitting the same docs.
+        if was_prev_accepted and found:
+            found[-1] = f"{found[-1]} {surface}"
+            prev_accepted = True
+            continue
+        if low in seen_lower:
+            continue
+        if is_initial:
+            continue
+        seen_lower.add(low)
+        found.append(surface)
+        prev_accepted = True
+
+    return found[:max_terms]
 
 
 @dataclass
@@ -619,7 +715,6 @@ def _is_heavy_topic_heuristic(q: str) -> bool:
     # Single keyword but with contextual markers (numbers, locations, quotes)
     if hits == 1:
         # Check for news article markers
-        import re
         has_numbers = bool(re.search(r"\b\d{1,3}[,\s]?\d{0,3}\b", q))
         has_quotes = '"' in q or '"' in q or '"' in q
         has_locations = bool(re.search(
@@ -772,7 +867,6 @@ def extract_thread_keywords(text: str) -> Set[str]:
     Returns:
         Set of lowercase keywords (min 3 chars, no stopwords)
     """
-    import re
 
     # Extract alphanumeric words only (strips punctuation)
     text_lower = text.lower()
@@ -931,7 +1025,6 @@ def belongs_to_thread(
     Returns:
         True if current query continues the thread
     """
-    from datetime import datetime
 
     # Calculate time difference
     last_time = last_conversation.get("timestamp")

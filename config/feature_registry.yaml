@@ -279,3 +279,53 @@ features:
       accepted: true
       notes: "LLM proposal generation, ChromaDB storage, 4-stage implementation detection, GUI tab. Foundation for branch supervision."
       merged_at: "2026-04-22"
+
+  # ── Insight / Stance (2026-08-23) ────────────────────────────────
+
+  - proposal_id: insight_evidence_assembly
+    title: "Insight / Evidence-Assembly Mode"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: true
+    depends_on: []
+    implemented_files:
+      - core/insight/types.py
+      - core/insight/detector.py
+      - core/insight/facets.py
+      - core/insight/sweep.py
+      - core/insight/provenance.py
+      - core/insight/assessor.py
+      - core/insight/synthesizer.py
+      - memory/corpus_manager.py
+      - core/agentic/gate.py
+      - gui/handlers.py
+      - knowledge/document_generator.py
+    test_files:
+      - tests/unit/test_insight_gate.py
+      - tests/unit/test_insight_sweep.py
+      - tests/unit/test_insight_provenance.py
+      - tests/unit/test_insight_assessor.py
+      - tests/unit/test_insight_mode_handler.py
+      - tests/unit/test_corpus_keyword_search.py
+    outcome:
+      accepted: true
+      notes: "Turn-owning evidence-assembly mode: facet decomposition, ungated cross-store sweep (defeats per-doc cosine gating on collective-signal evidence), provenance-labeled rendering, adversarial fail-honest assessment, doc save on agreement. One consent-gated offer per session at non-elevated tone."
+      merged_at: "2026-08-23"
+
+  - proposal_id: stance_epistemic_tagging
+    title: "Stance / Epistemic Tagging Layer"
+    status: implemented
+    source: goal_directed
+    risk_level: medium
+    touches_core_system: true
+    depends_on:
+      - insight_evidence_assembly
+    implemented_files:
+      - memory/stance_classifier.py
+    test_files:
+      - tests/unit/test_stance_classifier.py
+    outcome:
+      accepted: true
+      notes: "Single-source deterministic stance core (objective/appraisal/reported/inferred/unknown). Value judgments (casey|is|evil) tagged as the user's appraisal, never world-fact; unresolved referents never fuzzy-bind to named entities. Write-time wiring + consumers in Phase B."
+      merged_at: "2026-08-23"

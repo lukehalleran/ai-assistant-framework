@@ -14,8 +14,15 @@ Expansion also honours read-time TTL: stale transient edges (past their
 per-relation horizon, via GraphMemory._edge_is_stale_transient →
 relation_classifier) are dropped from traversal and scoring, so aged-out
 mood/activity/illness states stop surfacing without any deletion.
+
+Stance filter [2026-08-23]: edges whose metadata carries an EXPLICIT
+"appraisal" or "inferred" stance (memory/stance_classifier.effective_stance)
+never route expansion or score — the user's value judgment (casey--is-->evil)
+is their take, not a topical bridge; it had leaked "evil" into unrelated
+queries' expansion terms. Legacy untagged edges ("unknown") are unchanged.
 """
 
+import os
 import re
 from collections import deque
 from datetime import datetime
@@ -31,6 +38,14 @@ logger = get_logger("graph_utils")
 # entire neighbourhood into the query whenever any token incidentally links to
 # it.  Overridable per-call via the ``hub_degree`` argument.
 _DEFAULT_HUB_DEGREE = 30
+
+# Minimum evidence bar for expansion candidates (2026-08-23): a node the graph
+# has only seen ONCE is one extraction event, not an established concept — a
+# single incidental mention shouldn't inject its display name into unrelated
+# queries.  Nodes whose mention_count is below this bar are skipped during
+# candidate scoring.  Env `GRAPH_EXPANSION_MIN_MENTIONS` overrides (0 disables);
+# nodes without a mention_count attribute (mocks, legacy stores) are exempt.
+_DEFAULT_MIN_MENTIONS = 2
 
 # Stopwords to skip during entity extraction (same set used by context_gatherer)
 _STOPWORDS = frozenset({
@@ -111,6 +126,53 @@ def _is_expansion_junk(name: str) -> bool:
     return is_junk_entity(name)
 
 
+# Species words a relation can embed ("has_dog", "adopted_kitten"), mapped to
+# their canonical species for comparison against node metadata. Juvenile forms
+# collapse to the adult species.
+_RELATION_SPECIES = {
+    "dog": "dog", "puppy": "dog",
+    "cat": "cat", "kitten": "cat",
+    "bird": "bird", "fish": "fish", "hamster": "hamster",
+    "rabbit": "rabbit", "bunny": "rabbit", "horse": "horse",
+    "snake": "snake", "lizard": "lizard", "ferret": "ferret",
+    "turtle": "turtle", "guinea_pig": "guinea_pig",
+}
+
+_RELATION_SPECIES_RE = re.compile(
+    r"(?:^|_)(" + "|".join(sorted(_RELATION_SPECIES, key=len, reverse=True)) + r")s?(?:_|$)"
+)
+
+
+def relation_species_conflict(relation: str, node_metadata: Optional[dict]) -> bool:
+    """True when a relation embeds an animal species that contradicts the
+    target node's own ``species`` metadata.
+
+    2026-08-18: the shutdown LLM extractor invented ``user | has_dog |
+    Daisy`` from an excerpt that never mentions a dog; the graph node
+    already carried curated ``species: cat`` metadata and an older
+    ``has_cat`` edge — and the wrong edge fed a junk proactive insight.
+    Curated node metadata is ground truth here: a single extraction naming
+    a conflicting species is an extraction error, not new information.
+    Fires ONLY when the node explicitly declares a species (under-fires by
+    design); nodes without species metadata are never blocked.
+    """
+    if not node_metadata:
+        return False
+    declared = str(node_metadata.get("species", "") or "").strip().lower()
+    if not declared:
+        return False
+    m = _RELATION_SPECIES_RE.search(str(relation or "").strip().lower())
+    if not m:
+        return False
+    claimed = _RELATION_SPECIES[m.group(1)]
+    # The declared value may be descriptive ("cat, black, big golden eyes") —
+    # word-boundary containment, not equality. Multi-word species carry an
+    # underscore in relation form but a space in declared metadata
+    # ("guinea_pig" vs "guinea pig") — accept either separator.
+    claimed_pat = re.escape(claimed).replace("_", r"[_\s]")
+    return not re.search(r"\b" + claimed_pat + r"s?\b", declared)
+
+
 def rank_expansion_candidates(
     entity_ids: Set[str],
     graph_memory,
@@ -118,6 +180,7 @@ def rank_expansion_candidates(
     skip_ids: Optional[Set[str]] = None,
     max_terms: int = 8,
     hub_degree: Optional[int] = None,
+    min_mentions: Optional[int] = None,
 ) -> List[str]:
     """Rank expansion candidates by connectivity (non-hub edge count).
 
@@ -148,6 +211,10 @@ def rank_expansion_candidates(
         hub_degree: Degree threshold for auto-detecting hubs (default
             ``_DEFAULT_HUB_DEGREE``).  Non-seed nodes at/above this degree act
             as traversal barriers even if not named in *skip_ids*.
+        min_mentions: Evidence bar — candidates whose ``mention_count`` is
+            below this are skipped (default ``_DEFAULT_MIN_MENTIONS``, env
+            ``GRAPH_EXPANSION_MIN_MENTIONS``; 0 disables).  Nodes without the
+            attribute are exempt.
 
     Returns:
         Ordered list of display names, best candidates first
@@ -158,6 +225,12 @@ def rank_expansion_candidates(
     skip = skip_ids or set()
     seeds = {e.lower() for e in entity_ids}
     threshold = _DEFAULT_HUB_DEGREE if hub_degree is None else hub_degree
+    if min_mentions is None:
+        try:
+            min_mentions = int(
+                os.getenv("GRAPH_EXPANSION_MIN_MENTIONS", _DEFAULT_MIN_MENTIONS))
+        except (TypeError, ValueError):
+            min_mentions = _DEFAULT_MIN_MENTIONS
 
     # Read-time TTL: reuse GraphMemory's staleness check (single source of truth
     # in relation_classifier) so a transient edge (mood/activity/illness past its
@@ -168,6 +241,19 @@ def rank_expansion_candidates(
     _stale_fn = getattr(graph_memory, "_edge_is_stale_transient", None)
 
     def _live(edge) -> bool:
+        # Stance filter (2026-08-23): EXPLICIT appraisal/inferred edges never
+        # route expansion or score — the user's value judgment (casey--is-->evil)
+        # is their take, not a topical bridge, and it leaked "evil" into
+        # unrelated queries' expansion terms. Legacy edges without a stance
+        # tag ("unknown") are unchanged — suppression acts only on explicit
+        # tags (conservative missing-field semantics).
+        try:
+            from memory.stance_classifier import effective_stance
+            if effective_stance(getattr(edge, "metadata", None)) in (
+                    "appraisal", "inferred"):
+                return False
+        except Exception:
+            pass
         if _stale_fn is None:
             return True
         try:
@@ -226,6 +312,11 @@ def rank_expansion_candidates(
         if not name or name.lower() in _STOPWORDS:
             continue
         if _is_expansion_junk(name):
+            continue
+        # Evidence bar: a once-mentioned node is a single extraction event,
+        # not an established concept — don't let it steer query expansion.
+        mentions = getattr(node, "mention_count", None)
+        if mentions is not None and min_mentions > 0 and mentions < min_mentions:
             continue
 
         # Count non-hub edges (edges where the other end is NOT in skip_ids).
@@ -303,6 +394,18 @@ def extract_graph_entities(text: str, resolver, graph_memory=None) -> Set[str]:
         # Common nouns/participles that are not entities but had been ingested
         # as graph nodes and pulled the user hub into unrelated queries.
         "video", "videos", "done", "homework", "stuff",
+        # Generic possession/admin nouns that get auto-learned as ALIASES of
+        # specific personal entities ("my project" → possessive alias "project"
+        # on phase_change_heat_exchanger_project). On 2026-08-28 the bare word
+        # "project" in "group project" resolved to that node and its stored
+        # notes PHOTO was attached to an unrelated memory-ingest turn. These
+        # words are constant in school/medical-admin vocabulary and must never
+        # resolve as single-word entity mentions (n-gram matches still can).
+        "project", "projects", "note", "notes", "email", "emails",
+        "meeting", "meetings", "appointment", "appointments",
+        "calendar", "syllabus", "screenshot", "screenshots",
+        "photo", "photos", "image", "images", "picture", "pictures",
+        "document", "documents", "file", "files", "folder", "folders",
     })
 
     # Strip punctuation from each word for cleaner matching

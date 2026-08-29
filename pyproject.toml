@@ -26,3 +26,22 @@ packages = []
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+# Bug-focused floor, not a style regime (2026-08-28: first lint config at
+# ~222K lines). Rules limited to shapes that are real bugs — syntax errors,
+# undefined names, invalid comparisons/f-strings — so the gate stays green
+# and violations are always worth fixing. Broaden deliberately, not by default.
+target-version = "py311"
+extend-exclude = ["venv", "data", "integration.bak", "web", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E9",   # syntax errors / io errors
+    "F63",  # invalid comparisons (is-literal, ==/!= on unsized)
+    "F7",   # syntax-adjacent (return outside function, etc.)
+    "F82",  # undefined names
+    "F811", # redefined-while-unused (shadowed test/function definitions)
+    "F601", "F602",  # is-comparisons to str/int literals
+    "B002", "B006",  # ++n typo, mutable default args
+]

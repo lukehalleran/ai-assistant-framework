@@ -52,7 +52,7 @@ class TestRequestShaped:
         assert _is_request_shaped("check the docs for what changed")
         assert _is_request_shaped("pull up the logs from tuesday")
         assert _is_request_shaped("run the numbers on that")
-        assert _is_request_shaped("please verify the fix landed")
+        assert _is_request_shaped("please run the cleanup script")
 
     def test_second_person_asks(self):
         assert _is_request_shaped("can you check the docs")
@@ -132,7 +132,7 @@ class TestAffirmationRerun:
     async def test_affirmation_reruns_original_veto_exempt(self):
         apply_intent_veto(
             _decision(), {"intent_type": "general", "confidence": 0.0},
-            tone_level="MEDIUM", query="please verify the fix landed",
+            tone_level="MEDIUM", query="please run the cleanup script",
         )
         assert gate._DEFERRED_REQUEST_SLOT  # armed
         redo = await evaluate_agentic_gate(user_text="yes go ahead")
@@ -145,7 +145,7 @@ class TestAffirmationRerun:
     async def test_affirmed_rerun_survives_a_fresh_veto(self):
         apply_intent_veto(
             _decision(), {"intent_type": "general", "confidence": 0.0},
-            tone_level="MEDIUM", query="please verify the fix landed",
+            tone_level="MEDIUM", query="please run the cleanup script",
         )
         redo = await evaluate_agentic_gate(user_text="sure")
         # tone is still elevated next turn — veto_exempt must hold

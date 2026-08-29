@@ -50,6 +50,7 @@ Agentic search activates when ALL conditions are met:
    - Tier 2: Entity match — query mentions known knowledge graph entity + recall signal
    - Tier 3: Document *generation* or self-note intent detection
    - Tier 4: LLM fallback — piggybacks on web search trigger call (`needs_memory_search`, `needs_knowledge_search`, `needs_document_generation`). **Retry-after-inability (2026-08-22)**: `analyze_for_web_search_llm` first checks the conversation context for the assistant's own search-inability disclosure ("I can't search right now") plus a retry cue in the query ("try again", "I fixed it") → deterministic search BEFORE the LLM-first gating (terms = text after the last colon, else the retry-preamble-stripped remainder; `source="explicit"`) — the live retry had hit the 5s LLM timeout and the heuristic fallback found no indicators. Tests: `tests/test_web_search_trigger.py::TestRetryAfterInability` (5).
+   - **Insight routing [2026-08-23]**: insight detection (`core/insight/detector.py`) runs BEFORE Tier-3 `detect_document_intent` — a personal-theme document request ("write a summary of my pattern with X for my therapist") routes to insight mode, not web research. The decision is always `veto_exempt` and carries `AgenticDecision.insight_intent`; the turn is then owned by `gui/handlers._run_insight_mode` (see "Insight / Evidence-Assembly Mode" below).
    - Casual skip filter, continuation override, and intent-based veto all handled inside gate
    - **Continuation override** [tightened 2026-07-15]: requires a TERSE affirmation (≤ `CONTINUATION_MAX_WORDS`=6 words containing a continuation phrase) AND ground truth that the prior turn was agentic — corpus entries now store `response_mode` (written from provenance); a word-boundary keyword fallback covers only legacy entries. Long messages merely containing "yeah"/"sure" are new statements (the benzo-turn incident: 'yeah' substring + "sleep **issues**" matching the GitHub word list burned a 60s loop on a vibe remark).
    - **Concurrent evaluation** [2026-07-15]: `handle_submit` launches the gate as an asyncio task BEFORE `prepare_prompt`, hiding the Tier-4 LLM call (~2s) behind prompt building. The intent veto needs the context pipeline's classification, so the gate is launched with `intent_info=None` and the dispatcher applies `gate.apply_intent_veto(decision, intent, tone_level=...)` post-hoc; `AgenticDecision.veto_exempt` records explicit requests (search keywords / URL / file access / doc-gen / self-note) the veto must never suppress.
@@ -114,6 +115,60 @@ against 8 anchor sentences. Long responses (>max_length after hedge-stripping)
 skip detection. Config: `UNCERTAINTY_FALLBACK_ENABLED`,
 `UNCERTAINTY_SEMANTIC_THRESHOLD` (default 0.70),
 `UNCERTAINTY_MAX_LENGTH` (default 400).
+
+---
+
+## Insight / Evidence-Assembly Mode [2026-08-23]
+
+A turn-owning mode PARALLEL to agentic search: instead of a tool loop, the
+turn runs a fixed evidence-assembly pipeline over the user's own stores.
+Built for theme-sweep / self-assessment requests the per-doc memory gate
+structurally cannot serve — "gather everything I've said about X" needs an
+evidence SET whose members are individually low-similarity but collectively
+signal-bearing, so the sweep is deliberately UNGATED (generous caps replace
+cosine gating).
+
+Package: `core/insight/`
+
+| File | Purpose |
+|------|---------|
+| `types.py` | `InsightIntent`, `FacetQuery`/`FacetPlan`, `EvidenceItem`, `ClaimAssessment`, `Assessment` — worst-of verdict ordering `disagree > insufficient > partial > agree`; a document may be produced only on agree/partial |
+| `detector.py` | Deterministic regex detection: theme-sweep shapes ("gather everything I've said about X"), personal-theme doc shapes ("write a summary of my pattern with X for my therapist" → `wants_document=True`), explicit assessment shapes ("check this against what I've told you" / "am I right that..."); `detect_insight_statement()` feeds the consent offer |
+| `facets.py` | One strict-JSON LLM call decomposes the theme into 4-6 facet queries incl. a MANDATORY counter-evidence facet; deterministic fallback if the call fails |
+| `sweep.py` | UNGATED cross-store sweep: conversations/summaries/reflections/facts/obsidian_notes/threads via chroma `query_collection` + `corpus_manager.search_keyword()` keyword scan + graph 1-hop (hub/stale/appraisal-edge skips) + `MemoryExpander` around top conversation hits; asyncio timeout returns partial results |
+| `provenance.py` | Stance labels per item: user-stated / users-own-note / assistant-inferred / extracted-fact / graph-edge; assistant-authored text carries an explicit "[assistant's interpretation, not your words]" marker; appraisals carry "[value judgment — an appraisal, not an objective fact]" |
+| `assessor.py` | Adversarial strict-JSON assessment — MUST seek refuting evidence; any failure → "insufficient", never fail-agree |
+| `synthesizer.py` | Streamed synthesis with hard-coded invariants: quote+date every point, never assert value judgments in system voice, mandatory denominator caveat (the corpus over-samples distress days, so record-frequency ≠ life-frequency), counter-evidence visible, MI-shaped close; elevated tone → therapist framing |
+
+**Handler flow** (`gui/handlers._run_insight_mode(ctx)`): decompose → sweep
+(8s keepalive heartbeats to the UI) → provenance labeling → (assess, for the
+assessment kind) → stream synthesis → optional doc save. Stored with
+`response_mode="insight-assembly"`. On any exception the handler falls
+through to the agentic/enhanced path — insight mode never strands a turn.
+
+**Document save**: `DocumentGenerator.save_prewritten()` (new method) saves
+an already-written markdown body with frontmatter + versioned file +
+`index.json` entry — no research, no LLM call, and the doc never enters
+`reference_docs`. Saved only when `wants_document` and no disagreeing
+assessment, or on an agree/partial assessment when
+`insight_mode.doc_on_agreement`.
+
+**Consent offer**: `maybe_arm_insight_offer(query, tone_level)` arms a
+one-shot slot (max 1 offer/session, in-memory) when the user makes an
+insight-shaped STATEMENT at non-elevated tone; handlers inject an
+`[INSIGHT OFFER]` system-prompt note; a terse affirmation next turn runs
+the assessment veto-exempt; anything else drops the offer permanently.
+(Same one-shot doctrine as the tone-deferral clarify loop.)
+
+**Config** (YAML `insight_mode:` → `INSIGHT_*` constants): `enabled`,
+`max_facets` (6), `per_facet_cap` (10), `total_evidence_cap` (80),
+`evidence_snippet_chars` (280), `keyword_scan_max` (50), `expand_top_k` (3),
+`expand_window` (2), `decompose_max_tokens` (700), `synthesis_max_tokens`
+(2600), `sweep_timeout_s` (45), `offer_enabled`, `doc_on_agreement`.
+
+Tests: `tests/unit/test_insight_gate.py`, `test_insight_sweep.py`,
+`test_insight_provenance.py`, `test_insight_assessor.py`,
+`test_insight_mode_handler.py`, `test_corpus_keyword_search.py`.
 
 ---
 
@@ -508,6 +563,23 @@ gathered for grounding). Without provided material the prior topic-driven
 web+memory research is unchanged. Fixes "evaluate THIS pasted proposal" requests
 that previously web-searched the bare topic string ("daemon") and returned
 irrelevant sources (the Anarchism Wikipedia article, a 1994 Unix-daemon PDF).
+
+**Conversation-sourced documents** [2026-08-24]: the Tier-4 LLM web-search
+trigger now declares `document_source` alongside `needs_document_generation`
+— `"research"` (research the topic from external sources) or
+`"conversation"` (write up THIS conversation's content; sharing cues like
+"so I can text/send/show that to X" about the current discussion mean
+conversation). `gui/handlers._resolve_doc_source()` honors the LLM
+declaration with a deterministic backstop regex, and for conversation-shaped
+requests `_build_conversation_source_material()` renders `ctx.history` as a
+transcript and passes it as `source_material` (clearing
+`DOCUMENT_PROVIDED_MIN_CHARS`, so it becomes the PRIMARY `[INPUT_1]` source
+and web/wiki research is suppressed per the content-aware path above). Fixes
+"summarize these insights so I can text them to my therapist"-shaped
+requests, which previously ran RESEARCH mode — `source_material` was just
+the ~70-char request itself, below the threshold, so the generator
+web-researched the topic instead of writing up the conversation. Tests:
+`tests/unit/test_doc_conversation_source.py`.
 
 **LLM-failure safety** [2026-06-08]: `generate_once()` returns API-error
 sentinel strings ("[API Error] … 402", "[CREDITS EXHAUSTED] …") instead of

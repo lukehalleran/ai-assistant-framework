@@ -1,5 +1,8 @@
 import type {
   ActionDecisionResponse,
+  CurationProposal,
+  CurationQueueResponse,
+  CurationScanReport,
   DebugRecordsResponse,
   DuelSettings,
   ModelListResponse,
@@ -105,4 +108,44 @@ export const api = {
     const body = await json<{ files: UploadedFileInfo[] }>(resp)
     return body.files
   },
+
+  // ---- Curation Center (docs/AUTONOMOUS_CURATION_DESIGN.md) ----
+
+  getCurationQueue: () =>
+    fetch('/api/curation/queue').then((r) => json<CurationQueueResponse>(r)),
+
+  runCurationScan: () =>
+    fetch('/api/curation/scan', { method: 'POST' }).then((r) =>
+      json<CurationScanReport>(r),
+    ),
+
+  applyCurationProposal: (id: string) =>
+    fetch(`/api/curation/${id}/apply`, { method: 'POST' }).then(async (r) => {
+      if (!r.ok) {
+        const detail = await r.json().then((b) => b.detail).catch(() => null)
+        throw new Error(detail || `${r.status} ${r.statusText}`)
+      }
+      return r.json() as Promise<CurationProposal>
+    }),
+
+  dismissCurationProposal: (id: string, reason = '') =>
+    fetch(`/api/curation/${id}/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }).then((r) => json<CurationProposal>(r)),
+
+  undoCurationProposal: (id: string) =>
+    fetch(`/api/curation/${id}/undo`, { method: 'POST' }).then(async (r) => {
+      if (!r.ok) {
+        const detail = await r.json().then((b) => b.detail).catch(() => null)
+        throw new Error(detail || `${r.status} ${r.statusText}`)
+      }
+      return r.json() as Promise<CurationProposal>
+    }),
+
+  getCurationActivity: (limit = 100) =>
+    fetch(`/api/curation/activity?limit=${limit}`).then((r) =>
+      json<{ events: Record<string, unknown>[] }>(r),
+    ),
 }

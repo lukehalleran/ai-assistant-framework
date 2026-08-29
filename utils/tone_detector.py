@@ -760,12 +760,20 @@ def _session_in_distress(
     "concern", "light_support", "MEDIUM", "elevated_support", "crisis_support".
     """
     if previous_tone is not None:
-        pt = str(previous_tone).lower()
-        distress_markers = (
+        # Prefer the enum's .value ("light_support") over its repr
+        # ("CrisisLevel.CONCERN"), then strip any remaining class prefix.
+        # The test must be EXACT membership: a substring match on "crisis"
+        # latched session_distress True for every level incl. CONVERSATIONAL
+        # ("crisis" ⊂ "crisislevel.…") from 2026-07-21 to 2026-08-27 — every
+        # session floored to CONCERN from turn 2.
+        pt = str(getattr(previous_tone, "value", previous_tone)).strip().lower()
+        if "." in pt:
+            pt = pt.rsplit(".", 1)[-1]
+        distress_levels = {
             "high", "medium", "concern", "crisis", "elevated",
             "light_support", "elevated_support", "crisis_support",
-        )
-        if any(k in pt for k in distress_markers):
+        }
+        if pt in distress_levels:
             return True
     return _recent_distress_from_history(conversation_history)
 
@@ -1158,6 +1166,7 @@ async def detect_crisis_level(
     conversation_history: Optional[List[dict]] = None,
     model_manager=None,
     previous_tone: Optional[object] = None,
+    allow_sticky_floor: bool = True,
 ) -> ToneAnalysis:
     """
     Hybrid crisis detection combining keyword, semantic, and LLM approaches.
@@ -1169,6 +1178,13 @@ async def detect_crisis_level(
         previous_tone: The prior turn's detected tone (CrisisLevel or string).
             Makes distress sticky across short messages so a spiral built from
             terse turns does not flatline at CONVERSATIONAL.
+        allow_sticky_floor: When False the distress-sticky floor stage is
+            skipped entirely. The caller (ContextPipeline) sets this from the
+            TONE_FLOOR_CHAIN_MAX budget — withholding previous_tone alone did
+            NOT enforce the budget, because _session_in_distress falls through
+            to the recent-heavy-history path and the floor re-fired anyway
+            (2026-08-28: four consecutive floor turns on jokey messages).
+            Organic signals (keyword/semantic/arbiter/backstop) are unaffected.
 
     Returns:
         ToneAnalysis with detected crisis level and metadata
@@ -1261,7 +1277,8 @@ async def detect_crisis_level(
     # session). Explicit casual markers ("ok", "lol") are still allowed to
     # relax, so genuine disengagement de-escalates normally.
     if (
-        session_distress
+        allow_sticky_floor
+        and session_distress
         and level == CrisisLevel.CONVERSATIONAL
         and not _is_explicit_casual(message)
         and not _is_positive_state_report(message)

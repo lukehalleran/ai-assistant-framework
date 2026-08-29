@@ -588,7 +588,13 @@ class TestReviewGate:
     _QUERY = "Can you describe the color of my cat's fur and general appearance in some detail?"
 
     @pytest.mark.asyncio
-    async def test_review_gate_retry(self):
+    async def test_review_gate_log_only_never_swaps(self):
+        """2026-08-28: the review gate is LOG-ONLY. An 8-week telemetry audit
+        showed its silent swap fired on exactly ONE real turn ever — a CONCERN
+        emotional turn where what the user READ diverged from what memory
+        STORED. Stored must always equal seen: review runs, telemetry is
+        recorded, but the response is NEVER replaced and no agentic retry
+        runs."""
         # Response must be >= 120 chars for review gate
         initial_response = "The cat has some fur. " * 8  # ~176 chars
         orch = _make_orchestrator(
@@ -609,6 +615,9 @@ class TestReviewGate:
         mock_plan = MagicMock()
         orch._current_response_plan = mock_plan
 
+        retry_mock = AsyncMock(
+            return_value=("Here is a much better and complete answer with full context and detail.", ""),
+        )
         extra = [
             patch("config.app_config.RESPONSE_REVIEW_ENABLED", True),
             patch("config.app_config.RESPONSE_REVIEW_CONFIDENCE_THRESHOLD", 0.9),
@@ -620,16 +629,17 @@ class TestReviewGate:
                 new_callable=AsyncMock,
                 return_value=_no_trigger_decision(),
             ),
-            patch(
-                "gui.handlers._silent_agentic_retry",
-                new_callable=AsyncMock,
-                return_value=("Here is a much better and complete answer with full context and detail.", ""),
-            ),
+            patch("gui.handlers._silent_agentic_retry", retry_mock),
         ]
         results = await _run_submit(self._QUERY, orch, extra_patches=extra)
 
         content = _final_content(results)
-        assert "better and complete" in content
+        # Original response shown/stored — the review verdict never swaps it.
+        assert "The cat has some fur." in content
+        assert "better and complete" not in content
+        retry_mock.assert_not_awaited()
+        # Review itself still ran (telemetry signal preserved).
+        mock_planner.review_answer.assert_awaited()
 
 
 class TestEmptyResponse:

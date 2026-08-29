@@ -23,6 +23,11 @@ cluster of distinct emotional states. Duplicate-arm deletions and all
 collection access go through store._get_collection() (raw `collections`
 dict holds None placeholders pre-open — the reference_docs silent-no-op
 bug class).
+
+Appraisal skip [2026-08-23]: facts whose metadata carries an EXPLICIT
+"appraisal" stance never enter contradiction clustering — perspectives
+coexist ("casey is evil" vs "casey was kind at first" is the user's evolving
+take, not a conflict to resolve). Legacy untagged facts unchanged.
 """
 
 import re
@@ -445,6 +450,16 @@ class CrossCollectionDeduplicator:
             md = doc.get("metadata", {}) or {}
             if md.get("is_current") is False or str(md.get("is_current", "")).lower() == "false":
                 continue
+            # Skip EXPLICIT-appraisal facts (2026-08-23): perspectives coexist —
+            # "casey is evil" vs "casey was kind at first" is the user's evolving
+            # take, not a conflict to resolve. Extends the MULTI_VALUED
+            # carve-out; legacy untagged facts unchanged (conservative).
+            try:
+                from memory.stance_classifier import effective_stance
+                if effective_stance(md) == "appraisal":
+                    continue
+            except Exception:
+                pass
             subj, pred, obj = self._extract_triple(doc)
             if subj and pred:
                 pred_norm = pred.lower().strip()

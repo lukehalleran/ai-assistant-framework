@@ -241,10 +241,13 @@ class TestLLMCompression:
     @pytest.mark.asyncio
     async def test_multiple_sections(self, builder):
         """Compression works across different context sections."""
+        # 2026-08-14: PRIORITY_ORDER meters the RENDERED split keys — the
+        # combined "summaries"/"reflections" keys are dead (never rendered,
+        # so never scanned for compression either).
         ctx = {
             "memories": [_make_item("m" * 8000)],
-            "summaries": [_make_item("s" * 12000)],
-            "reflections": [_make_item("r" * 100)],  # too small
+            "recent_summaries": [_make_item("s" * 12000)],
+            "recent_reflections": [_make_item("r" * 100)],  # too small
         }
 
         call_count = 0
@@ -257,12 +260,12 @@ class TestLLMCompression:
 
         result = await builder._llm_compress_oversized(ctx)
 
-        # memories (8000/4=2000 > 1536) and summaries (12000/4=3000 > 2400) should compress
-        # reflections (100/4=25 < 2400) should not
+        # memories (8000/4=2000 > 1536) and recent_summaries (12000/4=3000 > 2400)
+        # should compress; recent_reflections (100/4=25 < 2400) should not
         assert call_count == 2
         assert result["memories"][0]["content"] == "compressed content for this section."
-        assert result["summaries"][0]["content"] == "compressed content for this section."
-        assert result["reflections"][0]["content"] == "r" * 100
+        assert result["recent_summaries"][0]["content"] == "compressed content for this section."
+        assert result["recent_reflections"][0]["content"] == "r" * 100
 
     @pytest.mark.asyncio
     async def test_skips_protected_sections(self, builder):
@@ -367,12 +370,13 @@ class TestLLMCompression:
         # SEMANTIC_ITEM_MAX_TOKENS=800, threshold=800*3=2400 tokens
         # Need >2400 tokens → >9600 chars (at ~4 chars/token)
         big = "x" * 12000  # ~3000 tokens > 2400
-        ctx = {"summaries": [{"text": big, "metadata": {"id": "1"}}]}
+        # rendered key — bare "summaries" is dead since 2026-08-14
+        ctx = {"recent_summaries": [{"text": big, "metadata": {"id": "1"}}]}
 
         builder.model_manager.generate_once = AsyncMock(
             return_value="compressed text key result here."
         )
 
         result = await builder._llm_compress_oversized(ctx)
-        assert result["summaries"][0]["text"] == "compressed text key result here."
-        assert result["summaries"][0]["metadata"] == {"id": "1"}
+        assert result["recent_summaries"][0]["text"] == "compressed text key result here."
+        assert result["recent_summaries"][0]["metadata"] == {"id": "1"}

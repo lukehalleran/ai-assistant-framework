@@ -99,6 +99,7 @@ class LearnedRelationStore:
             rel = normalize_relation(rel) or rel
         except Exception:
             pass
+        # lazy import: cycle (llm_fact_extractor imports this store at call time)
         from memory.llm_fact_extractor import CORE_RELATIONS
         if rel in CORE_RELATIONS:
             return None

@@ -10,6 +10,11 @@ Module Contract:
 - Outputs: Expanded query string with additional keywords
 - Dependencies: topic_manager, spaCy NER
 - Side effects: None (pure transformation)
+- Ordering (2026-08-23): the rewritten string feeds an order-sensitive embedding
+  model (bge), so keywords keep the user's first-occurrence order and synonym
+  expansions append after them in deterministic SYNONYM_GROUPS order — a set()
+  round-trip here used to scramble word order and change the query vector
+  run-to-run for the same query.
 """
 
 import re
@@ -61,6 +66,12 @@ def extract_keywords(query: str) -> Set[str]:
 
     return keywords
 
+def _ordered_keywords(text: str) -> List[str]:
+    """Keywords in first-occurrence order, noise removed (order matters: the
+    rewritten query is embedded by an order-sensitive model)."""
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    return [w for w in dict.fromkeys(words) if w not in NOISE_WORDS]
+
 def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
     """
     Rewrite a casual query into a semantic-rich version for better retrieval.
@@ -81,10 +92,11 @@ def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
 
     logger.debug(f"[QueryRewriter] Original query: '{query}'")
 
-    # 1. Extract base keywords
-    keywords = extract_keywords(query)
+    # 1. Base keywords in the user's own word order
+    ordered = _ordered_keywords(query)
 
-    # 2. Try topic extraction if available
+    # 2. Try topic extraction if available (topic words append after the
+    #    user's words, in topic order)
     if use_topic_extraction:
         try:
             from utils.topic_manager import TopicManager
@@ -93,28 +105,34 @@ def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
             topics = [topic] if topic else []
 
             if topics:
-                # Add extracted topics
                 for topic in topics[:5]:  # Limit to top 5
-                    topic_words = extract_keywords(topic)
-                    keywords.update(topic_words)
+                    for word in _ordered_keywords(topic):
+                        if word not in ordered:
+                            ordered.append(word)
                 logger.debug(f"[QueryRewriter] Extracted topics: {topics[:5]}")
         except Exception as e:
             logger.debug(f"[QueryRewriter] Topic extraction failed: {e}")
 
-    # 3. Expand with synonyms
-    expanded = expand_with_synonyms(keywords)
+    # 3. Synonym expansions, appended in deterministic order: keywords in
+    #    query order, each keyword's first matching group in SYNONYM_GROUPS
+    #    order, synonyms in group-list order.
+    seen = set(ordered)
+    additional_keywords = []
+    for keyword in ordered:
+        for group_key, synonyms in SYNONYM_GROUPS.items():
+            if keyword == group_key or keyword in synonyms:
+                for syn in synonyms:
+                    if syn not in seen:
+                        additional_keywords.append(syn)
+                        seen.add(syn)
+                break
 
-    # 4. Build rewritten query
-    # Keep original keywords first, then add expansions
-    original_keywords = list(keywords)
-    additional_keywords = list(expanded - keywords)
-
-    # Combine: original + additional (limit total to avoid bloat)
-    all_keywords = original_keywords + additional_keywords[:10]
+    # 4. Combine: original + additional (limit total to avoid bloat)
+    all_keywords = ordered + additional_keywords[:10]
     rewritten = ' '.join(all_keywords)
 
     logger.info(f"[QueryRewriter] Rewritten: '{query}' → '{rewritten}'")
-    logger.debug(f"[QueryRewriter] Keyword count: {len(original_keywords)} original + {len(additional_keywords[:10])} expanded")
+    logger.debug(f"[QueryRewriter] Keyword count: {len(ordered)} original + {len(additional_keywords[:10])} expanded")
 
     return rewritten
 

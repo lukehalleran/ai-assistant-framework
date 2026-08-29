@@ -25,6 +25,16 @@ collection. The graph has no `is_current` flag; this read-time filter is what
 keeps a once-stored "currently sick" edge from surfacing as present-tense
 indefinitely. Edges are never deleted — they just stop being injected once stale
 (a fresh re-mention refreshes last_seen and brings them back).
+
+Stance metadata + settledness [2026-08-23]: add_relation merges incoming
+stance/capture_tone into existing-edge metadata and tracks appraisal edges'
+distinct-ISO-day observation lists (appraisal_days/appraisal_tones,
+_track_appraisal_settledness); an appraisal restated on
+>= APPRAISAL_SETTLED_MIN_DAYS (3) distinct NON-elevated days gains
+metadata["settled"]=True. Elevated/unknown-tone days never count —
+settledness deliberately under-fires (a crisis-week spiral must not mint a
+"settled" view). Rendering (GraphEdge.to_natural_language) attributes
+explicit appraisal/inferred edges instead of asserting them.
 """
 
 import os
@@ -64,6 +74,29 @@ GRAPH_SCHEMA_VERSION = 1
 # Default persist path (overridden by config)
 _DEFAULT_PERSIST_PATH = os.path.join("data", "knowledge_graph.json")
 
+# Bare generic nouns must never BIND as an alias of a specific entity — the
+# auto-learned alias "project" on phase_change_heat_exchanger_project made
+# every "group project" mention resolve to that node (its stored notes PHOTO
+# was attached to an unrelated memory-ingest turn, 2026-08-28; a second junk
+# binding 'meeting'→gòu existed in the same scan). Multi-word possessives
+# ("my project") still bind. Enforced at every alias-index write site
+# INCLUDING load-time rebuild, so historical junk aliases in node data are
+# neutralized without a store repair. Kept in sync in spirit with the
+# broader single-word extraction stoplist in graph_utils._COMMON_WORDS.
+_GENERIC_ALIAS_WORDS = frozenset({
+    "project", "projects", "note", "notes", "email", "emails",
+    "meeting", "meetings", "appointment", "appointments",
+    "calendar", "syllabus", "screenshot", "screenshots",
+    "photo", "photos", "image", "images", "picture", "pictures",
+    "document", "documents", "file", "files", "folder", "folders",
+    "app", "system", "class", "course", "homework",
+})
+
+
+def _alias_bindable(alias: str, eid: str) -> bool:
+    """A generic bare word may self-reference but never alias another entity."""
+    return alias == eid or alias not in _GENERIC_ALIAS_WORDS
+
 
 class GraphMemory:
     """Persistent knowledge graph wrapping NetworkX DiGraph."""
@@ -100,7 +133,7 @@ class GraphMemory:
             cur_aliases = set(existing.get("aliases", []))
             for alias in node.aliases:
                 a_lower = alias.lower().strip()
-                if a_lower and a_lower != eid:
+                if a_lower and a_lower != eid and _alias_bindable(a_lower, eid):
                     cur_aliases.add(a_lower)
                     self._alias_index[a_lower] = eid
             existing["aliases"] = list(cur_aliases)
@@ -114,7 +147,7 @@ class GraphMemory:
             aliases_lower = []
             for a in node.aliases:
                 a_lower = a.lower().strip()
-                if a_lower and a_lower != eid:
+                if a_lower and a_lower != eid and _alias_bindable(a_lower, eid):
                     aliases_lower.append(a_lower)
                     self._alias_index[a_lower] = eid
             self._alias_index[eid] = eid  # self-reference
@@ -153,10 +186,20 @@ class GraphMemory:
             existing.last_seen = now
             if fact_id and fact_id not in existing.source_fact_ids:
                 existing.source_fact_ids.append(fact_id)
+            # Merge incoming stance metadata (2026-08-23): a re-mention that
+            # carries a stance tag updates the stored one (write-time
+            # classification is deterministic, so repeats agree; a legacy
+            # edge gains its tag on first re-mention post-backfill).
+            if edge.metadata:
+                for _k in ("stance", "capture_tone"):
+                    if edge.metadata.get(_k):
+                        existing.metadata[_k] = edge.metadata[_k]
+            self._track_appraisal_settledness(existing, edge.metadata or {}, now)
             # Update NetworkX edge data
             self.graph[src][tgt]["weight"] = existing.weight
             self.graph[src][tgt]["last_seen"] = now.isoformat()
             self.graph[src][tgt]["source_fact_ids"] = existing.source_fact_ids
+            self.graph[src][tgt]["metadata"] = existing.metadata
         else:
             # New edge
             edge_copy = GraphEdge(
@@ -172,6 +215,7 @@ class GraphMemory:
             )
             if fact_id and fact_id not in edge_copy.source_fact_ids:
                 edge_copy.source_fact_ids.append(fact_id)
+            self._track_appraisal_settledness(edge_copy, edge.metadata or {}, now)
             self._edge_index[ekey] = edge_copy
             self.graph.add_edge(src, tgt, **{
                 "relation": rel,
@@ -189,6 +233,46 @@ class GraphMemory:
                 self.graph.nodes[nid]["last_seen"] = now.isoformat()
 
         self._mark_dirty()
+
+    # Settledness thresholds (2026-08-23 stance layer): an appraisal repeated
+    # on >= this many DISTINCT days, each at non-elevated capture tone, is
+    # marked settled — a stable stated view rather than a crisis-day one-off.
+    # Elevated/unknown-tone days never count (conservative: settledness
+    # deliberately under-fires). Mirrors learned_relations' distinct-days
+    # promotion pattern.
+    APPRAISAL_SETTLED_MIN_DAYS = 3
+    _APPRAISAL_DAYS_CAP = 30  # bound the stored day lists
+
+    def _track_appraisal_settledness(self, edge: GraphEdge, incoming_md: dict,
+                                     now: datetime) -> None:
+        """Record a distinct-ISO-date observation for an appraisal edge and
+        promote to settled at >= APPRAISAL_SETTLED_MIN_DAYS non-elevated days."""
+        try:
+            stance = (incoming_md or {}).get("stance") or edge.metadata.get("stance")
+            if stance != "appraisal":
+                return
+            day = now.strftime("%Y-%m-%d")
+            tone = (incoming_md or {}).get("capture_tone") or "unknown"
+            days = edge.metadata.setdefault("appraisal_days", [])
+            tones = edge.metadata.setdefault("appraisal_tones", [])
+            if day not in days:
+                days.append(day)
+                tones.append(tone)
+                # keep lists bounded and aligned
+                if len(days) > self._APPRAISAL_DAYS_CAP:
+                    del days[0:len(days) - self._APPRAISAL_DAYS_CAP]
+                    del tones[0:len(tones) - len(days)]
+            elif tone == "non_elevated":
+                # A later same-day non-elevated restatement upgrades that
+                # day's tone (elevated→non_elevated never downgrades).
+                idx = days.index(day)
+                if idx < len(tones) and tones[idx] != "non_elevated":
+                    tones[idx] = "non_elevated"
+            non_elevated_days = sum(1 for t in tones if t == "non_elevated")
+            if non_elevated_days >= self.APPRAISAL_SETTLED_MIN_DAYS:
+                edge.metadata["settled"] = True
+        except Exception:
+            pass
 
     def get_entity(self, entity_id: str) -> Optional[GraphNode]:
         """Look up an entity by its canonical ID."""
@@ -267,6 +351,12 @@ class GraphMemory:
         a_lower = alias.lower().strip()
         eid = entity_id.lower().strip()
         if not a_lower or not eid:
+            return
+        if not _alias_bindable(a_lower, eid):
+            logger.debug(
+                f"[GraphMemory] Refusing generic-word alias binding: "
+                f"{a_lower!r} -> {eid!r}"
+            )
             return
         self._alias_index[a_lower] = eid
         # Also store on the node
@@ -470,10 +560,13 @@ class GraphMemory:
         # Load nodes
         for nid, data in payload.get("nodes", {}).items():
             self.graph.add_node(nid, **data)
-            # Rebuild alias index
+            # Rebuild alias index (generic-word junk aliases in historical
+            # node data are skipped here — neutralized without a store repair)
             self._alias_index[nid] = nid
             for alias in data.get("aliases", []):
-                self._alias_index[alias.lower().strip()] = nid
+                a_lower = alias.lower().strip()
+                if _alias_bindable(a_lower, nid):
+                    self._alias_index[a_lower] = nid
 
         # Load edges
         for edata in payload.get("edges", []):

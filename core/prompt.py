@@ -39,16 +39,10 @@ from .prompt.context_gatherer import ContextGatherer
 from .prompt.formatter import PromptFormatter
 from .prompt.summarizer import LLMSummarizer
 from .prompt.token_manager import TokenManager
-from .prompt.base import (
-    _parse_bool,
-    _cfg_int,
-    _as_summary_dict,
-    _dedupe_keep_order,
-    _truncate_list,
-    _strip_prompt_artifacts,
-    _FallbackCorpusManager,
-    _FallbackMemoryCoordinator
-)
+# NOTE: the helper names below are imported ONCE, further down — 5 from
+# .prompt.formatter and 3 from .prompt.base. A previous duplicate import of
+# all 8 from .prompt.base here was silently shadowed (first ruff pass,
+# 2026-08-28).
 
 # Maintain backward compatibility by exposing the main classes at module level
 __all__ = [
@@ -83,12 +77,12 @@ from .prompt.base import (
     _FallbackCorpusManager,
     _FallbackMemoryCoordinator
 )
+import warnings
 
 # Legacy function imports that might be used elsewhere
 # These were previously in the monolithic file
 def build_prompt(*args, **kwargs):
     """Legacy function wrapper - use UnifiedPromptBuilder.build_prompt() instead."""
-    import warnings
     warnings.warn(
         "build_prompt() function is deprecated. Use UnifiedPromptBuilder.build_prompt() instead.",
         DeprecationWarning,

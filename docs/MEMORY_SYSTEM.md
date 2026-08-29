@@ -50,11 +50,12 @@ resolved, and stale information is penalized in ranking.
 ### Fact & Truth Pipeline
 | File | Purpose |
 |------|---------|
-| `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget. Pre-canonicalization filters: ephemeral predicate blocking (config-driven), boolean-only value rejection, junk-object + polarity guards (2026-08-02) |
-| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching. `_normalize_triple()` applies `_is_ephemeral_relation()` + `_is_boolean_noise()` guards; LLM prompt explicitly discourages transient state extraction. 2026-08-05: 30-turn window, newest-first budget (see "Extraction coverage" below); `CORE_RELATIONS` constant + learned-relation promotion |
+| `memory/fact_extractor.py` | Multi-stage extraction: corrections > spaCy > REBEL > regex, dual budget. Pre-canonicalization filters: ephemeral predicate blocking (config-driven), boolean-only value rejection, junk-object + polarity guards (2026-08-02); object cap `FACT_OBJECT_MAX_CHARS`=300 + salutation salvage (2026-08-26: "Hi Morgan,\n<email>" object → `email_sent=Morgan` instead of a silent drop) |
+| `memory/llm_fact_extractor.py` | LLM-assisted triple extraction with entity support; accepts existing profile facts for relation reuse; attaches source_excerpt via keyword matching. `_normalize_triple()` applies `_is_ephemeral_relation()` + `_is_boolean_noise()` guards; LLM prompt explicitly discourages transient state extraction. 2026-08-05: 30-turn window, newest-first budget (see "Extraction coverage" below); `CORE_RELATIONS` constant + learned-relation promotion. 2026-08-26: long-object cap + salutation salvage (this path had NO length cap — a ~700-char pasted email was stored wholesale as a fact object) |
 | `memory/fact_verification.py` | Pre-storage conflict checking: ephemeral > candidates > trust > LLM adjudication |
 | `memory/truth_scorer.py` | Stateless truth computation: initial score + adjustments + time decay |
 | `memory/claim_tracker.py` | Claim extraction, hashing, reverse index, staleness cascade |
+| `memory/stance_classifier.py` | Single-source deterministic stance core (2026-08-23): objective / appraisal / reported / inferred / unknown. `classify_triple_stance`, `classify_utterance_stance`, `scope_unresolved_referent`, `classify_for_storage`, `effective_stance`, `capture_tone_from_level`; `EVALUATIVE_LEXICON` of thick evaluative terms (evil, abusive, toxic, worthless...) |
 
 ### Persistence Safety (2026-07-14)
 
@@ -696,6 +697,105 @@ When a fact is corrected, staleness cascades to summaries that embedded it:
    "[HISTORICAL — PARTIALLY OUTDATED]"
 ```
 
+### Post-Response Truth Pipeline — GUI Wiring (2026-08-23)
+
+The whole post-response pipeline above (correction/confirmation detection →
+truth events → staleness cascade) was DEAD on the production GUI path: only
+the unused `process_user_query` flow called `_run_post_response_detectors`
+(same class as the 08-18 EscalationTracker GUI-wiring bug).
+`orchestrator.run_post_response_detectors()` is now PUBLIC and called per
+turn from `gui/handlers._write_turn_telemetry`; the flow-based wrapper
+delegates to it so both paths run THE same pipeline. Same batch: a
+terse-numeric-swap correction pattern joined the detector ("6 weeks off
+vryalr not 1."), and `correction_detector.detect_correction_signal()`
+(message-level, fact-list-INDEPENDENT) scores correction confidence even
+when the correction matches no stored fact. Tests:
+`tests/unit/test_correction_gui_wiring.py`.
+
+### Narrative Staleness Flag (2026-08-23)
+
+A correction can invalidate the cached narrative context
+(`data/narrative_context.txt`, regenerated only at shutdown) even when it
+matches NO stored fact — the 08-23 "6 weeks off vryalr not 1." case: the
+wrong "day 8" framing lived in the narrative, and kept re-entering every
+prompt's [TEMPORAL GROUNDING] for the rest of the session.
+`utils/narrative_staleness.py` (NEW): a `detect_correction_signal()` score
+≥ 0.6 in `run_post_response_detectors()` calls `mark_stale()` (atomic flag
+write to `data/narrative_stale.json`; keeps the EARLIEST mark);
+`corpus_manager.get_narrative_context()` appends a CAUTION line ("the user
+corrected a factual detail after this narrative was generated … prefer the
+user's most recent statements") while `is_stale(narrative_mtime)` holds; a
+fresh narrative save calls `clear()`. The flag doesn't rewrite the
+narrative (an LLM job) — it makes the prompt HONEST about it until the next
+regeneration. Lenient derived state: corrupt/missing flag = not stale,
+never raises (tone_state.json doctrine). Tests:
+`tests/unit/test_narrative_staleness.py`.
+
+---
+
+## Stance / Epistemic Tagging (2026-08-23)
+
+`memory/stance_classifier.py` is the single deterministic source for a
+fact/edge's epistemic stance: **objective** / **appraisal** (value judgment)
+/ **reported** / **inferred** / **unknown**. `LEGACY_STANCE_DEFAULT="unknown"`
+covers all pre-existing untagged data; consumers act conservatively —
+suppression fires only on EXPLICIT appraisal/inferred, and standing-granting
+(settledness, see below) requires EXPLICIT non-elevated evidence. The
+`EVALUATIVE_LEXICON` of thick evaluative terms (evil, abusive, toxic,
+worthless, ...) drives the deterministic classification.
+
+### Write Path
+
+- `llm_fact_extractor` triples carry a `"stance"` field — the LLM fills
+  gaps, but the deterministic classifier OVERRIDES on lexicon hits.
+- `fact_extractor._clean_triple` preserves evaluative pronoun-subject
+  triples user-scoped instead of dropping them.
+- `memory_storage.extract_and_store_facts` forwards `stance` +
+  `capture_tone` into fact metadata; `_ingest_fact_to_graph` writes them
+  into `GraphEdge.metadata`.
+- **Referent scoping**: `scope_unresolved_referent` — an evaluative claim
+  with a pronoun/role subject ("she is abusive") re-scopes to
+  "user's unnamed referent" / "user's last partner" and NEVER fuzzy-binds
+  to a named entity. User-scoped role subjects become verbatim
+  `entity_type="role"` graph nodes, bypassing the alias resolver.
+- The shutdown LLM path joins each triple to its session corpus entry's
+  `is_heavy_topic` flag for `capture_tone` (unmatched → unknown).
+
+### Consumers
+
+1. **Query expansion** — `graph_utils.rank_expansion_candidates` excludes
+   explicit appraisal/inferred edges (fixes the "evil" expansion leak).
+2. **Rendering** — `GraphEdge.to_natural_language` renders appraisals as
+   "you described X as '...' (your words at the time, DATE)" — settled ones
+   as "you've consistently described..." — and inferred edges with an
+   "(assistant inference)" marker; `memory_retriever._present_fact_content`
+   rewrites explicit-appraisal fact content the same way at the retrieval
+   boundary (objective/legacy output stays byte-identical).
+3. **Dedup** — `cross_deduplicator._find_fact_contradictions` skips
+   explicit-appraisal facts (perspectives coexist; they are not
+   contradictions to resolve).
+4. **Profile** — `user_profile.add_fact` stores the stance, never promotes
+   explicit appraisals into the quick profile, and applies a deterministic
+   lexicon backstop when the caller passes no stance.
+5. **Settledness** — `graph_memory.add_relation` tracks
+   `appraisal_days`/`appraisal_tones` distinct-ISO-day lists: an appraisal
+   restated on ≥3 DISTINCT non-elevated days gains metadata `settled=True`
+   (elevated/unknown-tone days never count).
+
+### Backfill
+
+`scripts/backfill_stance.py` — dry-run default, refuses `--apply` while
+Daemon runs (`utils/daemon_guard`), pre-image backups to
+`data/backups/stance_backfill_<ts>/`, classifies all facts + graph edges
+with THE deployed classifier. Hard sentinel: exits nonzero unless
+`fact_e1f5f920_20260818_135210570` (casey|is|evil) classifies appraisal.
+Dry-run validated on live data 2026-08-23 (3268 facts, 20 appraisal; 987
+edges); `--apply` owner-gated.
+
+Tests: `tests/unit/test_stance_classifier.py`, `test_stance_write_path.py`,
+`test_stance_consumers.py`, `test_appraisal_settledness.py`,
+`test_backfill_stance.py`.
+
 ---
 
 ## User Profile
@@ -852,6 +952,12 @@ Stage 3: Forced Minimum
    memory_retriever → gate; the floor can only LOWER, so a bare "Hey" at
    casual_social max_mems=3 no longer gets 8 below-threshold memories forced
    in. Tests: tests/unit/test_gate_min_results_cap.py)
+  (QUALITY floor since 2026-08-23: forced items must still score above
+   threshold − GATE_FORCED_FLOOR_MARGIN (env, default 0.05) — fail-soft
+   means "don't starve an ordinary turn", not "force junk in". Near-misses
+   may be rescued; a turn with 0 natural passes now renders
+   fewer-but-honest memories instead of the floor's worth of junk.
+   Tests: tests/unit/test_gate_forced_quality_floor.py)
 
 Stage 4: Cross-Encoder Reranking (if available, > 5 items)
   Rerank by cross-encoder score
@@ -861,6 +967,23 @@ Stage 5: Cap
 ```
 
 **Timing:** ~200ms total (ChromaDB HNSW candidate generation ~50ms, cosine ~50ms, cross-encoder ~100ms). No FAISS in the live memory path — FAISS is used only for the wiki index and visual memory.
+
+### Insight Evidence Sweep — the UNGATED Exception (2026-08-23)
+
+Insight / evidence-assembly turns (`core/insight/sweep.py` — see
+`AGENTIC_SEARCH.md`) deliberately BYPASS this gate: a theme-sweep request
+("gather everything I've said about X") needs an evidence SET whose members
+are individually low-pairwise-similarity but collectively signal-bearing —
+per-doc cosine gating structurally cannot pass such sets. The sweep instead
+uses generous caps (`per_facet_cap`=10, `total_evidence_cap`=80) over
+conversations/summaries/reflections/facts/obsidian_notes/threads, plus a
+word-boundary keyword scan via the new read-only
+`corpus_manager.search_keyword(terms, start, end, max_results, context_chars)`
+(case-insensitive over episodic entries; query and response scanned
+SEPARATELY for accurate speaker attribution; newest-first; junk-filtered),
+graph 1-hop expansion (hub/stale/appraisal-edge skips), and `MemoryExpander`
+windows around top conversation hits. Tests:
+`tests/unit/test_insight_sweep.py`, `tests/unit/test_corpus_keyword_search.py`.
 
 ---
 
@@ -1049,6 +1172,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `GATE_DEICTIC_MIN_RETRIEVAL` | 0.61 | Deictic follow-up floor in retrieval space (≈ 0.20 MiniLM) |
 | `GATE_COSINE_WEIGHT` | 0.85 | Weight of cosine vs truth in blended gate score (env var in gate_system.py, NOT app_config) |
 | `MIN_GATED_MEMORIES` | 8 | Forced minimum even if below threshold (env var in gate_system.py, NOT app_config) |
+| `GATE_FORCED_FLOOR_MARGIN` | 0.05 | Quality floor for the forced-minimum backfill (2026-08-23): items below threshold − margin are never forced (env var in gate_system.py, NOT app_config) |
 
 ### Facts & Truth
 | Constant | Default | Purpose |
@@ -1080,6 +1204,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `GRAPH_SCORING_BOOST_CAP` | 0.15 | Max graph bonus per memory |
 | `GRAPH_QUERY_EXPANSION_MAX_TERMS` | 8 | Max neighbor names appended to query |
 | `GRAPH_EXPANSION_HUB_DEGREE` | 30 | Degree at/above which a node is treated as a hub — reachable but never expanded through |
+| `GRAPH_EXPANSION_MIN_MENTIONS` | 2 | Evidence bar for expansion candidates (2026-08-23): nodes with `mention_count` below this never become expansion terms (env-overridable in graph_utils.py; 0 disables; nodes without the field pass) |
 
 ### Profile Namespace
 | Constant | Default | Purpose |
@@ -1088,3 +1213,18 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `PROFILE_EPHEMERAL_TTL_HOURS` | 24 | Hours before ephemeral facts are dropped from retrieval results (memory_retriever TTL filter) |
 | `PROFILE_EPHEMERAL_MAX_HISTORY` | 20 | Max historical entries kept per ephemeral relation |
 | `PROFILE_CATEGORY_SOFT_CAP` | 200 | Max facts per category before pruning kicks in |
+
+### Insight Mode (2026-08-23)
+| Constant | Default | Purpose |
+|----------|---------|---------|
+| `INSIGHT_MODE_ENABLED` | True | Master toggle (YAML `insight_mode.enabled`) |
+| `INSIGHT_MAX_FACETS` | 6 | Max facet queries from decomposition (incl. mandatory counter-evidence facet) |
+| `INSIGHT_PER_FACET_CAP` | 10 | Max evidence items per facet |
+| `INSIGHT_TOTAL_EVIDENCE_CAP` | 80 | Global evidence cap across the sweep |
+| `INSIGHT_EVIDENCE_SNIPPET_CHARS` | 280 | Per-item snippet length |
+| `INSIGHT_KEYWORD_SCAN_MAX` | 50 | Max hits from the corpus keyword scan |
+| `INSIGHT_EXPAND_TOP_K` | 3 | Top conversation hits expanded via MemoryExpander |
+| `INSIGHT_EXPAND_WINDOW` | 2 | Expansion window per hit |
+| `INSIGHT_SWEEP_TIMEOUT_S` | 45 | Sweep timeout (partial results returned) |
+| `INSIGHT_OFFER_ENABLED` | True | Consent-offer arming on insight-shaped statements |
+| `INSIGHT_DOC_ON_AGREEMENT` | True | Save doc on agree/partial assessment |

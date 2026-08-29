@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Optional
 
 from utils.logging_utils import get_logger
+import re
 
 logger = get_logger("wikidata_enrichment")
 
@@ -46,7 +47,6 @@ _FORWARD_ONLY_RELATIONS = frozenset({"instance_of", "subclass_of"})
 
 
 def _slugify(text: str) -> str:
-    import re
     s = text.lower().strip()
     s = re.sub(r"[^\w\s]", "", s)
     s = re.sub(r"\s+", "_", s)

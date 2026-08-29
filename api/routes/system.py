@@ -6,6 +6,7 @@ import os
 from fastapi import APIRouter, HTTPException, Request
 
 from utils.logging_utils import get_logger
+import asyncio
 
 logger = get_logger("api_routes")
 
@@ -44,7 +45,6 @@ async def sync_notes(request: Request):
     embed_vault is synchronous and can take a while on big vaults — run it in a
     worker thread so the event loop (and any in-flight chat stream) stays live.
     """
-    import asyncio
 
     def _sync() -> str:
         try:

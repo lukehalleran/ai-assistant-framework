@@ -222,6 +222,13 @@ class SearchDecision:
     done_reason: Optional[str] = None
     wants_answer: bool = False
     partial_response: Optional[str] = None
+    # Set when this wants_answer decision is a decision-round TIMEOUT
+    # fallback, not the model's own signal — lets the controller distinguish
+    # "model is ready to answer" from "model never answered" and dispatch
+    # the explicitly requested tool deterministically (2026-08-27: a 75s
+    # timeout on an explicit "can we do a web search" turn ended the loop
+    # with zero tools).
+    timed_out: bool = False
 
 
 @dataclass

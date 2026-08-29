@@ -793,7 +793,6 @@ class PromptFormatter:
         if system_prompt and not directives:
             directives = system_prompt
 
-        from datetime import datetime
         logger.warning(f"PROMPT ASSEMBLY START: context has {len(context)} keys: {list(context.keys())}")
         logger.warning(f"PROMPT ASSEMBLY START: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
         logger.warning(f"PROMPT ASSEMBLY START: stm_summary present = {context.get('stm_summary') is not None}, value = {context.get('stm_summary')}")

@@ -49,16 +49,38 @@ Module Contract
     image inject) for all non-raw paths.
   - _run_raw / _run_duel / _run_agentic_search / _run_enhanced: the 4 mutually-exclusive parent
     modes. _run_duel and _run_agentic_search leave ctx.handled False on bail to fall through.
+  - _run_insight_mode [NEW 2026-08-23]: insight/evidence-assembly turn-owner
+    (gate_decision.insight_intent; dispatched BEFORE doc-gen). Facet decompose →
+    ungated cross-store sweep (8s keepalive heartbeats) → provenance labeling →
+    adversarial assessment (assessment kind) → streamed synthesis → optional
+    DocumentGenerator.save_prewritten (doc only on agree/partial or un-assessed
+    explicit request); stores with response_mode "insight-assembly"; exception →
+    ctx.handled False (falls through). The dispatcher also arms the one-shot
+    insight consent offer (gate.maybe_arm_insight_offer → [INSIGHT OFFER]
+    system-prompt note) when the mode did NOT trigger.
   - _run_doc_generation / _run_self_note: agentic-gate bypasses (do their own store_interaction).
+    Conversation-sourced docs (2026-08-24): _resolve_doc_source (LLM document_source
+    declaration OR _DOC_CONVERSATION_SOURCE_RE deterministic backstop) routes
+    "summarize these insights so I can text them to my therapist"-shaped requests
+    to _build_conversation_source_material — ctx.history rendered as a transcript
+    and passed as source_material (clears DOCUMENT_PROVIDED_MIN_CHARS, so the
+    generator writes up the conversation instead of web-researching the topic).
   - _run_enhanced owns the post-answer passes (uncertainty fallback, review gate) and the
     finally cleanup (fast-mode restore + storage). Its finally is enhanced-path-only by design
     (see "latent fast-mode-restore" note below) — do NOT hoist it to the dispatcher.
 - Turn telemetry [NEW 2026-07-03]: one JSONL line per completed turn (utils/turn_telemetry.py,
   logs/turn_records.jsonl). SubmitContext.telemetry accumulates gate decision (dispatcher) +
-  uncertainty/review outcomes (_run_enhanced); _write_turn_telemetry() merges those with
+  uncertainty/review outcomes (_run_enhanced) + grounding-check outcomes (2026-08-28:
+  grounding_prefilter_fired / grounding_verifier_fired / grounding_flagged /
+  grounding_confidence / grounding_corrected, set by _apply_grounding_check on the
+  enhanced AND agentic paths); _write_turn_telemetry() merges those with
   orchestrator._last_turn_signals (intent/tone/plan, captured in build_full_prompt) and writes
   at the duel/agentic/enhanced storage-dispatch sites plus the doc-generation and
   self-note bypass paths (2026-07-05 — those turns previously vanished from the record). Never raises.
+  Also hosts the post-response truth pipeline hook (2026-08-23):
+  orchestrator.run_post_response_detectors(ctx.user_text) — corrections/confirmations →
+  truth events + staleness cascade + narrative-stale flag; dead on the GUI path before
+  (only the unused process_user_query ran it — same class as the escalation bug above).
 - Extracted helpers:
   - _safe_count_tokens(), _safe_extract_citations(), _build_debug_record(), _build_provenance(),
     _attach_agentic_provenance(), _sanitize_response_text(), _strip_echoed_headers(),
@@ -86,6 +108,9 @@ from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult
 import json
 from config.app_config import load_system_prompt
+import re as _re_draft
+import time as _time_mod
+import time as _time
 DEFAULT_SYSTEM_PROMPT = load_system_prompt()
 logger = logging.getLogger("gradio_gui")
 
@@ -464,7 +489,6 @@ def _find_email_draft(chat_history: list, fallback: str) -> str:
 
     for content in assistant_msgs:
         # Strip XML artifacts before checking
-        import re as _re_draft
         clean = _re_draft.sub(r'<function_calls>.*?</function_calls>', '', content, flags=_re_draft.DOTALL)
         clean = _re_draft.sub(r'<function_calls>.*$', '', clean, flags=_re_draft.DOTALL)
         clean = _re_draft.sub(r'<invoke\s[^>]*>.*?</invoke>', '', clean, flags=_re_draft.DOTALL)
@@ -671,6 +695,17 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
             tracker.record_response(response_text)
     except Exception as e:
         logger.debug(f"[Telemetry] escalation record_response skipped: {e}")
+    try:
+        # Post-response truth pipeline: corrections/confirmations → truth
+        # events, staleness cascade, entity + attribution detection. Dead on
+        # the GUI path until 2026-08-23 — only the unused process_user_query
+        # ran it, so "6 weeks off vryalr not 1"-class corrections never
+        # updated stored facts (same class as the escalation bug above).
+        orch = getattr(ctx, "orchestrator", None)
+        if orch is not None and ctx.user_text:
+            orch.run_post_response_detectors(ctx.user_text)
+    except Exception as e:
+        logger.debug(f"[Telemetry] post-response detectors skipped: {e}")
 
 
 async def _silent_agentic_retry(
@@ -954,7 +989,6 @@ async def _prepare_submit_context(ctx):
                 logger.warning("[Fast Mode] Set hybrid_retriever._fast_mode = True (2150 → ~40 candidates)")
 
     # Use merged_input (user text + file contents) so file content appears in the prompt.
-    import time as _time_mod
     from utils import turn_progress
 
     ctx.t_prepare_start = _time_mod.perf_counter()
@@ -1206,6 +1240,64 @@ async def _run_duel(ctx, gens, sels, features_duel):
     # Fall through to agentic/streaming on failure (ctx.handled stays False)
 
 
+# Conversation-sourced document backstop (2026-08-23): "Please summerize
+# insight with direct evidence so I can text that to my therapist" ran
+# RESEARCH mode — source_material was just the ~70-char request (below
+# DOCUMENT_PROVIDED_MIN_CHARS) so the generator web-searched the topic
+# instead of writing up the conversation. Deterministic shapes that mean
+# "the source is THIS conversation": a summarize/write-up verb (misspelling
+# tolerant) plus either a conversation/insight referent or a sharing cue
+# ("so I can text that to my therapist").
+_DOC_CONV_VERB = r"(?:summ[ae]r?i[sz]e|write\s+(?:\w+\s+)?up|put\s+together)"
+_DOC_CONV_REFERENT = (
+    r"(?:(?:this|our|the)\s+(?:conversation|discussion|chat|session)"
+    r"|what\s+we(?:'ve)?\s+(?:just\s+)?(?:discussed|talked\s+about|covered)"
+    r"|\binsights?\b"
+    r"|so\s+i\s+can\s+(?:text|send|show|share|give|forward))"
+)
+_DOC_CONVERSATION_SOURCE_RE = _re.compile(
+    rf"\b{_DOC_CONV_VERB}\b.{{0,120}}{_DOC_CONV_REFERENT}", _re.I | _re.S
+)
+
+_DOC_TRANSCRIPT_MAX_MESSAGES = 30
+_DOC_TRANSCRIPT_MAX_CHARS = 8000
+
+
+def _resolve_doc_source(doc_gen_intent, user_text) -> str:
+    """'conversation' | 'research' for a doc_gen_intent.
+
+    The LLM trigger's document_source declaration wins when it says
+    "conversation"; the deterministic regex is the backstop (Tier-3 regex
+    intents carry no source, and the LLM may omit the field).
+    """
+    if (doc_gen_intent or {}).get("source") == "conversation":
+        return "conversation"
+    if user_text and _DOC_CONVERSATION_SOURCE_RE.search(user_text):
+        return "conversation"
+    return "research"
+
+
+def _build_conversation_source_material(history, user_text) -> str:
+    """Render recent ctx.history as a transcript for DocumentGenerator.
+
+    Newest messages win the char cap (trimmed from the front); the user's
+    request rides along so the generator knows the framing.
+    """
+    lines = []
+    for msg in (history or [])[-_DOC_TRANSCRIPT_MAX_MESSAGES:]:
+        if not isinstance(msg, dict):
+            continue
+        content = str(msg.get("content") or "").strip()
+        if not content or content.startswith("📝"):
+            continue
+        speaker = "User" if msg.get("role") == "user" else "Daemon"
+        lines.append(f"{speaker}: {content}")
+    transcript = "\n\n".join(lines)
+    if len(transcript) > _DOC_TRANSCRIPT_MAX_CHARS:
+        transcript = transcript[-_DOC_TRANSCRIPT_MAX_CHARS:]
+    return f"[CONVERSATION TRANSCRIPT]\n{transcript}\n\n[USER REQUEST]\n{user_text or ''}".strip()
+
+
 async def _run_doc_generation(ctx):
     """Direct document-generation bypass (agentic gate doc_gen_intent).
 
@@ -1239,16 +1331,28 @@ async def _run_doc_generation(ctx):
             chroma_store=_cs,
         )
 
-        yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
+        # Conversation-sourced request ("summarize these insights so I can
+        # text them to my therapist") → the transcript IS the material and
+        # clears DOCUMENT_PROVIDED_MIN_CHARS, so web/wiki research is
+        # suppressed. Otherwise pass the user's full message as primary
+        # material so a "write a report evaluating this: <pasted content>"
+        # request is grounded in that content rather than a generic web
+        # search on the topic string.
+        _doc_source = _resolve_doc_source(_doc_gen_intent, getattr(ctx, "user_text", None))
+        if _doc_source == "conversation":
+            _source_material = _build_conversation_source_material(
+                getattr(ctx, "history", None), getattr(ctx, "user_text", None)
+            )
+            yield {"role": "assistant", "content": "📝 Summarizing our conversation...", "is_progress": True}
+        else:
+            _source_material = getattr(ctx, "user_text", None)
+            yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
 
-        # Pass the user's full message as primary material so a "write a report
-        # evaluating this: <pasted content>" request is grounded in that content
-        # rather than a generic web search on the topic string.
         _doc_result = await _dg.generate(
             topic=_doc_gen_intent["topic"],
             doc_type=_doc_gen_intent["doc_type"],
             focus=_doc_gen_intent.get("focus"),
-            source_material=getattr(ctx, "user_text", None),
+            source_material=_source_material,
         )
 
         _doc_response = (
@@ -1283,6 +1387,214 @@ async def _run_doc_generation(ctx):
 
     except Exception as e:
         logger.error(f"[Handle Submit] Direct document generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
+
+
+async def _run_insight_mode(ctx):
+    """Insight / evidence-assembly mode (agentic gate insight_intent, 2026-08-23).
+
+    Owns the turn: facet decomposition → UNGATED cross-store sweep (the memory
+    gate's per-doc cosine test structurally cannot pass low-pairwise-similarity
+    / high-collective-signal evidence sets) → provenance labeling → adversarial
+    assessment (assessment kind only) → streamed synthesis → optional
+    prewritten-document save. Does its own store_interaction dispatch and sets
+    ctx.handled on success. On exception, logs and returns with ctx.handled
+    False so the dispatcher falls through to agentic/enhanced.
+    """
+    orchestrator = ctx.orchestrator
+    _intent_dict = dict(getattr(ctx.gate_decision, "insight_intent", None) or {})
+    # Empty/malformed intent dict: fall through to the normal flow instead of
+    # crashing InsightIntent validation ("2 validation errors for
+    # InsightIntent: kind/theme Field required", 2026-08-28 logs).
+    if not _intent_dict.get("kind") or not _intent_dict.get("theme"):
+        logger.warning(
+            f"[Handle Submit] INSIGHT MODE: intent missing kind/theme "
+            f"({_intent_dict}) — falling through"
+        )
+        return
+    logger.warning(f"[Handle Submit] INSIGHT MODE: {_intent_dict}")
+    try:
+        from core.agentic.gate import _tone_is_elevated
+        from core.insight.assessor import assess
+        from core.insight.facets import decompose
+        from core.insight.provenance import label_evidence
+        from core.insight.sweep import run_sweep
+        from core.insight.synthesizer import build_synthesis_prompts, synthesize_stream
+        from core.insight.types import InsightIntent
+
+        intent = InsightIntent(**_intent_dict)
+        tone_level = (ctx.raw_context or {}).get("tone_level")
+        tone_elevated = _tone_is_elevated(tone_level)
+
+        _ms = getattr(orchestrator, "memory_system", None)
+        _chroma = getattr(_ms, "chroma_store", None)
+        _corpus = getattr(_ms, "corpus_manager", None)
+        _graph = getattr(_ms, "graph_memory", None)
+        _resolver = getattr(_ms, "entity_resolver", None)
+        if _chroma is None:
+            raise RuntimeError("insight mode requires a chroma_store")
+        _expander = None
+        try:
+            from memory.memory_expander import MemoryExpander
+            _expander = MemoryExpander(_chroma)
+        except Exception:
+            pass
+
+        yield {"role": "assistant",
+               "content": f"🔎 Sweeping your history for: {intent.theme}...",
+               "is_progress": True}
+
+        # Keepalive wrapper: yield a heartbeat every 8s while a stage runs
+        # (same discipline as the agentic loop — mobile clients time out on
+        # silence, and the sweep alone may take tens of seconds).
+        _KEEPALIVE_S = 8.0
+
+        # (async generators can't yield from a helper — inline the loop per stage)
+        async def _wait_stage(task):
+            """Wait one keepalive interval; returns True when done."""
+            _done, _ = await asyncio.wait({task}, timeout=_KEEPALIVE_S)
+            return bool(_done)
+
+        _plan_task = asyncio.ensure_future(
+            decompose(intent, orchestrator.model_manager, entity_resolver=_resolver)
+        )
+        _n = 0
+        while not await _wait_stage(_plan_task):
+            _n += 1
+            yield {"role": "assistant",
+                   "content": f"🔄 Planning the sweep... ({int(_n * _KEEPALIVE_S)}s)",
+                   "is_progress": True}
+        plan = _plan_task.result()
+
+        _sweep_task = asyncio.ensure_future(run_sweep(
+            plan, chroma_store=_chroma, corpus_manager=_corpus,
+            graph_memory=_graph, entity_resolver=_resolver,
+            memory_expander=_expander,
+        ))
+        _n = 0
+        while not await _wait_stage(_sweep_task):
+            _n += 1
+            yield {"role": "assistant",
+                   "content": f"🔄 Sweeping stores... ({int(_n * _KEEPALIVE_S)}s)",
+                   "is_progress": True}
+        evidence = _sweep_task.result()
+        label_evidence(evidence)
+
+        _stores = {e.collection for e in evidence}
+        yield {"role": "assistant",
+               "content": (f"🗂️ Found {len(evidence)} pieces of evidence across "
+                           f"{len(_stores)} stores — assembling..."),
+               "is_progress": True}
+
+        assessment = None
+        if intent.kind == "insight_assessment":
+            _assess_task = asyncio.ensure_future(assess(
+                plan.claims or [intent.theme], evidence, orchestrator.model_manager,
+            ))
+            _n = 0
+            while not await _wait_stage(_assess_task):
+                _n += 1
+                yield {"role": "assistant",
+                       "content": f"🔄 Checking the claim against the record... ({int(_n * _KEEPALIVE_S)}s)",
+                       "is_progress": True}
+            assessment = _assess_task.result()
+
+        model_name = getattr(
+            orchestrator.model_manager, 'get_active_model_name', lambda: None
+        )()
+
+        _buffer = ""
+        async for _text in synthesize_stream(
+            intent, evidence, assessment,
+            model_manager=orchestrator.model_manager,
+            model_name=model_name,
+            tone_elevated=tone_elevated,
+        ):
+            _buffer += _text
+            yield {"role": "assistant",
+                   "content": ResponseParser.strip_trailing_stream_artifact(_buffer)}
+
+        final_text = _sanitize_response_text(_buffer).strip()
+        if not final_text:
+            raise RuntimeError("insight synthesis returned no visible content")
+
+        # Optional document save. Explicit wants_document requests save when no
+        # assessment gates them; an assessment gates on agree/partial (fail-
+        # honest: never hand the user a document the record disputes). An
+        # assessment run without an explicit doc request also saves on
+        # agreement when doc_on_agreement is enabled (goal 2's contract).
+        from config.app_config import INSIGHT_DOC_ON_AGREEMENT
+        _save_doc = (
+            (intent.wants_document
+             and (assessment is None or assessment.allows_document))
+            or (assessment is not None and INSIGHT_DOC_ON_AGREEMENT
+                and assessment.allows_document)
+        )
+        doc_line = ""
+        if _save_doc:
+            try:
+                from knowledge.document_generator import DocumentGenerator
+                _dg = DocumentGenerator(model_manager=orchestrator.model_manager)
+                _doc = _dg.save_prewritten(
+                    final_text,
+                    topic=intent.theme,
+                    doc_type="summary",
+                    source_types=sorted(_stores),
+                )
+                doc_line = f"\n\n📄 Saved as **{_doc.title}** → `{_doc.path}`"
+            except Exception as _doc_err:
+                logger.warning(f"[Insight Mode] Document save failed: {_doc_err}")
+                doc_line = "\n\n(I couldn't save the document to disk — the text above is the full content.)"
+        elif intent.wants_document and assessment is not None and not assessment.allows_document:
+            doc_line = (
+                "\n\n(I held off on saving a document: the record doesn't "
+                "support this strongly enough to put it in writing yet — "
+                "the honest read is above.)"
+            )
+
+        _insight_session_id = _get_session_id(orchestrator)
+        _prov = _build_provenance(
+            "insight-assembly", _insight_session_id, model_name, [],
+            insight_kind=intent.kind,
+            insight_theme=intent.theme[:120],
+            evidence_count=len(evidence),
+            evidence_stores=sorted(_stores),
+            assessment_overall=(assessment.overall if assessment else None),
+            document_saved=bool(_save_doc and "Saved as" in doc_line),
+        )
+        _syn_system, _syn_prompt = build_synthesis_prompts(
+            intent, evidence, assessment, tone_elevated=tone_elevated
+        )
+        prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
+            _syn_prompt, _syn_system, model_name, orchestrator,
+        )
+        debug_record = _build_debug_record(
+            mode='insight-assembly', user_text=ctx.user_text, prompt=_syn_prompt,
+            system_prompt=_syn_system, response=final_text, model=model_name,
+            prompt_tokens=prompt_tokens, system_tokens=system_tokens,
+            total_tokens=total_tokens, citations=[], orchestrator=orchestrator,
+            provenance=_prov,
+        )
+        yield {"role": "assistant", "content": final_text + doc_line,
+               "debug": debug_record}
+
+        _dispatch_storage(
+            orchestrator, ctx.merged_input, final_text, ctx.user_text,
+            final_text, ctx.personality, ctx.file_names, ctx.conversation_logger,
+            _insight_session_id, _prov, 'insight-assembly',
+        )
+        _write_turn_telemetry(
+            ctx, 'insight-assembly', _insight_session_id, model_name,
+            len(final_text or ""), response_text=final_text,
+        )
+        ctx.handled = True
+        ctx.storage_dispatched = True
+        return
+
+    except Exception as e:
+        logger.error(f"[Handle Submit] Insight mode failed: {e}")
         import traceback
         traceback.print_exc()
         # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
@@ -1480,7 +1792,6 @@ def _apply_web_citations(text, web_map, wiki_map=None):
     """
     if not text:
         return text
-    import re as _re
     # Idempotency guard: the linkified form [[WEB_N](url)] still contains the literal
     # substring [WEB_N], so a second pass would re-wrap it ([[[WEB_N](url)](url)]) and
     # re-append Sources. If any marker is already linkified, this text is done — return it.
@@ -1606,6 +1917,67 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     return suffix
 
 
+async def _apply_grounding_check(ctx, response_text) -> str:
+    """Factual-grounding floor (2026-08-28): deterministic claim-shape
+    pre-filter → LLM verifier → visible correction suffix.
+
+    Runs on ALL tones — the plan/review gate is skipped on CONCERN+ (no plan
+    → no review), which is exactly where the refrigerator-mother endorsement
+    shipped. Fail-open everywhere: any failure returns "" and never blocks or
+    delays the shown response beyond the final-chunk append window. The
+    returned suffix is appended to BOTH display and final_output so the
+    stored copy carries the correction (a false endorsement must not become
+    retrievable corpus ground truth).
+    """
+    try:
+        from config.app_config import (
+            GROUNDING_CHECK_ENABLED, GROUNDING_CHECK_MODEL,
+            GROUNDING_CONFIDENCE_THRESHOLD, GROUNDING_TIMEOUT_S,
+            GROUNDING_MAX_TOKENS, GROUNDING_MIN_RESPONSE_CHARS,
+        )
+        if (not GROUNDING_CHECK_ENABLED or not response_text
+                or len(response_text.strip()) < GROUNDING_MIN_RESPONSE_CHARS):
+            return ""
+        from core.grounding_check import (
+            has_checkable_claims, verify_grounding, build_grounding_correction,
+        )
+        if not has_checkable_claims(response_text, ctx.user_text or ""):
+            return ""
+        ctx.telemetry["grounding_prefilter_fired"] = True
+
+        mm = getattr(ctx.orchestrator, "model_manager", None)
+        if mm is None:
+            return ""
+        ctx.telemetry["grounding_verifier_fired"] = True
+        verdict = await verify_grounding(
+            ctx.user_text or "", response_text, mm,
+            model_name=GROUNDING_CHECK_MODEL,
+            max_tokens=GROUNDING_MAX_TOKENS,
+            timeout_s=GROUNDING_TIMEOUT_S,
+        )
+        if verdict is None:
+            return ""  # fail-open: timeout / call failure / unparseable
+        ctx.telemetry["grounding_flagged"] = bool(verdict.false_claim_present)
+        ctx.telemetry["grounding_confidence"] = round(float(verdict.confidence), 3)
+        if not (verdict.false_claim_present
+                and verdict.correction.strip()
+                and verdict.confidence >= GROUNDING_CONFIDENCE_THRESHOLD):
+            return ""
+
+        from core.agentic.gate import _tone_is_elevated
+        elevated = _tone_is_elevated((ctx.raw_context or {}).get("tone_level"))
+        ctx.telemetry["grounding_corrected"] = True
+        logger.warning(
+            f"[GroundingCheck] Correcting false claim "
+            f"(conf={verdict.confidence:.2f}, elevated={elevated}): "
+            f"{verdict.claim[:120]!r}"
+        )
+        return build_grounding_correction(verdict.correction, elevated=elevated)
+    except Exception as e:
+        logger.warning(f"[GroundingCheck] failed (non-fatal): {e}")
+        return ""
+
+
 async def _run_self_note(ctx):
     """Direct daemon self-note bypass (agentic gate self_note_intent).
 
@@ -1678,7 +2050,6 @@ async def _run_agentic_search(ctx):
     conversation_logger = ctx.conversation_logger
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
-    import time as _time_mod
     logger.warning("[Handle Submit] AGENTIC SEARCH MODE - routing through agentic controller")
     try:
         from core.agentic import AgenticSearchController, ProgressEvent
@@ -2041,6 +2412,17 @@ async def _run_agentic_search(ctx):
         except Exception as _ag_guard_err:
             logger.warning(f"[Handle Submit] Agentic action guard failed (non-fatal): {_ag_guard_err}")
 
+        # ── Factual-grounding floor (same as enhanced path): correct a
+        # confirmably-false claim before the final yield; suffix lands in
+        # display_output AND final_output so storage carries the correction.
+        try:
+            _ag_gc_suffix = await _apply_grounding_check(ctx, display_output)
+            if _ag_gc_suffix:
+                display_output = display_output.rstrip() + _ag_gc_suffix
+                final_output = (final_output or "").rstrip() + _ag_gc_suffix
+        except Exception as _ag_gc_err:
+            logger.warning(f"[Handle Submit] Agentic grounding check failed (non-fatal): {_ag_gc_err}")
+
         logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
         _final_chunk = {"role": "assistant", "content": display_output, "debug": debug_record}
         if _pending_action_id:
@@ -2133,7 +2515,6 @@ async def _run_enhanced(ctx):
     _original_limits = ctx.original_limits
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
-    import time as _time_mod
     final_output = ""
     display_output = ""
     debug_emitted = False
@@ -2388,8 +2769,16 @@ async def _run_enhanced(ctx):
                     f"[UNCERTAINTY FALLBACK] Detection failed (non-fatal): {e}"
                 )
 
-        # ── Post-Answer Review Gate: check response against plan ──
-        _review_retry_done = False
+        # ── Post-Answer Review Gate: LOG-ONLY (2026-08-28) ──
+        # The gate previously ran a silent agentic retry and SWAPPED the
+        # response before storage when review failed at high confidence. An
+        # 8-week telemetry audit showed exactly ONE real-turn swap ever — a
+        # 07-28 CONCERN emotional turn where what the user READ diverged from
+        # what memory STORED (33 of 34 swaps were benchmark traffic), against
+        # an 84% review-failure rate that says the plan-adherence criteria are
+        # miscalibrated. Stored must always equal seen: the review still runs
+        # and records pass/fail/confidence telemetry for recalibration, but
+        # NEVER replaces the response.
         _review_min_len = 120
         if agentic_enabled and final_output and not _uncertainty_retry_done and len(final_output) >= _review_min_len:
             try:
@@ -2418,26 +2807,9 @@ async def _run_enhanced(ctx):
                             logger.warning(
                                 f"[REVIEW GATE] Response failed review "
                                 f"(confidence={_review.confidence:.2f}, "
-                                f"issues={_review.issues}). Retrying via agentic."
+                                f"issues={_review.issues}). Log-only — "
+                                f"response NOT replaced."
                             )
-                            _rg_hint = (
-                                f'[RESPONSE REVIEW RETRY] The user asked: "{user_text}" '
-                                f"The initial response had these issues: "
-                                f"{'; '.join(_review.issues)}. "
-                                f"Suggestion: {_review.suggestion}. "
-                                f"Search memory and provide a better answer."
-                            )
-                            _rg_clean, _rg_think = await _silent_agentic_retry(
-                                orchestrator, merged_input, system_prompt,
-                                model_name, raw_context, final_output,
-                                _rg_hint, "REVIEW GATE",
-                            )
-                            if _rg_clean is not None:
-                                final_output = _rg_clean
-                                display_output = final_output
-                                thinking_part_stream = _rg_think or thinking_part_stream
-                                _review_retry_done = True
-                            ctx.telemetry["review_retry_accepted"] = bool(_rg_clean is not None)
                         elif _review:
                             logger.debug(
                                 f"[REVIEW GATE] Response passed review "
@@ -2567,6 +2939,18 @@ async def _run_enhanced(ctx):
         except Exception as e:
             logger.warning(f"[Handle Submit] Enhanced action guard failed (non-fatal): {e}")
 
+        # ── Factual-grounding floor: catch a confirmably-false claim the
+        # response asserted/endorsed in its own voice. Runs on the FINAL text
+        # (after uncertainty/review retries + action guard) so the verifier
+        # sees exactly what ships; suffix reaches display AND storage.
+        try:
+            _gc_suffix = await _apply_grounding_check(ctx, _resp_for_debug)
+            if _gc_suffix:
+                _resp_for_debug = (_resp_for_debug or "").rstrip() + _gc_suffix
+                final_output = (final_output or "").rstrip() + _gc_suffix
+        except Exception as e:
+            logger.warning(f"[Handle Submit] Grounding check failed (non-fatal): {e}")
+
         # Make [WEB_N] citations from the standard web-search path clickable
         # (display only; stored response keeps the canonical markers).
         _resp_for_debug = _apply_web_citations(
@@ -2690,8 +3074,102 @@ async def _run_enhanced(ctx):
             logger.warning("[Handle Submit] ⚡ Fast Mode limits RESTORED to normal")
 
 
+# ── Ingress guard (2026-08-28): duplicate-submit dedupe + client-error strip ──
+# The SPA's "⚠️ Failed to fetch" resend path double-processed turns for weeks
+# (duplicate gate evals + 30s builds + stored corpus duplicates on crisis days;
+# telemetry shows x2/x3 records for the same heavy query since at least 08-18)
+# and embedded the client error text inside resent messages (one stored query
+# carries it permanently). The guard is IN-FLIGHT-ONLY by design: a resend
+# after the first attempt finished may be the REAL turn (live case 08-28: the
+# 14:42 attempt died mid-stream, the 14:46 resend produced the actual reply) —
+# a completed-window dedupe would have blocked the good turn.
+
+# normalized-text key → registration monotonic timestamp
+_INFLIGHT_SUBMITS: dict = {}
+_INFLIGHT_STALE_S = 600.0        # crashed turns never cleaned → expire
+_INFLIGHT_MIN_CHARS = 20         # short repeats ("ugh", "hello") are legit
+
+# Line-anchored SPA/client error artifacts that leak into resent messages.
+_CLIENT_ERROR_LINE_RE = _re.compile(
+    r"^\s*(?:⚠️\s*)?Failed to fetch\s*$", _re.MULTILINE
+)
+
+
+def _strip_client_error_artifacts(text: str) -> str:
+    """Remove line-anchored client-transport error artifacts from an incoming
+    message. Only whole lines are removed — a user SAYING 'failed to fetch'
+    mid-sentence is untouched."""
+    if not text or "Failed to fetch" not in text:
+        return text
+    cleaned = _CLIENT_ERROR_LINE_RE.sub("", text)
+    if cleaned != text:
+        logger.warning("[Ingress] Stripped client error artifact from incoming message")
+        cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
+def _inflight_key(user_text: str, file_names) -> str:
+    norm = " ".join((user_text or "").lower().split())
+    files_part = "|".join(sorted(str(n) for n in (file_names or [])))
+    return f"{norm}::{files_part}"
+
+
 @log_and_time("Handle Submit")
 async def handle_submit(
+    user_text,
+    files,
+    history,
+    use_raw_gpt,
+    orchestrator,
+    system_prompt=DEFAULT_SYSTEM_PROMPT,
+    force_summarize=False,
+    include_summaries=True,
+    personality=None,
+    fast_mode=False
+):
+    """Ingress wrapper around the turn dispatcher: strips client error
+    artifacts from the incoming text and rejects a duplicate submit of the
+    SAME message while the first is still being processed. Transparent
+    otherwise — all callers keep this entry point."""
+
+    user_text = _strip_client_error_artifacts(user_text or "")
+
+    _key = None
+    _norm = " ".join(user_text.lower().split())
+    if len(_norm) >= _INFLIGHT_MIN_CHARS:
+        _key = _inflight_key(user_text, [getattr(f, "name", f) for f in (files or [])])
+        _now = _time.monotonic()
+        _seen = _INFLIGHT_SUBMITS.get(_key)
+        if _seen is not None and (_now - _seen) < _INFLIGHT_STALE_S:
+            logger.warning(
+                f"[Ingress] Duplicate submit while original still in flight "
+                f"— ignoring ({user_text[:60]!r})"
+            )
+            yield {
+                "role": "assistant",
+                "content": "⚠️ I'm already working on this message — "
+                           "ignoring the duplicate submit.",
+            }
+            return
+        _INFLIGHT_SUBMITS[_key] = _now
+        # opportunistic sweep of stale entries (crashed turns)
+        for k in [k for k, t in _INFLIGHT_SUBMITS.items() if (_now - t) >= _INFLIGHT_STALE_S]:
+            _INFLIGHT_SUBMITS.pop(k, None)
+
+    try:
+        async for _chunk in _handle_submit_inner(
+            user_text, files, history, use_raw_gpt, orchestrator,
+            system_prompt=system_prompt, force_summarize=force_summarize,
+            include_summaries=include_summaries, personality=personality,
+            fast_mode=fast_mode,
+        ):
+            yield _chunk
+    finally:
+        if _key is not None:
+            _INFLIGHT_SUBMITS.pop(_key, None)
+
+
+async def _handle_submit_inner(
     user_text,
     files,
     history,
@@ -2818,7 +3296,6 @@ async def handle_submit(
     _original_limits = ctx.original_limits
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
-    import time as _time_mod
 
     # ── DUEL MODE: Two models + judge, takes priority over agentic ──
     _cfg_duel = getattr(orchestrator, 'config', {}) or {}
@@ -2910,6 +3387,39 @@ async def handle_submit(
                 "offer to one short sentence; the person comes first."
             )
             ctx.telemetry["gate_deferred_request"] = True
+
+        # Insight consent offer (2026-08-23): the user made an insight-SHAPED
+        # first-person statement at non-elevated tone and the mode did NOT
+        # trigger — arm the ONE-per-session offer slot and tell the model it
+        # may offer, once, in one sentence, to check the insight against full
+        # history. A terse affirmation next turn runs the assessment
+        # (gate consumes the slot); anything else drops the offer permanently.
+        if not getattr(_gate_decision, "insight_intent", None):
+            try:
+                from core.agentic.gate import maybe_arm_insight_offer
+                if maybe_arm_insight_offer(
+                    user_text,
+                    raw_context.get("tone_level") if raw_context else None,
+                ):
+                    ctx.system_prompt = (ctx.system_prompt or "") + (
+                        "\n\n[INSIGHT OFFER] The user just stated an insight "
+                        "about themselves. You MAY offer — once, in one short "
+                        "sentence at the end of your reply — to check it "
+                        "against everything they've told you across sessions. "
+                        "Do not push; if they decline or ignore it, never "
+                        "bring the offer up again."
+                    )
+                    ctx.telemetry["insight_offer_armed"] = True
+            except Exception as _io_err:
+                logger.debug(f"[Handle Submit] Insight offer check failed: {_io_err}")
+
+        # --- Insight / evidence-assembly mode (owns the turn) ---
+        if getattr(_gate_decision, "insight_intent", None) and should_use_agentic:
+            async for _c in _run_insight_mode(ctx):
+                yield _c
+            if ctx.handled:
+                return
+            # else insight mode failed — fall through to doc-gen / agentic / enhanced
 
         # --- Direct document generation (bypasses agentic loop) ---
         if _doc_gen_intent and should_use_agentic:

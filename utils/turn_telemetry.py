@@ -23,8 +23,9 @@ Typical record fields (all optional — record what the turn produced):
   is_small_talk, plan_points, plan_tone, gate_triggered, gate_modes,
   gate_reason, mode (enhanced|agentic-search|best-of-duel|...),
   uncertainty_fired, uncertainty_accepted, review_fired, review_passed,
-  review_retry_accepted, response_len, model, session_id,
-  prepare_elapsed_s.
+  review_retry_accepted, grounding_prefilter_fired, grounding_verifier_fired,
+  grounding_flagged, grounding_confidence, grounding_corrected,
+  response_len, model, session_id, prepare_elapsed_s.
 """
 
 from __future__ import annotations
@@ -89,6 +90,11 @@ def record_turn(record: Dict[str, Any]) -> bool:
             return False
 
         payload = {"ts": datetime.now().astimezone().isoformat(timespec="seconds")}
+        # Test/prod isolation (2026-08-28): stamp rows written under pytest so
+        # telemetry analysis can exclude test traffic (benchmark/test rows sat
+        # un-flagged in prod turn_records.jsonl and skewed fire-rate metrics).
+        if os.getenv("DAEMON_TEST_MODE"):
+            payload["test_env"] = True
         payload.update({str(k): _sanitize_value(v) for k, v in (record or {}).items()})
 
         path = TURN_TELEMETRY_PATH

@@ -810,7 +810,6 @@ class TestDiverseSelect:
         return ProposalFilter()
 
     def _make_scored_dict(self, title, tags, score):
-        import json
         return {
             "content": title,
             "metadata": {

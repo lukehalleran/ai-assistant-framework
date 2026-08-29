@@ -7,6 +7,12 @@ Module Contract
   - add_entry(query, response, tags?, timestamp?)
   - add_summary(content|node)
   - get_recent_memories(count), get_summaries(count)
+  - search_keyword(terms, start?, end?, max_results?, context_chars?, include_entry?) -> List[Dict]
+    [NEW 2026-08-23, insight sweep]: read-only word-boundary case-insensitive
+    scan over episodic entries; query and response scanned SEPARATELY for
+    accurate speaker attribution; newest-first; junk-filtered.
+    include_entry=True (2026-08-26) attaches the raw corpus entry per hit —
+    used by the keyword-anchor retrieval fallback in memory_retriever
   - save_narrative_context(text: str) -> bool [NEW 2026-01-17]
   - get_narrative_context() -> str [NEW 2026-01-17]
 - Outputs:
@@ -22,6 +28,9 @@ Module Contract
     a failed LLM call must never persist or surface as temporal grounding [2026-07-09]
   - add_summary rejects junk summaries at storage time (memory.utils.is_junk_summary —
     "-"/truncated fragments), mirroring the Chroma-side add_summary guard [2026-07-25]
+  - Narrative correction-staleness (utils.narrative_staleness): a user correction
+    after generation appends a CAUTION line to the returned narrative; a fresh
+    save_narrative_context clears the flag [2026-08-23]
 - Side effects:
   - Writes to CORPUS_FILE JSON on each add.
   - Writes to NARRATIVE_CONTEXT_PATH for temporal grounding cache [NEW 2026-01-17]
@@ -33,6 +42,9 @@ from typing import Any, Dict, List, Optional
 from utils.logging_utils import get_logger, log_and_time
 from utils.safe_json import load_critical_json
 from config.app_config import CORPUS_MAX_ENTRIES
+from datetime import timedelta
+import re as _re
+from datetime import timezone
 
 logger = get_logger("corpus_manager")
 
@@ -219,7 +231,6 @@ class CorpusManager:
         to a time-bounded slice. Falls back gracefully when timestamps are
         missing or unparseable.
         """
-        from datetime import timedelta
 
         cached = self._get_episodic_sorted()
         cutoff = datetime.now() - timedelta(hours=hours)
@@ -245,6 +256,107 @@ class CorpusManager:
         )
         return result
 
+
+    def search_keyword(
+        self,
+        terms,
+        *,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        max_results: int = 50,
+        context_chars: int = 280,
+        include_entry: bool = False,
+    ) -> List[Dict]:
+        """
+        Word-boundary, case-insensitive keyword search over episodic corpus
+        entries — the raw-text channel the insight sweep uses to defeat the
+        fact extractor's triple-shape bias (nuanced statements like "the only
+        partner I've had who wasn't abusive" never become structured facts,
+        so no structured store can surface them; the raw turn text can).
+
+        Args:
+            terms: a term/phrase or list of terms (matched with \\b anchors)
+            start/end: optional inclusive datetime window
+            max_results: cap on returned hits
+            context_chars: excerpt window centered on the first match
+            include_entry: attach the raw corpus entry dict as ``entry`` on
+                each hit — the keyword-anchor retrieval fallback (2026-08-26)
+                needs the full turn, not just the excerpt
+
+        Returns newest-first list of hits. Query and response text are scanned
+        SEPARATELY so each hit carries an accurate ``speaker`` field
+        ("user" | "assistant") — provenance labeling depends on it:
+            {timestamp, speaker, matched_term, excerpt, query_preview}
+        Read-only; junk turns (API-error sentinels, box tests) are skipped.
+        """
+        from memory.utils import is_junk_conversation_doc
+
+        if isinstance(terms, str):
+            terms = [terms]
+        terms = [t.strip() for t in (terms or []) if t and t.strip()]
+        if not terms:
+            return []
+
+        patterns = [
+            (t, _re.compile(r"\b" + _re.escape(t) + r"\b", _re.IGNORECASE))
+            for t in terms
+        ]
+
+        def _ts(entry) -> Optional[datetime]:
+            ts = entry.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    return None
+            if isinstance(ts, datetime):
+                return ts.replace(tzinfo=None) if ts.tzinfo is not None else ts
+            return None
+
+        def _excerpt(text: str, match_start: int, match_end: int) -> str:
+            half = max(0, (context_chars - (match_end - match_start)) // 2)
+            lo = max(0, match_start - half)
+            hi = min(len(text), match_end + half)
+            prefix = "…" if lo > 0 else ""
+            suffix = "…" if hi < len(text) else ""
+            return prefix + text[lo:hi].strip() + suffix
+
+        results: List[Dict] = []
+        for entry in self._get_episodic_sorted():  # newest-first
+            if len(results) >= max_results:
+                break
+            ts = _ts(entry)
+            if start is not None and (ts is None or ts < start):
+                continue
+            if end is not None and (ts is None or ts > end):
+                continue
+            query = entry.get("query", "") or ""
+            response = entry.get("response", "") or ""
+            if is_junk_conversation_doc(query=query, response=response):
+                continue
+            for speaker, text in (("user", query), ("assistant", response)):
+                if not text or len(results) >= max_results:
+                    continue
+                for term, pat in patterns:
+                    m = pat.search(text)
+                    if m:
+                        hit = {
+                            "timestamp": ts,
+                            "speaker": speaker,
+                            "matched_term": term,
+                            "excerpt": _excerpt(text, m.start(), m.end()),
+                            "query_preview": query[:120],
+                        }
+                        if include_entry:
+                            hit["entry"] = entry
+                        results.append(hit)
+                        break  # one hit per side per entry
+
+        logger.debug(
+            f"[CorpusManager] search_keyword({terms!r}) → {len(results)} hits "
+            f"(cap={max_results})"
+        )
+        return results
 
     def add_summary(self, content, tags: List[str] = None, timestamp: datetime = None):
         """Add a summary-like node to the corpus.
@@ -338,7 +450,6 @@ class CorpusManager:
 
     def get_summaries(self, count: int = 5) -> List[Dict[str, any]]:
         """Get the most recent summaries, normalizing timestamps for robust sorting."""
-        from datetime import timezone
 
         def _norm_ts(ts):
             # Accept datetime or ISO string; return naive UTC datetime
@@ -463,6 +574,14 @@ class CorpusManager:
             # Atomic swap
             os.replace(tmp_path, narrative_path)
 
+            # A fresh narrative supersedes any correction-staleness flag
+            # (regeneration saw the corrected conversation).
+            try:
+                from utils.narrative_staleness import clear as clear_stale_flag
+                clear_stale_flag()
+            except Exception:
+                pass
+
             logger.debug(f"[CorpusManager] Saved narrative context ({len(text)} chars) to {narrative_path}")
             return True
 
@@ -505,6 +624,22 @@ class CorpusManager:
             from utils.time_manager import format_relative_timestamp
             gen_label = format_relative_timestamp(gen_dt)
             content = f"[Generated: {gen_label}]\n{content}"
+
+            # Correction-staleness caution (2026-08-23): if the user
+            # corrected a fact AFTER this narrative was generated, say so —
+            # the wrong detail may be in the text below and would otherwise
+            # keep re-entering every prompt until the next regeneration.
+            try:
+                from utils.narrative_staleness import is_stale
+                if is_stale(mtime):
+                    content += (
+                        "\n[CAUTION: The user corrected a factual detail after this "
+                        "narrative was generated. Details above may be outdated — "
+                        "prefer the user's most recent statements in the "
+                        "conversation over this narrative where they conflict.]"
+                    )
+            except Exception:
+                pass
 
             logger.debug(f"[CorpusManager] Loaded narrative context ({len(content)} chars)")
             return content

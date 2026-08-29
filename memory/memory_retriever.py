@@ -11,7 +11,11 @@ Module Contract
   - get_semantic_top_memories(query, limit) -> List[Dict]  [gated semantic across collections]
   - get_facts(query, limit) -> List[Dict]  [semantic-primary ranked facts with confidence/recency tiebreak;
       drops facts marked is_current=False / superseded_by, and ages out transient relations past their
-      per-relation TTL via memory/relation_classifier.py (health-transient illness/recovery vs ~24h ephemeral)]
+      per-relation TTL via memory/relation_classifier.py (health-transient illness/recovery vs ~24h ephemeral);
+      2026-08-23: EXPLICIT-appraisal/inferred fact content is rewritten at this
+      boundary via _present_fact_content ("casey | is | evil" → "you described
+      casey as 'evil' (your words at the time, DATE)") — objective/legacy
+      content stays byte-identical, every downstream renderer inherits it]
   - get_recent_facts(limit) -> List[Dict]
   - get_reflections(limit) -> List[Dict]  [corpus-first, semantic fallback]
   - get_reflections_hybrid(query, limit) -> List[Dict]  [n/3 recent + 2n/3 semantic]
@@ -30,6 +34,14 @@ Module Contract
   - 3-stage threshold: primary → relaxed (70%) → top-N fallback (min 5 results)
   - Meta-conversational routing: entity-aware retrieval with temporal window detection
   - Dynamic config: gym/health queries get expanded semantic pool and bypass gating
+  - Keyword anchor (2026-08-26): a rare query proper noun absent from the ENTIRE
+    semantic pool triggers an exact word-boundary corpus scan
+    (utils.query_checker.extract_rare_proper_nouns → corpus_manager.search_keyword);
+    up to KEYWORD_ANCHOR_MAX_HITS (3) hits join past the gate AND the score
+    threshold (their relevance evidence is lexical — the same reason semantic
+    retrieval missed them), cross-encoder rerank orders the final slice.
+    Env KEYWORD_ANCHOR_ENABLED (default on). Incident: "appointment with Morgan"
+    retrieved 30 appointment-vibe memories, zero Morgan mentions.
   - Topic pre-filtering with fallback to unfiltered when no matches
   - Deduplication via _get_memory_key (id → timestamp+content → content hash)
   - Hybrid/semantic path surfaces metadata['timestamp'] as the top-level timestamp [2026-07-08]
@@ -61,6 +73,7 @@ from config.app_config import (
     NORMAL_THRESHOLD,
 )
 from memory.utils import format_recent_conversations
+import re as _re
 
 logger = get_logger("memory_retriever")
 
@@ -289,6 +302,44 @@ def _is_ephemeral_fact(content: str) -> bool:
     return _fact_ephemeral_ttl(content) is not None
 
 
+def _present_fact_content(content: str, metadata: dict | None) -> str:
+    """Stance-aware fact presentation (2026-08-23).
+
+    An EXPLICIT-appraisal fact never surfaces as a bare ``s | r | o`` triple —
+    "casey | is | evil" reads as an asserted world-fact to the model. Rewritten
+    to attributed, dated form: "you described casey as 'evil' (your words at
+    the time, 2026-08-18)". Objective/legacy-untagged facts return the content
+    BYTE-IDENTICAL. Applied at the retrieval boundary so every downstream
+    renderer inherits it.
+    """
+    try:
+        from memory.stance_classifier import effective_stance
+        stance = effective_stance(metadata)
+        if stance not in ("appraisal", "inferred"):
+            return content
+        parts = [p.strip() for p in (content or "").split("|")]
+        _date = ""
+        ts = (metadata or {}).get("timestamp") or ""
+        if isinstance(ts, str) and len(ts) >= 10:
+            _date = ts[:10]
+        _when = f", {_date}" if _date else ""
+        if len(parts) == 3:
+            s, r, o = parts
+            subj_disp = "yourself" if s.lower() == "user" else s
+            if stance == "appraisal":
+                _rel_disp = r.replace("_", " ")
+                _phrase = o if _rel_disp in ("is", "was", "are", "were", "is a") \
+                    else f"{_rel_disp} {o}"
+                return (f"you described {subj_disp} as '{_phrase}' "
+                        f"(your words at the time{_when})")
+            return f"{content} (assistant inference{_when})"
+        if stance == "appraisal":
+            return f"you said at the time: {content} (your words{_when})"
+        return f"{content} (assistant inference{_when})"
+    except Exception:
+        return content
+
+
 def _metadata_fallback_search(
     chroma_store, query: str, exclude_ids: set, max_results: int = 10
 ) -> list:
@@ -505,6 +556,86 @@ class MemoryRetriever:
         entries = self.corpus_manager.get_recent_memories(k) or []
         return format_recent_conversations(entries)
 
+    # ------------------------------------------------------------------
+    # Rare-proper-noun keyword anchor (2026-08-26)
+    # ------------------------------------------------------------------
+    # A rare name contributes almost nothing to a bge query embedding, so a
+    # query like "get appointment scheduled with Morgan for Friday" retrieves
+    # appointment-vibe docs with zero Morgan mentions — and the live memory
+    # path had no keyword channel (corpus keyword scan was insight-mode
+    # only). When a query proper noun is absent from the ENTIRE semantic
+    # candidate pool, exact word-boundary corpus hits for it are injected
+    # past the score-threshold filter (capped, newest-first). The exact-name
+    # match is the relevance evidence the embedding could not provide; the
+    # cross-encoder rerank still decides final ordering.
+    # Env: KEYWORD_ANCHOR_ENABLED (default on), KEYWORD_ANCHOR_MAX_HITS (3).
+
+    def _keyword_anchor_memories(
+        self, query: str, candidate_pool: List[Dict]
+    ) -> List[Dict]:
+        """Exact-match corpus hits for query proper nouns the semantic pool
+        missed entirely. Returns formatted memory dicts flagged
+        ``keyword_anchor=True``; empty list when the name is already covered
+        (semantic retrieval saw it — no anchor needed) or detection is off."""
+        if os.getenv("KEYWORD_ANCHOR_ENABLED", "1").lower() in ("0", "false"):
+            return []
+        try:
+            max_hits = int(os.getenv("KEYWORD_ANCHOR_MAX_HITS", "3"))
+        except ValueError:
+            max_hits = 3
+        if max_hits <= 0:
+            return []
+        try:
+            from utils.query_checker import extract_rare_proper_nouns
+            terms = extract_rare_proper_nouns(query)
+        except Exception:
+            return []
+        if not terms or not hasattr(self.corpus_manager, "search_keyword"):
+            return []
+
+        missing = []
+        for t in terms:
+            pat = re.compile(r"\b" + re.escape(t) + r"\b", re.IGNORECASE)
+            if not any(
+                pat.search(m.get("content") or "") for m in candidate_pool
+            ):
+                missing.append(t)
+        if not missing:
+            return []
+
+        entries: List[Dict] = []
+        seen = set()
+        for t in missing[:2]:
+            try:
+                hits = self.corpus_manager.search_keyword(
+                    t, max_results=max_hits * 2, include_entry=True
+                )
+            except Exception as e:
+                logger.debug(f"[KeywordAnchor] corpus scan failed for {t!r}: {e}")
+                continue
+            for h in hits:
+                entry = h.get("entry")
+                if not entry:
+                    continue
+                key = (str(entry.get("timestamp")), (entry.get("query") or "")[:80])
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(entry)
+        if not entries:
+            return []
+
+        mems = format_recent_conversations(
+            entries[:max_hits], id_prefix="kwanchor", base_relevance=0.7
+        )
+        for m in mems:
+            m["keyword_anchor"] = True
+        logger.info(
+            f"[KeywordAnchor] {len(mems)} exact-match memories injected for "
+            f"term(s) {missing[:2]} absent from the semantic pool"
+        )
+        return mems
+
     async def get_recent_facts(self, limit: int = 5) -> List[Dict]:
         """Fetch the most recent facts by timestamp."""
         try:
@@ -545,7 +676,7 @@ class MemoryRetriever:
                         continue
                     results.append({
                         "id": item.get("id"),
-                        "content": content,
+                        "content": _present_fact_content(content, meta),
                         "confidence": float(meta.get("confidence", 0.6)),
                         "relevance_score": float(item.get("relevance_score") or 0.0),
                         "source": meta.get("source", "facts"),
@@ -563,7 +694,7 @@ class MemoryRetriever:
                     meta = item.get("metadata", {}) or {}
                     results.append({
                         "id": item.get("id"),
-                        "content": content,
+                        "content": _present_fact_content(content, meta),
                         "confidence": float(meta.get("confidence", 0.6)),
                         "relevance_score": 0.0,
                         "source": meta.get("source", "facts"),
@@ -854,7 +985,7 @@ class MemoryRetriever:
         while same-day summaries sat unread in the collection.
         get_recent() sorts by the timestamp metadata instead.
         """
-        from memory.utils import is_junk_summary
+        from memory.utils import is_junk_summary, is_quarantined
 
         # Try ChromaDB first
         try:
@@ -864,7 +995,9 @@ class MemoryRetriever:
                 'content': r.get('content', ''),
                 'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
                 'type': 'summary'
-            } for r in results if not is_junk_summary(r.get('content', ''))]
+            } for r in results
+                if not is_junk_summary(r.get('content', ''))
+                and not is_quarantined(r.get('metadata'))]
             if chroma_summaries:
                 return chroma_summaries[:limit]
         except Exception:
@@ -1123,7 +1256,7 @@ class MemoryRetriever:
                 n_results=n_results
             )
 
-            from memory.utils import is_junk_conversation_doc
+            from memory.utils import is_junk_conversation_doc, is_quarantined
 
             for collection_name, results in batch_results.items():
                 if not results:
@@ -1134,8 +1267,10 @@ class MemoryRetriever:
                         if not isinstance(item, dict):
                             item = {"content": str(item), "id": str(uuid.uuid4())}
                         # Same junk guard as the hybrid path (error sentinels
-                        # stored before the storage-time guard, "test" turns)
-                        if is_junk_conversation_doc(content=item.get("content", "")):
+                        # stored before the storage-time guard, "test" turns),
+                        # plus curation-quarantined docs.
+                        if is_quarantined(item.get("metadata")) or \
+                                is_junk_conversation_doc(content=item.get("content", "")):
                             continue
                         memories.append(self._parse_result(item, collection_name))
 
@@ -1264,7 +1399,8 @@ class MemoryRetriever:
         callers with a small real budget (intent max_mems) pass it so the gate
         never forces below-threshold memories in beyond that budget (2026-08-21).
         """
-        # Import here to avoid circular imports
+        # lazy import: patch point (tests monkeypatch these symbols at module
+        # level; call-time import sees the patch — NOT a cycle, comment was stale)
         from utils.query_checker import is_meta_conversational, _is_heavy_topic_heuristic
         from memory.memory_scorer import _is_deictic_followup
 
@@ -1326,6 +1462,13 @@ class MemoryRetriever:
         ]
         very_recent, semantic = await asyncio.gather(*tasks)
 
+        # Keyword anchor: uses the ORIGINAL query (reformulation can alter
+        # casing) against the full pre-filter pool — if the name already
+        # surfaced semantically or sits in the very-recent turns, no anchor.
+        anchor_mems = await asyncio.to_thread(
+            self._keyword_anchor_memories, query, very_recent + semantic
+        )
+
         hierarchical: List[Dict] = []
 
         # Topic pre-filter
@@ -1356,6 +1499,16 @@ class MemoryRetriever:
             bypass_gate=is_gym_health_query,
             min_gated=min_gated,
         )
+
+        # Keyword-anchor hits join AFTER the cosine gate (they'd fail it for
+        # the same reason semantic retrieval missed them); the scorer still
+        # ranks them and the cross-encoder rerank orders the final slice.
+        if anchor_mems:
+            existing = {(m.get('content') or '')[:120] for m in combined}
+            combined.extend(
+                m for m in anchor_mems
+                if (m.get('content') or '')[:120] not in existing
+            )
 
         # Rank memories
         if self.scorer:
@@ -1399,11 +1552,26 @@ class MemoryRetriever:
                 )
                 accepted = ranked[:GATING_MIN_RESULTS]
 
+        # Keyword anchors are guaranteed up to their cap in the final slice —
+        # an exact rare-name match dropped by the score threshold defeats the
+        # whole fallback (its relevance evidence is lexical, not semantic).
+        final_pool = accepted[:limit]
+        if anchor_mems:
+            anchor_ids = {m.get('id') for m in anchor_mems}
+            present = {m.get('id') for m in final_pool}
+            missing_anchors = [
+                m for m in ranked
+                if m.get('id') in anchor_ids and m.get('id') not in present
+            ]
+            if missing_anchors:
+                keep = max(0, limit - len(missing_anchors))
+                final_pool = final_pool[:keep] + missing_anchors
+
         # Cross-encoder reranking: rescore top candidates using query-document
         # pair scoring.  This runs AFTER the multi-factor scorer so it sees
         # all memories including episodic (which bypass the gate filter).
         # The cross-encoder can discriminate "related" from "best answer".
-        top_memories = await self._maybe_cross_encoder_rerank(accepted[:limit], query)
+        top_memories = await self._maybe_cross_encoder_rerank(final_pool, query)
 
         # Update truth scores
         if self.scorer:
@@ -1572,7 +1740,6 @@ class MemoryRetriever:
         Special handling: If this is a meta-conversational query (e.g., "do you recall"),
         route to specialized retrieval that prioritizes recent episodic memories.
         """
-        import re as _re
         from utils.query_checker import is_meta_conversational
 
         if is_meta_conversational(query):

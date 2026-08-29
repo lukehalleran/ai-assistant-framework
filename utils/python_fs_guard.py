@@ -36,6 +36,14 @@ from utils.shell_cmd_guard import (
 
 logger = logging.getLogger("python_fs_guard")
 
+# Daemon-owned state files whose writes are legitimate DURING agentic
+# dispatch (the daemon's own bookkeeping riding the dispatch thread, not an
+# agent file operation). Prefix match covers atomic-write temp siblings
+# ("data/web_search_credits.json.tmp*").
+_DAEMON_STATE_EXEMPT_PREFIXES = (
+    "data/web_search_credits.json",
+)
+
 # ============================================================================
 # Module-level state
 # ============================================================================
@@ -306,6 +314,15 @@ def _check_and_maybe_block(operation: str, target: Any) -> None:
 
     # 7. Not a protected path — allow
     if not _is_protected_path(resolved_rel):
+        return
+
+    # 7b. Daemon-owned state file — allow (2026-08-28). The guard exists to
+    # stop AGENT file operations on protected paths, but agentic dispatch
+    # runs on the same thread as the daemon's own bookkeeping: the web-search
+    # credits tracker's atomic save (temp + os.replace under data/) was
+    # blocked on every agentic turn since 07-16, so credit counts silently
+    # under-recorded. Exact-prefix allowlist — nothing else under data/ opens.
+    if resolved_rel.startswith(_DAEMON_STATE_EXEMPT_PREFIXES):
         return
 
     # 8. Explicit unlock in effect

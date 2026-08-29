@@ -17,6 +17,14 @@ Module Contract
 - Key behaviors:
   - Coordinates between corpus_manager and chroma_store
   - Triggers fact extraction per turn (if FACTS_EXTRACT_EACH_TURN enabled)
+  - Stance tagging [2026-08-23]: extract_and_store_facts forwards
+    stance + capture_tone (memory/stance_classifier.classify_for_storage;
+    deterministic classifier authoritative over extractor-provided stance)
+    into fact metadata, and _ingest_fact_to_graph(stance=, capture_tone=)
+    writes them into GraphEdge.metadata. User-scoped role subjects
+    ("user's last partner") become verbatim entity_type="role" nodes and
+    BYPASS the alias resolver in BOTH the edge and node-metadata branches —
+    a possessive alias must never bind an appraisal to a named person.
   - Triggers summary consolidation (if not SUMMARIZE_AT_SHUTDOWN_ONLY)
   - _maybe_regenerate_narrative(): Triggers narrative context refresh after consolidation [NEW 2026-01-17]
   - Entity metadata forwarding: extract_and_store_facts() uses dict-based source to pass
@@ -51,12 +59,42 @@ from collections import deque
 
 from utils.logging_utils import get_logger
 from models.model_manager import API_ERROR_PREFIXES
+from datetime import timedelta
 
 logger = get_logger("memory_storage")
 
 # Environment configuration
 FACTS_EXTRACT_EACH_TURN = os.getenv("FACTS_EXTRACT_EACH_TURN", "0").strip().lower() not in ("0", "false", "no", "off")
 SUMMARIZE_AT_SHUTDOWN_ONLY = os.getenv("SUMMARIZE_AT_SHUTDOWN_ONLY", "1").strip().lower() not in ("0", "false", "no", "off")
+# Messages longer than this are treated as containing PASTED material for
+# per-turn fact extraction: only user-subject triples are kept (2026-08-29).
+_FACT_EXTRACT_PASTE_CHARS = int(os.getenv("FACT_EXTRACT_PASTE_CHARS", "1500"))
+
+
+def _paste_guard_filter(query: str, facts: list) -> list:
+    """Paste guard (2026-08-29): a paste-sized message is mostly DOCUMENT
+    text, and the regex extractor happily mines it — a pasted syllabus stored
+    "assignments | is_a | the most important avenue of learning…" as a fact
+    (entity_type PERSON) and spawned junk graph nodes ('students',
+    'questions'). On long messages keep only USER-anchored triples: the
+    user's own narration ("I have the docs") still yields facts; document
+    boilerplate does not. Under-fires by design."""
+    if len(query or "") <= _FACT_EXTRACT_PASTE_CHARS:
+        return facts
+
+    def _user_anchored(item) -> bool:
+        md = item.get("metadata", {}) if isinstance(item, dict) \
+            else (getattr(item, "metadata", None) or {})
+        s = str(md.get("subject") or md.get("subj") or "").strip().lower()
+        return s == "user" or s.startswith("user's ")
+
+    kept = [f for f in facts if _user_anchored(f)]
+    if len(kept) != len(facts):
+        logger.info(
+            f"[MemoryStorage] Paste guard: dropped "
+            f"{len(facts) - len(kept)}/{len(facts)} non-user-subject "
+            f"facts from a {len(query)}-char message")
+    return kept
 
 # Knowledge graph config (imported inside methods to avoid circular imports)
 def _get_graph_enabled():
@@ -986,9 +1024,22 @@ class MemoryStorage:
         """Extract and store facts from a turn"""
         try:
             logger.debug(f"[MemoryStorage] Extracting facts from query: {query[:100]}...")
+            # Capture-tone regime for this turn's facts (2026-08-23): derived
+            # from the same heavy-topic heuristic store_interaction uses for
+            # the corpus flag. Heuristic failure → None → "unknown" (settled-
+            # ness later requires EXPLICIT non-elevated evidence, so unknown
+            # under-fires — the safe direction).
+            _turn_is_heavy = None
+            try:
+                from utils.query_checker import _is_heavy_topic_heuristic
+                _turn_is_heavy = bool(_is_heavy_topic_heuristic(query))
+            except Exception:
+                pass
             facts = await self.fact_extractor.extract_facts(query, "") or []
             total = len(facts)
             logger.debug(f"[MemoryStorage] Extracted {total} facts (raw)")
+
+            facts = _paste_guard_filter(query, facts)
 
             def _to_dict(item):
                 if isinstance(item, dict):
@@ -1022,11 +1073,37 @@ class MemoryStorage:
                 conf = float(md.get("confidence", truth_score))
                 src = md.get("source", "conversation")
 
+                # Stance + capture tone (2026-08-23): every stored fact carries
+                # an epistemic tag (casey|is|evil is the user's APPRAISAL, not a
+                # world-fact) and the tone regime it was captured under. The
+                # deterministic classifier is authoritative; an extractor-
+                # provided stance only fills lexicon gaps.
+                stance_md = {}
+                try:
+                    from memory.stance_classifier import (
+                        VALID_STANCES,
+                        classify_for_storage,
+                    )
+                    if subj and rel and obj:
+                        stance_md = classify_for_storage(
+                            subj, rel, obj,
+                            tone_level=(None if _turn_is_heavy is None
+                                        else ("elevated" if _turn_is_heavy
+                                              else "conversational")),
+                        )
+                        _ext_stance = md.get("stance")
+                        if (stance_md.get("stance") == "objective"
+                                and _ext_stance in VALID_STANCES):
+                            stance_md["stance"] = _ext_stance
+                except Exception as stance_err:
+                    logger.debug(f"[MemoryStorage] Stance classification failed: {stance_err}")
+
                 # Build source dict to forward entity metadata to ChromaDB
                 source_dict = {
                     "source": src,
                     "confidence": conf,
                 }
+                source_dict.update(stance_md)
                 for key in ("fact_scope", "entity_type", "user_connection", "source_excerpt"):
                     val = md.get(key)
                     if val:
@@ -1082,6 +1159,8 @@ class MemoryStorage:
                                 fact_id=str(result) if result else "",
                                 entity_type=md.get("entity_type", ""),
                                 confidence=conf,
+                                stance=stance_md.get("stance", ""),
+                                capture_tone=stance_md.get("capture_tone", ""),
                             )
                 except Exception as inner:
                     logger.warning(f"[MemoryStorage] add_fact failed: {inner}")
@@ -1160,12 +1239,19 @@ class MemoryStorage:
     def _ingest_fact_to_graph(
         self, subj: str, rel: str, obj: str,
         fact_id: str = "", entity_type: str = "", confidence: float = 0.5,
+        stance: str = "", capture_tone: str = "",
     ) -> None:
         """Push a single S-R-O triple into the knowledge graph.
 
         Called after a fact is successfully stored in ChromaDB.
         Resolves entities via EntityResolver and normalizes relations.
         Filters out non-entity objects (durations, phrases, generic words).
+        stance/capture_tone (2026-08-23) ride into GraphEdge.metadata so
+        read-time consumers can tell an appraisal edge (casey--is-->evil) from
+        a world-fact edge. User-scoped role subjects ("user's last partner")
+        become verbatim ``entity_type="role"`` nodes and are NEVER passed
+        through the alias resolver — a possessive alias could fuzzy-bind the
+        appraisal to a named person.
         """
         if not subj or not rel or not obj:
             return
@@ -1178,13 +1264,25 @@ class MemoryStorage:
             if confidence < KNOWLEDGE_GRAPH_MIN_CONFIDENCE:
                 return
 
+            _is_role_subject = subj.lower().startswith("user's ")
+
             # Filter junk subjects (pronouns, stopwords, numbers) — these
-            # should never become graph nodes. "user" is exempt.
-            if subj.lower() != "user" and is_junk_entity(subj):
+            # should never become graph nodes. "user" is exempt; user-scoped
+            # role subjects are deliberate, not junk.
+            if subj.lower() != "user" and not _is_role_subject and is_junk_entity(subj):
                 logger.debug(f"[MemoryStorage] Graph skip junk subject: '{subj}'")
                 return
 
             canon_rel = normalize_relation(rel)
+
+            def _role_subject_node_id() -> str:
+                """Verbatim role node — NEVER through the alias resolver (a
+                possessive alias would bind the appraisal to a named person)."""
+                return self.graph_memory.add_entity(GraphNode(
+                    entity_id=re.sub(r"[^a-z0-9]+", "_", subj.lower()).strip("_"),
+                    display_name=subj,
+                    entity_type="role",
+                ))
 
             # An object that resolves to an entity ALREADY in the graph is
             # always edge-worthy — the heuristics below exist to avoid creating
@@ -1196,7 +1294,10 @@ class MemoryStorage:
             if not obj_resolved and not self._is_graph_worthy_object(obj):
                 subj_display = subj if subj.lower() != "user" else "User"
                 subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
-                subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
+                if _is_role_subject:
+                    subj_id = _role_subject_node_id()
+                else:
+                    subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
                 # Store as node metadata: {"relation": "value"}
                 node = self.graph_memory.get_entity(subj_id)
                 if node:
@@ -1213,14 +1314,39 @@ class MemoryStorage:
             subj_display = subj if subj.lower() != "user" else "User"
             obj_display = obj
 
-            # Resolve or create entities
-            subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
-            subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
+            # Resolve or create entities. Role subjects bypass the resolver:
+            # verbatim node, entity_type="role" (never alias-bound to a person).
+            if _is_role_subject:
+                subj_id = _role_subject_node_id()
+            else:
+                subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
+                subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
             obj_id = self.entity_resolver.resolve_or_create(obj, display_name=obj_display)
 
-            # Add relation as graph edge
+            # A species-typed relation must not contradict the node's curated
+            # species metadata (2026-08-18: the shutdown LLM extractor invented
+            # user|has_dog|Daisy against a node declaring species: cat; the
+            # wrong edge fed a junk proactive insight). Edge only — the fact
+            # itself still stores normally.
+            from memory.graph_utils import relation_species_conflict
+            _target_node = self.graph_memory.get_entity(obj_id)
+            if _target_node is not None and relation_species_conflict(
+                    canon_rel, getattr(_target_node, "metadata", None)):
+                logger.info(
+                    f"[MemoryStorage] Graph skip species-conflict edge: "
+                    f"{subj_id} --{canon_rel}--> {obj_id} "
+                    f"(node metadata contradicts relation species)")
+                return
+
+            # Add relation as graph edge (stance/capture_tone in metadata)
+            _edge_md = {}
+            if stance:
+                _edge_md["stance"] = stance
+            if capture_tone:
+                _edge_md["capture_tone"] = capture_tone
             self.graph_memory.add_relation(
-                GraphEdge(source_id=subj_id, relation=canon_rel, target_id=obj_id),
+                GraphEdge(source_id=subj_id, relation=canon_rel, target_id=obj_id,
+                          metadata=_edge_md),
                 fact_id=fact_id,
             )
             logger.debug(f"[MemoryStorage] Graph: {subj_id} --{canon_rel}--> {obj_id}")
@@ -1383,7 +1509,6 @@ class MemoryStorage:
         Returns:
             List of summary dicts sorted by timestamp (most recent first)
         """
-        from datetime import timedelta
 
         try:
             # Get all recent summaries

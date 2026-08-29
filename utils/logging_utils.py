@@ -28,6 +28,14 @@ def configure_logging(
     On startup, call this before creating any loggers to ensure a clean
     configuration and avoid duplicate/garbled console lines.
     """
+    # Test isolation (2026-08-28): a pytest run that imports main/gui.launch
+    # used to land HERE with the prod path — rotating the LIVE daemon's log
+    # out from under it and writing test output into daemon_debug.log (the
+    # 08-28 12:20 "doc boom"/quantum test records sat in a rotated prod log).
+    # Under DAEMON_TEST_MODE the file sink is redirected to a test-only path.
+    if os.getenv("DAEMON_TEST_MODE") and file_path:
+        file_path = os.path.join("logs", "test_debug.log")
+
     root = logging.getLogger()
     if root.hasHandlers():
         root.handlers.clear()

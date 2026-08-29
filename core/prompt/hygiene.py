@@ -9,10 +9,11 @@ Module Contract
   - _hygiene_and_caps(context, stm_summary) -> Dict
     Deduplication and caps enforcement across all context sections.
     Cross-section dedup with backfill for recent_conversations.
-    Cross-section dedup keys canonicalize role labels ("Daemon:" → "assistant:")
-    and collapse whitespace anywhere in the string (2026-08-05: the label-only
-    difference let the session's own turns re-surface in [RELEVANT MEMORIES]).
-    Stitches semantic chunks by title. Adds STM summary.
+    All dedup passes key items via _canonical_turn_key: shape-independent
+    (corpus {query,response} vs retrieval {content} — 2026-08-28: the shapes
+    keyed differently so the same turn NEVER collided across sections),
+    role-label canonical ("Daemon:" → "assistant:", 2026-08-05), whitespace
+    collapsed. Stitches semantic chunks by title. Adds STM summary.
   - _backfill_recent_conversations(existing_items, seen_embeddings, seen_content,
       target_count, offset, embedder, similarity_threshold) -> List
     Fetches additional conversations from corpus until target count reached,
@@ -35,6 +36,43 @@ from utils.logging_utils import get_logger
 from .formatter import _dedupe_keep_order, _sanitize_embedded_headers
 
 logger = get_logger("prompt_hygiene")
+
+
+def _canonical_turn_key(item: Any) -> str:
+    """Canonical dedup key for a conversation-shaped item, regardless of source shape.
+
+    Corpus recent entries carry separate query/response fields (the formatter
+    renders them as "User: ...\nDaemon: ..." later); retrieval docs carry a
+    prebuilt content string ("User: ...\nAssistant: ..."). Keying the corpus
+    shape on response-only while the retrieval shape keyed on content meant the
+    two representations of the SAME turn could never collide — the 2026-08-28
+    session showed today's own turns duplicated across [RECENT CONVERSATION]
+    and [RELEVANT MEMORIES] in 4 of 8 prompts. Build the same composite for
+    both shapes, then canonicalize role labels and whitespace (2026-08-05
+    lesson) and key on the first 500 normalized chars.
+    """
+    if isinstance(item, dict):
+        content = str(item.get("content", "") or "")
+        if not content.strip():
+            q = str(item.get("query", "") or "").strip()
+            r = str(item.get("response", "") or "").strip()
+            if q and r:
+                content = f"User: {q}\nAssistant: {r}"
+            elif r:
+                content = f"Assistant: {r}"
+            elif q:
+                content = f"User: {q}"
+            else:
+                content = ""
+    else:
+        content = str(item)
+
+    normalized = re.sub(r"\bdaemon\s*:", "assistant:", content.strip().lower())
+    normalized = re.sub(r"\s+", " ", normalized)
+    for prefix in ["user:", "assistant:", "luke,"]:
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):].strip()
+    return normalized[:500]
 
 
 class ContentHygiene:
@@ -76,16 +114,8 @@ class ContentHygiene:
                 # For memories and conversations, dedupe by content
                 if section in ["recent_conversations", "memories"]:
                     original_count = len(items)
-                    # Handle both content field (hybrid retriever) and query/response fields (corpus)
-                    def dedup_key(x):
-                        # Try content field first (from hybrid retriever)
-                        content = x.get("content", "")
-                        if content:
-                            return content.strip().lower()
-                        # Fallback to query/response
-                        return str(x.get("response", "") + x.get("query", "")).strip().lower()
-
-                    deduped = _dedupe_keep_order(items, key_fn=dedup_key)
+                    # Shape-independent canonical key (content vs query/response)
+                    deduped = _dedupe_keep_order(items, key_fn=_canonical_turn_key)
                     logger.debug(f"ASSEMBLY DEDUP {section}: {original_count} -> {len(deduped)} items")
                 else:
                     # For others, dedupe by string representation
@@ -124,30 +154,10 @@ class ContentHygiene:
 
             deduplicated = []
             for item in items:
-                # Extract content for dedup check
-                if isinstance(item, dict):
-                    content = item.get("content", "")
-                    if not content:
-                        response = item.get("response", "")
-                        content = response if response else str(item.get("query", ""))
-                else:
-                    content = str(item)
-
-                # Normalize content for comparison. The same turn renders as
-                # "User: ...\nDaemon: ..." in recent_conversations but comes
-                # back from retrieval as "User: ...\nAssistant: ..." — the
-                # mid-string role label plus whitespace variance defeated the
-                # first-500-char key, so the session's OWN turns re-surfaced
-                # in [RELEVANT MEMORIES] (2026-08-05, three duplicates in one
-                # prompt). Canonicalize role labels everywhere in the string,
-                # not just as a leading prefix, and collapse whitespace.
-                normalized = re.sub(r"\bdaemon\s*:", "assistant:", content.strip().lower())
-                normalized = re.sub(r"\s+", " ", normalized)
-                for prefix in ["user:", "assistant:", "luke,"]:
-                    if normalized.startswith(prefix):
-                        normalized = normalized[len(prefix):].strip()
-
-                dedup_key = normalized[:500]
+                # Shape-independent canonical key — corpus {query,response}
+                # entries and retrieval {content} docs of the SAME turn must
+                # produce the same key (see _canonical_turn_key).
+                dedup_key = _canonical_turn_key(item)
                 if dedup_key and dedup_key not in seen_content:
                     seen_content.add(dedup_key)
                     deduplicated.append(item)
@@ -276,20 +286,10 @@ class ContentHygiene:
                 # Deduplicate new items against existing ones
                 added_count = 0
                 for item in additional_items:
-                    # Extract content
-                    if isinstance(item, dict):
-                        content = item.get("content", "")
-                        if not content:
-                            response = item.get("response", "")
-                            content = response if response else str(item.get("query", ""))
-                    else:
-                        content = str(item)
-
-                    # Normalize
-                    normalized = content.strip().lower()
-                    for prefix in ["user:", "daemon:", "luke,"]:
-                        if normalized.startswith(prefix):
-                            normalized = normalized[len(prefix):].strip()
+                    # Same canonical key as the cross-section pass — corpus
+                    # {query,response} items must collide with retrieval
+                    # {content} docs of the same turn already in seen_content.
+                    normalized = _canonical_turn_key(item)
 
                     is_duplicate = False
 

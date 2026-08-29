@@ -221,12 +221,17 @@ class TestEnhancedStandard:
 
     @pytest.mark.asyncio
     async def test_escalation_tracker_update_and_record(self):
+        # 2026-08-18: tracker.update() moved to build_full_prompt's
+        # _update_safety_trackers (single call site, pinned by
+        # test_escalation_gui_wiring) — build_full_prompt is mocked in this
+        # harness, so the flow itself must NOT call update; record_response
+        # still fires from process_user_query.
         esc = MagicMock()
         esc.get_debug_info = MagicMock(return_value={"strategy": "x"})
         esc.get_token_budget_override = MagicMock(return_value=None)
         orch = _make_flow_orch(escalation_tracker=esc)
         await _run(orch, "tell me about python")
-        esc.update.assert_called_once()
+        esc.update.assert_not_called()
         esc.record_response.assert_called_once()
 
 

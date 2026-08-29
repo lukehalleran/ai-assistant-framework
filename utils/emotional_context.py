@@ -27,6 +27,7 @@ async def analyze_emotional_context(
     conversation_history: Optional[List[Dict[str, Any]]] = None,
     model_manager=None,
     previous_tone: Optional[object] = None,
+    allow_sticky_floor: bool = True,
 ) -> EmotionalContext:
     """
     Unified emotional analysis combining severity and need-type.
@@ -37,13 +38,17 @@ async def analyze_emotional_context(
         model_manager: Optional model manager for embedder/LLM access
         previous_tone: Prior turn's tone (CrisisLevel/str); makes distress sticky
             across short turns (see tone_detector.detect_crisis_level).
+        allow_sticky_floor: False when the floor-chain budget is exhausted —
+            disables the distress-sticky floor stage only (organic signals
+            unaffected); see tone_detector.detect_crisis_level.
 
     Returns:
         EmotionalContext with both crisis level and need type
     """
     # Get tone analysis (async)
     tone = await detect_crisis_level(
-        message, conversation_history, model_manager, previous_tone=previous_tone
+        message, conversation_history, model_manager, previous_tone=previous_tone,
+        allow_sticky_floor=allow_sticky_floor,
     )
 
     # Get need analysis (sync, but fast)

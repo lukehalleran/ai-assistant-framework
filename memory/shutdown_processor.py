@@ -38,7 +38,11 @@ Module Contract
     forwards source_excerpt from MemoryNode metadata to ChromaDB
   - _extract_llm_facts(session_conversations) — LLM-assisted triple extraction with fact verification gate;
     injects existing profile facts so LLM reuses relation names for updates/cancellations;
-    forwards source_excerpt from triples to ChromaDB and UserProfile
+    forwards source_excerpt from triples to ChromaDB and UserProfile;
+    2026-08-23: forwards each triple's "stance" and a capture_tone derived by
+    _capture_tone_for_triple (joins the triple's object/subject back to the
+    session corpus entry's is_heavy_topic flag; unmatched → "unknown") into
+    fact metadata + graph edge metadata
   - _extract_behavioral_patterns(session_conversations) — cross-turn habit detection;
     single LLM call identifies recurring cross-domain behaviors the user exhibits
     but never states explicitly (e.g., "codes at the gym"). Stores as profile facts.
@@ -70,8 +74,30 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from utils.logging_utils import get_logger
+import json
+import time
 
 logger = get_logger("shutdown_processor")
+
+
+def _log_shutdown_llm_failure(step: str, exc: BaseException) -> None:
+    """LOUD, greppable marker for shutdown-time LLM failures.
+
+    A provider outage during shutdown silently loses the session's
+    facts/summaries/reflections — the 2026-08-24 18:59 shutdown hit three
+    OpenRouter 402s that were only visible at DEBUG level, so nothing
+    surfaced that the session's memory processing had failed (2026-08-28
+    retrospective). grep '[SHUTDOWN-LLM-FAILURE]' in daemon_debug*.log.
+    """
+    text = str(exc)
+    lowered = text.lower()
+    if "402" in text or "payment required" in lowered or "credit" in lowered:
+        logger.error(
+            f"[SHUTDOWN-LLM-FAILURE] {step}: API credits/payment failure — "
+            f"this session's {step} output is LOST: {text[:200]}"
+        )
+    else:
+        logger.error(f"[SHUTDOWN-LLM-FAILURE] {step}: {text[:200]}")
 
 # --- Environment-driven configuration ---
 REFLECTIONS_ENABLED = os.getenv("REFLECTIONS_ENABLED", "1").strip() not in ("0", "false", "no", "off")
@@ -248,7 +274,7 @@ class ShutdownProcessor:
             )
             for r in phase_a:
                 if isinstance(r, Exception):
-                    logger.error(f"[Shutdown] Extraction phase error: {r}")
+                    _log_shutdown_llm_failure("extraction", r)
 
             # ── Parallel Phase B: Generation + maintenance ────────────
             # Proposals, threads, and wiki enrichment are independent of each
@@ -267,7 +293,7 @@ class ShutdownProcessor:
             )
             for r in phase_b:
                 if isinstance(r, Exception):
-                    logger.error(f"[Shutdown] Generation phase error: {r}")
+                    _log_shutdown_llm_failure("generation", r)
 
             # ── Sequential Phase C: Persistence ───────────────────────
             # Graph save must follow wiki enrichment (Phase B).
@@ -301,7 +327,6 @@ class ShutdownProcessor:
         Both ingest survivors into the proposal store for review next session.
         Requires podman + an LLM key; otherwise logs and skips. Cost is bounded
         (queue cap / N lenses) and nothing runs unless explicitly enabled."""
-        import os
         if not os.getenv("AGENT_BRANCH_SHUTDOWN_ENABLED"):
             return
         try:
@@ -747,6 +772,15 @@ class ShutdownProcessor:
                     "source": "llm_shutdown",
                     "confidence": 0.75,
                 }
+                # Stance + capture tone (2026-08-23): stance was set by
+                # _normalize_triple (deterministic-over-LLM); capture tone
+                # joins the triple back to the session corpus entry that
+                # mentions its object/subject and reads its is_heavy_topic
+                # flag. Unmatched → "unknown" (settledness requires EXPLICIT
+                # non-elevated evidence, so unknown under-fires — safe).
+                if t.get("stance"):
+                    src_dict["stance"] = t["stance"]
+                src_dict["capture_tone"] = self._capture_tone_for_triple(t, sess_items)
                 src_exc = t.get("source_excerpt", "")
                 if src_exc:
                     src_dict["source_excerpt"] = src_exc[:200]
@@ -769,6 +803,8 @@ class ShutdownProcessor:
                                 subj=subj, rel=rel, obj=obj,
                                 fact_id=str(result),
                                 confidence=0.75,
+                                stance=t.get("stance", ""),
+                                capture_tone=src_dict.get("capture_tone", ""),
                             )
                     except Exception as graph_err:
                         logger.debug(f"[Shutdown] Graph ingestion failed: {graph_err}")
@@ -792,6 +828,32 @@ class ShutdownProcessor:
                     logger.debug("[Shutdown] No user-scoped facts to add to profile")
             except Exception as profile_err:
                 logger.warning(f"[Shutdown] Failed to update user profile: {profile_err}")
+
+    @staticmethod
+    def _capture_tone_for_triple(t, sess_items) -> str:
+        """Join a triple back to the session corpus entry that mentions its
+        object (or non-user subject) and map that entry's is_heavy_topic flag
+        to a capture-tone regime. Newest match wins; no match → "unknown"
+        (2026-08-23 stance layer — settledness treats unknown as never
+        counting, the conservative direction)."""
+        try:
+            obj = str(t.get("object") or "").strip().lower()
+            subj = str(t.get("subject") or "").strip().lower()
+            needles = [n for n in (obj, subj) if n and n != "user" and len(n) >= 3]
+            if not needles:
+                return "unknown"
+            for e in reversed(sess_items or []):
+                if not isinstance(e, dict):
+                    continue
+                text = ((e.get("query") or "") + " " + (e.get("response") or "")).lower()
+                if any(n in text for n in needles):
+                    heavy = e.get("is_heavy_topic")
+                    if heavy is None:
+                        return "unknown"
+                    return "elevated" if heavy else "non_elevated"
+        except Exception:
+            pass
+        return "unknown"
 
     # ------------------------------------------------------------------
     # Behavioral pattern extraction (cross-turn habit detection)
@@ -1038,8 +1100,6 @@ JSON:"""
             return
 
         # Parse JSON lines
-        import json
-        import time
         from memory.procedural_skill import ProceduralSkill, SkillCategory
 
         kept = 0

@@ -13,6 +13,9 @@ must take at review time rather than a passive label.
 """
 import logging
 import gradio as gr
+import json as _json
+import html as _html
+from datetime import datetime as _dt
 
 
 def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_tabs):
@@ -92,7 +95,6 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
 
         def _load_proposals(status_f, type_f):
             """Load proposals from ChromaDB and render as collapsible HTML cards."""
-            import json as _json
             try:
                 chroma = getattr(orchestrator, 'memory_system', None)
                 chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
@@ -292,7 +294,6 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
 
         async def _generate_code_now(selected_label, title_map):
             """Generate full implementation code for the selected proposal."""
-            import html as _html
             if not selected_label or not title_map:
                 return "Select a proposal first.", ""
 
@@ -544,7 +545,6 @@ def _render_proposal_card(meta, index, _json):
     reasoning = meta.get("reasoning", "")
     description = meta.get("description", "")
     created = float(meta.get("created_at", 0))
-    from datetime import datetime as _dt
     created_str = _dt.fromtimestamp(created).strftime('%Y-%m-%d %H:%M') if created else ""
 
     open_attr = " open" if index == 0 else ""

@@ -19,6 +19,8 @@ import logging
 from typing import Optional
 
 from core.actions.types import ActionProposal, ActionResult
+import base64
+import email.message
 
 logger = logging.getLogger("actions_email")
 
@@ -119,8 +121,6 @@ async def _try_gmail_send(
         )
 
     # Build RFC 5322 message
-    import base64
-    import email.message
 
     from_addr = INTERNET_ACTIONS_SMTP_FROM or INTERNET_ACTIONS_SMTP_USER
     subject = proposal.params.get("subject", "Message from Daemon")
@@ -192,7 +192,6 @@ async def _smtp_send(
     subject = proposal.params.get("subject", "Message from Daemon")
     from_addr = INTERNET_ACTIONS_SMTP_FROM or INTERNET_ACTIONS_SMTP_USER
 
-    import email.message
     msg = email.message.EmailMessage()
     msg["Subject"] = subject
     msg["From"] = from_addr

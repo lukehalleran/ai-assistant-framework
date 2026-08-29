@@ -24,7 +24,7 @@ class TestSystemPromptPlaceholders:
 
         # Should appear multiple times (at least 2-3 occurrences)
         count = content.count("{USER_NAME}")
-        assert count >= 2, f"Expected at least 2 {USER_NAME} placeholders, found {count}"
+        assert count >= 2, f"Expected at least 2 {{USER_NAME}} placeholders, found {count}"
 
     def test_system_prompt_contains_user_pronouns_placeholder(self):
         """System prompt should contain {USER_PRONOUNS} placeholder."""

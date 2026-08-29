@@ -26,8 +26,9 @@ import MemoryPanel from './components/showcase/MemoryPanel'
 import DebugPage from './components/debug/DebugPage'
 import ProvenancePage from './components/debug/ProvenancePage'
 import SettingsPage from './components/settings/SettingsPage'
+import CurationPage from './components/curation/CurationPage'
 
-type View = 'chat' | 'debug' | 'provenance' | 'settings'
+type View = 'chat' | 'debug' | 'provenance' | 'settings' | 'curation'
 
 export default function App() {
   const chat = useChatStream()
@@ -145,6 +146,7 @@ export default function App() {
               { value: 'chat', label: '💬 Chat' },
               { value: 'debug', label: '🔎 Debug' },
               { value: 'provenance', label: '🧾 Prov.' },
+              { value: 'curation', label: '🧹' },
               { value: 'settings', label: '⚙️' },
             ]}
           />
@@ -213,6 +215,7 @@ export default function App() {
         {view === 'debug' && <DebugPage />}
         {view === 'provenance' && <ProvenancePage />}
         {view === 'settings' && <SettingsPage />}
+        {view === 'curation' && <CurationPage />}
         {/* minWidth/overflowX clamp: a long unbroken line anywhere in the chat
             column must shrink within the viewport, never widen the page */}
         <Stack

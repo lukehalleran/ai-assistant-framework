@@ -26,7 +26,12 @@ Module Contract
 - Dependencies:
   - memory.graph_utils.extract_graph_entities (Tier 2 entity match)
   - utils.web_search_trigger.analyze_for_web_search_llm (Tier 4 LLM fallback)
-  - knowledge.document_generator.detect_document_intent (doc gen detection)
+  - knowledge.document_generator.detect_document_intent (doc gen detection).
+    Tier-4 doc_gen_intent also carries "source" (2026-08-24): the LLM trigger's
+    document_source ("research" | "conversation") threads through so handlers can
+    pass the conversation transcript as source_material when the user wants THIS
+    conversation written up (Tier-3 regex intents omit the key; handlers'
+    deterministic backstop covers them).
   - knowledge.daemon_notes_manager.detect_self_note_intent (self-note detection)
   All imports are lazy (inside the function) with try/except guards.
 - Side effects: None. Pure decision logic + one optional async LLM call.
@@ -45,6 +50,19 @@ Module Contract
   suppress it. The enhanced (tool-less) streaming path carries a matching
   [ACTION HONESTY] note so a gate miss degrades to an honest "I can't this turn"
   + offer, never a confabulated reason.
+- Insight / evidence-assembly routing (2026-08-23): detection runs BEFORE the
+  Tier-3 doc-gen check (a personal-theme document request — "write a summary
+  of my pattern with X for my therapist" — must route to core/insight, not
+  web research) via core.insight.detector.detect_insight_request; on hit the
+  decision carries modes=["insight"], insight_intent (serialized
+  InsightIntent), and is ALWAYS veto_exempt (explicit requests work
+  mid-distress; the synthesizer handles elevated-tone framing). Consent
+  offer: maybe_arm_insight_offer(query, tone_level) arms a one-shot slot
+  (max ONE offer per session, in-memory) for insight-shaped statements at
+  non-elevated tone; a terse affirmation on the next turn yields an
+  insight_assessment decision; anything else consumes and drops the offer
+  permanently (anti-excavation). _reset_insight_offer_state() is the test
+  hook.
 - Tone-deferral clarify loop (2026-08-21): a TONE arm vetoing a
   REQUEST-shaped, non-vent query (imperative without a lookup cue — "review
   the tuesday logs"; lookup-cue and interrogative shapes escape the veto
@@ -80,9 +98,12 @@ Module Contract
 """
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
+import re as _re_gate
+import re as _re_gate2
 
 logger = logging.getLogger("agentic_gate")
 
@@ -107,11 +128,26 @@ class AgenticDecision:
     # suppress. Lets apply_intent_veto() run post-hoc without recomputing
     # gate internals.
     veto_exempt: bool = False
+    # True when veto_exempt came from a BARE URL alone (no explicit request
+    # keyword like "go to http", no files/doc-gen/self-note). 2026-08-28
+    # retrospective: "I don't want to die I am fucking scared and hurt
+    # https://en.wikip…" (MEDIUM, harm_score 12) ran an agentic loop because
+    # the pasted link made the vent veto-exempt — a link inside an acute
+    # first-person vent is shared context, not a fetch request. The acute
+    # tone arm may pierce THIS exemption only; explicit-keyword URL requests
+    # stay exempt.
+    veto_exempt_url_only: bool = False
     # Set when a TONE arm vetoed a request-shaped (non-vent) query
     # (2026-08-21): handlers inject a "acknowledge + offer to proceed" note
     # into the system prompt, and a terse affirmation on the NEXT turn
     # re-runs the original query veto-exempt (see _arm_deferred_request).
     deferred_request: Optional[str] = None
+    # Insight / evidence-assembly mode (2026-08-23): serialized InsightIntent
+    # dict when the query is an explicit insight request (theme sweep,
+    # personal-theme document, insight assessment) or an affirmation of the
+    # one-shot consent offer. Handlers route to _run_insight_mode; always
+    # veto_exempt (explicit requests work even mid-distress).
+    insight_intent: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +285,13 @@ FILE_RETRIEVAL_PRONOUN_PATTERN = re.compile(
 
 # Markers that a previous turn was about a saved file/document — used to
 # disambiguate the pronoun-retrieval pattern above.
+# 'document' and 'file' moved to the word-bounded regex below (2026-08-27):
+# as substrings they matched "documented medical circumstances",
+# "documentation", "filed after the deadline", and even "profile" — for a
+# user whose life admin constantly involves medical documentation, the
+# prior-turn "file context" test was effectively always true.
 FILE_DOC_CONTEXT_WORDS = (
-    'document', 'doc ', ' doc.', 'file', '.md', 'markdown', 'pdf', '.txt',
+    'doc ', ' doc.', '.md', 'markdown', 'pdf', '.txt',
     'saved', 'on disk', 'implementation plan', 'file_read', 'file access',
     'reconstruct', 'print',
     # Repo/project vocabulary (2026-08-22): "Pushed yesterday's work, docs are
@@ -258,6 +299,10 @@ FILE_DOC_CONTEXT_WORDS = (
     # "docs are"), so the pronoun-retrieval continuation never routed to tools.
     'repo', 'repositor', 'commit', 'codebase', 'docs', 'pushed',
 )
+
+# Word-bounded file/document markers: matches "the document"/"files" but not
+# "documented"/"documentation"/"filed"/"profile".
+FILE_DOC_CONTEXT_WORD_RE = re.compile(r"\b(?:documents?|files?)\b", re.IGNORECASE)
 
 # Markers that the model OFFERED to read/pull a file last turn ("Want me to pull
 # that up?"). A bare affirmation ("yes", "do it") after one of these routes to
@@ -298,6 +343,117 @@ CONTINUATION_PHRASES = (
     'go ahead', 'yes please', 'please do', 'go for it',
     'run it', "let's go", 'sure', 'yep',
     'yes', 'yeah', 'do that',
+)
+
+
+def _compile_keyword_matcher(keywords):
+    """Left-word-boundary matching for bare-word keywords, substring for the rest.
+
+    'solve' must not match "resolution"/"unresolved" — a memory-ingest paste
+    titled "crisis resolution" keyword-routed to a 49s computation+tools loop
+    on 2026-08-28 (same substring class as 'document'⊂"documented", fixed
+    2026-08-27). Only the LEFT boundary is enforced so 'solve' still matches
+    "solves"/"solving"; keywords containing spaces, apostrophes, or
+    trailing-space sentinels keep their original substring semantics
+    ('go to http' must still match "go to https://...").
+    """
+    word_pats = []
+    substrings = []
+    for kw in keywords:
+        if re.fullmatch(r"[a-z][a-z0-9_]*", kw):
+            word_pats.append(re.compile(rf"\b{re.escape(kw)}"))
+        else:
+            substrings.append(kw)
+
+    def _hit(lower_text: str) -> bool:
+        return (
+            any(p.search(lower_text) for p in word_pats)
+            or any(k in lower_text for k in substrings)
+        )
+
+    return _hit
+
+
+_COMPUTATION_HIT = _compile_keyword_matcher(COMPUTATION_KEYWORDS)
+_WEB_SEARCH_HIT = _compile_keyword_matcher(WEB_SEARCH_KEYWORDS)
+_TOOL_HIT = _compile_keyword_matcher(TOOL_KEYWORDS)
+_MEMORY_HIT = _compile_keyword_matcher(MEMORY_KEYWORDS)
+_KNOWLEDGE_HIT = _compile_keyword_matcher(KNOWLEDGE_KEYWORDS)
+# Tier-2's recall-signal test used bare substring — 'how' ⊂ "sHOWer" fired
+# memory mode on "I am in bathroom with shower running…" (live 2026-08-29;
+# 4th occurrence of the substring class after 'solve'⊂"resolution",
+# 'document'⊂"documented", 'cat'⊂"catalog").
+_RECALL_SIGNAL_HIT = _compile_keyword_matcher(RECALL_SIGNAL_WORDS)
+
+# Tier-2 entity+recall arm is only trusted on short messages (2026-08-29:
+# a lyrics paste with an embedded '?' ran a 151s memory loop).
+TIER2_ENTITY_MAX_WORDS = int(os.getenv("TIER2_ENTITY_MAX_WORDS", "60"))
+
+
+def _entity_mention_is_proper(user_text: str, entity_id: str) -> bool:
+    """A Tier-2 entity anchor must look like a NAME in the user's text:
+    TitleCase at the mention site, or an inherently multi-word entity id.
+    Generic-word graph nodes ('normal', 'tie', 'bed') otherwise anchor the
+    memory arm on ordinary prose (live 2026-08-29). Under-fires for names
+    typed lowercase — those recall queries carry Tier-1 keywords anyway."""
+    if "_" in entity_id or " " in entity_id:
+        return True
+    head = entity_id.split("_")[0]
+    if not head:
+        return False
+    pat = r"\b" + re.escape(head[0].upper() + head[1:]) + r"\b"
+    return re.search(pat, user_text) is not None
+
+
+# Deterministic backstop for the Tier-4 LLM WEB trigger (2026-08-29): asked
+# "is this expected, or potentially useful info for Monday" (deictic — his
+# reactivity, his appointment), the trigger LLM proposed three searches of
+# the shape "<generic noun> for Monday August 31 2026" and burned Tavily
+# credits on Keene-NH construction news. A term whose content is ONLY
+# time/date tokens plus generic filler names no searchable topic — if every
+# proposed term is like that, the search cannot be about anything.
+_TEMPORAL_GENERIC_TOKENS = frozenset({
+    # time/date
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "today", "tomorrow", "yesterday", "week", "weekend", "month",
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+    # generic filler the trigger pads terms with
+    "expected", "events", "useful", "information", "info", "news",
+    "updates", "update", "things", "happening", "schedule", "plans",
+    "upcoming", "potentially", "general", "relevant",
+    # stopwords
+    "for", "on", "in", "the", "a", "an", "of", "and", "or", "to", "about",
+    "this", "that", "is", "are", "what",
+})
+
+
+def _terms_are_temporal_generic(terms) -> bool:
+    """True when EVERY proposed search term reduces to time words + generic
+    filler (no content-bearing token survives). Never fires on real topics:
+    'GT drop date August 2026' keeps 'gt'/'drop'/'date'."""
+    if not terms:
+        return False
+    for term in terms:
+        tokens = re.findall(r"[a-zA-Z]+", str(term).lower())
+        if any(t not in _TEMPORAL_GENERIC_TOKENS and not t.isdigit()
+               for t in tokens):
+            return False
+    return True
+
+# The email-action arms fire on an address + action-verb co-occurrence, which
+# is trivially true for any long paste carrying an email SIGNATURE plus
+# narration like "Emailed re: ..." (live 2026-08-28 ingest turn). A real send
+# request is either terse ("email Morgan the update") or opens with a send
+# imperative ("Send this to Morgan@...: <draft>"). Head-anchored (the 08-27
+# unanchored-"can you" lesson); "can/could you email..." within the length
+# cap passes via the word count.
+EMAIL_ACTION_MAX_WORDS = 40
+_EMAIL_COMMAND_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|alright|all\s+right|cool|yeah|yes|sure|right|so|and|"
+    r"now|then|also|well|hey|please)[,\s]+){0,3}"
+    r"(?:please\s+)?(?:send|e-?mail|draft|write|compose|forward|shoot|fire\s+off)\b",
+    re.IGNORECASE,
 )
 
 # A genuine continuation/affirmation is terse ("yes please", "ok try again").
@@ -465,6 +621,37 @@ async def evaluate_agentic_gate(
             )
             return _redo
 
+    # ── Insight consent-offer affirmation (2026-08-23) ───────────────
+    # If the PREVIOUS turn armed the one-shot insight offer (an insight-shaped
+    # statement at non-elevated tone; handlers injected "may I check this
+    # against your history?"), a terse affirmation now runs the assessment on
+    # the ORIGINAL statement, veto-exempt. Slot is one-shot: consumed on every
+    # call — anything but an immediate affirmation drops it permanently
+    # (a decline is never re-offered; anti-excavation).
+    _offered_insight = _consume_insight_offer()
+    if _offered_insight:
+        _is_affirm = (
+            len(_words) <= CONTINUATION_MAX_WORDS
+            and any(p in _lower for p in CONTINUATION_PHRASES)
+        )
+        if _is_affirm:
+            logger.info(
+                f"[Agentic Gate] Insight-offer affirmed — assessing: "
+                f"'{_offered_insight[:60]}'"
+            )
+            return AgenticDecision(
+                should_trigger=True,
+                modes=["insight"],
+                reason=f"insight-offer affirmation: '{_offered_insight[:80]}'",
+                veto_exempt=True,
+                insight_intent={
+                    "kind": "insight_assessment",
+                    "theme": _offered_insight,
+                    "wants_document": False,
+                    "raw_query": _offered_insight,
+                },
+            )
+
     modes: List[str] = []
     search_terms: List[str] = []
     matched_entities: Set[str] = set()
@@ -478,25 +665,31 @@ async def evaluate_agentic_gate(
     needs_tools = False
 
     # ── Tier 1: Keyword heuristics (instant, no LLM) ─────────────────
-    needs_computation = any(kw in _lower for kw in COMPUTATION_KEYWORDS)
+    needs_computation = _COMPUTATION_HIT(_lower)
 
-    if _has_url or any(kw in _lower for kw in WEB_SEARCH_KEYWORDS):
+    if _has_url or _WEB_SEARCH_HIT(_lower):
         needs_web_search = True
         logger.debug("[Agentic Gate] Tier 1: explicit web search/URL keyword detected")
 
-    if any(kw in _lower for kw in TOOL_KEYWORDS):
+    if _TOOL_HIT(_lower):
         needs_tools = True
 
+    # Email arms only run for a plausible SEND request: terse message or a
+    # head-anchored send imperative. A long paste containing addresses in a
+    # signature plus incidental "email"/"write" is narration, not a command.
+    _email_action_plausible = (
+        len(_words) <= EMAIL_ACTION_MAX_WORDS
+        or bool(_EMAIL_COMMAND_RE.search(user_text.strip()))
+    )
+
     # Email address + action verb → internet action intent
-    if not needs_tools:
-        import re as _re_gate
+    if not needs_tools and _email_action_plausible:
         _has_email_addr = bool(_re_gate.search(r'\S+@\S+\.\S+', user_text))
         if _has_email_addr and any(w in _lower for w in ('email', 'send', 'message', 'write', 'mail', 'contact')):
             needs_tools = True
 
     # Email-by-name patterns: "email Meagan", "send Meagan an email", "email her about X"
-    if not needs_tools:
-        import re as _re_gate2
+    if not needs_tools and _email_action_plausible:
         # "email <name>" at start of message
         if _re_gate2.match(r'^email\s+[a-z]', _lower):
             needs_tools = True
@@ -519,22 +712,37 @@ async def evaluate_agentic_gate(
         needs_tools = True
         logger.debug("[Agentic Gate] Tier 1: file/document access intent detected")
 
-    needs_memory = any(kw in _lower for kw in MEMORY_KEYWORDS)
+    needs_memory = _MEMORY_HIT(_lower)
 
     # Knowledge keywords require 4+ words and no computation trigger
     if len(_words) >= 4 and not needs_computation:
-        needs_knowledge = any(kw in _lower for kw in KNOWLEDGE_KEYWORDS)
+        needs_knowledge = _KNOWLEDGE_HIT(_lower)
 
     # ── Tier 2: Entity match (instant, no LLM) ───────────────────────
-    if not needs_computation and not needs_memory and entity_resolver is not None:
+    # 2026-08-29 live-session hardening (three agentic loops on emotional
+    # turns, 44-151s each):
+    #   - LENGTH CAP: on a paste-sized message both halves of the test are
+    #     unreliable — a '?' inside pasted lyrics ("am I just beaten so ?")
+    #     is not a user question, and lyric words resolve to graph nodes
+    #     ('tie', 'bed'). Genuine long recall requests hit Tier-1 keywords.
+    #   - PROPER-MENTION FILTER: a matched entity must appear TitleCase in
+    #     the raw text (or be multi-word) — generic-word graph nodes
+    #     ('normal', 'tie', 'bed') fired this arm on therapy-processing
+    #     replies. Same under-fire doctrine as extract_rare_proper_nouns.
+    if (not needs_computation and not needs_memory and entity_resolver is not None
+            and len(_words) <= TIER2_ENTITY_MAX_WORDS):
         try:
             from memory.graph_utils import extract_graph_entities
             matched_entities = extract_graph_entities(user_text, entity_resolver)
             matched_entities.discard("user")
+            matched_entities = {
+                e for e in matched_entities
+                if _entity_mention_is_proper(user_text, e)
+            }
             if matched_entities:
                 _has_recall_signal = (
                     '?' in user_text
-                    or any(w in _lower for w in RECALL_SIGNAL_WORDS)
+                    or _RECALL_SIGNAL_HIT(_lower)
                 )
                 if _has_recall_signal:
                     needs_memory = True
@@ -639,8 +847,13 @@ async def evaluate_agentic_gate(
         # retrieval verb, ack-prefix tolerant, self-reports excluded) counts
         # exactly like a pronoun retrieval; the prior-turn file/doc/repo
         # context gate below is what prevents over-fire either way.
+        # Length cap (2026-08-27): retrieval continuations are terse. A long
+        # pasted message can contain incidental matches for either shape
+        # (an email's own "can you ..." matched request-shape and rode this
+        # arm into a 106s tool loop).
         _is_pronoun_retrieval = (
             not _self_report
+            and len(_words) <= REQUEST_CONTINUATION_MAX_WORDS
             and (
                 bool(FILE_RETRIEVAL_PRONOUN_PATTERN.search(_lower))
                 or _is_request_shaped(user_text)
@@ -656,7 +869,10 @@ async def evaluate_agentic_gate(
                 for _prev in _recent:
                     _resp = (_prev.get('response', '') or '')[:800].lower()
                     _blob = (_prev.get('query', '') or '').lower() + ' ' + _resp
-                    _prev_was_file = any(w in _blob for w in FILE_DOC_CONTEXT_WORDS)
+                    _prev_was_file = (
+                        any(w in _blob for w in FILE_DOC_CONTEXT_WORDS)
+                        or bool(FILE_DOC_CONTEXT_WORD_RE.search(_blob))
+                    )
                     _prev_offered_file = any(o in _resp for o in FILE_OFFER_MARKERS)
                     # pronoun → needs file/doc context; affirmation → needs explicit offer
                     if ((_is_pronoun_retrieval and _prev_was_file)
@@ -669,6 +885,34 @@ async def evaluate_agentic_gate(
                         break
             except Exception as e:
                 logger.debug(f"[Agentic Gate] File continuation check failed (non-fatal): {e}")
+
+    # ── Insight / evidence-assembly requests (2026-08-23) ─────────────
+    # Checked BEFORE Tier-3 doc-gen: a personal-theme document request
+    # ("write a summary of my pattern with X for my therapist") must route to
+    # the insight mode, not to web research — detect_document_intent treated
+    # exactly that shape as a research topic. Always veto_exempt: an explicit
+    # request works even mid-distress (therapist-doc framing is handled by
+    # the synthesizer's elevated-tone tail, not by refusing the turn).
+    try:
+        from config.app_config import INSIGHT_MODE_ENABLED
+        if INSIGHT_MODE_ENABLED:
+            # lazy import: cycle (insight.detector imports gate at call time)
+            from core.insight.detector import detect_insight_request
+            _insight = detect_insight_request(user_text)
+            if _insight:
+                logger.info(
+                    f"[Agentic Gate] Insight mode: {_insight.kind} "
+                    f"theme='{_insight.theme[:60]}' doc={_insight.wants_document}"
+                )
+                return AgenticDecision(
+                    should_trigger=True,
+                    modes=["insight"],
+                    reason=f"insight-mode: {_insight.kind}",
+                    veto_exempt=True,
+                    insight_intent=_insight.model_dump(),
+                )
+    except Exception as e:
+        logger.warning(f"[Agentic Gate] Insight detection failed (non-fatal): {e}")
 
     # ── Tier 3: Document generation + self-note intent ────────────────
     try:
@@ -717,6 +961,19 @@ async def evaluate_agentic_gate(
                 should_trigger = getattr(trigger_decision, 'should_search', False)
                 search_terms = getattr(trigger_decision, 'search_terms', []) or []
 
+                # Temporal-generic term guard (2026-08-29): if every proposed
+                # term is time words + filler ("useful information for Monday
+                # August 31 2026"), the LLM misread a personal schedule
+                # reference as a news request — stand down instead of burning
+                # searches on nothing.
+                if should_trigger and search_terms and \
+                        _terms_are_temporal_generic(search_terms):
+                    logger.info(
+                        "[Agentic Gate] LLM web trigger suppressed — all "
+                        f"proposed terms are temporal-generic: {search_terms}")
+                    should_trigger = False
+                    search_terms = []
+
                 if getattr(trigger_decision, 'needs_memory_search', False):
                     logger.debug("[Agentic Gate] LLM detected memory search intent")
                     should_trigger = True
@@ -749,6 +1006,10 @@ async def evaluate_agentic_gate(
                         "topic": getattr(trigger_decision, 'document_topic', '') or user_text,
                         "doc_type": getattr(trigger_decision, 'document_type', 'report') or 'report',
                         "focus": None,
+                        # "conversation" = write up THIS conversation's content
+                        # (handlers pass the transcript as source_material);
+                        # "research"/None = research the topic externally.
+                        "source": getattr(trigger_decision, 'document_source', '') or None,
                     }
 
                 logger.debug(
@@ -780,9 +1041,15 @@ async def evaluate_agentic_gate(
             logger.debug(f"[Agentic Gate] Triggered — modes: {', '.join(triggered)}")
 
     # ── Intent-veto exemption (explicit requests are never vetoed) ────
+    _explicit_kw = any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS)
     _veto_exempt = (
-        any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS) or _has_url or needs_files
+        _explicit_kw or _has_url or needs_files
         or bool(doc_gen_intent) or bool(self_note_intent)
+    )
+    # Bare pasted link with NO request shape — the only exemption the acute
+    # tone arm may pierce (see AgenticDecision.veto_exempt_url_only).
+    _veto_exempt_url_only = _has_url and not (
+        _explicit_kw or needs_files or bool(doc_gen_intent) or bool(self_note_intent)
     )
 
     # ── Build modes list ──────────────────────────────────────────────
@@ -828,6 +1095,7 @@ async def evaluate_agentic_gate(
         skip_initial_search=skip_initial,
         reason=reason,
         veto_exempt=_veto_exempt,
+        veto_exempt_url_only=_veto_exempt_url_only,
     )
 
     # Intent veto — applied here when intent_info was available at call time.
@@ -850,6 +1118,12 @@ _INTERROGATIVE_OPENERS = (
 _INFO_SEEKING_CUES = (
     "search", "look up", "google", "find out", "remember when", "what did",
     "recall", "look for", "look into", "research", "check the", "check my",
+    # Confirmation-shaped lookups: "I would like to confirm it's this Friday
+    # that's the drop date" has no "?", no interrogative opener, and no lookup
+    # verb — it read as vent-shaped and the tone-veto killed the agentic gate
+    # on a deadline question (2026-08-27).
+    "confirm", "verify", "double-check", "double check", "check if",
+    "check whether",
 )
 # Pronoun-split lookup commands: "look IT up", "pull THAT up". The contiguous
 # "look up" cue missed them — "Look it up it's pretty funny" was vetoed AND
@@ -916,13 +1190,25 @@ def strip_epistemic_markers(text: str) -> str:
 # should be a visible DEFERRAL (acknowledge + offer), never a silent decline
 # — and never a no_search teaching event. The (?!,) guard keeps discourse
 # markers ("Look, I'm just tired") out: comma after the verb = not a command.
+# BOTH branches are head-anchored (2026-08-27): the second-person branch used
+# to match "\bcan you\b" ANYWHERE, so a 700-word pasted email containing
+# "...can you point me to the right process?" (a question addressed to the
+# email's RECIPIENT, not to Daemon) counted as request-shaped and routed a
+# status-update turn into a 106s agentic loop. A request to Daemon leads the
+# message; "can you" buried mid-paste is quoted content.
 _REQUEST_SHAPED_RE = re.compile(
     r"^(?:(?:ok(?:ay)?|alright|all\s+right|cool|yeah|yes|sure|right|so|and|now|then|also|well|hey)[,\s]+){0,3}"
-    r"(?:please\s+)?(?:check|look|pull|show|run|search|find|read|open|list|"
+    r"(?:(?:please\s+)?(?:check|look|pull|show|run|search|find|read|open|list|"
     r"verify|fetch|grab|review|summarize|summarise|scan|test|compare)\b(?!,)"
-    r"|\b(?:can|could|would|will)\s+you\b",
+    r"|(?:please\s+)?(?:can|could|would|will)\s+you\b)",
     re.IGNORECASE,
 )
+
+# A retrieval continuation is TERSE by nature ("pull up the veto logic",
+# "check it out now"). Anything longer is a substantive message that should
+# route through the normal tiers — a pasted email that happens to open with
+# an ack word must never ride the continuation shortcut.
+REQUEST_CONTINUATION_MAX_WORDS = 30
 
 
 def _is_request_shaped(text: str) -> bool:
@@ -946,6 +1232,59 @@ def _consume_deferred_request() -> Optional[str]:
     q = _DEFERRED_REQUEST_SLOT.get("query")
     _DEFERRED_REQUEST_SLOT.clear()
     return q
+
+
+# One-shot cross-turn slot for the insight consent offer (2026-08-23).
+# Armed by maybe_arm_insight_offer when the user makes an insight-SHAPED
+# statement at non-elevated tone (handlers then inject a one-sentence
+# "want me to check this against your history?" offer); consumed at the top
+# of the next evaluate_agentic_gate call. Capped at ONE offer per session
+# (in-memory counter — a restart forgetting a decline is the cheapest
+# failure mode). A decline is never re-offered: anti-excavation.
+_INSIGHT_OFFER_SLOT: Dict[str, str] = {}
+_INSIGHT_OFFERS_THIS_SESSION: int = 0
+
+
+def maybe_arm_insight_offer(query: str, tone_level: Optional[str] = None) -> bool:
+    """Arm the one-shot insight consent offer if the query is an insight-shaped
+    first-person statement, tone is non-elevated, and the per-session offer
+    budget (1) is unspent. Returns True when armed (handlers inject the offer
+    note only then)."""
+    global _INSIGHT_OFFERS_THIS_SESSION
+    try:
+        from config.app_config import INSIGHT_MODE_ENABLED, INSIGHT_OFFER_ENABLED
+        if not (INSIGHT_MODE_ENABLED and INSIGHT_OFFER_ENABLED):
+            return False
+    except Exception:
+        return False
+    if _INSIGHT_OFFERS_THIS_SESSION >= 1:
+        return False
+    if _tone_is_elevated(tone_level) or _tone_is_acute(tone_level):
+        return False
+    try:
+        from core.insight.detector import detect_insight_statement
+        if not detect_insight_statement(query):
+            return False
+    except Exception:
+        return False
+    _INSIGHT_OFFER_SLOT.clear()
+    _INSIGHT_OFFER_SLOT["statement"] = query.strip()
+    _INSIGHT_OFFERS_THIS_SESSION += 1
+    logger.info(f"[Agentic Gate] Insight offer armed: '{query.strip()[:60]}'")
+    return True
+
+
+def _consume_insight_offer() -> Optional[str]:
+    s = _INSIGHT_OFFER_SLOT.get("statement")
+    _INSIGHT_OFFER_SLOT.clear()
+    return s
+
+
+def _reset_insight_offer_state() -> None:
+    """Test helper: clear the slot and the per-session offer counter."""
+    global _INSIGHT_OFFERS_THIS_SESSION
+    _INSIGHT_OFFER_SLOT.clear()
+    _INSIGHT_OFFERS_THIS_SESSION = 0
 
 
 def _is_vent_shaped(query: str) -> bool:
@@ -1012,7 +1351,22 @@ def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
     if decision is None or not decision.should_trigger or intent_info is None:
         return decision
     if decision.veto_exempt:
-        return decision
+        # Bare-URL exemption pierce (2026-08-28): a pasted link inside an
+        # ACUTE (MEDIUM/HIGH) first-person vent is shared context, not a
+        # fetch request — the tone arms below may stand the gate down.
+        # Every other exemption source (explicit keywords, files, doc-gen,
+        # self-note) remains absolute.
+        _pierce = (
+            getattr(decision, "veto_exempt_url_only", False)
+            and _tone_is_acute(tone_level)
+            and query and _is_vent_shaped(query)
+        )
+        if not _pierce:
+            return decision
+        logger.info(
+            "[Agentic Gate] Bare-URL exemption pierced: acute tone + "
+            "vent-shaped message — tone arms may veto"
+        )
     _intent_type = (
         getattr(intent_info, 'intent_type', None)
         if not isinstance(intent_info, dict)

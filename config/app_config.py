@@ -29,7 +29,6 @@ Module Contract
 import os
 import re
 import yaml
-import torch
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
@@ -544,6 +543,9 @@ ESCALATION_MAX_HISTORY: int = int(ESCALATION_CFG.get("max_history", 10))
 # Consecutive CONCERN-or-higher turns before a mild-but-persistent spiral
 # upgrades to grounding (slow-spiral guard; higher than ESCALATION_THRESHOLD)
 ESCALATION_DISTRESS_THRESHOLD: int = int(ESCALATION_CFG.get("distress_threshold", 5))
+# Max consecutive turns the sustained-distress upgrade may hold GROUNDING
+# before stepping down to GENTLE_REENGAGEMENT (fresh accumulation to re-ground)
+ESCALATION_DISTRESS_GROUNDING_MAX: int = int(ESCALATION_CFG.get("distress_grounding_max", 3))
 
 # Valence-aware retrieval — caps mood-congruent recall during distress sessions
 VALENCE_CFG = config.get("valence_retrieval", {})
@@ -1113,6 +1115,31 @@ LIGHT_PROMPT_ENABLED = bool(int(os.getenv("LIGHT_PROMPT_ENABLED", "1" if LIGHT_P
 LIGHT_PROMPT_MAX_WORDS: int = int(os.getenv("LIGHT_PROMPT_MAX_WORDS", LIGHT_PROMPT_CFG.get("max_words", 8)))
 
 # --------------------------------------------------------------------
+# Insight / Evidence-Assembly Mode [2026-08-23]
+# --------------------------------------------------------------------
+# Turn-owning mode (parallel to agentic search) that deliberately assembles
+# cross-store evidence on a personal theme: facet decomposition → ungated
+# sweep (chroma + corpus keyword + graph 1-hop + expansion) → provenance
+# labeling (stance core) → optional adversarial assessment → MI-shaped
+# synthesis with a mandatory denominator caveat. See core/insight/.
+INSIGHT_CFG = config.get("insight_mode", {}) or {}
+INSIGHT_MODE_ENABLED: bool = bool(INSIGHT_CFG.get("enabled", True))
+INSIGHT_MODE_ENABLED = bool(int(os.getenv("INSIGHT_MODE_ENABLED", "1" if INSIGHT_MODE_ENABLED else "0")))
+INSIGHT_MAX_FACETS: int = int(os.getenv("INSIGHT_MAX_FACETS", INSIGHT_CFG.get("max_facets", 6)))
+INSIGHT_PER_FACET_CAP: int = int(os.getenv("INSIGHT_PER_FACET_CAP", INSIGHT_CFG.get("per_facet_cap", 10)))
+INSIGHT_TOTAL_EVIDENCE_CAP: int = int(os.getenv("INSIGHT_TOTAL_EVIDENCE_CAP", INSIGHT_CFG.get("total_evidence_cap", 80)))
+INSIGHT_EVIDENCE_SNIPPET_CHARS: int = int(os.getenv("INSIGHT_EVIDENCE_SNIPPET_CHARS", INSIGHT_CFG.get("evidence_snippet_chars", 280)))
+INSIGHT_KEYWORD_SCAN_MAX: int = int(os.getenv("INSIGHT_KEYWORD_SCAN_MAX", INSIGHT_CFG.get("keyword_scan_max", 50)))
+INSIGHT_EXPAND_TOP_K: int = int(os.getenv("INSIGHT_EXPAND_TOP_K", INSIGHT_CFG.get("expand_top_k", 3)))
+INSIGHT_EXPAND_WINDOW: int = int(os.getenv("INSIGHT_EXPAND_WINDOW", INSIGHT_CFG.get("expand_window", 2)))
+INSIGHT_DECOMPOSE_MAX_TOKENS: int = int(os.getenv("INSIGHT_DECOMPOSE_MAX_TOKENS", INSIGHT_CFG.get("decompose_max_tokens", 700)))
+INSIGHT_SYNTHESIS_MAX_TOKENS: int = int(os.getenv("INSIGHT_SYNTHESIS_MAX_TOKENS", INSIGHT_CFG.get("synthesis_max_tokens", 2600)))
+INSIGHT_SWEEP_TIMEOUT_S: float = float(os.getenv("INSIGHT_SWEEP_TIMEOUT_S", INSIGHT_CFG.get("sweep_timeout_s", 45.0)))
+INSIGHT_OFFER_ENABLED: bool = bool(INSIGHT_CFG.get("offer_enabled", True))
+INSIGHT_OFFER_ENABLED = bool(int(os.getenv("INSIGHT_OFFER_ENABLED", "1" if INSIGHT_OFFER_ENABLED else "0")))
+INSIGHT_DOC_ON_AGREEMENT: bool = bool(INSIGHT_CFG.get("doc_on_agreement", True))
+
+# --------------------------------------------------------------------
 # Backup Configuration [2026-07-14]
 # --------------------------------------------------------------------
 # Automated local backups of the memory stores (final shutdown phase).
@@ -1141,6 +1168,21 @@ LOG_MAINTENANCE_AUDIT_MAX_MB: float = float(LOG_MAINTENANCE_CFG.get("audit_max_m
 LOG_MAINTENANCE_DEBUG_COMPRESS_AGE_DAYS: float = float(LOG_MAINTENANCE_CFG.get("debug_compress_age_days", 7))
 LOG_MAINTENANCE_DEBUG_KEEP_DAYS: float = float(LOG_MAINTENANCE_CFG.get("debug_keep_days", 90))
 LOG_MAINTENANCE_ENABLED = bool(int(os.getenv("LOG_MAINTENANCE_ENABLED", "1" if LOG_MAINTENANCE_ENABLED else "0")))
+
+# --------------------------------------------------------------------
+# Autonomous curation engine (docs/AUTONOMOUS_CURATION_DESIGN.md).
+# max_mode is the global disposition ceiling — "queue" until curators
+# graduate the trust ladder; DELETE never auto-applies at any mode.
+CURATION_CFG = config.get("curation", {}) or {}
+CURATION_ENABLED: bool = bool(CURATION_CFG.get("enabled", True))
+CURATION_ENABLED = bool(int(os.getenv("CURATION_ENABLED", "1" if CURATION_ENABLED else "0")))
+CURATION_MAX_MODE: str = str(CURATION_CFG.get("max_mode", "queue"))
+CURATION_CURATOR_MODES: dict = dict(CURATION_CFG.get("curator_modes", {}) or {})
+CURATION_SCAN_TIMEOUT_S: float = float(CURATION_CFG.get("scan_timeout_s", 45))
+CURATION_AUTO_RATE_CAP: int = int(CURATION_CFG.get("auto_rate_cap", 25))
+CURATION_ANOMALY_FRACTION: float = float(CURATION_CFG.get("anomaly_fraction", 0.05))
+CURATION_MAX_QUEUE_ITEMS_PER_CURATOR: int = int(CURATION_CFG.get("max_queue_items_per_curator", 50))
+CURATION_STALENESS_GRACE_HOURS: int = int(CURATION_CFG.get("staleness_grace_hours", 48))
 
 # --------------------------------------------------------------------
 # API Server Configuration (FastAPI frontend; Gradio mounted at /admin)
@@ -1336,6 +1378,14 @@ AGENTIC_DECISION_MAX_TOKENS: int = int(AGENTIC_CFG.get("decision_max_tokens", 16
 # loop — once exceeded, no new round starts and the loop synthesizes from context.
 AGENTIC_ROUND_TIMEOUT_S: float = float(AGENTIC_CFG.get("round_timeout_s", 75.0))
 AGENTIC_LOOP_TIMEOUT_S: float = float(AGENTIC_CFG.get("loop_timeout_s", 120.0))
+# Decision-round timeout on a tool-triggered session with ZERO tools dispatched
+# yet → run the requested search deterministically (one-shot) instead of
+# answering from context (2026-08-27: explicit "can we do a web search" turn
+# hit the 75s timeout and spent 280s synthesizing with no evidence).
+AGENTIC_TIMEOUT_TOOL_FALLBACK: bool = (
+    os.getenv("AGENTIC_TIMEOUT_TOOL_FALLBACK",
+              "1" if AGENTIC_CFG.get("timeout_tool_fallback", True) else "0") == "1"
+)
 
 # --------------------------------------------------------------------
 # Uncertainty Fallback (retry via agentic search on "I don't know" responses)
@@ -1373,6 +1423,31 @@ RESPONSE_PLANNING_ENABLED = bool(int(os.getenv(
 RESPONSE_REVIEW_ENABLED = bool(int(os.getenv(
     "RESPONSE_REVIEW_ENABLED",
     "1" if RESPONSE_REVIEW_ENABLED else "0",
+)))
+
+# --------------------------------------------------------------------
+# Factual-Grounding Check (post-generation false-claim floor, 2026-08-28)
+# Deterministic claim-shape pre-filter → LLM verifier → visible correction
+# append. Runs on ALL tones — the review gate is skipped on CONCERN+ (no
+# plan → no review), which is exactly where the refrigerator-mother
+# endorsement shipped. Verifier model falls back to the review model.
+# --------------------------------------------------------------------
+GROUNDING_CHECK_CFG = config.get("grounding_check", {})
+GROUNDING_CHECK_ENABLED: bool = bool(GROUNDING_CHECK_CFG.get("enabled", True))
+GROUNDING_CHECK_MODEL: Optional[str] = (
+    GROUNDING_CHECK_CFG.get("model") or RESPONSE_REVIEW_MODEL
+)
+GROUNDING_CONFIDENCE_THRESHOLD: float = float(
+    GROUNDING_CHECK_CFG.get("confidence_threshold", 0.85))
+GROUNDING_TIMEOUT_S: float = float(GROUNDING_CHECK_CFG.get("timeout_s", 5.0))
+GROUNDING_MAX_TOKENS: int = int(GROUNDING_CHECK_CFG.get("max_tokens", 250))
+# LOW on purpose — the live false-endorsement response was ~300 chars.
+GROUNDING_MIN_RESPONSE_CHARS: int = int(
+    GROUNDING_CHECK_CFG.get("min_response_chars", 40))
+
+GROUNDING_CHECK_ENABLED = bool(int(os.getenv(
+    "GROUNDING_CHECK_ENABLED",
+    "1" if GROUNDING_CHECK_ENABLED else "0",
 )))
 
 # --------------------------------------------------------------------
@@ -1847,7 +1922,10 @@ ACTION_CLAIM_SELF_REPAIR_ENABLED = bool(int(os.getenv(
 # Final setup
 # --------------------------------------------------------------------
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# NOTE: torch was imported at module level here for a single dead `device`
+# constant (no external consumer) — costing every script/test that touches
+# app_config ~1.5s of torch import. Removed 2026-08-28; live embedding-device
+# resolution is multi_collection_chroma_store._resolve_embed_device().
 SYSTEM_PROMPT = load_system_prompt(config)
 
 # Prompt-cache breakpoint marker. The orchestrator inserts this into the system
@@ -1888,5 +1966,4 @@ else:
 logger.info(f"Config loaded successfully for VERSION={VERSION}, MODE={DAEMON_MODE}")
 logger.info(f"Using CORPUS_FILE={CORPUS_FILE}")
 logger.info(f"Using CHROMA_PATH={CHROMA_PATH}")
-logger.info(f"Using DEVICE={device}")
 logger.info(f"Corpus max entries={CORPUS_MAX_ENTRIES}")

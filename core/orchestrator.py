@@ -29,6 +29,14 @@ Module Contract
   - Early-exit helpers (_handle_command, _handle_deictic, _maybe_document_generation,
     _maybe_agentic_search) return (text, debug_info) or None (None = fall through).
   - The outer try/except logs, sets debug_info["error"], and re-raises.
+  - run_post_response_detectors(user_input) [PUBLIC 2026-08-23]: the correction/
+    confirmation → truth-event → staleness-cascade pipeline, now also called from
+    the GUI path (handlers._write_turn_telemetry) — it was dead in production
+    while only the unused process_user_query ran it (same class as the 08-18
+    escalation bug). Also flags the cached narrative context stale
+    (utils/narrative_staleness.mark_stale) when the message carries a correction
+    signal ≥0.6, so "6 weeks off vryalr not 1."-class corrections stop
+    re-entering prompts via stale [TEMPORAL GROUNDING] until regeneration.
 - System prompt flow:
   - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via load_personality_text() + load_operating_principles(). Falls back to load_system_prompt() if files fail.
   - Conditional section instructions (2026-08-02): build_full_prompt() appends core/prompt/section_instructions.conditional_instruction_tail(prompt_ctx) to the system prompt AFTER the cache breakpoint — the [USER'S PERSONAL NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING] guidance blocks (moved out of operating_principles.txt) are injected only when their section exists in the gathered context (~1.2K tok saved on turns without those sections).
@@ -58,6 +66,9 @@ from typing import Dict, Any, Optional, Tuple, List, Union
 from dataclasses import dataclass, field
 from core.response_parser import ResponseParser
 from utils.logging_utils import get_logger
+import time
+import asyncio as _aio
+import time as _time_mod
 logger = get_logger("orchestrator")
 
 
@@ -364,6 +375,7 @@ class DaemonOrchestrator:
                 ESCALATION_DEESCALATION_WINDOW,
                 ESCALATION_MAX_HISTORY,
                 ESCALATION_DISTRESS_THRESHOLD,
+                ESCALATION_DISTRESS_GROUNDING_MAX,
             )
             if ESCALATION_ENABLED:
                 self.escalation_tracker = EscalationTracker(
@@ -371,6 +383,7 @@ class DaemonOrchestrator:
                     deescalation_window=ESCALATION_DEESCALATION_WINDOW,
                     max_history=ESCALATION_MAX_HISTORY,
                     distress_threshold=ESCALATION_DISTRESS_THRESHOLD,
+                    distress_grounding_max=ESCALATION_DISTRESS_GROUNDING_MAX,
                 )
                 self.logger.info(
                     f"[Orchestrator] EscalationTracker enabled "
@@ -1144,6 +1157,21 @@ class DaemonOrchestrator:
             if self.escalation_tracker:
                 escalation_instructions = self.escalation_tracker.get_strategy_instructions()
                 if escalation_instructions:
+                    # Accuracy-floor dedup (2026-08-28): the tone block
+                    # (LIGHT/ELEVATED SUPPORT) and the escalation block BOTH
+                    # carry GROUNDING_ACCURACY_CLAUSE — when both render in
+                    # one prompt the clause appeared twice (~150 tokens of
+                    # repeated instruction, live turn same day it shipped).
+                    # Keep the first occurrence, strip it from the later block.
+                    try:
+                        from core.grounding_check import GROUNDING_ACCURACY_CLAUSE
+                        if (GROUNDING_ACCURACY_CLAUSE in system_prompt
+                                and GROUNDING_ACCURACY_CLAUSE in escalation_instructions):
+                            escalation_instructions = escalation_instructions.replace(
+                                "\n" + GROUNDING_ACCURACY_CLAUSE, ""
+                            ).replace(GROUNDING_ACCURACY_CLAUSE, "")
+                    except Exception:
+                        pass
                     system_prompt = system_prompt.rstrip() + escalation_instructions
 
             session_headers = self._get_session_headers_instructions()
@@ -1236,10 +1264,17 @@ class DaemonOrchestrator:
                         if hasattr(context.emotional_context.need_type, 'value')
                         else str(context.emotional_context.need_type)
                     )
+                # Floor-produced tone ("distress_sticky_floor") must not
+                # accumulate distress in the tracker — carried tone is not
+                # fresh evidence (2026-08-28 joke-turn grounding).
+                tone_trigger_str = str(
+                    getattr(context.emotional_context, 'tone_trigger', '') or ''
+                ) if context.emotional_context else ''
                 self.escalation_tracker.update(
                     context.tone_level,
                     context.original_query or "",
                     need_type=need_type_str,
+                    tone_trigger=tone_trigger_str,
                 )
             except Exception as _esc_exc:
                 self.logger.debug(f"[EscalationTracker] update skipped: {_esc_exc}")
@@ -1278,7 +1313,6 @@ class DaemonOrchestrator:
             If return_raw_context=False: (prompt_string, system_prompt_string)
             If return_raw_context=True: (prompt_string, system_prompt_string, raw_context_dict)
         """
-        import time
         _t_start = time.perf_counter()
 
         # --- 0) Update session-level safety trackers ---
@@ -1298,7 +1332,6 @@ class DaemonOrchestrator:
         # --- 2) Build prompt context (+ optional response plan in parallel) ---
         _plan_result = None
         if self.response_planner and self.response_planner.should_plan(context):
-            import asyncio as _aio
             _plan_task = _aio.create_task(
                 self.response_planner.create_plan(
                     query=context.original_query,
@@ -1464,7 +1497,6 @@ class DaemonOrchestrator:
             If return_context=True: (prompt, system_prompt, context_dict)
         """
         # Thin wrapper that delegates to the new ContextPipeline-based methods
-        import time
         _t_start = time.perf_counter()
 
         # Step 1: Build context via ContextPipeline
@@ -1662,7 +1694,6 @@ class DaemonOrchestrator:
         use_raw_mode = flow.use_raw_mode
         personality = flow.personality
         debug_info = flow.debug_info
-        import time as _time_mod
         _t_ctx_start = _time_mod.perf_counter()
         context = await self.build_context(
             user_input=user_input,
@@ -1993,7 +2024,6 @@ class DaemonOrchestrator:
 
     async def _generate_response(self, flow):
         """Best-of / duel / ensemble or standard streaming generation."""
-        import time as _time_mod
         user_input = flow.user_input
         use_raw_mode = flow.use_raw_mode
         prompt = flow.prompt
@@ -2084,7 +2114,6 @@ class DaemonOrchestrator:
 
     async def _store_interaction(self, flow):
         """Persist the exchange to memory (skipped in raw mode)."""
-        import time as _time_mod
         user_input = flow.user_input
         use_raw_mode = flow.use_raw_mode
         answer_for_storage = flow.answer_for_storage
@@ -2107,7 +2136,18 @@ class DaemonOrchestrator:
 
     def _run_post_response_detectors(self, flow):
         """Truth/correction/confirmation detection, staleness cascade, entity + attribution detection."""
-        user_input = flow.user_input
+        self.run_post_response_detectors(flow.user_input)
+
+    def run_post_response_detectors(self, user_input: str):
+        """Public entry for the post-response truth pipeline (2026-08-23).
+
+        Historically only `process_user_query` called `_run_post_response_detectors`,
+        and the GUI path never did — so CorrectionDetector, truth events and the
+        staleness cascade were DEAD in production (same class as the 08-18
+        EscalationTracker GUI-wiring bug). handlers._write_turn_telemetry now
+        calls this per turn; the flow-based wrapper above delegates here so both
+        paths run THE same pipeline.
+        """
         if self.user_profile and self.correction_detector:
             try:
                 recent_facts = self._get_recent_profile_facts()
@@ -2146,6 +2186,22 @@ class DaemonOrchestrator:
 
             except Exception as e:
                 self.logger.warning(f"[Orchestrator] Truth event detection failed: {e}")
+
+        # --- Narrative-context staleness flag (2026-08-23) ---
+        # A correction may invalidate the cached narrative (which only
+        # regenerates at shutdown) even when it matches NO stored fact —
+        # the 08-23 "6 weeks off vryalr not 1." case: the wrong "day 8"
+        # framing lived in narrative_context.txt, not the profile. The
+        # message-level signal (no fact list) flags it so [TEMPORAL
+        # GROUNDING] carries a caution line until the next regeneration.
+        if self.correction_detector:
+            try:
+                signal = self.correction_detector.detect_correction_signal(user_input)
+                if signal >= 0.6:
+                    from utils.narrative_staleness import mark_stale
+                    mark_stale(f"user correction (conf {signal:.2f}): {user_input[:120]}")
+            except Exception as e:
+                self.logger.debug(f"[Orchestrator] Narrative staleness flag failed (non-fatal): {e}")
 
         # --- Entity correction detection (non-profile entities) ---
         if self.correction_detector:

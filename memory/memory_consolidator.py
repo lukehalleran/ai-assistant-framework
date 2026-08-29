@@ -39,6 +39,8 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
+from pathlib import Path
+import re
 
 logger = get_logger("memory_consolidator")
 
@@ -329,8 +331,6 @@ Do NOT make up information not present in the summaries."""
 
         Returns list of dicts with 'content' and 'timestamp' keys.
         """
-        from pathlib import Path
-        import re
 
         notes_path = self._get_obsidian_notes_path()
         if not notes_path:
@@ -399,7 +399,6 @@ Do NOT make up information not present in the summaries."""
         the daily-notes root. Returns list of dicts with 'content' and
         'timestamp' keys, sorted by mtime (most recent first).
         """
-        from pathlib import Path
 
         notes_path = self._get_obsidian_notes_path()
         if not notes_path:
@@ -463,7 +462,6 @@ Do NOT make up information not present in the summaries."""
 
         Returns list of dicts with 'content' and 'timestamp' keys.
         """
-        from pathlib import Path
 
         notes_path = self._get_obsidian_notes_path()
         if not notes_path:

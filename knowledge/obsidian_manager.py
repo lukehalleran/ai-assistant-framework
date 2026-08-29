@@ -29,6 +29,10 @@ Features:
 - Extracts ![[images]] per-chunk for multimodal support [NEW 2026-01-30]
 - Strips YAML frontmatter while keeping content clean
 - Keyword search includes file_path for folder-based topic matching [NEW 2026-01-30]
+- Rare-proper-noun floor [NEW 2026-08-26]: a word-boundary hit on a name-shaped query
+  token (utils.query_checker.extract_rare_proper_nouns) floors the keyword score at
+  0.75 — whole-query word-set scoring weighed "Morgan" the same as "not", so the
+  "Advisor: Morgan Reeves" note lost to date-titled daily notes on generic overlap
 - Image loading with resolution: same folder → parent → attachments → vault root → global search
 """
 
@@ -704,6 +708,23 @@ class ObsidianManager:
             query_lower = query.lower().strip()
             query_words = set(query_lower.split())
 
+            # Rare-proper-noun floor (2026-08-26): the word-set scoring below
+            # weighs every query word equally, so "Morgan" counted the same as
+            # "not" and the "Advisor: Morgan Reeves" note lost to daily
+            # notes on generic overlap. A word-boundary hit on a name-shaped
+            # query token floors the score at 0.75 — above generic content
+            # overlap, below exact-title matches.
+            proper_noun_pats = []
+            try:
+                import re as _re
+                from utils.query_checker import extract_rare_proper_nouns
+                proper_noun_pats = [
+                    _re.compile(r"\b" + _re.escape(t) + r"\b", _re.IGNORECASE)
+                    for t in extract_rare_proper_nouns(query)
+                ]
+            except Exception:
+                proper_noun_pats = []
+
             # Score each document
             scored = []
             for i, (doc, meta) in enumerate(zip(documents, metadatas)):
@@ -764,6 +785,13 @@ class ObsidianManager:
                 elif query_words & set(content.split()):
                     matching_words = len(query_words & set(content.split()))
                     score = 0.2 + (0.2 * min(matching_words / max(len(query_words), 1), 1.0))
+
+                # Proper-noun floor: an exact rare-name hit anywhere in the
+                # chunk outranks any generic word-overlap score.
+                if proper_noun_pats:
+                    haystack = f"{title}\n{section}\n{content}"
+                    if any(p.search(haystack) for p in proper_noun_pats):
+                        score = max(score, 0.75)
 
                 if score > 0:
                     scored.append({

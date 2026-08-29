@@ -54,7 +54,9 @@ class TestMarkSequence:
 class TestWiring:
     def test_handle_submit_marks_at_ingress(self):
         from gui import handlers
-        src = inspect.getsource(handlers.handle_submit)
+        # handle_submit is now a thin ingress wrapper (2026-08-28 dedupe
+        # guard); the dispatcher body lives in _handle_submit_inner.
+        src = inspect.getsource(handlers._handle_submit_inner)
         assert "mark_query_time()" in src, (
             "handle_submit must mark pacing at ingress — the [TIME CONTEXT] "
             "block is assembled from this state during prompt build"

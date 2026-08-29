@@ -23,11 +23,17 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 
 from utils.logging_utils import get_logger
-from utils.query_rewriter import rewrite_query, extract_keywords
+from utils.query_rewriter import rewrite_query, _ordered_keywords
 from utils.keyword_matcher import calculate_keyword_score
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.utils import is_junk_conversation_doc
 from config.app_config import CHROMA_PATH
+
+# Cap on query keywords used for candidate scoring. Normal queries have well
+# under 40 content words, so behavior is unchanged; only paste-sized queries
+# are bounded. 40 x 800 candidates ≈ 32K regex searches ≈ sub-second.
+import os as _os
+KEYWORD_MATCH_MAX_KEYWORDS = int(_os.getenv("KEYWORD_MATCH_MAX_KEYWORDS", "40"))
 
 logger = get_logger("hybrid_retriever")
 
@@ -131,7 +137,9 @@ class HybridRetriever:
                         # Drop junk docs stored before the storage-time
                         # guards (API-error sentinel turns, bare "test"
                         # exchanges) — they were ranking in top-10 retrieval.
-                        if is_junk_conversation_doc(
+                        # Curation-quarantined docs are dropped the same way.
+                        from memory.utils import is_quarantined
+                        if is_quarantined(item.get("metadata")) or is_junk_conversation_doc(
                             content=item.get("content", ""),
                             query=item.get("query", ""),
                             response=item.get("response", ""),
@@ -182,9 +190,16 @@ class HybridRetriever:
         """
         logger.debug(f"[HybridRetriever] Keyword matching for {len(candidates)} candidates")
 
-        # Extract keywords from query
-        keywords = extract_keywords(query)
-        logger.debug(f"[HybridRetriever] Extracted keywords: {keywords}")
+        # Extract keywords from query — CAPPED, first-occurrence order.
+        # A pasted document turned the whole syllabus vocabulary into
+        # keywords: ~700 keywords x 800 candidates = 560K per-keyword regex
+        # searches = a 20s stall inside get_memories (live 2026-08-29 turn).
+        # First-occurrence order keeps the user's OWN words (the message head)
+        # ahead of pasted-document vocabulary.
+        keywords = _ordered_keywords(query)[:KEYWORD_MATCH_MAX_KEYWORDS]
+        logger.debug(
+            f"[HybridRetriever] Extracted {len(keywords)} keywords "
+            f"(cap {KEYWORD_MATCH_MAX_KEYWORDS}): {keywords[:15]}...")
 
         # Score each candidate
         for candidate in candidates:

@@ -343,9 +343,18 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
     )
 
     # --- TECHNICAL_HELP ---------------------------------------------------
+    # Bare "issue" removed 2026-08-28: "disclosure timing … is often a huge
+    # issue" (a health-research question) classified technical_help@0.75 —
+    # the everyday-English sense, not the bug-tracker sense (same class as
+    # "commit to" below; this user's vocabulary is constantly medical-admin).
+    # The misclassification also opened the self-docs allow-gate, flooding
+    # [DAEMON DOCUMENTATION] into an unrelated turn. Technical turns nearly
+    # always carry another cue (error/bug/fix/debug); tracker-sense "issue"
+    # kept via the explicit github/filed forms.
     _add(
         r"\b(how (do|can|should|would) (i|you|we|one)"
-        r"|fix(ing)?|debug(ging)?|error|bug|issue|exception|traceback"
+        r"|fix(ing)?|debug(ging)?|error|bug|exception|traceback"
+        r"|github issue|open(ed)? an issue|file[ds]? an issue"
         r"|doesn'?t work|isn'?t working|not working|broken|crash(es|ing|ed)?"
         r"|help me (with|fix|debug|understand|figure))\b",
         IntentType.TECHNICAL_HELP, 0.75,
@@ -356,12 +365,15 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
     )
 
     # --- PROJECT_WORK -----------------------------------------------------
+    # "commit(?!\s+to\b)": bare \bcommit\b matched "Before I commit to that"
+    # in a pasted enrollment email and classified an emotional-logistics turn
+    # project_work@0.80 (2026-08-27) — the everyday-English sense, not git.
     _add(
         r"\b(let'?s (work on|build|create|add|implement|code)"
         r"|add (a |the )?(feature|endpoint|component|module|test|class)"
         r"|write (a |the )?(function|method|test|script|module)"
         r"|update (the |my )?(code|codebase|project|repo)"
-        r"|PR|pull request|merge|commit|branch|deploy)\b",
+        r"|PR|pull request|merge|commit(?!\s+to\b)|branch|deploy)\b",
         IntentType.PROJECT_WORK, 0.80,
     )
     # File references. Stem must contain at least one letter so version

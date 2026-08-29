@@ -873,3 +873,48 @@ class TestClipTopic:
 
     def test_never_empty(self, generator):
         assert generator._clip_topic("   ...  ") == "untitled"
+
+
+class TestSavePrewritten:
+    """save_prewritten (2026-08-23): insight-mode doc save — no research, no LLM."""
+
+    BODY = "# My Sleep Pattern\n\nEvidence assembled...\n\n## Timeline\n\n- item"
+
+    def test_writes_versioned_file_and_index(self, generator_no_search, tmp_path):
+        doc = generator_no_search.save_prewritten(
+            self.BODY, topic="my sleep pattern", source_types=["conversations", "facts"],
+        )
+        path = Path(doc.path)
+        assert path.exists()
+        assert str(path).startswith(str(tmp_path / "documents"))
+        content = path.read_text()
+        assert content.startswith("---")          # frontmatter present
+        assert "# My Sleep Pattern" in content
+        index = json.loads((tmp_path / "documents" / "index.json").read_text())
+        assert index[-1]["topic"] == "my sleep pattern"
+        assert index[-1]["source_types"] == ["conversations", "facts"]
+        assert index[-1]["sources_count"] == 0
+
+    def test_title_from_heading(self, generator_no_search):
+        doc = generator_no_search.save_prewritten(self.BODY, topic="sleep")
+        assert doc.title == "My Sleep Pattern"
+
+    def test_no_llm_call(self, generator_no_search, mock_model_manager):
+        generator_no_search.save_prewritten(self.BODY, topic="sleep")
+        mock_model_manager.generate_once.assert_not_called()
+
+    def test_empty_body_rejected(self, generator_no_search):
+        with pytest.raises(ValueError):
+            generator_no_search.save_prewritten("   ", topic="sleep")
+
+    def test_never_overwrites(self, generator_no_search):
+        d1 = generator_no_search.save_prewritten(self.BODY, topic="sleep")
+        d2 = generator_no_search.save_prewritten(self.BODY, topic="sleep")
+        assert d1.path != d2.path
+        assert Path(d1.path).exists() and Path(d2.path).exists()
+
+    def test_long_topic_clamped(self, generator_no_search):
+        doc = generator_no_search.save_prewritten(
+            self.BODY, topic="a very long noisy topic string " * 10,
+        )
+        assert len(doc.topic) <= 80

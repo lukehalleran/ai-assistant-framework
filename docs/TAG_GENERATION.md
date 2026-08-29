@@ -122,12 +122,12 @@ No manual intervention needed - tags are generated automatically when notes are 
 
 ## Testing
 
-Run the test script:
+Tag generation is covered by the main suite:
 ```bash
-python test_tag_generator.py
+python -m pytest tests/unit/test_daily_notes_auto_update.py -q
 ```
 
-This demonstrates:
+This covers:
 - Daily note tag generation
 - Weekly note tag generation
 - Tag vocabulary overview
@@ -203,5 +203,5 @@ If LLM fails:
 - `utils/weekly_notes_generator.py` - Weekly note integration
 - `config/app_config.py` - Configuration constants
 - `config/config.yaml` - YAML configuration
-- `test_tag_generator.py` - Test script
+- `tests/unit/test_daily_notes_auto_update.py` - Test coverage
 - `docs/TAG_GENERATION.md` - This documentation

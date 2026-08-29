@@ -11,7 +11,7 @@ Pydantic v2 schema validation for config.yaml.
 
 import sys
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -277,6 +277,25 @@ class AgenticSearchSection(BaseModel):
     # started and the loop falls through to final synthesis. Bounds a runaway
     # multi-round session (max_rounds × slow-model latency) hanging the turn.
     loop_timeout_s: float = Field(default=120.0, ge=10.0)
+
+
+class InsightModeSection(BaseModel):
+    """Insight / evidence-assembly turn-owning mode (facet sweep + provenance
+    + adversarial assessment). Sibling of agentic_search."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    max_facets: int = Field(default=6, ge=1)
+    per_facet_cap: int = Field(default=10, ge=1)
+    total_evidence_cap: int = Field(default=80, ge=1)
+    evidence_snippet_chars: int = Field(default=280, ge=50)
+    keyword_scan_max: int = Field(default=50, ge=1)
+    expand_top_k: int = Field(default=3, ge=0)
+    expand_window: int = Field(default=2, ge=1)
+    decompose_max_tokens: int = Field(default=700, ge=100)
+    synthesis_max_tokens: int = Field(default=2600, ge=200)
+    sweep_timeout_s: float = Field(default=45.0, ge=5.0)
+    offer_enabled: bool = True
+    doc_on_agreement: bool = True
 
 
 class FileAccessSection(BaseModel):
@@ -563,6 +582,9 @@ class EscalationSection(BaseModel):
     # upgrades to grounding presence (higher than `threshold`, which is for
     # ELEVATED/CRISIS). Catches slow spirals built from many terse CONCERN turns.
     distress_threshold: int = Field(default=5, ge=1)
+    # Max consecutive turns the sustained-distress upgrade may hold GROUNDING
+    # before stepping down to GENTLE_REENGAGEMENT (distress counter resets).
+    distress_grounding_max: int = Field(default=3, ge=1)
 
 
 class CanarySection(BaseModel):
@@ -685,6 +707,20 @@ class LogMaintenanceSection(BaseModel):
     debug_keep_days: float = Field(default=90, ge=1)
 
 
+class CurationSection(BaseModel):
+    """Autonomous curation engine (docs/AUTONOMOUS_CURATION_DESIGN.md)."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    max_mode: Literal["off", "shadow", "queue", "auto"] = "queue"
+    curator_modes: Dict[str, Literal["off", "shadow", "queue", "auto"]] = Field(
+        default_factory=dict)
+    scan_timeout_s: float = Field(default=45, gt=0)
+    auto_rate_cap: int = Field(default=25, ge=0)
+    anomaly_fraction: float = Field(default=0.05, gt=0, le=1)
+    max_queue_items_per_curator: int = Field(default=50, ge=1)
+    staleness_grace_hours: int = Field(default=48, ge=0)
+
+
 class ApiSection(BaseModel):
     """FastAPI server settings (React frontend at /, Gradio admin UI at /admin)."""
     model_config = ConfigDict(extra="ignore")
@@ -743,6 +779,18 @@ class ResponsePlanningSection(BaseModel):
     review_max_tokens: int = Field(default=200, ge=1)
     review_confidence_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
     review_timeout: float = Field(default=5.0, gt=0.0)
+
+
+class GroundingCheckSection(BaseModel):
+    """Factual-grounding floor (2026-08-28): post-generation false-claim
+    check — deterministic pre-filter → LLM verifier → visible correction."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    model: Optional[str] = None  # None → falls back to response_planning.review_model
+    confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    timeout_s: float = Field(default=5.0, gt=0.0)
+    max_tokens: int = Field(default=250, ge=1)
+    min_response_chars: int = Field(default=40, ge=0)
 
 
 class UncertaintyFallbackSection(BaseModel):
@@ -1027,12 +1075,15 @@ class DaemonConfig(BaseModel):
     web_search: WebSearchSection = Field(default_factory=WebSearchSection)
     location: LocationSection = Field(default_factory=LocationSection)
     agentic_search: AgenticSearchSection = Field(default_factory=AgenticSearchSection)
+    insight_mode: InsightModeSection = Field(default_factory=InsightModeSection)
     uncertainty_fallback: UncertaintyFallbackSection = Field(default_factory=UncertaintyFallbackSection)
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
+    grounding_check: GroundingCheckSection = Field(default_factory=GroundingCheckSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
     light_prompt: LightPromptSection = Field(default_factory=LightPromptSection)
     backup: BackupSection = Field(default_factory=BackupSection)
     log_maintenance: LogMaintenanceSection = Field(default_factory=LogMaintenanceSection)
+    curation: CurationSection = Field(default_factory=CurationSection)
     file_access: FileAccessSection = Field(default_factory=FileAccessSection)
     memory_expansion: MemoryExpansionSection = Field(default_factory=MemoryExpansionSection)
     obsidian: ObsidianSection = Field(default_factory=ObsidianSection)

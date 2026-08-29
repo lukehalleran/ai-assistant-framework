@@ -77,7 +77,6 @@ except ImportError:  # pragma: no cover - triggered in trimmed test envs
     AsyncOpenAI = None  # type: ignore
     _openai_module = None  # type: ignore
 import httpx
-import os
 import asyncio
 import json
 

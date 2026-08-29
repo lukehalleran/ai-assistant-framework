@@ -31,7 +31,10 @@ Module Contract
 
 import uuid
 from enum import Enum
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy
 from dataclasses import dataclass, field
 from datetime import datetime
 

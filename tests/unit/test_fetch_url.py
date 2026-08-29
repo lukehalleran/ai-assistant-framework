@@ -768,7 +768,6 @@ class TestHandlerUrlDetection:
 
     def test_url_extraction_regex(self):
         """Test the URL extraction regex used in handlers.py."""
-        import re
         _url_pattern = re.compile(r'https?://[^\s<>"\')\]]+')
 
         text = "Check https://github.com/user/repo and http://example.com/page?q=1"
@@ -778,7 +777,6 @@ class TestHandlerUrlDetection:
         assert "http://example.com/page?q=1" in urls
 
     def test_url_extraction_no_urls(self):
-        import re
         _url_pattern = re.compile(r'https?://[^\s<>"\')\]]+')
 
         text = "Tell me about http protocols and HTTPS"
@@ -788,7 +786,6 @@ class TestHandlerUrlDetection:
         assert len(urls) == 0
 
     def test_url_extraction_with_trailing_punct(self):
-        import re
         _url_pattern = re.compile(r'https?://[^\s<>"\')\]]+')
 
         # URL followed by period should not include the period (it's a valid URL char though)

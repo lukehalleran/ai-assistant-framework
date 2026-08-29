@@ -14,9 +14,14 @@ Module Contract
   - list[CorrectionEvent] — each event identifies a fact and whether it
     was corrected or confirmed, with a confidence score.
   - list[EntityCorrectionEvent] — entity-level corrections (alive/survived/etc.)
+  - detect_correction_signal(user_message) -> float — message-level
+    correction confidence with NO fact list (2026-08-23; feeds the
+    narrative-staleness flag and any caller that needs "is this a
+    correction?" before fact resolution).
 - Key behaviors:
   - Pattern-based detection (no LLM call — fast, deterministic)
-  - Correction patterns: "actually it's...", "no, I meant...", "I moved to..."
+  - Correction patterns: "actually it's...", "no, I meant...", "I moved to...",
+    terse numeric swaps ("6 weeks off vryalr not 1.")
   - Confirmation patterns: "yeah I still...", "still working at..."
   - Entity correction patterns: "X did not die", "X is still alive", "X survived"
   - Minimum confidence threshold of 0.6 to reduce false positives
@@ -88,6 +93,10 @@ _CORRECTION_PATTERNS = [
     (re.compile(r"\bi\s+no\s+longer\b", re.I), 0.75),
     (re.compile(r"\bnot\s+anymore\b", re.I), 0.70),
     (re.compile(r"\bi\s+don'?t\s+(live|work|go|do|have)\b", re.I), 0.65),
+    # Terse numeric swap: "6 weeks off vryalr not 1." — a whole-message
+    # value correction with no correction verb (2026-08-23: this shape
+    # matched nothing and the wrong "day 8" duration persisted).
+    (re.compile(r"^\s*\d+[\w\s.,'-]{0,60}?\bnot\s+\d+(?:\s+\w{1,15})?\s*\.?\s*$", re.I), 0.75),
 ]
 
 # ------------------------------------------------------------------
@@ -154,6 +163,22 @@ _MIN_CONFIDENCE = 0.6
 class CorrectionDetector:
     """Detects user corrections and confirmations of stored facts."""
 
+    def detect_correction_signal(self, user_message: str) -> float:
+        """Message-level correction signal, independent of any fact list.
+
+        Returns the best correction-pattern confidence (0.0 when nothing
+        matches). Callers that need "is the user correcting SOMETHING?"
+        without a resolvable stored fact (e.g. narrative-state staleness
+        flagging, 2026-08-23) use this; detect_corrections() builds on it.
+        """
+        if not user_message:
+            return 0.0
+        best = 0.0
+        for pattern, conf in _CORRECTION_PATTERNS:
+            if pattern.search(user_message):
+                best = max(best, conf)
+        return best
+
     def detect_corrections(
         self, user_message: str, recent_facts: List[dict]
     ) -> List[CorrectionEvent]:
@@ -174,10 +199,7 @@ class CorrectionDetector:
         msg_lower = user_message.lower()
 
         # First check if the message matches any correction pattern at all
-        best_pattern_conf = 0.0
-        for pattern, conf in _CORRECTION_PATTERNS:
-            if pattern.search(user_message):
-                best_pattern_conf = max(best_pattern_conf, conf)
+        best_pattern_conf = self.detect_correction_signal(user_message)
 
         if best_pattern_conf < _MIN_CONFIDENCE:
             return []

@@ -461,7 +461,7 @@ class TestApplyIntentVetoPostHoc:
         assert d2.should_trigger
 
     def test_posthoc_veto_noop_without_intent(self):
-        from core.agentic.gate import apply_intent_veto, AgenticDecision
+        from core.agentic.gate import apply_intent_veto
         d = AgenticDecision(should_trigger=True)
         assert apply_intent_veto(d, None).should_trigger is True
 

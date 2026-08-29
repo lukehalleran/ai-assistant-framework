@@ -65,6 +65,10 @@ def _mems(n):
 @pytest.fixture(autouse=True)
 def _default_floor(monkeypatch):
     monkeypatch.setenv("GATE_MIN_MEMORIES", "8")
+    # These tests pin the COUNT-cap contract with cosine-0 memories; the
+    # 2026-08-23 quality floor would (correctly) refuse them all. Disable it
+    # here — floor semantics live in test_gate_forced_quality_floor.py.
+    monkeypatch.setenv("GATE_FORCED_FLOOR_MARGIN", "1.0")
 
 
 @pytest.mark.asyncio

@@ -395,7 +395,7 @@ class TestGraphMemoryTraversal:
         already aged these out). get_context_sentences now applies the shared
         relation_classifier TTL.
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime
         old = datetime.now() - timedelta(hours=500)  # well past the 96h health TTL
         graph.add_relation(GraphEdge(
             source_id="user", relation="health_status",
@@ -410,7 +410,7 @@ class TestGraphMemoryTraversal:
 
     def test_context_sentences_keeps_fresh_illness(self, graph):
         """A fresh illness edge is still surfaced (only stale ones age out)."""
-        from datetime import datetime, timedelta
+        from datetime import datetime
         recent = datetime.now() - timedelta(hours=2)
         graph.add_relation(GraphEdge(
             source_id="user", relation="health_status",
@@ -421,7 +421,7 @@ class TestGraphMemoryTraversal:
 
     def test_context_sentences_keeps_old_durable_edge(self, graph):
         """A durable (non-transient) edge is kept regardless of age."""
-        from datetime import datetime, timedelta
+        from datetime import datetime
         old = datetime.now() - timedelta(days=400)
         graph.add_relation(GraphEdge(
             source_id="user", relation="lives_in", target_id="spain",
@@ -439,7 +439,7 @@ class TestGraphMemoryTraversal:
         now standard-ephemeral and ages out on the 24h horizon like its siblings
         (appointment_time, therapy_appointment); durable edges are unaffected.
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime
         old = datetime.now() - timedelta(hours=72)  # past the 24h ephemeral TTL
         graph.add_relation(GraphEdge(
             source_id="user", relation="appointment",
@@ -454,7 +454,7 @@ class TestGraphMemoryTraversal:
 
     def test_context_sentences_keeps_fresh_appointment(self, graph):
         """A freshly-mentioned appointment edge is still surfaced (only stale ages out)."""
-        from datetime import datetime, timedelta
+        from datetime import datetime
         recent = datetime.now() - timedelta(hours=2)
         graph.add_relation(GraphEdge(
             source_id="user", relation="appointment",

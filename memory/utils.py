@@ -35,6 +35,15 @@ _TRIVIAL_TEST_QUERIES = frozenset({
 })
 
 
+def is_quarantined(metadata) -> bool:
+    """True for docs the curation engine has quarantined (2026-08-28,
+    docs/AUTONOMOUS_CURATION_DESIGN.md). Quarantine replaces deletion: the
+    doc stays on disk (fully restorable via the Curation Center undo) but
+    must never surface in a prompt. Checked beside the content predicates
+    at every retrieval filter site."""
+    return bool(metadata) and bool(metadata.get("curation_quarantined"))
+
+
 def is_junk_conversation_doc(content: str = "", query: str = "", response: str = "") -> bool:
     """
     True for stored conversation docs that should never surface at retrieval:

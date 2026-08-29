@@ -203,3 +203,22 @@ def test_diff_external_git_config_not_executed(tmp_path):
     )
     assert not canary.exists(), "worker .git diff.external executed on host"
     assert "edit" in diff
+
+
+def test_diff_bogus_base_sha_fails_loud(tmp_path):
+    """A base_sha the baseline clone doesn't have must RAISE, never silently
+    diff against the clone's HEAD or return "" (empty diff reads as "no
+    changes" — a silent PASS in a review path). 2026-08-28: the checkout was
+    check=False and both failure shapes were reachable."""
+    import pytest
+    baseline, base_sha = _make_baseline(tmp_path)
+    worker = tmp_path / "worker_clone"
+    subprocess.run(["git", "clone", "-q", str(baseline), str(worker)], check=True)
+    (worker / "sandbox" / "calc.py").write_text(
+        "def add(a, b):\n    return a + b  # edit\n", encoding="utf-8")
+
+    with pytest.raises((subprocess.CalledProcessError, RuntimeError)):
+        compute_trusted_diff(
+            worker_repo=worker, trusted_baseline_repo=baseline,
+            base_sha="0" * 40, work_dir=tmp_path / "diff_root",
+        )

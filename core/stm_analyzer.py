@@ -39,6 +39,8 @@ Module Contract
 import json
 from typing import List, Dict, Any, Optional
 from utils.logging_utils import get_logger
+from datetime import date, timedelta
+from datetime import datetime
 
 logger = get_logger("stm_analyzer")
 
@@ -203,7 +205,6 @@ Return JSON only, no markdown or extra text:"""
         except ImportError:
             return ""
 
-        from datetime import date, timedelta
         today = date.today()
         parts: List[str] = []
 
@@ -234,7 +235,6 @@ Return JSON only, no markdown or extra text:"""
         Returns:
             Formatted conversation string with relative day labels
         """
-        from datetime import datetime
         from utils.time_manager import format_relative_timestamp
 
         lines = []

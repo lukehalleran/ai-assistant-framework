@@ -65,6 +65,7 @@ import uuid
 import asyncio
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
+from datetime import datetime as _dt
 
 logger = logging.getLogger(__name__)
 
@@ -339,7 +340,6 @@ class MultiCollectionChromaStore:
             except Exception as e:
                 logger.debug(f"[ChromaStore] Could not parse timestamp '{ts}': {e}, using minimum date")
             # fallback ensures items without timestamp don't crash
-            from datetime import datetime as _dt
             return _dt.min
 
         all_items.sort(key=_ts, reverse=True)

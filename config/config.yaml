@@ -159,8 +159,25 @@ agentic_search:
   decision_max_tokens: 1600
   round_timeout_s: 75      # per-round decision-LLM timeout (backstop vs. stalled call)
   loop_timeout_s: 120      # wall-clock budget for rounds 2-N; then synthesize from context
-uncertainty_fallback:
+insight_mode:
   enabled: true
+  max_facets: 6            # facet decomposition cap (distinct search angles per theme)
+  per_facet_cap: 10        # evidence items kept per facet per source
+  total_evidence_cap: 80   # hard cap on assembled evidence items
+  evidence_snippet_chars: 280
+  keyword_scan_max: 50     # corpus keyword-search result cap per facet
+  expand_top_k: 3          # conversation hits expanded via memory_expander
+  expand_window: 2         # turns of surrounding context per expansion
+  decompose_max_tokens: 700
+  synthesis_max_tokens: 2600
+  sweep_timeout_s: 45      # sweep wall-clock budget; partial evidence on timeout
+  offer_enabled: true      # ONE consent-gated offer on insight-shaped statements
+  doc_on_agreement: true   # save doc only on agree/partial verdicts
+uncertainty_fallback:
+  # OFF 2026-08-28: 8-week telemetry audit — 62 fires, ALL benchmark/test
+  # traffic, 0 real-turn fires, 0 retries ever accepted; each fire costs a
+  # full silent agentic retry. Code + tests stay; flip to re-enable.
+  enabled: false
   semantic_threshold: 0.7
   max_length: 400
 response_planning:
@@ -173,6 +190,13 @@ response_planning:
   review_max_tokens: 200
   review_confidence_threshold: 0.9
   review_timeout: 5.0
+grounding_check:
+  enabled: true
+  model: null            # null -> falls back to response_planning.review_model
+  confidence_threshold: 0.85
+  timeout_s: 5.0
+  max_tokens: 250
+  min_response_chars: 40 # LOW on purpose - the live false endorsement was ~300 chars
 file_access:
   enabled: true
   approved_folders:
@@ -254,6 +278,19 @@ log_maintenance:
   audit_max_mb: 20
   debug_compress_age_days: 7
   debug_keep_days: 90
+curation:
+  enabled: true
+  # Global disposition ceiling: no curator may exceed this regardless of its
+  # per-curator mode. "queue" until curators graduate the trust ladder
+  # (docs/AUTONOMOUS_CURATION_DESIGN.md) — flip to "auto" per owner decision.
+  max_mode: queue
+  # Per-curator overrides (off | shadow | queue | auto). Unlisted = queue.
+  curator_modes: {}
+  scan_timeout_s: 45
+  auto_rate_cap: 25
+  anomaly_fraction: 0.05
+  max_queue_items_per_curator: 50
+  staleness_grace_hours: 48
 api:
   host: 127.0.0.1
   port: 8000
@@ -480,6 +517,11 @@ escalation_tracker:
   threshold: 3
   deescalation_window: 2
   distress_threshold: 5
+  # Max consecutive turns the sustained-distress (CONCERN-run) upgrade may
+  # hold GROUNDING before stepping down to GENTLE_REENGAGEMENT (distress
+  # counter resets — a fresh sustained run is required to re-ground).
+  # Elevated/crisis-path grounding is never budgeted.
+  distress_grounding_max: 3
 valence_retrieval:
   enabled: true
   max_negative_fraction: 0.5

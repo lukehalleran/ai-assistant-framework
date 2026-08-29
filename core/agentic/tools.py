@@ -35,6 +35,10 @@ from core.agentic.types import (
     _ToolResult,
 )
 from core.agentic.formatters import AgenticFormatter
+import re as _re
+import asyncio
+import urllib.parse
+import re
 
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
@@ -95,7 +99,6 @@ def reroute_url_search(decision: "SearchDecision") -> "SearchDecision":
     Returns the (possibly rewritten) decision; the dispatch loop then routes it to the
     fetch_url handler. Applied by BOTH routers so behavior is identical."""
     if decision.wants_search and decision.search_query:
-        import re as _re
         m = _re.search(r'(https?://[^\s<>"\')\]]+)', decision.search_query.strip())
         if m:
             logger.info(f"[ToolExecutor] Rerouting URL from web_search to fetch_url: {m.group(1)}")
@@ -1819,8 +1822,6 @@ Provide a focused summary with the most important information."""
 
     async def _execute_stackexchange(self, query: str, site: str = "stackoverflow") -> str:
         """Search Stack Exchange API. No auth needed."""
-        import asyncio
-        import urllib.parse
         import httpx
 
         url = (
@@ -1845,7 +1846,6 @@ Provide a focused summary with the most important information."""
             accepted = "ACCEPTED" if item.get("accepted_answer_id") else ""
             link = item.get("link", "")
             # Extract text from body HTML (simple strip)
-            import re
             body = re.sub(r"<[^>]+>", "", item.get("body", ""))[:500]
             lines.append(
                 f"{i}. [{score} votes] {'[ANSWERED]' if answered else ''} {accepted}\n"
@@ -1855,7 +1855,6 @@ Provide a focused summary with the most important information."""
 
     async def _execute_arxiv(self, query: str) -> str:
         """Search arXiv API. No auth needed."""
-        import urllib.parse
         import httpx
         import xml.etree.ElementTree as ET
 
@@ -1899,7 +1898,6 @@ Provide a focused summary with the most important information."""
 
     async def _execute_pubmed(self, query: str) -> str:
         """Search PubMed E-utilities. No auth needed."""
-        import urllib.parse
         import httpx
         import xml.etree.ElementTree as ET
 
@@ -1952,7 +1950,6 @@ Provide a focused summary with the most important information."""
 
     async def _execute_hackernews(self, query: str) -> str:
         """Search Hacker News via Algolia API. No auth needed."""
-        import urllib.parse
         import httpx
 
         url = (

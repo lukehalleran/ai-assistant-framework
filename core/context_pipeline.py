@@ -594,6 +594,9 @@ class ContextPipeline:
             Tuple of (ToneLevel, EmotionalContext)
         """
         try:
+            # lazy import: patch point (tone tests monkeypatch
+            # utils.emotional_context.analyze_emotional_context; the call-time
+            # import is what makes the patch visible here)
             from utils.emotional_context import analyze_emotional_context
 
             # Get recent memories for context if memory_system available
@@ -625,16 +628,22 @@ class ContextPipeline:
             import os as _os
             _floor_chain_max = int(_os.getenv("TONE_FLOOR_CHAIN_MAX", "3"))
             _prev_tone = self._last_tone_level
-            if self._floor_chain >= _floor_chain_max:
+            _floor_budget_left = self._floor_chain < _floor_chain_max
+            if not _floor_budget_left:
                 # The carried tone is floor-produced N turns deep — stop
                 # feeding it back as evidence; only organic signals (semantic/
                 # keyword/arbiter/backstop, or heavy history) may re-elevate.
+                # Withholding previous_tone alone is NOT enough: the detector's
+                # session-distress test falls through to recent-heavy-history
+                # and the floor re-fired past the budget (2026-08-28, 4 chained
+                # floor turns) — the floor stage itself is disabled too.
                 _prev_tone = None
             emotional_ctx = await analyze_emotional_context(
                 message=query,
                 conversation_history=recent_memories,
                 model_manager=self.model_manager,
                 previous_tone=_prev_tone,
+                allow_sticky_floor=_floor_budget_left,
             )
 
             # Convert crisis level to ToneLevel
@@ -643,7 +652,15 @@ class ContextPipeline:
                 tone_level = ToneLevel.from_string(level_str)
                 # Remember this turn's crisis level for the next call's stickiness.
                 self._last_tone_level = emotional_ctx.crisis_level
-                _trigger = str(getattr(emotional_ctx, 'trigger', '') or '')
+                # EmotionalContext's field is `tone_trigger` (ToneAnalysis uses
+                # `trigger`) — reading the wrong name left the chain counter at 0
+                # and persisted trigger="" every turn (dead TONE_FLOOR_CHAIN_MAX
+                # guard + floor levels seedable across restart, 2026-08-27).
+                _trigger = str(
+                    getattr(emotional_ctx, 'tone_trigger', None)
+                    or getattr(emotional_ctx, 'trigger', '')
+                    or ''
+                )
                 if _trigger == "distress_sticky_floor":
                     self._floor_chain += 1
                 else:

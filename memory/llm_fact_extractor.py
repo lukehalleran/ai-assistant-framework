@@ -48,6 +48,16 @@ Contract
   fact_extractor._polarity_conflict against the full matched source message
   (positive-preference triples the source negates are dropped) — the LLM path
   previously had neither guard, so junk/inverted facts entered the profile through it.
+- Long-object cap + salvage (2026-08-26): objects over FACT_OBJECT_MAX_CHARS (300)
+  either yield their salutation recipient (fact_extractor._salvage_long_object —
+  "Hi Morgan, …700 chars…" -> "Morgan") or drop; this path previously had NO length cap.
+- Stance tagging (2026-08-23): the prompt asks for a "stance" field
+  (objective/appraisal/reported) with an explicit value-judgment rule; the
+  DETERMINISTIC classifier (memory/stance_classifier.classify_triple_stance)
+  OVERRIDES the LLM's tag on lexicon hits — the LLM only fills lexicon gaps.
+  Evaluative pronoun/role subjects ("she is abusive") are re-scoped via
+  scope_unresolved_referent to user-owned strings, never fuzzy-bound to a
+  named entity. Output triples carry "stance"; gen max_tokens 900→1100.
 """
 
 from __future__ import annotations
@@ -60,6 +70,7 @@ import os
 
 from utils.logging_utils import get_logger
 from memory.user_profile_schema import ProfileCategory, categorize_relation
+from collections import defaultdict
 
 logger = get_logger("llm_facts")
 
@@ -118,10 +129,58 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     # _clean_triple. Until 2026-08-03 the LLM path had no junk-object check,
     # so junk like `dad_show_up=for a bit` entered the profile through here
     # and later showed up only as "skipped as duplicate" of itself.
-    from memory.fact_extractor import _is_junk_object
+    from memory.fact_extractor import (
+        _is_junk_object,
+        _fact_object_max_chars,
+        _salvage_long_object,
+    )
     if _is_junk_object(obj, rel):
         logger.debug(f"[LLM Facts] Blocked junk object: {subj}|{rel}|{obj}")
         return None
+
+    # Long-object cap + salutation salvage (2026-08-26). This path had NO
+    # length cap at all — a pasted email became the OBJECT of
+    # `user | email_sent | "Hi Morgan, …700 chars…"` (2026-06-15), burying the
+    # recipient where no embedding or entity resolution could see it. Recover
+    # the recipient when a salutation names one; otherwise drop, same as the
+    # regex path's cap.
+    if len(obj) > _fact_object_max_chars():
+        salvaged = _salvage_long_object(obj)
+        if not salvaged:
+            logger.debug(
+                f"[LLM Facts] Blocked over-long object ({len(obj)} chars, "
+                f"no salvageable recipient): {subj}|{rel}|{obj[:60]}…"
+            )
+            return None
+        logger.info(
+            f"[LLM Facts] Salvaged recipient {salvaged!r} from "
+            f"{len(obj)}-char {rel} object"
+        )
+        obj = salvaged
+
+    # Stance (2026-08-23): read the LLM's tolerantly, but the DETERMINISTIC
+    # classifier overrides on lexicon hits — a thick evaluative object
+    # (casey|is|evil) is an appraisal no matter what the model tagged. The LLM
+    # stance only fills the gaps the lexicon can't see. Unresolved evaluative
+    # referents ("she is abusive") are re-scoped to a user-owned subject and
+    # NEVER fuzzy-bound to a named entity.
+    from memory.stance_classifier import (
+        VALID_STANCES,
+        classify_triple_stance,
+        scope_unresolved_referent,
+    )
+    scoped_subj = scope_unresolved_referent(subj, obj)
+    if scoped_subj:
+        logger.info(f"[LLM Facts] Scoped unresolved referent: {subj} -> {scoped_subj}")
+        subj = scoped_subj
+    _det = classify_triple_stance(subj, rel, obj)
+    _llm_stance = str(t.get("stance") or "").strip().lower()
+    if _det.stance != "objective":
+        stance = _det.stance
+    elif _llm_stance in VALID_STANCES:
+        stance = _llm_stance
+    else:
+        stance = _det.stance
 
     # Auto-categorize
     category = categorize_relation(rel)
@@ -141,6 +200,7 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
         "category": category.value,
         "confidence": confidence,
         "fact_scope": fact_scope,
+        "stance": stance,
     }
 
     # Forward user_connection if the LLM provided one
@@ -208,7 +268,6 @@ class LLMFactExtractor:
         except ImportError:
             return ""
         # Invert: canonical → [variants]
-        from collections import defaultdict
         canonical_to_variants = defaultdict(set)
         for variant, canonical in SAFE_RELATION_ALIASES.items():
             canonical_to_variants[canonical].add(variant)
@@ -327,8 +386,18 @@ CATEGORIES to classify facts into:
 
 OUTPUT FORMAT (strict JSON array):
 [
-  {{"subject": "user", "relation": "snake_case_relation", "object": "value", "category": "category_name", "confidence": 0.0-1.0}}
+  {{"subject": "user", "relation": "snake_case_relation", "object": "value", "category": "category_name", "confidence": 0.0-1.0, "stance": "objective|appraisal|reported"}}
 ]
+
+STANCE (epistemic tag — how the statement relates to reality):
+- "objective": a checkable world-fact ("lives in Chicago", "takes 20mg").
+- "appraisal": a VALUE JUDGMENT about a person or thing — INCLUDING the user
+  about themselves ("my ex is evil", "I'm a failure", "my boss is toxic").
+  An appraisal is the user's take at the time, never a world-fact.
+- "reported": the user relaying someone else's claim ("my mom says I
+  overreact").
+- Example: "Casey was evil to me" →
+  {{"subject": "Casey", "relation": "is", "object": "evil", "category": "relationships", "confidence": 0.8, "stance": "appraisal"}}
 
 RELATION NAMING (keeps the knowledge graph queryable — 2026-08-02: 630 of 696
 stored relations were single-use inventions):
@@ -449,7 +518,7 @@ JSON:"""
                 prompt=prompt,
                 model_name=self.model_alias,
                 system_prompt="You output only strict JSON arrays. No prose, no explanation.",
-                max_tokens=900,  # 2026-08-05: 600 capped output ~10-14 JSON triples; 900 fits max_triples=16
+                max_tokens=1100,  # 2026-08-05: 600 capped ~10-14 triples; 2026-08-23: +stance field per triple
                 temperature=0.0,
                 top_p=1.0,
             )

@@ -569,7 +569,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
         logger.debug(f"[Shutdown] Sandbox cleanup: {e}")
 
     # Wait for any pending background storage tasks first
-    print("[Shutdown] 1/5 Draining pending memory writes (≤10s)…")
+    print("[Shutdown] 1/6 Draining pending memory writes (≤10s)…")
     try:
         from gui.handlers import wait_for_pending_storage
         await wait_for_pending_storage(timeout=10.0)
@@ -582,7 +582,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     # Bounded by SHUTDOWN_TASK_TIMEOUT_S so a hung LLM call (e.g. a slow
     # reasoning model) can't block exit — we persist whatever finished.
     from config.app_config import SHUTDOWN_TASK_TIMEOUT_S
-    print(f"[Shutdown] 2/5 Session reflection + fact extraction (≤{SHUTDOWN_TASK_TIMEOUT_S}s)…")
+    print(f"[Shutdown] 2/6 Session reflection + fact extraction (≤{SHUTDOWN_TASK_TIMEOUT_S}s)…")
     try:
         _refl, _proc = await asyncio.wait_for(
             asyncio.gather(
@@ -612,7 +612,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
         )
 
     # Generate today's daily note from this session's conversations
-    print("[Shutdown] 3/5 Daily note…")
+    print("[Shutdown] 3/6 Daily note…")
     try:
         from config.app_config import DAILY_NOTES_ENABLED
         if DAILY_NOTES_ENABLED:
@@ -636,14 +636,14 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     # cancelled mid-flight on every exit and never persisted a candidate.
     try:
         from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S
-        print(f"[Shutdown] 4/5 Synthesis dreaming (≤{SYNTHESIS_DREAM_TIMEOUT_S}s — the embedding "
+        print(f"[Shutdown] 4/6 Synthesis dreaming (≤{SYNTHESIS_DREAM_TIMEOUT_S}s — the embedding "
               f"'Batches' bar below may sit at 0% for a while)…")
         await asyncio.wait_for(
             orchestrator.memory_system.run_synthesis_dreaming(),
             timeout=SYNTHESIS_DREAM_TIMEOUT_S,
         )
         logger.info("[Shutdown] Synthesis dreaming completed")
-        print("[Shutdown] 4/5 Synthesis dreaming done.")
+        print("[Shutdown] 4/6 Synthesis dreaming done.")
     except asyncio.TimeoutError:
         logger.warning(
             f"[Shutdown] Synthesis dreaming exceeded {SYNTHESIS_DREAM_TIMEOUT_S}s — skipped"
@@ -651,17 +651,50 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     except Exception as e:
         logger.warning(f"[Shutdown] Synthesis dreaming failed (non-fatal): {e}")
 
+    # Curation scan — after all session writes have landed, before backup
+    # (so the backup captures any queued-state change). Scan is read-only on
+    # the stores + queue persist; with max_mode="queue" nothing auto-applies.
+    # Runs in-process against the daemon's OWN store objects, so the external
+    # -script clobber problem (08-05 profile incident) cannot occur.
+    try:
+        from config.app_config import CURATION_ENABLED, CURATION_SCAN_TIMEOUT_S
+        if CURATION_ENABLED:
+            from memory.curation.service import get_engine, init_engine
+            engine = get_engine()
+            if engine is None:
+                ms = orchestrator.memory_system
+                engine = init_engine(
+                    chroma_store=getattr(ms, "chroma_store", None),
+                    user_profile=getattr(ms, "user_profile", None),
+                    corpus_manager=getattr(ms, "corpus_manager", None),
+                )
+            if engine is not None:
+                print(f"[Shutdown] 5/6 Curation scan (≤{CURATION_SCAN_TIMEOUT_S:.0f}s)…")
+                _rep = await asyncio.wait_for(
+                    asyncio.to_thread(engine.run_scan),
+                    timeout=CURATION_SCAN_TIMEOUT_S,
+                )
+                logger.info(
+                    f"[Shutdown] Curation scan: {_rep.proposals_queued} queued, "
+                    f"{_rep.proposals_shadowed} shadowed, "
+                    f"halted={_rep.halted_curators or 'none'}"
+                )
+    except asyncio.TimeoutError:
+        logger.warning("[Shutdown] Curation scan timed out — queue resumes next shutdown")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Curation scan failed (non-fatal): {e}")
+
     # Backup — LAST, after every store write above has landed. Local file
     # copies (a few MB of JSON always; the ~600MB chroma tree only when the
     # newest chroma backup is older than BACKUP_MIN_INTERVAL_HOURS).
     try:
         from config.app_config import BACKUP_ENABLED
         if BACKUP_ENABLED:
-            print("[Shutdown] 5/5 Backing up memory stores…")
+            print("[Shutdown] 6/6 Backing up memory stores…")
             from utils.backup_manager import run_shutdown_backup
             _bk = await asyncio.to_thread(run_shutdown_backup)
             if _bk.ok and _bk.path:
-                print(f"[Shutdown] 5/5 Backup written: {_bk.path}"
+                print(f"[Shutdown] 6/6 Backup written: {_bk.path}"
                       f"{' (+chroma)' if _bk.chroma_included else ''} — exiting.")
             elif _bk.skipped_reason:
                 logger.info(f"[Shutdown] Backup skipped: {_bk.skipped_reason}")

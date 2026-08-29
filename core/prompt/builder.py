@@ -73,7 +73,10 @@ import os
 import re
 import time
 import asyncio
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.context_pipeline import ContextResult
 from datetime import datetime
 from utils.time_manager import TimeManager
 from utils.query_checker import analyze_query
@@ -97,6 +100,7 @@ from .token_manager import TokenManager
 from .base import _FallbackMemoryCoordinator
 from .hygiene import ContentHygiene
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
+import hashlib as _hashlib
 
 logger = get_logger("prompt_builder")
 
@@ -338,6 +342,41 @@ PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
 # minimum survives — but only a minimum; restoring to MAX would undo the trim.
 PROMPT_MIN_SUMMARIES_FLOOR = _cfg_int("prompt_min_summaries_floor", 2)
 PROMPT_MIN_REFLECTIONS_FLOOR = _cfg_int("prompt_min_reflections_floor", 1)
+
+
+def select_floor_topup(stored, have_contents, needed):
+    """Pick the NEWEST `needed` items from a floor re-fetch, skipping ones
+    already in the prompt.
+
+    The floors used to iterate `stored[::-1]`, assuming an oldest-first list —
+    but get_summaries/get_reflections return newest-first, so the floor
+    restored the OLDEST items in the fetch buffer (live 2026-08-27:
+    [RECENT SUMMARIES] rendered July 26/28 while Aug 22-26 summaries sat
+    unread; same class as the agentic digest-order inversion). Sort by
+    timestamp explicitly so either input order works.
+    """
+    if needed <= 0:
+        return []
+
+    def _ts_key(item):
+        ts = item.get("timestamp") if isinstance(item, dict) else None
+        if hasattr(ts, "isoformat"):
+            return ts.isoformat()
+        return str(ts or "")
+
+    have = set(have_contents or ())
+    add = []
+    for s in sorted(
+        (s for s in (stored or []) if isinstance(s, dict)),
+        key=_ts_key, reverse=True,
+    ):
+        content = (s.get("content") or "").strip()
+        if content and content not in have:
+            add.append(s)
+            have.add(content)
+        if len(add) >= needed:
+            break
+    return add
 
 # _staleness_prefix, _is_multimodal_model, _load_upload_image moved to formatter.py
 # Re-exported above via: from .formatter import _staleness_prefix, _is_multimodal_model, _load_upload_image
@@ -656,7 +695,6 @@ class UnifiedPromptBuilder:
             # especially). A cached string is reused; a cached None records a
             # prior timeout — skip straight to middle-out instead of re-paying
             # the timeout every turn.
-            import hashlib as _hashlib
             # Key includes the compression target: the same text compressed
             # for a different budget must not reuse the other target's result.
             _key = _hashlib.sha256(
@@ -1550,13 +1588,7 @@ class UnifiedPromptBuilder:
                     have = { (s.get('content') or '').strip()
                              for key in ('recent_summaries', 'semantic_summaries')
                              for s in (context.get(key) or []) if isinstance(s, dict) }
-                    add = []
-                    for s in (stored or [])[::-1]:  # assume stored oldest->newest; reverse to pick newest first
-                        if isinstance(s, dict) and (s.get('content') or '').strip() and (s.get('content').strip() not in have):
-                            add.append(s)
-                            have.add(s.get('content').strip())
-                        if len(add) >= needed:
-                            break
+                    add = select_floor_topup(stored, have, needed)
                     if add:
                         context['recent_summaries'] = (context.get('recent_summaries') or []) + add
 
@@ -1583,15 +1615,7 @@ class UnifiedPromptBuilder:
                     have_refl = { (r.get('content') or '').strip()
                                   for key in ('recent_reflections', 'semantic_reflections')
                                   for r in (context.get(key) or []) if isinstance(r, dict) }
-                    add_refl = []
-                    for r in (stored_refl or [])[::-1]:
-                        if isinstance(r, dict):
-                            content = (r.get('content') or '').strip()
-                            if content and content not in have_refl:
-                                add_refl.append(r)
-                                have_refl.add(content)
-                            if len(add_refl) >= needed:
-                                break
+                    add_refl = select_floor_topup(stored_refl, have_refl, needed)
                     if add_refl:
                         context['recent_reflections'] = (context.get('recent_reflections') or []) + add_refl
             except (TypeError, AttributeError, KeyError) as e:
@@ -1666,15 +1690,7 @@ class UnifiedPromptBuilder:
                     have = { (s.get('content') or '').strip()
                              for key in ('recent_summaries', 'semantic_summaries')
                              for s in (context.get(key) or []) if isinstance(s, dict) }
-                    add = []
-                    for s in (stored or [])[::-1]:
-                        if isinstance(s, dict):
-                            content = (s.get('content') or '').strip()
-                            if content and content not in have:
-                                add.append(s)
-                                have.add(content)
-                            if len(add) >= needed:
-                                break
+                    add = select_floor_topup(stored, have, needed)
                     if add:
                         context['recent_summaries'] = (context.get('recent_summaries') or []) + add
 
@@ -1712,15 +1728,7 @@ class UnifiedPromptBuilder:
                     have_refl = { (r.get('content') or '').strip()
                                   for key in ('recent_reflections', 'semantic_reflections')
                                   for r in (context.get(key) or []) if isinstance(r, dict) }
-                    add_refl = []
-                    for r in (stored_refl or [])[::-1]:
-                        if isinstance(r, dict):
-                            content = (r.get('content') or '').strip()
-                            if content and content not in have_refl:
-                                add_refl.append(r)
-                                have_refl.add(content)
-                            if len(add_refl) >= needed:
-                                break
+                    add_refl = select_floor_topup(stored_refl, have_refl, needed)
                     if add_refl:
                         context['recent_reflections'] = (context.get('recent_reflections') or []) + add_refl
             except (TypeError, AttributeError, KeyError) as e:

@@ -80,6 +80,17 @@ from gui.handlers import handle_submit
 from utils.conversation_logger import get_conversation_logger
 from gui.wizard import WizardState, process_wizard_message, get_welcome_message
 from gui.theme import DARK_CHATBOT_CSS, get_dark_theme
+import threading
+import asyncio
+import time as _t
+from datetime import datetime, timezone
+import asyncio as _a
+import re as _re_final
+
+# Module-level logger: 14 call sites referenced `logger` while it was only
+# assigned inside two function scopes — every other use was a latent
+# NameError waiting for its code path (first ruff pass, 2026-08-28).
+logger = logging.getLogger("gui.launch")
 
 # Detect frozen executable mode
 IS_FROZEN = getattr(sys, 'frozen', False)
@@ -111,8 +122,6 @@ def _run_daily_notes_catchup():
     Note: Creates its own ModelManager to avoid sharing httpx clients across event loops,
     which causes 'Event loop is closed' errors.
     """
-    import threading
-    import asyncio
 
     def _catchup_task():
         try:
@@ -162,8 +171,6 @@ def _run_weekly_notes_catchup():
     Note: Creates its own ModelManager to avoid sharing httpx clients across event loops,
     which causes 'Event loop is closed' errors.
     """
-    import threading
-    import asyncio
 
     def _catchup_task():
         try:
@@ -208,8 +215,6 @@ def _run_monthly_notes_catchup():
     Step 2: Generate last month's summary if complete and missing (async).
     Non-blocking - errors are logged but don't affect GUI startup.
     """
-    import threading
-    import asyncio
 
     def _catchup_task():
         try:
@@ -260,7 +265,6 @@ def _run_reference_docs_seed(chroma_store=None):
     (which reloaded the ~90MB BGE model and opened a duplicate client on the
     same data dir during the startup window).
     """
-    import threading
 
     def _seed_task():
         try:
@@ -323,10 +327,8 @@ def _run_model_warmup(orchestrator):
     CrossEncoder construction below can't race the meta-tensor _st_load_lock.
     Each step is independently guarded — warmup must never affect startup.
     """
-    import threading
 
     def _warm_task():
-        import time as _t
         t0 = _t.time()
         # 1) Cross-encoder reranker (MemoryRetriever lazy singleton) — the biggest
         #    cold cost on turn 1; the gate's cross-encoder already loads at init.
@@ -765,7 +767,6 @@ def build_demo(orchestrator, dev_tabs=None):
             sem_refl_count = 0
         # Last user message time (from recent corpus entries)
         def _fmt_ts(ts):
-            from datetime import datetime, timezone
             try:
                 if isinstance(ts, str):
                     ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -977,7 +978,6 @@ def build_demo(orchestrator, dev_tabs=None):
         thinking_visible = False
         winner_text = ""
         # Initial emit: clear input, keep debug_state only (debug view updates via state.change)
-        import time as _t, asyncio as _a
         _t0 = _t.time(); _updates = 0; _last_tick = _t0
         typing_text = "<div style='text-align:right'>Assistant is typing …</div>"
         timer_text = "<div style='text-align:right'>⏱️ 0.0 s</div>"
@@ -1171,7 +1171,6 @@ def build_demo(orchestrator, dev_tabs=None):
         # Safety strip: catch any XML tool-call artifacts that slipped through handlers
         if _final_content and ('<function_calls>' in _final_content or '<invoke' in _final_content
                                or '<lookup_contact' in _final_content or '<propose_action' in _final_content):
-            import re as _re_final
             _fc_orig = _final_content
             _final_content = _re_final.sub(r'<function_calls>.*?</function_calls>', '', _final_content, flags=_re_final.DOTALL).strip()
             _final_content = _re_final.sub(r'<function_calls>.*$', '', _final_content, flags=_re_final.DOTALL).strip()
@@ -1821,7 +1820,6 @@ def _launch_demo(demo, orchestrator, SHARE, SERVER_NAME, PORT):
             raise
 
     # When running as desktop app, shut down when browser tab closes
-    import threading
     shutdown_event = threading.Event()
 
     if IS_FROZEN:

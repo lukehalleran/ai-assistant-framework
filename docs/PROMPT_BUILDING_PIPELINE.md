@@ -101,14 +101,14 @@ default to `[]` without affecting other sections.
 | Task | Method | Default Limit |
 |------|--------|---------------|
 | recent | `_get_recent_conversations()` | 15 |
-| memories | `_get_semantic_memories()` | 15 (passes `min_gated=limit` so the `GATE_MIN_MEMORIES=8` forced-minimum floor is clamped to the intent budget — lower only [2026-08-21]; incident detail in MEMORY_SYSTEM Stage 3. `tests/unit/test_gate_min_results_cap.py`) |
+| memories | `_get_semantic_memories()` | 15 (passes `min_gated=limit` so the `GATE_MIN_MEMORIES=8` forced-minimum floor is clamped to the intent budget — lower only [2026-08-21]; incident detail in MEMORY_SYSTEM Stage 3. `tests/unit/test_gate_min_results_cap.py`); keyword anchor [2026-08-26]: a rare query proper noun (`extract_rare_proper_nouns`) absent from the ENTIRE semantic pool injects up to `KEYWORD_ANCHOR_MAX_HITS`=3 exact word-boundary corpus matches past the gate + score threshold — a rare name contributes ~nothing to a bge embedding, so "appointment with Morgan" had retrieved 30 memories with zero Morgan mentions; `tests/unit/test_keyword_anchor_retrieval.py`) |
 | user_profile | `get_user_profile_context()` | 3000 tokens |
 | summaries | `_get_summaries_separate()` | 5 recent + 5 semantic (recent side is `chroma.get_recent()` timestamp-sorted + `is_junk_summary` filter since 2026-07-25 — it was a semantic query with an EMPTY string, i.e. "nearest the null embedding", so [RECENT SUMMARIES] surfaced junk while same-day summaries sat unread) |
 | dreams | `_get_dreams()` | 3 |
 | semantic | `_get_semantic_chunks()` | 8 (dedicated 2-worker executor + non-blocking in-flight semaphore [2026-07-15] — a USB-stalled search that outlives SEM_TIMEOUT_S can't starve the shared default executor, and a saturated pool makes the turn SKIP wiki chunks instead of queuing; warmup touch at startup via `_run_model_warmup`) |
 | reflections | `_get_reflections_separate()` | 5 recent + 5 semantic |
 | wiki | `_get_wiki_content()` | 3 |
-| personal_notes | `get_personal_notes()` | 5 (chunks with < `PERSONAL_NOTES_MIN_CHARS`=60 chars of real prose after stripping image embeds are dropped — image-only vault chunks embed as noise [2026-07-25]) |
+| personal_notes | `get_personal_notes()` | 5 (chunks with < `PERSONAL_NOTES_MIN_CHARS`=60 chars of real prose after stripping image embeds are dropped — image-only vault chunks embed as noise [2026-07-25]); obsidian `_keyword_search` floors a word-boundary proper-noun hit at 0.75 [2026-08-26] — whole-query word-set scoring weighed "Morgan" the same as "not", so the "Advisor: Morgan Reeves" note lost to date-titled daily notes) |
 | reference_docs | `get_reference_docs()` | 5 (ALLOW-gated [2026-08-05]: `builder._should_include_reference_docs` — self-docs surface only on meta_conversational/technical_help/project_work intents or a self-referential query cue ("daemon", "your memory", "how do you score"…); a conversational-tone personal pain turn had pulled 15 doc chunks incl. a lecture transcript. The 2026-07-25 suppressions still always win: distress/emotional_support turns and file-upload turns drop the task entirely — Daemon's own tone docs semantically match distress language) |
 | user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session; staleness gate [2026-08-05]: `_upload_is_live` keeps an upload only if fresh (≤ `USER_UPLOADS_MAX_AGE_DAYS`=7) OR relevance ≥ `USER_UPLOADS_MIN_RELEVANCE`=0.62 — months-old homework docs/photos were injected every turn, undated legacy docs must clear the relevance bar; bar recalibrated 0.5→0.62 on 2026-08-14: store rel=1/(1+2(1−cos)) in bge space, so 0.5 ≈ cosine 0.5 = any-text, 0.62 ≈ cosine 0.69, above the memory gate's 0.60) |
 | git_commits | `get_git_commits()` | varies |
@@ -356,6 +356,26 @@ scorer._intent_weight_overrides = None
 
 ---
 
+## Query Rewriting (utils/query_rewriter.py)
+
+`rewrite_query()` expands the query with topic terms and synonym-group
+expansions before semantic retrieval (used by `memory/hybrid_retriever.py`;
+the ContextPipeline's LLM query rewrite is a separate step).
+
+### Deterministic keyword ordering (2026-08-23)
+
+The rewritten string feeds an ORDER-SENSITIVE embedding model (bge), and a
+`set()` round-trip used to scramble word order — the SAME query could
+produce a different query vector run-to-run, making retrieval
+non-deterministic. Keywords now keep the user's first-occurrence order
+(`_ordered_keywords()`), topic-extraction terms append after them in topic
+order, and synonym expansions append last in deterministic order (keywords
+in query order → each keyword's first matching group in `SYNONYM_GROUPS`
+order → synonyms in group-list order). Tests:
+`tests/unit/test_query_rewriter_order.py`.
+
+---
+
 ## Graph Query Expansion
 
 Before semantic retrieval, `_expand_query_with_graph()` appends knowledge
@@ -388,6 +408,31 @@ and graph-context (`get_context_sentences`) already apply: stale transient edges
 `GraphMemory._edge_is_stale_transient` → `relation_classifier`) are dropped from
 both traversal and scoring. Nothing is deleted — a fresh mention refreshes
 `last_seen` and the edge returns.
+
+### Stance-aware edges (2026-08-23)
+
+`rank_expansion_candidates()` also excludes edges whose
+`GraphEdge.metadata` carries an EXPLICIT `appraisal` or `inferred` stance
+(`memory/stance_classifier.py`) from query expansion — a stored value
+judgment ("casey is evil") must not seed retrieval terms for unrelated
+queries (the "evil" expansion leak). Legacy untagged edges
+(`stance="unknown"`) are NOT suppressed. Rendering is also stance-aware:
+`GraphEdge.to_natural_language` (feeding `[KNOWLEDGE GRAPH]`) presents
+appraisals as "you described X as '...' (your words at the time, DATE)" —
+"you've consistently described..." once settled — and inferred edges with
+an "(assistant inference)" marker; `memory_retriever._present_fact_content`
+applies the same rewrite to explicit-appraisal facts at the retrieval
+boundary (objective/legacy output byte-identical). Tests:
+`tests/unit/test_stance_consumers.py`.
+
+### Min-mentions evidence bar (2026-08-23)
+
+`rank_expansion_candidates()` also applies an evidence bar: candidates
+whose node `mention_count` is below `GRAPH_EXPANSION_MIN_MENTIONS`
+(default 2; env-overridable, 0 disables) are skipped — a single-mention
+node (one offhand remark) no longer becomes a query-expansion term. Nodes
+without the `mention_count` metadata field are not penalized. Tests:
+`tests/unit/test_graph_expansion_min_mentions.py`.
 
 ---
 
@@ -490,6 +535,24 @@ always gets the full context. The ContextPipeline computes a *separate*
 `is_small_talk` (CASUAL_SOCIAL intent, conf ≥ 0.70) used for heavy-topic
 skip and telemetry — the two signals coexist deliberately.
 Tests: `tests/unit/test_light_prompt_path.py`.
+
+---
+
+## Insight-Mode Bypass (2026-08-23)
+
+Insight / evidence-assembly turns do NOT source their evidence from this
+pipeline: when the agentic gate returns `AgenticDecision.insight_intent`,
+the turn is owned by `gui/handlers._run_insight_mode`, which runs the
+UNGATED cross-store sweep in `core/insight/sweep.py` (chroma
+`query_collection` + `corpus_manager.search_keyword` keyword scan + graph
+1-hop + `MemoryExpander`; generous caps instead of cosine gating — a
+theme-sweep evidence set is individually low-similarity but collectively
+signal-bearing, which the per-doc memory gate structurally cannot pass) and
+streams its own synthesis. The standard `build_prompt()` gather/gate/budget
+machinery is not the evidence source for these turns; on any exception the
+handler falls through to the agentic/enhanced path (which does use it).
+See `AGENTIC_SEARCH.md` "Insight / Evidence-Assembly Mode" for the full
+pipeline.
 
 ---
 

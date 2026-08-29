@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Optional
 
 from utils.logging_utils import get_logger
+import math
 
 logger = get_logger("graph_walk_generator")
 
@@ -126,7 +127,6 @@ class GraphWalkGenerator:
         log-scale penalty to prevent high-degree nodes (like "states")
         from dominating seed selection.
         """
-        import math
         from config.app_config import GRAPH_WALK_HUB_DEGREE_THRESHOLD
 
         candidates = []

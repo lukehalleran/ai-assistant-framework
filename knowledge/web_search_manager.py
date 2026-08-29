@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+import re as _re
 
 log = logging.getLogger(__name__)
 
@@ -1117,6 +1118,14 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
             log.debug(f"[WebSearch] Location resolution failed: {e}")
             return None
 
+    def _get_user_institution(self) -> Optional[str]:
+        try:
+            from utils.institution_resolver import get_user_institution
+            return get_user_institution()
+        except Exception as e:
+            log.debug(f"[WebSearch] Institution resolution failed: {e}")
+            return None
+
     def _localize_query(self, query: str) -> str:
         """Deterministic backstop behind the LLM prompts: substitute literal
         "my area"/"near me" with the user's location, and append the location
@@ -1207,10 +1216,22 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
                     f"they named it. If unnamed, keep those sub-queries place-free.\n"
                 )
 
+            institution_block = ""
+            user_institution = self._get_user_institution()
+            if user_institution:
+                institution_block = (
+                    f"\nUser's school: {user_institution}\n"
+                    f"If the query is about the user's OWN school logistics (drop/withdrawal "
+                    f"deadlines, registration, registrar, tuition, academic calendar), use "
+                    f"\"{user_institution}\" in those sub-queries instead of generic "
+                    f"\"college\"/\"school\". Never apply it when the user names a different "
+                    f"school, and never for general coursework/concept questions.\n"
+                )
+
             prompt = f"""Analyze this search query and determine if it should be split into multiple focused sub-queries for better search results.
 
 Query: "{query}"
-{location_block}
+{location_block}{institution_block}
 Criteria for splitting:
 1. Multiple distinct entities (e.g., "Tesla vs Rivian" → search each separately)
 2. Multiple facets/aspects (e.g., "iPhone 16 price and reviews" → search price, search reviews)
@@ -1290,6 +1311,16 @@ If not splitting, leave SUB_QUERIES empty."""
                 from utils.location_resolver import strip_unjustified_location
                 sub_queries = strip_unjustified_location(
                     sub_queries, query, user_location
+                )
+
+            # Backstop: name the user's school in academic-logistics
+            # sub-queries the LLM left generic (2026-08-27: "class
+            # withdrawal deadline 2026" et al. burned 6 credits on
+            # generic pages while the profile knew the school).
+            if sub_queries and user_institution:
+                from utils.institution_resolver import apply_institution
+                sub_queries = apply_institution(
+                    sub_queries, query, user_institution
                 )
 
             # Validate we have enough sub-queries
@@ -1386,7 +1417,6 @@ If not splitting, leave SUB_QUERIES empty."""
             return False
         # Named entities (capitalized mid-sentence words) → specific query
         # Skip first word of each sentence (always capitalized, not an entity signal)
-        import re as _re
         _sentences = _re.split(r'[.!?]+\s*', query)
         _NON_ENTITY_MID = {
             "i", "i'll", "i'm", "i've", "i'd",

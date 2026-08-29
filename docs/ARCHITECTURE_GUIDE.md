@@ -57,6 +57,8 @@ docs throughout.
 30. [Google OAuth2 & Calendar Integration](#30-google-oauth2--calendar-integration)
 31. [Ephemeral Fact Filtering](#31-ephemeral-fact-filtering)
 32. [Backup & Disaster Recovery](#32-backup--disaster-recovery)
+33. [Insight / Evidence-Assembly Mode](#33-insight--evidence-assembly-mode)
+34. [Stance / Epistemic-Tagging Layer](#34-stance--epistemic-tagging-layer)
 
 ---
 
@@ -1708,6 +1710,26 @@ Detection produces `CorrectionEvent` objects with the affected fact,
 the correction type, and the new value. These events trigger truth
 score adjustments and staleness cascade.
 
+### GUI Wiring Fix (2026-08-23)
+
+This whole post-response pipeline was DEAD on the production GUI path:
+only the unused `process_user_query` flow called
+`_run_post_response_detectors` (same class as the 08-18 EscalationTracker
+GUI-wiring bug). `orchestrator.run_post_response_detectors()` is now
+PUBLIC and called per turn from `gui/handlers._write_turn_telemetry`; the
+flow-based wrapper delegates to it so both paths run THE same pipeline.
+Same batch: a terse-numeric-swap correction pattern joined the detector
+("6 weeks off vryalr not 1."), and
+`correction_detector.detect_correction_signal()` (message-level,
+fact-list-INDEPENDENT) scores correction confidence even when the
+correction matches no stored fact — at ≥0.6 it also flags the cached
+narrative context stale (`utils/narrative_staleness.py`:
+`corpus_manager.get_narrative_context()` appends a CAUTION line until the
+next narrative regeneration clears it, so corrected claims stop
+re-entering prompts via a stale [TEMPORAL GROUNDING]). Tests:
+`tests/unit/test_correction_gui_wiring.py`,
+`tests/unit/test_narrative_staleness.py`.
+
 ---
 
 ## 16. Memory Staleness Cascade
@@ -3026,6 +3048,154 @@ Install as a daily cron job:
 ```
 
 Or run manually: `bash scripts/backup_data.sh`
+
+---
+
+## 33. Insight / Evidence-Assembly Mode
+
+**Files**: `core/insight/` (types.py, detector.py, facets.py, sweep.py,
+provenance.py, assessor.py, synthesizer.py), `gui/handlers.py`
+(`_run_insight_mode`), `core/agentic/gate.py`, `memory/corpus_manager.py`
+(`search_keyword`). Shipped 2026-08-23.
+
+A turn-owning mode parallel to agentic search for theme-sweep and
+self-assessment requests over the user's own history: "gather everything
+I've said about X", "write a summary of my pattern with X for my
+therapist" (`wants_document=True`), "check this against what I've told
+you" / "am I right that...". Detection is deterministic regex
+(`detector.py`).
+
+### Routing
+
+The agentic gate runs insight detection BEFORE Tier-3
+`detect_document_intent`, so personal-theme doc requests route to insight
+mode instead of web research. The decision is always `veto_exempt` and
+carries `AgenticDecision.insight_intent`. A consent offer
+(`maybe_arm_insight_offer(query, tone_level)`) arms a one-shot in-memory
+slot (max 1 offer/session) when the user makes an insight-shaped STATEMENT
+at non-elevated tone; handlers inject an `[INSIGHT OFFER]` system-prompt
+note; a terse affirmation next turn runs the assessment veto-exempt;
+anything else drops the offer permanently.
+
+### Pipeline
+
+```
+Facet decomposition (facets.py)
+  One strict-JSON LLM call → 4-6 FacetQuery incl. a MANDATORY
+  counter-evidence facet; deterministic fallback on failure
+    ↓
+UNGATED sweep (sweep.py)
+  conversations/summaries/reflections/facts/obsidian_notes/threads via
+  chroma query_collection + corpus_manager.search_keyword() word-boundary
+  scan (query/response scanned separately for speaker attribution) +
+  graph 1-hop (hub/stale/appraisal-edge skips) + MemoryExpander around top
+  conversation hits. Generous caps (per_facet 10, total 80) replace cosine
+  gating — the per-doc memory gate structurally cannot pass
+  low-pairwise-similarity / high-collective-signal evidence sets.
+  asyncio timeout (45s) returns partial results.
+    ↓
+Provenance labeling (provenance.py)
+  user-stated / users-own-note / assistant-inferred / extracted-fact /
+  graph-edge; assistant text marked "[assistant's interpretation, not your
+  words]"; appraisals marked "[value judgment — an appraisal, not an
+  objective fact]"
+    ↓
+Assessment (assessor.py — assessment kind only)
+  Adversarial strict-JSON; MUST seek refuting evidence; any failure →
+  "insufficient", never fail-agree. Worst-of verdict ordering:
+  disagree > insufficient > partial > agree
+    ↓
+Streamed synthesis (synthesizer.py)
+  Hard-coded invariants: quote+date every point; never assert value
+  judgments in system voice; mandatory denominator caveat (the corpus
+  over-samples distress days — record-frequency ≠ life-frequency);
+  counter-evidence visible; MI-shaped close; elevated tone → therapist
+  framing
+    ↓
+Optional doc save
+  DocumentGenerator.save_prewritten(): frontmatter + versioned file +
+  index.json entry; no research, no LLM, never enters reference_docs.
+  Only when wants_document and no disagreeing assessment, or on
+  agree/partial when insight_mode.doc_on_agreement
+```
+
+Storage uses `response_mode="insight-assembly"`. On any exception the
+handler falls through to the agentic/enhanced path.
+
+Config: YAML `insight_mode:` → `INSIGHT_*` constants (see
+`MEMORY_SYSTEM.md` / `QUICK_REFERENCE.md`). Tests:
+`tests/unit/test_insight_gate.py`, `test_insight_sweep.py`,
+`test_insight_provenance.py`, `test_insight_assessor.py`,
+`test_insight_mode_handler.py`, `test_corpus_keyword_search.py`.
+Registered in `config/feature_registry.yaml` as `insight_evidence_assembly`.
+
+---
+
+## 34. Stance / Epistemic-Tagging Layer
+
+**Files**: `memory/stance_classifier.py` (single-source deterministic
+core), plus write-path hooks in `fact_extractor` / `llm_fact_extractor` /
+`memory_storage`, and consumers across `graph_utils`, `graph_models`,
+`memory_retriever`, `cross_deduplicator`, `user_profile`, `graph_memory`.
+Shipped 2026-08-23.
+
+Every fact and graph edge carries an epistemic stance: **objective** /
+**appraisal** / **reported** / **inferred** / **unknown**
+(`LEGACY_STANCE_DEFAULT="unknown"` for untagged data — consumers act
+conservatively: suppression only on EXPLICIT appraisal/inferred,
+standing-granting requires EXPLICIT non-elevated evidence). The
+`EVALUATIVE_LEXICON` of thick evaluative terms (evil, abusive, toxic,
+worthless, ...) drives deterministic classification; the LLM extractor may
+propose a stance but the classifier OVERRIDES on lexicon hits.
+
+### Write Path
+
+- `fact_extractor._clean_triple` preserves evaluative pronoun-subject
+  triples user-scoped instead of dropping them; `scope_unresolved_referent`
+  re-scopes "she is abusive" to "user's unnamed referent" / "user's last
+  partner" and NEVER fuzzy-binds to a named entity.
+- `memory_storage.extract_and_store_facts` forwards stance +
+  `capture_tone` into fact metadata; `_ingest_fact_to_graph` writes them
+  into `GraphEdge.metadata`. User-scoped role subjects become verbatim
+  `entity_type="role"` graph nodes, bypassing the alias resolver.
+- The shutdown LLM path joins each triple to its session corpus entry's
+  `is_heavy_topic` flag for `capture_tone` (unmatched → unknown).
+
+### Consumers
+
+1. `graph_utils.rank_expansion_candidates` excludes explicit
+   appraisal/inferred edges from query expansion (the "evil" expansion
+   leak fix).
+2. `GraphEdge.to_natural_language` renders appraisals as "you described X
+   as '...' (your words at the time, DATE)" — settled ones as "you've
+   consistently described..." — and inferred edges with an "(assistant
+   inference)" marker; `memory_retriever._present_fact_content` applies
+   the same rewrite at the retrieval boundary (objective/legacy output
+   byte-identical).
+3. `cross_deduplicator._find_fact_contradictions` skips explicit-appraisal
+   facts (perspectives coexist).
+4. `user_profile.add_fact` stores the stance, never promotes explicit
+   appraisals into the quick profile, with a deterministic lexicon
+   backstop when the caller passes no stance.
+5. `graph_memory.add_relation` tracks `appraisal_days`/`appraisal_tones`
+   distinct-ISO-day lists — an appraisal restated on ≥3 DISTINCT
+   non-elevated days gains `settled=True` (elevated/unknown days never
+   count).
+
+### Backfill
+
+`scripts/backfill_stance.py` — dry-run default, refuses `--apply` while
+Daemon runs (`utils/daemon_guard`), pre-image backups to
+`data/backups/stance_backfill_<ts>/`, classifies all facts + graph edges
+with THE deployed classifier, hard sentinel (exits nonzero unless the
+known casey|is|evil fact classifies appraisal). Dry-run validated on live
+data 2026-08-23: 3268 facts (20 appraisal), 987 edges; `--apply`
+owner-gated.
+
+Tests: `tests/unit/test_stance_classifier.py`, `test_stance_write_path.py`,
+`test_stance_consumers.py`, `test_appraisal_settledness.py`,
+`test_backfill_stance.py`. Registered in `config/feature_registry.yaml` as
+`stance_epistemic_tagging`.
 
 ---
 

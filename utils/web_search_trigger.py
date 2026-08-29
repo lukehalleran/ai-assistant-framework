@@ -30,6 +30,13 @@ Module Contract:
     - source: str ("llm" | "heuristic" | "explicit")
     - needs_memory_search: bool (LLM detected memory/recall intent) [NEW 2026-03-15]
     - needs_knowledge_search: bool (LLM detected encyclopedic/wiki intent) [NEW 2026-03-31]
+    - needs_document_generation + document_topic/document_type/document_source —
+      document_source is "research" (research the topic externally) or
+      "conversation" (write up THIS conversation's content; sharing cues like
+      "so I can text that to my therapist" mean conversation) [NEW 2026-08-24];
+      normalized to ""|"research"|"conversation" in LLMSearchTriggerResponse.parse,
+      consumed by the agentic gate's Tier-4 doc_gen_intent and gui/handlers'
+      _resolve_doc_source (which also has a deterministic regex backstop)
 - Adaptive anchors [NEW 2026-08-03]:
   - _get_search_anchors() merges learned exemplars (utils.adaptive_exemplars,
     domain "web_search") into the semantic anchor sets: "search_worthy" → positive,
@@ -70,6 +77,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
+import json
 
 logger = get_logger("web_search_trigger")
 
@@ -117,6 +125,7 @@ class WebSearchDecision:
     needs_document_generation: bool = False  # LLM detected document generation intent
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
+    document_source: str = ""  # "research" (external lookup) | "conversation" (summarize THIS conversation) | ""
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -152,6 +161,7 @@ class LLMSearchTriggerResponse:
     needs_document_generation: bool = False  # Whether query wants a saved document
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
+    document_source: str = ""  # "research" | "conversation" | ""
 
     @classmethod
     def parse(cls, json_str: str) -> Optional['LLMSearchTriggerResponse']:
@@ -169,7 +179,6 @@ class LLMSearchTriggerResponse:
         Returns:
             LLMSearchTriggerResponse if parsing succeeds, None otherwise
         """
-        import json
 
         if not json_str:
             return None
@@ -198,6 +207,10 @@ class LLMSearchTriggerResponse:
             if search_depth not in ("quick", "standard", "deep"):
                 search_depth = "quick"
 
+            document_source = str(data.get("document_source", "")).strip().lower()
+            if document_source not in ("research", "conversation"):
+                document_source = ""
+
             return cls(
                 should_search=bool(data.get("should_search", False)),
                 confidence=confidence,
@@ -210,6 +223,7 @@ class LLMSearchTriggerResponse:
                 needs_document_generation=bool(data.get("needs_document_generation", False)),
                 document_topic=str(data.get("document_topic", "")),
                 document_type=str(data.get("document_type", "")),
+                document_source=document_source,
             )
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.debug(f"[LLMSearchTriggerResponse] JSON parse error: {e}")
@@ -905,6 +919,7 @@ def is_personal_state_statement(query: str) -> bool:
     # gate's vent-shape test; lazy import — both modules import each other
     # only inside functions) and require remaining substantive first person.
     try:
+        # lazy import: cycle (gate imports web_search_trigger at call time)
         from core.agentic.gate import strip_epistemic_markers, _FIRST_PERSON_RE
         return bool(_FIRST_PERSON_RE.search(strip_epistemic_markers(q)))
     except Exception:
@@ -934,6 +949,7 @@ def _build_llm_trigger_prompt(
     remaining_credits: float = 100,
     conversation_context: str = None,
     user_location: str = None,
+    user_institution: str = None,
 ) -> str:
     """
     Build the classification prompt for the unified LLM trigger.
@@ -950,6 +966,12 @@ def _build_llm_trigger_prompt(
             When present, location-dependent queries (weather, local news,
             "near me") get the location baked into search_terms instead of
             leaking literal "my area" into the search engine.
+        user_institution: Optional name of the user's school ("Georgia
+            Tech"). When present, the user's OWN academic-logistics queries
+            (drop/withdrawal deadlines, registrar, tuition) get the school
+            named in search_terms instead of generic "college"/"school" —
+            generic academic queries return generic pages (2026-08-27: a
+            drop-date confirmation searched "college drop date August 2026").
 
     Returns:
         Formatted prompt string for LLM
@@ -979,11 +1001,23 @@ def _build_llm_trigger_prompt(
             f"by where they are — a college in their city is not their college unless they named "
             f"it. If the institution is unnamed, search the error/issue generically without any place."
         )
+    institution_line = ""
+    institution_guideline = ""
+    if user_institution and user_institution.strip():
+        _inst = user_institution.strip()
+        institution_line = f"User's school: {_inst}\n"
+        institution_guideline = (
+            f"\n- SCHOOL-LOGISTICS QUERIES: the user attends \"{_inst}\". For queries about "
+            f"THEIR OWN school logistics (drop/withdrawal deadlines, registration, registrar, "
+            f"tuition, academic calendar, transcripts), use \"{_inst}\" in search terms instead "
+            f"of generic \"college\"/\"school\"/\"my school\". NEVER apply it when the user names "
+            f"a DIFFERENT school, and never use it for general coursework/concept questions."
+        )
     return f"""Analyze if this query needs real-time web search OR stored memory search, and generate optimized search terms.
 
 Query: "{query[:500]}"
 Current date: {current_date}
-{location_line}Available search budget: {remaining_credits:.0f} credits
+{location_line}{institution_line}Available search budget: {remaining_credits:.0f} credits
 {context_block}
 WEB SEARCH CRITERIA:
 - SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info the user is explicitly asking about (recalls, outbreaks, new guidance), or references dates/years needing verification
@@ -996,6 +1030,7 @@ WEB SEARCH CRITERIA:
   * Greetings or short responses under 5 words that aren't explicit search requests
   * Follow-up references to prior conversation ("watched it", "saw that", "just read it", "i just watched", etc.) - these refer to something already discussed, not web content
   * Comments about media the user consumed ("i just watched", "i finished reading", "just saw") - these are conversation follow-ups, not search requests
+  * Questions about the user's OWN schedule or state anchored to a weekday/date ("is this useful info for Monday", "will I be ready by Friday") — "Monday" is THEIR appointment or deadline from the conversation, not a news topic. There is nothing on the web about the user's Monday. Deictic questions ("is this expected/normal?") are about conversation content, not the internet
 - should_search=true requires an actual information need: the reply would be materially wrong or stale without fresh external facts. When in doubt, false.
 
 MEMORY SEARCH CRITERIA (needs_memory_search):
@@ -1018,6 +1053,7 @@ DOCUMENT GENERATION CRITERIA (needs_document_generation):
 - Also TRUE if: user references the document writing feature, asks to "try the document feature", or says something like "write that up as a report"
 - FALSE if: user just wants information verbally, asks a question, wants a summary in chat, or says "summarize X" without asking to save/write/create a document
 - When TRUE, also set document_topic to the core topic and document_type to "report" or "summary"
+- When TRUE, also set document_source: "conversation" if the user wants THIS conversation's content written up (e.g. "write up what we just discussed", "summarize these insights so I can send them to my therapist", "put our conversation in a doc") — the source is what was already said, not external research. Use "research" when the user wants a topic researched and written up from external sources ("write a report about climate change"). Sharing cues ("so I can text/send/show that to X") about the current discussion mean "conversation".
 
 OUTPUT (JSON only, no markdown):
 {{
@@ -1031,11 +1067,12 @@ OUTPUT (JSON only, no markdown):
   "needs_knowledge_search": true or false,
   "needs_document_generation": true or false,
   "document_topic": "topic for document (only if needs_document_generation is true)",
-  "document_type": "report or summary (only if needs_document_generation is true)"
+  "document_type": "report or summary (only if needs_document_generation is true)",
+  "document_source": "research or conversation (only if needs_document_generation is true)"
 }}
 
 GUIDELINES:
-- search_terms: Rewrite for better results (add year if relevant, be specific, remove conversational filler){location_guideline}
+- search_terms: Rewrite for better results (add year if relevant, be specific, remove conversational filler){location_guideline}{institution_guideline}
 - FOLLOW-UPS: If the query is elliptical or refers back to the conversation ("check the news", "any updates on that", "what's the latest", "look into it", "anything new on it"), resolve the referent using RECENT CONVERSATION above and make search_terms SPECIFIC to that established topic. Never emit generic or world-news terms when the user is clearly asking for an update on something already being discussed. If no RECENT CONVERSATION is provided, treat the query as self-contained.
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
@@ -1079,9 +1116,16 @@ async def _classify_with_llm_unified(
         user_location = get_user_location()
     except Exception as e:
         logger.debug(f"[WebSearchTrigger] Location resolution failed: {e}")
+    user_institution = None
+    try:
+        from utils.institution_resolver import get_user_institution
+        user_institution = get_user_institution()
+    except Exception as e:
+        logger.debug(f"[WebSearchTrigger] Institution resolution failed: {e}")
     prompt = _build_llm_trigger_prompt(
         query, current_date, remaining_credits, conversation_context,
         user_location=user_location,
+        user_institution=user_institution,
     )
     effective_timeout = timeout or SEARCH_TRIGGER_TIMEOUT
 
@@ -1116,6 +1160,16 @@ async def _classify_with_llm_unified(
                 from utils.location_resolver import strip_unjustified_location
                 parsed.search_terms = strip_unjustified_location(
                     parsed.search_terms, query, user_location
+                )
+            if parsed.search_terms and user_institution:
+                # Backstop: name the user's school in academic-logistics
+                # terms the LLM left generic ("college drop date August
+                # 2026" retrieved nothing usable, 2026-08-27). Runs after
+                # the location strip so a de-localized term can still gain
+                # the institution.
+                from utils.institution_resolver import apply_institution
+                parsed.search_terms = apply_institution(
+                    parsed.search_terms, query, user_institution
                 )
             logger.debug(
                 f"[WebSearchTrigger] LLM parsed: should_search={parsed.should_search}, "
@@ -1439,6 +1493,7 @@ async def analyze_for_web_search_llm(
         needs_document_generation=llm_response.needs_document_generation,
         document_topic=llm_response.document_topic,
         document_type=llm_response.document_type,
+        document_source=llm_response.document_source,
     )
 
     # Cache the result to avoid duplicate LLM calls within same request

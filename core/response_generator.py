@@ -36,6 +36,7 @@ from datetime import datetime
 from utils.time_manager import TimeManager
 from utils.query_checker import keyword_tokens
 from core.reasoning_stream_filter import InterleavedReasoningFilter, MARKER
+import math
 # No config constants imported here; defaults are managed by ModelManager
 logger = get_logger("response_generator")
 
@@ -499,7 +500,6 @@ class ResponseGenerator:
         a = (answer or "").lower()
         c = (context_hint or "").lower()
         # penalize numbers not in context
-        import re
         nums = re.findall(r"\b\d+[\w\-]*\b", a)
         if not nums:
             return 0.0
@@ -535,7 +535,6 @@ class ResponseGenerator:
         else:
             temps = (getattr(self.model_manager, 'default_temperature', 0.7),) * n
 
-        import asyncio
         tasks = []
         for i in range(n):
             t = temps[i if i < len(temps) else -1]
@@ -728,7 +727,6 @@ class ResponseGenerator:
         These are logged but stripped before sending to the judge, and only the
         final answer from the winning model is returned.
         """
-        import asyncio
         if self.logger:
             try:
                 self.logger.info(f"[DUEL] model_1={model_a} model_2={model_b} judge={judge_model}")
@@ -831,7 +829,6 @@ class ResponseGenerator:
         - Uses internal heuristic scoring and optionally LLM judges; combines by weights.
         - judge_top_k>0: only the top-K (by heuristic) are sent to judges.
         """
-        import asyncio, math
 
         if self.logger:
             try:
