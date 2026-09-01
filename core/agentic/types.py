@@ -187,6 +187,12 @@ class SearchDecision:
     wants_pubmed: bool = False
     pubmed_query: Optional[str] = None
     pubmed_reason: Optional[str] = None
+    # Deterministic longitudinal evidence scan (phase JSON is optional; the
+    # executor returns disabled/unavailable status when no corpus is injected).
+    wants_pattern_scan: bool = False
+    pattern_spec: Optional[Dict[str, Any]] = None
+    pattern_events: Optional[List[Dict[str, Any]]] = None
+    pattern_reason: Optional[str] = None
     # Hacker News search
     wants_hackernews: bool = False
     hackernews_query: Optional[str] = None
@@ -265,6 +271,16 @@ class AgenticSearchSession:
     # Short digest of THIS session's recent turns (content, not just counts) so the
     # per-round decision can avoid re-deriving facts already settled in-session.
     recent_conversation_digest: str = ""
+    # Richer bounded digest only populated for explicit write-action turns;
+    # preserves exact dates/drafts and the prior assistant's closing question.
+    action_context_digest: str = ""
+
+    # Per-round operational telemetry.  Kept separate from SearchRound so the
+    # audit record can describe decision latency even for tool-less rounds.
+    round_telemetry: List[Dict[str, Any]] = field(default_factory=list)
+    decision_answer_reuse_fired: bool = False
+    fetch_fastpath_fired: bool = False
+    requested_channels: Dict[str, str] = field(default_factory=dict)
 
     # Provenance
     final_prompt_hash: str = ""
@@ -313,12 +329,31 @@ class AgenticSearchSession:
                 rd["reason"] = r.request.reason[:120] if r.request.reason else ""
             if r.error:
                 rd["error"] = str(r.error)[:200]
+            telemetry = next(
+                (entry for entry in self.round_telemetry
+                 if entry.get("round") == r.round_number),
+                None,
+            )
+            if telemetry:
+                for key in ("decision_ms", "tool_ms", "timed_out"):
+                    if key in telemetry:
+                        rd[key] = telemetry[key]
             agentic_rounds.append(rd)
+        channels = dict(self.requested_channels)
+        if not channels:
+            q = self.query.lower()
+            for name, cues in {"pattern": ("pattern", "before and after"), "pubmed": ("pubmed", "research"), "web": ("web", "wiki")}.items():
+                if any(c in q for c in cues): channels[name] = "requested"
+            for r in self.rounds:
+                q = (r.request.query or "").lower()
+                for name, cue in (("pattern", "pattern_scan"), ("pubmed", "pubmed"), ("web", "web_search"), ("wiki", "wiki")):
+                    if cue in q: channels[name] = "attempted"
         return {
             "total_rounds": len(self.rounds),
             "protocol": self.protocol.value if self.protocol else "",
             "agentic_rounds": agentic_rounds,
             "model_signaled_done": self.model_signaled_done,
+            "requested_channels": channels,
             "done_reason": self.done_reason or "",
             "context_inventory": self.context_inventory[:500] if self.context_inventory else "",
             "memory_search_counts": dict(self.memory_search_counts) if self.memory_search_counts else {},
@@ -879,6 +914,19 @@ PUBMED_TOOL_DEFINITION = {
     }
 }
 
+PATTERN_SCAN_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "pattern_scan",
+        "description": ("Run a bounded, multi-phase longitudinal evidence scan over "
+                        "the user's record. Use for explicit before/taper/after "
+                        "comparisons; absence of mention is not evidence of absence."),
+        "parameters": {"type": "object", "properties": {
+            "spec": {"type": "object", "description": "Frozen evidence spec with propositions, outcomes, and phases."},
+            "reason": {"type": "string"}}, "required": ["spec"]}
+    }
+}
+
 HACKERNEWS_TOOL_DEFINITION = {
     "type": "function",
     "function": {
@@ -1019,11 +1067,13 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
             "Propose a write action on an external service that requires user confirmation. "
             "Use this to send messages (Telegram, Discord, email), create GitHub issues, "
             "or perform other internet write operations. The user will see a confirmation "
-            "prompt and can approve or reject the action. Propose at most ONE action per turn. "
+            "prompt and can approve or reject the action. Propose at most ONE logical action "
+            "per turn; several calendar events belong in one events[] batch proposal. "
             "REQUIRED fields per action_type: github_create_issue needs subject (the issue TITLE) "
             "and message (the issue BODY); github_comment_pr needs pr_number and message (the comment); "
             "send_email/send_telegram/send_discord need recipient and message; calendar_create_event "
-            "needs summary, start_time, end_time. Do NOT specify a repo — it is auto-detected."
+            "needs summary, start_time, end_time, OR an events[] array whose items contain "
+            "those fields. Do NOT specify a repo — it is auto-detected."
         ),
         "parameters": {
             "type": "object",
@@ -1080,6 +1130,34 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 "location": {
                     "type": "string",
                     "description": "Event location (calendar_create_event only)."
+                },
+                "all_day": {
+                    "type": "boolean",
+                    "description": (
+                        "True for an all-day calendar entry. Then start_time/end_time are "
+                        "YYYY-MM-DD dates and end_time is the next day (exclusive)."
+                    )
+                },
+                "events": {
+                    "type": "array",
+                    "description": (
+                        "Several calendar events in one confirmation proposal. Use only for "
+                        "calendar_create_event; each item needs summary, start_time, end_time."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "summary": {"type": "string"},
+                            "description": {"type": "string"},
+                            "start_time": {"type": "string"},
+                            "end_time": {"type": "string"},
+                            "time_zone": {"type": "string"},
+                            "calendar_id": {"type": "string"},
+                            "location": {"type": "string"},
+                            "all_day": {"type": "boolean"}
+                        },
+                        "required": ["summary", "start_time", "end_time"]
+                    }
                 },
                 "pr_number": {
                     "type": "integer",

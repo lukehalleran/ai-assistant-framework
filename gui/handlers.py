@@ -163,7 +163,11 @@ async def _background_store_interaction(
             log_metadata['provenance'] = provenance
         conversation_logger.log_interaction(
             user_input=user_text,
-            assistant_response=final_output,
+            # Log the same sanitized text that memory stores. The raw stream
+            # can start with provider control tokens such as <|sep|>; logging
+            # it raw made debug transcripts look polluted even when the UI and
+            # corpus were clean.
+            assistant_response=response_to_store,
             metadata=log_metadata,
         )
     except Exception as e:
@@ -823,9 +827,55 @@ def _make_text_action_proposal(decision, store):
         summary=decision.action_summary or f"{decision.action_type}: action",
         reasoning=decision.action_reason or "",
     )
-    store.propose(proposal)
+    if not store.propose(proposal):
+        logger.warning("[Handle Submit] Pending action store rejected text proposal")
+        return None
     ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(proposal)
     return proposal.action_id
+
+
+def _format_action_proposal_card(proposal) -> str:
+    """Render enough detail for informed approval, including calendar batches."""
+    params = proposal.params or {}
+    action_name = proposal.action_type.value
+    events = params.get("events") if isinstance(params.get("events"), list) else []
+    if action_name == "calendar_create_event" and events:
+        lines = [
+            f"\n\n---\n**calendar_create_event** — {len(events)} events, one approval"
+        ]
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            title = str(event.get("summary", "Untitled event"))
+            start = str(event.get("start_time", "time missing"))
+            all_day = event.get("all_day") is True or str(
+                event.get("all_day", "")
+            ).lower() in {"true", "1", "yes"}
+            suffix = " [all day]" if all_day else ""
+            lines.append(f"- **{title}** — {start}{suffix}")
+        return "\n".join(lines) + "\n"
+
+    if action_name == "calendar_create_event":
+        title = str(params.get("summary", proposal.summary or "Untitled event"))
+        start = str(params.get("start_time", "time missing"))
+        all_day = params.get("all_day") is True or str(
+            params.get("all_day", "")
+        ).lower() in {"true", "1", "yes"}
+        suffix = " [all day]" if all_day else ""
+        return f"\n\n---\n**calendar_create_event** — **{title}** — {start}{suffix}\n"
+
+    recipient = params.get("recipient", "")
+    subject = params.get("subject", "")
+    message = params.get("message", "")
+    header = f"**{action_name}**"
+    if recipient:
+        header += f" to {recipient}"
+    if subject:
+        header += f" — *{subject}*"
+    card = f"\n\n---\n{header}\n"
+    if message:
+        card += f"> {str(message)[:300]}\n\n"
+    return card
 
 
 async def _resolve_contact_and_propose_email(
@@ -1392,6 +1442,68 @@ async def _run_doc_generation(ctx):
         # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
 
 
+def _interleave_phase_events(comparisons):
+    """Round-robin scan events across phases (outcome events before proxies
+    within each phase) so the downstream pattern-evidence cap samples every
+    phase. Sequential phase-order appending let the earlier phases fill the
+    cap: the 2026-08-31 sleep/functioning run had 25 stable-on + 29 taper
+    outcome events, so the 50-item cap dropped ALL 62 post-cessation ("off")
+    events — the synthesis had no quotable post-cessation statement while the
+    manifest reported the phase counts."""
+    queues = [
+        list(comparison.events) + list(comparison.proxy_events)
+        for comparison in comparisons
+    ]
+    interleaved = []
+    while any(queues):
+        for queue in queues:
+            if queue:
+                interleaved.append(queue.pop(0))
+    return interleaved
+
+
+def _window_scan_collection(chroma_store, collection_name, window, cap):
+    """Chunks whose CONTENT date falls inside [start, end] (ISO strings).
+
+    The date-range retrieval arm for windowed longitudinal specs: an explicit
+    calendar window is a metadata question, not a similarity question. Scans
+    the collection's metadata (small collections only — notes/facts, a few
+    thousand chunks) and prefers note_date (content date) over index-time
+    timestamps. Read-only; failures degrade to an empty list."""
+    try:
+        coll = chroma_store._get_collection(collection_name)
+        if coll is None:
+            return []
+        data = coll.get(include=["documents", "metadatas"])
+        start, end = window
+        rows = []
+        for doc, meta, chunk_id in zip(
+            data.get("documents") or [],
+            data.get("metadatas") or [],
+            data.get("ids") or [],
+        ):
+            meta = meta or {}
+            date = str(
+                meta.get("note_date") or meta.get("date")
+                or meta.get("timestamp") or ""
+            )[:10]
+            if not (start <= date <= end):
+                continue
+            rows.append((date, {"id": chunk_id, "content": doc, "metadata": meta}))
+        # Date-sorted, evenly-sampled cap: a first-N cap starved the LATER
+        # weeks of a long window (coverage bias would masquerade as a trend).
+        rows.sort(key=lambda item: item[0])
+        if len(rows) > cap:
+            step = len(rows) / cap
+            rows = [rows[int(i * step)] for i in range(cap)]
+        return [row for _, row in rows]
+    except Exception as exc:
+        logger.warning(
+            f"[Insight] window scan failed for {collection_name}: {exc}"
+        )
+        return []
+
+
 async def _run_insight_mode(ctx):
     """Insight / evidence-assembly mode (agentic gate insight_intent, 2026-08-23).
 
@@ -1422,7 +1534,7 @@ async def _run_insight_mode(ctx):
         from core.insight.provenance import label_evidence
         from core.insight.sweep import run_sweep
         from core.insight.synthesizer import build_synthesis_prompts, synthesize_stream
-        from core.insight.types import InsightIntent
+        from core.insight.types import InsightIntent, EvidenceItem
 
         intent = InsightIntent(**_intent_dict)
         tone_level = (ctx.raw_context or {}).get("tone_level")
@@ -1442,14 +1554,22 @@ async def _run_insight_mode(ctx):
         except Exception:
             pass
 
+        _is_pattern = intent.kind == "pattern_temporal"
         yield {"role": "assistant",
-               "content": f"🔎 Sweeping your history for: {intent.theme}...",
+               "content": (
+                   f"📈 Analyzing patterns across your history: {intent.theme}..."
+                   if _is_pattern else
+                   f"🔎 Sweeping your history for: {intent.theme}..."),
                "is_progress": True}
 
         # Keepalive wrapper: yield a heartbeat every 8s while a stage runs
         # (same discipline as the agentic loop — mobile clients time out on
         # silence, and the sweep alone may take tens of seconds).
         _KEEPALIVE_S = 8.0
+        # Synthesis stream wall-clock ceiling: a healthy full report finishes
+        # well under this; the 2026-08-31 degenerate stream ran 3.5 min and
+        # was only stopped by the owner killing the process.
+        _SYNTHESIS_STREAM_MAX_S = 240.0
 
         # (async generators can't yield from a helper — inline the loop per stage)
         async def _wait_stage(task):
@@ -1457,30 +1577,345 @@ async def _run_insight_mode(ctx):
             _done, _ = await asyncio.wait({task}, timeout=_KEEPALIVE_S)
             return bool(_done)
 
-        _plan_task = asyncio.ensure_future(
-            decompose(intent, orchestrator.model_manager, entity_resolver=_resolver)
-        )
-        _n = 0
-        while not await _wait_stage(_plan_task):
-            _n += 1
-            yield {"role": "assistant",
-                   "content": f"🔄 Planning the sweep... ({int(_n * _KEEPALIVE_S)}s)",
-                   "is_progress": True}
-        plan = _plan_task.result()
+        # Pattern stage (2026-08-29): deterministic engine FIRST — the counts
+        # are computed, the LLM only narrates them. Read-only + sync → thread.
+        _patterns = None
+        _deliberation = None
+        _pattern_evidence = []
+        if _is_pattern:
+            from core.insight.temporal import run_pattern_stage
+            from core.insight.coordinator import (
+                LongitudinalDeliberationCoordinator,
+                normalize_chroma_rows,
+            )
+            _profile = getattr(_ms, "user_profile", None)
+            _wsm = getattr(getattr(getattr(orchestrator, "prompt_builder", None), "context_gatherer", None), "web_search_manager", None)
 
-        _sweep_task = asyncio.ensure_future(run_sweep(
-            plan, chroma_store=_chroma, corpus_manager=_corpus,
-            graph_memory=_graph, entity_resolver=_resolver,
-            memory_expander=_expander,
-        ))
-        _n = 0
-        while not await _wait_stage(_sweep_task):
-            _n += 1
-            yield {"role": "assistant",
-                   "content": f"🔄 Sweeping stores... ({int(_n * _KEEPALIVE_S)}s)",
-                   "is_progress": True}
-        evidence = _sweep_task.result()
+            async def _web_adapter(q):
+                if _wsm is None:
+                    raise RuntimeError("web search manager unavailable")
+                result = await _wsm.search(q, localize=False, max_results=5)
+                if getattr(result, "error", None):
+                    raise RuntimeError(str(result.error))
+                return [{
+                    "id": getattr(page, "url", ""),
+                    "title": getattr(page, "title", ""),
+                    "url": getattr(page, "url", ""),
+                    "snippet": (getattr(page, "content", "") or getattr(page, "snippet", ""))[:1200],
+                    "published_date": getattr(page, "published_date", None),
+                    "source": getattr(page, "source", "web"),
+                } for page in getattr(result, "pages", [])]
+
+            async def _pubmed_adapter(q):
+                from knowledge.pubmed_search import search_pubmed
+                # Literature requests need enough breadth to expose adjacent
+                # endpoints (aggression, agitation, behavior scales), not just
+                # the first few keyword hits.
+                return await search_pubmed(q, max_results=10)
+
+            async def _arxiv_adapter(q):
+                from knowledge.research_search import search_arxiv
+                return await search_arxiv(q, max_results=5)
+
+            async def _stackexchange_adapter(q):
+                from knowledge.research_search import search_stackexchange
+                return await search_stackexchange(q, max_results=5)
+
+            async def _chroma_adapter(collection, channel, q, limit, window=None):
+                rows = await asyncio.to_thread(
+                    _chroma.query_collection, collection, q, limit,
+                )
+                normalized = normalize_chroma_rows(rows, channel=channel)
+                if window:
+                    # Date-range retrieval arm: semantic similarity is
+                    # date-blind, so a windowed longitudinal spec also pulls
+                    # chunks whose CONTENT date falls inside the frozen window
+                    # (live 2026-08-31: 0 of 70 retrieved notes were in a
+                    # six-month window while 200+ dated chunks existed).
+                    dated = await asyncio.to_thread(
+                        _window_scan_collection, _chroma, collection,
+                        window, max(limit * 3, 30),
+                    )
+                    seen = {row.get("source_id") or row.get("id") for row in normalized}
+                    for row in normalize_chroma_rows(dated, channel=channel):
+                        key = row.get("source_id") or row.get("id")
+                        if key not in seen:
+                            seen.add(key)
+                            normalized.append(row)
+                return normalized
+
+            async def _notes_adapter(q, window=None):
+                return await _chroma_adapter("obsidian_notes", "notes", q, 20, window=window)
+
+            async def _facts_adapter(q, window=None):
+                return await _chroma_adapter("facts", "facts", q, 12, window=window)
+
+            async def _wiki_adapter(q):
+                return await _chroma_adapter("wiki_knowledge", "wiki", q, 6)
+
+            async def _files_adapter(q):
+                return await _chroma_adapter("reference_docs", "files", q, 8)
+
+            _wolfram_manager = getattr(
+                getattr(orchestrator, "_agentic_controller", None),
+                "wolfram_manager", None,
+            )
+            if _wolfram_manager is None:
+                try:
+                    from config.app_config import WOLFRAM_ENABLED, WOLFRAM_APP_ID
+                    if WOLFRAM_ENABLED and WOLFRAM_APP_ID:
+                        from knowledge.wolfram_manager import WolframManager
+                        _wolfram_manager = WolframManager()
+                except Exception as _wolfram_init_error:
+                    logger.debug(
+                        f"[Insight] Wolfram adapter unavailable: {_wolfram_init_error}"
+                    )
+
+            async def _wolfram_adapter(q):
+                result = await _wolfram_manager.query(q)
+                if not result.success:
+                    raise RuntimeError(result.error or "Wolfram query failed")
+                return [{
+                    "title": "Wolfram Alpha computation",
+                    "text": _wolfram_manager.format_for_prompt(result),
+                    "query": q,
+                    "source": "Wolfram Alpha",
+                }]
+
+            _deliberation_adapters = {
+                "notes": _notes_adapter,
+                "facts": _facts_adapter,
+                "pubmed": _pubmed_adapter,
+                "web": _web_adapter,
+                "wiki": _wiki_adapter,
+                "files": _files_adapter,
+                "arxiv": _arxiv_adapter,
+                "stackexchange": _stackexchange_adapter,
+            }
+            if _wolfram_manager is not None:
+                _deliberation_adapters["wolfram"] = _wolfram_adapter
+
+            _coord = LongitudinalDeliberationCoordinator(
+                corpus_manager=_corpus,
+                adapters=_deliberation_adapters,
+                model_manager=orchestrator.model_manager,
+            )
+            _deliberation_task = asyncio.ensure_future(_coord.run(intent.raw_query or intent.theme))
+            _n = 0
+            while not await _wait_stage(_deliberation_task):
+                _n += 1
+                yield {"role": "assistant",
+                       "content": f"🔄 Planning and gathering the evidence set... ({int(_n * _KEEPALIVE_S)}s)",
+                       "is_progress": True}
+            _deliberation = _deliberation_task.result()
+
+            # Secondary rolling aggregates use ONLY the already-frozen outcome
+            # contract. If planning failed, do not guess terms from raw prose.
+            if _deliberation.freeze.status == "ready" and _deliberation.freeze.spec is not None:
+                if _deliberation.freeze.spec.analysis_kind == "time_series":
+                    _pattern_task = asyncio.ensure_future(asyncio.to_thread(
+                        run_pattern_stage, intent,
+                        corpus_manager=_corpus, user_profile=_profile,
+                        spec=_deliberation.freeze.spec,
+                    ))
+                    _n = 0
+                    while not await _wait_stage(_pattern_task):
+                        _n += 1
+                        yield {"role": "assistant",
+                               "content": f"🔄 Counting the frozen outcomes... ({int(_n * _KEEPALIVE_S)}s)",
+                               "is_progress": True}
+                    _patterns, _rolling_evidence = _pattern_task.result()
+                    _pattern_evidence.extend(_rolling_evidence)
+                else:
+                    # Event/period comparisons are already computed over exact
+                    # phase bounds by run_longitudinal_scan. A second rolling
+                    # default window would select a different evidence set.
+                    _patterns = []
+            else:
+                # Terminal fail-closed behavior applies to longitudinal
+                # requests: never turn raw comparison prose into a computed
+                # aggregate. Ordinary theme sweeps retain their established
+                # locator behavior when no deliberation contract is needed.
+                if intent.kind == "pattern_temporal":
+                    _patterns = []
+                else:
+                    _fallback_pattern_task = asyncio.ensure_future(asyncio.to_thread(
+                        run_pattern_stage, intent,
+                        corpus_manager=_corpus, user_profile=_profile,
+                    ))
+                    _n = 0
+                    while not await _wait_stage(_fallback_pattern_task):
+                        _n += 1
+                        yield {"role": "assistant",
+                               "content": f"🔄 Recovering a broad pattern signal... ({int(_n * _KEEPALIVE_S)}s)",
+                               "is_progress": True}
+                    _patterns, _fallback_evidence = _fallback_pattern_task.result()
+                    _pattern_evidence.extend(_fallback_evidence)
+
+            if _deliberation.scan is not None:
+                _seen_internal = set()
+                for _event in _interleave_phase_events(
+                        _deliberation.scan.comparisons):
+                    _key = (_event.source_class, _event.source_id)
+                    if _key in _seen_internal:
+                        continue
+                    _seen_internal.add(_key)
+                    _pattern_evidence.append(EvidenceItem(
+                        doc_id=_event.source_id,
+                        text=_event.text,
+                        date=_event.timestamp,
+                        collection=("obsidian_notes" if _event.source_class in {"users-own-note", "assistant-summary"} else "corpus"),
+                        speaker=_event.speaker,
+                        stance_label=(
+                            "users-own-note" if _event.source_class == "users-own-note"
+                            else "assistant-inferred" if _event.source_class == "assistant-summary"
+                            else "user-stated"
+                        ),
+                        facet="deliberation:phase-evidence",
+                    ))
+            # External research remains usable even when a fuzzy personal
+            # anchor prevents the before/after phase scan from running.
+            for _src in _deliberation.external_evidence:
+                _pattern_evidence.append(EvidenceItem(
+                    doc_id=str(_src.get("source_id") or _src.get("id") or _src.get("pmid") or ""),
+                    text=str(
+                        _src.get("snippet") or _src.get("abstract")
+                        or _src.get("text") or _src.get("content")
+                        or _src.get("document") or _src.get("title") or ""
+                    )[:800],
+                    date=_src.get("date") or _src.get("published_date"),
+                    collection=str(_src.get("source_class") or "research"),
+                    stance_label=(
+                        "computed-evidence"
+                        if _src.get("source_class") == "wolfram"
+                        else "external-research"
+                    ),
+                    facet="deliberation:research",
+                ))
+
+        if (_deliberation is not None
+                and _deliberation.freeze.status == "ready"
+                and _deliberation.freeze.spec is not None):
+            # The deliberation plan is the sole evidence selector. Convert its
+            # frozen support/refute angles into the existing cross-store sweep
+            # interface instead of decomposing the raw conversational request
+            # a second time.
+            from core.insight.types import FacetPlan, FacetQuery
+            _spec = _deliberation.freeze.spec
+            _facet_terms = (_spec.outcome_terms + _spec.behavioral_indicators)[:8]
+            _facet_rows = []
+            for _idx, _facet in enumerate(_spec.supporting_facets[:6]):
+                _facet_rows.append(FacetQuery(
+                    name=f"support-{_idx + 1}", query_text=_facet,
+                    keywords=_facet_terms, entities=[],
+                ))
+            for _idx, _facet in enumerate(_spec.refuting_facets[:4]):
+                _facet_rows.append(FacetQuery(
+                    name=("counter-evidence" if _idx == 0 else f"refute-{_idx + 1}"),
+                    query_text=_facet, keywords=_facet_terms, entities=[],
+                ))
+            plan = FacetPlan(
+                facets=_facet_rows,
+                claims=[claim.proposition for claim in _spec.claims],
+                fallback=False,
+            )
+        elif _is_pattern and _deliberation is not None:
+            # If the strict longitudinal planner is unavailable (for example,
+            # a transient model timeout), keep the product useful by falling
+            # back to the existing facet planner.  This is deliberately
+            # marked as fallback: it can assemble evidence, but must not be
+            # presented as a frozen phase/causal analysis.
+            _fallback_plan_task = asyncio.ensure_future(
+                decompose(intent, orchestrator.model_manager,
+                          entity_resolver=_resolver)
+            )
+            _n = 0
+            while not await _wait_stage(_fallback_plan_task):
+                _n += 1
+                yield {"role": "assistant",
+                       "content": f"🔄 Recovering with a broad evidence sweep... ({int(_n * _KEEPALIVE_S)}s)",
+                       "is_progress": True}
+            plan = _fallback_plan_task.result()
+            plan.fallback = True
+        else:
+            _plan_task = asyncio.ensure_future(
+                decompose(intent, orchestrator.model_manager, entity_resolver=_resolver)
+            )
+            _n = 0
+            while not await _wait_stage(_plan_task):
+                _n += 1
+                yield {"role": "assistant",
+                       "content": f"🔄 Planning the sweep... ({int(_n * _KEEPALIVE_S)}s)",
+                       "is_progress": True}
+            plan = _plan_task.result()
+
+        if plan.facets:
+            _sweep_task = asyncio.ensure_future(run_sweep(
+                plan, chroma_store=_chroma, corpus_manager=_corpus,
+                graph_memory=_graph, entity_resolver=_resolver,
+                memory_expander=_expander,
+            ))
+            _n = 0
+            while not await _wait_stage(_sweep_task):
+                _n += 1
+                yield {"role": "assistant",
+                       "content": f"🔄 Sweeping stores... ({int(_n * _KEEPALIVE_S)}s)",
+                       "is_progress": True}
+            evidence = _sweep_task.result()
+        else:
+            evidence = []
         label_evidence(evidence)
+        if _is_pattern:
+            # Engine exemplars are already provenance-labeled; join after
+            # label_evidence so their stance_labels are preserved. Put frozen
+            # contract/recovery evidence first so the generic sweep cannot
+            # crowd it out of the synthesis prompt's bounded evidence block.
+            evidence = _pattern_evidence + evidence
+
+        # The generic adapters and the cross-store sweep can surface the same
+        # source. Keep one prompt item while preserving first-seen provenance.
+        _deduped_evidence = []
+        _seen_evidence = set()
+        _query_tokens = {
+            _token for _token in _re.findall(r"[a-z0-9']+", (intent.raw_query or "").lower())
+            if len(_token) > 2
+        }
+        for _item in evidence:
+            # Assistant-authored summaries can help locate originals, but are
+            # not independent evidence for a personal longitudinal analysis.
+            # Keeping them here caused prior runs to report the model's own
+            # failed answers as if they were Luke's history.
+            if _is_pattern and (
+                _item.speaker == "assistant"
+                or _item.stance_label == "assistant-inferred"
+            ):
+                continue
+            # Conversation indexing can return clipped copies of the current
+            # request itself. They are not historical observations. Suppress
+            # only high-overlap, substantial excerpts so ordinary records
+            # mentioning the same medication/topic remain eligible.
+            if _is_pattern and _query_tokens:
+                _item_tokens = {
+                    _token for _token in _re.findall(r"[a-z0-9']+", (_item.text or "").lower())
+                    if len(_token) > 2
+                }
+                _overlap = (
+                    len(_query_tokens & _item_tokens) / max(1, len(_item_tokens))
+                )
+                if len((_item.text or "").split()) >= 35 and _overlap >= 0.72:
+                    continue
+            _evidence_key = (
+                # Same excerpts often arrive through several collections and
+                # with different IDs; content identity is the useful key.
+                " ".join((_item.text or "").split()).lower()[:1200],
+            )
+            if _evidence_key in _seen_evidence:
+                continue
+            _seen_evidence.add(_evidence_key)
+            _deduped_evidence.append(_item)
+            if _is_pattern and len(_deduped_evidence) >= 50:
+                break
+        evidence = _deduped_evidence
 
         _stores = {e.collection for e in evidence}
         yield {"role": "assistant",
@@ -1505,20 +1940,128 @@ async def _run_insight_mode(ctx):
             orchestrator.model_manager, 'get_active_model_name', lambda: None
         )()
 
+        async def _synthesis_with_keepalive(stream):
+            """Yield synthesis text while keeping the GUI connection alive.
+
+            Runaway watchdog (2026-08-31): a degenerate kimi-3 stream looped
+            garbage for ~3.5 min — chunks kept arriving so the keepalive
+            timer never fired and nothing bounded it. Wall-clock ceiling +
+            periodic degenerate-shape check; a tripped watchdog yields a
+            terminal {"kind": "runaway"} event and stops consuming.
+            """
+            _stream_iter = stream.__aiter__()
+            _elapsed = 0
+            _accum = ""
+            _checked_at = 0
+            _started = _time.monotonic()
+            while True:
+                _next_task = asyncio.ensure_future(_stream_iter.__anext__())
+                try:
+                    while True:
+                        _done, _ = await asyncio.wait({_next_task}, timeout=_KEEPALIVE_S)
+                        if _done:
+                            break
+                        _elapsed += int(_KEEPALIVE_S)
+                        yield {"kind": "progress", "seconds": _elapsed}
+                    try:
+                        _piece = _next_task.result()
+                    except StopAsyncIteration:
+                        break
+                    _accum += _piece
+                    if _time.monotonic() - _started > _SYNTHESIS_STREAM_MAX_S:
+                        yield {"kind": "runaway", "reason": "duration"}
+                        return
+                    if len(_accum) - _checked_at > 2000:
+                        _checked_at = len(_accum)
+                        if ResponseParser.looks_degenerate_stream(_accum):
+                            yield {"kind": "runaway", "reason": "degenerate"}
+                            return
+                    yield {"kind": "text", "value": _piece}
+                finally:
+                    if not _next_task.done():
+                        _next_task.cancel()
+
         _buffer = ""
-        async for _text in synthesize_stream(
+        _primary_stream = synthesize_stream(
             intent, evidence, assessment,
             model_manager=orchestrator.model_manager,
             model_name=model_name,
             tone_elevated=tone_elevated,
-        ):
-            _buffer += _text
-            yield {"role": "assistant",
-                   "content": ResponseParser.strip_trailing_stream_artifact(_buffer)}
+            patterns=_patterns,
+            deliberation_manifest=(
+                _deliberation.manifest if _deliberation is not None else None
+            ),
+            disable_reasoning=True,
+        )
+        _runaway_reason = None
+        async for _event in _synthesis_with_keepalive(_primary_stream):
+            if _event["kind"] == "progress":
+                yield {"role": "assistant", "content":
+                       f"🔄 Still assembling the report... ({_event['seconds']}s)",
+                       "is_progress": True}
+            elif _event["kind"] == "runaway":
+                _runaway_reason = _event.get("reason") or "runaway"
+                break
+            else:
+                _buffer += _event["value"]
+                yield {"role": "assistant", "content":
+                       ResponseParser.strip_trailing_stream_artifact(_buffer)}
+        if _runaway_reason:
+            logger.error(
+                f"[Insight Mode] Synthesis stream aborted by watchdog "
+                f"({_runaway_reason}); {len(_buffer)} chars discarded, nothing stored"
+            )
+            ctx.handled = True
+            yield {"role": "assistant", "content":
+                   "⚠️ I stopped the report mid-stream — the model's output "
+                   "went off the rails ("
+                   + ("it exceeded the time ceiling" if _runaway_reason == "duration"
+                      else "it started repeating garbage")
+                   + "). Nothing from this attempt was stored. "
+                   "Please rerun the same query."}
+            return
 
         final_text = _sanitize_response_text(_buffer).strip()
         if not final_text:
-            raise RuntimeError("insight synthesis returned no visible content")
+            # Reasoning-capable models can occasionally spend the entire
+            # synthesis turn in reasoning and emit no visible text. Retry once
+            # with the provider's explicit reasoning off-switch before letting
+            # the dispatcher fall through to an unrelated agentic search.
+            yield {"role": "assistant", "content":
+                   "🔄 Synthesis returned no visible text; retrying without extended reasoning...",
+                   "is_progress": True}
+            _retry_buffer = ""
+            _retry_stream = synthesize_stream(
+                intent, evidence, assessment,
+                model_manager=orchestrator.model_manager,
+                model_name=model_name,
+                tone_elevated=tone_elevated,
+                patterns=_patterns,
+                deliberation_manifest=(
+                    _deliberation.manifest if _deliberation is not None else None
+                ),
+                disable_reasoning=True,
+            )
+            async for _event in _synthesis_with_keepalive(_retry_stream):
+                if _event["kind"] == "progress":
+                    yield {"role": "assistant", "content":
+                           f"🔄 Still assembling the retry... ({_event['seconds']}s)",
+                           "is_progress": True}
+                elif _event["kind"] == "runaway":
+                    logger.error(
+                        f"[Insight Mode] Retry synthesis aborted by watchdog "
+                        f"({_event.get('reason')}); nothing stored"
+                    )
+                    raise RuntimeError(
+                        "insight synthesis retry aborted: runaway stream"
+                    )
+                else:
+                    _retry_buffer += _event["value"]
+                    yield {"role": "assistant", "content":
+                           ResponseParser.strip_trailing_stream_artifact(_retry_buffer)}
+            final_text = _sanitize_response_text(_retry_buffer).strip()
+            if not final_text:
+                raise RuntimeError("insight synthesis returned no visible content after reasoning-off retry")
 
         # Optional document save. Explicit wants_document requests save when no
         # assessment gates them; an assessment gates on agree/partial (fail-
@@ -1597,7 +2140,14 @@ async def _run_insight_mode(ctx):
         logger.error(f"[Handle Submit] Insight mode failed: {e}")
         import traceback
         traceback.print_exc()
-        # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
+        # Insight requests are a distinct, evidence-sensitive workflow. Do
+        # not silently replace a failed analysis with an unrelated agentic
+        # answer; surface the bounded failure and keep provenance honest.
+        ctx.handled = True
+        yield {"role": "assistant", "content":
+               "I couldn't complete the insight synthesis on this attempt. "
+               "The retrieval work was not converted into a final report; "
+               "please rerun this same query."}
 
 
 # ============================================================================
@@ -1917,52 +2467,79 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     return suffix
 
 
-async def _apply_grounding_check(ctx, response_text) -> str:
+async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
     """Factual-grounding floor (2026-08-28): deterministic claim-shape
-    pre-filter → LLM verifier → visible correction suffix.
+    pre-filter → LLM verifier → correction.
 
     Runs on ALL tones — the plan/review gate is skipped on CONCERN+ (no plan
     → no review), which is exactly where the refrigerator-mother endorsement
-    shipped. Fail-open everywhere: any failure returns "" and never blocks or
-    delays the shown response beyond the final-chunk append window. The
-    returned suffix is appended to BOTH display and final_output so the
-    stored copy carries the correction (a false endorsement must not become
-    retrievable corpus ground truth).
+    shipped. Fail-open everywhere: any failure returns (None, "") and never
+    blocks the shown response beyond the final-chunk window.
+
+    Returns (revised_text, suffix):
+    - (revised, "")  — 2026-08-29 integration path: the correction is woven
+      INTO the response by a bounded rewrite. Caller must replace BOTH the
+      display text and final_output with `revised` (the final yield is a
+      whole-bubble replacement on every path, so display == storage holds).
+    - (None, suffix) — fallback: append suffix to display AND final_output.
+    - (None, "")     — no action.
+
+    source_material: text the assistant retrieved while answering (agentic
+    tool-round results). The verifier treats it like user-pasted material —
+    without it, correct document-derived facts get flagged against the
+    verifier model's own priors (live 2026-08-29: "Fall 2026" at conf 0.9).
     """
+    _no_action = (None, "")
     try:
         from config.app_config import (
             GROUNDING_CHECK_ENABLED, GROUNDING_CHECK_MODEL,
             GROUNDING_CONFIDENCE_THRESHOLD, GROUNDING_TIMEOUT_S,
             GROUNDING_MAX_TOKENS, GROUNDING_MIN_RESPONSE_CHARS,
+            GROUNDING_INTEGRATE_ENABLED, GROUNDING_INTEGRATE_TIMEOUT_S,
+            GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS,
         )
         if (not GROUNDING_CHECK_ENABLED or not response_text
                 or len(response_text.strip()) < GROUNDING_MIN_RESPONSE_CHARS):
-            return ""
+            return _no_action
         from core.grounding_check import (
             has_checkable_claims, verify_grounding, build_grounding_correction,
+            integrate_grounding_correction,
         )
         if not has_checkable_claims(response_text, ctx.user_text or ""):
-            return ""
+            return _no_action
         ctx.telemetry["grounding_prefilter_fired"] = True
 
         mm = getattr(ctx.orchestrator, "model_manager", None)
         if mm is None:
-            return ""
+            return _no_action
         ctx.telemetry["grounding_verifier_fired"] = True
+        # The runtime clock is source data, not something the verifier should
+        # reconstruct from model priors. Put it FIRST so source truncation can
+        # never drop it behind a long retrieved document.
+        from datetime import datetime as _grounding_datetime
+        _runtime_now = _grounding_datetime.now().astimezone()
+        _runtime_source = (
+            "[AUTHORITATIVE RUNTIME CLOCK]\n"
+            f"Current time: {_runtime_now.strftime('%A, %Y-%m-%d %H:%M:%S %Z')}"
+        )
+        _grounding_source = _runtime_source
+        if source_material:
+            _grounding_source += "\n\n" + str(source_material)
         verdict = await verify_grounding(
             ctx.user_text or "", response_text, mm,
             model_name=GROUNDING_CHECK_MODEL,
             max_tokens=GROUNDING_MAX_TOKENS,
             timeout_s=GROUNDING_TIMEOUT_S,
+            source_material=_grounding_source,
         )
         if verdict is None:
-            return ""  # fail-open: timeout / call failure / unparseable
+            return _no_action  # fail-open: timeout / call failure / unparseable
         ctx.telemetry["grounding_flagged"] = bool(verdict.false_claim_present)
         ctx.telemetry["grounding_confidence"] = round(float(verdict.confidence), 3)
         if not (verdict.false_claim_present
                 and verdict.correction.strip()
                 and verdict.confidence >= GROUNDING_CONFIDENCE_THRESHOLD):
-            return ""
+            return _no_action
 
         from core.agentic.gate import _tone_is_elevated
         elevated = _tone_is_elevated((ctx.raw_context or {}).get("tone_level"))
@@ -1972,10 +2549,20 @@ async def _apply_grounding_check(ctx, response_text) -> str:
             f"(conf={verdict.confidence:.2f}, elevated={elevated}): "
             f"{verdict.claim[:120]!r}"
         )
-        return build_grounding_correction(verdict.correction, elevated=elevated)
+        if GROUNDING_INTEGRATE_ENABLED:
+            revised = await integrate_grounding_correction(
+                response_text, verdict, mm,
+                model_name=GROUNDING_CHECK_MODEL,
+                timeout_s=GROUNDING_INTEGRATE_TIMEOUT_S,
+                max_response_chars=GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS,
+            )
+            if revised:
+                ctx.telemetry["grounding_integrated"] = True
+                return (revised, "")
+        return (None, build_grounding_correction(verdict.correction, elevated=elevated))
     except Exception as e:
         logger.warning(f"[GroundingCheck] failed (non-fatal): {e}")
-        return ""
+        return _no_action
 
 
 async def _run_self_note(ctx):
@@ -2026,6 +2613,51 @@ async def _run_pending_proposal(ctx, proposal):
         # Fall through to normal flow (ctx.handled stays False)
 
 
+def _retry_fetch_urls_from_context(user_text, chat_history) -> list[str]:
+    """Recover a URL only for an explicit retry after the assistant failed to fetch."""
+    from utils.query_checker import is_retry_continuation
+    if not is_retry_continuation(user_text):
+        return []
+    # Both production callers append the CURRENT turn before this runs (SPA:
+    # the user message; legacy Gradio: user + an "…" typing placeholder), so a
+    # naive last-user/last-assistant read tests the retry message itself and
+    # the placeholder (audit F1 — digest-order class). Work over a view with
+    # the current turn and placeholders removed, and pair the failure reply
+    # with the user message that PRECEDED it.
+    current_norm = " ".join(str(user_text or "").split())
+    messages = []
+    for m in (chat_history or []):
+        if not isinstance(m, dict):
+            continue
+        content = str(m.get("content", "")).strip()
+        role = m.get("role")
+        if role == "assistant" and content in {"", "…", "..."}:
+            continue
+        if role == "user" and " ".join(content.split()) == current_norm:
+            continue
+        messages.append(m)
+    last_assistant_idx = next(
+        (i for i in range(len(messages) - 1, -1, -1)
+         if messages[i].get("role") == "assistant"), None,
+    )
+    if last_assistant_idx is None:
+        return []
+    assistant_text = str(messages[last_assistant_idx].get("content", "")).lower()
+    markers = (
+        "won't load", "wont load", "blank page", "couldn't fetch", "can't fetch",
+        "could not fetch", "failed to fetch", "can't open the link", "couldn't open the link",
+    )
+    if not any(marker in assistant_text for marker in markers):
+        return []
+    previous_user = next(
+        (messages[i] for i in range(last_assistant_idx - 1, -1, -1)
+         if messages[i].get("role") == "user"), None,
+    )
+    import re
+    urls = re.findall(r'https?://[^\s<>"\')\]]+', str((previous_user or {}).get("content", "")))
+    return urls
+
+
 async def _run_agentic_search(ctx):
     """AGENTIC SEARCH mode: ReAct loop via the agentic controller.
 
@@ -2056,6 +2688,17 @@ async def _run_agentic_search(ctx):
 
         # Get the agentic controller from orchestrator
         agentic_controller = orchestrator.agentic_controller
+        if agentic_controller is None:
+            # Lazy construction can fail when an optional dependency is
+            # unavailable.  Do not turn that into a misleading NoneType
+            # traceback; leave ctx unhandled so the dispatcher can choose its
+            # documented fallback and record the reason.
+            logger.error(
+                "[Handle Submit] Agentic controller unavailable; "
+                "falling through with reason=controller_init_failed"
+            )
+            ctx.agentic_fallback_reason = "controller_init_failed"
+            return
         model_name = orchestrator.model_manager.get_active_model_name()
 
         # Get initial search terms from the trigger decision we already have
@@ -2065,7 +2708,25 @@ async def _run_agentic_search(ctx):
         # Extract URLs from the user message for direct fetch
         import re as _re_url
         _url_pattern = _re_url.compile(r'https?://[^\s<>"\')\]]+')
-        _extracted_urls = _url_pattern.findall(user_text)
+        _url_in_current_msg = _url_pattern.findall(user_text)
+        _retry_recovered_urls = _retry_fetch_urls_from_context(user_text, history)
+        _extracted_urls = _url_in_current_msg or _retry_recovered_urls
+        from utils.topic_manager import _TOPIC_URL_RE
+        from core.actions.registry import detect_action_intent
+        from config.app_config import AGENTIC_FETCH_FASTPATH
+        _remainder_words = len(_TOPIC_URL_RE.sub("", user_text).split())
+        _gate_modes = getattr(_gate_decision, "modes", []) or []
+        _forced_action = detect_action_intent(user_text)
+        _fastpath_ok = (
+            AGENTIC_FETCH_FASTPATH
+            and ((bool(_url_in_current_msg) and _remainder_words <= 12)
+                 or (bool(_retry_recovered_urls) and _remainder_words <= 25))
+            and not any(mode in _gate_modes for mode in ("memory", "computation", "knowledge"))
+            and not getattr(_gate_decision, "doc_gen_intent", None)
+            and not getattr(_gate_decision, "self_note_intent", None)
+            and not getattr(_gate_decision, "insight_intent", None)
+            and not _forced_action
+        )
 
         # Run agentic search loop with RAG context
         agentic_response = ""
@@ -2083,6 +2744,7 @@ async def _run_agentic_search(ctx):
             initial_context=raw_context,
             skip_initial_search=_gate_decision.skip_initial_search and not _extracted_urls,
             initial_urls=_extracted_urls if _extracted_urls else None,
+            fetch_fastpath=_fastpath_ok,
         )
 
         async def _agentic_next():
@@ -2213,6 +2875,25 @@ async def _run_agentic_search(ctx):
         # If agentic loop ran but no tools were actually dispatched (model
         # just narrated what it would do), strip bare tool-call-like lines
         # that leaked as plain text (e.g. "list_repos", "Lines added...")
+        # ── Narration-shaped final recovery (2026-08-29): the synthesis call
+        # shipped "let me grab the full text back out of memory…" as the final
+        # reply — a plan, not an answer (the 08-28 promissory guards covered
+        # only the decision-answer REUSE path). One bounded no-reasoning
+        # retry; the final chunk below is a whole-bubble replacement yield, so
+        # a recovery replaces what the user briefly saw AND what gets stored.
+        try:
+            if agentic_controller.narration_shaped_final(display_output):
+                logger.warning(
+                    "[Handle Submit] Agentic final response is narration-shaped "
+                    f"({len(display_output)} chars) — attempting recovery")
+                _narr_recovered = await agentic_controller.regenerate_final_answer()
+                if _narr_recovered:
+                    display_output = _narr_recovered
+                    final_output = _narr_recovered
+                    ctx.telemetry["agentic_narration_recovered"] = True
+        except Exception as _narr_err:
+            logger.warning(f"[Handle Submit] Narration recovery failed (non-fatal): {_narr_err}")
+
         _agentic_session = getattr(
             getattr(orchestrator, '_agentic_controller', None),
             '_last_session', None
@@ -2222,10 +2903,13 @@ async def _run_agentic_search(ctx):
             and hasattr(_agentic_session, 'rounds')
             and len(_agentic_session.rounds) > 0
         )
-        if not _had_real_rounds and display_output:
+        if (not _had_real_rounds and display_output
+                and not ctx.telemetry.get("agentic_narration_recovered")):
             # Response is just narration — strip lines that look like
             # bare tool queries (short lines without sentence structure)
             # But preserve [propose_action] blocks for text parsing
+            # (a narration-recovered answer skips this: it's a vetted full
+            # reply, and its markdown table rows must not be line-stripped)
             _cleaned_lines = []
             _in_action_block = False
             for _line in display_output.split('\n'):
@@ -2242,7 +2926,7 @@ async def _run_agentic_search(ctx):
                 if (not _stripped_line
                         or len(_stripped_line.split()) >= 4
                         or _stripped_line.endswith(('.', '!', '?', ':', ';', ','))
-                        or _stripped_line.startswith(('#', '-', '*', '>', '{', '"'))):
+                        or _stripped_line.startswith(('#', '-', '*', '>', '{', '"', '|'))):
                     _cleaned_lines.append(_line)
                 else:
                     logger.debug(f"[Handle Submit] Stripped bare tool-call line: {_stripped_line!r}")
@@ -2307,18 +2991,7 @@ async def _run_agentic_search(ctx):
                 _pending_proposal = _actions_store.get_pending()
                 if _pending_proposal:
                     _pending_action_id = _pending_proposal.action_id
-                    _recipient = _pending_proposal.params.get("recipient", "")
-                    _subject = _pending_proposal.params.get("subject", "")
-                    _msg = _pending_proposal.params.get("message", "")
-                    _action_header = f"**{_pending_proposal.action_type.value}**"
-                    if _recipient:
-                        _action_header += f" to {_recipient}"
-                    if _subject:
-                        _action_header += f" — *{_subject}*"
-                    _action_card = f"\n\n---\n{_action_header}\n"
-                    if _msg:
-                        _action_card += f"> {_msg[:300]}\n\n"
-                    display_output += _action_card
+                    display_output += _format_action_proposal_card(_pending_proposal)
         except ImportError:
             pass
 
@@ -2413,11 +3086,28 @@ async def _run_agentic_search(ctx):
             logger.warning(f"[Handle Submit] Agentic action guard failed (non-fatal): {_ag_guard_err}")
 
         # ── Factual-grounding floor (same as enhanced path): correct a
-        # confirmably-false claim before the final yield; suffix lands in
-        # display_output AND final_output so storage carries the correction.
+        # confirmably-false claim before the final yield. The verifier gets
+        # the loop's tool-round results as SOURCE MATERIAL — on agentic turns
+        # the response's facts come from retrieved documents the verifier
+        # otherwise never sees (it flagged a correct "Fall 2026" against its
+        # own date prior, live 2026-08-29). Integration path replaces the
+        # whole text (final yield is a bubble replacement); suffix append is
+        # the fallback. Either way display AND final_output stay identical.
         try:
-            _ag_gc_suffix = await _apply_grounding_check(ctx, display_output)
-            if _ag_gc_suffix:
+            _ag_source_parts = []
+            for _gc_round in (getattr(_agentic_session, 'rounds', None) or []):
+                _gc_piece = getattr(_gc_round, 'summary', None)
+                if not _gc_piece and getattr(_gc_round, 'results', None) is not None:
+                    _gc_piece = str(_gc_round.results)
+                if _gc_piece:
+                    _ag_source_parts.append(str(_gc_piece)[:2000])
+            _ag_source = "\n---\n".join(_ag_source_parts)[:6000]
+            _ag_gc_revised, _ag_gc_suffix = await _apply_grounding_check(
+                ctx, display_output, source_material=_ag_source)
+            if _ag_gc_revised:
+                display_output = _ag_gc_revised
+                final_output = _ag_gc_revised
+            elif _ag_gc_suffix:
                 display_output = display_output.rstrip() + _ag_gc_suffix
                 final_output = (final_output or "").rstrip() + _ag_gc_suffix
         except Exception as _ag_gc_err:
@@ -2452,6 +3142,16 @@ async def _run_agentic_search(ctx):
             _agentic_session_id, _agentic_prov, 'agentic-search',
         )
         logger.info("[Handle Submit] Agentic storage dispatched to background")
+        if _agentic_session is not None:
+            ctx.telemetry["agentic_rounds"] = list(
+                getattr(_agentic_session, "round_telemetry", [])
+            )
+            ctx.telemetry["agentic_reuse_fired"] = bool(
+                getattr(_agentic_session, "decision_answer_reuse_fired", False)
+            )
+            ctx.telemetry["agentic_fastpath"] = bool(
+                getattr(_agentic_session, "fetch_fastpath_fired", False)
+            )
         _write_turn_telemetry(
             ctx, 'agentic-search', _agentic_session_id,
             model_name if 'model_name' in dir() else None,
@@ -2489,26 +3189,42 @@ async def _run_enhanced(ctx):
     agentic_enabled = ctx.agentic_enabled
     fast_mode = ctx.fast_mode
 
-    # Enhanced is a tool-less generation path. Tell the model so it doesn't claim
-    # to have performed side effects it can't (the confabulation backstop — the
-    # action guard below catches it after the fact, this prevents it up front).
+    # Enhanced cannot invoke tools directly, but it must still know the
+    # application's REAL backend status. The live calendar miss said "I don't
+    # have calendar access" even though OAuth + write scope were healthy,
+    # because this fallback carried only a blanket "no tools" sentence. Share
+    # the registry-backed action status with both paths and distinguish
+    # pass-local invocation from application-wide capability.
     # NOTE: scoped to the streaming call via _stream_system_prompt — the
     # uncertainty/review agentic RETRIES below reuse `system_prompt` and DO have
     # tools, so they must not inherit the "no tools" claim.
     _stream_system_prompt = system_prompt
     try:
+        from core.actions.registry import get_runtime_action_health
+        _action_health = get_runtime_action_health()
+        _stream_system_prompt = (system_prompt or "") + (
+            "\n\n[APPLICATION ACTION STATUS — AUTHORITATIVE]\n"
+            f"{_action_health}\n"
+            "Never contradict an AVAILABLE backend by claiming the application "
+            "lacks access, authentication, or capability."
+        )
+    except Exception:
+        pass
+    try:
         from config.app_config import ACTION_CLAIM_GUARD_ENABLED
         if ACTION_CLAIM_GUARD_ENABLED:
-            _stream_system_prompt = (system_prompt or "") + (
-                "\n\n[ACTION HONESTY] You have no tools available this turn — no file "
-                "access, no web search, no memory search, no sending. Do NOT claim you "
+            _stream_system_prompt = (_stream_system_prompt or "") + (
+                "\n\n[ACTION HONESTY] This enhanced generation pass cannot invoke tools "
+                "directly. Do NOT claim you "
                 "saved, sent, created, scheduled, emailed, added, read, opened, fetched, "
-                "or pulled up anything. If you cannot read a file or retrieve a saved "
-                "document right now, say so plainly — do NOT invent a reason for it "
+                "or pulled up anything in this pass. Do not turn that pass-local limit "
+                "into a false claim that an AVAILABLE backend is disconnected or "
+                "unauthenticated. If you cannot read a file or retrieve a saved document "
+                "right now, say so plainly — do NOT invent a reason for it "
                 "(for example, never claim it's because you're \"on mobile\" or similar). "
-                "If the user wants such an action — including reading or printing a saved "
-                "file/document — OFFER it (\"Want me to pull that up?\") and the system "
-                "will carry it out on a follow-up. Never state it is already done."
+                "If the user wants such an action, state that a confirmation proposal is "
+                "required; never promise that merely sending another chat message will "
+                "execute it. Never state it is already done."
             )
     except Exception:
         pass
@@ -2906,18 +3622,7 @@ async def _run_enhanced(ctx):
                             _resp_for_debug = _strip_inline_tool_xml(_resp_for_debug)
                             _pending = _enh_store.get_pending()
                             if _pending:
-                                _enh_recip = _pending.params.get("recipient", "")
-                                _enh_subj = _pending.params.get("subject", "")
-                                _enh_msg = _pending.params.get("message", "")
-                                _enh_header = f"**{_pending.action_type.value}**"
-                                if _enh_recip:
-                                    _enh_header += f" to {_enh_recip}"
-                                if _enh_subj:
-                                    _enh_header += f" — *{_enh_subj}*"
-                                _card = f"\n\n---\n{_enh_header}\n"
-                                if _enh_msg:
-                                    _card += f"> {_enh_msg[:300]}\n\n"
-                                _resp_for_debug += _card
+                                _resp_for_debug += _format_action_proposal_card(_pending)
                             break
         except (ImportError, Exception) as e:
             logger.warning(f"[Handle Submit] Enhanced text action parse failed: {e}")
@@ -2942,10 +3647,15 @@ async def _run_enhanced(ctx):
         # ── Factual-grounding floor: catch a confirmably-false claim the
         # response asserted/endorsed in its own voice. Runs on the FINAL text
         # (after uncertainty/review retries + action guard) so the verifier
-        # sees exactly what ships; suffix reaches display AND storage.
+        # sees exactly what ships. Integration path (2026-08-29) replaces the
+        # text — the final chunk below is a whole-bubble replacement yield, so
+        # display and storage stay identical; suffix append is the fallback.
         try:
-            _gc_suffix = await _apply_grounding_check(ctx, _resp_for_debug)
-            if _gc_suffix:
+            _gc_revised, _gc_suffix = await _apply_grounding_check(ctx, _resp_for_debug)
+            if _gc_revised:
+                _resp_for_debug = _gc_revised
+                final_output = _gc_revised
+            elif _gc_suffix:
                 _resp_for_debug = (_resp_for_debug or "").rstrip() + _gc_suffix
                 final_output = (final_output or "").rstrip() + _gc_suffix
         except Exception as e:
@@ -2976,6 +3686,28 @@ async def _run_enhanced(ctx):
         logger.error(f"[HANDLE_SUBMIT] Streaming error: {e}")
         error_message = f"⚠️ Streaming error: {str(e)}"
 
+        # Even partial/failed turns must leave an inspectable trace. Without
+        # this, the UI shows a partial answer while the Debug/Provenance tabs
+        # remain blank, making the failure impossible to diagnose remotely.
+        if not debug_emitted:
+            try:
+                _failure_debug = _build_debug_record(
+                    mode="failed", user_text=user_text, prompt="",
+                    system_prompt="", response=error_message,
+                    model=locals().get("model_name", ""),
+                    prompt_tokens=0, system_tokens=0, total_tokens=0,
+                    citations=[], orchestrator=orchestrator,
+                    provenance={
+                        "response_mode": "failed",
+                        "error": str(e),
+                        "partial": bool(final_output),
+                    },
+                )
+                debug_record = _failure_debug
+                debug_emitted = True
+            except Exception as _debug_error:
+                logger.error(f"[HANDLE_SUBMIT] Failed to build error debug: {_debug_error}")
+
         # Log error conversation
         conversation_logger.log_interaction(
             user_input=user_text,
@@ -2987,7 +3719,7 @@ async def _run_enhanced(ctx):
             }
         )
 
-        yield {"role": "assistant", "content": error_message}
+        yield {"role": "assistant", "content": error_message, "debug": debug_record if debug_emitted else {}}
 
     finally:
         # Clean up fast mode flags (defensive try/except to never interfere with streaming)
@@ -3089,6 +3821,45 @@ _INFLIGHT_SUBMITS: dict = {}
 _INFLIGHT_STALE_S = 600.0        # crashed turns never cleaned → expire
 _INFLIGHT_MIN_CHARS = 20         # short repeats ("ugh", "hello") are legit
 
+# Completed-turn resend window (2026-08-31): a mobile client that loses the
+# SSE at the moment of completion resends the identical query minutes later
+# (live case: a 19:59 resend of the completed-and-stored 19:56 insight turn
+# re-ran a 4-minute pipeline). This does NOT violate the in-flight-only
+# doctrine above — it never BLOCKS a resend, it SERVES the stored reply, and
+# only when the first attempt verifiably completed (non-empty stored
+# response). A mid-stream-death resend has no stored entry and runs normally.
+_COMPLETED_RESEND_WINDOW_S = 300.0
+
+
+def _recent_completed_duplicate(orchestrator, norm_query: str):
+    """Return the stored response of an identical turn completed within the
+    resend window, else None. Read-only over the newest corpus entries."""
+    try:
+        from datetime import datetime as _dt
+        corpus = getattr(
+            getattr(orchestrator, "memory_system", None), "corpus_manager", None,
+        )
+        entries = list(getattr(corpus, "corpus", []) or [])[-5:]
+        now = _dt.now()
+        for entry in reversed(entries):
+            if not isinstance(entry, dict):
+                continue
+            stored_norm = " ".join(str(entry.get("query") or "").lower().split())
+            if stored_norm != norm_query:
+                continue
+            response = str(entry.get("response") or "").strip()
+            if not response:
+                continue
+            try:
+                age = (now - _dt.fromisoformat(str(entry.get("timestamp")))).total_seconds()
+            except (TypeError, ValueError):
+                continue
+            if 0 <= age < _COMPLETED_RESEND_WINDOW_S:
+                return response
+        return None
+    except Exception:
+        return None
+
 # Line-anchored SPA/client error artifacts that leak into resent messages.
 _CLIENT_ERROR_LINE_RE = _re.compile(
     r"^\s*(?:⚠️\s*)?Failed to fetch\s*$", _re.MULTILINE
@@ -3149,6 +3920,19 @@ async def handle_submit(
                 "role": "assistant",
                 "content": "⚠️ I'm already working on this message — "
                            "ignoring the duplicate submit.",
+            }
+            return
+        _stored_reply = _recent_completed_duplicate(orchestrator, _norm)
+        if _stored_reply is not None:
+            logger.warning(
+                f"[Ingress] Resend of a just-completed identical turn — "
+                f"serving the stored reply ({user_text[:60]!r})"
+            )
+            yield {
+                "role": "assistant",
+                "content": "♻️ This looks like a resend of a message I just "
+                           "answered (your connection may have dropped). "
+                           "Here's that reply:\n\n" + _stored_reply,
             }
             return
         _INFLIGHT_SUBMITS[_key] = _now
@@ -3343,6 +4127,22 @@ async def _handle_submit_inner(
             tone_level=raw_context.get("tone_level") if raw_context else None,
             query=user_text,
         )
+        # Explicit insight requests own the turn.  The gate runs concurrently
+        # with context preparation, so a veto or stale classifier result must
+        # not downgrade a recognized pattern request into ordinary web search.
+        if not getattr(_gate_decision, "insight_intent", None):
+            try:
+                from core.insight.detector import detect_insight_request
+                _explicit_insight = detect_insight_request(user_text)
+                if _explicit_insight is not None:
+                    _gate_decision.insight_intent = _explicit_insight.model_dump()
+                    _gate_decision.should_trigger = True
+                    _gate_decision.veto_exempt = True
+                    _gate_decision.modes = ["insight"]
+                    _gate_decision.reason = "insight-mode: direct detector override"
+                    logger.info("[Handle Submit] Direct insight detector override")
+            except Exception as _insight_override_error:
+                logger.debug("[Handle Submit] Insight override failed: %s", _insight_override_error)
         should_use_agentic = _gate_decision.should_trigger
         search_terms = _gate_decision.search_terms
         needs_computation = "computation" in _gate_decision.modes

@@ -1955,6 +1955,29 @@ GROUNDING_MIN_RESPONSE_CHARS = 40      # Skip tiny replies
 # ceiling curation.max_mode="queue" (auto locked). API: api/routes/curation.py.
 # Docs: docs/AUTONOMOUS_CURATION_DESIGN.md.
 
+# Pattern Analysis [NEW 2026-08-29] (YAML: pattern_analysis: → PATTERN_* constants)
+PATTERN_ANALYSIS_ENABLED = True        # Deterministic engine + insight pattern_temporal facet
+PATTERN_DEFAULT_WINDOW_DAYS = 90       # When the request names no window
+PATTERN_MAX_EXEMPLARS = 12             # Exemplar quotes carried into synthesis
+PATTERN_KEYWORD_HIT_CAP = 5000         # Corpus keyword-scan ceiling for counting
+# memory/pattern_engine.py: counts/streaks/gaps/trend by dimension × bucket; the model
+# narrates COMPUTED numbers (never recounts). ON-DEMAND ONLY — no proactive surfacing.
+# Docs: docs/PATTERN_ANALYSIS.md.
+
+# Longitudinal deliberation [NEW 2026-08-31] (core/insight/coordinator.py + deliberation.py)
+# insight_mode.planner_model = null   # planner/recovery JSON model; null → review model → active
+#   (strict-JSON contract planning on the voice model timed out at 35s — 3/3 live turns)
+# Coordinator timeouts: planner 35s → compact recovery (12s) → structural fallback → honest
+# insufficient; adapters 25s each (pubmed concurrency 2); assessor 75s (disable_reasoning).
+# co_occurrence: ≥2 named series over weekly buckets (explicit ISO or relative "last two weeks"
+# windows); series recover from the request's conjunction if the planner omits them; user source
+# restrictions ("use my corpus and notes") enforced deterministically. Windowed specs get a
+# date-range retrieval arm (notes/facts by CONTENT date, even-sampled) + in-window accounting.
+# Fail-honest: internal required channel with 0 items demotes supported→insufficient.
+# Degenerate-stream guard: ResponseParser.looks_degenerate_stream in sanitize_for_storage +
+# 240s/repetition watchdog on the insight synthesis stream. Resend of a completed identical
+# turn within 300s serves the STORED reply (ingress guard).
+
 # Escalation de-escalation [2026-08-28] (YAML: escalation_tracker.distress_grounding_max = 3)
 # Floored (distress_sticky_floor) turns HOLD consecutive_distress_count (never increment);
 # sustained-distress GROUNDING steps down to GENTLE_REENGAGEMENT after the budget; floor STAGE

@@ -91,6 +91,15 @@ class STMAnalyzer:
         conversation_text = self._format_memories(recent_memories)
         daily_notes_text = self._get_recent_daily_notes_text()
 
+        immediate_section = ""
+        if last_assistant_response:
+            immediate = self._head_tail(str(last_assistant_response), 2400)
+            immediate_section = (
+                "\n\nIMMEDIATELY PRECEDING ASSISTANT REPLY (authoritative for "
+                "short answers and option selections; inspect its final question):\n"
+                f"{immediate}\n"
+            )
+
         # Daily notes section is included only when at least one note was found.
         # When sessions start before catch-up has run, this gracefully degrades
         # to the old (recent-conversation-only) behavior.
@@ -108,6 +117,7 @@ class STMAnalyzer:
 
 Recent conversation:
 {conversation_text}
+{immediate_section}
 {notes_section}
 Current user query: {user_query}
 
@@ -176,6 +186,24 @@ Return JSON only, no markdown or extra text:"""
 
             # Parse and return
             parsed = self._parse_json(content)
+            # Deterministic continuity floor: a short non-question directly
+            # following the assistant's question is an answer/selection, never
+            # a new information request. The live "Day of please thank you"
+            # turn was otherwise rewritten as "what day is today?".
+            try:
+                from utils.query_checker import is_continuation_answer
+                if is_continuation_answer(user_query, last_assistant_response or ""):
+                    parsed["reference_type"] = "clarification"
+                    parsed["user_question"] = (
+                        "User is answering the assistant's immediately preceding "
+                        f"question with: {user_query.strip()}"
+                    )
+                    parsed["intent"] = (
+                        "Apply the user's selected option to the immediately "
+                        "preceding request without asking for it again"
+                    )
+            except Exception:
+                pass
             logger.debug(f"[STMAnalyzer] Analysis complete: topic={parsed.get('topic')}, tone={parsed.get('tone')}")
             return parsed
 
@@ -237,8 +265,34 @@ Return JSON only, no markdown or extra text:"""
         """
         from utils.time_manager import format_relative_timestamp
 
+        # Corpus contract is newest-first. Render chronologically so the final
+        # exchange really is the immediate predecessor; sort by timestamp when
+        # all timestamps are parseable, otherwise reverse the contract order.
+        ordered = list(memories or [])
+        parsed_times = []
+        for mem in ordered:
+            raw = mem.get("timestamp", "") if isinstance(mem, dict) else ""
+            try:
+                parsed_times.append(
+                    raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+                )
+            except (ValueError, TypeError):
+                parsed_times.append(None)
+        if ordered and all(ts is not None for ts in parsed_times):
+            try:
+                ordered = [
+                    mem for _, mem in sorted(
+                        zip(parsed_times, ordered),
+                        key=lambda pair: pair[0].timestamp(),
+                    )
+                ]
+            except (ValueError, OSError, OverflowError):
+                ordered.reverse()
+        else:
+            ordered.reverse()
+
         lines = []
-        for mem in memories:
+        for mem in ordered:
             query = mem.get('query', '').strip()
             response = mem.get('response', '').strip()
 
@@ -255,17 +309,25 @@ Return JSON only, no markdown or extra text:"""
                     pass
 
             if query:
-                # Truncate very long messages for STM context
-                query_short = query[:200] + "..." if len(query) > 200 else query
+                # Preserve both the opening context and closing ask. The old
+                # head-only 200 chars routinely deleted the choice question.
+                query_short = self._head_tail(query, 500)
                 lines.append(f"{ts_prefix}User: {query_short}")
 
             if response:
-                # Truncate very long responses
-                response_short = response[:200] + "..." if len(response) > 200 else response
+                response_short = self._head_tail(response, 700)
                 lines.append(f"Assistant: {response_short}")
 
         # Keep last 10 lines max (5 exchanges)
         return '\n'.join(lines[-10:])
+
+    @staticmethod
+    def _head_tail(text: str, limit: int) -> str:
+        value = (text or "").strip()
+        if len(value) <= limit:
+            return value
+        head = limit // 2
+        return value[:head] + "\n[…snipped…]\n" + value[-(limit - head):]
 
     def _parse_json(self, raw: str) -> Dict[str, Any]:
         """

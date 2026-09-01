@@ -175,7 +175,9 @@ TOOL_KEYWORDS = [
     'loc ', 'lines of code', 'lines added', 'lines changed',
     'workflow', 'pull request', 'open issues', 'closed issues',
     'actions', 'releases',
-    # Internet actions (email, telegram, discord)
+    # Internet actions (email, telegram, discord). Calendar requests use the
+    # registry-backed explicit-action detector below so a bare mention of a
+    # calendar event does not trigger tools.
     'send email', 'send an email', 'email to ', 'email him', 'email her',
     'email them', 'send a message to', 'send message to',
     'send telegram', 'send discord', 'message on telegram',
@@ -582,6 +584,7 @@ async def evaluate_agentic_gate(
         AgenticDecision with routing information.
     """
     _lower = user_text.lower().strip()
+    _lower_normalized = _re_gate.sub(r"\s+", " ", _lower).strip()
     _words = _lower.split()
     _has_url = 'http://' in _lower or 'https://' in _lower
 
@@ -667,12 +670,40 @@ async def evaluate_agentic_gate(
     # ── Tier 1: Keyword heuristics (instant, no LLM) ─────────────────
     needs_computation = _COMPUTATION_HIT(_lower)
 
-    if _has_url or _WEB_SEARCH_HIT(_lower):
+    # Personal-document search (2026-08-29): "please search for documents
+    # related to the MGT class I am currently enrolled in" hit the WEB
+    # keyword arm ("search") and ran the whole turn in web_search mode —
+    # but the search target is the user's own corpus. Route to tools
+    # (file/doc retrieval + memory) and stand the web arm down. A bare URL
+    # still wins: pasting a link is an explicit web target.
+    from utils.query_checker import is_personal_doc_search  # lazy import: cycle (gate is in a sanctioned cycle group; all internal imports here are call-time)
+    _personal_doc_search = is_personal_doc_search(user_text)
+
+    # Registry-backed write intent is itself a Tier-1 tool trigger. Previously
+    # the controller knew how to force a proposal *after* entering agentic
+    # mode, but the gate did not consult the same registry, so the exact live
+    # request "create the calendar events" (plural) stayed in tool-less chat.
+    # Keep one source of truth for every action type and make explicit writes
+    # veto-exempt below.
+    try:
+        from core.actions.registry import detect_action_intent
+        _explicit_action = detect_action_intent(user_text)
+    except Exception as e:
+        logger.debug(f"[Agentic Gate] Action-intent detection failed (non-fatal): {e}")
+        _explicit_action = None
+
+    if _has_url or (_WEB_SEARCH_HIT(_lower) and not _personal_doc_search):
         needs_web_search = True
         logger.debug("[Agentic Gate] Tier 1: explicit web search/URL keyword detected")
 
     if _TOOL_HIT(_lower):
         needs_tools = True
+    if _explicit_action is not None:
+        needs_tools = True
+        logger.debug(
+            f"[Agentic Gate] Tier 1: explicit write action detected "
+            f"({_explicit_action.value})"
+        )
 
     # Email arms only run for a plausible SEND request: terse message or a
     # head-anchored send imperative. A long paste containing addresses in a
@@ -706,7 +737,8 @@ async def evaluate_agentic_gate(
     # file_list / get_full_document are offered. Literal fast-path + robust regex.
     needs_files = (
         any(kw in _lower for kw in FILE_ACCESS_KEYWORDS)
-        or any(p.search(_lower) for p in FILE_ACCESS_PATTERNS)
+        or ("pattern tool" not in _lower_normalized and any(p.search(_lower) for p in FILE_ACCESS_PATTERNS))
+        or _personal_doc_search
     )
     if needs_files:
         needs_tools = True
@@ -914,6 +946,56 @@ async def evaluate_agentic_gate(
     except Exception as e:
         logger.warning(f"[Agentic Gate] Insight detection failed (non-fatal): {e}")
 
+    # Broad natural-language fallback for mixed personal/external requests.
+    # Tier-1 may already have noticed words such as "web" or "PubMed"; without
+    # this preemption those flags would skip the unified classifier and reduce
+    # a longitudinal deliberation to an ordinary web-search turn.
+    # Audit F7 (2026-08-31): the LLM verdict must never override DETERMINISTIC
+    # routing computed above (explicit actions, file/tool arms); the check is
+    # a STRICT boolean (a mocked/malformed decision's truthy attribute had
+    # hijacked ordinary turns into 35s deliberations); the decision is reused
+    # by Tier 4 instead of paying a second LLM call; failures log at warning.
+    _prefetched_trigger_decision = None
+    if (model_manager is not None and _explicit_action is None
+            and not needs_tools and not needs_files):
+        try:
+            from utils.web_search_trigger import (
+                _looks_like_pattern_candidate,
+                analyze_for_web_search_llm,
+            )
+            if _looks_like_pattern_candidate(user_text):
+                _pattern_decision = await analyze_for_web_search_llm(
+                    query=user_text,
+                    model_manager=model_manager,
+                    conversation_context=_build_recent_context(corpus_manager),
+                )
+                _prefetched_trigger_decision = _pattern_decision
+                if getattr(_pattern_decision, "needs_pattern_analysis", False) is True:
+                    logger.info(
+                        "[Agentic Gate] LLM preempted mixed tools with generic "
+                        "pattern-deliberation intent"
+                    )
+                    # lazy import: cycle (insight.detector imports gate at call time)
+                    from core.insight.detector import parse_window_days
+                    return AgenticDecision(
+                        should_trigger=True,
+                        modes=["insight"],
+                        reason="insight-mode: pattern_temporal (LLM-classified)",
+                        veto_exempt=True,
+                        insight_intent={
+                            "kind": "pattern_temporal",
+                            "theme": user_text,
+                            "wants_document": False,
+                            "raw_query": user_text,
+                            "window_days": parse_window_days(user_text),
+                            "dimension": "",
+                        },
+                    )
+        except Exception as e:
+            logger.warning(
+                f"[Agentic Gate] Pattern-deliberation LLM fallback failed: {e}"
+            )
+
     # ── Tier 3: Document generation + self-note intent ────────────────
     try:
         from knowledge.document_generator import detect_document_intent
@@ -952,12 +1034,37 @@ async def evaluate_agentic_gate(
                 # Carry the prior turns so elliptical follow-ups ("check the
                 # news") resolve to topic-specific search terms instead of
                 # generic ones.
-                _recent_ctx = _build_recent_context(corpus_manager)
-                trigger_decision = await analyze_for_web_search_llm(
-                    query=user_text,
-                    model_manager=model_manager,
-                    conversation_context=_recent_ctx,
-                )
+                if _prefetched_trigger_decision is not None:
+                    # The pattern-preemption arm already paid this exact LLM
+                    # call (same query + context) — reuse, don't re-bill.
+                    trigger_decision = _prefetched_trigger_decision
+                else:
+                    _recent_ctx = _build_recent_context(corpus_manager)
+                    trigger_decision = await analyze_for_web_search_llm(
+                        query=user_text,
+                        model_manager=model_manager,
+                        conversation_context=_recent_ctx,
+                    )
+                if getattr(trigger_decision, 'needs_pattern_analysis', False) is True:
+                    logger.info(
+                        "[Agentic Gate] LLM detected generic pattern-deliberation intent"
+                    )
+                    # lazy import: cycle (insight.detector imports gate at call time)
+                    from core.insight.detector import parse_window_days
+                    return AgenticDecision(
+                        should_trigger=True,
+                        modes=["insight"],
+                        reason="insight-mode: pattern_temporal (LLM-classified)",
+                        veto_exempt=True,
+                        insight_intent={
+                            "kind": "pattern_temporal",
+                            "theme": user_text,
+                            "wants_document": False,
+                            "raw_query": user_text,
+                            "window_days": parse_window_days(user_text),
+                            "dimension": "",
+                        },
+                    )
                 should_trigger = getattr(trigger_decision, 'should_search', False)
                 search_terms = getattr(trigger_decision, 'search_terms', []) or []
 
@@ -1045,6 +1152,7 @@ async def evaluate_agentic_gate(
     _veto_exempt = (
         _explicit_kw or _has_url or needs_files
         or bool(doc_gen_intent) or bool(self_note_intent)
+        or _explicit_action is not None
     )
     # Bare pasted link with NO request shape — the only exemption the acute
     # tone arm may pierce (see AgenticDecision.veto_exempt_url_only).

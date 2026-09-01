@@ -39,6 +39,10 @@ from typing import Dict, Optional, List, Set, Tuple
 from utils.logging_utils import get_logger
 import re as _re
 
+# URLs never belong in a topic label (2026-08-29: a chatgpt.com/share link
+# became the stored topic and rendered into [THREAD CONTEXT] verbatim).
+_TOPIC_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
 # Optional spaCy NER for stage 2 entity extraction
 _spacy_nlp = None
 def _load_spacy():
@@ -252,7 +256,9 @@ class TopicManager:
         """
         if not text:
             return None
-        q = text.strip()
+        # URLs are never topic material — a raw share link had become the
+        # stored topic label ("Chatgpt https://chatgpt.com/share/…", 2026-08-29).
+        q = _TOPIC_URL_RE.sub(" ", text).strip()
 
         leaders = [
             r"^(can you please|could you please|would you please)\s+",
@@ -562,7 +568,8 @@ class TopicManager:
 
         if not isinstance(raw, str):
             return None
-        resp = raw.strip().strip('"').strip()
+        resp = _TOPIC_URL_RE.sub(" ", raw).strip().strip('"').strip()
+        resp = re.sub(r"\s{2,}", " ", resp)
         if not resp or resp.upper() == "CONTINUE":
             return None
 

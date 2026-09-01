@@ -42,6 +42,11 @@ logger = logging.getLogger("python_fs_guard")
 # ("data/web_search_credits.json.tmp*").
 _DAEMON_STATE_EXEMPT_PREFIXES = (
     "data/web_search_credits.json",
+    # PendingActionsStore.propose() persists during agentic dispatch — the
+    # store's core scenario (proposal survives a restart before approval) was
+    # silently dead behind the guard (2026-08-31 audit F2; same class as the
+    # 07-16 credits incident).
+    "data/pending_actions.json",
 )
 
 # ============================================================================

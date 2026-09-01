@@ -277,6 +277,8 @@ class AgenticSearchSection(BaseModel):
     # started and the loop falls through to final synthesis. Bounds a runaway
     # multi-round session (max_rounds × slow-model latency) hanging the turn.
     loop_timeout_s: float = Field(default=120.0, ge=10.0)
+    fetch_fastpath: bool = True
+    fetch_fastpath_min_chars: int = Field(default=400, ge=1)
 
 
 class InsightModeSection(BaseModel):
@@ -296,6 +298,18 @@ class InsightModeSection(BaseModel):
     sweep_timeout_s: float = Field(default=45.0, ge=5.0)
     offer_enabled: bool = True
     doc_on_agreement: bool = True
+    planner_model: Optional[str] = None
+
+
+class PatternAnalysisSection(BaseModel):
+    """Deterministic pattern engine + insight-mode pattern_temporal facet
+    (2026-08-29). On-demand only — never injected into prompts uninvited."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    default_window_days: int = Field(default=90, ge=1)
+    max_exemplars: int = Field(default=12, ge=0)
+    exemplars_per_bucket: int = Field(default=2, ge=0)
+    keyword_hit_cap: int = Field(default=5000, ge=100)
 
 
 class FileAccessSection(BaseModel):
@@ -791,6 +805,12 @@ class GroundingCheckSection(BaseModel):
     timeout_s: float = Field(default=5.0, gt=0.0)
     max_tokens: int = Field(default=250, ge=1)
     min_response_chars: int = Field(default=40, ge=0)
+    # 2026-08-29: integrate=True weaves the correction INTO the response via
+    # a bounded rewrite (final-yield replacement, display==storage); the
+    # appended suffix is the fallback.
+    integrate: bool = True
+    integrate_timeout_s: float = Field(default=6.0, gt=0.0)
+    integrate_max_response_chars: int = Field(default=4000, ge=200)
 
 
 class UncertaintyFallbackSection(BaseModel):
@@ -1058,6 +1078,7 @@ class InternetActionsSection(BaseModel):
     # Safety
     action_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     max_pending_actions: int = Field(default=5, ge=1, le=20)
+    pending_actions_path: str = "data/pending_actions.json"
     audit_log_path: str = "logs/actions_audit.jsonl"
 
 
@@ -1076,6 +1097,7 @@ class DaemonConfig(BaseModel):
     location: LocationSection = Field(default_factory=LocationSection)
     agentic_search: AgenticSearchSection = Field(default_factory=AgenticSearchSection)
     insight_mode: InsightModeSection = Field(default_factory=InsightModeSection)
+    pattern_analysis: PatternAnalysisSection = Field(default_factory=PatternAnalysisSection)
     uncertainty_fallback: UncertaintyFallbackSection = Field(default_factory=UncertaintyFallbackSection)
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     grounding_check: GroundingCheckSection = Field(default_factory=GroundingCheckSection)

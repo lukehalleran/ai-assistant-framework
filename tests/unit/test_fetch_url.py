@@ -8,7 +8,8 @@ Covers:
 - XMLMarkerHandler — parse <fetch_url url="...">reason</fetch_url> and alias patterns
 - NativeToolsHandler — parse fetch_url tool call, availability flag controls tool listing
 - ToolExecutor.dispatch_single — URL reroute (web_search with URL -> fetch_url)
-- ToolExecutor._execute_fetch_url — mock _tavily_extract, success/failure/empty
+- ToolExecutor._execute_fetch_url — mock fetch_url_content (layered: direct-first,
+  Tavily fallback — 2026-08-29), success/failure/empty
 - AgenticFormatter.format_fetch_url_context — output format
 - _strip_leaked_xml_markers — strips fetch_url and other markers
 - Response parser sentence-level thinking detection
@@ -432,7 +433,7 @@ class TestToolExecutorUrlReroute:
 # ── ToolExecutor._execute_fetch_url ──────────────────────────────
 
 class TestExecuteFetchUrl:
-    """Test ToolExecutor._execute_fetch_url with mocked _tavily_extract."""
+    """Test ToolExecutor._execute_fetch_url with mocked fetch_url_content."""
 
     @pytest.mark.asyncio
     async def test_execute_fetch_url_success(self):
@@ -445,7 +446,7 @@ class TestExecuteFetchUrl:
         mock_page.url = "https://example.com"
 
         mock_wsm = MagicMock()
-        mock_wsm._tavily_extract = AsyncMock(return_value=[mock_page])
+        mock_wsm.fetch_url_content = AsyncMock(return_value=[mock_page])
 
         executor = ToolExecutor(
             model_manager=MagicMock(),
@@ -466,7 +467,7 @@ class TestExecuteFetchUrl:
         from core.agentic.tools import ToolExecutor
 
         mock_wsm = MagicMock()
-        mock_wsm._tavily_extract = AsyncMock(return_value=[])
+        mock_wsm.fetch_url_content = AsyncMock(return_value=[])
 
         executor = ToolExecutor(
             model_manager=MagicMock(),
@@ -488,7 +489,7 @@ class TestExecuteFetchUrl:
         mock_page.url = "https://empty.com"
 
         mock_wsm = MagicMock()
-        mock_wsm._tavily_extract = AsyncMock(return_value=[mock_page])
+        mock_wsm.fetch_url_content = AsyncMock(return_value=[mock_page])
 
         executor = ToolExecutor(
             model_manager=MagicMock(),
@@ -504,7 +505,7 @@ class TestExecuteFetchUrl:
         from core.agentic.tools import ToolExecutor
 
         mock_wsm = MagicMock()
-        mock_wsm._tavily_extract = AsyncMock(side_effect=Exception("API error"))
+        mock_wsm.fetch_url_content = AsyncMock(side_effect=Exception("API error"))
 
         executor = ToolExecutor(
             model_manager=MagicMock(),
@@ -539,7 +540,7 @@ class TestExecuteFetchUrl:
         mock_page.url = "https://example.com"
 
         mock_wsm = MagicMock()
-        mock_wsm._tavily_extract = AsyncMock(return_value=[mock_page])
+        mock_wsm.fetch_url_content = AsyncMock(return_value=[mock_page])
 
         executor = ToolExecutor(
             model_manager=MagicMock(),
@@ -812,7 +813,7 @@ class TestDispatchFetchUrl:
         mock_page.url = "https://test.com"
 
         mock_wsm = MagicMock()
-        mock_wsm._tavily_extract = AsyncMock(return_value=[mock_page])
+        mock_wsm.fetch_url_content = AsyncMock(return_value=[mock_page])
 
         executor = ToolExecutor(
             model_manager=MagicMock(),
@@ -850,7 +851,7 @@ class TestDispatchFetchUrl:
         from core.agentic.tools import ToolExecutor
 
         mock_wsm = MagicMock()
-        mock_wsm._tavily_extract = AsyncMock(return_value=[])
+        mock_wsm.fetch_url_content = AsyncMock(return_value=[])
 
         executor = ToolExecutor(
             model_manager=MagicMock(),

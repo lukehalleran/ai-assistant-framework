@@ -77,6 +77,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
+from utils.query_checker import is_personal_doc_search
 import json
 
 logger = get_logger("web_search_trigger")
@@ -123,6 +124,7 @@ class WebSearchDecision:
     needs_memory_search: bool = False  # LLM detected memory/recall intent
     needs_knowledge_search: bool = False  # LLM detected encyclopedic/wiki knowledge intent
     needs_document_generation: bool = False  # LLM detected document generation intent
+    needs_pattern_analysis: bool = False  # LLM detected cross-history pattern deliberation
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
     document_source: str = ""  # "research" (external lookup) | "conversation" (summarize THIS conversation) | ""
@@ -159,6 +161,7 @@ class LLMSearchTriggerResponse:
     needs_memory_search: bool = False  # Whether query wants stored memories/facts/notes
     needs_knowledge_search: bool = False  # Whether query wants encyclopedic/wiki knowledge
     needs_document_generation: bool = False  # Whether query wants a saved document
+    needs_pattern_analysis: bool = False  # Whether query asks for longitudinal/pattern evaluation
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
     document_source: str = ""  # "research" | "conversation" | ""
@@ -221,6 +224,7 @@ class LLMSearchTriggerResponse:
                 needs_memory_search=bool(data.get("needs_memory_search", False)),
                 needs_knowledge_search=bool(data.get("needs_knowledge_search", False)),
                 needs_document_generation=bool(data.get("needs_document_generation", False)),
+                needs_pattern_analysis=bool(data.get("needs_pattern_analysis", False)),
                 document_topic=str(data.get("document_topic", "")),
                 document_type=str(data.get("document_type", "")),
                 document_source=document_source,
@@ -554,6 +558,22 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
             matched_patterns=supp_matches
         )
 
+    # Personal-document search (2026-08-29): "search for documents related to
+    # the MGT class I am currently enrolled in" is an INTERNAL retrieval
+    # request — the search verb made the old heuristic call it an "explicit
+    # search request" (conf 0.80) and burn Tavily credits on the user's own
+    # corpus (one sub-query was literally "Add dates and deadlines to Google
+    # Calendar"). The agentic gate routes these to file/memory tools instead.
+    if is_personal_doc_search(query):
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.0,
+            reason="Suppressed: personal-document search (internal retrieval target)",
+            matched_keywords=[],
+            matched_patterns=["personal_doc_search"],
+        )
+
     # Check explicit search phrases (strongest signal)
     has_explicit, explicit_matches = _matches_phrase(query, EXPLICIT_SEARCH_PHRASES)
     if has_explicit:
@@ -820,6 +840,43 @@ def get_search_decision_for_prompt(
 # ===== LLM-First Trigger System =====
 
 
+_PATTERN_CANDIDATE_FIRST_PERSON_RE = re.compile(
+    r"\b(?:i|me|my|mine|we|us|our)\b", re.I,
+)
+# Audit F7 (2026-08-31): the original list accepted pronoun + ANY comparator
+# ("before", "data", "changed", "theory"…) — a wide slice of ordinary turns
+# paid an extra LLM round-trip and vents with "before" in them reached the
+# classifier. Now an explicit RECORD/LONGITUDINAL operation is required; bare
+# comparators fall through to the ordinary Tier-4 path, which can still
+# return needs_pattern_analysis for genuine mixed requests.
+_PATTERN_CANDIDATE_OPERATION_RE = re.compile(
+    # record/longitudinal operations + two-series RELATIONAL vocabulary
+    # ("could X and Y be connected?" is a genuine mixed shape); bare
+    # comparators (before/after/data/changed/theory) stay out.
+    r"\b(?:patterns?|trends?|over\s+time|"
+    r"across\s+(?:time|(?:my\s+|the\s+)?(?:months|weeks|years|history))|"
+    r"co-?occur\w*|correlat\w*|covar\w*|timeline|"
+    r"linked|connected|relationship|associated\s+with|"
+    r"my\s+(?:recorded\s+)?(?:history|records?|notes|data|corpus)|"
+    r"how\s+often|how\s+many\s+(?:times|days|nights|weeks)|"
+    r"before\s+and\s+after|compare\s+my)\b",
+    re.I,
+)
+
+
+def _looks_like_pattern_candidate(query: str) -> bool:
+    """Cheap recall-oriented signal that only decides whether to ask the LLM.
+
+    It never routes the turn itself, and it must not drag personal-state
+    statements (vents) into an LLM round-trip — the 08-05 guard's doctrine.
+    """
+    text = query or ""
+    if not (_PATTERN_CANDIDATE_FIRST_PERSON_RE.search(text)
+            and _PATTERN_CANDIDATE_OPERATION_RE.search(text)):
+        return False
+    return not is_personal_state_statement(text)
+
+
 def quick_prefilter_should_skip(query: str) -> bool:
     """
     Quick pre-filter to skip LLM for obvious non-search queries.
@@ -1047,6 +1104,22 @@ KNOWLEDGE SEARCH CRITERIA (needs_knowledge_search):
 - NEVER for FOLLOW-UP CONTINUATIONS of an ongoing task ("yeah and…", "also…", "I'll also need…", "plus…") — these extend the current collaborative work; answer them directly.
 - The trigger must be an actual QUESTION or an explicit "explain / what is / how does / tell me about" request. A task statement ("I need X in Y format", "make it Z") is never knowledge search.
 
+PATTERN DELIBERATION CRITERIA (needs_pattern_analysis):
+- TRUE when the user asks the system to examine their history/notes/data across
+  time or periods, identify or test a recurring pattern, compare before versus
+  after an event, evaluate whether two personal variables covary, or assemble
+  longitudinal evidence for a decision.
+- This includes natural phrasings that do not literally say "pattern": "look
+  across everything I've told you", "has this changed since I moved?", "compare
+  how I was before and after", "what tends to happen when...", "check whether
+  my theory fits the record", and "use my history plus outside research".
+- TRUE even when the same request also needs web, Wikipedia, PubMed, computation,
+  or another tool. The deliberation coordinator will select and audit those
+  channels; do not reduce a mixed request to ordinary web search.
+- FALSE for a single current symptom, ordinary recall of one fact/event, casual
+  self-reflection without a request to examine the record, or general factual
+  questions about patterns in populations.
+
 DOCUMENT GENERATION CRITERIA (needs_document_generation):
 - TRUE if: the user wants a document SAVED to disk — a report, summary, or research document written and stored as a file
 - Examples: "write a report about climate change", "create a document about AI", "save a summary on quantum computing", "prepare a report on economic trends", "make me a research document about X", "generate a report and save it", "draft a report about Y", "I need a written report on Z"
@@ -1065,6 +1138,7 @@ OUTPUT (JSON only, no markdown):
   "num_searches": 1-4,
   "needs_memory_search": true or false,
   "needs_knowledge_search": true or false,
+  "needs_pattern_analysis": true or false,
   "needs_document_generation": true or false,
   "document_topic": "topic for document (only if needs_document_generation is true)",
   "document_type": "report or summary (only if needs_document_generation is true)",
@@ -1077,7 +1151,7 @@ GUIDELINES:
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
 - If not searching, return empty search_terms and num_searches: 0
-- At most one of should_search, needs_memory_search, needs_knowledge_search, needs_document_generation should be true (web vs memory vs knowledge vs document generation are separate paths)
+- At most one of should_search, needs_memory_search, needs_knowledge_search, needs_pattern_analysis, needs_document_generation should be true. A mixed personal pattern request owns the turn via needs_pattern_analysis and records its required evidence channels inside the later frozen plan.
 
 JSON:"""
 
@@ -1267,6 +1341,7 @@ async def analyze_for_web_search_llm(
         WebSearchDecision with should_search, search_terms, depth, num_searches
     """
     global _llm_trigger_cache
+    pattern_candidate = _looks_like_pattern_candidate(query)
 
     # Check cache first (prevents duplicate LLM calls within same request).
     # Hash on (query, conversation_context): the SAME elliptical query ("check the
@@ -1312,7 +1387,7 @@ async def analyze_for_web_search_llm(
         )
 
     # Quick pre-filter: skip LLM for obvious non-search queries
-    if quick_prefilter_should_skip(query):
+    if quick_prefilter_should_skip(query) and not pattern_candidate:
         return WebSearchDecision(
             should_search=False,
             depth=WebSearchDepth.QUICK,
@@ -1321,6 +1396,21 @@ async def analyze_for_web_search_llm(
             matched_keywords=[],
             matched_patterns=[],
             source="heuristic"
+        )
+
+    # Personal-document search (2026-08-29, deterministic — LLM-independent):
+    # the target of the search is the user's own corpus (notes/files/uploads/
+    # syllabus + personal anchor); never a web request, never consult the LLM.
+    # The agentic gate routes the same shape to file/memory tools.
+    if is_personal_doc_search(query):
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.0,
+            reason="Personal-document search: internal retrieval target",
+            matched_keywords=[],
+            matched_patterns=["personal_doc_search"],
+            source="heuristic",
         )
 
     # Always compute heuristic result (used for blending and fallback)
@@ -1384,12 +1474,13 @@ async def analyze_for_web_search_llm(
                 get_store().record("web_search", "no_search", query, "personal_state_statement")
             except Exception:
                 pass
-        if not _referential_followup:
+        if not _referential_followup and not pattern_candidate:
             logger.debug("[WebSearchTrigger] Skipping LLM: heuristic confident no-search (conf=0.0, no keywords)")
             _llm_trigger_cache[cache_key] = (now, heuristic_result)
             return heuristic_result
         logger.debug("[WebSearchTrigger] conf=0.0 referential follow-up with context — consulting LLM")
-    if heuristic_result.confidence >= 0.7 and heuristic_result.should_search:
+    if (heuristic_result.confidence >= 0.7 and heuristic_result.should_search
+            and not pattern_candidate):
         logger.debug(f"[WebSearchTrigger] Skipping LLM: heuristic confident search (conf={heuristic_result.confidence:.2f})")
         _llm_trigger_cache[cache_key] = (now, heuristic_result)
         return heuristic_result
@@ -1407,6 +1498,25 @@ async def analyze_for_web_search_llm(
     if llm_response is None:
         logger.debug("[WebSearchTrigger] LLM failed, falling back to heuristics")
         return heuristic_result
+
+    # A mixed longitudinal request owns the turn. Do not let the ordinary web
+    # confidence blend or a personal-topic search veto erase this independent
+    # routing decision; the frozen planner will audit every requested channel.
+    if llm_response.needs_pattern_analysis:
+        result = WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=llm_response.confidence,
+            reason=f"LLM: {llm_response.reason}",
+            matched_keywords=heuristic_result.matched_keywords,
+            matched_patterns=heuristic_result.matched_patterns,
+            search_terms=[],
+            num_searches=0,
+            source="llm",
+            needs_pattern_analysis=True,
+        )
+        _llm_trigger_cache[cache_key] = (time.time(), result)
+        return result
 
     # Heuristic veto: only override LLM when heuristic has an ACTIVE reason
     # to suppress (matched a suppression/static pattern). A confidence of 0.0
@@ -1490,6 +1600,7 @@ async def analyze_for_web_search_llm(
         source="llm",
         needs_memory_search=llm_response.needs_memory_search,
         needs_knowledge_search=llm_response.needs_knowledge_search,
+        needs_pattern_analysis=llm_response.needs_pattern_analysis,
         needs_document_generation=llm_response.needs_document_generation,
         document_topic=llm_response.document_topic,
         document_type=llm_response.document_type,

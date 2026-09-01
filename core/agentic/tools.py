@@ -85,6 +85,7 @@ DISPATCH_TABLE = [
     (lambda d: d.wants_stackexchange and d.stackexchange_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "stackexchange")),
     (lambda d: d.wants_arxiv and d.arxiv_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "arxiv")),
     (lambda d: d.wants_pubmed and d.pubmed_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "pubmed")),
+    (lambda d: d.wants_pattern_scan, "_dispatch_pattern_scan", _args_basic),
     (lambda d: d.wants_hackernews and d.hackernews_query, "_dispatch_api_search", lambda d, rn, cl, ss: (d, rn, "hackernews")),
     (lambda d: d.wants_generate_document and d.generate_document_topic, "_dispatch_generate_document", _args_basic),
     (lambda d: d.wants_create_daemon_note and d.daemon_note_title, "_dispatch_create_daemon_note", _args_basic),
@@ -137,6 +138,8 @@ class ToolExecutor:
         github_manager: Optional["GitHubManager"] = None,
         token_manager: Optional["TokenManager"] = None,
         memory_expander: Optional["MemoryExpander"] = None,
+        corpus_manager=None,
+        user_profile=None,
         compression_model: str = "gpt-4o-mini",
     ):
         self.model_manager = model_manager
@@ -150,6 +153,8 @@ class ToolExecutor:
         self.github_manager = github_manager
         self.token_manager = token_manager
         self.memory_expander = memory_expander
+        self.corpus_manager = corpus_manager
+        self.user_profile = user_profile
         self.compression_model = compression_model
 
         # Web source map for citation tracking across rounds
@@ -218,8 +223,10 @@ class ToolExecutor:
         # Visual memory
         try:
             from config.app_config import VISUAL_MEMORY_ENABLED
-            if VISUAL_MEMORY_ENABLED:
-                lines.append("recall_image: AVAILABLE")
+            if VISUAL_MEMORY_ENABLED and self.chroma_store:
+                lines.append("recall_image: READY (visual memory enabled; shared Chroma store injected)")
+            elif VISUAL_MEMORY_ENABLED:
+                lines.append("recall_image: UNAVAILABLE (visual memory enabled but no Chroma store)")
             else:
                 lines.append("recall_image: DISABLED")
         except Exception:
@@ -241,11 +248,12 @@ class ToolExecutor:
         else:
             lines.append("github: UNAVAILABLE (gh CLI not installed or not authenticated)")
 
-        # Dedicated search APIs (always available — free, no auth)
-        lines.append("search_stackexchange: AVAILABLE (Stack Overflow, ServerFault, etc.)")
-        lines.append("search_arxiv: AVAILABLE (academic papers)")
-        lines.append("search_pubmed: AVAILABLE (biomedical literature)")
-        lines.append("search_hackernews: AVAILABLE (tech news/discussion)")
+        # Dedicated APIs need no credentials, but are network-dependent and are
+        # only confirmed healthy after a successful request in this process.
+        lines.append("search_stackexchange: READY (public API; not yet live-checked)")
+        lines.append("search_arxiv: READY (public API; not yet live-checked)")
+        lines.append("search_pubmed: READY (public API; not yet live-checked)")
+        lines.append("search_hackernews: READY (public API; not yet live-checked)")
 
         # Document generation
         try:
@@ -267,16 +275,11 @@ class ToolExecutor:
         except Exception:
             lines.append("create_daemon_note: DISABLED")
 
-        # Internet actions — list comes from the action registry (each spec gates on its own flag).
+        # Internet actions — action registry is also the source of runtime
+        # OAuth/scope status, shared with the enhanced fallback prompt.
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            if INTERNET_ACTIONS_ENABLED:
-                from core.actions.registry import enabled_action_types
-                names = [at.value for at in enabled_action_types()]
-                action_list = ", ".join(names) if names else "(no actions enabled)"
-                lines.append(f"propose_action: AVAILABLE ({action_list} — requires user confirmation)")
-            else:
-                lines.append("propose_action: DISABLED (internet actions not enabled)")
+            from core.actions.registry import get_runtime_action_health
+            lines.extend(get_runtime_action_health().splitlines())
         except Exception:
             lines.append("propose_action: DISABLED")
 
@@ -308,6 +311,42 @@ class ToolExecutor:
     # ------------------------------------------------------------------
     # Dispatch methods
     # ------------------------------------------------------------------
+
+    async def _dispatch_pattern_scan(self, decision: SearchDecision, round_number: int) -> _ToolResult:
+        """Execute the deterministic scan and preserve its machine result."""
+        from memory.pattern_engine import LongitudinalEvidenceSpec, run_longitudinal_scan
+        try:
+            from config.app_config import PATTERN_ANALYSIS_ENABLED
+        except Exception:
+            PATTERN_ANALYSIS_ENABLED = True
+        if not PATTERN_ANALYSIS_ENABLED:
+            text = "[PATTERN_SCAN] DISABLED by configuration; no evidence retrieved."
+            return _ToolResult(decision=decision, round_data=None, formatted_context=text,
+                               start_events=[], end_events=[])
+        if self.corpus_manager is None:
+            text = "[PATTERN_SCAN] UNAVAILABLE: corpus manager was not injected."
+            return _ToolResult(decision=decision, round_data=None, formatted_context=text,
+                               start_events=[], end_events=[])
+        spec = LongitudinalEvidenceSpec.model_validate(decision.pattern_spec or {})
+        events = []
+        for entry in getattr(self.corpus_manager, "corpus", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            # Corpus entries are user-authored only when query is present; the
+            # response is locator context and is never counted as independent proof.
+            if entry.get("query"):
+                events.append({"timestamp": entry.get("timestamp", ""),
+                    "text": entry.get("query", ""), "source_class": "user",
+                    "source_id": entry.get("id") or entry.get("timestamp"), "speaker": "user"})
+        result = run_longitudinal_scan(spec, events)
+        payload = result.model_dump_json()
+        text = f"[PATTERN_SCAN_RESULT]\n{payload}\n{result.render_manifest()}"
+        round_data = SearchRound(round_number=round_number,
+            request=SearchRequest(query="pattern_scan", reason=decision.pattern_reason,
+                                  round_number=round_number), results=result,
+            summary=result.render_manifest())
+        return _ToolResult(decision=decision, round_data=round_data,
+                           formatted_context=text, start_events=[], end_events=[])
 
     async def _dispatch_web_search(
         self, decision: SearchDecision, round_number: int,
@@ -1432,6 +1471,36 @@ class ToolExecutor:
         self._current_web_source_map.update(source_map)
         return numbered
 
+    def _register_research_rows(self, rows: list[dict]) -> list[dict]:
+        """Attach the same WEB_N provenance markers used by Tavily results."""
+        from knowledge.web_search_manager import WebPage
+        pages = []
+        for row in rows or []:
+            url = str(row.get("url") or "")
+            if not url:
+                continue
+            content = str(row.get("abstract") or row.get("text") or row.get("snippet") or "")
+            pages.append(WebPage(
+                url=url, title=str(row.get("title") or row.get("source") or ""),
+                content=content, snippet=content[:500],
+                score=float(row.get("score") or 0.0), source=str(row.get("source") or "research"),
+            ))
+        numbered = self._merge_web_ids(pages)
+        ids_by_url = {item.url: item.source_id for item in numbered}
+        # Existing URLs may have been numbered in an earlier round.
+        from knowledge.web_search_manager import _canonical_url
+        existing = {
+            _canonical_url(meta.get("url", "")): source_id
+            for source_id, meta in self._current_web_source_map.items()
+        }
+        enriched = []
+        for row in rows or []:
+            item = dict(row)
+            canon = _canonical_url(str(item.get("url") or ""))
+            item["web_citation_id"] = ids_by_url.get(str(item.get("url") or ""), existing.get(canon))
+            enriched.append(item)
+        return enriched
+
     async def _compress_results(
         self,
         result: Any,
@@ -1679,14 +1748,15 @@ Provide a focused summary with the most important information."""
             return f"[GitHub query error: {e}]"
 
     async def _execute_fetch_url(self, url: str) -> str:
-        """Fetch page content from a URL via Tavily extract API.
+        """Fetch page content from a URL — local direct fetch (incl. SPA
+        embedded-JSON salvage) first, Tavily extract fallback.
 
         Also registers the fetched page in the web source map for [WEB_N] citations.
         """
         if not self.web_search_manager:
             return "[Web search manager not configured — cannot fetch URLs]"
         try:
-            pages = await self.web_search_manager._tavily_extract([url])
+            pages = await self.web_search_manager.fetch_url_content(url)
             if not pages:
                 return f"[Could not fetch content from {url}]"
             page = pages[0]
@@ -1732,10 +1802,10 @@ Provide a focused summary with the most important information."""
             from knowledge.visual_retrieval import VisualRetriever
 
             clip = get_clip_manager()
-            chroma = getattr(self, '_chroma_store', None)
-            if not chroma and self.memory_coordinator:
-                chroma = getattr(self.memory_coordinator, 'chroma_store', None)
-            store = VisualMemoryStore(chroma_store=chroma)
+            # ToolExecutor receives the shared Chroma store directly. The old
+            # fallback referenced a nonexistent memory_coordinator attribute and
+            # made every visual recall fail before retrieval began.
+            store = VisualMemoryStore(chroma_store=getattr(self, "chroma_store", None))
             retriever = VisualRetriever(clip, store)
 
             result = await retriever.retrieve_visual_memories(query, max_images=3)
@@ -1791,6 +1861,7 @@ Provide a focused summary with the most important information."""
         )]
 
         start_time = time.time()
+        search_error = None
         try:
             if tool_name == "stackexchange":
                 formatted = await self._execute_stackexchange(
@@ -1806,12 +1877,14 @@ Provide a focused summary with the most important information."""
                 formatted = f"Unknown API tool: {tool_name}"
         except Exception as e:
             logger.warning(f"[ToolExecutor] {tool_name} search failed: {e}")
+            search_error = str(e)
             formatted = f"[{tool_name} search error: {e}]"
 
         duration_ms = (time.time() - start_time) * 1000
         end_events = [ProgressEvent(
-            event_type="tool_complete",
-            message=f"{tool_name} search complete ({duration_ms:.0f}ms)",
+            event_type="tool_error" if search_error else "tool_complete",
+            message=(f"{tool_name} search failed ({duration_ms:.0f}ms): {search_error}"
+                     if search_error else f"{tool_name} search complete ({duration_ms:.0f}ms)"),
             round_number=round_number,
         )]
         return _ToolResult(
@@ -1822,131 +1895,27 @@ Provide a focused summary with the most important information."""
 
     async def _execute_stackexchange(self, query: str, site: str = "stackoverflow") -> str:
         """Search Stack Exchange API. No auth needed."""
-        import httpx
-
-        url = (
-            f"https://api.stackexchange.com/2.3/search/advanced"
-            f"?order=desc&sort=votes&q={urllib.parse.quote(query)}"
-            f"&site={site}&filter=withbody&pagesize=5"
+        from knowledge.research_search import (
+            format_stackexchange_results, search_stackexchange,
         )
-        loop = asyncio.get_event_loop()
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
-            data = resp.json()
-
-        items = data.get("items", [])
-        if not items:
-            return f"[Stack Exchange] No results for: {query}"
-
-        lines = [f"[STACK EXCHANGE — {site}] {query}\n"]
-        for i, item in enumerate(items[:5], 1):
-            title = item.get("title", "")
-            score = item.get("score", 0)
-            answered = item.get("is_answered", False)
-            accepted = "ACCEPTED" if item.get("accepted_answer_id") else ""
-            link = item.get("link", "")
-            # Extract text from body HTML (simple strip)
-            body = re.sub(r"<[^>]+>", "", item.get("body", ""))[:500]
-            lines.append(
-                f"{i}. [{score} votes] {'[ANSWERED]' if answered else ''} {accepted}\n"
-                f"   {title}\n   {body.strip()}\n   {link}\n"
-            )
-        return "\n".join(lines)
+        rows = await search_stackexchange(query, site=site, max_results=5)
+        rows = self._register_research_rows(rows)
+        return format_stackexchange_results(query, rows, site=site)
 
     async def _execute_arxiv(self, query: str) -> str:
         """Search arXiv API. No auth needed."""
-        import httpx
-        import xml.etree.ElementTree as ET
-
-        url = (
-            f"http://export.arxiv.org/api/query"
-            f"?search_query=all:{urllib.parse.quote(query)}"
-            f"&start=0&max_results=5&sortBy=relevance&sortOrder=descending"
-        )
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url)
-
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        root = ET.fromstring(resp.text)
-        entries = root.findall("atom:entry", ns)
-
-        if not entries:
-            return f"[arXiv] No results for: {query}"
-
-        lines = [f"[arXiv SEARCH] {query}\n"]
-        for i, entry in enumerate(entries[:5], 1):
-            title = (entry.findtext("atom:title", "", ns) or "").strip().replace("\n", " ")
-            summary = (entry.findtext("atom:summary", "", ns) or "").strip().replace("\n", " ")[:400]
-            authors = [a.findtext("atom:name", "", ns) for a in entry.findall("atom:author", ns)]
-            link = ""
-            for l in entry.findall("atom:link", ns):
-                if l.get("title") == "pdf":
-                    link = l.get("href", "")
-                    break
-            if not link:
-                link = entry.findtext("atom:id", "", ns) or ""
-            author_str = ", ".join(authors[:3])
-            if len(authors) > 3:
-                author_str += f" et al. ({len(authors)} authors)"
-            lines.append(
-                f"{i}. {title}\n"
-                f"   {author_str}\n"
-                f"   {summary}\n"
-                f"   {link}\n"
-            )
-        return "\n".join(lines)
+        from knowledge.research_search import format_arxiv_results, search_arxiv
+        rows = await search_arxiv(query, max_results=5)
+        rows = self._register_research_rows(rows)
+        return format_arxiv_results(query, rows)
 
     async def _execute_pubmed(self, query: str) -> str:
         """Search PubMed E-utilities. No auth needed."""
-        import httpx
-        import xml.etree.ElementTree as ET
+        from knowledge.pubmed_search import format_pubmed_results, search_pubmed
 
-        # Step 1: search for IDs
-        search_url = (
-            f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-            f"?db=pubmed&term={urllib.parse.quote(query)}&retmax=5&sort=relevance&retmode=xml"
-        )
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            search_resp = await client.get(search_url)
-
-        root = ET.fromstring(search_resp.text)
-        ids = [id_el.text for id_el in root.findall(".//Id") if id_el.text]
-
-        if not ids:
-            return f"[PubMed] No results for: {query}"
-
-        # Step 2: fetch summaries
-        fetch_url = (
-            f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-            f"?db=pubmed&id={','.join(ids)}&rettype=abstract&retmode=xml"
-        )
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            fetch_resp = await client.get(fetch_url)
-
-        articles_root = ET.fromstring(fetch_resp.text)
-        lines = [f"[PUBMED SEARCH] {query}\n"]
-
-        for i, article in enumerate(articles_root.findall(".//PubmedArticle"), 1):
-            title = article.findtext(".//ArticleTitle") or "No title"
-            abstract = article.findtext(".//AbstractText") or "No abstract"
-            pmid = article.findtext(".//PMID") or ""
-            authors_el = article.findall(".//Author")
-            authors = []
-            for a in authors_el[:3]:
-                last = a.findtext("LastName") or ""
-                init = a.findtext("Initials") or ""
-                if last:
-                    authors.append(f"{last} {init}".strip())
-            author_str = ", ".join(authors)
-            if len(authors_el) > 3:
-                author_str += f" et al."
-            lines.append(
-                f"{i}. {title}\n"
-                f"   {author_str}\n"
-                f"   {abstract[:400]}\n"
-                f"   https://pubmed.ncbi.nlm.nih.gov/{pmid}/\n"
-            )
-        return "\n".join(lines)
+        rows = await search_pubmed(query, max_results=5)
+        rows = self._register_research_rows(rows)
+        return format_pubmed_results(query, rows)
 
     async def _execute_hackernews(self, query: str) -> str:
         """Search Hacker News via Algolia API. No auth needed."""

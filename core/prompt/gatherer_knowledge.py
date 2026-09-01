@@ -293,12 +293,16 @@ _WIKI_SEM_MAX_CONCURRENT = int(os.getenv("WIKI_SEM_MAX_CONCURRENT", "2"))
 _WIKI_SEM_EXECUTOR = ThreadPoolExecutor(
     max_workers=_WIKI_SEM_MAX_CONCURRENT, thread_name_prefix="wiki-sem"
 )
+_WIKI_CHROMA_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="wiki-chroma"
+)
 _WIKI_SEM_INFLIGHT = threading.Semaphore(_WIKI_SEM_MAX_CONCURRENT)
 # Hard cap on the wiki FAISS semantic-chunks lookup. The 41M-row index lives on
 # external storage; at the old 8s ceiling this task timed out on ~30% of turns
 # (see daemon_debug logs: "semantic=8.00s") and floored the whole prompt build.
 # 1.5s keeps a warm-index lookup while capping the cold/slow-drive worst case.
 SEM_TIMEOUT_S = float(os.getenv("SEM_TIMEOUT_S", "1.5"))
+WIKI_CHROMA_TIMEOUT_S = float(os.getenv("WIKI_CHROMA_TIMEOUT_S", "3.0"))
 SEM_STITCH_MAX_CHARS = int(os.getenv("SEM_STITCH_MAX_CHARS", "4000"))
 try:
     from config.app_config import SEMANTIC_CHUNKS_GATE_THRESHOLD
@@ -1301,10 +1305,20 @@ class KnowledgeRetrievalMixin:
         if chroma:
             try:
                 coll = chroma.collections.get('wiki_knowledge')
-                if coll and coll.count() > 0:
-                    results = chroma.query_collection(
+                def _query_wiki_chroma():
+                    if not coll or coll.count() <= 0:
+                        return []
+                    return chroma.query_collection(
                         'wiki_knowledge', query, n_results=limit
                     )
+
+                results = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        _WIKI_CHROMA_EXECUTOR, _query_wiki_chroma
+                    ),
+                    timeout=WIKI_CHROMA_TIMEOUT_S,
+                )
+                if results:
                     if results:
                         # Drop disambiguation-page chunks — the embedded corpus
                         # contains them as plain text and they carry no content
@@ -1340,6 +1354,11 @@ class KnowledgeRetrievalMixin:
                             }
                             for r in results
                         ]
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Wiki] ChromaDB wiki query timed out (>%ss) — skipping wiki this turn",
+                    WIKI_CHROMA_TIMEOUT_S,
+                )
             except Exception as e:
                 logger.debug(f"[ContextGatherer] wiki_knowledge query failed, falling back to API: {e}")
 

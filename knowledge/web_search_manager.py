@@ -55,11 +55,14 @@ Enhanced Features (2026-01):
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -67,6 +70,90 @@ from typing import Any, Dict, List, Optional, Tuple
 import re as _re
 
 log = logging.getLogger(__name__)
+
+
+class UnsafeFetchURLError(ValueError):
+    """Raised when a requested URL could access a local or private resource."""
+
+
+_BLOCKED_HOST_SUFFIXES = (
+    ".localhost",
+    ".local",
+    ".internal",
+    ".lan",
+    ".home",
+    ".corp",
+    ".home.arpa",
+)
+
+
+def _ensure_public_ip(address: ipaddress._BaseAddress) -> None:
+    """Reject every address that is not globally routable."""
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if not address.is_global:
+        raise UnsafeFetchURLError(f"non-public network address is not allowed: {address}")
+
+
+def _validate_fetch_url_syntax(url: str) -> urllib.parse.SplitResult:
+    """Validate URL structure before either local or third-party extraction.
+
+    DNS is checked separately immediately before each direct request. Keeping the
+    structural check here also prevents an unsafe URL from being handed to the
+    Tavily extract fallback when direct fetching is disabled.
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise UnsafeFetchURLError("URL is empty")
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+        port = parsed.port  # Force validation of malformed/out-of-range ports.
+    except ValueError as exc:
+        raise UnsafeFetchURLError(f"invalid URL: {exc}") from exc
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise UnsafeFetchURLError("only http:// and https:// URLs are allowed")
+    if not parsed.hostname:
+        raise UnsafeFetchURLError("URL must include a hostname")
+    if parsed.username is not None or parsed.password is not None:
+        raise UnsafeFetchURLError("URLs containing credentials are not allowed")
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost" or host.endswith(_BLOCKED_HOST_SUFFIXES):
+        raise UnsafeFetchURLError(f"local hostname is not allowed: {host}")
+    if ":" in host and "%" in host:
+        raise UnsafeFetchURLError("scoped IPv6 addresses are not allowed")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # Single-label names commonly resolve only inside a private network.
+        if "." not in host:
+            raise UnsafeFetchURLError(f"non-public hostname is not allowed: {host}")
+    else:
+        _ensure_public_ip(address)
+    _ = port
+    return parsed
+
+
+async def _validate_fetch_url_dns(url: str) -> None:
+    """Resolve a URL hostname and reject private/special DNS answers."""
+    parsed = _validate_fetch_url_syntax(url)
+    host = parsed.hostname or ""
+    try:
+        ipaddress.ip_address(host)
+        return  # Literal addresses were validated by the syntax pass.
+    except ValueError:
+        pass
+
+    def _resolve() -> list[tuple]:
+        return socket.getaddrinfo(
+            host,
+            parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+
+    answers = await asyncio.to_thread(_resolve)
+    if not answers:
+        raise OSError(f"hostname did not resolve: {host}")
+    for answer in answers:
+        _ensure_public_ip(ipaddress.ip_address(answer[4][0].split("%", 1)[0]))
 
 # News detection patterns
 NEWS_KEYWORDS = {
@@ -487,16 +574,28 @@ class WebSearchCache:
     """
     ChromaDB-backed cache for web search results.
 
-    Uses semantic similarity for cache hits, with 72-hour TTL.
+    Uses an exact normalized query + search-depth key. This intentionally avoids
+    returning stale or mismatched facts for merely similar current-events queries.
     """
 
     COLLECTION_NAME = "web_search_cache"
     TTL_HOURS = 72
 
-    def __init__(self, chroma_store: Optional[Any] = None):
+    def __init__(
+        self,
+        chroma_store: Optional[Any] = None,
+        ttl_hours: Optional[float] = None,
+    ):
         self._store = chroma_store
         self._collection = None
         self._initialized = False
+        if ttl_hours is None:
+            try:
+                from config.app_config import WEB_SEARCH_CACHE_TTL_HOURS
+                ttl_hours = WEB_SEARCH_CACHE_TTL_HOURS
+            except (ImportError, AttributeError):
+                ttl_hours = self.TTL_HOURS
+        self.ttl_hours = max(0.0, float(ttl_hours))
 
     def _ensure_initialized(self) -> bool:
         """Lazy initialization of ChromaDB collection."""
@@ -546,7 +645,7 @@ class WebSearchCache:
                 cached_time = metadata.get("timestamp", 0)
 
                 # Check TTL
-                if time.time() - cached_time > (self.TTL_HOURS * 3600):
+                if time.time() - cached_time > (self.ttl_hours * 3600):
                     log.debug(f"[WebSearchCache] Cache expired for query: {query[:50]}...")
                     return None
 
@@ -599,7 +698,7 @@ class WebSearchCache:
                 "num_pages": len(result.pages)
             }
 
-            # Use query as document for semantic matching
+            # The document aids inspection; lookups use the deterministic ID.
             self._collection.upsert(
                 ids=[cache_key],
                 documents=[result.query],
@@ -623,7 +722,7 @@ class WebSearchCache:
 
             expired_ids = []
             current_time = time.time()
-            ttl_seconds = self.TTL_HOURS * 3600
+            ttl_seconds = self.ttl_hours * 3600
 
             for i, entry_id in enumerate(all_entries["ids"]):
                 metadata = all_entries["metadatas"][i] if all_entries.get("metadatas") else {}
@@ -966,6 +1065,123 @@ class WebSearchManager:
                 self._api_key_invalid = True
             else:
                 log.error(f"[WebSearch] Tavily search failed: {e}")
+            return []
+
+    # Direct local fetch below this many extracted chars is a shell/failure —
+    # fall through to Tavily extract.
+    _DIRECT_FETCH_MIN_CHARS = 400
+    _DIRECT_FETCH_MAX_BYTES = 2_000_000
+    _DIRECT_FETCH_MAX_REDIRECTS = 5
+
+    _DIRECT_FETCH_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) "
+            "Gecko/20100101 Firefox/130.0"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "application/json;q=0.8,*/*;q=0.7"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    async def fetch_url_content(self, url: str) -> List[WebPage]:
+        """Layered single-URL fetch: local direct fetch + extraction first,
+        Tavily extract as fallback.
+
+        The direct layer handles JS-rendered SPA pages via embedded-JSON
+        salvage (utils/page_extract — chatgpt.com/share links returned
+        "blank page" through Tavily, 2026-08-29) and costs no API credits.
+        Env WEB_FETCH_DIRECT_ENABLED (default on) disables the local layer.
+        """
+        # This check applies even when direct fetching is disabled: otherwise a
+        # private URL could still be forwarded to a third-party extractor.
+        _validate_fetch_url_syntax(url)
+        direct: List[WebPage] = []
+        if os.getenv("WEB_FETCH_DIRECT_ENABLED", "1").lower() not in ("0", "false"):
+            direct = await self._direct_fetch(url)
+            if direct and len(direct[0].content) >= self._DIRECT_FETCH_MIN_CHARS:
+                return direct
+        tavily = await self._tavily_extract([url])
+        if tavily and (tavily[0].content or "").strip():
+            # Prefer whichever layer extracted more actual content.
+            if direct and len(direct[0].content) > len(tavily[0].content):
+                return direct
+            return tavily
+        return direct
+
+    async def _direct_fetch(self, url: str) -> List[WebPage]:
+        """Fetch a public URL locally and extract its content.
+
+        Every redirect target is validated before it is requested. Unsafe URLs
+        raise ``UnsafeFetchURLError`` so callers cannot silently fall through to
+        another fetch backend; ordinary network/extraction failures return [].
+        """
+        try:
+            import httpx  # lazy import: startup cost
+            async with httpx.AsyncClient(
+                follow_redirects=False,
+                timeout=15.0,
+                headers=self._DIRECT_FETCH_HEADERS,
+                trust_env=False,
+            ) as client:
+                current_url = url
+                for redirect_count in range(self._DIRECT_FETCH_MAX_REDIRECTS + 1):
+                    await _validate_fetch_url_dns(current_url)
+                    resp = await client.get(current_url)
+                    if resp.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    location = resp.headers.get("location")
+                    if not location:
+                        return []
+                    if redirect_count >= self._DIRECT_FETCH_MAX_REDIRECTS:
+                        log.debug(f"[WebSearch] Too many redirects for {url}")
+                        return []
+                    current_url = urllib.parse.urljoin(current_url, location)
+                    _validate_fetch_url_syntax(current_url)
+            if resp.status_code >= 400:
+                log.debug(f"[WebSearch] Direct fetch HTTP {resp.status_code} for {url}")
+                return []
+            content_length = resp.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > self._DIRECT_FETCH_MAX_BYTES:
+                        log.debug(f"[WebSearch] Direct fetch too large for {url}")
+                        return []
+                except ValueError:
+                    pass
+            ctype = (resp.headers.get("content-type") or "").lower()
+            title = current_url
+            if "json" in ctype:
+                text = resp.text[:self._DIRECT_FETCH_MAX_BYTES]
+            elif ("html" in ctype or "xml" in ctype
+                    or ctype.startswith("text/") or not ctype):
+                from utils.page_extract import extract_page_text
+                title_extracted, text, method = extract_page_text(
+                    resp.text[:self._DIRECT_FETCH_MAX_BYTES], current_url
+                )
+                title = title_extracted or current_url
+                log.info(
+                    f"[WebSearch] Direct fetch {url}: method={method}, "
+                    f"{len(text)} chars"
+                )
+            else:
+                # Binary (pdf, images, …) — let Tavily extract handle it.
+                return []
+            content = (text or "")[: self.max_content_chars]
+            if not content.strip():
+                return []
+            return [WebPage(
+                url=current_url,
+                title=title,
+                content=content,
+                snippet=content[:500],
+                source="direct_fetch",
+            )]
+        except UnsafeFetchURLError:
+            raise
+        except Exception as e:
+            log.debug(f"[WebSearch] Direct fetch failed for {url}: {e}")
             return []
 
     async def _tavily_extract(self, urls: List[str]) -> List[WebPage]:

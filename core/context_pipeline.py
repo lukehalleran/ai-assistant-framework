@@ -346,11 +346,13 @@ class ContextPipeline:
         if not use_raw_mode:
             _progress_emit("🧠 Analyzing query — topics + tone…")
             (primary_topic, topics), (tone_level, emotional_context) = await asyncio.gather(
-                self._extract_topics(user_input),
+                self._extract_topics(user_input, last_exchange=last_exchange),
                 self._detect_tone(user_input, conversation_history),
             )
         else:
-            primary_topic, topics = await self._extract_topics(user_input)
+            primary_topic, topics = await self._extract_topics(
+                user_input, last_exchange=last_exchange
+            )
         logger.debug(f"Stage 1 (Topics): primary={primary_topic}, all={topics}")
         if not use_raw_mode:
             logger.debug(f"Stage 2 (Tone): level={tone_level.value}")
@@ -521,7 +523,11 @@ class ContextPipeline:
 
     # --- Stage Implementations ---
 
-    async def _extract_topics(self, query: str) -> tuple[Optional[str], List[str]]:
+    async def _extract_topics(
+        self,
+        query: str,
+        last_exchange: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Optional[str], List[str]]:
         """
         Stage 1: Extract topics via TopicManager.
 
@@ -543,17 +549,35 @@ class ContextPipeline:
             # the planner's Topics: signal aligned with the real referent.
             from utils.query_checker import (
                 is_anaphoric_continuation,
+                is_continuation_answer,
                 is_fragment_continuation,
             )
             prev_topic = getattr(self.topic_manager, "last_topic", None)
+            last_response = ""
+            if isinstance(last_exchange, dict):
+                last_response = (
+                    last_exchange.get("response")
+                    or last_exchange.get("assistant")
+                    or (
+                        last_exchange.get("content", "")
+                        if last_exchange.get("role") == "assistant" else ""
+                    )
+                    or ""
+                )
+            answers_last_question = is_continuation_answer(query, str(last_response))
             if (
-                prev_topic
+                isinstance(prev_topic, str)
+                and prev_topic.strip()
                 and prev_topic.strip().lower() != "general"
                 # 2026-08-22: bare noun-phrase fragments ("Tactical Taylors")
                 # inherit like pronoun fragments — fresh classification of a
                 # 2-word riff mid-thread produced topic "Tactical Gear" and a
                 # gear-brand reply to a joke.
-                and (is_anaphoric_continuation(query) or is_fragment_continuation(query))
+                and (
+                    is_anaphoric_continuation(query)
+                    or is_fragment_continuation(query)
+                    or answers_last_question
+                )
             ):
                 logger.debug(
                     f"[ContextPipeline] Anaphoric continuation — inheriting "
@@ -1007,12 +1031,30 @@ Rewritten query (just the rewritten text, no explanation):"""
             elif conversation_history:
                 recent_memories = conversation_history[:self._stm_max_recent]
 
-            # Get last assistant response
+            # Get the immediately preceding assistant response. Corpus entries
+            # are normally {query, response} pairs (not role/content messages),
+            # so the old role-only loop almost always passed None and STM had
+            # no way to understand answers like "Day of please".
             last_response = None
-            if recent_memories:
+            if conversation_history:
+                first = conversation_history[0]
+                if isinstance(first, dict):
+                    last_response = (
+                        first.get("response")
+                        or first.get("assistant")
+                        or (first.get("content") if first.get("role") == "assistant" else None)
+                    )
+            if not last_response and recent_memories:
                 for mem in recent_memories:
-                    if mem.get('role') == 'assistant':
-                        last_response = mem.get('content', mem.get('response'))
+                    if not isinstance(mem, dict):
+                        continue
+                    candidate = (
+                        mem.get("response")
+                        or mem.get("assistant")
+                        or (mem.get("content") if mem.get("role") == "assistant" else None)
+                    )
+                    if candidate:
+                        last_response = candidate
                         break
 
             result = await self.stm_analyzer.analyze(

@@ -60,7 +60,10 @@ def default_caps() -> dict:
 
 
 def _meta_date(metadata: dict) -> Optional[str]:
-    for key in ("timestamp", "date", "created_at", "last_seen"):
+    # Longitudinal notes carry the event date separately from indexing time.
+    # Prefer it defensively, including for legacy Chroma rows whose timestamp
+    # was written when the note was embedded rather than when it occurred.
+    for key in ("note_date", "date", "timestamp", "created_at", "last_seen"):
         v = (metadata or {}).get(key)
         if v:
             return str(v)

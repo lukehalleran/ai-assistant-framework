@@ -364,6 +364,9 @@ WEB_SEARCH_LINK_SELECTOR_MODEL: str = WEB_SEARCH_CFG.get("link_selector_model", 
 WEB_SEARCH_ENABLED = bool(int(os.getenv("WEB_SEARCH_ENABLED", "1" if WEB_SEARCH_ENABLED else "0")))
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", str(WEB_SEARCH_TIMEOUT)))
 WEB_SEARCH_DAILY_CREDIT_LIMIT = int(os.getenv("WEB_SEARCH_DAILY_CREDIT_LIMIT", str(WEB_SEARCH_DAILY_CREDIT_LIMIT)))
+WEB_SEARCH_PER_QUERY_LIMIT = int(os.getenv("WEB_SEARCH_PER_QUERY_LIMIT", str(WEB_SEARCH_PER_QUERY_LIMIT)))
+WEB_SEARCH_CACHE_TTL_HOURS = int(os.getenv("WEB_SEARCH_CACHE_TTL_HOURS", str(WEB_SEARCH_CACHE_TTL_HOURS)))
+WEB_SEARCH_LINK_SELECTOR_MODEL = os.getenv("WEB_SEARCH_LINK_SELECTOR_MODEL", WEB_SEARCH_LINK_SELECTOR_MODEL)
 WEB_SEARCH_CREDITS_PATH: str = os.getenv("WEB_SEARCH_CREDITS_PATH", str(WEB_SEARCH_CFG.get("credits_path", os.path.join("data", "web_search_credits.json"))))
 
 # --------------------------------------------------------------------
@@ -1133,11 +1136,30 @@ INSIGHT_KEYWORD_SCAN_MAX: int = int(os.getenv("INSIGHT_KEYWORD_SCAN_MAX", INSIGH
 INSIGHT_EXPAND_TOP_K: int = int(os.getenv("INSIGHT_EXPAND_TOP_K", INSIGHT_CFG.get("expand_top_k", 3)))
 INSIGHT_EXPAND_WINDOW: int = int(os.getenv("INSIGHT_EXPAND_WINDOW", INSIGHT_CFG.get("expand_window", 2)))
 INSIGHT_DECOMPOSE_MAX_TOKENS: int = int(os.getenv("INSIGHT_DECOMPOSE_MAX_TOKENS", INSIGHT_CFG.get("decompose_max_tokens", 700)))
-INSIGHT_SYNTHESIS_MAX_TOKENS: int = int(os.getenv("INSIGHT_SYNTHESIS_MAX_TOKENS", INSIGHT_CFG.get("synthesis_max_tokens", 2600)))
+INSIGHT_SYNTHESIS_MAX_TOKENS: int = int(os.getenv("INSIGHT_SYNTHESIS_MAX_TOKENS", INSIGHT_CFG.get("synthesis_max_tokens", 4200)))
 INSIGHT_SWEEP_TIMEOUT_S: float = float(os.getenv("INSIGHT_SWEEP_TIMEOUT_S", INSIGHT_CFG.get("sweep_timeout_s", 45.0)))
 INSIGHT_OFFER_ENABLED: bool = bool(INSIGHT_CFG.get("offer_enabled", True))
 INSIGHT_OFFER_ENABLED = bool(int(os.getenv("INSIGHT_OFFER_ENABLED", "1" if INSIGHT_OFFER_ENABLED else "0")))
 INSIGHT_DOC_ON_AGREEMENT: bool = bool(INSIGHT_CFG.get("doc_on_agreement", True))
+# Deliberation planner/recovery JSON calls route to this model when set and
+# registered; falls back to RESPONSE_REVIEW_MODEL, then the active model.
+# The active model (kimi-3) timed out at 35s on all three 2026-08-31 live
+# planner calls — contract planning is a strict-JSON task, not a voice task.
+INSIGHT_PLANNER_MODEL: Optional[str] = (
+    os.getenv("INSIGHT_PLANNER_MODEL", INSIGHT_CFG.get("planner_model")) or None
+)
+
+# --------------------------------------------------------------------
+# Pattern Analysis [2026-08-29] — deterministic engine + insight-mode
+# pattern_temporal facet. ON-DEMAND ONLY (never injected uninvited).
+# --------------------------------------------------------------------
+PATTERN_CFG = config.get("pattern_analysis", {}) or {}
+PATTERN_ANALYSIS_ENABLED: bool = bool(int(os.getenv(
+    "PATTERN_ANALYSIS_ENABLED", "1" if PATTERN_CFG.get("enabled", True) else "0")))
+PATTERN_DEFAULT_WINDOW_DAYS: int = int(PATTERN_CFG.get("default_window_days", 90))
+PATTERN_MAX_EXEMPLARS: int = int(PATTERN_CFG.get("max_exemplars", 12))
+PATTERN_EXEMPLARS_PER_BUCKET: int = int(PATTERN_CFG.get("exemplars_per_bucket", 2))
+PATTERN_KEYWORD_HIT_CAP: int = int(PATTERN_CFG.get("keyword_hit_cap", 5000))
 
 # --------------------------------------------------------------------
 # Backup Configuration [2026-07-14]
@@ -1386,6 +1408,13 @@ AGENTIC_TIMEOUT_TOOL_FALLBACK: bool = (
     os.getenv("AGENTIC_TIMEOUT_TOOL_FALLBACK",
               "1" if AGENTIC_CFG.get("timeout_tool_fallback", True) else "0") == "1"
 )
+AGENTIC_FETCH_FASTPATH: bool = os.getenv(
+    "AGENTIC_FETCH_FASTPATH",
+    "1" if AGENTIC_CFG.get("fetch_fastpath", True) else "0",
+) == "1"
+AGENTIC_FETCH_FASTPATH_MIN_CHARS: int = int(
+    AGENTIC_CFG.get("fetch_fastpath_min_chars", 400)
+)
 
 # --------------------------------------------------------------------
 # Uncertainty Fallback (retry via agentic search on "I don't know" responses)
@@ -1449,6 +1478,19 @@ GROUNDING_CHECK_ENABLED = bool(int(os.getenv(
     "GROUNDING_CHECK_ENABLED",
     "1" if GROUNDING_CHECK_ENABLED else "0",
 )))
+
+# 2026-08-29: weave the correction INTO the response via a bounded rewrite
+# (final-yield replacement — display and storage stay identical); the
+# appended ⚠️ suffix is the fallback on any integrator failure.
+GROUNDING_INTEGRATE_ENABLED: bool = bool(GROUNDING_CHECK_CFG.get("integrate", True))
+GROUNDING_INTEGRATE_ENABLED = bool(int(os.getenv(
+    "GROUNDING_INTEGRATE_ENABLED",
+    "1" if GROUNDING_INTEGRATE_ENABLED else "0",
+)))
+GROUNDING_INTEGRATE_TIMEOUT_S: float = float(
+    GROUNDING_CHECK_CFG.get("integrate_timeout_s", 6.0))
+GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS: int = int(
+    GROUNDING_CHECK_CFG.get("integrate_max_response_chars", 4000))
 
 # --------------------------------------------------------------------
 # Agentic File Access (read/grep/list within approved folders)
@@ -1550,6 +1592,9 @@ INTERNET_ACTIONS_PLAYWRIGHT_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("playw
 INTERNET_ACTIONS_PLAYWRIGHT_TIMEOUT: int = int(INTERNET_ACTIONS_CFG.get("playwright_timeout_s", 30))
 INTERNET_ACTIONS_TTL: int = int(INTERNET_ACTIONS_CFG.get("action_ttl_seconds", 300))
 INTERNET_ACTIONS_MAX_PENDING: int = int(INTERNET_ACTIONS_CFG.get("max_pending_actions", 5))
+PENDING_ACTIONS_STORE_PATH: str = str(
+    INTERNET_ACTIONS_CFG.get("pending_actions_path", "data/pending_actions.json")
+)
 INTERNET_ACTIONS_AUDIT_LOG: str = str(INTERNET_ACTIONS_CFG.get("audit_log_path", "logs/actions_audit.jsonl"))
 
 # Google OAuth2 (env var overrides for secrets)

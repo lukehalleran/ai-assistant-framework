@@ -14,7 +14,8 @@ import cost deferred (as the original executors.py did) and lets tests patch the
 
 Module Contract
 - Public: ActionSpec, ACTION_SPECS, is_action_enabled(spec), enabled_action_types(),
-  detect_action_intent(query), backfill_params(action_type, query).
+  detect_action_intent(query), backfill_params(action_type, query),
+  get_runtime_action_health().
 - Dependencies: core.actions.types only (executor modules imported lazily on use); config.app_config
   read lazily for enable flags. No dependency on core.agentic.* (correct layering).
 """
@@ -22,7 +23,7 @@ Module Contract
 import importlib
 import re
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.actions.types import ActionType
 
@@ -72,6 +73,7 @@ class ActionSpec:
     executor_ref: str                         # "module.path:function" — resolved lazily at call time
     required: Tuple[str, ...]                 # params that must be present for parse acceptance
     optional: Tuple[str, ...] = ()            # additional params to forward if present
+    batch_param: Optional[str] = None          # optional list of required-field dicts
     intent_patterns: Tuple[str, ...] = ()     # regexes for explicit-action detection (forcing)
     backfill: Optional[Callable[[str], Dict[str, str]]] = None  # query -> partial params
     health: str = ""                          # tool-health (TOOL STATUS) line
@@ -81,7 +83,23 @@ class ActionSpec:
 
     @property
     def forward_params(self) -> Tuple[str, ...]:
-        return tuple(self.required) + tuple(self.optional)
+        fields = tuple(self.required) + tuple(self.optional)
+        if self.batch_param and self.batch_param not in fields:
+            fields += (self.batch_param,)
+        return fields
+
+    def accepts_params(self, params: Dict[str, Any]) -> bool:
+        """Whether params satisfy this action's single-item or batch shape."""
+        if all(params.get(field) not in (None, "") for field in self.required):
+            return True
+        if not self.batch_param:
+            return False
+        items = params.get(self.batch_param)
+        return bool(items) and isinstance(items, list) and all(
+            isinstance(item, dict)
+            and all(item.get(field) not in (None, "") for field in self.required)
+            for item in items
+        )
 
     def resolve_executor(self) -> Callable:
         """Import + return the executor function (lazy; re-resolved each call so patches apply)."""
@@ -159,14 +177,31 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
         action_type=ActionType.CALENDAR_CREATE_EVENT,
         executor_ref="core.actions.google_calendar_create:create_calendar_event",
         required=("summary", "start_time", "end_time"),
-        optional=("description", "time_zone", "calendar_id", "location"),
+        optional=("description", "time_zone", "calendar_id", "location", "all_day"),
+        batch_param="events",
         intent_patterns=(
-            r'\b(create|add|schedule|make|set up|put)\b[^.?!]{0,40}\b(calendar event|event|meeting|appointment)\b',
+            r'\b(create|add|schedule|make|set up|put)\b[^.?!]{0,40}\b(calendar events?|events?|meetings?|appointments?)\b',
+            # "place each in the appropriate time slot on my Google calendar"
+            # (live 2026-08-29): verb "place" + bare object "calendar" missed
+            # the pattern above, and the verb→object span ran 44 chars — the
+            # explicit calendar request produced an offer instead of a
+            # proposal. Bare "calendar" only counts as the object of a
+            # placement verb (this pattern), never of "make"/"schedule" alone.
+            r'\b(add|put|place|drop|slot)\b[^.?!]{0,60}\b(?:google\s+)?calendar\b',
         ),
-        health="calendar_create_event (summary + start_time + end_time)",
-        field_hint="calendar_create_event: summary, start_time, end_time",
+        health="calendar_create_event (one event or an events[] batch; requires confirmation)",
+        field_hint=(
+            "calendar_create_event: summary, start_time, end_time; for several "
+            "events use one batch proposal containing events[]. Honor any source "
+            "timezone. For all-day events set all_day=true and use YYYY-MM-DD "
+            "start/end dates (Google end date is exclusive)."
+        ),
         enabled_flag="GOOGLE_CALENDAR_ENABLED",
-        summary=lambda p: f"calendar_create_event: {p.get('summary','')}",
+        summary=lambda p: (
+            f"calendar_create_event: {len(p.get('events') or [])} events"
+            if p.get("events") else
+            f"calendar_create_event: {p.get('summary','')}"
+        ),
     ),
 }
 
@@ -188,13 +223,109 @@ def enabled_action_types() -> Tuple[ActionType, ...]:
     return tuple(at for at, spec in ACTION_SPECS.items() if is_action_enabled(spec))
 
 
+def get_runtime_action_health() -> str:
+    """Authoritative runtime status for proposal actions and Calendar OAuth.
+
+    Config flags alone are insufficient for Google Calendar: a model must not
+    call it unavailable when a token + write scope are present, or available
+    when OAuth has not been completed. This helper is shared by agentic and
+    enhanced prompts so their self-knowledge cannot drift.
+    """
+    try:
+        import config.app_config as cfg
+        if not getattr(cfg, "INTERNET_ACTIONS_ENABLED", False):
+            return "propose_action: DISABLED (internet actions not enabled)"
+        names = [at.value for at in enabled_action_types()]
+        action_list = ", ".join(names) if names else "(no actions enabled)"
+        lines = [
+            f"propose_action: AVAILABLE ({action_list} — requires user confirmation)"
+        ]
+
+        if not getattr(cfg, "GOOGLE_CALENDAR_ENABLED", False):
+            lines.append("calendar_create_event backend: DISABLED by config")
+            return "\n".join(lines)
+
+        from core.actions.google_auth import get_google_auth
+        auth = get_google_auth()
+        if auth is None:
+            lines.append(
+                "calendar_create_event backend: UNAVAILABLE "
+                "(Google OAuth client is not configured)"
+            )
+        elif not auth.is_authenticated:
+            lines.append(
+                "calendar_create_event backend: UNAVAILABLE "
+                "(Google OAuth token is not authenticated)"
+            )
+        else:
+            from core.actions.google_calendar_create import CALENDAR_EVENTS_SCOPE
+            if auth.has_scope(CALENDAR_EVENTS_SCOPE):
+                lines.append(
+                    "calendar_create_event backend: AVAILABLE "
+                    "(OAuth token present; calendar.events write scope granted; "
+                    "user confirmation required before execution)"
+                )
+            else:
+                lines.append(
+                    "calendar_create_event backend: UNAVAILABLE "
+                    "(OAuth token lacks calendar.events write scope)"
+                )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"propose_action: STATUS ERROR ({exc})"
+
+
+_ACTION_REQUEST_MAX_WORDS = 80
+_ACTION_COMMAND_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|alright|all\s+right|cool|yeah|yes|sure|right|so|and|"
+    r"now|then|also|well|hey)[,\s]+){0,3}"
+    r"(?:please\s+)?(?:"
+    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)|"
+    r"(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+)"
+    r")?"
+    r"(?:open|create|file|raise|log|comment|reply|respond|post|send|e-?mail|"
+    r"compose|draft|forward|shoot|fire\s+off|message|ping|add|schedule|make|"
+    r"set\s+up|put|place|drop|slot)\b",
+    re.IGNORECASE,
+)
+
+
+def _action_request_is_plausible(query: str) -> bool:
+    """Reject an action phrase found only inside a long pasted payload.
+
+    Registry patterns need to find compound requests such as "search my docs,
+    then place the dates on my calendar", so they are intentionally not
+    head-anchored. Short turns are request-local. In a paste-sized turn, the
+    action must instead lead the message or appear as a distinct short final
+    paragraph written by the user.
+    """
+    stripped = (query or "").strip()
+    if len(stripped.split()) <= _ACTION_REQUEST_MAX_WORDS:
+        return True
+    if _ACTION_COMMAND_RE.search(stripped):
+        return True
+    paragraphs = [
+        part.strip()
+        for part in re.split(r"\n\s*\n", stripped)
+        if part.strip()
+    ]
+    return bool(
+        len(paragraphs) > 1
+        and len(paragraphs[-1].split()) <= _ACTION_REQUEST_MAX_WORDS
+        and _ACTION_COMMAND_RE.search(paragraphs[-1])
+    )
+
+
 def detect_action_intent(query: str) -> Optional[ActionType]:
-    """Return the ActionType if the query is an EXPLICIT request to perform a write action."""
+    """Return the ActionType for an explicit, plausibly user-authored request."""
     if not query:
         return None
     for at, spec in ACTION_SPECS.items():
         for pattern in spec.intent_patterns:
-            if re.search(pattern, query, re.IGNORECASE):
+            if (
+                re.search(pattern, query, re.IGNORECASE)
+                and _action_request_is_plausible(query)
+            ):
                 return at
     return None
 

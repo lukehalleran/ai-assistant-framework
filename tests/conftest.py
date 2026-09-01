@@ -182,6 +182,26 @@ def _sandbox_learned_relations(tmp_path, monkeypatch):
     _lr._store = None
 
 
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_pending_actions(tmp_path, monkeypatch):
+    """Keep persisted approval proposals isolated from the live daemon and tests."""
+    import sys
+    actions_types = sys.modules.get("core.actions.types")
+    if actions_types is not None:
+        monkeypatch.setattr(
+            actions_types, "_STORE_PATH",
+            str(tmp_path / "pending_actions.json"), raising=False,
+        )
+    tools_module = sys.modules.get("core.agentic.tools")
+    if tools_module is not None:
+        monkeypatch.setattr(
+            tools_module.ToolExecutor, "_pending_actions_store", None, raising=False,
+        )
+    yield
+    if tools_module is not None:
+        tools_module.ToolExecutor._pending_actions_store = None
+
+
 # Curation sandbox (2026-08-28): the engine's default queue/journal paths are
 # PROD files (data/curation_queue.json, logs/curation_audit.jsonl). Tests
 # always get tmp defaults + a fresh service singleton — the 08-22 test-state-

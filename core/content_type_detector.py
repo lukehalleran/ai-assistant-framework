@@ -50,6 +50,27 @@ _MESSAGE_PATTERNS = [
     re.compile(r'\b(?:he|she|they)\s+(?:said|texted|wrote|sent)\s*[:\-]', re.IGNORECASE),
 ]
 
+# Lyric section headers ("[Verse 1]", "[Chorus]", "[Bridge]"...) — nobody
+# types these in conversation; a paste carrying them is a lyrics share with
+# ~perfect precision, regardless of line structure or question marks. The
+# 2026-08-28 live Genius-page paste carried them but failed _looks_like_lyrics
+# on the Q&A section's question marks + page-chrome line ratios (2026-08-29).
+_LYRIC_SECTION_RE = re.compile(
+    r"\[(?:verse|chorus|pre-chorus|bridge|intro|outro|hook|refrain)\s*\d*\]",
+    re.IGNORECASE,
+)
+
+# Song-share FRAME: a long message that narrates listening ("I am listening to
+# this…", "this song is making me think…") almost always CONTAINS the song —
+# the 2026-08-29 live paste was run-on lyrics (newlines collapsed) framed by
+# exactly this narration, invisible to the line-structure heuristic. Length
+# floor keeps short remarks about songs ("this song slaps") out.
+_SONG_FRAME_RE = re.compile(
+    r"\b(?:this\s+song|these\s+lyrics|listen(?:ing)?\s+to\s+this)\b",
+    re.IGNORECASE,
+)
+_SONG_FRAME_MIN_CHARS = 1200
+
 # Content-sharing preambles
 _SHARE_PREAMBLES = [
     re.compile(r'^(?:check\s+(?:this|it)\s+out|look\s+at\s+this|listen\s+to\s+this)', re.IGNORECASE),
@@ -90,6 +111,12 @@ def detect_content_type(text: str) -> ContentTypeResult:
     if _CODE_FENCE.search(text):
         return ContentTypeResult("code", 0.90, "", "")
 
+    # 2.5 Lyric section headers → lyrics (max-precision marker; beats the
+    # structural heuristic that page chrome / Q&A sections defeat)
+    if _LYRIC_SECTION_RE.search(text):
+        title, attr = _extract_title_attribution(text)
+        return ContentTypeResult("lyrics", 0.85, title, attr)
+
     # 3. Dream narratives
     for pattern in _DREAM_PATTERNS:
         if pattern.search(text):
@@ -109,6 +136,12 @@ def detect_content_type(text: str) -> ContentTypeResult:
                 return ContentTypeResult("lyrics", 0.75, title, attr)
             return ContentTypeResult("quote", 0.70, title, attr)
 
+    # 5.5 Song-share frame: long message narrating listening → the song is in
+    # there even when newlines collapsed (run-on paste, 2026-08-29 live case)
+    if len(text) >= _SONG_FRAME_MIN_CHARS and _SONG_FRAME_RE.search(text):
+        title, attr = _extract_title_attribution(text)
+        return ContentTypeResult("lyrics", 0.70, title, attr)
+
     # 6. Multi-line poetic/lyrical structure (no explicit marker)
     if _looks_like_lyrics(text):
         title, attr = _extract_title_attribution(text)
@@ -125,6 +158,17 @@ def _looks_like_lyrics(text: str) -> bool:
     """
     lines = text.strip().split("\n")
     if len(lines) < 4:
+        return False
+
+    # 2026-08-29: terminal-wrapped prose guard. A single wrapped sentence
+    # ("Please search for documents related to the MGT class\n  I am
+    # enrolled in, …") is 4 short lines with no '?' and was stored
+    # content_type=lyrics. Wrapping indents its continuation lines — verse
+    # lines start at column 0. Half or more of the continuation lines
+    # indented → wrapped prose, not lyrics.
+    _continuations = lines[1:]
+    _indented = sum(1 for l in _continuations if l[:1] in (" ", "\t"))
+    if _continuations and _indented >= max(1, (len(_continuations) + 1) // 2):
         return False
 
     # Count non-empty lines

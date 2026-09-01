@@ -169,7 +169,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             FETCH_URL_TOOL_DEFINITION,
             STACKEXCHANGE_TOOL_DEFINITION,
             ARXIV_TOOL_DEFINITION,
-            PUBMED_TOOL_DEFINITION,
+    PUBMED_TOOL_DEFINITION,
+            PATTERN_SCAN_TOOL_DEFINITION,
             HACKERNEWS_TOOL_DEFINITION,
             GENERATE_DOCUMENT_TOOL_DEFINITION,
             CREATE_DAEMON_NOTE_TOOL_DEFINITION,
@@ -192,6 +193,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.stackexchange_tool = STACKEXCHANGE_TOOL_DEFINITION
         self.arxiv_tool = ARXIV_TOOL_DEFINITION
         self.pubmed_tool = PUBMED_TOOL_DEFINITION
+        self.pattern_scan_tool = PATTERN_SCAN_TOOL_DEFINITION
         self.hackernews_tool = HACKERNEWS_TOOL_DEFINITION
         self.generate_document_tool = GENERATE_DOCUMENT_TOOL_DEFINITION
         self.create_daemon_note_tool = CREATE_DAEMON_NOTE_TOOL_DEFINITION
@@ -542,6 +544,13 @@ class NativeToolsHandler(BaseProtocolHandler):
                 )
             return None
 
+        elif func_name == "pattern_scan":
+            spec = args.get("spec") or {}
+            if isinstance(spec, dict):
+                return SearchDecision(wants_pattern_scan=True, pattern_spec=spec,
+                                      pattern_reason=args.get("reason"))
+            return None
+
         elif func_name == "search_hackernews":
             query = args.get("query", "")
             reason = args.get("reason")
@@ -606,7 +615,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             # since models leave those blank unreliably). Forward only the spec's known params —
             # never trust a model-supplied repo, etc. (it's not in forward_params, so it's dropped).
             accepted = bool(spec) and (
-                all(args.get(f) for f in spec.required) or spec.backfill is not None
+                spec.accepts_params(args) or spec.backfill is not None
             )
             if accepted:
                 params = {k: args[k] for k in spec.forward_params if args.get(k) not in (None, "")}
@@ -686,8 +695,9 @@ class NativeToolsHandler(BaseProtocolHandler):
                 reason = params.get("reason", "User requested")
                 is_calendar = action_type == "calendar_create_event"
                 cal_summary = params.get("summary", "")
+                cal_events = params.get("events") if isinstance(params.get("events"), list) else []
 
-                if message or (is_calendar and cal_summary):
+                if message or (is_calendar and (cal_summary or cal_events)):
                     action_params = {}
                     if message:
                         action_params["message"] = message
@@ -698,12 +708,14 @@ class NativeToolsHandler(BaseProtocolHandler):
                     # Forward calendar-specific params
                     if is_calendar:
                         for key in ("summary", "description", "start_time", "end_time",
-                                    "time_zone", "calendar_id", "location"):
+                                    "time_zone", "calendar_id", "location", "all_day", "events"):
                             val = params.get(key)
                             if val:
                                 action_params[key] = val
 
-                    if is_calendar and cal_summary:
+                    if is_calendar and cal_events:
+                        summary = f"calendar_create_event: {len(cal_events)} events"
+                    elif is_calendar and cal_summary:
                         summary = f"calendar_create_event: {cal_summary}"
                     elif recipient:
                         summary = f"{action_type} to {recipient}: {message[:60]}"
@@ -849,6 +861,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             self.arxiv_tool,
             self.pubmed_tool,
             self.hackernews_tool,
+            self.pattern_scan_tool,
         ])
         # Document generation + self-notes — always available
         tools.append(self.generate_document_tool)
@@ -887,7 +900,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             tool_list.append("github")
         if self.fetch_url_available:
             tool_list.append("fetch_url")
-        tool_list.extend(["search_stackexchange", "search_arxiv", "search_pubmed", "search_hackernews"])
+        tool_list.extend(["search_stackexchange", "search_arxiv", "search_pubmed", "search_hackernews", "pattern_scan"])
         tool_list.append("done_searching")
 
         tools_str = ", ".join(tool_list)
@@ -1025,6 +1038,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
         re.DOTALL | re.IGNORECASE
     )
     WOLFRAM_PATTERN = re.compile(r'<wolfram>(.*?)</wolfram>', re.DOTALL | re.IGNORECASE)
+    PUBMED_PATTERN = re.compile(r'<(?:pubmed|search_pubmed)>(.*?)</(?:pubmed|search_pubmed)>', re.DOTALL | re.IGNORECASE)
     DONE_PATTERN = re.compile(r'<done\s*/?>', re.IGNORECASE)
     # Python sandbox pattern with optional purpose attribute
     # Matches: <python>code</python> or <python purpose="description">code</python>
@@ -1085,6 +1099,8 @@ class XMLMarkerHandler(BaseProtocolHandler):
     FILE_LIST_NESTED_PATTERN = re.compile(r'<file_list\s*>(.*?)</file_list>', re.DOTALL | re.IGNORECASE)
     FETCH_URL_NESTED_PATTERN = re.compile(r'<fetch_url\s*>(.*?)</fetch_url>', re.DOTALL | re.IGNORECASE)
     GET_FULL_DOCUMENT_NESTED_PATTERN = re.compile(r'<get_full_document\s*>(.*?)</get_full_document>', re.DOTALL | re.IGNORECASE)
+    PATTERN_SCAN_PATTERN = re.compile(r'<pattern_scan(?:\s+spec=["\'](.*?)["\'])?\s*>(.*?)</pattern_scan>', re.DOTALL | re.IGNORECASE)
+    PATTERN_SCAN_SELF_PATTERN = re.compile(r'<pattern_scan\s+spec=["\'](.*?)["\']\s*/>', re.DOTALL | re.IGNORECASE)
     # Expand memory pattern: <expand_memory id="abc12345" collection="conversations" window="3">reason</expand_memory>
     EXPAND_MEMORY_PATTERN = re.compile(
         r'<expand_memory\s+id=["\']([^"\']+)["\']'
@@ -1094,14 +1110,17 @@ class XMLMarkerHandler(BaseProtocolHandler):
         re.DOTALL | re.IGNORECASE
     )
     # Internet action pattern: <action type="send_telegram" recipient="@luke">message</action>
+    # 2026-08-29: attributes are parsed GENERICALLY (any key="value" pair →
+    # params). The old fixed recipient/subject/reason groups made actions whose
+    # params aren't message-shaped inexpressible on the XML path —
+    # calendar_create_event needs summary/start_time/end_time, so a forced
+    # calendar proposal could never carry its fields and the round fell
+    # through to "implicit ready" (live 2026-08-29 MGT-calendar turn).
     ACTION_PATTERN = re.compile(
-        r'<action\s+type=["\']([^"\']+)["\']'
-        r'(?:\s+recipient=["\']([^"\']*)["\'])?'
-        r'(?:\s+subject=["\']([^"\']*)["\'])?'
-        r'(?:\s+reason=["\']([^"\']*)["\'])?'
-        r'\s*>(.*?)</action>',
+        r'<action\s+([^>]*?)>(.*?)</action>',
         re.DOTALL | re.IGNORECASE
     )
+    ACTION_ATTR_RE = re.compile(r'(\w+)\s*=\s*["\']([^"\']*)["\']')
     # Contact lookup pattern: <lookup_contact name="Harper">reason</lookup_contact>
     LOOKUP_CONTACT_PATTERN = re.compile(
         r'<lookup_contact\s+name=["\']([^"\']+)["\']\s*>(.*?)</lookup_contact>',
@@ -1151,6 +1170,27 @@ class XMLMarkerHandler(BaseProtocolHandler):
             return [SearchDecision(is_done=True)]
 
         decisions = []
+
+        # Longitudinal pattern scan. Spec is JSON so date ambiguity and phase
+        # boundaries remain machine-readable on the XML protocol.
+        for match in self.PATTERN_SCAN_PATTERN.finditer(text):
+            raw = (match.group(1) or match.group(2) or "{}").strip()
+            try:
+                spec = json.loads(raw)
+            except Exception:
+                spec = {"propositions": [raw]} if raw else {}
+            decisions.append(SearchDecision(wants_pattern_scan=True,
+                pattern_spec=spec, pattern_reason="explicit longitudinal pattern request"))
+        for match in self.PATTERN_SCAN_SELF_PATTERN.finditer(text):
+            try: spec = json.loads(match.group(1))
+            except Exception: spec = {}
+            decisions.append(SearchDecision(wants_pattern_scan=True, pattern_spec=spec))
+
+        for match in self.PUBMED_PATTERN.finditer(text):
+            query = match.group(1).strip()
+            if query:
+                decisions.append(SearchDecision(wants_pubmed=True, pubmed_query=query,
+                                                pubmed_reason="XML PubMed request"))
 
         # Check for Python sandbox markers
         for python_match in self.PYTHON_PATTERN.finditer(text):
@@ -1414,21 +1454,23 @@ class XMLMarkerHandler(BaseProtocolHandler):
                 ))
 
         # Check for action markers: <action type="send_telegram" recipient="@luke">message</action>
+        # Attributes parse generically: every key="value" lands in params
+        # (type/reason special-cased), the body becomes params["message"].
+        # A marker with no body but real attrs (calendar events) is valid.
         for action_match in self.ACTION_PATTERN.finditer(text):
-            action_type = action_match.group(1).strip()
-            recipient = action_match.group(2) or ""
-            subject = action_match.group(3) or ""
-            reason = action_match.group(4) or ""
-            message = action_match.group(5).strip()
-            if action_type and message:
-                params = {"message": message}
+            attrs = dict(self.ACTION_ATTR_RE.findall(action_match.group(1)))
+            action_type = (attrs.pop("type", "") or "").strip()
+            reason = attrs.pop("reason", "") or ""
+            message = action_match.group(2).strip()
+            params = {k: v for k, v in attrs.items() if v}
+            if message:
+                params["message"] = message
+            if action_type and params:
+                recipient = params.get("recipient", "")
+                _label = params.get("summary") or message or next(iter(params.values()), "")
+                summary = f"{action_type}: {_label[:80]}"
                 if recipient:
-                    params["recipient"] = recipient
-                if subject:
-                    params["subject"] = subject
-                summary = f"{action_type}: {message[:80]}"
-                if recipient:
-                    summary = f"{action_type} to {recipient}: {message[:60]}"
+                    summary = f"{action_type} to {recipient}: {_label[:60]}"
                 logger.info(f"[AgenticProtocol] XML action marker found: {summary}")
                 decisions.append(SearchDecision(
                     wants_action=True,

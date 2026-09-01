@@ -860,6 +860,35 @@ class SynthesisFilter:
         specificity = 1.0 - result.template_similarity
         internal_novelty = result.novelty_score_internal
 
+        # A missing/NaN/inf component must never become an implicit pass.  In
+        # Python, NaN comparisons are false, so `composite < threshold` would
+        # otherwise accept a poisoned score and make calibration look better
+        # than production behavior.  Scores are contractually normalized to
+        # [0, 1] at this boundary.
+        components = {
+            "coherence": coherence_score,
+            "distance": distance_score,
+            "structural": structural_score,
+            "claim_novelty": claim_novelty,
+            "cooccurrence_novelty": cooccurrence_novelty,
+            "specificity": specificity,
+            "internal_novelty": internal_novelty,
+        }
+        invalid_components = [
+            name for name, value in components.items()
+            if not isinstance(value, (int, float, np.number))
+            or not np.isfinite(value)
+            or not 0.0 <= float(value) <= 1.0
+        ]
+        if invalid_components:
+            return StageResult(
+                stage_name="composite_scoring",
+                passed=False,
+                reason="Invalid score component(s): " + ", ".join(invalid_components),
+                score=None,
+                metadata={"invalid_components": invalid_components},
+            )
+
         novelty_score = (
             SYNTHESIS_NOVELTY_W_CLAIM * claim_novelty
             + SYNTHESIS_NOVELTY_W_COOCCURRENCE * cooccurrence_novelty

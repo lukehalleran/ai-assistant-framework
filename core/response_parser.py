@@ -188,6 +188,42 @@ class ResponseParser:
             return text or ""
         return ResponseParser._EDGE_SPECIAL_TOKEN_RE.sub("", text)
 
+    # Runaway-stream detection (2026-08-31): a kimi-3 insight synthesis
+    # streamed looping table-fragment garbage for ~3.5 minutes until the owner
+    # killed the process — the only thing that kept it out of storage.
+    _DEGEN_MIN_CHARS = 1500
+    _DEGEN_TAIL_CHARS = 4000
+    _DEGEN_LINE_RUN = 12
+    _DEGEN_SHINGLE_UNIQUE_FLOOR = 0.35
+
+    @staticmethod
+    def looks_degenerate_stream(text: str) -> bool:
+        """Detect runaway/degenerate model output (verbatim loops, shingle spam).
+
+        Conservative by design — killing a real answer is worse than letting
+        garbage run one more chunk. Fires only on massive tail repetition:
+        >=12 identical consecutive non-blank lines, or <35% unique 6-word
+        shingles across a >=120-word tail. Real prose and real markdown
+        tables (distinct content per row) never approach either bound.
+        """
+        if not text or not isinstance(text, str):
+            return False
+        if len(text) < ResponseParser._DEGEN_MIN_CHARS:
+            return False
+        tail = text[-ResponseParser._DEGEN_TAIL_CHARS:]
+        lines = [line.strip() for line in tail.splitlines() if line.strip()]
+        run = 1
+        for prev, cur in zip(lines, lines[1:]):
+            run = run + 1 if cur == prev else 1
+            if run >= ResponseParser._DEGEN_LINE_RUN:
+                return True
+        words = tail.split()
+        if len(words) >= 120:
+            shingles = [" ".join(words[i:i + 6]) for i in range(len(words) - 5)]
+            if len(set(shingles)) / len(shingles) < ResponseParser._DEGEN_SHINGLE_UNIQUE_FLOOR:
+                return True
+        return False
+
     @staticmethod
     def strip_trailing_stream_artifact(text: str) -> str:
         """Remove a stray trailing 'e' glued to terminal punctuation, plus
@@ -550,6 +586,14 @@ class ResponseParser:
         # 7. Appended streaming-error marker after partial content (a
         #    marker-ONLY response is left for the API-error storage guard)
         cleaned = ResponseParser.strip_trailing_stream_error(cleaned)
+
+        # 8. Degenerate/looping stream output (2026-08-31 kimi-3 incident):
+        #    a runaway stream that reaches completion must never persist as a
+        #    reply — replayed garbage teaches the model garbage. The empty
+        #    return trips memory_storage's refuse-empty guard. Detector is
+        #    deliberately conservative (verbatim loops / shingle spam only).
+        if ResponseParser.looks_degenerate_stream(cleaned):
+            return ""
 
         return cleaned.strip()
 

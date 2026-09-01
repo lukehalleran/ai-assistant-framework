@@ -827,6 +827,8 @@ class DaemonOrchestrator:
                 git_stats_manager=git_stats_manager,
                 github_manager=github_manager,
                 token_manager=token_manager,
+                corpus_manager=getattr(self.memory_system, "corpus_manager", None),
+                user_profile=getattr(self, "user_profile", None),
                 max_rounds=self._agentic_config.get("max_rounds", 5),
                 context_budget_tokens=self._agentic_config.get("context_budget_tokens", 8000),
                 compression_model=self._agentic_config.get("compression_model", "gpt-4o-mini"),

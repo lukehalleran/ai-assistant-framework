@@ -79,6 +79,12 @@ def _cfg_int(key: str, default_val: int) -> int:
     except (ValueError, TypeError):
         return int(default_val)
 
+
+_DERIVED_CONTENT_NOTE = (
+    "Daemon-authored synthesis of past sessions — derived context, not the user's words. "
+    "If this conflicts with [RECENT CONVERSATION] or the user's own statements, trust those."
+)
+
 def _parse_bool(s: Optional[str], default: bool = False) -> bool:
     """Parse boolean from string, with fallback."""
     if not s:
@@ -198,7 +204,7 @@ def _format_summary_section(items: list, header: str, apply_staleness: bool = Tr
                 lines.append(f"{i}) {prefix}{content}")
     if not lines:
         return None
-    return f"[{header}] n={len(lines)}\n" + "\n\n".join(lines)
+    return f"[{header}] n={len(lines)}\n{_DERIVED_CONTENT_NOTE}\n" + "\n\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1549,7 +1555,12 @@ class PromptFormatter:
         # Temporal Grounding (Narrative Context) - synthesized life state for trajectory awareness
         narrative_state = context.get("narrative_state", "")
         if narrative_state and isinstance(narrative_state, str) and narrative_state.strip():
-            sections.append(f"[TEMPORAL GROUNDING]\n{narrative_state}")
+            sections.append(
+                "[TEMPORAL GROUNDING]\n"
+                "(Assistant-synthesized life-context narrative — derived from notes and "
+                "summaries; may lag recent corrections. Not the user's words.)\n"
+                f"{narrative_state}"
+            )
             logger.debug(f"[PROMPT ASSEMBLY] Added temporal grounding section ({len(narrative_state)} chars)")
 
         # STM (Short-Term Memory) Summary - placed right before query for maximum attention

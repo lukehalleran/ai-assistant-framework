@@ -110,6 +110,28 @@ def get_health_status(orchestrator=None) -> Dict[str, Any]:
         checks["api_key"] = {"error": str(e)}
         status = "degraded"
 
+    # 5. Search/tool backends. This is intentionally non-networking: optional
+    # APIs report configured/ready/degraded state without making health probes
+    # consume credits or blocking container startup.
+    try:
+        executor = None
+        controller = getattr(orchestrator, "_agentic_controller", None) if orchestrator else None
+        executor = getattr(controller, "_tool_executor", None)
+        if executor is not None and hasattr(executor, "get_tool_health"):
+            checks["search_tools"] = {
+                "configured": True,
+                "summary": executor.get_tool_health(),
+            }
+        else:
+            from config.app_config import WEB_SEARCH_ENABLED, WEB_SEARCH_API_KEY
+            checks["search_tools"] = {
+                "web_search": "ready" if WEB_SEARCH_ENABLED and WEB_SEARCH_API_KEY else "unavailable",
+                "dedicated_apis": "ready (network not probed)",
+                "network_probe": False,
+            }
+    except Exception as e:
+        checks["search_tools"] = {"error": str(e)}
+
     # Get version
     try:
         from config.app_config import VERSION

@@ -71,6 +71,7 @@ Module Contract
 """
 import os
 import sys
+import json
 import logging
 import socket
 import gradio as gr
@@ -1236,6 +1237,7 @@ def build_demo(orchestrator, dev_tabs=None):
             with gr.TabItem("Chat"):
                 chatbot = gr.Chatbot(
                     label="Daemon", height=520, type="messages",
+                    show_copy_button=True, show_copy_all_button=True,
                     latex_delimiters=[
                         {"left": "$$", "right": "$$", "display": True},
                         {"left": "\\(", "right": "\\)", "display": False},
@@ -1544,6 +1546,12 @@ def build_demo(orchestrator, dev_tabs=None):
             with gr.TabItem("Provenance"):
                 gr.Markdown("### Provenance")
                 provenance_view = gr.JSON(value={}, label="Provenance")
+                # gr.Code supplies a reliable built-in copy button, including
+                # on mobile clients where the old JSON widget's affordance was
+                # easy to miss or failed to copy the full object.
+                provenance_copy = gr.Code(value="{}", language="json",
+                                           label="Copyable provenance",
+                                           interactive=False)
 
                 def _format_provenance(entries):
                     """Extract and format provenance from debug entries"""
@@ -1571,8 +1579,14 @@ def build_demo(orchestrator, dev_tabs=None):
                             prov[_tb_key] = prov[_tb_key][:_GUI_THINKING_CAP] + " [truncated]"
                     return prov
 
+                def _format_provenance_copy(entries):
+                    return json.dumps(_format_provenance(entries), indent=2, ensure_ascii=False)
+
                 # Update provenance view whenever debug_state changes
-                debug_state.change(fn=_format_provenance, inputs=[debug_state], outputs=[provenance_view])
+                debug_state.change(
+                    fn=lambda entries: (_format_provenance(entries), _format_provenance_copy(entries)),
+                    inputs=[debug_state], outputs=[provenance_view, provenance_copy]
+                )
 
             with gr.TabItem("Status"):
                 gr.Markdown("### 📊 Runtime Status")

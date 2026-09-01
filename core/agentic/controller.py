@@ -189,6 +189,8 @@ class AgenticSearchController:
         git_stats_manager: Optional["GitStatsManager"] = None,
         github_manager: Optional["GitHubManager"] = None,
         token_manager: Optional["TokenManager"] = None,
+        corpus_manager=None,
+        user_profile=None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         context_budget_tokens: int = DEFAULT_CONTEXT_BUDGET_TOKENS,
         compression_model: str = DEFAULT_COMPRESSION_MODEL,
@@ -252,6 +254,8 @@ class AgenticSearchController:
             github_manager=github_manager,
             token_manager=token_manager,
             memory_expander=self.memory_expander,
+            corpus_manager=corpus_manager,
+            user_profile=user_profile,
             compression_model=compression_model,
         )
 
@@ -362,6 +366,7 @@ class AgenticSearchController:
         crisis_level: Optional[str] = None,
         skip_initial_search: bool = False,
         initial_urls: Optional[List[str]] = None,
+        fetch_fastpath: bool = False,
     ) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Execute the agentic search loop.
@@ -378,6 +383,7 @@ class AgenticSearchController:
             crisis_level: Current crisis/tone level
             skip_initial_search: If True, skip Round 1 web search (for computation-only queries)
             initial_urls: Optional list of URLs extracted from the user message to fetch directly
+            fetch_fastpath: Skip model decision rounds after a substantive direct fetch.
 
         Yields:
             ProgressEvent: Status updates for UI
@@ -451,7 +457,9 @@ class AgenticSearchController:
                     "- Information that should be shared with someone mentioned in conversation\n"
                     "- The user explicitly asks you to send/create/post something\n\n"
                     f"Available action types: {_action_types}\n"
-                    "Propose at most ONE action per turn. The user will see a confirmation prompt.\n\n"
+                    "Propose at most ONE logical action per turn. A request for several "
+                    "calendar events is ONE batch proposal, so the user sees one complete "
+                    "confirmation instead of several hidden approvals.\n\n"
                     "CRITICAL — DO NOT JUST DRAFT, AND DO NOT OVER-RESEARCH: When the user EXPLICITLY asks "
                     "you to create/file an issue, send a message, comment on a PR, or post something, your "
                     "FIRST action MUST be to call the propose_action tool — not to research. Writing the "
@@ -525,6 +533,31 @@ class AgenticSearchController:
                 )
                 session.rounds.append(first_round)
                 session.accumulated_context = "\n\n".join(fetch_context_parts)
+                session.round_telemetry.append({
+                    "round": 1, "action": "fetch_url", "decision_ms": 0,
+                    "tool_ms": round(fetch_duration), "timed_out": False,
+                })
+
+                # A plainly shared URL does not need a planning round after a
+                # successful fetch.  Keep the normal loop as the fallback for
+                # short/error-only fetches.
+                try:
+                    from config.app_config import AGENTIC_FETCH_FASTPATH_MIN_CHARS
+                except ImportError:
+                    AGENTIC_FETCH_FASTPATH_MIN_CHARS = 400
+                substantive = any(
+                    not isinstance(result, Exception)
+                    and len(str(result)) >= AGENTIC_FETCH_FASTPATH_MIN_CHARS
+                    for result in fetch_results
+                )
+                if fetch_fastpath and substantive:
+                    session.model_signaled_done = True
+                    session.fetch_fastpath_fired = True
+                    session.round_telemetry[-1]["action"] = "fetch_fastpath"
+                    logger.info(
+                        "[AgenticSearch] Fetch fastpath: skipping decision rounds "
+                        "-> direct synthesis"
+                    )
 
                 yield ProgressEvent(
                     event_type="url_fetched",
@@ -606,6 +639,10 @@ class AgenticSearchController:
                 compressed = await self._compress_results(first_result)
                 first_round.summary = compressed
                 session.rounds.append(first_round)
+                session.round_telemetry.append({
+                    "round": 1, "action": "web_search", "decision_ms": 0,
+                    "tool_ms": round(search_duration), "timed_out": False,
+                })
                 session.accumulated_context = self._format_search_context(
                     1, initial_search_terms[0], compressed
                 )
@@ -650,6 +687,13 @@ class AgenticSearchController:
             _forced_action = detect_action_intent(query)  # ActionType or None (from the registry)
             _force_propose_pending = _forced_action is not None
             if _forced_action:
+                # Forced action rounds need more than the tiny general-purpose
+                # recent-turn digest. Follow-ups such as "create the calendar
+                # events" depend on the prior answer's full date table and the
+                # user's intervening "day of" preference.
+                session.action_context_digest = self._compute_action_context(
+                    initial_context
+                )
                 logger.info(
                     f"[AgenticSearch] Explicit action intent ({_forced_action.value}) — forcing "
                     f"propose_action on first decision round"
@@ -708,32 +752,48 @@ class AgenticSearchController:
                 _round_system_prompt = augmented_system_prompt
                 _round_prompt = iteration_prompt
                 if _force_propose_pending:
+                    from core.actions.registry import ACTION_SPECS
+                    _spec = ACTION_SPECS.get(_forced_action)
+                    _hint = (_spec.field_hint if _spec and _spec.field_hint else "the required fields")
                     _round_tool_choice = {"type": "function", "function": {"name": "propose_action"}}
                     _ptool = getattr(handler, "propose_action_tool", None)
                     if _ptool is not None:
                         _round_tools_override = [_ptool]
-                    # Use the user's actual request as the prompt (not the generic "what tool
-                    # next?" iteration prompt) so the model fills the content fields from it.
-                    _round_prompt = (
-                        f"The user asked: {query}\n\n"
-                        f"Call propose_action now to do exactly this, filling in ALL content "
-                        f"fields (e.g. subject=title, message=body) from the request above."
-                    )
-                    # An explicit per-round directive — the generic [AVAILABLE ACTIONS] block is
-                    # too soft; models otherwise emit a propose_action call with the content fields
-                    # blank. The required-field hint for THIS action comes from its registry spec.
-                    from core.actions.registry import ACTION_SPECS
-                    _spec = ACTION_SPECS.get(_forced_action)
-                    _hint = (_spec.field_hint if _spec and _spec.field_hint else "the required fields")
-                    _round_system_prompt = augmented_system_prompt + (
-                        f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a write "
-                        f"action ({_forced_action.value}). Call propose_action NOW and FILL IN the "
-                        f"content fields from the user's request — for this action: {_hint}. "
-                        f"Do NOT leave required fields empty, and do NOT specify a repo (auto-detected)."
-                    )
+                        # Use the user's actual request as the prompt (not the generic "what tool
+                        # next?" iteration prompt) so the model fills the content fields from it.
+                        _round_prompt = iteration_prompt + "\n\n" + (
+                            "[ACTION EXECUTION DIRECTIVE]\n"
+                            f"The user asked: {query}\n\n"
+                            f"Call propose_action now to do exactly this, filling in ALL content "
+                            f"fields from the request and conversation context above. For several "
+                            f"calendar events, use one events[] batch."
+                        )
+                        _round_system_prompt = augmented_system_prompt + (
+                            f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a write "
+                            f"action ({_forced_action.value}). Call propose_action NOW and FILL IN the "
+                            f"content fields from the user's request — for this action: {_hint}. "
+                            f"Do NOT leave required fields empty, and do NOT specify a repo (auto-detected)."
+                        )
+                    else:
+                        # XML-markers protocol (2026-08-29): tool_choice/tools_override are
+                        # ignored here and "propose_action" is native-tools vocabulary the
+                        # model has never seen — the live forced calendar round produced
+                        # NOTHING and fell through to implicit-ready. Give the model the
+                        # actual marker syntax with the spec's required fields as
+                        # attributes, one marker per item.
+                        _round_prompt = iteration_prompt + "\n\n" + self._build_xml_action_force_prompt(
+                            query, _forced_action, _spec)
+                        _round_system_prompt = augmented_system_prompt + (
+                            f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a "
+                            f"write action ({_forced_action.value}). Emit the <action> marker(s) "
+                            f"NOW exactly as instructed — for this action: {_hint}. Do NOT "
+                            f"narrate or answer in prose; markers only."
+                        )
                     _force_propose_pending = False  # force on this round only
 
-                # Generate with protocol-appropriate method
+                # Generate with protocol-appropriate method and record the
+                # decision latency even when the model returns no tools.
+                decision_started = time.monotonic()
                 decisions = await self._get_model_decision(
                     prompt=_round_prompt,
                     system_prompt=_round_system_prompt,
@@ -743,6 +803,34 @@ class AgenticSearchController:
                     tool_choice=_round_tool_choice,
                     tools_override=_round_tools_override,
                 )
+                decision_ms = (time.monotonic() - decision_started) * 1000
+                decision_timed_out = any(
+                    getattr(decision, "timed_out", False) for decision in decisions
+                )
+                def _decision_action(decision: SearchDecision) -> str:
+                    names = (
+                        ("web_search", decision.wants_search),
+                        ("wolfram", decision.wants_wolfram),
+                        ("sandbox", decision.wants_sandbox),
+                        ("memory_search", decision.wants_memory_search),
+                        ("memory_expand", decision.wants_memory_expand),
+                        ("file_read", decision.wants_file_read),
+                        ("file_grep", decision.wants_file_grep),
+                        ("file_list", decision.wants_file_list),
+                        ("fetch_url", decision.wants_fetch_url),
+                        ("github", decision.wants_github),
+                        ("action", decision.wants_action),
+                    )
+                    selected = [name for name, enabled in names if enabled]
+                    return ",".join(selected) or ("answer" if decision.wants_answer else "done")
+                telemetry_entry = {
+                    "round": session.current_round,
+                    "action": ",".join(_decision_action(decision) for decision in decisions),
+                    "decision_ms": round(decision_ms),
+                    "tool_ms": 0,
+                    "timed_out": decision_timed_out,
+                }
+                session.round_telemetry.append(telemetry_entry)
 
                 # Decision-round timeout with nothing gathered: the user's
                 # request explicitly triggered the tool loop, so a stalled
@@ -794,6 +882,7 @@ class AgenticSearchController:
                     d for d in decisions
                     if d.wants_action and d.action_type
                 ]
+                _action_decisions = self._coalesce_action_decisions(_action_decisions)
                 if _action_decisions:
                     for _ad in _action_decisions:
                         # Backfill blank fields from the user's request for any action whose spec
@@ -954,6 +1043,21 @@ class AgenticSearchController:
                             )
                             continue  # Retry the loop iteration
 
+                    # Forced-action retry (2026-08-29): the user explicitly
+                    # requested a write action, the forced round produced no
+                    # action marker, and nothing else was gathered — silence
+                    # here must not become "ready to answer". Re-arm the force
+                    # (now protocol-aware) and retry exactly once.
+                    if (_forced_action is not None and not _action_decisions
+                            and not getattr(session, '_action_force_retry_sent', False)):
+                        session._action_force_retry_sent = True
+                        _force_propose_pending = True
+                        logger.info(
+                            "[AgenticSearch] Forced action round produced no "
+                            "action marker — retrying once"
+                        )
+                        continue
+
                     if not _action_decisions:
                         _decision_answer_text = "".join(
                             d.partial_response or "" for d in decisions
@@ -1000,6 +1104,7 @@ class AgenticSearchController:
                         f"[AgenticSearch] Parallel dispatch: {len(tool_decisions)} tools"
                     )
 
+                tool_started = time.monotonic()
                 tasks = [
                     self._dispatch_single(
                         d, base_round + i, session, crisis_level, sandbox_session
@@ -1007,6 +1112,7 @@ class AgenticSearchController:
                     for i, d in enumerate(tool_decisions)
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+                telemetry_entry["tool_ms"] = round((time.monotonic() - tool_started) * 1000)
 
                 # Yield events and accumulate results (deterministic order)
                 session.state = AgentState.OBSERVING
@@ -1056,6 +1162,7 @@ class AgenticSearchController:
                 else None
             )
             if _reused_answer:
+                session.decision_answer_reuse_fired = True
                 session.final_prompt_hash = "decision-answer-reuse"
                 logger.info(
                     f"[AgenticSearch] Reusing decision-round answer "
@@ -1450,6 +1557,161 @@ class AgenticSearchController:
         re.IGNORECASE,
     )
 
+    @staticmethod
+    def _build_xml_action_force_prompt(query: str, forced_action, spec) -> str:
+        """Forced-round prompt for the XML-markers protocol: a concrete
+        <action> example whose attributes are the spec's required/optional
+        fields, one marker per item (a calendar request can carry several
+        events — each is its own marker)."""
+        _fields = list(getattr(spec, "required", ()) or ())
+        _attr_example = " ".join(f'{f}="<{f}>"' for f in _fields) or 'recipient="<who>"'
+        _type = forced_action.value
+        _calendar_hint = ""
+        if _type == "calendar_create_event":
+            _attr_example += ' all_day="<true-or-false>" time_zone="<IANA-timezone-if-timed>"'
+            _calendar_hint = (
+                " If the user selected day-of/all-day entries, set all_day=\"true\", "
+                "start_time to YYYY-MM-DD, and end_time to the NEXT date because "
+                "Google's all-day end is exclusive. For timed events, preserve an "
+                "explicit source timezone (ET = America/New_York) and include the "
+                "matching offset; never silently reinterpret ET as local Central time."
+            )
+        return (
+            f"The user asked: {query}\n\n"
+            f"Perform exactly this request by emitting one or more <action> "
+            f"markers — nothing else, no prose. Syntax (fill every field from "
+            f"the request and the conversation context above):\n"
+            f'<action type="{_type}" {_attr_example} reason="user asked">optional details</action>\n'
+            f"Timed datetimes use ISO 8601 with an offset (e.g. "
+            f"2026-09-13T23:59:00-04:00).{_calendar_hint} If the request "
+            f"covers multiple items (several events, several messages), emit one "
+            f"<action> marker per item, each with ALL fields filled."
+        )
+
+    @staticmethod
+    def _coalesce_action_decisions(decisions: List[SearchDecision]) -> List[SearchDecision]:
+        """Collapse several calendar-event calls into one approval proposal.
+
+        The pending store exposes one proposal ID to the UI/API and defaults
+        to five entries, while a course schedule can easily contain seven or
+        more deadlines. Keeping one decision per event therefore made later
+        events unreachable (and overflowed the store). A calendar batch is one
+        user-authorized logical action and retains every event in params.events.
+        """
+        if len(decisions) < 2:
+            return decisions
+        calendar = [
+            d for d in decisions
+            if str(getattr(d.action_type, "value", d.action_type) or "")
+            == "calendar_create_event"
+        ]
+        if len(calendar) < 2:
+            return decisions
+
+        events: List[Dict[str, Any]] = []
+        seen = set()
+        for decision in calendar:
+            params = dict(decision.action_params or {})
+            # Flatten a native events[] call if one appears alongside other
+            # calendar decisions; XML produces one marker per item.
+            candidates = params.get("events") if isinstance(params.get("events"), list) else [params]
+            for event in candidates:
+                if not isinstance(event, dict):
+                    continue
+                clean = {k: v for k, v in event.items() if k != "events"}
+                key = (
+                    str(clean.get("summary", "")),
+                    str(clean.get("start_time", "")),
+                    str(clean.get("end_time", "")),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                events.append(clean)
+
+        if len(events) < 2:
+            # Either everything was a duplicate or malformed; preserve the
+            # first actual decision and drop duplicate calendar calls.
+            first = calendar[0]
+            return [d for d in decisions if d is first or d not in calendar]
+
+        batch = SearchDecision(
+            wants_action=True,
+            action_type="calendar_create_event",
+            action_params={"events": events},
+            action_summary=f"calendar_create_event: {len(events)} events",
+            action_reason=next(
+                (d.action_reason for d in calendar if d.action_reason),
+                "User requested multiple calendar events",
+            ),
+        )
+        output: List[SearchDecision] = []
+        inserted = False
+        for decision in decisions:
+            if decision in calendar:
+                if not inserted:
+                    output.append(batch)
+                    inserted = True
+                continue
+            output.append(decision)
+        return output
+
+    def narration_shaped_final(self, text: str) -> bool:
+        """Is a FINAL synthesis output mid-loop narration instead of an
+        answer? (2026-08-29: the synthesis call shipped 'let me grab the full
+        text back out of memory…' as the final reply — the 08-28 promissory
+        guards only covered the decision-answer REUSE path.) Short promissory
+        text or a loop-meta opener qualifies; long substantive answers that
+        merely contain 'let me check' mid-prose do not."""
+        t = (text or "").strip()
+        if not t:
+            return False
+        if len(t) < 600 and self._PROMISSORY_RE.search(t):
+            return True
+        if self._LOOP_META_RE.search(t[:200]):
+            return True
+        return False
+
+    async def regenerate_final_answer(self) -> Optional[str]:
+        """One bounded no-reasoning retry of the final synthesis after a
+        narration-shaped output. Returns vetted text or None (caller keeps
+        the original). Uses the stashed final prompt from the last
+        _generate_final_response call."""
+        final_prompt = getattr(self, "_last_final_prompt", None)
+        if not final_prompt:
+            return None
+        directive = (
+            "\n\n[SYSTEM]: Your previous output described what you were about "
+            "to do instead of answering. All tool rounds are CLOSED — no more "
+            "searching, retrieving, or checking is possible. Using ONLY the "
+            "context above, write the complete final answer to the user's "
+            "request now (include the concrete results — dates, catalog, "
+            "outcomes — plus anything you could not do and why). Never "
+            "describe an action you are about to take."
+        )
+        try:
+            recovered = await self.model_manager.generate_once(
+                prompt=final_prompt + directive,
+                model_name=getattr(self, "_last_final_model", None),
+                system_prompt=getattr(self, "_last_final_system_prompt", None) or "",
+                max_tokens=4096,
+                disable_reasoning=True,
+            )
+        except Exception as e:
+            logger.error(f"[AgenticSearch] Narration recovery failed: {e}")
+            return None
+        from core.response_parser import ResponseParser
+        recovered = (ResponseParser.sanitize_for_storage(recovered or "") or "").strip()
+        if len(recovered) < 200 or self.narration_shaped_final(recovered):
+            logger.warning(
+                "[AgenticSearch] Narration recovery produced unusable output "
+                f"({len(recovered)} chars) — keeping original")
+            return None
+        logger.info(
+            f"[AgenticSearch] Recovered narration-shaped final response "
+            f"({len(recovered)} chars via no-reasoning retry)")
+        return recovered
+
     def _usable_decision_answer(self, text: str) -> Optional[str]:
         """Vet a decision-round answer for reuse as the final response.
 
@@ -1521,6 +1783,11 @@ class AgenticSearchController:
 
         # Hash prompt for provenance
         session.final_prompt_hash = hashlib.sha256(final_prompt.encode()).hexdigest()[:16]
+
+        # Stash for regenerate_final_answer (narration-shaped final recovery)
+        self._last_final_prompt = final_prompt
+        self._last_final_system_prompt = system_prompt
+        self._last_final_model = model_name
 
         # Extract images from initial context for multimodal models
         _images = None
@@ -1752,6 +2019,81 @@ class AgenticSearchController:
     # can avoid searching to re-derive an in-session fact (or contradicting one).
     _DIGEST_MAX_TURNS = 4
     _DIGEST_MSG_CHARS = 220
+    _ACTION_CONTEXT_MAX_TURNS = 3
+    _ACTION_CONTEXT_MSG_CHARS = 2200
+    _ACTION_CONTEXT_TOTAL_CHARS = 7000
+
+    @staticmethod
+    def _ordered_recent_conversations(
+        initial_context: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return recent conversation turns oldest-first, newest last."""
+        if not initial_context:
+            return []
+        recent = initial_context.get('recent_conversations', []) or []
+        if not recent:
+            return []
+
+        def _conv_ts(conv):
+            raw = str(conv.get('timestamp', '') or '')
+            try:
+                return datetime.fromisoformat(raw.replace(' ', 'T', 1)[:26])
+            except (ValueError, TypeError):
+                return None
+
+        ordered = list(recent)
+        stamps = [_conv_ts(c) for c in ordered]
+        if all(s is not None for s in stamps):
+            return [c for _, c in sorted(zip(stamps, ordered), key=lambda p: p[0])]
+        # Gatherer contract when timestamps are absent: newest-first.
+        return list(reversed(ordered))
+
+    @staticmethod
+    def _head_tail(text: str, limit: int) -> str:
+        """Bound text without dropping the closing question/preference cue."""
+        value = (text or "").strip()
+        if len(value) <= limit:
+            return value
+        head = max(1, limit // 2)
+        tail = max(1, limit - head)
+        return value[:head] + "\n[…snipped…]\n" + value[-tail:]
+
+    def _compute_action_context(
+        self, initial_context: Optional[Dict[str, Any]],
+    ) -> str:
+        """Richer recent-turn context used only by explicit write actions.
+
+        General decision rounds intentionally use a tiny digest. Write-action
+        follow-ups are different: exact dates, recipients, draft bodies, and
+        the assistant's final choice question often live after character 220.
+        """
+        ordered = self._ordered_recent_conversations(initial_context)
+        if not ordered:
+            return ""
+        lines: List[str] = []
+        for conv in ordered[-self._ACTION_CONTEXT_MAX_TURNS:]:
+            user_msg = conv.get('query', conv.get('user', '')) or ''
+            assistant_msg = conv.get('response', conv.get('assistant', '')) or ''
+            if user_msg:
+                lines.append(
+                    "User: " + self._head_tail(
+                        str(user_msg), self._ACTION_CONTEXT_MSG_CHARS
+                    )
+                )
+            if assistant_msg:
+                lines.append(
+                    "Daemon: " + self._head_tail(
+                        str(assistant_msg), self._ACTION_CONTEXT_MSG_CHARS
+                    )
+                )
+        rendered = "\n\n".join(lines)
+        rendered = self._head_tail(rendered, self._ACTION_CONTEXT_TOTAL_CHARS)
+        return (
+            "[ACTION CONTEXT — AUTHORITATIVE EARLIER TURNS]\n"
+            "Resolve pronouns, selected options, event details, recipients, and "
+            "dates from these turns. Do not ask again for a choice already answered.\n"
+            + rendered
+        )
 
     def _compute_recent_conversation_digest(
         self, initial_context: Optional[Dict[str, Any]]
@@ -1764,30 +2106,9 @@ class AgenticSearchController:
         """
         if not initial_context:
             return ""
-        recent = initial_context.get('recent_conversations', []) or []
-        if not recent:
+        ordered = self._ordered_recent_conversations(initial_context)
+        if not ordered:
             return ""
-
-        # The gatherer returns recent_conversations NEWEST-FIRST. Order by
-        # timestamp when parseable (robust to either ordering) so the digest
-        # keeps the most recent turns; assuming oldest-first here silently fed
-        # the decision rounds the N OLDEST turns (2026-08-02: two turn-1 queries
-        # referencing "earlier" got yesterday's turns in the digest, and the
-        # reused decision answer asked the user to re-explain).
-        def _conv_ts(conv):
-            raw = str(conv.get('timestamp', '') or '')
-            try:
-                return datetime.fromisoformat(raw.replace(' ', 'T', 1)[:26])
-            except (ValueError, TypeError):
-                return None
-        ordered = list(recent)
-        stamps = [_conv_ts(c) for c in ordered]
-        if all(s is not None for s in stamps):
-            ordered = [c for _, c in sorted(zip(stamps, ordered), key=lambda p: p[0])]
-        else:
-            # No usable timestamps: trust the gatherer contract (newest-first)
-            # and flip to oldest-first for rendering.
-            ordered = list(reversed(ordered))
         tail = ordered[-self._DIGEST_MAX_TURNS:]
         lines = []
         for conv in tail:
@@ -1866,6 +2187,11 @@ You are in round {round_number} of up to {self.max_rounds} search rounds."""]
         # decision is grounded in what was already established this session.
         if session and session.recent_conversation_digest:
             parts.append(session.recent_conversation_digest)
+
+        # Explicit write actions get a bounded richer digest. This is absent
+        # from ordinary search rounds, so it does not inflate normal prompts.
+        if session and getattr(session, "action_context_digest", ""):
+            parts.append(session.action_context_digest)
 
         # Include relaxation hint if present (guides LLM to broader queries or synthesis)
         if session and session.relaxation_hint:

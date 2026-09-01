@@ -117,15 +117,19 @@ class TestInsightModeHandler:
         stages["assess"].assert_awaited_once()
         assert stages["synth_calls"]["assessment"].overall == "agree"
 
-    def test_sweep_exception_falls_through(self, stages, monkeypatch):
+    def test_sweep_exception_fails_honestly(self, stages, monkeypatch):
         import core.insight.sweep as sweep_mod
         monkeypatch.setattr(
             sweep_mod, "run_sweep", AsyncMock(side_effect=RuntimeError("boom"))
         )
         ctx = _ctx({"kind": "theme_sweep", "theme": "sleep",
                     "wants_document": False, "raw_query": "gather it"})
-        _collect(ctx)  # must not raise
-        assert ctx.handled is False  # dispatcher falls through to enhanced
+        chunks = _collect(ctx)  # must not raise
+        # 2026-08-31 contract change: insight failures are terminal and
+        # honest — never silently replaced by an unrelated agentic/enhanced
+        # answer (evidence-sensitive workflow).
+        assert ctx.handled is True
+        assert "couldn't complete the insight synthesis" in chunks[-1]["content"]
 
     def test_elevated_tone_threads_to_synthesizer(self, stages, monkeypatch):
         monkeypatch.setattr(handlers, "_dispatch_storage", lambda *a, **k: None)
@@ -135,7 +139,7 @@ class TestInsightModeHandler:
         _collect(ctx)
         assert stages["synth_calls"]["tone_elevated"] is True
 
-    def test_empty_synthesis_falls_through(self, stages, monkeypatch):
+    def test_empty_synthesis_fails_honestly(self, stages, monkeypatch):
         import core.insight.synthesizer as synth_mod
 
         async def empty_stream(*a, **kw):
@@ -144,8 +148,11 @@ class TestInsightModeHandler:
         monkeypatch.setattr(synth_mod, "synthesize_stream", empty_stream)
         ctx = _ctx({"kind": "theme_sweep", "theme": "sleep",
                     "wants_document": False, "raw_query": "gather it"})
-        _collect(ctx)
-        assert ctx.handled is False
+        chunks = _collect(ctx)
+        # Same 2026-08-31 contract: empty synthesis (after the reasoning-off
+        # retry) surfaces a bounded failure instead of falling through.
+        assert ctx.handled is True
+        assert "couldn't complete the insight synthesis" in chunks[-1]["content"]
 
 
 class TestDocumentGating:
@@ -237,3 +244,46 @@ class TestDispatcherWiring:
         # the offer must never push — check the DISPATCH-SITE occurrence (the
         # module docstring also mentions the marker; rindex targets the code)
         assert "never" in src[src.rindex("[INSIGHT OFFER]"):src.rindex("[INSIGHT OFFER]") + 600].lower()
+
+
+class TestInterleavePhaseEvents:
+    """2026-08-31 sleep/functioning run: phase evidence appended in phase
+    order (25 stable-on + 29 taper) filled the 50-item pattern-evidence cap
+    before ANY of the 62 post-cessation events — the synthesis prompt had no
+    quotable off-phase statement while the manifest reported 25/29/62."""
+
+    @staticmethod
+    def _comparison(label, n_events, n_proxy=0):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            events=[SimpleNamespace(phase=label, idx=i) for i in range(n_events)],
+            proxy_events=[
+                SimpleNamespace(phase=f"{label}-proxy", idx=i) for i in range(n_proxy)
+            ],
+        )
+
+    def test_live_run_shape_keeps_off_phase_under_cap(self):
+        comparisons = [
+            self._comparison("stable-on", 25, 14),
+            self._comparison("taper", 29, 4),
+            self._comparison("off", 62, 9),
+        ]
+        interleaved = handlers._interleave_phase_events(comparisons)
+        assert len(interleaved) == 25 + 14 + 29 + 4 + 62 + 9
+        capped_phases = {e.phase for e in interleaved[:50]}
+        # Every phase survives a 50-item cap — including the final one.
+        assert {"stable-on", "taper", "off"} <= capped_phases
+        # Fair sampling: roughly a third of the cap is off-phase.
+        assert sum(1 for e in interleaved[:50] if e.phase == "off") >= 15
+
+    def test_outcome_events_precede_proxies_within_a_phase(self):
+        comparisons = [self._comparison("only", 2, 2)]
+        interleaved = handlers._interleave_phase_events(comparisons)
+        assert [e.phase for e in interleaved] == [
+            "only", "only", "only-proxy", "only-proxy"]
+
+    def test_empty_and_uneven_phases(self):
+        comparisons = [self._comparison("a", 0, 0), self._comparison("b", 3, 0)]
+        interleaved = handlers._interleave_phase_events(comparisons)
+        assert [e.idx for e in interleaved] == [0, 1, 2]
+        assert handlers._interleave_phase_events([]) == []

@@ -184,9 +184,19 @@ async def test_multiple_sequential_interactions(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_memory_with_long_text(memory_coordinator):
-    """Test memory storage with long text."""
-    long_query = "What is Python? " * 100
-    long_response = "Python is a language. " * 100
+    """Test memory storage with long text.
+
+    The text must be long but VARIED — a sentence repeated 100 times is
+    degenerate-stream shaped and sanitize_for_storage now correctly refuses
+    to persist it (2026-08-31 garbage-loop guard)."""
+    long_query = " ".join(
+        f"What is Python feature number {i} and how does it work?"
+        for i in range(100)
+    )
+    long_response = " ".join(
+        f"Python feature {i} is part of the language and serves purpose {i}."
+        for i in range(100)
+    )
 
     await memory_coordinator.store_interaction(long_query, long_response)
     memories = await memory_coordinator.get_memories("Python", limit=5)

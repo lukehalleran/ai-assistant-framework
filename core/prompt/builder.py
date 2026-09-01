@@ -79,7 +79,10 @@ if TYPE_CHECKING:
     from core.context_pipeline import ContextResult
 from datetime import datetime
 from utils.time_manager import TimeManager
-from utils.query_checker import analyze_query
+from utils.query_checker import (
+    analyze_query, is_anaphoric_continuation, is_fragment_continuation,
+    is_retry_continuation,
+)
 from memory.memory_consolidator import MemoryConsolidator
 from utils.logging_utils import get_logger
 
@@ -342,6 +345,10 @@ PROMPT_MIN_RECENT_FLOOR = _cfg_int("prompt_min_recent_floor", 5)
 # minimum survives — but only a minimum; restoring to MAX would undo the trim.
 PROMPT_MIN_SUMMARIES_FLOOR = _cfg_int("prompt_min_summaries_floor", 2)
 PROMPT_MIN_REFLECTIONS_FLOOR = _cfg_int("prompt_min_reflections_floor", 1)
+# (2026-08-29): the Step-6.1 memory top-up is likewise a survival MINIMUM —
+# its filler is ungated recent conversations relabeled as [RELEVANT MEMORIES];
+# refilling to the intent cap (30) defeated the gate's honest-few doctrine.
+MEMORY_TOPUP_FLOOR = _cfg_int("prompt_memory_topup_floor", 3)
 
 
 def select_floor_topup(stored, have_contents, needed):
@@ -918,6 +925,15 @@ class UnifiedPromptBuilder:
                     )
                 eff_max_semantic = 0
             eff_max_wiki = _ro.get("max_wiki", PROMPT_MAX_WIKI)
+            _continuation_shaped = (
+                is_anaphoric_continuation(user_input)
+                or is_fragment_continuation(user_input)
+                or is_retry_continuation(user_input)
+            )
+            if _continuation_shaped and (eff_max_wiki > 0 or eff_max_semantic > 0):
+                logger.debug("[BUILD_PROMPT] Continuation-shaped query — suppressing wiki retrieval")
+                eff_max_semantic = 0
+                eff_max_wiki = 0
             eff_max_skills = _ro.get("max_skills", PROMPT_MAX_SKILLS)
             eff_max_proposals = _ro.get("max_proposals", PROMPT_MAX_PROPOSALS)
             eff_max_git = _ro.get("max_git_commits", PROMPT_MAX_GIT_COMMITS)
@@ -1517,7 +1533,14 @@ class UnifiedPromptBuilder:
                 # top-up used the global PROMPT_MAX_MEMS, so a casual_social
                 # profile with max_mems=3 could be inflated back to the global
                 # target after hygiene/dedup.
-                target_mems = max(0, int(eff_max_mems or 0))
+                # 2026-08-29: the top-up is a SURVIVAL MINIMUM, not a refill —
+                # its filler is UNGATED recent conversations beyond the ones
+                # [RECENT CONVERSATION] already shows, relabeled as "relevant".
+                # Refilling to the intent cap defeated the gate's honest-few
+                # doctrine (live: gate returned 1 memory, quality floor working
+                # as designed; this top-up then added 30 recents — 10K tokens of
+                # the prior days' heavy conversations on a logistics turn).
+                target_mems = min(max(0, int(eff_max_mems or 0)), MEMORY_TOPUP_FLOOR)
                 if len(mems) < target_mems:
                     # Pull extra recent conversations beyond the ones already shown
                     extra_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT + target_mems)

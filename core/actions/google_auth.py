@@ -147,11 +147,30 @@ class GoogleAuthManager:
 
             flow = InstalledAppFlow.from_client_config(client_config, self._scopes)
 
-            # Run browser flow in executor to avoid blocking the event loop
+            # Run browser flow in executor to avoid blocking the event loop.
+            # Fallback (2026-08-29): webbrowser can't find a runnable browser
+            # on systems where the browser is a flatpak/snap (no binary on
+            # PATH) or BROWSER is unset — the local callback server still
+            # works, so retry with open_browser=False and print the consent
+            # URL for the user to open by hand.
+            def _run_flow():
+                try:
+                    return flow.run_local_server(port=0)
+                except Exception as browser_err:
+                    if "browser" not in str(browser_err).lower():
+                        raise
+                    print(
+                        "\n• No runnable browser found — open this URL "
+                        "yourself (same machine, any browser):\n"
+                    )
+                    return flow.run_local_server(
+                        port=0,
+                        open_browser=False,
+                        authorization_prompt_message="{url}\n",
+                    )
+
             loop = asyncio.get_event_loop()
-            creds = await loop.run_in_executor(
-                None, lambda: flow.run_local_server(port=0)
-            )
+            creds = await loop.run_in_executor(None, _run_flow)
 
             self._save_token(creds)
             self._credentials = creds

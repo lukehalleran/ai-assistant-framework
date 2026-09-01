@@ -169,6 +169,8 @@ try:
         WEB_SEARCH_MAX_CONTENT_CHARS,
         WEB_SEARCH_API_KEY,
         WEB_SEARCH_DAILY_CREDIT_LIMIT,
+        WEB_SEARCH_PER_QUERY_LIMIT,
+        WEB_SEARCH_LINK_SELECTOR_MODEL,
     )
 except ImportError:
     WEB_SEARCH_ENABLED = _cfg_bool("web_search_enabled", True)
@@ -176,6 +178,8 @@ except ImportError:
     WEB_SEARCH_MAX_CONTENT_CHARS = _cfg_int("web_search_max_content_chars", 10000)
     WEB_SEARCH_API_KEY = os.getenv("TAVILY_API_KEY", "")
     WEB_SEARCH_DAILY_CREDIT_LIMIT = 100
+    WEB_SEARCH_PER_QUERY_LIMIT = 5
+    WEB_SEARCH_LINK_SELECTOR_MODEL = "gpt-4o-mini"
 
 class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMixin):
     """Handles all data collection and retrieval for prompt building.
@@ -229,14 +233,16 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
 
                 # Create rate limiter with config values
                 rate_limiter = WebSearchRateLimiter(
-                    daily_limit=WEB_SEARCH_DAILY_CREDIT_LIMIT
+                    daily_limit=WEB_SEARCH_DAILY_CREDIT_LIMIT,
+                    per_query_limit=WEB_SEARCH_PER_QUERY_LIMIT,
                 )
 
                 self._web_search_manager = WebSearchManager(
                     api_key=WEB_SEARCH_API_KEY,  # Pass API key from config
                     rate_limiter=rate_limiter,
                     default_timeout=WEB_SEARCH_TIMEOUT,
-                    max_content_chars=WEB_SEARCH_MAX_CONTENT_CHARS
+                    max_content_chars=WEB_SEARCH_MAX_CONTENT_CHARS,
+                    link_selector_model=WEB_SEARCH_LINK_SELECTOR_MODEL,
                 )
 
                 # Log initialization status

@@ -34,16 +34,22 @@ STANCE_LABELS = (
                           # user's words
     "extracted-fact",     # structured fact triple from the facts collection
     "graph-edge",         # knowledge-graph relation
+    "external-research",  # independently retrieved web/wiki/literature source
+    "computed-evidence",  # independently executed computation with inputs retained
 )
 
 
 class InsightIntent(BaseModel):
     """A detected insight-mode request."""
 
-    kind: str = Field(description="theme_sweep | insight_assessment")
+    kind: str = Field(description="theme_sweep | insight_assessment | pattern_temporal")
     theme: str = Field(description="The personal theme / stated insight to work on")
     wants_document: bool = Field(default=False)
     raw_query: str = Field(default="")
+    # pattern_temporal only (2026-08-29): parsed time window (0 = config
+    # default, -1 = all history) and optional engine-dimension hint.
+    window_days: int = Field(default=0)
+    dimension: str = Field(default="")
 
 
 class FacetQuery(BaseModel):
@@ -87,6 +93,12 @@ class ClaimAssessment(BaseModel):
     support: list[str] = Field(default_factory=list)  # evidence refs, e.g. "E3"
     refute: list[str] = Field(default_factory=list)
     notes: str = ""
+    claim_id: str = ""
+    confidence: float = 0.0
+    evidence_coverage: str = "unknown"
+    directness: str = "unknown"
+    dependencies: list[str] = Field(default_factory=list)
+    authority: str = "assessment"
 
 
 class Assessment(BaseModel):
@@ -94,6 +106,7 @@ class Assessment(BaseModel):
 
     overall: str = Field(default="insufficient")
     claims: list[ClaimAssessment] = Field(default_factory=list)
+    summary: str = ""
 
     @classmethod
     def from_claims(cls, claims: list[ClaimAssessment]) -> "Assessment":
@@ -103,7 +116,11 @@ class Assessment(BaseModel):
             (c.verdict if c.verdict in VERDICT_ORDER else "insufficient" for c in claims),
             key=VERDICT_ORDER.index,
         )
-        return cls(overall=worst, claims=claims)
+        # Keep legacy worst-of ``overall`` for compatibility, while exposing
+        # claim-level results as authoritative and identifying mixed chains.
+        kinds = {c.verdict for c in claims}
+        summary = "mixed claim statuses; inspect each claim and dependencies" if len(kinds) > 1 else "uniform claim statuses"
+        return cls(overall=worst, claims=claims, summary=summary)
 
     @property
     def allows_document(self) -> bool:

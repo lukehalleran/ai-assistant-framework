@@ -105,6 +105,160 @@ _PERSONAL_DOC_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# Pattern-temporal shapes (2026-08-29) — "how often / how many times / is X
+# getting worse / trend over time". Deterministic, UNDER-fires by design:
+# ambiguous requests fall through to theme_sweep, which still works.
+# ---------------------------------------------------------------------------
+
+_PATTERN_TEMPORAL_PATTERNS = [
+    # "how often have I / do I ... X"
+    re.compile(
+        r"\bhow\s+often\s+(?:have|do|did|am|was|is|are)\s+(?:i|my|we)\b\s*(?P<theme>.*)",
+        re.IGNORECASE,
+    ),
+    # "how many times/days (have I) ... X"
+    re.compile(
+        r"\bhow\s+many\s+(?:times|days|nights|weeks|sessions)\b\s*(?P<theme>.*)",
+        re.IGNORECASE,
+    ),
+    # "is/are my X getting worse/better/more/less (frequent)"
+    re.compile(
+        r"\b(?:is|are)\s+(?:my|the)\s+(?P<theme>.+?)\s+"
+        r"(?:getting|becoming|growing)\s+(?:worse|better|more|less|stronger|weaker)\b",
+        re.IGNORECASE,
+    ),
+    # "(show me / what's) the trend in/of/for MY X" — the personal anchor is
+    # mandatory (audit F3: "What's the trend in AI regulation?" is a world
+    # question, not a personal-record scan; UNDER-fires by design)
+    re.compile(
+        r"\btrends?\s+(?:in|of|for|with)\s+my\s+(?P<theme>.+)",
+        re.IGNORECASE,
+    ),
+    # "my pattern with X over time / over the last N ..." (temporal cue REQUIRED
+    # — bare "my pattern with X" stays a theme sweep)
+    re.compile(
+        r"\b(?:my|the)\s+patterns?\s+(?:with|of|in|around)\s+(?P<theme>.+?)\s+"
+        r"(?:over\s+(?:time|the\s+(?:last|past)\s+\w+)|across\s+(?:the\s+)?(?:months|weeks|years))\b",
+        re.IGNORECASE,
+    ),
+    # "track/chart/graph my X over ..."
+    re.compile(
+        r"\b(?:track|chart|graph|plot|count)\s+(?:my\s+)?(?P<theme>.+?)\s+"
+        r"over\s+(?:time|the\s+(?:last|past)\s+\w+\s*\w*)\b",
+        re.IGNORECASE,
+    ),
+]
+
+# High-precision deliberation shapes whose subject cannot be extracted safely
+# with a regex. These route the complete request to the generic planner, which
+# freezes the actual outcomes, phases, claims, and tools before retrieval.
+_EXPLICIT_PATTERN_TOOL_RE = re.compile(
+    r"\b(?:use|run|invoke|with)\s+(?:the\s+)?pattern\s+"
+    r"(?:tool|scan|engine|analysis)\b|\bpattern_scan\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_PATTERN_COMMAND_RE = re.compile(
+    r"(?:^|[.!?\n]\s*)(?:please\s+)?(?:use|run|invoke)\s+"
+    r"(?:the\s+)?pattern\s+(?:tool|scan|engine|analysis)\b|"
+    r"(?:^|[.!?\n]\s*)pattern_scan\b",
+    re.IGNORECASE,
+)
+_PERSONAL_RECORD_RE = re.compile(
+    r"\b(?:my|our)\s+(?:history|record|data|notes?|timeline|messages?|"
+    r"conversations?)\b|\beverything\s+i(?:'ve|\s+have)\s+(?:said|told\s+you|shared)\b|"
+    r"\bacross\s+(?:my|our)\s+(?:history|notes?|record|conversations?)\b|"
+    r"\b(?:my\s+theory|my\s+hypothesis|my\s+hunch).{0,80}\bthe\s+record\b|"
+    # "re-run my Zelphex cessation analysis" — a possessive ANALYSIS request
+    # is a personal-record cue even when every other possessive is dropped
+    # (2026-08-31 16:11 turn: this head-anchored cue was the only personal
+    # marker; the sole matching arm was notes→PubMed at char 225, which the
+    # long-message incidental guard correctly suppressed, and the turn
+    # misrouted to agentic knowledge mode). {0,3} intervening plain words;
+    # possessive chains ("my friend's analysis") fail the \w-only word shape.
+    r"\b(?:my|our)\s+(?:[\w-]+\s+){0,3}(?:analysis|analyses|comparison|assessment)\b",
+    re.IGNORECASE,
+)
+_DELIBERATION_OPERATION_RE = re.compile(
+    r"\b(?:compare|contrast|analy[sz]e|evaluate|assess|test|verify|weigh|"
+    r"check|examine|investigate|determine|decide|correlat\w*|covar\w*|track|trend\w*|"
+    r"changed?|changes?|different|theory|hypothesis|hunch|decision)\b|"
+    r"\bbefore\s+(?:versus|vs\.?|and)\s+after\b|"
+    r"\b(?:what|which)\s+tends?\s+to\s+happen\s+when\b",
+    re.IGNORECASE,
+)
+_NON_INSIGHT_LOOKUP_RE = re.compile(
+    r"^\s*(?:how\s+many\s+times\s+has\b|"
+    r"is\s+my\s+\w+\s+before\b|"
+    r"have\s+i\s+told\s+you\s+about\b)",
+    re.IGNORECASE,
+)
+_IMPLICIT_PERSONAL_COMPARISON_RE = re.compile(
+    r"\b(?:has|have|did|does|is|are|am)\s+(?:my|our|i|we)\b.{0,100}"
+    r"\b(?:changed?|different|better|worse|more|less|since|after|before|"
+    r"track(?:s|ed|ing)?|correlat\w*|covar\w*)\b|"
+    r"\bcompare\b.{0,80}\b(?:i|me|my|we|our)\b.{0,100}"
+    r"\b(?:before|after|between|since)\b|"
+    r"\bwhat\s+tends?\s+to\s+happen\s+when\s+i\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_PERSONAL_PLUS_EXTERNAL_RE = re.compile(
+    r"\b(?:history|record|notes?|data|everything\s+i(?:'ve|\s+have)\s+said)\b"
+    r".{0,180}\b(?:pub\s*med|wikipedia|wiki|web|internet|research|stud(?:y|ies)|"
+    r"literature|arxiv|wolfram)\b|"
+    r"\b(?:pub\s*med|wikipedia|wiki|web|internet|research|stud(?:y|ies)|"
+    r"literature|arxiv|wolfram)\b.{0,180}"
+    r"\b(?:my\s+)?(?:history|record|notes?|data)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _detect_deliberation_shape(query: str) -> Optional[re.Match]:
+    explicit = _EXPLICIT_PATTERN_COMMAND_RE.search(query)
+    if explicit:
+        return explicit
+    implicit = _IMPLICIT_PERSONAL_COMPARISON_RE.search(query)
+    if implicit:
+        return implicit
+    record = _PERSONAL_RECORD_RE.search(query)
+    operation = _DELIBERATION_OPERATION_RE.search(query)
+    if record and operation:
+        return record if record.start() <= operation.start() else operation
+    mixed = _PERSONAL_PLUS_EXTERNAL_RE.search(query)
+    if mixed and _DELIBERATION_OPERATION_RE.search(query):
+        return mixed
+    return None
+
+# Time-window parsing for pattern requests. Deterministic; default handled by
+# the engine (PATTERN_DEFAULT_WINDOW_DAYS) when nothing matches.
+_WINDOW_UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+_WINDOW_N_RE = re.compile(
+    r"\b(?:last|past)\s+(\d+)\s+(day|week|month|year)s?\b", re.IGNORECASE)
+_WINDOW_ONE_RE = re.compile(
+    r"\b(?:last|past)\s+(day|week|month|year)\b", re.IGNORECASE)
+_WINDOW_ALL_RE = re.compile(
+    r"\b(?:all\s+time|ever|entire\s+history|over\s+the\s+years|since\s+we\s+started)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_window_days(text: str) -> int:
+    """0 = no window named (engine applies its default); -1 = all history."""
+    if not text:
+        return 0
+    if _WINDOW_ALL_RE.search(text):
+        return -1
+    m = _WINDOW_N_RE.search(text)
+    if m:
+        return int(m.group(1)) * _WINDOW_UNIT_DAYS[m.group(2).lower()]
+    m = _WINDOW_ONE_RE.search(text)
+    if m:
+        return _WINDOW_UNIT_DAYS[m.group(1).lower()]
+    if re.search(r"\bthis\s+year\b", text, re.IGNORECASE):
+        return 365  # coarse YTD — the engine buckets by month at this size
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Explicit assessment shapes
 # ---------------------------------------------------------------------------
 
@@ -190,6 +344,23 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
         return None
     query = text.strip()
 
+    # Factual/calendar/memory lookups are not longitudinal self-analysis even
+    # when they contain words such as "before" or "how many times".
+    if _NON_INSIGHT_LOOKUP_RE.search(query):
+        return None
+
+    # Generic longitudinal deliberation owns mixed internal/external requests.
+    # The regex identifies only the operation shape; the LLM planner selects
+    # the phenomenon and evidence contract from the complete request.
+    deliberation_match = _detect_deliberation_shape(query)
+    explicit_command = bool(_EXPLICIT_PATTERN_COMMAND_RE.search(query))
+    if deliberation_match and (
+        explicit_command or not _trigger_is_incidental(query, deliberation_match.start())
+    ):
+        return InsightIntent(kind="pattern_temporal", theme=_clean_theme(query),
+                             wants_document=False, raw_query=query,
+                             window_days=parse_window_days(query))
+
     # 1. Explicit assessment shapes (checked first: "check this against what
     #    I've told you" may also contain gather-ish vocabulary).
     for pat in _ASSESS_PATTERNS:
@@ -202,6 +373,24 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
                 wants_document=False,
                 raw_query=query,
             )
+
+    # 1.5 Pattern-temporal shapes (before theme sweep: "my pattern with X
+    #     over time" would otherwise match nothing and "how often" nothing).
+    for pat in _PATTERN_TEMPORAL_PATTERNS:
+        m = pat.search(query)
+        if m and not _trigger_is_incidental(query, m.start()):
+            theme = _clean_theme(m.groupdict().get("theme") or "")
+            if theme:
+                return InsightIntent(
+                    kind="pattern_temporal",
+                    theme=theme,
+                    wants_document=bool(
+                        _PERSONAL_DOC_RE.search(query)
+                        and _PERSONAL_MARKER_RE.search(query)
+                    ),
+                    raw_query=query,
+                    window_days=parse_window_days(query),
+                )
 
     # 2. Theme-sweep shapes.
     for pat in _THEME_SWEEP_PATTERNS:

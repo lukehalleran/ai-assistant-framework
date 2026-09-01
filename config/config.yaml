@@ -159,6 +159,8 @@ agentic_search:
   decision_max_tokens: 1600
   round_timeout_s: 75      # per-round decision-LLM timeout (backstop vs. stalled call)
   loop_timeout_s: 120      # wall-clock budget for rounds 2-N; then synthesize from context
+  fetch_fastpath: true
+  fetch_fastpath_min_chars: 400
 insight_mode:
   enabled: true
   max_facets: 6            # facet decomposition cap (distinct search angles per theme)
@@ -169,10 +171,20 @@ insight_mode:
   expand_top_k: 3          # conversation hits expanded via memory_expander
   expand_window: 2         # turns of surrounding context per expansion
   decompose_max_tokens: 700
-  synthesis_max_tokens: 2600
+  synthesis_max_tokens: 4200
   sweep_timeout_s: 45      # sweep wall-clock budget; partial evidence on timeout
   offer_enabled: true      # ONE consent-gated offer on insight-shaped statements
   doc_on_agreement: true   # save doc only on agree/partial verdicts
+  planner_model: null      # deliberation planner/recovery JSON model; null → review_model → active
+pattern_analysis:
+  # Deterministic pattern engine (memory/pattern_engine.py) + insight-mode
+  # pattern_temporal facet (2026-08-29). ON-DEMAND ONLY — results are never
+  # injected into prompts uninvited (anti-amplification doctrine).
+  enabled: true
+  default_window_days: 90    # when the request names no time window
+  max_exemplars: 12          # exemplar quotes carried into synthesis (total)
+  exemplars_per_bucket: 2
+  keyword_hit_cap: 5000      # corpus keyword-scan ceiling for counting
 uncertainty_fallback:
   # OFF 2026-08-28: 8-week telemetry audit — 62 fires, ALL benchmark/test
   # traffic, 0 real-turn fires, 0 retries ever accepted; each fire costs a
@@ -197,6 +209,9 @@ grounding_check:
   timeout_s: 5.0
   max_tokens: 250
   min_response_chars: 40 # LOW on purpose - the live false endorsement was ~300 chars
+  integrate: true        # weave the correction INTO the response (final-yield replacement); append is the fallback
+  integrate_timeout_s: 6.0
+  integrate_max_response_chars: 4000
 file_access:
   enabled: true
   approved_folders:
@@ -602,6 +617,7 @@ internet_actions:
   playwright_timeout_s: 30
   action_ttl_seconds: 300
   max_pending_actions: 5
+  pending_actions_path: data/pending_actions.json
   audit_log_path: logs/actions_audit.jsonl
 prompts:
   default_system_prompt: You are Daemon, a brutally honest AI assistant who tells

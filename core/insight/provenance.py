@@ -42,6 +42,8 @@ _LABEL_DISPLAY = {
     "assistant-inferred": "assistant's interpretation, not your words",
     "extracted-fact": "extracted fact",
     "graph-edge": "relationship record",
+    "external-research": "external research source",
+    "computed-evidence": "computed evidence",
 }
 
 
@@ -66,7 +68,12 @@ def label_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
                 "assistant-inferred" if item.speaker == "assistant" else "user-stated"
             )
         elif coll == "obsidian_notes":
-            item.stance_label = "users-own-note"
+            # Deliberation events may carry explicit provenance from
+            # frontmatter (e.g. Daemon-generated daily summaries). Preserve
+            # that classification instead of treating every vault note as a
+            # first-person user record.
+            if item.stance_label not in {"assistant-inferred", "extracted-fact"}:
+                item.stance_label = "users-own-note"
         elif coll == "facts":
             item.stance_label = "extracted-fact"
         elif coll == "graph":
@@ -75,6 +82,10 @@ def label_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
             item.stance_label = "assistant-inferred"
         elif coll == "conversations":
             item.stance_label = _label_conversation_doc(item)
+        elif item.stance_label in {"external-research", "computed-evidence"}:
+            # Adapters assign these explicitly; never relabel independent
+            # evidence as the user's statement because its collection is novel.
+            pass
         else:
             item.stance_label = "user-stated"
 

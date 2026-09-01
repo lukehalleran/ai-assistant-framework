@@ -48,6 +48,24 @@ from datetime import datetime
 
 logger = get_logger("query_checker")
 
+# Deliberate near-duplicate of web_search_trigger._RETRY_CUES.  That module
+# imports this one, so importing its cues here would create a cycle.
+_RETRY_CONTINUATION_PHRASES = (
+    "try again", "try that again", "try it now", "one more time",
+    "should work now", "restarted you",
+)
+_RETRY_WORD_RE = re.compile(r"\bretry\b|\bfixed it\b", re.IGNORECASE)
+
+
+def is_retry_continuation(query: str, max_words: int = 25) -> bool:
+    """Return whether a short query explicitly retries the prior operation."""
+    text = _normalize(query)
+    if len(text.split()) > max_words:
+        return False
+    return any(phrase in text for phrase in _RETRY_CONTINUATION_PHRASES) or bool(
+        _RETRY_WORD_RE.search(text)
+    )
+
 
 DEICTIC_HINTS: tuple[str, ...] = (
     "explain", "that", "it", "this", "again", "another way",
@@ -505,6 +523,50 @@ def extract_rare_proper_nouns(q: str, max_terms: int = 3) -> List[str]:
         prev_accepted = True
 
     return found[:max_terms]
+
+
+# ── Personal-document search detection (2026-08-29) ─────────────────────
+# "please search for documents related to the MGT class I am currently
+# enrolled in" fired the WEB trigger (heuristic "explicit search request"
+# conf 0.80 → 3 Tavily sub-searches, one literally "Add dates and deadlines
+# to Google Calendar") and the agentic gate's Tier-1 web arm — but the
+# search TARGET is the user's own document corpus, not the internet.
+# Deliberately UNDER-fires: search verb + personal-doc noun in proximity +
+# a first-person/ownership anchor, short messages only (paste lesson), and
+# an explicit web/internet mention disqualifies.
+
+_DOC_SEARCH_VERB_NOUN_RE = re.compile(
+    r"\b(?:search|find|locate|look|pull|dig|check)\w*"
+    r"(?:\W+\w+){0,6}?\W+"
+    r"(?:documents?|docs?|notes?|files?|uploads?|syllab(?:us|i|uses))\b",
+    re.IGNORECASE,
+)
+_PERSONAL_ANCHOR_RE = re.compile(
+    r"\b(?:my|our)\b|\bi(?:'m|\s+am)\b|\bi\s+(?:have|uploaded|saved|gave|sent|shared)\b"
+    r"|\b(?:enrolled|uploaded|saved)\b",
+    re.IGNORECASE,
+)
+# "search the web/online for ..." is a real web request even if a doc noun
+# follows. "Google calendar"/"Google Docs" must NOT disqualify — only the
+# bare web/internet/online words and "google it/search".
+_WEB_EXPLICIT_RE = re.compile(
+    r"\bweb\b|\bonline\b|\binternet\b|\bgoogle\s+(?:it|search)\b|\bwww\b|https?://",
+    re.IGNORECASE,
+)
+_PERSONAL_DOC_SEARCH_MAX_WORDS = 60
+
+
+def is_personal_doc_search(q: str) -> bool:
+    """True when the message asks to search/find the USER'S OWN documents
+    (notes, files, uploads, a syllabus) — internal-retrieval intent, never a
+    web search. Conservative by design; a miss just means the old routing."""
+    if not q or not q.strip():
+        return False
+    if len(q.split()) > _PERSONAL_DOC_SEARCH_MAX_WORDS:
+        return False  # paste-sized message: incidental vocabulary, not a command
+    if _WEB_EXPLICIT_RE.search(q):
+        return False
+    return bool(_DOC_SEARCH_VERB_NOUN_RE.search(q) and _PERSONAL_ANCHOR_RE.search(q))
 
 
 @dataclass

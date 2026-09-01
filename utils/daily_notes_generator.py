@@ -522,6 +522,9 @@ class DailyNotesGenerator:
 
         return f"""---
 date: {target_date.isoformat()}
+author: daemon
+source_type: daemon_daily_summary
+derived_from: conversation_corpus
 usage_intensity: {intensity}
 conversations: {count}
 span_hours: {span_hours:.1f}

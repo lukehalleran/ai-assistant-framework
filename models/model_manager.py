@@ -1123,8 +1123,16 @@ class ModelManager:
 
                 # Request native reasoning separation for supported models
                 # (unless the caller explicitly disabled it for a recovery retry)
-                if self.supports_reasoning(target_model) and not disable_reasoning:
-                    create_kwargs["extra_body"]["reasoning"] = {"effort": "medium"}
+                if self.supports_reasoning(target_model):
+                    # Omitting the reasoning param does NOT disable reasoning
+                    # for reasoning-by-default models: kimi-k3 kept reasoning
+                    # through the 2026-08-31 insight assessor call with no
+                    # reasoning key sent and blew the 75s timeout. OpenRouter's
+                    # explicit off-switch is enabled=false.
+                    create_kwargs["extra_body"]["reasoning"] = (
+                        {"enabled": False} if disable_reasoning
+                        else {"effort": "medium"}
+                    )
 
                 response = await self.async_client.chat.completions.create(**create_kwargs)
 
@@ -1460,6 +1468,9 @@ class ModelManager:
                     logger.info(f"[generate_async] Enabled native reasoning for {target_model}"
                                 + (" (images present)" if images else ""))
                 elif disable_reasoning and self.supports_reasoning(target_model):
+                    # Explicit off-switch — omission alone leaves
+                    # reasoning-by-default models (kimi-k3) reasoning anyway.
+                    create_kwargs["extra_body"]["reasoning"] = {"enabled": False}
                     logger.info(f"[generate_async] Native reasoning disabled by caller for {target_model} (recovery retry)")
 
                 stream = await self.async_client.chat.completions.create(**create_kwargs)
