@@ -47,6 +47,12 @@ _DEFAULT_PROFILE_PATH = os.path.join("data", "user_profile.json")
 # "University of Wisconsin-Madison" alongside the current "Georgia Tech").
 _SCHOOL_RELATIONS = ("school", "attends_school", "attends", "university")
 
+# Relations that name the user's employer, in preference order.
+_EMPLOYER_RELATIONS = ("employer", "works_at", "works_for", "company")
+
+# Relations that name organizations the user belongs to.
+_ORG_RELATIONS = ("member_of", "belongs_to", "volunteers_at")
+
 # An institution-shaped value: 1-6 tokens, opens uppercase, tokens are
 # capitalized words / acronyms / connectors. Rejects sentence-shaped profile
 # junk ("in third best grad program in nation", "get into school stuff").
@@ -93,6 +99,8 @@ class InstitutionResolver:
         self.profile_path = profile_path or _DEFAULT_PROFILE_PATH
         self._cached: Optional[str] = None
         self._mtime: Optional[float] = None
+        self._cached_anchors: Optional[List[str]] = None
+        self._mtime_anchors: Optional[float] = None
         self._lock = threading.Lock()
 
     def get_institution(self) -> Optional[str]:
@@ -102,6 +110,79 @@ class InstitutionResolver:
         if override:
             return override
         return self._from_profile()
+
+    def get_anchors(self) -> List[str]:
+        """Return user's personal anchors (school, employer, orgs) in order.
+
+        Returns a list of unique anchor strings for use in private-sphere
+        query filtering and institutional injection. School appears first
+        (via existing resolution), then employer, then orgs. Junk-shaped
+        values are excluded.
+        """
+        if not INSTITUTION_ENABLED:
+            return []
+        try:
+            mtime = os.path.getmtime(self.profile_path)
+        except OSError:
+            return []
+        with self._lock:
+            if self._mtime_anchors == mtime:
+                return self._cached_anchors or []
+            anchors = self._extract_anchors()
+            self._cached_anchors = anchors
+            self._mtime_anchors = mtime
+            return anchors
+
+    # ------------------------------------------------------------------
+
+    def _extract_anchors(self) -> List[str]:
+        """Extract school, employer, and org anchors from profile."""
+        anchors = []
+        try:
+            with open(self.profile_path, "r", encoding="utf-8") as f:
+                profile = json.load(f)
+            school = self._extract_school(profile)
+            if school:
+                anchors.append(school)
+            employer = self._extract_from_relations(profile, _EMPLOYER_RELATIONS)
+            if employer:
+                anchors.append(employer)
+            org = self._extract_from_relations(profile, _ORG_RELATIONS)
+            if org:
+                anchors.append(org)
+        except Exception as e:
+            logger.debug(f"[PersonalAnchors] extraction failed: {e}")
+        return anchors
+
+    @staticmethod
+    def _extract_school(profile: dict) -> Optional[str]:
+        """Extract the user's school (existing logic)."""
+        return InstitutionResolver._extract_from_relations(profile, _SCHOOL_RELATIONS)
+
+    @staticmethod
+    def _extract_from_relations(profile: dict, relations: tuple) -> Optional[str]:
+        """Extract a value from the first-found relation in the given tuple."""
+        candidates = []
+        categories = profile.get("categories", {}) or {}
+        for facts in categories.values():
+            if not isinstance(facts, list):
+                continue
+            for fact in facts:
+                if not isinstance(fact, dict) or not fact.get("is_current", False):
+                    continue
+                rel = str(fact.get("relation", "")).strip().lower()
+                if rel not in relations:
+                    continue
+                val = str(fact.get("value", "")).strip()
+                if not _INSTITUTION_VALUE_RE.match(val):
+                    continue
+                rank = relations.index(rel)
+                conf = float(fact.get("confidence", 0.0) or 0.0)
+                candidates.append((rank, -conf, val))
+        if candidates:
+            candidates.sort()
+            return candidates[0][2]
+        return None
 
     # ------------------------------------------------------------------
 
@@ -126,26 +207,9 @@ class InstitutionResolver:
 
     @staticmethod
     def _extract(profile: dict) -> Optional[str]:
-        candidates = []  # (relation_rank, confidence, value)
-        categories = profile.get("categories", {}) or {}
-        for facts in categories.values():
-            if not isinstance(facts, list):
-                continue
-            for fact in facts:
-                if not isinstance(fact, dict) or not fact.get("is_current", False):
-                    continue
-                rel = str(fact.get("relation", "")).strip().lower()
-                if rel not in _SCHOOL_RELATIONS:
-                    continue
-                val = str(fact.get("value", "")).strip()
-                if not _INSTITUTION_VALUE_RE.match(val):
-                    continue
-                rank = _SCHOOL_RELATIONS.index(rel)
-                conf = float(fact.get("confidence", 0.0) or 0.0)
-                candidates.append((rank, -conf, val))
-        if candidates:
-            candidates.sort()
-            return candidates[0][2]
+        school = InstitutionResolver._extract_from_relations(profile, _SCHOOL_RELATIONS)
+        if school:
+            return school
         quick = str((profile.get("quick_profile", {}) or {}).get("school", "")).strip()
         if quick and _INSTITUTION_VALUE_RE.match(quick):
             return quick
@@ -164,6 +228,16 @@ def get_user_institution() -> Optional[str]:
             if _resolver is None:
                 _resolver = InstitutionResolver()
     return _resolver.get_institution()
+
+
+def get_user_anchors() -> List[str]:
+    """Return user's personal anchors (school, employer, orgs) in order."""
+    global _resolver
+    if _resolver is None:
+        with _resolver_lock:
+            if _resolver is None:
+                _resolver = InstitutionResolver()
+    return _resolver.get_anchors()
 
 
 def query_is_academic_logistics(query: str) -> bool:

@@ -2561,6 +2561,15 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
         if not (verdict.false_claim_present
                 and verdict.correction.strip()
                 and verdict.confidence >= GROUNDING_CONFIDENCE_THRESHOLD):
+            if verdict.false_claim_present:
+                # Observability: without this line a flagged-but-suppressed
+                # verdict leaves no trace of what the verifier wanted to say
+                # or which gate stopped it (2026-09-01 live-verification gap).
+                logger.info(
+                    "[GroundingCheck] Flagged verdict suppressed "
+                    f"(conf={verdict.confidence:.2f} < {GROUNDING_CONFIDENCE_THRESHOLD}"
+                    f" or empty correction): {verdict.correction[:120]!r}"
+                )
             return _no_action
 
         from core.agentic.gate import _tone_is_elevated
@@ -2776,6 +2785,7 @@ async def _run_agentic_search(ctx):
             skip_initial_search=_gate_decision.skip_initial_search and not _extracted_urls,
             initial_urls=_extracted_urls if _extracted_urls else None,
             fetch_fastpath=_fastpath_ok,
+            gate_modes=_gate_modes,
         )
 
         async def _agentic_next():
@@ -2786,6 +2796,11 @@ async def _run_agentic_search(ctx):
 
         _KEEPALIVE_S = 8.0
         _keepalive_n = 0
+        # Degenerate-stream watchdog (2026-09-01): shape check only — the
+        # agentic loop legitimately runs minutes of rounds before the first
+        # response chunk, so a wall-clock arm here would discard real answers.
+        _degenerate_check_threshold = 2000
+        _last_degenerate_check_len = 0
 
         while True:
             _task = asyncio.ensure_future(_agentic_next())
@@ -2844,6 +2859,23 @@ async def _run_agentic_search(ctx):
             else:
                 # Response chunk - accumulate and stream
                 agentic_response += item
+
+                # Degenerate-stream watchdog: abort if the stream entered a
+                # repeating-garbage loop (same detection as enhanced mode).
+                if len(agentic_response) - _last_degenerate_check_len > _degenerate_check_threshold:
+                    _last_degenerate_check_len = len(agentic_response)
+                    if ResponseParser.looks_degenerate_stream(agentic_response):
+                        logger.error(
+                            "[Agentic] Stream aborted by watchdog (degenerate); "
+                            f"{len(agentic_response)} chars discarded, nothing stored"
+                        )
+                        yield {"role": "assistant", "content":
+                               "⚠️ The agentic search's synthesis became repetitive and "
+                               "incoherent. I stopped the generation — nothing was stored. "
+                               "Please try again."}
+                        ctx.handled = True
+                        return
+
                 # Fail fast on a classified API-error payload at the stream
                 # head — never render raw error JSON into the bubble (same
                 # guard as the enhanced path, added 2026-08-21).
@@ -3300,6 +3332,13 @@ async def _run_enhanced(ctx):
         thinking_started = False
         thinking_complete = False
         chunk_count = 0
+        # Degenerate-stream watchdog (2026-09-01): if the model enters a loop
+        # emitting repeated garbage, abort on degenerate-shape detection.
+        # Shape check ONLY — no wall-clock arm (a slow endpoint streaming a
+        # long legitimate answer must never be aborted on time; the insight
+        # synthesis 240s ceiling is insight-only by design).
+        _degenerate_check_threshold = 2000
+        _last_degenerate_check_len = 0
         async for chunk in orchestrator.response_generator.generate_streaming_response(
             prompt=full_prompt,
             model_name=model_name,
@@ -3310,6 +3349,21 @@ async def _run_enhanced(ctx):
             if chunk_count <= 3 or chunk_count % 20 == 0:
                 logger.info(f"[Handle Submit] Chunk #{chunk_count}: {str(chunk)[:50]}...")
             final_output = smart_join(final_output, chunk)
+
+            # Degenerate-stream watchdog: abort if the stream entered a
+            # repeating-garbage loop (same detection as insight mode).
+            if len(final_output) - _last_degenerate_check_len > _degenerate_check_threshold:
+                _last_degenerate_check_len = len(final_output)
+                if ResponseParser.looks_degenerate_stream(final_output):
+                    logger.error(
+                        "[Enhanced] Stream aborted by watchdog (degenerate); "
+                        f"{len(final_output)} chars discarded, nothing stored"
+                    )
+                    yield {"role": "assistant", "content":
+                           "⚠️ The model's output became repetitive and incoherent. "
+                           "I stopped the generation — nothing was stored. "
+                           "Please try again."}
+                    return
 
             # Fail fast on classified API-error payloads. model_manager yields
             # the classified error string AS stream content; before 2026-08-21

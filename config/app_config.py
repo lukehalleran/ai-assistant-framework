@@ -1491,6 +1491,10 @@ GROUNDING_INTEGRATE_TIMEOUT_S: float = float(
     GROUNDING_CHECK_CFG.get("integrate_timeout_s", 6.0))
 GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS: int = int(
     GROUNDING_CHECK_CFG.get("integrate_max_response_chars", 4000))
+GROUNDING_INTEGRATE_MIN_RATIO: float = float(
+    GROUNDING_CHECK_CFG.get("integrate_min_ratio", 0.75))
+GROUNDING_INTEGRATE_MAX_RATIO: float = float(
+    GROUNDING_CHECK_CFG.get("integrate_max_ratio", 1.30))
 
 # --------------------------------------------------------------------
 # Agentic File Access (read/grep/list within approved folders)

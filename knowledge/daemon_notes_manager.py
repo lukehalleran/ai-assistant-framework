@@ -346,7 +346,10 @@ class DaemonNotesManager:
                 temperature=0.3,
             )
             if result and result.strip():
-                return result.strip()
+                # Strip trailing stream artifacts (kimi-3 lone 'e', edge <|sep|> tokens)
+                from core.response_parser import ResponseParser
+                result = ResponseParser.strip_trailing_stream_artifact(result.strip())
+                return result
         except Exception as e:
             logger.debug(f"[DaemonNotes] Summary generation failed: {e}")
 

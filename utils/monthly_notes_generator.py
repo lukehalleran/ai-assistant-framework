@@ -61,7 +61,7 @@ class MonthlyGenerationResult:
 
 
 # LLM prompt template for monthly summaries
-MONTHLY_NOTES_PROMPT = '''You are Daemon, an AI companion writing a monthly summary of your conversations with Luke.
+SYSTEM_PROMPT_TEMPLATE = '''You are Daemon, an AI companion writing a monthly summary of your conversations with __USER_NAME__.
 
 DAILY NOTES FROM {month_name} {year}:
 
@@ -91,10 +91,10 @@ Aggregate life activity patterns across the entire month:
 - **Exercise/Health**: Activities, frequency, any changes. If not discussed: "Not discussed this month."
 - **Social/Other**: Notable events, social activities, life changes.
 
-Note: "Not discussed" means Luke didn't mention it - NOT that it didn't happen.
+Note: "Not discussed" means __USER_NAME__ didn't mention it - NOT that it didn't happen.
 
 ## Mood Trajectory
-How Luke's emotional state evolved across the month. Note any turning points, sustained moods, or patterns.
+How __USER_NAME__'s emotional state evolved across the month. Note any turning points, sustained moods, or patterns.
 
 ## Growth & Progress
 What changed between the start and end of the month? Skills developed, problems solved, goals advanced.
@@ -112,7 +112,7 @@ Summary of activity metrics and notable numbers.
 Overall month assessment.
 
 IMPORTANT:
-- Write from YOUR perspective as Daemon ("This month we...", "Luke seemed...")
+- Write from YOUR perspective as Daemon ("This month we...", "__USER_NAME__ seemed...")
 - Synthesize patterns across the entire month - don't just list weeks sequentially
 - Identify trajectory and evolution, not just static summaries
 - For Life Patterns: Only report what was explicitly discussed
@@ -153,7 +153,7 @@ class MonthlyNotesGenerator:
             self.max_tokens = MONTHLY_NOTES_MAX_TOKENS
             self.tag_generation_enabled = TAG_GENERATION_ENABLED
         except ImportError:
-            self.vault_path = Path(vault_path or "~/Documents/Luke Notes").expanduser()
+            self.vault_path = Path(vault_path or "~/Documents/Notes").expanduser()
             self.enabled = True
             self.daily_folder = "Daily"
             self.model_name = "sonnet-4.5"
@@ -519,8 +519,11 @@ generated: {datetime.now().isoformat()}
         # Format for LLM
         formatted_notes = self._format_daily_notes_for_prompt(notes_data)
 
-        # Build prompt
-        prompt = MONTHLY_NOTES_PROMPT.format(
+        # Build prompt with user display name substitution
+        from utils.user_identity import get_user_display_name  # lazy import: live-config read
+        user_name = get_user_display_name()
+        prompt_template = SYSTEM_PROMPT_TEMPLATE.replace("__USER_NAME__", user_name)
+        prompt = prompt_template.format(
             month_name=month_name,
             year=year,
             formatted_daily_notes=formatted_notes,

@@ -9,7 +9,12 @@ from core.insight.coordinator import (
     _event_from_row,
     normalize_chroma_rows,
 )
-from core.insight.deliberation import compact_recovery_plan, plan_deliberation, validate_and_freeze
+from core.insight.deliberation import (
+    _FRAMING_TERMS,
+    compact_recovery_plan,
+    plan_deliberation,
+    validate_and_freeze,
+)
 from memory.pattern_engine import (
     DeliberationClaimSpec,
     EvidencePhase,
@@ -18,6 +23,19 @@ from memory.pattern_engine import (
     run_longitudinal_scan,
 )
 from knowledge.pubmed_search import PubMedRows
+
+
+def test_framing_terms_include_support_roles():
+    """Verify that _FRAMING_TERMS contains role generalization for step 4."""
+    # Original therapist and doctor
+    assert "therapist" in _FRAMING_TERMS
+    assert "doctor" in _FRAMING_TERMS
+    # New roles: sponsor, coach, mentor, etc.
+    expected_roles = {"sponsor", "coach", "boss", "manager", "mentor", "advisor", "partner", "parent"}
+    for role in expected_roles:
+        assert role in _FRAMING_TERMS, f"Role '{role}' missing from _FRAMING_TERMS"
+    # Verify it's a frozenset
+    assert isinstance(_FRAMING_TERMS, frozenset)
 
 
 def test_generated_daily_note_is_assistant_summary_not_user_observation():

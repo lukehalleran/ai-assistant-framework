@@ -78,6 +78,11 @@ def backup_targets() -> List[str]:
         PROACTIVE_SURFACING_HISTORY_PATH, STALENESS_INDEX_PATH,
     )
     from memory.user_profile import UserProfile
+    from utils.adaptive_exemplars import _STORE_PATH as adaptive_exemplars_path
+    from memory.learned_relations import _STORE_PATH as learned_relations_path
+
+    # Narrative staleness flag path — resolved at call time for test sandboxing
+    narrative_stale_path = os.getenv("NARRATIVE_STALE_FLAG_PATH", os.path.join("data", "narrative_stale.json"))
 
     candidates = [
         KNOWLEDGE_GRAPH_PERSIST_PATH,
@@ -86,6 +91,13 @@ def backup_targets() -> List[str]:
         CORPUS_FILE,
         STALENESS_INDEX_PATH,
         PROACTIVE_SURFACING_HISTORY_PATH,
+        # Post-07-14 stores (2026-07-15+)
+        adaptive_exemplars_path,
+        learned_relations_path,
+        os.path.join("data", "tone_state.json"),  # context_pipeline._TONE_STATE_PATH
+        os.path.join("data", "pending_actions.json"),  # core.actions.types.PendingActionsStore
+        os.path.join("data", "curation_queue.json"),  # memory.curation.engine._DEFAULT_QUEUE_PATH
+        narrative_stale_path,  # utils.narrative_staleness._DEFAULT_FLAG_PATH
     ]
     return [p for p in candidates if p and os.path.isfile(p)]
 

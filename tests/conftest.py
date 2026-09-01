@@ -225,3 +225,18 @@ def _sandbox_curation(tmp_path, monkeypatch):
     monkeypatch.setattr(_cs, "_engine", None)
     yield
     _cs._engine = None
+
+
+# Timezone resolver sandbox (2026-09-01): calendar tests pin the timezone
+# resolver to ensure consistent results across CI environments (which may
+# have different system /etc/localtime). Tests that use the calendar actions
+# automatically get America/Chicago, matching the historical default.
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_timezone_resolver(monkeypatch):
+    import utils.timezone_resolver as _tz
+    monkeypatch.setattr(_tz, "_resolver", None)  # fresh singleton per test
+    # Pin get_user_timezone to America/Chicago so calendar tests pass in any
+    # CI environment (system /etc/localtime varies by machine).
+    monkeypatch.setattr(_tz, "get_user_timezone",
+                        lambda: "America/Chicago", raising=False)
+    yield

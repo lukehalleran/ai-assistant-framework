@@ -36,6 +36,7 @@ from datetime import datetime
 from typing import Optional
 
 from core.insight.types import EvidenceItem, FacetPlan, FacetQuery
+from memory.utils import is_junk_conversation_doc, is_junk_summary, is_quarantined
 from utils.logging_utils import get_logger
 
 logger = get_logger("insight_sweep")
@@ -113,9 +114,29 @@ async def run_sweep(
         conversation_hits: list[dict] = []
         for coll, rows in zip(SWEEP_COLLECTIONS, chroma_results):
             for row in rows or []:
+                # --- Hygiene filters (no cosine gate, but junk/quarantine guard) ---
+                metadata = row.get("metadata") or {}
+
+                # Skip quarantined docs (curation engine)
+                if is_quarantined(metadata):
+                    continue
+
                 content = (row.get("content") or "").strip()
                 if not content:
                     continue
+
+                # Collection-specific junk filters
+                if coll == "conversations":
+                    if is_junk_conversation_doc(content=content):
+                        continue
+                elif coll in ("summaries", "reflections"):
+                    if is_junk_summary(content):
+                        continue
+                elif coll == "facts":
+                    # Skip superseded facts (is_current=False or superseded_by set)
+                    if metadata.get("is_current") is False or metadata.get("superseded_by"):
+                        continue
+
                 collected.append(EvidenceItem(
                     doc_id=row.get("id"),
                     text=content,
@@ -168,6 +189,12 @@ async def run_sweep(
                 for turn in (exp or {}).get("turns", []):
                     content = (turn.get("content") or "").strip()
                     if not content:
+                        continue
+                    # Hygiene: skip quarantined/junk expanded turns
+                    turn_meta = turn.get("metadata") or {}
+                    if is_quarantined(turn_meta):
+                        continue
+                    if is_junk_conversation_doc(content=content):
                         continue
                     collected.append(EvidenceItem(
                         doc_id=turn.get("id"),

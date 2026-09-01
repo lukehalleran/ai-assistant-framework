@@ -162,7 +162,8 @@ def _event_body(event: Dict[str, Any]) -> Dict[str, Any]:
             body["location"] = event["location"]
         return body
 
-    time_zone = event.get("time_zone", "America/Chicago")
+    from utils.timezone_resolver import get_user_timezone  # lazy import: live-config read
+    time_zone = event.get("time_zone") or get_user_timezone()
     body: Dict[str, Any] = {
         "summary": event["summary"],
         "start": {"dateTime": wall_clock_time(event["start_time"]), "timeZone": time_zone},
@@ -184,7 +185,7 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
         - end_time (str): ISO 8601 datetime for event end.
         - description (str, optional): Event description.
         - calendar_id (str, optional): Calendar ID, defaults to "primary".
-        - time_zone (str, optional): IANA timezone, defaults to "America/Chicago".
+        - time_zone (str, optional): IANA timezone, defaults to the user's local timezone.
         - location (str, optional): Event location.
         - events (list[dict], optional): Multiple events under one approval;
           every item has the same required/optional fields above.

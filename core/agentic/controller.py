@@ -367,6 +367,7 @@ class AgenticSearchController:
         skip_initial_search: bool = False,
         initial_urls: Optional[List[str]] = None,
         fetch_fastpath: bool = False,
+        gate_modes: Optional[List[str]] = None,
     ) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Execute the agentic search loop.
@@ -384,6 +385,7 @@ class AgenticSearchController:
             skip_initial_search: If True, skip Round 1 web search (for computation-only queries)
             initial_urls: Optional list of URLs extracted from the user message to fetch directly
             fetch_fastpath: Skip model decision rounds after a substantive direct fetch.
+            gate_modes: List of trigger modes ("web_search", "memory", "computation", etc.)
 
         Yields:
             ProgressEvent: Status updates for UI
@@ -842,8 +844,9 @@ class AgenticSearchController:
                 # Decision-round timeout with nothing gathered: the user's
                 # request explicitly triggered the tool loop, so a stalled
                 # decision call must not silently become "answer from context".
-                # Substitute a deterministic web search from the trigger's own
-                # seed terms (or the query itself) — once.
+                # Substitute a deterministic search from the trigger's own
+                # seed terms (or the query itself) — once. Route depends on
+                # the trigger mode: web_search → web, memory → memory.
                 from config.app_config import AGENTIC_TIMEOUT_TOOL_FALLBACK
                 if (
                     decisions
@@ -851,7 +854,6 @@ class AgenticSearchController:
                     and not session.rounds
                     and not _timeout_fallback_used
                     and AGENTIC_TIMEOUT_TOOL_FALLBACK
-                    and fetch_url_available
                 ):
                     _timeout_fallback_used = True
                     _fb_terms = [
@@ -859,28 +861,56 @@ class AgenticSearchController:
                         for t in (initial_search_terms or [])
                         if t and t.strip()
                     ][:2] or [self._fallback_terms_from_query(query)]
-                    logger.warning(
-                        f"[AgenticSearch] Decision round timed out with zero "
-                        f"tools dispatched — running the requested search "
-                        f"deterministically: {_fb_terms}"
-                    )
-                    yield ProgressEvent(
-                        event_type="round_start",
-                        message="Model stalled — running the requested search directly",
-                        round_number=session.current_round,
-                        metadata={"terms": _fb_terms},
-                    )
-                    decisions = [
-                        SearchDecision(
-                            wants_search=True,
-                            search_query=t,
-                            search_reason=(
-                                "decision-round timeout — dispatching the "
-                                "explicitly requested search deterministically"
-                            ),
+                    _is_memory_mode = gate_modes and "memory" in gate_modes
+
+                    if _is_memory_mode:
+                        # Memory-routed session: substitute memory search
+                        logger.warning(
+                            f"[AgenticSearch] Decision round timed out with zero "
+                            f"tools dispatched — running memory search "
+                            f"deterministically: {_fb_terms[0] if _fb_terms else 'all'}"
                         )
-                        for t in _fb_terms
-                    ]
+                        yield ProgressEvent(
+                            event_type="round_start",
+                            message="Model stalled — searching memory directly",
+                            round_number=session.current_round,
+                            metadata={"query": _fb_terms[0] if _fb_terms else query},
+                        )
+                        decisions = [
+                            SearchDecision(
+                                wants_memory_search=True,
+                                memory_query=_fb_terms[0] if _fb_terms else query,
+                                memory_collection="all",
+                                memory_reason=(
+                                    "decision-round timeout — dispatching memory search "
+                                    "deterministically"
+                                ),
+                            )
+                        ]
+                    elif fetch_url_available:
+                        # Web-routed session: substitute web search
+                        logger.warning(
+                            f"[AgenticSearch] Decision round timed out with zero "
+                            f"tools dispatched — running web search "
+                            f"deterministically: {_fb_terms}"
+                        )
+                        yield ProgressEvent(
+                            event_type="round_start",
+                            message="Model stalled — running the requested search directly",
+                            round_number=session.current_round,
+                            metadata={"terms": _fb_terms},
+                        )
+                        decisions = [
+                            SearchDecision(
+                                wants_search=True,
+                                search_query=t,
+                                search_reason=(
+                                    "decision-round timeout — dispatching the "
+                                    "explicitly requested search deterministically"
+                                ),
+                            )
+                            for t in _fb_terms
+                        ]
 
                 # Dispatch action proposals BEFORE honoring done signal.
                 # The model often sends propose_action + signal_done together;

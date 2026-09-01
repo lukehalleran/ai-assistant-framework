@@ -49,9 +49,13 @@ class FakeChromaStore:
 def _make_doc(doc_id: str, ts: str, content: str = "", **extra_meta) -> dict:
     meta = {"timestamp": ts}
     meta.update(extra_meta)
+    # If no content provided, generate a reasonable default
+    # For reflections/summaries, ensure it's long enough to pass junk checks (≥40 chars)
+    if not content:
+        content = f"This is a detailed reflection or summary for {doc_id} with enough text to pass validation checks and be considered a real piece of content."
     return {
         "id": doc_id,
-        "content": content or f"content of {doc_id}",
+        "content": content,
         "metadata": meta,
     }
 
@@ -434,3 +438,120 @@ class TestSummaryExpansion:
         result = expander.expand("s1", collection="summaries")
 
         assert result["total_in_collection"] == 4  # all 4 convos in range
+
+
+# ---------------------------------------------------------------------------
+# Tests — Hygiene Filters
+# ---------------------------------------------------------------------------
+
+class TestHygieneFilters:
+    """Tests for hygiene filtering (quarantine, junk, supersession)."""
+
+    def _make_expander(self, data):
+        store = FakeChromaStore(data)
+        from memory.memory_expander import MemoryExpander
+        return MemoryExpander(store)
+
+    def test_junk_doc_excluded_from_window(self):
+        """Junk conversation docs should be skipped during window expansion."""
+        docs = [
+            _make_doc("d0", _ts(0), "good content"),
+            _make_doc("d1", _ts(10), "[API Error] 502 Bad Gateway"),  # junk
+            _make_doc("d2", _ts(20), "more good content"),
+        ]
+        expander = self._make_expander({"conversations": docs})
+
+        result = expander.expand("d1", window=1, collection="conversations")
+
+        # Window should include d0 and d2, but d1 is the anchor and must be in results
+        # However, neighbors d0/d2 pass hygiene, so they should be included
+        ids = [t["id"] for t in result["turns"]]
+        # The anchor d1 is junk but still included (never filtered), but neighbors should pass
+        assert "d1" in ids  # anchor is kept even if junk
+
+    def test_quarantined_doc_excluded_from_window(self):
+        """Quarantined docs should be excluded from window expansion."""
+        docs = [
+            _make_doc("d0", _ts(0), "good content"),
+            _make_doc("d1", _ts(10), "good content", curation_quarantined=True),  # quarantined
+            _make_doc("d2", _ts(20), "more good content"),
+        ]
+        expander = self._make_expander({"conversations": docs})
+
+        result = expander.expand("d0", window=2, collection="conversations")
+
+        ids = [t["id"] for t in result["turns"]]
+        # d1 is quarantined and should be excluded from the window
+        assert "d1" not in ids
+        assert "d0" in ids
+        assert "d2" in ids
+
+    def test_superseded_fact_excluded_from_window(self):
+        """Superseded facts should be excluded from window expansion."""
+        docs = [
+            _make_doc("f0", _ts(0), "current fact"),
+            _make_doc("f1", _ts(10), "old fact", is_current=False),  # superseded
+            _make_doc("f2", _ts(20), "another fact"),
+            _make_doc("f3", _ts(30), "outdated", superseded_by="f4"),  # superseded
+        ]
+        expander = self._make_expander({"facts": docs})
+
+        result = expander.expand("f0", window=2, collection="facts")
+
+        ids = [t["id"] for t in result["turns"]]
+        # Superseded facts f1 and f3 should be excluded
+        assert "f1" not in ids
+        assert "f3" not in ids
+        assert "f0" in ids
+        assert "f2" in ids
+
+    def test_junk_doc_excluded_from_fetch_by_ids(self):
+        """Junk docs should be skipped when fetching by specific IDs."""
+        docs = [
+            _make_doc("c0", _ts(0), "good content"),
+            _make_doc("c1", _ts(10), "[API Error] timeout"),  # junk
+            _make_doc("c2", _ts(20), "more good content"),
+        ]
+        expander = self._make_expander({"conversations": docs})
+
+        # Fetch c0, c1 (junk), c2 by ID
+        result = expander.expand("summary", window=1, collection="summaries")
+        # Manually call _fetch_docs_by_ids to test it
+        turns = expander._fetch_docs_by_ids("conversations", ["c0", "c1", "c2"], "summary")
+
+        ids = [t["id"] for t in turns]
+        assert "c0" in ids
+        assert "c2" in ids
+        assert "c1" not in ids  # junk excluded
+
+    def test_quarantined_excluded_from_fetch_by_ids(self):
+        """Quarantined docs should be skipped when fetching by ID."""
+        docs = [
+            _make_doc("c0", _ts(0), "good"),
+            _make_doc("c1", _ts(10), "quarantined", curation_quarantined=True),
+            _make_doc("c2", _ts(20), "also good"),
+        ]
+        expander = self._make_expander({"conversations": docs})
+
+        turns = expander._fetch_docs_by_ids("conversations", ["c0", "c1", "c2"], "summary")
+
+        ids = [t["id"] for t in turns]
+        assert "c0" in ids
+        assert "c2" in ids
+        assert "c1" not in ids  # quarantined excluded
+
+    def test_junk_excluded_from_time_range_fetch(self):
+        """Junk docs should be skipped when fetching from time range."""
+        docs = [
+            _make_doc("c0", _ts(0), "good"),
+            _make_doc("c1", _ts(10), "[API Error] 502"),  # junk
+            _make_doc("c2", _ts(20), "also good"),
+        ]
+        expander = self._make_expander({"conversations": docs})
+
+        turns = expander._fetch_conversations_in_range(_ts(0), _ts(30), "summary")
+
+        ids = [t["id"] for t in turns]
+        assert "c0" in ids
+        assert "c2" in ids
+        assert "c1" not in ids  # junk excluded

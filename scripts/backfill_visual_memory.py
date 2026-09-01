@@ -68,8 +68,10 @@ async def run_backfill(args):
         try:
             from config.app_config import OBSIDIAN_VAULT_PATH
             vault_path = os.path.expanduser(OBSIDIAN_VAULT_PATH)
-        except ImportError:
-            vault_path = os.path.expanduser("~/Documents/Luke Notes")
+        except (ImportError, Exception) as e:
+            print(f"ERROR: Could not load OBSIDIAN_VAULT_PATH from config: {e}")
+            print("Please set OBSIDIAN_VAULT_PATH in config/app_config.py or config/config.yaml")
+            sys.exit(1)
 
         obsidian_images = find_obsidian_images(vault_path)
         for img in obsidian_images:

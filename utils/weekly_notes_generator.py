@@ -10,7 +10,7 @@ Module Contract:
   - generate_last_week_if_complete() -> Optional[WeeklyGenerationResult]: Startup catch-up
   - week_summary_exists(date: date) -> bool: Check if summary already exists
 - Outputs:
-  - Weekly folder: ~/Documents/Luke Notes/Vault/Daily Notes and To Do's/Week 3 Jan 2026/
+  - Weekly folder: ~/Documents/[user vault]/Vault/Daily Notes and To Do's/Week 3 Jan 2026/
   - Weekly summary: Week 3 Jan 2026 Summary.md
   - WeeklyGenerationResult with success status, paths, stats
 - Behavior:
@@ -69,7 +69,7 @@ class WeeklyGenerationResult:
 
 
 # LLM prompt template for weekly summaries
-WEEKLY_NOTES_PROMPT = '''You are Daemon, an AI companion writing a weekly summary of your conversations with Luke.
+SYSTEM_PROMPT_TEMPLATE = '''You are Daemon, an AI companion writing a weekly summary of your conversations with __USER_NAME__.
 
 DAILY NOTES FROM WEEK {week_num}, {year}:
 
@@ -99,13 +99,13 @@ Aggregate life activity patterns from the daily notes. For each category, summar
 - **Exercise/Health**: Activities done, frequency. If not discussed: "Not discussed this week."
 - **Other Events**: Notable life events aggregated across the week.
 
-Note: "Not discussed" means Luke didn't mention it - NOT that it didn't happen.
+Note: "Not discussed" means __USER_NAME__ didn't mention it - NOT that it didn't happen.
 
 ## Recurring Themes
 Topics/patterns that appeared across multiple days.
 
 ## Mood Arc
-How Luke's emotional state evolved through the week.
+How __USER_NAME__'s emotional state evolved through the week.
 
 ## Key Decisions (Aggregated)
 Major decisions consolidated from the week.
@@ -123,7 +123,7 @@ Summary of activity metrics.
 Overall week assessment based on cumulative activity.
 
 IMPORTANT:
-- Write from YOUR perspective as Daemon ("This week we...", "Luke seemed...")
+- Write from YOUR perspective as Daemon ("This week we...", "__USER_NAME__ seemed...")
 - Synthesize patterns across days, don't just list each day sequentially
 - Note evolution and progress, not just static facts
 - If a quest resolved, celebrate it; if it carried over, note why
@@ -167,7 +167,7 @@ class WeeklyNotesGenerator:
             self.max_tokens = WEEKLY_NOTES_MAX_TOKENS
             self.tag_generation_enabled = TAG_GENERATION_ENABLED
         except ImportError:
-            self.vault_path = Path(vault_path or "~/Documents/Luke Notes").expanduser()
+            self.vault_path = Path(vault_path or "~/Documents/Notes").expanduser()
             self.daily_enabled = True
             self.enabled = True
             self.daily_folder = "Daily"
@@ -537,8 +537,11 @@ generated: {datetime.now().isoformat()}
         # Format for LLM
         formatted_notes = self._format_daily_notes_for_prompt(notes_data)
 
-        # Build prompt
-        prompt = WEEKLY_NOTES_PROMPT.format(
+        # Build prompt with user display name substitution
+        from utils.user_identity import get_user_display_name  # lazy import: live-config read
+        user_name = get_user_display_name()
+        prompt_template = SYSTEM_PROMPT_TEMPLATE.replace("__USER_NAME__", user_name)
+        prompt = prompt_template.format(
             week_num=week_num,
             year=year,
             formatted_daily_notes=formatted_notes,

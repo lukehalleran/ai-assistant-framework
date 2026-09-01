@@ -114,6 +114,66 @@ class TestInsightStatementShape:
             "do you think my real problem is avoidance?"
         )
 
+    def test_new_life_domain_nouns_detected(self):
+        # Procrastination, focus, attention, motivation
+        assert detect_insight_statement(
+            "I think my real problem is procrastination"
+        )
+        assert detect_insight_statement(
+            "I'm starting to realize my focus has been destroying my work"
+        )
+        # Sobriety, cravings, addictions
+        assert detect_insight_statement(
+            "my real issue is the cravings keep coming at night"
+        )
+        # Parenting, marriage, finances
+        assert detect_insight_statement(
+            "maybe the real pattern is I keep falling into debt"
+        )
+        # Burnout, confidence, self-esteem
+        assert detect_insight_statement(
+            "I think my real problem is my burnout"
+        )
+
+    def test_personal_theme_doc_with_new_nouns(self):
+        # Sobriety
+        intent = detect_insight_request(
+            "write a summary of my pattern with sobriety for my sponsor"
+        )
+        assert intent is not None
+        assert intent.wants_document is True
+        # Pain patterns
+        intent = detect_insight_request(
+            "prepare a summary of my pain patterns for my doctor"
+        )
+        assert intent is not None
+        assert intent.wants_document is True
+
+    def test_personal_theme_doc_with_new_audience_roles(self):
+        # Sponsor (substance use recovery)
+        intent = detect_insight_request(
+            "prepare a summary of my pattern with anxiety for my sponsor"
+        )
+        assert intent is not None
+        assert intent.wants_document is True
+        # Support group
+        intent = detect_insight_request(
+            "save a summary of my relationship patterns for my support group"
+        )
+        assert intent is not None
+        assert intent.wants_document is True
+        # Coach or mentor
+        intent = detect_insight_request(
+            "create a document of my procrastination patterns for my coach"
+        )
+        assert intent is not None
+        assert intent.wants_document is True
+
+    def test_non_personal_use_not_triggered(self):
+        assert not detect_insight_statement(
+            "what is the history of grief counseling"
+        )
+
     def test_explicit_assessment_that_is_also_vent_still_triggers(self):
         # A distressed phrasing that carries an EXPLICIT assessment request
         # must still route (explicit requests always work, even mid-distress).

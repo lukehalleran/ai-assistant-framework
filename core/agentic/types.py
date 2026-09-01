@@ -538,7 +538,7 @@ MEMORY_SEARCH_TOOL_DEFINITION = {
             "Search your own memory and knowledge base. Collections and what they contain:\n"
             "- summaries: Rich narrative session summaries — best for profile overviews, biographical questions, 'tell me about' queries\n"
             "- conversations: Raw past conversation turns — best for 'did we discuss', temporal recall, specific exchanges\n"
-            "- facts: Individual extracted triples (e.g. name=Luke, age=33) — best for specific single facts\n"
+            "- facts: Individual extracted triples (e.g. name=Alex, age=34) — best for specific single facts\n"
             "- reflections: End-of-session reflections and insights\n"
             "- reference_docs: Your own architecture/documentation\n"
             "- obsidian_notes: User's personal Obsidian vault notes\n"
@@ -1122,7 +1122,7 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 },
                 "time_zone": {
                     "type": "string",
-                    "description": "IANA timezone, e.g. 'America/Chicago' (calendar_create_event only). Defaults to America/Chicago."
+                    "description": "IANA timezone (calendar actions). Defaults to the user's local timezone."
                 },
                 "calendar_id": {
                     "type": "string",

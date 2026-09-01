@@ -10,7 +10,7 @@ Module Contract:
   - generate_yesterday_if_missing() -> Optional[GenerationResult]: Startup catch-up (called by GUI on launch)
   - note_exists(date: date) -> bool: Check if note already exists
 - Outputs:
-  - Markdown files in Obsidian vault: ~/Documents/Luke Notes/Daily/M D YY Daily Note.md
+  - Markdown files in Obsidian vault: ~/Documents/[user vault]/Daily/M D YY Daily Note.md
   - GenerationResult with success status, path, stats
 - Behavior:
   - Filters corpus by timestamp to get day's conversations
@@ -130,7 +130,7 @@ def read_daily_note(target_date: date, vault_path: Optional[Path] = None) -> Opt
 
 
 # LLM prompt template
-DAILY_NOTES_PROMPT = '''You are Daemon, an AI companion writing a daily note about your conversations with Luke today.
+SYSTEM_PROMPT_TEMPLATE = '''You are Daemon, an AI companion writing a daily note about your conversations with __USER_NAME__ today.
 
 CONVERSATIONS FROM {date}:
 {formatted_conversations}
@@ -161,7 +161,7 @@ Track these specific life activities ONLY if mentioned in conversations. Do NOT 
 - **Other Events**: Any other notable life events mentioned (social activities, appointments, errands, etc.). If none mentioned: "None mentioned."
 
 ## Emotional State
-Luke's mood throughout the day. Note any shifts. Be specific and observant.
+__USER_NAME__'s mood throughout the day. Note any shifts. Be specific and observant.
 
 ## Key Decisions
 Explicit choices made today. Bullet list. If none, write "None today."
@@ -176,9 +176,9 @@ Unresolved questions or things to follow up on. Bullet list. If none, write "All
 One line: count, duration, and complexity assessment.
 
 IMPORTANT:
-- Write from YOUR perspective as Daemon ("Today we...", "Luke seemed...")
+- Write from YOUR perspective as Daemon ("Today we...", "__USER_NAME__ seemed...")
 - Be factual - only include what actually happened in the conversations
-- For Life Events: ONLY report what was explicitly mentioned. Never assume activities happened or didn't happen. If Luke didn't mention work/study/sleep, say "Not discussed today" - do NOT say "Luke didn't work today."
+- For Life Events: ONLY report what was explicitly mentioned. Never assume activities happened or didn't happen. If __USER_NAME__ didn't mention work/study/sleep, say "Not discussed today" - do NOT say "__USER_NAME__ didn't work today."
 - If a section has nothing relevant, acknowledge it briefly
 - Keep it concise but informative
 - Do NOT include any preamble or meta-commentary, just the note content
@@ -219,7 +219,7 @@ class DailyNotesGenerator:
             self.max_tokens = DAILY_NOTES_MAX_TOKENS
             self.tag_generation_enabled = TAG_GENERATION_ENABLED
         except ImportError:
-            self.vault_path = Path(vault_path or "~/Documents/Luke Notes").expanduser()
+            self.vault_path = Path(vault_path or "~/Documents/Notes").expanduser()
             self.enabled = True
             self.daily_folder = "Daily"
             self.model_name = "sonnet-4.5"
@@ -616,8 +616,11 @@ generated: {datetime.now().isoformat()}
         first_time = first_ts.strftime("%H:%M") if first_ts else "??:??"
         last_time = last_ts.strftime("%H:%M") if last_ts else "??:??"
 
-        # Build prompt
-        prompt = DAILY_NOTES_PROMPT.format(
+        # Build prompt with user display name substitution
+        from utils.user_identity import get_user_display_name  # lazy import: live-config read
+        user_name = get_user_display_name()
+        prompt_template = SYSTEM_PROMPT_TEMPLATE.replace("__USER_NAME__", user_name)
+        prompt = prompt_template.format(
             date=target_date.strftime("%B %d, %Y"),
             formatted_conversations=formatted,
             count=len(convos),

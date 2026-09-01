@@ -88,12 +88,17 @@ _SELF_MODEL_NOUNS = (
     r"(?:patterns?|behaviors?|behaviours?|habits?|tendenc(?:y|ies)|relationships?|"
     r"histor(?:y|ies)|sleep|anxiety|depression|moods?|triggers?|drinking|spending|"
     r"coping|trauma|recovery|health|symptoms?|medications?|struggles?|issues?|"
-    r"problems?|fears?|self[\s-]?talk|thinking|feelings?|episodes?)"
+    r"problems?|fears?|self[\s-]?talk|thinking|feelings?|episodes?|"
+    r"procrastination|focus|attention|motivation|energy|pain|fatigue|sobriety|"
+    r"cravings?|addictions?|grief|parenting|marriage|finances?|debts?|burnout|"
+    r"confidence|self[\s-]?esteem|productivity|routines?)"
 )
 
 _PERSONAL_MARKER_RE = re.compile(
     rf"\b(?:my|our)\s+(?:\w+\s+){{0,3}}{_SELF_MODEL_NOUNS}\b"
-    rf"|\bfor\s+my\s+(?:therapist|psychiatrist|psychologist|counselor|counsellor|doctor|psych)\b"
+    rf"|\bfor\s+my\s+(?:therapist|psychiatrist|psychologist|counselor|counsellor|doctor|psych|"
+    rf"sponsor|coach|mentor|advisor|adviser|pastor|priest|rabbi|imam|lawyer|attorney|"
+    rf"caseworker|social\s+worker|support\s+group)\b"
     rf"|\bwhat\s+i(?:'ve|\s+have)\s+(?:been\s+through|told\s+you)\b",
     re.IGNORECASE,
 )

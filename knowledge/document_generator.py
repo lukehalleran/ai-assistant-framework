@@ -281,6 +281,11 @@ class DocumentGenerator:
                 )
             markdown = await self._draft_report(topic, focus, outline, sources)
 
+        # Strip trailing stream artifacts (kimi-3 lone 'e', edge <|sep|> tokens)
+        # before validation and assembly, so the final document is clean.
+        from core.response_parser import ResponseParser
+        markdown = ResponseParser.strip_trailing_stream_artifact(markdown or "")
+
         if not markdown or not markdown.strip():
             raise RuntimeError("LLM returned empty document content")
 

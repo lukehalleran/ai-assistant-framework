@@ -430,7 +430,7 @@ class ShutdownProcessor:
         # three consumers (corpus, chroma, claim index) see clean text.
         try:
             from core.response_parser import ResponseParser
-            summary_text = ResponseParser.strip_trailing_stream_artifact(summary_text or "")
+            summary_text = ResponseParser.sanitize_for_storage(summary_text or "")
             from memory.utils import is_junk_summary
             if is_junk_summary(summary_text):
                 logger.warning("[Shutdown] Rejected junk summary at _store_summary")

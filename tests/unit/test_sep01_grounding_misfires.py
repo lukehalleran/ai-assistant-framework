@@ -261,3 +261,118 @@ class TestVerifierNoiseDemotions:
         response = "That frame honestly lands closer to truth than people admit."
         verdict = self._verify(raw, response)
         assert verdict is not None and verdict.false_claim_present
+
+
+class TestDateCorroborationDemotions:
+    """2026-09-01 evening HW-1 misfire: the verifier flagged the CORRECT
+    'HW 1 is due Sunday, Sep 13 at 11:59 PM ET' at conf 1.00 while its own
+    source material contained 'HW 1 due on Sep 13' AND the user's message
+    said 'due the 13th'; the integrator then rewrote the shipped reply to a
+    fabricated Sep 6 (Sep 6 2026 IS a Sunday, so the weekday-arithmetic
+    backstop could not object). Both prompt rules are now deterministic."""
+
+    LIVE_CLAIM = "HW 1 is due Sunday, Sep 13 at 11:59 PM ET on Canvas"
+    LIVE_QUERY = ("Alright id verified. Okay. Yes first assignment is due "
+                  "the 13th. Are you saying it's just a quiz on lectures "
+                  "or is there deliverable")
+    LIVE_SOURCE = (
+        "[2] upload:tmptffehsqj.pdf MGT 6203 COURSE SCHEDULE\n"
+        "| 2 | Aug 31-Sep 6 | Linear Models (1) | ISLR 3 MLBA 6 |  |\n"
+        "| 3 | Sep 7-13 | Linear Models (2): Beyond Linearity | ISLR 7 | "
+        "HW 1 due on Sep 13 |\n"
+    )
+    LIVE_RESPONSE = ("It's a real deliverable, not just a quiz. HW 1 is due "
+                     "Sunday, Sep 13 at 11:59 PM ET on Canvas.")
+
+    def _verify(self, raw, query="q", response="r", source=""):
+        import core.grounding_check as gc
+        mm = _StubMM(raw)
+        return asyncio.run(
+            gc.verify_grounding(query, response, mm, source_material=source))
+
+    def _live_verdict_raw(self):
+        return json.dumps({
+            "false_claim_present": True,
+            "claim": self.LIVE_CLAIM,
+            "why_false": "The syllabus indicates HW 1 is due at the end of "
+                         "the Linear Models (1) week.",
+            "correction": "HW 1 is due Sunday, Sep 6 at 11:59 PM ET.",
+            "confidence": 1.0,
+        })
+
+    def test_live_turn_demoted(self):
+        # Exact live shape: user-stated date + source corroboration together.
+        assert self._verify(
+            self._live_verdict_raw(), query=self.LIVE_QUERY,
+            response=self.LIVE_RESPONSE, source=self.LIVE_SOURCE) is None
+
+    def test_user_stated_ordinal_alone_demotes(self):
+        assert self._verify(
+            self._live_verdict_raw(), query=self.LIVE_QUERY,
+            response=self.LIVE_RESPONSE) is None
+
+    def test_source_corroboration_alone_demotes(self):
+        assert self._verify(
+            self._live_verdict_raw(), query="is it just a quiz?",
+            response=self.LIVE_RESPONSE, source=self.LIVE_SOURCE) is None
+
+    def test_iso_source_date_demotes(self):
+        source = "Calendar: MGT 6203 HW 1 Due — all-day 2026-09-13\n"
+        assert self._verify(
+            self._live_verdict_raw(), query="is it just a quiz?",
+            response=self.LIVE_RESPONSE, source=source) is None
+
+    def test_wrong_date_without_context_survives(self):
+        # Counterfactual: the response claims Sep 6 (genuinely wrong). The
+        # week-2 row contains "Sep 6" but shares NO content word with the
+        # claim — the real catch must survive.
+        raw = json.dumps({
+            "false_claim_present": True,
+            "claim": "HW 1 is due Sunday, Sep 6 at 11:59 PM ET on Canvas",
+            "why_false": "The schedule says HW 1 is due on Sep 13.",
+            "correction": "HW 1 is due Sunday, Sep 13, 2026.",
+            "confidence": 0.9,
+        })
+        verdict = self._verify(
+            raw, query="is it just a quiz?",
+            response="HW 1 is due Sunday, Sep 6.", source=self.LIVE_SOURCE)
+        assert verdict is not None and verdict.false_claim_present
+
+    def test_dateless_claim_unaffected(self):
+        # Real catches without dates (the refrigerator-mother class) never
+        # touch these demotions even with source material present.
+        raw = json.dumps({
+            "false_claim_present": True,
+            "claim": "refrigerator mother theory lands closer to truth",
+            "why_false": "The theory is discredited.",
+            "correction": "The refrigerator-mother theory was discredited "
+                          "decades ago; autism is neurodevelopmental.",
+            "confidence": 0.9,
+        })
+        verdict = self._verify(
+            raw, query=self.LIVE_QUERY, response="r", source=self.LIVE_SOURCE)
+        assert verdict is not None and verdict.false_claim_present
+
+    def test_unrelated_ordinal_in_query_no_demote(self):
+        # "51st state" must not register as a user-stated day.
+        raw = json.dumps({
+            "false_claim_present": True,
+            "claim": "the vote happened on Sep 20",
+            "why_false": "The vote was Sep 22.",
+            "correction": "The vote actually happened on Sep 22, 2026.",
+            "confidence": 0.9,
+        })
+        verdict = self._verify(
+            raw, query="what about the Alberta 51st state thing",
+            response="The vote happened on Sep 20.")
+        assert verdict is not None and verdict.false_claim_present
+
+    def test_helper_extraction_shapes(self):
+        from core.grounding_check import (claim_date_in_source,
+                                          claim_date_user_stated)
+        assert claim_date_user_stated(self.LIVE_CLAIM, self.LIVE_QUERY)
+        assert claim_date_user_stated("due September 13", "due Sept 13th I think")
+        assert not claim_date_user_stated(self.LIVE_CLAIM, "is it a quiz?")
+        assert claim_date_in_source(self.LIVE_CLAIM, self.LIVE_SOURCE)
+        assert not claim_date_in_source(self.LIVE_CLAIM, "")
+        assert not claim_date_in_source("no dates here", self.LIVE_SOURCE)

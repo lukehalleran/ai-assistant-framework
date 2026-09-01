@@ -298,6 +298,10 @@ CONCERN_KEYWORDS = {
     "health anxiety", "worried about my health",
     "scared of being sick", "medical anxiety",
     "afraid of dying", "death anxiety",
+
+    # Financial hardship (2026-09-01)
+    "can't afford", "behind on rent", "behind on bills",
+    "drowning in debt", "no days off", "running on empty",
 }
 
 # Event distress keywords (strong reactions to upsetting world events)

@@ -236,6 +236,40 @@ class TestFallbackGuards:
         assert captured["final_called"] is True
 
     @pytest.mark.asyncio
+    async def test_memory_mode_timeout_fallback(self, controller, monkeypatch):
+        """Memory-routed session timeout → deterministic memory search, not web."""
+        captured = {"final_called": False}
+        calls = {"n": 0}
+
+        async def fake_decision(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _timeout_decision()
+            return [SearchDecision(is_done=True, done_reason="enough")]
+
+        monkeypatch.setattr(controller, "_get_model_decision", fake_decision)
+        monkeypatch.setattr(controller, "_dispatch_single", _make_dispatch_spy(captured))
+        monkeypatch.setattr(controller, "_generate_final_response", _make_final_spy(captured))
+
+        events = []
+        async for ev in controller.run_agentic_search(
+            query=LIVE_QUERY,
+            system_prompt="sys",
+            model_name="test-model",
+            initial_search_terms=LIVE_TERMS,
+            skip_initial_search=True,
+            gate_modes=["memory"],  # memory-routed
+        ):
+            events.append(ev)
+
+        # Should have dispatched a memory search, not web
+        assert len(captured.get("dispatched", [])) > 0
+        dispatched_decision = captured["dispatched"][0]
+        assert dispatched_decision.wants_memory_search is True
+        assert dispatched_decision.wants_search is False
+        assert captured["final_called"] is True
+
+    @pytest.mark.asyncio
     async def test_no_fallback_without_web_search(self, monkeypatch):
         manager = MagicMock()
         manager.api_models = {}

@@ -214,6 +214,8 @@ grounding_check:
   integrate: true        # weave the correction INTO the response (final-yield replacement); append is the fallback
   integrate_timeout_s: 6.0
   integrate_max_response_chars: 4000
+  integrate_min_ratio: 0.75   # min (rewritten / original) length ratio
+  integrate_max_ratio: 1.30   # max (rewritten / original) length ratio
 file_access:
   enabled: true
   approved_folders:

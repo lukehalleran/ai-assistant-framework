@@ -235,10 +235,10 @@ def _query_wants_visual(query: str, intent_type: Optional[str]) -> bool:
     message, a show/see/look verb in a SHORT message, or — in a long paste —
     a short request-shaped line naming imagery) or the turn is a short
     recall-intent message that naturally wants imagery. This stops a name
-    that merely appears in passing (``/home/lukeh/...`` matching the entity
-    ``luke``, an email signature "Luke Halleran", or "Screenshot saved."
-    narration inside pasted content) from pulling a photo into an unrelated
-    message. Under-fires by design.
+    that merely appears in passing (``/home/user/...`` matching an entity,
+    an email signature, or "Screenshot saved." narration inside pasted
+    content) from pulling a photo into an unrelated message. Under-fires
+    by design.
     """
     tokens = [re.sub(r"[^\w]", "", w.lower()) for w in query.split()]
     words = set(tokens)

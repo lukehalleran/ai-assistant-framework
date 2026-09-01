@@ -337,6 +337,102 @@ class TestEmptyShellThenContent:
         assert src.count("strip_trailing_stream_artifact(display_output)") >= 4
 
 
+class TestDegenerateStreamWatchdog:
+    """2026-09-01: enhanced and agentic streaming loops now detect degenerate
+    (repeating garbage) streams and abort them before storage, same as
+    insight mode's watchdog."""
+
+    def test_watchdog_shape_check_present_no_wall_clock(self):
+        """Both loops run the degenerate-shape check; NEITHER has a wall-clock
+        arm — the agentic loop legitimately spends minutes in rounds before
+        the first response chunk (211s live turns on record), so a duration
+        ceiling would discard real answers. Insight's 240s ceiling is
+        insight-only by design."""
+        import inspect
+        from gui.handlers import _run_enhanced, _run_agentic_search
+
+        enhanced_src = inspect.getsource(_run_enhanced)
+        assert "looks_degenerate_stream" in enhanced_src, (
+            "enhanced mode should call looks_degenerate_stream"
+        )
+        assert "_STREAM_MAX_S" not in enhanced_src, (
+            "enhanced mode must NOT have a wall-clock watchdog arm"
+        )
+
+        agentic_src = inspect.getsource(_run_agentic_search)
+        assert "looks_degenerate_stream" in agentic_src, (
+            "agentic mode should call looks_degenerate_stream"
+        )
+        assert "_STREAM_MAX_S" not in agentic_src, (
+            "agentic mode must NOT have a wall-clock watchdog arm"
+        )
+
+    def test_watchdog_returns_before_storage(self):
+        """A tripped watchdog must return early so nothing is stored."""
+        import inspect
+        from gui.handlers import _run_enhanced, _run_agentic_search
+
+        # Enhanced mode's watchdog yields an abort message and returns early
+        enhanced_src = inspect.getsource(_run_enhanced)
+        assert "Stream aborted by watchdog" in enhanced_src, (
+            "enhanced mode watchdog should log stream abort"
+        )
+
+        # Agentic mode's watchdog sets ctx.handled and returns early
+        agentic_src = inspect.getsource(_run_agentic_search)
+        assert "Stream aborted by watchdog" in agentic_src, (
+            "agentic watchdog should log stream abort"
+        )
+        assert "ctx.handled = True" in agentic_src, (
+            "agentic watchdog paths should set ctx.handled before return"
+        )
+
+
+class TestDocGenAndSelfNoteArtifactStrip:
+    """2026-09-01: doc-gen and self-note paths receive LLM output that can
+    contain trailing artifacts (kimi-3 lone 'e', edge <|sep|> tokens).
+    Document body and self-note summaries are now stripped before storage."""
+
+    def test_document_generator_strips_trailing_artifact(self):
+        """The document_generator.py now strips artifacts from markdown
+        before validation and assembly."""
+        # This is a unit test that the strip is called at the right place
+        import inspect
+        from knowledge.document_generator import DocumentGenerator
+
+        src = inspect.getsource(DocumentGenerator.generate)
+        # Check that the artifact strip is called on markdown before validation
+        assert "ResponseParser.strip_trailing_stream_artifact(markdown" in src, (
+            "DocumentGenerator.generate should strip artifacts from markdown "
+            "before validation and assembly"
+        )
+
+    def test_daemon_notes_summary_strips_artifact(self):
+        """The daemon_notes_manager._generate_summary now strips artifacts
+        from LLM output before returning."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from knowledge.daemon_notes_manager import DaemonNotesManager
+
+        dnm = DaemonNotesManager(
+            model_manager=MagicMock(),
+            chroma_store=None
+        )
+
+        # Mock the model_manager's generate_once to return artifact-laden text
+        mm_mock = MagicMock()
+        mm_mock.generate_once = AsyncMock(
+            return_value="Working note summary.e"  # kimi-3 artifact
+        )
+
+        result = asyncio.run(dnm._generate_summary("topic", model_manager=mm_mock))
+        # The artifact should have been stripped
+        assert result == "Working note summary.", (
+            f"Expected artifact stripped; got {result!r}"
+        )
+        assert not result.endswith(".e")
+
+
 class TestShutdownSummaryPathSanitized:
     """2026-08-22: shutdown _store_summary writes chroma via raw
     add_to_collection, bypassing chroma_store.add_summary (where the strip +
@@ -379,3 +475,19 @@ class TestShutdownSummaryPathSanitized:
         p._store_summary("[API Error] request failed", 20, 0, 0, 5, [])
         assert not p.chroma_store.added
         assert not p.corpus_manager.added
+
+    def test_thinking_block_stripped_before_storage(self):
+        """Test that leading thinking blocks are removed via sanitize_for_storage."""
+        p = self._proc()
+        # Summary with a thinking block at the start
+        summary_with_thinking = (
+            "<thinking>Let me think about the user's patterns...</thinking>"
+            "Based on the data, the user has been improving steadily over the past few weeks."
+        )
+        p._store_summary(summary_with_thinking, 20, 0, 0, 5, [])
+        assert p.chroma_store.added, "summary should store"
+        coll, text = p.chroma_store.added[0]
+        assert "<thinking>" not in text
+        assert "</thinking>" not in text
+        assert "Based on the data" in text
+        assert p.corpus_manager.added[0]["content"] == text

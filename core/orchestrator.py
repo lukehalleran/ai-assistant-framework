@@ -1043,7 +1043,19 @@ class DaemonOrchestrator:
                         "she/her": ("she", "her", "her"),
                         "they/them": ("they", "them", "their"),
                     }
-                    subj, obj, poss = PRONOUN_MAP.get(pronouns.lower(), ("they", "them", "their"))
+                    # Try map first; if not found and format is valid, use verbatim passthrough
+                    pronouns_lower = pronouns.lower().strip()
+                    if pronouns_lower in PRONOUN_MAP:
+                        subj, obj, poss = PRONOUN_MAP[pronouns_lower]
+                    elif "/" in pronouns_lower:
+                        # Verbatim passthrough: split on "/" and pad the third slot
+                        parts = pronouns_lower.split("/")
+                        if len(parts) == 2 and all(p.isalpha() for p in parts):
+                            subj, obj, poss = parts[0], parts[1], parts[1]
+                        else:
+                            subj, obj, poss = ("they", "them", "their")
+                    else:
+                        subj, obj, poss = ("they", "them", "their")
 
                     system_prompt = system_prompt.replace("{USER_NAME}", name)
                     system_prompt = system_prompt.replace("{USER_PRONOUNS}", pronouns)

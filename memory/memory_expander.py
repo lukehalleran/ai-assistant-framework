@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from config import app_config as cfg
+from memory.utils import is_junk_conversation_doc, is_junk_summary, is_quarantined
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,38 @@ class MemoryExpander:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _passes_hygiene(content: str, metadata: dict, collection: str = "") -> bool:
+        """Check if a document passes basic hygiene filters.
+
+        Returns False when:
+        - The document is quarantined by the curation engine
+        - The document is junk (based on content and collection type)
+        - The document is superseded (facts only)
+        """
+        if not content:
+            return False
+
+        metadata = metadata or {}
+
+        # Skip quarantined docs
+        if is_quarantined(metadata):
+            return False
+
+        # Collection-specific junk filters
+        if collection == "conversations":
+            if is_junk_conversation_doc(content=content):
+                return False
+        elif collection in ("summaries", "reflections"):
+            if is_junk_summary(content):
+                return False
+        elif collection == "facts":
+            # Skip superseded facts
+            if metadata.get("is_current") is False or metadata.get("superseded_by"):
+                return False
+
+        return True
 
     def _do_expand(
         self, memory_id: str, window: int, collection: Optional[str]
@@ -187,6 +220,11 @@ class MemoryExpander:
         for did in doc_ids:
             doc = self._store.get_by_id(collection, did)
             if doc:
+                content = doc.get("content", "")
+                metadata = doc.get("metadata") or {}
+                # Skip docs that fail hygiene checks
+                if not self._passes_hygiene(content, metadata, collection):
+                    continue
                 turns.append(self._doc_to_turn(doc, is_anchor=False, collection=collection))
         turns.sort(key=lambda t: (t.get("timestamp", ""), t.get("id", "")))
         return turns
@@ -213,6 +251,10 @@ class MemoryExpander:
             except (ValueError, TypeError):
                 continue
             if range_start <= doc_ts <= range_end:
+                # Skip docs that fail hygiene checks
+                content = doc.get("content", "")
+                if not self._passes_hygiene(content, doc_meta, "conversations"):
+                    continue
                 matched.append(doc)
 
         matched.sort(key=lambda d: self._sort_key(d))
@@ -249,6 +291,11 @@ class MemoryExpander:
         turns = []
         for doc in window_docs:
             is_anchor = doc.get("id") == memory_id
+            content = doc.get("content", "")
+            metadata = doc.get("metadata") or {}
+            # Skip non-anchor docs that fail hygiene checks
+            if not is_anchor and not self._passes_hygiene(content, metadata, collection):
+                continue
             turns.append(self._doc_to_turn(doc, is_anchor=is_anchor, collection=collection))
 
         return {

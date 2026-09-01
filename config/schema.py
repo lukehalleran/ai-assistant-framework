@@ -811,6 +811,8 @@ class GroundingCheckSection(BaseModel):
     integrate: bool = True
     integrate_timeout_s: float = Field(default=6.0, gt=0.0)
     integrate_max_response_chars: int = Field(default=4000, ge=200)
+    integrate_min_ratio: float = Field(default=0.75, gt=0.0)  # min (rewritten / original) length ratio
+    integrate_max_ratio: float = Field(default=1.30, gt=0.0)  # max (rewritten / original) length ratio
 
 
 class UncertaintyFallbackSection(BaseModel):

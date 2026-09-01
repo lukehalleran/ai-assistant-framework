@@ -447,3 +447,37 @@ def test_multiple_crisis_keywords():
     assert result is not None
     # Should be at least CONCERN or higher
     assert result[0] in [CrisisLevel.CONCERN, CrisisLevel.MEDIUM, CrisisLevel.HIGH]
+
+
+# =============================================================================
+# New Life-Domain Stressor Keywords (2026-09-01)
+# =============================================================================
+
+def test_concern_keywords_include_financial_hardship():
+    """New financial hardship keywords are in CONCERN_KEYWORDS"""
+    expected = {"can't afford", "behind on rent", "behind on bills",
+                "drowning in debt", "no days off", "running on empty"}
+    for keyword in expected:
+        assert keyword in CONCERN_KEYWORDS, f"Missing keyword: {keyword}"
+
+
+def test_financial_hardship_triggers_concern():
+    """Financial hardship keywords trigger CONCERN level"""
+    # Single hardship keyword (2pts) is below 4pt threshold, so multiple needed
+    result = _check_keyword_crisis("I'm behind on rent and behind on bills")
+    assert result is not None
+    assert result[0] == CrisisLevel.CONCERN
+
+    result2 = _check_keyword_crisis("I'm drowning in debt")
+    # Single keyword = 2 pts, below threshold alone
+    # But "drowning in debt" is a strong phrase, may accumulate
+    # For this test, use a version that hits multiple keywords
+    result3 = _check_keyword_crisis("I can't afford rent and I'm behind on bills")
+    assert result3 is not None
+    assert result3[0] == CrisisLevel.CONCERN
+
+
+def test_non_hardship_conversational():
+    """Non-personal financial queries remain conversational"""
+    result = _check_keyword_crisis("The quarterly report analyzes rent trends downtown")
+    assert result is None

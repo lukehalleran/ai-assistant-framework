@@ -1068,7 +1068,10 @@ def _build_llm_trigger_prompt(
             f"THEIR OWN school logistics (drop/withdrawal deadlines, registration, registrar, "
             f"tuition, academic calendar, transcripts), use \"{_inst}\" in search terms instead "
             f"of generic \"college\"/\"school\"/\"my school\". NEVER apply it when the user names "
-            f"a DIFFERENT school, and never use it for general coursework/concept questions."
+            f"a DIFFERENT school, and never use it for general coursework/concept questions. "
+            f"NEVER search for THEIR course's assignment/homework/quiz details or due dates — "
+            f"the web does not know their course section; those facts live in their own "
+            f"syllabus/Canvas/uploaded documents, which the assistant can already retrieve."
         )
     return f"""Analyze if this query needs real-time web search OR stored memory search, and generate optimized search terms.
 
@@ -1088,6 +1091,8 @@ WEB SEARCH CRITERIA:
   * Follow-up references to prior conversation ("watched it", "saw that", "just read it", "i just watched", etc.) - these refer to something already discussed, not web content
   * Comments about media the user consumed ("i just watched", "i finished reading", "just saw") - these are conversation follow-ups, not search requests
   * Questions about the user's OWN schedule or state anchored to a weekday/date ("is this useful info for Monday", "will I be ready by Friday") — "Monday" is THEIR appointment or deadline from the conversation, not a news topic. There is nothing on the web about the user's Monday. Deictic questions ("is this expected/normal?") are about conversation content, not the internet
+  * Questions about the user's OWN private arrangements in ANY life domain — their course's assignments/quizzes/due dates ("is the first assignment a quiz or a deliverable", "when is HW 1 due"), their job's meetings/shifts/deadlines ("when is our standup"), their club or hobby group's sessions/practice times, their own appointments. The web does not know the user's course section, workplace, or group; those facts live in their own documents and conversation history, which the assistant can already retrieve. Consider needs_memory_search instead
+  * "Are you saying..." / "Do you mean..." / "So you're telling me..." questions about the ASSISTANT'S own previous statement — they resolve from the conversation, not the web
 - should_search=true requires an actual information need: the reply would be materially wrong or stale without fresh external facts. When in doubt, false.
 
 MEMORY SEARCH CRITERIA (needs_memory_search):
@@ -1154,6 +1159,100 @@ GUIDELINES:
 - At most one of should_search, needs_memory_search, needs_knowledge_search, needs_pattern_analysis, needs_document_generation should be true. A mixed personal pattern request owns the turn via needs_pattern_analysis and records its required evidence channels inside the later frozen plan.
 
 JSON:"""
+
+
+# ---------------------------------------------------------------------------
+# Private-sphere generic term guard (2026-09-01): asked whether his first
+# assignment "is just a quiz on lectures or is there deliverable", the trigger
+# LLM said search at conf 0.8 with terms like "Georgia Tech assignment due
+# September 13 2026" — institution + generic category nouns + dates. The
+# public web does not know the user's PRIVATE ARRANGEMENTS — their course
+# section's assignments, their job's meetings/shifts, their club's practice
+# schedule, their own appointments; those facts live in their own documents
+# and conversation history (which retrieval already had — 6 Tavily credits
+# returned GT football schedules). Sibling of the gate's temporal-generic
+# guard: if EVERY proposed term reduces to a known personal-context anchor
+# (school/employer name) + private-sphere-generic nouns + time tokens, the
+# search cannot succeed. Any other content word rescues: a course code
+# ("MGT"), a topic, or public-institutional vocabulary ("drop", "tuition" —
+# registrar facts ARE on the web).
+#
+# GENERALITY DOCTRINE: this is ONE categorized vocabulary spanning life
+# domains (school / work / appointments / hobby-groups), not a per-domain
+# guard — extend by adding nouns to the right category, never by cloning the
+# function (the _REQUEST_FRAMING_STOPWORDS lesson). Only include nouns that
+# are overwhelmingly private-sphere when combined with nothing but an
+# institution name and dates; polysemous public-event words ("game", "exam",
+# "calendar", "club", "campaign") stay OUT so real public queries ("Georgia
+# Tech game September", "academic calendar") are always rescued. Under-fires
+# by design.
+# ---------------------------------------------------------------------------
+
+_PRIVATE_GUARD_TIME_STOP_TOKENS = frozenset({
+    # time/date
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "today", "tomorrow", "yesterday", "week", "weekend", "month",
+    "semester", "fall", "spring", "summer", "winter",
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+    # stopwords / filler
+    "for", "on", "in", "at", "the", "a", "an", "of", "and", "or", "to",
+    "about", "this", "that", "is", "are", "what", "when", "time", "times",
+    "my", "our", "their", "there", "details", "detail", "information",
+    "info",
+})
+
+# Private-sphere category nouns — things everyone HAS whose specifics only
+# the user's own context knows. Categorized for maintainability; one set at
+# runtime.
+_PRIVATE_SPHERE_GENERIC_TOKENS = frozenset({
+    # school (course-section facts; registrar-public words excluded)
+    "assignment", "assignments", "homework", "homeworks", "hw", "hws",
+    "quiz", "quizzes", "deliverable", "deliverables", "course", "courses",
+    "class", "classes", "lecture", "lectures", "syllabus", "module",
+    "modules", "grade", "grades",
+    # work (employer-internal logistics; bare "work"/"job" = THEIR job)
+    "work", "job", "meeting", "meetings", "standup", "standups", "shift",
+    "shifts", "agenda", "agendas", "sprint", "sprints", "timesheet",
+    "timesheets", "paycheck", "payday", "onboarding",
+    # appointments / personal scheduling
+    "appointment", "appointments", "session", "sessions", "schedule",
+    "schedules", "checkup", "followup",
+    # hobby / group activities
+    "practice", "practices", "rehearsal", "rehearsals", "workout",
+    "workouts",
+    # shared scheduling vocabulary
+    "due", "date", "dates", "deadline", "deadlines", "submission",
+    "submissions", "submit", "first", "second", "third", "next", "upcoming",
+})
+
+
+def terms_are_private_sphere_generic(terms, anchors=None) -> bool:
+    """True when EVERY proposed search term is a personal-context anchor
+    (the user's school/employer/group name) + private-sphere-generic nouns +
+    time tokens — a question about the user's own arrangements that the web
+    cannot answer. Each term must actually contain a private-sphere noun
+    (pure-temporal junk is the gate guard's job), and any other content
+    word rescues the term.
+
+    anchors: iterable of the user's named institutions (school today;
+    employer/group names when resolvers for them exist). Terms naming an
+    UNKNOWN organization are rescued by its name — under-fires by design."""
+    if not terms:
+        return False
+    anchor_tokens = set()
+    for anchor in (anchors or []):
+        anchor_tokens |= {t for t in re.findall(r"[a-z]+",
+                                                str(anchor or "").lower())}
+    allowed = (_PRIVATE_GUARD_TIME_STOP_TOKENS
+               | _PRIVATE_SPHERE_GENERIC_TOKENS | anchor_tokens)
+    for term in terms:
+        tokens = re.findall(r"[a-z]+", str(term).lower())
+        if not any(t in _PRIVATE_SPHERE_GENERIC_TOKENS for t in tokens):
+            return False
+        if any(t not in allowed for t in tokens):
+            return False
+    return True
 
 
 async def _classify_with_llm_unified(
@@ -1245,6 +1344,22 @@ async def _classify_with_llm_unified(
                 parsed.search_terms = apply_institution(
                     parsed.search_terms, query, user_institution
                 )
+            if parsed.should_search and parsed.search_terms:
+                try:
+                    from utils.institution_resolver import get_user_anchors
+                    anchors = get_user_anchors()
+                except Exception:
+                    anchors = [user_institution] if user_institution else []
+                if terms_are_private_sphere_generic(parsed.search_terms, anchors):
+                    # Runs AFTER apply_institution so it vets the final term
+                    # forms. Suppression only — never teaches no_search.
+                    logger.info(
+                        "[WebSearchTrigger] Search suppressed — every term is "
+                        "anchor+private-sphere-generic; the user's own "
+                        f"arrangements are not on the web: {parsed.search_terms}"
+                    )
+                    parsed.should_search = False
+                    parsed.search_terms = []
             logger.debug(
                 f"[WebSearchTrigger] LLM parsed: should_search={parsed.should_search}, "
                 f"conf={parsed.confidence}, terms={parsed.search_terms}"

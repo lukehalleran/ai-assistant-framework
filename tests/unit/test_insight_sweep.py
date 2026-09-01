@@ -24,7 +24,7 @@ def _caps(**over):
     return caps
 
 
-def _chroma_row(coll, i, content="some content", ts="2026-08-01T12:00:00"):
+def _chroma_row(coll, i, content="some content here that is long enough to pass the summary length check for testing purposes", ts="2026-08-01T12:00:00"):
     return {
         "id": f"{coll}_{i}",
         "content": content,
@@ -204,3 +204,138 @@ class TestFinalize:
         assert len(out) <= 20
         # minority collection keeps at least one slot
         assert any(i.collection == "graph" for i in out)
+
+
+class TestHygiene:
+    """Test that hygiene filters (quarantine, junk, supersession) drop bad docs."""
+
+    def test_quarantined_docs_excluded(self, corpus):
+        """Quarantined rows from the curation engine should not surface."""
+        s = MagicMock()
+        def _query(coll, q, n):
+            rows = [_chroma_row(coll, 0), _chroma_row(coll, 1)]
+            rows[1]["metadata"]["curation_quarantined"] = True  # mark 2nd as quarantined
+            return rows
+
+        s.query_collection.side_effect = _query
+        plan = FacetPlan(facets=[FacetQuery(name="f1", query_text="q", keywords=["test"])])
+        items = asyncio.run(run_sweep(
+            plan, chroma_store=s, corpus_manager=corpus, caps=_caps(expand_top_k=0),
+        ))
+        # Each collection returns 2 rows, one is quarantined → (2-1)*6 + 1 corpus = 7
+        assert len(items) == 7
+        # Verify no quarantined doc is present
+        assert not any(
+            i.doc_id and i.doc_id.endswith("_1") and i.collection in SWEEP_COLLECTIONS[:-1]
+            for i in items
+        )
+
+    def test_junk_conversation_excluded(self, corpus):
+        """Junk conversation docs (API errors, test boxes) should be excluded."""
+        s = MagicMock()
+        def _query(coll, q, n):
+            if coll == "conversations":
+                return [
+                    _chroma_row("conversations", 0),  # clean
+                    {  # API error sentinel (matches the prefix exactly)
+                        "id": "conversations_1",
+                        "content": "[API Error] 502 Bad Gateway",
+                        "metadata": {"timestamp": "2026-08-01T12:00:00"},
+                    },
+                ]
+            return [_chroma_row(coll, 0)]
+
+        s.query_collection.side_effect = _query
+        plan = FacetPlan(facets=[FacetQuery(name="f1", query_text="q", keywords=["test"])])
+        items = asyncio.run(run_sweep(
+            plan, chroma_store=s, corpus_manager=corpus, caps=_caps(expand_top_k=0),
+        ))
+        # conversations: 1 clean + 1 junk = 1; other collections: 1 each; corpus: 1
+        # Total: 1 + 5*1 + 1 = 7
+        assert len(items) == 7
+        # Verify no API-error doc survived
+        assert not any("[API Error]" in i.text for i in items)
+
+    def test_junk_summary_excluded(self, corpus):
+        """Summary docs that are too short or junk should be excluded."""
+        s = MagicMock()
+        def _query(coll, q, n):
+            if coll == "summaries":
+                return [
+                    _chroma_row("summaries", 0),  # clean (long enough)
+                    {  # too short
+                        "id": "summaries_1",
+                        "content": "-",  # placeholder junk
+                        "metadata": {"timestamp": "2026-08-01T12:00:00"},
+                    },
+                ]
+            return [_chroma_row(coll, 0)]
+
+        s.query_collection.side_effect = _query
+        plan = FacetPlan(facets=[FacetQuery(name="f1", query_text="q", keywords=["test"])])
+        items = asyncio.run(run_sweep(
+            plan, chroma_store=s, corpus_manager=corpus, caps=_caps(expand_top_k=0),
+        ))
+        # summaries: 1 clean + 1 junk = 1; other collections: 1 each; corpus: 1
+        # Total: 1 + 1 + 1 + 1 + 1 + 1 + 1 = 7
+        assert len(items) == 7
+        # Verify no "-" doc survived
+        assert not any(i.text == "-" for i in items)
+
+    def test_superseded_facts_excluded(self, corpus):
+        """Facts marked as superseded (is_current=False or superseded_by set) should be skipped."""
+        s = MagicMock()
+        def _query(coll, q, n):
+            if coll == "facts":
+                return [
+                    _chroma_row("facts", 0),  # clean
+                    {  # superseded (is_current=False)
+                        "id": "facts_1",
+                        "content": "some content here that is long enough to pass the summary length check for testing purposes",
+                        "metadata": {"timestamp": "2026-08-01T12:00:00", "is_current": False},
+                    },
+                    {  # superseded (superseded_by set)
+                        "id": "facts_2",
+                        "content": "some content here that is long enough to pass the summary length check for testing purposes",
+                        "metadata": {"timestamp": "2026-08-01T12:00:00", "superseded_by": "facts_3"},
+                    },
+                ]
+            return [_chroma_row(coll, 0)]
+
+        s.query_collection.side_effect = _query
+        plan = FacetPlan(facets=[FacetQuery(name="f1", query_text="q", keywords=["test"])])
+        items = asyncio.run(run_sweep(
+            plan, chroma_store=s, corpus_manager=corpus, caps=_caps(expand_top_k=0),
+        ))
+        # facts: 1 clean + 2 superseded = 1; other collections: 1 each; corpus: 1
+        # Total: 1 + 1 + 1 + 1 + 1 + 1 + 1 = 7
+        assert len(items) == 7
+        # Verify superseded facts don't appear
+        assert not any(i.doc_id in ("facts_1", "facts_2") for i in items)
+
+    def test_expansion_hygiene_applied(self, corpus):
+        """Hygiene filters should apply to expanded conversation turns too."""
+        s = MagicMock()
+        s.query_collection.side_effect = lambda coll, q, n: (
+            [_chroma_row("conversations", 0)] if coll == "conversations" else []
+        )
+        expander = MagicMock()
+        expander.expand.return_value = {
+            "turns": [
+                {"id": "exp_0", "content": "good expanded turn",
+                 "metadata": {"timestamp": "2026-08-02T10:00:00"}},
+                {"id": "exp_1", "content": "[API Error] 500",
+                 "metadata": {"timestamp": "2026-08-02T11:00:00"}},
+                {"id": "exp_2", "content": "another good turn",
+                 "metadata": {"timestamp": "2026-08-02T12:00:00", "curation_quarantined": True}},
+            ],
+        }
+        plan = FacetPlan(facets=[FacetQuery(name="f", query_text="q", keywords=["test"])])
+        items = asyncio.run(run_sweep(
+            plan, chroma_store=s, corpus_manager=corpus,
+            memory_expander=expander, caps=_caps(),
+        ))
+        # Only the clean expansion turns should survive (exp_0 and one that's good)
+        expanded = [i for i in items if i.collection == "conversations"]
+        assert len(expanded) == 2  # original + 1 good expanded turn (not the error or quarantined)
+        assert not any("[API Error]" in i.text for i in expanded)

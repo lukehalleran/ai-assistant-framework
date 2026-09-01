@@ -552,6 +552,100 @@ def _correction_restates_response(correction: str, response: str) -> bool:
     return all(f in resp_norm for f in facts)
 
 
+# ---------------------------------------------------------------------------
+# Date-corroboration demotions (2026-09-01 evening HW-1 misfire): the verifier
+# flagged the CORRECT "HW 1 is due Sunday, Sep 13" at conf 1.00 while its own
+# source material contained "HW 1 due on Sep 13" verbatim AND the user's
+# message said "due the 13th"; the integrator then rewrote the reply to a
+# fabricated Sep 6 (an internally-consistent Sunday, so the weekday-arithmetic
+# backstop couldn't object). The verifier prompt already carries both rules —
+# prompt teaching doesn't hold against the model's priors (wall-clock
+# doctrine), so they are enforced deterministically here. Both checks demote
+# (silence) rather than correct, and only fire on date-bearing claims.
+# ---------------------------------------------------------------------------
+
+_MONTH_NUM = {name[:3].lower(): i for i, name in enumerate(
+    ("January", "February", "March", "April", "May", "June", "July", "August",
+     "September", "October", "November", "December"), start=1)}
+
+_CLAIM_DATE_RE = re.compile(
+    rf"\b(?P<month>{_MONTH})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?\b"
+    r"|\b(?P<year>\d{4})-(?P<month_num>\d{2})-(?P<day_num>\d{2})\b",
+    re.IGNORECASE,
+)
+# Bare day ordinals ("due the 13th") — how users usually state dates in chat.
+_ORDINAL_DAY_RE = re.compile(r"\b(?P<day>\d{1,2})(?:st|nd|rd|th)\b",
+                             re.IGNORECASE)
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Minimal stoplist: shared-context matching must NOT count filler, month or
+# weekday names, or timezone tokens as corroborating context.
+_TOKEN_STOP = frozenset((
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "on", "at", "in", "of", "for", "to", "and", "or", "as", "by", "with",
+    "from", "that", "this", "it", "its", "you", "your", "not", "no", "but",
+    "will", "would", "can", "could", "am", "pm", "et", "pt", "ct", "est",
+    "edt", "cst", "cdt", "mst", "mdt", "pst", "pdt",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december", "jan", "feb",
+    "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+))
+
+
+def _claim_dates(text: str) -> set:
+    """(month, day) pairs from month-name and ISO date forms."""
+    dates = set()
+    for m in _CLAIM_DATE_RE.finditer(text or ""):
+        if m.group("month"):
+            mon = _MONTH_NUM.get(m.group("month")[:3].lower())
+            day = int(m.group("day"))
+        else:
+            mon, day = int(m.group("month_num")), int(m.group("day_num"))
+        if mon and 1 <= mon <= 12 and 1 <= day <= 31:
+            dates.add((mon, day))
+    return dates
+
+
+def _content_tokens(text: str) -> set:
+    return {t for t in _TOKEN_RE.findall((text or "").lower())
+            if (len(t) >= 3 and t not in _TOKEN_STOP and not t.isdigit())
+            or t == "hw"}
+
+
+def claim_date_user_stated(claim: str, query: str) -> bool:
+    """True when a date in the flagged claim matches a date the user stated
+    in their own message ("due the 13th", "September 13"). The assistant
+    restating the user's own date is grounded by the verifier's own contract
+    — flagging it is contradiction of the user by construction."""
+    dates = _claim_dates(claim)
+    if not dates or not query:
+        return False
+    query_dates = _claim_dates(query)
+    query_days = {int(m.group("day"))
+                  for m in _ORDINAL_DAY_RE.finditer(query)
+                  if 1 <= int(m.group("day")) <= 31}
+    return any(d in query_dates or d[1] in query_days for d in dates)
+
+
+def claim_date_in_source(claim: str, source: str) -> bool:
+    """True when a date in the flagged claim appears in the source material
+    on a line that shares at least one content word with the claim (the
+    schedule row "HW 1 due on Sep 13" shares "due"/"hw" with the claim; the
+    adjacent week row "Aug 31-Sep 6 | Linear Models (1)" shares nothing with
+    a due-date claim, so a genuinely wrong date is still catchable)."""
+    dates = _claim_dates(claim)
+    if not dates or not source:
+        return False
+    claim_tokens = _content_tokens(claim)
+    if not claim_tokens:
+        return False
+    for line in source.splitlines():
+        if dates & _claim_dates(line) and claim_tokens & _content_tokens(line):
+            return True
+    return False
+
+
 async def verify_grounding(
     query: str,
     response: str,
@@ -599,6 +693,18 @@ async def verify_grounding(
             logger.warning(
                 "[GroundingCheck] Verifier is policing terminology, not facts "
                 f"— demoted: {verdict.correction[:100]!r}"
+            )
+            return None
+        if claim_date_user_stated(verdict.claim, query):
+            logger.warning(
+                "[GroundingCheck] Flagged claim's date matches a date the "
+                f"user stated — demoted: {verdict.claim[:100]!r}"
+            )
+            return None
+        if claim_date_in_source(verdict.claim, source_material):
+            logger.warning(
+                "[GroundingCheck] Flagged claim's date is corroborated by "
+                f"source material — demoted: {verdict.claim[:100]!r}"
             )
             return None
     return verdict
@@ -656,12 +762,13 @@ _INTEGRATE_SYSTEM_PROMPT = (
     "Output only the revised reply."
 )
 
-# Revision guards: the integrator may only EDIT, never expand or gut.
-_INTEGRATE_MIN_RATIO = 0.75
-_INTEGRATE_MAX_RATIO = 1.30
-
-
 def _build_integrate_prompt(response: str, verdict: GroundingVerdict) -> str:
+    # Revision guards: the integrator may only EDIT, never expand or gut.
+    # Read from config with fallback to historical defaults.
+    from config.app_config import (
+        GROUNDING_INTEGRATE_MIN_RATIO,
+        GROUNDING_INTEGRATE_MAX_RATIO,
+    )
     return (
         "The assistant reply below contains one factual error. Rewrite the "
         "reply so the error is corrected IN PLACE, where the claim appears.\n\n"
@@ -741,11 +848,15 @@ async def integrate_grounding_correction(
         ).strip()
     if not revised or revised == response.strip():
         return None
+    from config.app_config import (
+        GROUNDING_INTEGRATE_MIN_RATIO,
+        GROUNDING_INTEGRATE_MAX_RATIO,
+    )
     ratio = len(revised) / max(len(response), 1)
-    if not (_INTEGRATE_MIN_RATIO <= ratio <= _INTEGRATE_MAX_RATIO):
+    if not (GROUNDING_INTEGRATE_MIN_RATIO <= ratio <= GROUNDING_INTEGRATE_MAX_RATIO):
         logger.debug(
             f"[GroundingCheck] Integrator length ratio {ratio:.2f} outside "
-            f"bounds — falling back to suffix")
+            f"bounds [{GROUNDING_INTEGRATE_MIN_RATIO}, {GROUNDING_INTEGRATE_MAX_RATIO}] — falling back to suffix")
         return None
     if "⚠️" in revised or revised.lower().startswith(("i cannot", "i can't")):
         return None

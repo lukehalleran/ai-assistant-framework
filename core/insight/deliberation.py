@@ -33,7 +33,9 @@ _INTERNAL_CHANNELS = frozenset({"pattern", "corpus", "notes", "facts"})
 _FRAMING_TERMS = frozenset({
     "analyze", "analysis", "pattern", "patterns", "data", "evidence",
     "tool", "tools", "research", "question", "point", "likely", "user",
-    "therapist", "verify", "consider", "weigh", "record", "history",
+    "therapist", "doctor", "psychiatrist", "sponsor", "coach", "boss",
+    "manager", "mentor", "advisor", "partner", "parent",
+    "verify", "consider", "weigh", "record", "history",
 })
 
 
@@ -229,8 +231,9 @@ Return this JSON shape:
 
 Rules:
 - Interpret the whole request, but select the PHENOMENON/OUTCOME being tested;
-  never use framing words such as "analyze", "therapist", "tool", or "research"
-  as the outcome merely because they appear early.
+  never use framing words such as "analyze", "therapist", "tool", "research",
+  or support-role names like "coach", "sponsor", "doctor" as the outcome
+  merely because they appear early.
 - Keep claims atomic. Include both what would support the user's theory and
   what would cut against it. A downstream action/forecast claim must remain
   separate from upstream historical and external-research claims. Give every
@@ -360,7 +363,9 @@ def deterministic_fallback_spec(query: str) -> Optional[LongitudinalEvidenceSpec
     outcome_terms = [outcome]
     named_terms = [term for term in re.findall(r"\b[A-Z][A-Za-z0-9-]{3,}\b", text)
                    if term.lower() not in {
-                       "therapist", "please", "pubmed", "wikipedia", "compare",
+                       "therapist", "doctor", "psychiatrist", "sponsor", "coach",
+                       "boss", "manager", "mentor", "advisor", "partner", "parent",
+                       "please", "pubmed", "wikipedia", "compare",
                        "include", "report", "separate", "re-run", "using",
                    }]
     # Keep fallback external queries source-specific without encoding a domain
