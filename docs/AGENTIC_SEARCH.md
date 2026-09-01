@@ -620,7 +620,8 @@ Email auto-resolution: For send_email, if recipient is a name (no '@'),
   matches return a descriptive error listing candidates.
 
 Action types: send_telegram, send_discord, send_email,
-              github_create_issue, github_comment_pr, calendar_create_event
+              github_create_issue, github_comment_pr, calendar_create_event,
+              calendar_update_event, calendar_delete_event (NEW 2026-09-01)
 Execution: Creates an ActionProposal stored in PendingActionsStore.
            GUI displays approve/reject buttons. On approval, the action is
            dispatched to the type-specific executor. On rejection, the proposal
@@ -1036,7 +1037,7 @@ INTERNET_ACTIONS_MAX_PENDING        # Max pending actions before rejection
 INTERNET_ACTIONS_AUDIT_LOG          # Audit log path (default logs/actions_audit.jsonl)
 
 # Google Calendar (YAML: internet_actions.google_calendar_enabled, default False)
-GOOGLE_CALENDAR_ENABLED             # Feature gate for calendar_create_event
+GOOGLE_CALENDAR_ENABLED             # Feature gate for calendar create/update/delete
 
 # Google Contacts (YAML: internet_actions:)
 GOOGLE_CONTACTS_ENABLED             # Search saved contacts (default True)
@@ -1082,6 +1083,7 @@ per line).
 | `send_discord` | Discord webhook via httpx | Requires webhook URL |
 | `send_email` | Gmail API (preferred) + SMTP fallback | Auto-resolves recipient names via Google Contacts + Gmail header search. Defense-in-depth `_resolve_recipient()` in `email.py`. |
 | `calendar_create_event` | Google Calendar API via httpx | Requires Google OAuth + `calendar.events` scope. API error responses include the response body for debugging. Config: `GOOGLE_CALENDAR_ENABLED`. Implementation in `core/actions/google_calendar_create.py`. |
+| `calendar_update_event` / `calendar_delete_event` | Google Calendar API via httpx | NEW 2026-09-01. Edit/remove an EXISTING event resolved by summary + date (local start date; exact title first) or verified event_id — exactly ONE live match required, ambiguity refuses and lists candidates (delete is irreversible). Update changes ride in `new_*` fields (start/end together); timed datetimes are wall-clock — the executor strips UTC offsets and the IANA `timeZone` field (default America/Chicago) governs. Same OAuth scope/config as create. Implementation in `core/actions/google_calendar_modify.py`. |
 | `github_create_issue` | `gh` CLI (`gh issue create`) | Requires `gh` installed + `gh auth login`. Config: `INTERNET_ACTIONS_GITHUB_WRITE_ENABLED`. Two-entry write-allowlist + explicit arg lists + timeout. Implementation in `core/actions/github_write.py`. |
 | `github_comment_pr` | `gh` CLI (`gh pr comment`) | Same gate/safety. PR number parsed from `pr_number`/recipient/subject. |
 

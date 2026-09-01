@@ -80,6 +80,7 @@ class ActionSpec:
     field_hint: str = ""                      # the per-action required-field directive line
     enabled_flag: Optional[str] = None        # extra app_config gate beyond INTERNET_ACTIONS_ENABLED
     summary: Optional[Callable[[dict], str]] = None  # params -> human summary
+    accepts_check: Optional[Callable[[Dict[str, Any]], bool]] = None  # extra shape rule beyond required fields
 
     @property
     def forward_params(self) -> Tuple[str, ...]:
@@ -91,7 +92,7 @@ class ActionSpec:
     def accepts_params(self, params: Dict[str, Any]) -> bool:
         """Whether params satisfy this action's single-item or batch shape."""
         if all(params.get(field) not in (None, "") for field in self.required):
-            return True
+            return self.accepts_check(params) if self.accepts_check else True
         if not self.batch_param:
             return False
         items = params.get(self.batch_param)
@@ -203,6 +204,63 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
             f"calendar_create_event: {p.get('summary','')}"
         ),
     ),
+    # Update/delete (2026-09-01): both require an EXPLICIT calendar anchor
+    # ("event(s)" or "calendar") as the object — bare "reschedule my
+    # appointment" is a life task the user does with the OFFICE, not a
+    # calendar-edit command (live 12:33 turn: "reschedule appointment with
+    # new psychiatrist" must NOT force an action loop). Under-fires by design.
+    ActionType.CALENDAR_UPDATE_EVENT: ActionSpec(
+        action_type=ActionType.CALENDAR_UPDATE_EVENT,
+        executor_ref="core.actions.google_calendar_modify:update_calendar_event",
+        required=("summary", "date"),
+        optional=("event_id", "new_summary", "new_start_time", "new_end_time",
+                  "new_description", "new_location", "time_zone", "all_day",
+                  "calendar_id"),
+        intent_patterns=(
+            r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\bcalendar\s+events?\b',
+            r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\bevents?\b',
+            r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\b(?:on|in|from)\s+(?:my\s+|the\s+)?(?:google\s+)?calendar\b',
+        ),
+        health="calendar_update_event (edit an existing event — summary + date identify it; exactly one match required)",
+        field_hint=(
+            "calendar_update_event: summary and date (YYYY-MM-DD) identify the "
+            "EXISTING event; changes go in new_* fields — new_start_time and "
+            "new_end_time together (ISO), new_summary, new_description, "
+            "new_location. event_id may replace summary+date."
+        ),
+        enabled_flag="GOOGLE_CALENDAR_ENABLED",
+        summary=lambda p: (
+            f"calendar_update_event: {p.get('summary','')} on {p.get('date','')}"
+        ),
+        # An update with no new_* fields can only fail after approval
+        # (2026-09-01 live: a changeless marker rendered a card and died at
+        # the executor) — reject at parse so the forced retry re-asks.
+        accepts_check=lambda p: any(
+            p.get(k) for k in ("new_summary", "new_start_time", "new_end_time",
+                               "new_description", "new_location")
+        ),
+    ),
+    ActionType.CALENDAR_DELETE_EVENT: ActionSpec(
+        action_type=ActionType.CALENDAR_DELETE_EVENT,
+        executor_ref="core.actions.google_calendar_modify:delete_calendar_event",
+        required=("summary", "date"),
+        optional=("event_id", "calendar_id"),
+        intent_patterns=(
+            r'\b(delete|remove|cancel|clear|drop)\b[^.?!]{0,60}\bcalendar\s+events?\b',
+            r'\b(delete|remove|cancel|clear)\b[^.?!]{0,60}\bevents?\b',
+            r'\b(delete|remove|cancel|clear|take)\b[^.?!]{0,60}\b(?:off|from)\s+(?:my\s+|the\s+)?(?:google\s+)?calendar\b',
+        ),
+        health="calendar_delete_event (remove an existing event — summary + date identify it; exactly one match required, irreversible)",
+        field_hint=(
+            "calendar_delete_event: summary and date (YYYY-MM-DD) identify the "
+            "EXISTING event to remove; event_id may replace summary+date. "
+            "Ambiguous matches refuse — never guess on a delete."
+        ),
+        enabled_flag="GOOGLE_CALENDAR_ENABLED",
+        summary=lambda p: (
+            f"calendar_delete_event: {p.get('summary','')} on {p.get('date','')}"
+        ),
+    ),
 }
 
 
@@ -293,7 +351,8 @@ _ACTION_COMMAND_RE = re.compile(
     r")?"
     r"(?:open|create|file|raise|log|comment|reply|respond|post|send|e-?mail|"
     r"compose|draft|forward|shoot|fire\s+off|message|ping|add|schedule|make|"
-    r"set\s+up|put|place|drop|slot)\b",
+    r"set\s+up|put|place|drop|slot|move|reschedule|shift|change|update|edit|"
+    r"delete|remove|cancel|clear)\b",
     re.IGNORECASE,
 )
 

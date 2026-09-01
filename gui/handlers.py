@@ -864,6 +864,21 @@ def _format_action_proposal_card(proposal) -> str:
         suffix = " [all day]" if all_day else ""
         return f"\n\n---\n**calendar_create_event** — **{title}** — {start}{suffix}\n"
 
+    if action_name in ("calendar_update_event", "calendar_delete_event"):
+        # Irreversible/modifying — the card must name EXACTLY which event.
+        title = str(params.get("summary") or params.get("event_id") or "?")
+        date = str(params.get("date", "date missing"))
+        card = f"\n\n---\n**{action_name}** — **{title}** on {date}"
+        changes = [
+            f"{k[4:]} → {params[k]}"
+            for k in ("new_summary", "new_start_time", "new_end_time",
+                      "new_location", "new_description")
+            if params.get(k)
+        ]
+        if changes:
+            card += "\n> " + "; ".join(str(c)[:80] for c in changes)
+        return card + "\n"
+
     recipient = params.get("recipient", "")
     subject = params.get("subject", "")
     message = params.get("message", "")
@@ -3004,10 +3019,14 @@ async def _run_agentic_search(ctx):
             if INTERNET_ACTIONS_ENABLED:
                 from core.agentic.tools import ToolExecutor
                 _actions_store = ToolExecutor._get_pending_actions_store()
-                _pending_proposal = _actions_store.get_pending()
-                if _pending_proposal:
-                    _pending_action_id = _pending_proposal.action_id
-                    display_output += _format_action_proposal_card(_pending_proposal)
+                _all_pending = _actions_store.get_all_pending()
+                if _all_pending:
+                    # Newest drives the approve button; EVERY pending card
+                    # renders (2026-09-01: the older of a delete+create pair
+                    # was invisible and could never be approved).
+                    _pending_action_id = _all_pending[-1].action_id
+                    for _pp in _all_pending:
+                        display_output += _format_action_proposal_card(_pp)
         except ImportError:
             pass
 
@@ -3859,6 +3878,35 @@ _INFLIGHT_MIN_CHARS = 20         # short repeats ("ugh", "hello") are legit
 _COMPLETED_RESEND_WINDOW_S = 300.0
 
 
+def _resend_serve_appropriate(user_text, stored_reply, history) -> bool:
+    """Serve the stored reply only for a genuine lost-reply resend
+    (2026-09-01: the 08-31 dedupe served a stale reply to a DELIBERATE
+    identical retest — twice — and the served "Queued — approve it" text
+    referenced a proposal that had already expired).
+
+    - If the client's own history already contains the stored reply, the
+      user SAW the answer; an identical send is a deliberate retry → run.
+    - Write-action requests always run fresh: proposals expire in minutes,
+      so a served approval prompt is wrong by construction.
+    """
+    try:
+        from core.actions.registry import detect_action_intent
+        if detect_action_intent(user_text or "") is not None:
+            return False
+    except Exception:
+        pass
+    try:
+        head = (stored_reply or "").strip()[:120]
+        if head:
+            for msg in list(history or [])[-8:]:
+                if (isinstance(msg, dict) and msg.get("role") == "assistant"
+                        and head in str(msg.get("content") or "")):
+                    return False
+    except Exception:
+        pass
+    return True
+
+
 def _recent_completed_duplicate(orchestrator, norm_query: str):
     """Return the stored response of an identical turn completed within the
     resend window, else None. Read-only over the newest corpus entries."""
@@ -3951,6 +3999,13 @@ async def handle_submit(
             }
             return
         _stored_reply = _recent_completed_duplicate(orchestrator, _norm)
+        if _stored_reply is not None and not _resend_serve_appropriate(
+                user_text, _stored_reply, history):
+            logger.info(
+                "[Ingress] Identical query but deliberate retry / action "
+                "request — running fresh instead of serving the stored reply"
+            )
+            _stored_reply = None
         if _stored_reply is not None:
             logger.warning(
                 f"[Ingress] Resend of a just-completed identical turn — "
@@ -4279,6 +4334,28 @@ async def _handle_submit_inner(
 # Internet Actions — Approve / Reject handlers (called by GUI buttons)
 # ---------------------------------------------------------------------------
 
+def _chain_next_pending(store, outcome):
+    """Approval chaining (2026-09-01): a delete+create turn left the older
+    proposal invisible (newest-only card) — after any decision, surface the
+    next still-pending proposal so it can be approved instead of silently
+    expiring."""
+    try:
+        nxt = store.get_pending()
+        # Type-strict: only chain a real proposal (a permissive store double
+        # returning a truthy stub must not leak into the outcome fields).
+        if nxt is not None and isinstance(getattr(nxt, "action_id", None), str):
+            outcome.next_action_id = nxt.action_id
+            outcome.next_summary = nxt.summary
+            outcome.message = (
+                outcome.message.rstrip()
+                + _format_action_proposal_card(nxt)
+                + "One more proposal from that turn is still pending — approve it too?"
+            )
+    except Exception as _chain_err:
+        logger.warning(f"[Actions] Pending-chain check failed (non-fatal): {_chain_err}")
+    return outcome
+
+
 async def execute_pending_action_core(action_id: str, orchestrator=None):
     """Approve + execute a pending internet action; transport-agnostic core.
 
@@ -4315,19 +4392,19 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
 
         if result.success:
             store.mark_executed(action_id, result.message)
-            return ActionOutcome(
+            return _chain_next_pending(store, ActionOutcome(
                 status="executed",
                 message=f"[ACTION EXECUTED: {proposal.action_type.value}] {result.message}",
                 action_type=proposal.action_type.value,
                 summary=proposal.summary,
-            )
+            ))
         store.mark_failed(action_id, result.message)
-        return ActionOutcome(
+        return _chain_next_pending(store, ActionOutcome(
             status="failed",
             message=f"Action failed: {result.message}\n\nWant me to try something else?",
             action_type=proposal.action_type.value,
             summary=proposal.summary,
-        )
+        ))
     except Exception as e:
         store.mark_failed(action_id, str(e))
         logger.error(f"[Actions] Execution failed for {action_id}: {e}")
@@ -4357,12 +4434,12 @@ async def reject_pending_action_core(action_id: str, orchestrator=None):
     audit.log_decision(action_id, approved=False)
 
     if proposal:
-        return ActionOutcome(
+        return _chain_next_pending(store, ActionOutcome(
             status="rejected",
             message=f"[ACTION REJECTED] Cancelled: {proposal.summary}",
             action_type=proposal.action_type.value,
             summary=proposal.summary,
-        )
+        ))
     return ActionOutcome(status="not_found",
                          message="Action already expired or was not found.")
 

@@ -215,8 +215,10 @@ class TestActionContextAndBatch:
         )
         assert 'all_day="<true-or-false>"' in prompt
         assert "end is exclusive" in prompt
+        # Wall-clock doctrine (2026-09-01): offsetless local times are the
+        # default; ET appears only as the source-named-zone exception.
         assert "ET = America/New_York" in prompt
-        assert "-04:00" in prompt
+        assert "WITHOUT a UTC offset" in prompt
 
     def test_seven_calendar_calls_become_one_batch(self):
         decisions = [

@@ -21,6 +21,30 @@ logger = logging.getLogger("actions_calendar_create")
 CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
 
+_UTC_OFFSET_RE = None  # compiled lazily below
+
+
+def wall_clock_time(value: str) -> str:
+    """Strip a trailing UTC offset (or Z) from an ISO datetime string.
+
+    Wall-clock doctrine (2026-09-01): the model reliably states the correct
+    WALL time but repeatedly invents a wrong offset — three consecutive live
+    turns emitted -04:00 Eastern for a Central-timezone user, and an executed
+    event landed an hour early (a "noon -> 1 PM" update moved the event to
+    the same instant). Prompt teaching did not hold, so the executor is the
+    authority: the IANA timeZone field governs the zone, the stated wall
+    time governs the clock. Date-only strings pass through untouched.
+    """
+    global _UTC_OFFSET_RE
+    import re as _re
+    if _UTC_OFFSET_RE is None:
+        _UTC_OFFSET_RE = _re.compile(r"(?:Z|[+-]\d{2}:?\d{2})$")
+    v = (value or "").strip()
+    if "T" in v:
+        return _UTC_OFFSET_RE.sub("", v)
+    return v
+
+
 def _event_key(calendar_id: str, summary: str, start_str: str) -> Tuple[str, str, str]:
     """Use the same date identity for all-day and timed calendar events."""
     return calendar_id, summary.casefold().strip(), str(start_str)[:10]
@@ -141,8 +165,8 @@ def _event_body(event: Dict[str, Any]) -> Dict[str, Any]:
     time_zone = event.get("time_zone", "America/Chicago")
     body: Dict[str, Any] = {
         "summary": event["summary"],
-        "start": {"dateTime": event["start_time"], "timeZone": time_zone},
-        "end": {"dateTime": event["end_time"], "timeZone": time_zone},
+        "start": {"dateTime": wall_clock_time(event["start_time"]), "timeZone": time_zone},
+        "end": {"dateTime": wall_clock_time(event["end_time"]), "timeZone": time_zone},
     }
     if event.get("description"):
         body["description"] = event["description"]

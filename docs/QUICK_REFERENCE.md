@@ -2382,7 +2382,7 @@ Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/enti
 #   Tier 1 also routes file/saved-document RETRIEVAL → tools (FILE_ACCESS_KEYWORDS + regex + pronoun/affirmation continuation); counts as explicit request (bypasses intent veto) [2026-06-08]
 #   "Check it out" routing chain [2026-08-22]: FILE_RETRIEVAL_PRONOUN_PATTERN gains check/review/read/inspect/verify/examine/look verbs (+ optional "at", "now" tail; first-person self-reports "I checked it out" excluded); FILE_DOC_CONTEXT_WORDS gains repo/repositor/commit/codebase/docs/pushed; a REQUEST-shaped imperative after prior file/repo context routes to tools with NO pronoun needed ("pull up the veto logic"); _REQUEST_SHAPED_RE tolerates leading ack/discourse markers ("Alright, check it out now", incl. "sure"/"right"); affirmative-directive continuation: ack-opener + request-shaped ≤12 words after a stored-agentic turn continues the agentic session with tools (benzo-turn guard holds — statements aren't request-shaped). Tests: tests/unit/test_pronoun_retrieval_repo.py (10)
 # core/agentic/formatters.py — AgenticFormatter: 19 pure formatting methods
-# core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, google_contacts.py, gmail_search.py, types.py, audit.py, executors.py [NEW 2026-05]
+# core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, google_calendar_modify.py [NEW 2026-09], google_contacts.py, gmail_search.py, types.py, audit.py, executors.py [NEW 2026-05]
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
     Delegates tool execution to ToolExecutor, formatting to AgenticFormatter."""
@@ -2506,7 +2506,9 @@ class AgenticSearchSession:
 # PROPOSE_ACTION_TOOL_DEFINITION — Internet write action proposal [NEW 2026-05, ENHANCED 2026-05]
 # Function name: "propose_action"
 # Params: action_type (enum: send_telegram, send_discord, send_email,
-#   github_create_issue, github_comment_pr, calendar_create_event),
+#   github_create_issue, github_comment_pr, calendar_create_event,
+#   calendar_update_event, calendar_delete_event [NEW 2026-09: edit/remove an existing
+#   event by summary + date or event_id; exactly one match required; update changes in new_* fields]),
 #   recipient (str), subject (str), message (str), reason (str),
 #   summary (str, calendar only), description (str, calendar only),
 #   start_time (str, ISO 8601, calendar only), end_time (str, ISO 8601, calendar only),
@@ -3269,6 +3271,7 @@ def clear_cache() -> None:
 
 
 # core/actions/google_calendar_create.py — Calendar event creation (write action)
+# core/actions/google_calendar_modify.py — Update/delete existing events (write actions; exact-single-match resolution, wall-clock times) [NEW 2026-09]
 async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
     """Create a Google Calendar event via Calendar API POST.
     Requires calendar.events scope. Expects proposal.params:

@@ -66,7 +66,12 @@ class TestGetGoogleCalendarEvents:
                    new_callable=AsyncMock, return_value=[]) as mock_fetch:
             await mixin.get_google_calendar_events(max_events=5)
 
-        mock_fetch.assert_called_once_with(max_events=5)
+        # lookahead_days wired 2026-09-01 (the YAML knob existed but was
+        # never forwarded — a 7-day default hid a next-week event from the
+        # turn editing it).
+        from config.app_config import GOOGLE_CALENDAR_LOOKAHEAD_DAYS
+        mock_fetch.assert_called_once_with(
+            max_events=5, lookahead_days=GOOGLE_CALENDAR_LOOKAHEAD_DAYS)
 
 
 # --- Formatter tests ---

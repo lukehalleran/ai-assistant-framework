@@ -667,3 +667,60 @@ class TestDirectFetchStreaming:
         stub = self._manager_stub()
         pages = await wsm.WebSearchManager._direct_fetch(stub, "http://example.com/ok")
         assert pages and "hello world" in pages[0].content
+
+
+# ===========================================================================
+# Token-manager oversized-item write-back (2026-09-01 live incident):
+# _extract_text reads item["response"] but the compressor wrote back to
+# item["query"] — a giant insight-report turn rendered the report TWICE
+# (snipped copy as the USER text + full response), blowing the true budget
+# and trimming git_commits out of the prompt entirely.
+# ===========================================================================
+
+class TestTokenManagerWriteBackKey:
+    def _manager(self, budget=10000):
+        from core.prompt.token_manager import TokenManager
+        mm = MagicMock()
+        mm.get_active_model_name.return_value = "test-model"
+        tok = MagicMock()
+        tok.count_tokens.side_effect = lambda text, model=None: len(text or "") // 4
+        return TokenManager(mm, tok, budget)
+
+    def test_oversized_conversation_entry_compresses_response_not_query(self):
+        tm = self._manager()
+        big_report = "## Report line with real content here.\n" * 200  # ~1950 tokens
+        entry = {
+            "query": "Is there PubMed evidence on caffeine and sleep fragmentation?",
+            "response": big_report,
+            "timestamp": "2026-08-31T21:57:26",
+        }
+        trimmed = tm._manage_token_budget({"recent_conversations": [entry]})
+        kept = trimmed["recent_conversations"]
+        assert kept, "entry should survive at this budget"
+        out = kept[0]
+        # The query is untouched; the RESPONSE is what shrank.
+        assert out["query"] == entry["query"]
+        assert len(out["response"]) < len(big_report)
+        assert "snipped" in out["response"]
+
+    def test_rendered_entry_actually_shrinks(self):
+        # The live failure mode: metering thought the entry shrank while the
+        # rendered User+Daemon text nearly doubled. Rendered size (query +
+        # response) must be strictly smaller after compression.
+        tm = self._manager()
+        big_report = "Detailed co-occurrence analysis content, week by week. " * 300
+        entry = {"query": "short question?", "response": big_report}
+        trimmed = tm._manage_token_budget({"recent_conversations": [entry]})
+        out = trimmed["recent_conversations"][0]
+        rendered_before = len(entry["query"]) + len(big_report)
+        rendered_after = len(out["query"]) + len(out["response"])
+        assert rendered_after < rendered_before
+
+    def test_content_shaped_items_still_compress(self):
+        # Memory items carry 'content' — the aligned key must still hit it.
+        tm = self._manager()
+        entry = {"content": "memory text here with some substance. " * 400}
+        trimmed = tm._manage_token_budget({"memories": [entry]})
+        out = trimmed["memories"][0]
+        assert len(out["content"]) < 400 * len("memory text here with some substance. ")
+        assert "snipped" in out["content"]

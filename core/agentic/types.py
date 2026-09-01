@@ -1284,10 +1284,12 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
     <github>closed PRs</github>
 
 14. **Propose Action**: <propose_action type="send_email" recipient="name_or_email" subject="Subject" reason="why">message body</propose_action>
-    Propose a write action (email, Telegram, Discord, calendar event) that requires user confirmation.
+    Propose a write action (email, Telegram, Discord, calendar) that requires user confirmation.
     **For email, the recipient can be just a name (e.g. "Harper") — the system resolves it to an email via Google Contacts automatically.** You do NOT need to look up the contact first.
-    Supported types: send_email, send_telegram, send_discord, calendar_create_event
+    Supported types: send_email, send_telegram, send_discord, calendar_create_event, calendar_update_event, calendar_delete_event
     Example: <propose_action type="send_email" recipient="Harper" subject="Weekly Update" reason="User asked to email Harper">Hey Harper, here's a quick recap of the week...</propose_action>
+    Calendar events: times are the user's LOCAL wall-clock time — write them WITHOUT a UTC offset (e.g. start_time="2026-09-09T13:00:00") and omit time_zone unless the SOURCE material explicitly names a different zone. calendar_update_event/calendar_delete_event identify the existing event by summary + date="YYYY-MM-DD"; update changes go in new_start_time/new_end_time (together), new_summary, new_description, new_location.
+    Example: <propose_action type="calendar_update_event" summary="Dentist" date="2026-09-09" new_start_time="2026-09-09T13:00:00" new_end_time="2026-09-09T14:00:00" reason="user asked to move it">move to 1 PM</propose_action>
 
 **Tool Selection Guidelines:**
 | Task Type | Best Tool |

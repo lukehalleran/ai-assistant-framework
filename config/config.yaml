@@ -611,7 +611,9 @@ internet_actions:
   google_token_path: data/google_token.json
   google_calendar_enabled: true
   google_calendar_max_events: 10
-  google_calendar_lookahead_days: 7
+  # 14: a 7-day window hid a next-week appointment from the model while it
+  # was editing that very event (2026-09-01)
+  google_calendar_lookahead_days: 14
   google_contacts_enabled: true
   google_other_contacts_enabled: true
   google_gmail_search_enabled: true

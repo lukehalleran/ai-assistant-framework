@@ -5101,6 +5101,7 @@ daemon/
 │   ├── google_auth.py         # Google OAuth2 credential management (installed-app flow, token persistence, refresh, scope checking, contacts + gmail scopes) [ENHANCED 2026-05-28]
 │   ├── google_calendar.py     # Fetch upcoming Google Calendar events (read-only, 5-min cache) [NEW 2026-05-27]
 │   ├── google_calendar_create.py  # Create Google Calendar events via Calendar API [NEW 2026-05-27]
+│   ├── google_calendar_modify.py  # Update/delete existing events (exact-single-match resolution; wall-clock times) [NEW 2026-09]
 │   ├── google_contacts.py     # People API saved + other contacts search, resolve_contact() with Gmail fallback [NEW 2026-05-28]
 │   ├── gmail_search.py        # Gmail header search (From/To) for contact resolution fallback [NEW 2026-05-28]
 │   └── audit.py               # Append-only JSONL audit log

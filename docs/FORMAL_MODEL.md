@@ -9,7 +9,7 @@ Let the following sets be given:
 - **Q** — the set of all natural-language query strings (user inputs)
 - **R** — the set of all natural-language response strings (agent outputs)
 - **D** — the set of all documents (memory entries), where each d in D is a tuple d = (content, metadata, embedding)
-- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha, file access, git stats, GitHub API, propose_action, calendar_create_event)
+- **T** — the set of all tool calls (web search, memory search, memory expansion, code execution, Wolfram Alpha, file access, git stats, GitHub API, propose_action, calendar create/update/delete)
 - **A = R U T** — the action space (the agent either responds or invokes a tool)
 
 ---
@@ -421,7 +421,7 @@ Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per 
 
 The agentic search controller is decomposed into three classes:
 - `AgenticSearchController` (`core/agentic/controller.py`) — main loop orchestration, prompt building, model interaction
-- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 20 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, lookup_contact, calendar_create_event, signal done)
+- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 20 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, lookup_contact, calendar create/update/delete, signal done)
 - `AgenticFormatter` (`core/agentic/formatters.py`) — pure stateless formatting for all result types (conversations, memories, web results, etc.)
 
 Protocol dispatch uses `detect_protocol()` (`core/agentic/protocols.py`) to choose between `NativeToolsHandler` (OpenAI/Anthropic function calling) and `XMLMarkerHandler` (local models using XML tags) based on model name. Both handlers parse responses into `SearchDecision` objects with a shared interface.

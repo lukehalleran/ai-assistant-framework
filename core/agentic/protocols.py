@@ -1167,17 +1167,34 @@ class XMLMarkerHandler(BaseProtocolHandler):
         model-supplied repo="someone/else" reached github_write unfiltered and
         the approval card never showed it). Unknown action types pass through
         unchanged; the executor registry rejects them downstream."""
-        # lazy import: cycle (mirrors the native propose_action path above)
-        from core.actions.registry import ACTION_SPECS
-        from core.actions.types import ActionType as _ActionType
-        try:
-            spec = ACTION_SPECS.get(_ActionType(action_type))
-        except ValueError:
-            spec = None
+        spec = XMLMarkerHandler._action_spec(action_type)
         if spec is None:
             return params
         allowed = set(spec.forward_params)
         return {k: v for k, v in params.items() if k in allowed}
+
+    @staticmethod
+    def _action_spec(action_type: str):
+        # lazy import: cycle (mirrors the native propose_action path above)
+        from core.actions.registry import ACTION_SPECS
+        from core.actions.types import ActionType as _ActionType
+        try:
+            return ACTION_SPECS.get(_ActionType(action_type))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _action_params_complete(action_type: str, params: Dict[str, Any]) -> bool:
+        """Validate like the native propose_action path (2026-09-01 live: an
+        XML calendar create WITHOUT start_time/end_time entered the store,
+        rendered a "time missing" card, and failed only after the user
+        approved it). Incomplete + no backfill → the marker is dropped, so
+        the controller's forced-action retry re-asks with the field hints.
+        Unknown action types stay accepted (registry rejects downstream)."""
+        spec = XMLMarkerHandler._action_spec(action_type)
+        if spec is None:
+            return True
+        return spec.accepts_params(params) or spec.backfill is not None
 
     def parse_response(self, response: Any) -> List[SearchDecision]:
         """
@@ -1503,6 +1520,13 @@ class XMLMarkerHandler(BaseProtocolHandler):
                 action_type, {k: v for k, v in attrs.items() if v})
             if message:
                 params["message"] = message
+            if action_type and params and not self._action_params_complete(action_type, params):
+                logger.warning(
+                    f"[AgenticProtocol] XML action marker for {action_type} is "
+                    f"missing required fields (got {sorted(params)}) — dropped "
+                    "so the forced-action retry can re-ask with field hints"
+                )
+                continue
             if action_type and params:
                 recipient = params.get("recipient", "")
                 _label = params.get("summary") or message or next(iter(params.values()), "")
@@ -1529,6 +1553,12 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     action_type, {k: v for k, v in attrs.items() if v})
                 if message:
                     params["message"] = message
+                if not self._action_params_complete(action_type, params):
+                    logger.warning(
+                        f"[AgenticProtocol] XML propose_action for {action_type} is "
+                        f"missing required fields (got {sorted(params)}) — dropped"
+                    )
+                    continue
                 recipient = params.get("recipient", "")
                 _label = params.get("summary") or message or next(iter(params.values()), "")
                 summary = (f"{action_type} to {recipient}: {_label[:60]}"
@@ -1587,6 +1617,12 @@ class XMLMarkerHandler(BaseProtocolHandler):
                         if params is candidate:  # no spec matched — old behavior
                             params = {k: candidate[k] for k in
                                       ("message", "recipient", "subject") if k in candidate}
+                        if not self._action_params_complete(action_type, params):
+                            logger.warning(
+                                f"[AgenticProtocol] XML invoke propose_action for "
+                                f"{action_type} missing required fields — dropped"
+                            )
+                            continue
                         summary = f"{action_type}: {args.get('message', '')[:80]}"
                         logger.info(f"[AgenticProtocol] XML invoke propose_action: {summary}")
                         decisions.append(SearchDecision(

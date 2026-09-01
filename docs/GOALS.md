@@ -182,7 +182,7 @@ These systems are complete and working. Listed here for context, not as active w
 
 ### Internet Actions System (2026-05)
 - `core/actions/` subsystem: propose→confirm→execute flow for internet write actions
-- 6 action types: send_telegram, send_discord, send_email, github_create_issue, github_comment_pr, calendar_create_event
+- 8 action types: send_telegram, send_discord, send_email, github_create_issue, github_comment_pr, calendar_create_event, calendar_update_event, calendar_delete_event
 - `propose_action` agentic tool (19th tool), GUI approve/reject buttons, JSONL audit log
 - Working executors: Telegram (Bot API), Discord (webhook), Email (Gmail API primary, SMTP fallback), Calendar event creation (Google Calendar API). GitHub stubs.
 - Config: `internet_actions` YAML section, `INTERNET_ACTIONS_*` app_config constants

@@ -130,6 +130,7 @@ core/                    # Request orchestration, context pipeline, agentic loop
 │   ├── google_auth.py   # GoogleAuthManager: OAuth2 installed-app flow, token persistence, scope detection (contacts + gmail scopes)
 │   ├── google_calendar.py       # fetch_upcoming_events(): read-only Calendar API + 5-min cache
 │   ├── google_calendar_create.py # create_calendar_event(): Calendar API write with scope validation
+│   ├── google_calendar_modify.py # update/delete an existing event: exact-single-match resolution, wall-clock times [NEW 2026-09]
 │   ├── google_contacts.py       # People API search + resolve_contact() with Gmail fallback
 │   ├── gmail_search.py  # Gmail header search (From/To) for contact resolution fallback
 │   ├── email.py         # Gmail API (preferred) + SMTP fallback + contact name resolution

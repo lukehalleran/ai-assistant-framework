@@ -1617,8 +1617,14 @@ class KnowledgeRetrievalMixin:
 
         try:
             from core.actions.google_calendar import fetch_upcoming_events
+            # Pass the configured lookahead — the YAML knob existed but was
+            # never forwarded, so the function's 7-day default ruled and a
+            # Sep 9 appointment was invisible on Sep 1 ("Fetched 0 upcoming
+            # events") while the model edited that very event (2026-09-01).
+            from config.app_config import GOOGLE_CALENDAR_LOOKAHEAD_DAYS
             events = await fetch_upcoming_events(
                 max_events=max_events,
+                lookahead_days=GOOGLE_CALENDAR_LOOKAHEAD_DAYS,
             )
             return events
         except Exception as e:

@@ -17,7 +17,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from utils.safe_json import atomic_write_json
@@ -44,6 +44,8 @@ class ActionType(str, Enum):
     GITHUB_CREATE_ISSUE = "github_create_issue"
     GITHUB_COMMENT_PR = "github_comment_pr"
     CALENDAR_CREATE_EVENT = "calendar_create_event"
+    CALENDAR_UPDATE_EVENT = "calendar_update_event"
+    CALENDAR_DELETE_EVENT = "calendar_delete_event"
     # Tier 1: Read-only enhanced (no confirmation needed)
     BROWSER_FETCH = "browser_fetch"
     RSS_CHECK = "rss_check"
@@ -57,6 +59,8 @@ CONFIRMATION_REQUIRED = {
     ActionType.GITHUB_CREATE_ISSUE,
     ActionType.GITHUB_COMMENT_PR,
     ActionType.CALENDAR_CREATE_EVENT,
+    ActionType.CALENDAR_UPDATE_EVENT,
+    ActionType.CALENDAR_DELETE_EVENT,
 }
 
 
@@ -98,6 +102,12 @@ class ActionOutcome(BaseModel):
     message: str
     action_type: Optional[str] = None
     summary: Optional[str] = None
+    # Approval chaining (2026-09-01): when another proposal is still pending
+    # after this decision, surface it so multi-proposal turns (e.g.
+    # delete + create) can be approved one after another instead of the
+    # older proposal silently expiring unseen.
+    next_action_id: Optional[str] = None
+    next_summary: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +242,16 @@ class PendingActionsStore:
         if not pending:
             return None
         return max(pending, key=lambda p: p.proposed_at)
+
+    def get_all_pending(self) -> List["ActionProposal"]:
+        """All pending proposals, oldest first (2026-09-01: a delete+create
+        turn orphaned the older proposal — its card never rendered and it
+        could never be approved)."""
+        self._prune_expired()
+        return sorted(
+            (p for p in self._store.values() if p.status == "pending"),
+            key=lambda p: p.proposed_at,
+        )
 
     def clear(self) -> None:
         """Clear all proposals."""

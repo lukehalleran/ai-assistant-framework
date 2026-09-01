@@ -28,7 +28,9 @@ async def _decide(request: Request, action_id: str, approve: bool) -> ActionDeci
     message = ChatMessage(role="assistant", content=outcome.message)
     state.session.history.append(message.model_dump())
     if state.session.pending_action_id == action_id:
-        state.session.pending_action_id = None
+        # Approval chaining (2026-09-01): hand the button to the next
+        # still-pending proposal from the same turn, if any.
+        state.session.pending_action_id = outcome.next_action_id or None
 
     return ActionDecisionResponse(outcome=outcome, message=message)
 

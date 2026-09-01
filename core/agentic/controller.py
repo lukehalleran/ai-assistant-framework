@@ -1588,14 +1588,39 @@ class AgenticSearchController:
         _attr_example = " ".join(f'{f}="<{f}>"' for f in _fields) or 'recipient="<who>"'
         _type = forced_action.value
         _calendar_hint = ""
+        if _type == "calendar_update_event":
+            # The example must SHOW the change fields (2026-09-01 live: the
+            # required-only example taught summary+date and the model emitted
+            # a changeless update that could only fail after approval).
+            _attr_example += (' new_start_time="<new-start>" new_end_time="<new-end>"')
+            _calendar_hint = (
+                " summary + date (YYYY-MM-DD) identify the EXISTING event. Put the "
+                "CHANGES in new_* fields: new_start_time and new_end_time TOGETHER "
+                "as the user's local wall-clock times WITHOUT a UTC offset (e.g. "
+                "2026-09-09T13:00:00); new_summary/new_description/new_location as "
+                "needed. At least one new_* field is required."
+            )
+        if _type == "calendar_delete_event":
+            _calendar_hint = (
+                " summary + date (YYYY-MM-DD) identify the EXISTING event to "
+                "remove — exactly those two fields, nothing else is needed."
+            )
         if _type == "calendar_create_event":
             _attr_example += ' all_day="<true-or-false>" time_zone="<IANA-timezone-if-timed>"'
+            # Timezone rule (2026-09-01 live: "1 PM" with no source timezone
+            # was emitted as 13:00 ET because the old hint's only example was
+            # "ET = America/New_York" — the executed Google event landed an
+            # hour early on the user's Central calendar). Local is the
+            # DEFAULT; a source-named zone is the exception.
             _calendar_hint = (
                 " If the user selected day-of/all-day entries, set all_day=\"true\", "
                 "start_time to YYYY-MM-DD, and end_time to the NEXT date because "
-                "Google's all-day end is exclusive. For timed events, preserve an "
-                "explicit source timezone (ET = America/New_York) and include the "
-                "matching offset; never silently reinterpret ET as local Central time."
+                "Google's all-day end is exclusive. For timed events, times with NO "
+                "explicit timezone in the request or source material are the USER'S "
+                "LOCAL time — write them WITHOUT a UTC offset and omit time_zone. "
+                "Only when the source material explicitly names a zone (e.g. a "
+                "syllabus stating ET = America/New_York) set time_zone to that IANA "
+                "zone; never silently reinterpret a stated zone as local."
             )
         return (
             f"The user asked: {query}\n\n"
@@ -1603,8 +1628,9 @@ class AgenticSearchController:
             f"markers — nothing else, no prose. Syntax (fill every field from "
             f"the request and the conversation context above):\n"
             f'<action type="{_type}" {_attr_example} reason="user asked">optional details</action>\n'
-            f"Timed datetimes use ISO 8601 with an offset (e.g. "
-            f"2026-09-13T23:59:00-04:00).{_calendar_hint} If the request "
+            f"Timed datetimes are the user's LOCAL wall-clock time in ISO 8601 "
+            f"WITHOUT a UTC offset (e.g. 2026-09-13T23:59:00) unless the source "
+            f"names a zone.{_calendar_hint} If the request "
             f"covers multiple items (several events, several messages), emit one "
             f"<action> marker per item, each with ALL fields filled."
         )

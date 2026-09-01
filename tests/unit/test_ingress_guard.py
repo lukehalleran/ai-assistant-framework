@@ -170,3 +170,48 @@ class TestInflightDedupe:
     def test_key_includes_files(self):
         assert _inflight_key("same text", ["a.txt"]) != _inflight_key("same text", ["b.txt"])
         assert _inflight_key("Same   Text", []) == _inflight_key("same text", [])
+
+
+class TestResendServeDiscrimination:
+    """2026-09-01: the completed-resend serve fired on a DELIBERATE identical
+    retest (twice) and re-served a 'Queued — approve it' reply whose proposal
+    had already expired. Serve only when the client demonstrably never got
+    the answer, and never for write-action requests."""
+
+    def test_action_request_never_served(self):
+        from gui.handlers import _resend_serve_appropriate
+        assert _resend_serve_appropriate(
+            "Move the psychiatrist event on the 9th from noon to 1 PM",
+            "Queued: calendar_update_event — approve it.",
+            [],
+        ) is False
+
+    def test_client_already_has_reply_runs_fresh(self):
+        from gui.handlers import _resend_serve_appropriate
+        reply = "Here's the summary of your week: lots of commits and a calendar saga."
+        history = [
+            {"role": "user", "content": "summarize my week"},
+            {"role": "assistant", "content": reply},
+        ]
+        assert _resend_serve_appropriate("summarize my week", reply, history) is False
+
+    def test_lost_reply_resend_still_served(self):
+        # The original feature case: non-action query, reply absent from the
+        # client history (SSE dropped before delivery).
+        from gui.handlers import _resend_serve_appropriate
+        reply = "Here's the summary of your week: lots of commits and a calendar saga."
+        history = [{"role": "user", "content": "summarize my week"}]
+        assert _resend_serve_appropriate("summarize my week", reply, history) is True
+
+    def test_served_wrapper_in_history_counts_as_seen(self):
+        # A second deliberate resend after one ♻️ serve must run fresh — the
+        # wrapper message contains the stored reply verbatim.
+        from gui.handlers import _resend_serve_appropriate
+        reply = "Here's the summary of your week: lots of commits and a calendar saga."
+        history = [
+            {"role": "assistant",
+             "content": "♻️ This looks like a resend of a message I just "
+                        "answered (your connection may have dropped). "
+                        "Here's that reply:\n\n" + reply},
+        ]
+        assert _resend_serve_appropriate("summarize my week", reply, history) is False

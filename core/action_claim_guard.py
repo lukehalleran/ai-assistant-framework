@@ -124,7 +124,11 @@ class ClaimReconciliation(BaseModel):
 # external (more consequential) kind; NOTE before DOCUMENT (notes are primary).
 _KIND_PATTERNS: list[tuple[ActionKind, re.Pattern]] = [
     (ActionKind.EMAIL, re.compile(r"\b(e-?mail(?:s|ed|ing)?)\b", re.IGNORECASE)),
-    (ActionKind.CALENDAR, re.compile(r"\b(calendar(?:\s+event)?|reminders?|remind(?:ing)?\s+you)\b", re.IGNORECASE)),
+    # Bare "event"/"appointment" added 2026-09-01: "Re-queuing the event with
+    # the corrected date … Approve that one" carried no "calendar" word and
+    # the confabulated re-queue claim went kind-less. The downstream
+    # expected-to-act gate still suppresses no-context narration.
+    (ActionKind.CALENDAR, re.compile(r"\b(calendar(?:\s+event)?|events?|appointments?|reminders?|remind(?:ing)?\s+you)\b", re.IGNORECASE)),
     (ActionKind.MESSAGE, re.compile(r"\b(telegram|discord|dm\s+you|message\s+you|text\s+you)\b", re.IGNORECASE)),
     (ActionKind.GITHUB, re.compile(r"\b(github\s+(?:issue|comment|pr|pull\s+request)|(?:open|file|create)\s+an?\s+issue)\b", re.IGNORECASE)),
     (ActionKind.NOTE, re.compile(r"\b(daemon\s+note|self-?notes?|notes?|memos?|note\s+to\s+self|jot\s+(?:this|it|that)\s+down|write\s+(?:this|it|that)\s+down)\b", re.IGNORECASE)),
@@ -155,7 +159,11 @@ _COMPLETION_PATTERNS: list[re.Pattern] = [
     # "Done — saving the 2-week plan as a note"  /  "done, saved ..."
     re.compile(r"\b(?:done|all set|all done)\b[\s,.:;—–-]+\s*(?:saving|saved|creating|created|writing|wrote|adding|added|sending|sent|scheduling|scheduled|storing|stored|jotting|jotted|noting|noted|dropping|dropped)\b", re.IGNORECASE),
     # "I've saved" / "I have created" / "I just added" / "I made a note"
-    re.compile(r"\b(?:i'?ve|i have|i)\s+(?:just\s+|already\s+)?(?:saved|stored|created|made|wrote|written|added|recorded|logged|sent|emailed|scheduled|jotted|noted|dropped|put)\b", re.IGNORECASE),
+    re.compile(r"\b(?:i'?ve|i have|i)\s+(?:just\s+|already\s+)?(?:saved|stored|created|made|wrote|written|added|recorded|logged|sent|emailed|scheduled|jotted|noted|dropped|put|queued|re-?queued)\b", re.IGNORECASE),
+    # "Re-queuing the event with the corrected date" — a queue/proposal claim
+    # (2026-09-01 live: an enhanced-path turn claimed "Re-queuing the event
+    # ... Approve that one" with no backend proposal created that turn)
+    re.compile(r"\b(?:re-?)?queu(?:e|ed|ing|eing)\b[\w\s,'-]{0,40}\b(?:the|a|an|your|this|that|it)\b", re.IGNORECASE),
     # "saved the note" / "created a doc" / "added your event"
     re.compile(r"\b(?:saved|created|made|added|stored|recorded|logged|sent|emailed|scheduled|jotted|noted|dropped)\b[\w\s,'-]{0,40}\b(?:the|a|an|your|this|that|it)\b", re.IGNORECASE),
     # "saving X as a note" / "dropping this into a note"
@@ -163,7 +171,7 @@ _COMPLETION_PATTERNS: list[re.Pattern] = [
     # "I'll save this as a note" — a tool-less promise that won't be kept this turn
     re.compile(r"\bi'?ll\s+(?:go ahead and\s+)?(?:save|store|create|write|add|record|log|send|email|schedule|jot|note|drop|put)\b", re.IGNORECASE),
     # "the note is saved" / "your event has been scheduled"
-    re.compile(r"\b(?:is|has been|have been|'?s)\s+(?:now\s+)?(?:saved|created|added|stored|sent|emailed|scheduled|recorded|logged|written)\b", re.IGNORECASE),
+    re.compile(r"\b(?:is|has been|have been|'?s)\s+(?:now\s+)?(?:saved|created|added|stored|sent|emailed|scheduled|recorded|logged|written|queued|re-?queued)\b", re.IGNORECASE),
 ]
 
 # A completion verb governed by an explicit non-assistant subject ("he emailed",

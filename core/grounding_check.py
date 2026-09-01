@@ -260,6 +260,13 @@ def _build_verifier_prompt(query: str, response: str,
         "Never output advice like \"please verify\" or \"double-check\" as a "
         "correction. If you cannot name the specific false claim AND state "
         "the correct fact, set false_claim_present to false.\n\n"
+        "Never correct calendar arithmetic (which weekday a date falls on, "
+        "what date \"next Monday\" resolves to) unless the response states a "
+        "weekday/date pair that is IMPOSSIBLE per the runtime clock — do the "
+        "arithmetic from the clock, never from your own sense of the date. "
+        "Never contradict a date or time the user explicitly stated in their "
+        "own message; the assistant restating the user's own date is "
+        "grounded.\n\n"
         "Flag ONLY when the assistant itself states, or agrees with, the "
         "false claim (e.g. calling a discredited theory \"closer to the "
         "truth\", or affirming a false premise in the user's message).\n\n"
@@ -341,6 +348,18 @@ _WEEKDAY_FIRST_RE = re.compile(
     rf"(?P<year>(?:19|20)\d{{2}})\b",
     re.IGNORECASE,
 )
+# Filler-tolerant, year-optional pair (2026-09-01 live miss: the integrator
+# shipped "next Monday, which is September 6" — intervening words defeated
+# _WEEKDAY_FIRST_RE and the missing year defeated both strict patterns, so an
+# impossible Sunday-as-Monday date sailed through the vet). Yearless matches
+# assume the CURRENT year — safe here because every consumer uses a mismatch
+# to DEMOTE a correction (under-fire direction), never to assert one.
+_WEEKDAY_FILLER_RE = re.compile(
+    rf"\b(?P<weekday>{_WEEKDAY})\b[^.!?\n\d]{{0,24}}?"
+    rf"(?P<month>{_MONTH})\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?"
+    rf"(?:\s*,?\s*(?P<year>(?:19|20)\d{{2}}))?\b",
+    re.IGNORECASE,
+)
 _DATE_FIRST_RE = re.compile(
     rf"\b(?P<month>{_MONTH})\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*"
     rf"(?P<year>(?:19|20)\d{{2}})\b[^.!?\n]{{0,45}}?"
@@ -361,16 +380,17 @@ def weekday_date_mismatches(text: str) -> list[str]:
     mismatches: list[str] = []
     seen = set()
     formats = (("%B",), ("%b",))
-    for pattern in (_WEEKDAY_FIRST_RE, _DATE_FIRST_RE):
+    for pattern in (_WEEKDAY_FIRST_RE, _DATE_FIRST_RE, _WEEKDAY_FILLER_RE):
         for match in pattern.finditer(text):
             raw_month = match.group("month")
             if raw_month.lower() == "sept":
                 raw_month = "Sep"
+            year = match.groupdict().get("year") or str(datetime.now().year)
             parsed = None
             for (month_fmt,) in formats:
                 try:
                     parsed = datetime.strptime(
-                        f"{raw_month} {match.group('day')} {match.group('year')}",
+                        f"{raw_month} {match.group('day')} {year}",
                         f"{month_fmt} %d %Y",
                     )
                     break
@@ -491,6 +511,47 @@ def _parse_verdict(raw: str) -> Optional[GroundingVerdict]:
         return None
 
 
+
+# 2026-09-01 live pair (both conf 0.9): (1) "The appointment is scheduled for
+# 1 PM on September 9, 2026, as per the user's request" appended as a
+# "correction" to a reply that SAID noon -> 1 PM Sep 9 — it corrects nothing;
+# (2) the integrator spliced "there is no widely accepted historical period
+# referred to as the 'misdiagnosis era'" into an emotional reply — the
+# verifier policing the user's own life-narrative shorthand as terminology.
+_RESTATEMENT_PHRASE_RE = re.compile(
+    r"\bas\s+(?:per|the\s+user)\s*(?:the\s+user'?s?\s+)?"
+    r"(?:request(?:ed)?|stated|specified)\b|\bas\s+per\s+the\s+user\b",
+    re.IGNORECASE,
+)
+_TERMINOLOGY_POLICING_RE = re.compile(
+    r"\b(?:no\s+widely\s+accepted|not\s+a\s+(?:recognized|standard|"
+    r"widely\s+used|formal))\b[^.!?]{0,60}\b(?:term|period|era|phrase|"
+    r"category|label|definition)\b|"
+    r"\bthere\s+is\s+no\s+(?:such\s+)?(?:term|period|era|phrase)\b",
+    re.IGNORECASE,
+)
+_CORR_TIME_RE = re.compile(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", re.IGNORECASE)
+_CORR_DATE_RE = re.compile(
+    rf"\b(?:{_MONTH})\s+\d{{1,2}}\b|\b\d{{4}}-\d{{2}}-\d{{2}}\b", re.IGNORECASE)
+
+
+def _correction_restates_response(correction: str, response: str) -> bool:
+    """True when the correction's date/time facts ALL already appear in the
+    response — it contradicts nothing, so shipping it as a correction is
+    noise at best and gaslighting at worst. A real correction introduces at
+    least one fact the response lacks."""
+    corr, resp = (correction or ""), (response or "")
+    if _RESTATEMENT_PHRASE_RE.search(corr):
+        return True
+    norm = lambda t: re.sub(r"\s+", " ", t.lower().replace(".", "")).strip()
+    facts = [norm(m) for m in _CORR_TIME_RE.findall(corr)]
+    facts += [norm(m) for m in _CORR_DATE_RE.findall(corr)]
+    if not facts:
+        return False
+    resp_norm = norm(resp)
+    return all(f in resp_norm for f in facts)
+
+
 async def verify_grounding(
     query: str,
     response: str,
@@ -526,7 +587,21 @@ async def verify_grounding(
     except Exception as e:
         logger.warning(f"[GroundingCheck] Verifier call failed — fail-open: {e}")
         return None
-    return _parse_verdict(raw)
+    verdict = _parse_verdict(raw)
+    if verdict is not None and verdict.false_claim_present:
+        if _correction_restates_response(verdict.correction, response):
+            logger.warning(
+                "[GroundingCheck] Verifier 'correction' restates the response "
+                f"— demoted: {verdict.correction[:100]!r}"
+            )
+            return None
+        if _TERMINOLOGY_POLICING_RE.search(verdict.correction or ""):
+            logger.warning(
+                "[GroundingCheck] Verifier is policing terminology, not facts "
+                f"— demoted: {verdict.correction[:100]!r}"
+            )
+            return None
+    return verdict
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +682,11 @@ def _build_integrate_prompt(response: str, verdict: GroundingVerdict) -> str:
     )
 
 
+# Trailing action-proposal card ("\n\n---\n**calendar_create_event** — ...")
+# appended by handlers from the pending store — backend truth, not prose.
+_PROPOSAL_CARD_RE = re.compile(r"\n\n---\n\*\*[a-z][a-z_]*\*\*")
+
+
 async def integrate_grounding_correction(
     response: str,
     verdict: GroundingVerdict,
@@ -622,6 +702,18 @@ async def integrate_grounding_correction(
     different, no leaked correction-block idiom."""
     if not response or not verdict.correction.strip():
         return None
+    # Action-proposal cards are AUTHORITATIVE backend state — the integrator
+    # must never rewrite one (2026-09-01 live: it rewrote a correct Sep 9
+    # calendar card to Sep 8, contradicting the pending-store truth the user
+    # was about to approve). Split a trailing card off, integrate the prose
+    # only, reattach the card verbatim.
+    _card = ""
+    _card_m = _PROPOSAL_CARD_RE.search(response)
+    if _card_m:
+        _card = response[_card_m.start():]
+        response = response[:_card_m.start()].rstrip()
+        if not response:
+            return None
     if len(response) > max_response_chars:
         return None  # long responses: revision cost/risk outgrows the benefit
     try:
@@ -657,13 +749,27 @@ async def integrate_grounding_correction(
         return None
     if "⚠️" in revised or revised.lower().startswith(("i cannot", "i can't")):
         return None
+    # The rewrite must actually APPLY a date-bearing correction (2026-09-01
+    # live: correction said September 7, the shipped rewrite said "September
+    # 6 — correction: just needs you to confirm" — label present, corrected
+    # fact absent, wrong date asserted).
+    for _cm, _cd in re.findall(
+            rf"\b({_MONTH})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b",
+            verdict.correction, re.IGNORECASE):
+        if not re.search(
+                rf"\b{_cm}\s+{_cd}(?:st|nd|rd|th)?\b", revised, re.IGNORECASE):
+            logger.warning(
+                "[GroundingCheck] Integrator dropped the corrected date "
+                f"({_cm} {_cd}) — falling back to suffix"
+            )
+            return None
     if weekday_date_mismatches(revised):
         logger.warning(
             "[GroundingCheck] Integrator introduced an impossible weekday/date "
             "pair — falling back to suffix"
         )
         return None
-    return revised
+    return revised + _card if _card else revised
 
 
 __all__ = [

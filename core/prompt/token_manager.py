@@ -51,7 +51,7 @@ asserts formatter↔PRIORITY_ORDER parity so a new rendered section can't go unm
 """
 
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from utils.logging_utils import get_logger
 
 logger = get_logger("prompt_token_manager")
@@ -145,15 +145,28 @@ class TokenManager:
         """Delegate to tokenizer_manager; keeps compatibility with your models."""
         return self.tokenizer_manager.count_tokens(text or "", model_name)
 
+    # Single source of truth for which dict field carries an item's text.
+    # _extract_text READS this key and the oversized-item compressor WRITES
+    # back to it — they must agree (2026-09-01: the write-back had its own
+    # list with 'query' in it, so a conversation entry's compressed RESPONSE
+    # overwrote its QUERY while the full response stayed — the rendered entry
+    # DOUBLED while metering thought it shrank; latent since 2025-11, first
+    # fired when insight-mode reports became oversized recent turns).
+    _TEXT_KEYS = ("content", "text", "response", "filtered_content")
+
+    def _text_key(self, item: dict) -> Optional[str]:
+        for key in self._TEXT_KEYS:
+            if key in item and item[key]:
+                return key
+        return None
+
     def _extract_text(self, item: Any) -> str:
         """Extract text from various item formats for token counting."""
         if isinstance(item, str):
             return item
         if isinstance(item, dict):
-            for key in ("content", "text", "response", "filtered_content"):
-                if key in item and item[key]:
-                    return str(item[key])
-            return str(item)
+            key = self._text_key(item)
+            return str(item[key]) if key else str(item)
         return str(item)
 
     def _middle_out(self, text: str, max_tokens: int, head_ratio: float = 0.6, force: bool = False) -> str:
@@ -261,14 +274,13 @@ class TokenManager:
                     max_item_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
                     if t > max_item_tokens and ENABLE_MIDDLE_OUT:
                         compressed_text = self._middle_out(item_text, max_item_tokens, force=True)
-                        # Update item with compressed text
+                        # Update item with compressed text — written back to
+                        # the SAME key _extract_text read (see _TEXT_KEYS).
                         if isinstance(item, dict):
                             compressed_item = dict(item)
-                            # Update the text field (could be 'content', 'text', 'query', etc.)
-                            for text_key in ['content', 'text', 'query', 'response']:
-                                if text_key in compressed_item:
-                                    compressed_item[text_key] = compressed_text
-                                    break
+                            _wb_key = self._text_key(compressed_item)
+                            if _wb_key:
+                                compressed_item[_wb_key] = compressed_text
                             item = compressed_item
                         else:
                             item = compressed_text
