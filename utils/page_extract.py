@@ -32,7 +32,10 @@ MIN_SALVAGE_STRING_CHARS = 40
 MAX_EXTRACT_CHARS = 24000
 
 # String literals pushed through a react-router/remix stream controller.
-_ENQUEUE_RE = re.compile(r'\.enqueue\((".*?")\)', re.DOTALL)
+# The literal is matched as a real JS string (escaped chars consumed) — the
+# old lazy ".*?" ended at the first '")' INSIDE the payload (audit F35
+# 2026-08-31), truncating the literal and dropping the whole block.
+_ENQUEUE_RE = re.compile(r'\.enqueue\(("(?:[^"\\]|\\.)*")\)', re.DOTALL)
 _JSON_SCRIPT_TYPES = ("application/json", "application/ld+json")
 
 _URLISH_RE = re.compile(r"^\s*(?:https?://|//|www\.)\S+\s*$", re.IGNORECASE)

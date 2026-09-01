@@ -1126,48 +1126,70 @@ class WebSearchManager:
                 trust_env=False,
             ) as client:
                 current_url = url
+                body_text = None
+                ctype = ""
                 for redirect_count in range(self._DIRECT_FETCH_MAX_REDIRECTS + 1):
                     await _validate_fetch_url_dns(current_url)
-                    resp = await client.get(current_url)
-                    if resp.status_code not in {301, 302, 303, 307, 308}:
+                    async with client.stream("GET", current_url) as resp:
+                        if resp.status_code in {301, 302, 303, 307, 308}:
+                            location = resp.headers.get("location")
+                            if not location:
+                                return []
+                            if redirect_count >= self._DIRECT_FETCH_MAX_REDIRECTS:
+                                log.debug(f"[WebSearch] Too many redirects for {url}")
+                                return []
+                            current_url = urllib.parse.urljoin(current_url, location)
+                            _validate_fetch_url_syntax(current_url)
+                            continue
+                        if resp.status_code >= 400:
+                            log.debug(f"[WebSearch] Direct fetch HTTP {resp.status_code} for {url}")
+                            return []
+                        content_length = resp.headers.get("content-length")
+                        if content_length:
+                            try:
+                                if int(content_length) > self._DIRECT_FETCH_MAX_BYTES:
+                                    log.debug(f"[WebSearch] Direct fetch too large for {url}")
+                                    return []
+                            except ValueError:
+                                pass
+                        ctype = (resp.headers.get("content-type") or "").lower()
+                        if not ("json" in ctype or "html" in ctype or "xml" in ctype
+                                or ctype.startswith("text/") or not ctype):
+                            # Binary (pdf, images, …) — let Tavily extract handle it.
+                            return []
+                        # Audit F11 (2026-08-31): stream with a byte cap — the
+                        # header check alone let a chunked response (no
+                        # Content-Length) buffer an unbounded body into memory
+                        # before the old post-hoc text slice ran.
+                        _chunks = []
+                        _received = 0
+                        async for _chunk in resp.aiter_bytes():
+                            _chunks.append(_chunk)
+                            _received += len(_chunk)
+                            if _received >= self._DIRECT_FETCH_MAX_BYTES:
+                                break
+                        _raw = b"".join(_chunks)[:self._DIRECT_FETCH_MAX_BYTES]
+                        try:
+                            body_text = _raw.decode(
+                                resp.charset_encoding or "utf-8", errors="replace")
+                        except LookupError:
+                            body_text = _raw.decode("utf-8", errors="replace")
                         break
-                    location = resp.headers.get("location")
-                    if not location:
-                        return []
-                    if redirect_count >= self._DIRECT_FETCH_MAX_REDIRECTS:
-                        log.debug(f"[WebSearch] Too many redirects for {url}")
-                        return []
-                    current_url = urllib.parse.urljoin(current_url, location)
-                    _validate_fetch_url_syntax(current_url)
-            if resp.status_code >= 400:
-                log.debug(f"[WebSearch] Direct fetch HTTP {resp.status_code} for {url}")
+            if body_text is None:
                 return []
-            content_length = resp.headers.get("content-length")
-            if content_length:
-                try:
-                    if int(content_length) > self._DIRECT_FETCH_MAX_BYTES:
-                        log.debug(f"[WebSearch] Direct fetch too large for {url}")
-                        return []
-                except ValueError:
-                    pass
-            ctype = (resp.headers.get("content-type") or "").lower()
             title = current_url
             if "json" in ctype:
-                text = resp.text[:self._DIRECT_FETCH_MAX_BYTES]
-            elif ("html" in ctype or "xml" in ctype
-                    or ctype.startswith("text/") or not ctype):
+                text = body_text
+            else:
                 from utils.page_extract import extract_page_text
                 title_extracted, text, method = extract_page_text(
-                    resp.text[:self._DIRECT_FETCH_MAX_BYTES], current_url
+                    body_text, current_url
                 )
                 title = title_extracted or current_url
                 log.info(
                     f"[WebSearch] Direct fetch {url}: method={method}, "
                     f"{len(text)} chars"
                 )
-            else:
-                # Binary (pdf, images, …) — let Tavily extract handle it.
-                return []
             content = (text or "")[: self.max_content_chars]
             if not content.strip():
                 return []

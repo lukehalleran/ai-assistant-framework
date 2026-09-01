@@ -16,6 +16,8 @@ memory:
   max_working_memory: 30
   mem_no: 5
   mem_importance_score: 0.75
+  # Step-6.1 memory top-up survival minimum (NOT a refill-to-max target)
+  prompt_memory_topup_floor: 3
   num_memories: 30
   prompt_max_mems: 30
   child_mem_limit: 3

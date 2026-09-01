@@ -98,6 +98,15 @@ class GoogleAuthManager:
         creds = self._load_token()
         return creds is not None
 
+    @property
+    def token_expired_no_refresh(self) -> bool:
+        """Disk-only check: token exists but is expired with no refresh token
+        (unrecoverable without re-auth; no network call)."""
+        creds = self._load_token()
+        if creds is None:
+            return False
+        return bool(getattr(creds, "expired", False)) and not creds.refresh_token
+
     def get_credentials(self):
         """Load credentials, refreshing if expired.
 

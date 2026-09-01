@@ -218,11 +218,13 @@ def is_continuation_answer(q: str, last_assistant_response: str, max_words: int 
     lr = (last_assistant_response or "").strip()
     if not ql or not lr:
         return False
-    # The assistant must have asked something in its last turn. Check for a
-    # question mark ANYWHERE, not just at the end — Daemon typically asks a
-    # question and then appends a trailing sentence ("...what was the error?
-    # You mentioned the last exchange was bad."), so the turn rarely ends on "?".
-    if "?" not in lr:
+    # The assistant must have asked something at the END of its last turn.
+    # Tolerate a trailing sentence after the question ("...what was the
+    # error? You mentioned the last exchange was bad.") but not a "?"
+    # buried anywhere (audit F29 2026-08-31: nearly every Daemon reply
+    # contains one somewhere, so terse NEW statements were misframed as
+    # answers to questions the user never saw as pending).
+    if "?" not in lr[-240:]:
         return False
     words = ql.split()
     if len(words) > max_words:
@@ -553,6 +555,13 @@ _WEB_EXPLICIT_RE = re.compile(
     r"\bweb\b|\bonline\b|\binternet\b|\bgoogle\s+(?:it|search)\b|\bwww\b|https?://",
     re.IGNORECASE,
 )
+# Third-party product docs (audit F27 2026-08-31): "the FastAPI docs" is a
+# reference-lookup target, not the user's corpus — a TitleCase word directly
+# before the doc noun disqualifies unless it is itself possessive-anchored
+# ("my Python notes" stays personal).
+_THIRD_PARTY_DOC_RE = re.compile(
+    r"\b([A-Za-z][\w.+-]*)\s+(?:docs?|documentation)\b"
+)
 _PERSONAL_DOC_SEARCH_MAX_WORDS = 60
 
 
@@ -566,6 +575,18 @@ def is_personal_doc_search(q: str) -> bool:
         return False  # paste-sized message: incidental vocabulary, not a command
     if _WEB_EXPLICIT_RE.search(q):
         return False
+    for m in _THIRD_PARTY_DOC_RE.finditer(q):
+        qualifier = m.group(1)
+        # Sentence-initial verbs/determiners capitalize too — only an
+        # unexpected TitleCase word (a product name) disqualifies.
+        if (qualifier[0].isupper()
+                and qualifier.lower() not in (
+                    "my", "our", "your", "the", "these", "those", "any", "all",
+                    "some", "search", "find", "locate", "look", "pull", "dig",
+                    "check")):
+            prefix = q[:m.start()].rstrip().lower()
+            if not prefix.endswith(("my", "our")):
+                return False
     return bool(_DOC_SEARCH_VERB_NOUN_RE.search(q) and _PERSONAL_ANCHOR_RE.search(q))
 
 

@@ -10,6 +10,28 @@ One finding (F4) was additionally confirmed by an actual test run.
 
 ---
 
+## EXECUTION STATUS (2026-09-01)
+
+**Batch 1 (committed 2026-08-31, 319e701):** F1, F2, F3, F4, F7, F8, F31 + pubmed ladder concurrency cap.
+
+**Batch 2 (2026-09-01, this working tree):** every remaining actionable finding is FIXED —
+F5, F6, F9, F10, F11, F13, F14, F15, F17, F18, F19, F20 (ACTION_ATTR_RE + pattern_scan spec),
+F21, F22 (fallback-reason telemetry, action-status warning, 5 grounding log promotions),
+F23, F24, F26, F27, F28, F29, F32, F33, and from F35: `_ENQUEUE_RE` escaped quotes +
+`prompt_memory_topup_floor` YAML key. Regression tests: `tests/unit/test_audit0831_fixes.py`
+(37, runtime — no getsource pins); ~770 affected-suite runs green; ruff clean.
+Bonus fix found while testing: `types.py get_provenance_summary` guarded against
+request-less rounds.
+
+**Still deferred per the "do NOT attempt" list (owner/frontier):** F12 (insight-branch
+runtime harness), F16 (time-blind calendar dup check — product decision), F25
+(canonical-form storage asymmetry), F30 (teaching XML tool tags — prompt budget),
+F34 (SSRF transport pinning), and the remaining F35 minor notes
+(GOOGLE_CALENDAR_MAX_EVENTS overload, progress-bubble theme, dimension producer,
+freeze shims, validate_and_freeze strictness, pubmed worst-case latency).
+
+---
+
 ## P0 — confirmed broken
 
 **F1. `_retry_fetch_urls_from_context` is dead on arrival (never fires on either production path).**

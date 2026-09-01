@@ -191,16 +191,26 @@ class TestFetchUrlContentLayering:
 
 
 def _mock_httpx_response(status=200, ctype="text/html", text=""):
+    # Stream-shaped since audit F11 (2026-08-31): _direct_fetch reads bodies
+    # via client.stream(...) + aiter_bytes with a byte cap, not client.get.
     resp = MagicMock()
     resp.status_code = status
     resp.headers = {"content-type": ctype}
-    resp.text = text
+    resp.charset_encoding = "utf-8"
+
+    async def _aiter_bytes():
+        if text:
+            yield text.encode()
+
+    resp.aiter_bytes = _aiter_bytes
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
     return resp
 
 
 def _mock_httpx_client(resp):
     client = AsyncMock()
-    client.get.return_value = resp
+    client.stream = MagicMock(return_value=resp)
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client

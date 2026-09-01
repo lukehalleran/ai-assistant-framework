@@ -65,8 +65,13 @@ _LYRIC_SECTION_RE = re.compile(
 # the 2026-08-29 live paste was run-on lyrics (newlines collapsed) framed by
 # exactly this narration, invisible to the line-structure heuristic. Length
 # floor keeps short remarks about songs ("this song slaps") out.
+# The listening arm requires a MUSIC noun (audit F28 2026-08-31: bare
+# "listening to this" marked podcast/audiobook shares as lyrics and poisoned
+# the pattern engine's content_type dimension).
 _SONG_FRAME_RE = re.compile(
-    r"\b(?:this\s+song|these\s+lyrics|listen(?:ing)?\s+to\s+this)\b",
+    r"\b(?:this\s+song|these\s+lyrics|"
+    r"listen(?:ing)?\s+to\s+this\s+(?:\w+\s+){0,2}"
+    r"(?:song|track|album|record|artist|band|playlist|music)\b)",
     re.IGNORECASE,
 )
 _SONG_FRAME_MIN_CHARS = 1200

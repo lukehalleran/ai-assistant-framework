@@ -158,7 +158,14 @@ class PendingActionsStore:
     def propose(self, proposal: ActionProposal) -> bool:
         """Store a new proposal. Returns False if at capacity (after pruning expired)."""
         self._prune_expired()
-        if len(self._store) >= self._max_pending:
+        # Audit F14 (2026-08-31): only ACTIVE proposals occupy slots —
+        # counting terminal ones (executed/failed/rejected, incl. expired
+        # restores) rejected every new proposal after 5 lifetime outcomes
+        # until restart.
+        active = sum(
+            1 for p in self._store.values() if p.status in ("pending", "approved")
+        )
+        if active >= self._max_pending:
             logger.warning(
                 f"[Actions] Pending store at capacity ({self._max_pending}), "
                 f"rejecting proposal {proposal.action_id}"

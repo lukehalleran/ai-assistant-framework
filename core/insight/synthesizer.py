@@ -97,7 +97,7 @@ Do not infer causation from a trend alone; causal language requires the \
 explicit longitudinal contract and alternative-explanation checks.
 9. CAUSAL BOUNDARY: calibrated causal or forward-looking assessment is \
 allowed only when phases, alternatives, and uncertainty support it; do not \
-prescribe medication/dose or claim professional review is unnecessary.\
+prescribe medication/dose or claim professional review is unnecessary.
 10. DENOMINATOR, WITH NUMBERS: use the turns-per-bucket denominators in the \
 aggregate — if mentions rose in a bucket where total talking also rose, say \
 so explicitly. Record-frequency is not life-frequency."""

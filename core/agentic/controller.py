@@ -390,6 +390,12 @@ class AgenticSearchController:
             str: Final streamed response chunks
         """
         # Initialize session
+        # Audit F21 (2026-08-31): the regenerate stash is per-turn state — a
+        # turn that never reaches _generate_final_response must not let
+        # regenerate_final_answer fire against the PREVIOUS turn's prompt.
+        self._last_final_prompt = None
+        self._last_final_system_prompt = None
+        self._last_final_model = None
         protocol = self.detect_protocol(model_name)
         session = AgenticSearchSession(
             query=query,
@@ -820,6 +826,7 @@ class AgenticSearchController:
                         ("fetch_url", decision.wants_fetch_url),
                         ("github", decision.wants_github),
                         ("action", decision.wants_action),
+                        ("pattern_scan", decision.wants_pattern_scan),
                     )
                     selected = [name for name, enabled in names if enabled]
                     return ",".join(selected) or ("answer" if decision.wants_answer else "done")
@@ -904,6 +911,7 @@ class AgenticSearchController:
                                     f"[AgenticSearch] Backfilled {_filled} from query for {_ad.action_type}"
                                 )
                         _ad_round = session.current_round
+                        telemetry_entry.setdefault("rounds", []).append(_ad_round)
                         _ad_result = await self._dispatch_single(
                             _ad, _ad_round, session, crisis_level, sandbox_session
                         )
@@ -916,6 +924,12 @@ class AgenticSearchController:
                         if _ad_result.formatted_context:
                             self._append_accumulated(session, _ad_result.formatted_context)
                         logger.info(f"[AgenticSearch] Dispatched action before done: {_ad.action_type}")
+                    # Audit F13 (2026-08-31): once an action dispatched this
+                    # session, the forced-action retry must never re-arm — a
+                    # later tool-less round used to re-force and produce a
+                    # DUPLICATE proposal.
+                    session._action_dispatched = True
+                    _force_propose_pending = False
 
                 # Web-mode-without-seed guard: the trigger routed this query to
                 # the web but distilled no seed terms, so Round 1 was skipped.
@@ -1049,6 +1063,7 @@ class AgenticSearchController:
                     # here must not become "ready to answer". Re-arm the force
                     # (now protocol-aware) and retry exactly once.
                     if (_forced_action is not None and not _action_decisions
+                            and not getattr(session, '_action_dispatched', False)
                             and not getattr(session, '_action_force_retry_sent', False)):
                         session._action_force_retry_sent = True
                         _force_propose_pending = True
@@ -1113,6 +1128,12 @@ class AgenticSearchController:
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 telemetry_entry["tool_ms"] = round((time.monotonic() - tool_started) * 1000)
+                # Audit F32 (2026-08-31): parallel rounds are numbered
+                # base_round+i — record them so the provenance join can match
+                # (it used to match only entry["round"], losing decision_ms
+                # for every round after the first of a multi-tool iteration).
+                telemetry_entry.setdefault("rounds", []).extend(
+                    base_round + i for i in range(len(tool_decisions)))
 
                 # Yield events and accumulate results (deterministic order)
                 session.state = AgentState.OBSERVING

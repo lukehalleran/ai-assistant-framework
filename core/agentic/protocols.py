@@ -1099,8 +1099,11 @@ class XMLMarkerHandler(BaseProtocolHandler):
     FILE_LIST_NESTED_PATTERN = re.compile(r'<file_list\s*>(.*?)</file_list>', re.DOTALL | re.IGNORECASE)
     FETCH_URL_NESTED_PATTERN = re.compile(r'<fetch_url\s*>(.*?)</fetch_url>', re.DOTALL | re.IGNORECASE)
     GET_FULL_DOCUMENT_NESTED_PATTERN = re.compile(r'<get_full_document\s*>(.*?)</get_full_document>', re.DOTALL | re.IGNORECASE)
-    PATTERN_SCAN_PATTERN = re.compile(r'<pattern_scan(?:\s+spec=["\'](.*?)["\'])?\s*>(.*?)</pattern_scan>', re.DOTALL | re.IGNORECASE)
-    PATTERN_SCAN_SELF_PATTERN = re.compile(r'<pattern_scan\s+spec=["\'](.*?)["\']\s*/>', re.DOTALL | re.IGNORECASE)
+    # Paired quotes (audit F20): a JSON spec is only expressible in a
+    # single-quoted attr; the old lazy ["\'](.*?)["\'] stopped at the first
+    # interior double quote and ran garbage as "computed evidence".
+    PATTERN_SCAN_PATTERN = re.compile(r'<pattern_scan(?:\s+spec=(?:"([^"]*)"|\'([^\']*)\'))?\s*>(.*?)</pattern_scan>', re.DOTALL | re.IGNORECASE)
+    PATTERN_SCAN_SELF_PATTERN = re.compile(r'<pattern_scan\s+spec=(?:"([^"]*)"|\'([^\']*)\')\s*/>', re.DOTALL | re.IGNORECASE)
     # Expand memory pattern: <expand_memory id="abc12345" collection="conversations" window="3">reason</expand_memory>
     EXPAND_MEMORY_PATTERN = re.compile(
         r'<expand_memory\s+id=["\']([^"\']+)["\']'
@@ -1120,19 +1123,24 @@ class XMLMarkerHandler(BaseProtocolHandler):
         r'<action\s+([^>]*?)>(.*?)</action>',
         re.DOTALL | re.IGNORECASE
     )
-    ACTION_ATTR_RE = re.compile(r'(\w+)\s*=\s*["\']([^"\']*)["\']')
+    # Paired quotes (audit F20 2026-08-31): the old [^"\'] class truncated
+    # values at the OTHER quote char — summary="Miller's exam" parsed as
+    # "Miller". Double- and single-quoted values each run to their own
+    # closing quote; use _parse_action_attrs, not findall, to consume this.
+    ACTION_ATTR_RE = re.compile(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
     # Contact lookup pattern: <lookup_contact name="Harper">reason</lookup_contact>
     LOOKUP_CONTACT_PATTERN = re.compile(
         r'<lookup_contact\s+name=["\']([^"\']+)["\']\s*>(.*?)</lookup_contact>',
         re.DOTALL | re.IGNORECASE
     )
     # Propose action pattern: <propose_action type="send_email" recipient="..." subject="..." reason="...">body</propose_action>
+    # Audit F5 (2026-08-31): attributes parse generically like <action> — the
+    # old fixed recipient/subject/reason groups made calendar proposals
+    # (summary/start_time/end_time) inexpressible on UNFORCED turns even
+    # though the always-injected XML vocabulary teaches this tag, so the
+    # marker silently fell through to wants_answer with raw XML as the text.
     PROPOSE_ACTION_PATTERN = re.compile(
-        r'<propose_action\s+type=["\']([^"\']+)["\']'
-        r'(?:\s+recipient=["\']([^"\']*)["\'])?'
-        r'(?:\s+subject=["\']([^"\']*)["\'])?'
-        r'(?:\s+reason=["\']([^"\']*)["\'])?'
-        r'\s*>(.*?)</propose_action>',
+        r'<propose_action\s+([^>]*?)>(.*?)</propose_action>',
         re.DOTALL | re.IGNORECASE
     )
     # Fallback: Anthropic-style <invoke name="tool"><parameter name="key">val</parameter></invoke>
@@ -1144,6 +1152,32 @@ class XMLMarkerHandler(BaseProtocolHandler):
         r'<parameter\s+name=["\'](\w+)["\'][^>]*>(.*?)</parameter>',
         re.DOTALL | re.IGNORECASE
     )
+
+    def _parse_action_attrs(self, attr_text: str) -> Dict[str, str]:
+        """key="value" pairs with paired quotes (empty string is a real value)."""
+        attrs: Dict[str, str] = {}
+        for m in self.ACTION_ATTR_RE.finditer(attr_text):
+            attrs[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
+        return attrs
+
+    @staticmethod
+    def _filter_action_params(action_type: str, params: Dict[str, str]) -> Dict[str, str]:
+        """Drop model-supplied params outside the spec's forward_params — the
+        same trust boundary the native path applies (audit F6 2026-08-31: a
+        model-supplied repo="someone/else" reached github_write unfiltered and
+        the approval card never showed it). Unknown action types pass through
+        unchanged; the executor registry rejects them downstream."""
+        # lazy import: cycle (mirrors the native propose_action path above)
+        from core.actions.registry import ACTION_SPECS
+        from core.actions.types import ActionType as _ActionType
+        try:
+            spec = ACTION_SPECS.get(_ActionType(action_type))
+        except ValueError:
+            spec = None
+        if spec is None:
+            return params
+        allowed = set(spec.forward_params)
+        return {k: v for k, v in params.items() if k in allowed}
 
     def parse_response(self, response: Any) -> List[SearchDecision]:
         """
@@ -1174,7 +1208,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
         # Longitudinal pattern scan. Spec is JSON so date ambiguity and phase
         # boundaries remain machine-readable on the XML protocol.
         for match in self.PATTERN_SCAN_PATTERN.finditer(text):
-            raw = (match.group(1) or match.group(2) or "{}").strip()
+            raw = (match.group(1) or match.group(2) or match.group(3) or "{}").strip()
             try:
                 spec = json.loads(raw)
             except Exception:
@@ -1182,7 +1216,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
             decisions.append(SearchDecision(wants_pattern_scan=True,
                 pattern_spec=spec, pattern_reason="explicit longitudinal pattern request"))
         for match in self.PATTERN_SCAN_SELF_PATTERN.finditer(text):
-            try: spec = json.loads(match.group(1))
+            try: spec = json.loads(match.group(1) or match.group(2) or "")
             except Exception: spec = {}
             decisions.append(SearchDecision(wants_pattern_scan=True, pattern_spec=spec))
 
@@ -1457,12 +1491,16 @@ class XMLMarkerHandler(BaseProtocolHandler):
         # Attributes parse generically: every key="value" lands in params
         # (type/reason special-cased), the body becomes params["message"].
         # A marker with no body but real attrs (calendar events) is valid.
+        # Attrs filter through the spec's forward_params (trust boundary);
+        # the body-derived message merges AFTER the filter — it's the marker's
+        # content channel, not a model-supplied param.
         for action_match in self.ACTION_PATTERN.finditer(text):
-            attrs = dict(self.ACTION_ATTR_RE.findall(action_match.group(1)))
+            attrs = self._parse_action_attrs(action_match.group(1))
             action_type = (attrs.pop("type", "") or "").strip()
             reason = attrs.pop("reason", "") or ""
             message = action_match.group(2).strip()
-            params = {k: v for k, v in attrs.items() if v}
+            params = self._filter_action_params(
+                action_type, {k: v for k, v in attrs.items() if v})
             if message:
                 params["message"] = message
             if action_type and params:
@@ -1480,22 +1518,21 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     action_reason=reason,
                 ))
 
-        # Check for <propose_action> markers
+        # Check for <propose_action> markers (generic attrs, same as <action>)
         for pa_match in self.PROPOSE_ACTION_PATTERN.finditer(text):
-            action_type = pa_match.group(1).strip()
-            recipient = pa_match.group(2) or ""
-            subject = pa_match.group(3) or ""
-            reason = pa_match.group(4) or ""
-            message = pa_match.group(5).strip()
+            attrs = self._parse_action_attrs(pa_match.group(1))
+            action_type = (attrs.pop("type", "") or "").strip()
+            reason = attrs.pop("reason", "") or ""
+            message = pa_match.group(2).strip()
             if action_type:
-                params = {}
+                params = self._filter_action_params(
+                    action_type, {k: v for k, v in attrs.items() if v})
                 if message:
                     params["message"] = message
-                if recipient:
-                    params["recipient"] = recipient
-                if subject:
-                    params["subject"] = subject
-                summary = f"{action_type} to {recipient}: {message[:60]}" if recipient else f"{action_type}: {message[:80]}"
+                recipient = params.get("recipient", "")
+                _label = params.get("summary") or message or next(iter(params.values()), "")
+                summary = (f"{action_type} to {recipient}: {_label[:60]}"
+                           if recipient else f"{action_type}: {_label[:80]}")
                 logger.info(f"[AgenticProtocol] XML propose_action marker found: {summary}")
                 decisions.append(SearchDecision(
                     wants_action=True,
@@ -1540,10 +1577,16 @@ class XMLMarkerHandler(BaseProtocolHandler):
                 elif func_name == "propose_action":
                     action_type = args.get("action_type") or args.get("type", "")
                     if action_type:
-                        params = {}
-                        for k in ("message", "recipient", "subject"):
-                            if args.get(k):
-                                params[k] = args[k]
+                        # Forward via the spec's forward_params (calendar
+                        # fields used to be dropped by a hardcoded
+                        # message/recipient/subject triple); unknown action
+                        # types keep the old conservative triple.
+                        candidate = {k: v for k, v in args.items()
+                                     if k not in ("action_type", "type", "reason") and v}
+                        params = self._filter_action_params(action_type, candidate)
+                        if params is candidate:  # no spec matched — old behavior
+                            params = {k: candidate[k] for k in
+                                      ("message", "recipient", "subject") if k in candidate}
                         summary = f"{action_type}: {args.get('message', '')[:80]}"
                         logger.info(f"[AgenticProtocol] XML invoke propose_action: {summary}")
                         decisions.append(SearchDecision(

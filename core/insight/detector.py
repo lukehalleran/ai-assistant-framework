@@ -349,11 +349,47 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
     if _NON_INSIGHT_LOOKUP_RE.search(query):
         return None
 
+    # The pattern-analysis kill switch governs every pattern_temporal arm
+    # (audit F17 2026-08-31: it only gated the agentic pattern_scan tool —
+    # the v1 primary surface ignored it). Assessment and theme-sweep are not
+    # pattern analysis and stay live.
+    try:
+        # lazy import: live-config read (tests monkeypatch app_config attrs)
+        from config.app_config import PATTERN_ANALYSIS_ENABLED as _pattern_enabled
+    except ImportError:
+        _pattern_enabled = True
+
+    explicit_command = bool(_EXPLICIT_PATTERN_COMMAND_RE.search(query))
+
+    # 1. Explicit assessment shapes — genuinely checked first (audit F10
+    #    2026-08-31: the deliberation shape used to preempt these, routing
+    #    "assess my theory against my history" away from the fail-honest
+    #    adversarial assess() machinery). Deliberation still owns requests
+    #    with deliberation-strength cues: an explicit pattern-tool command,
+    #    mixed personal+external evidence ("use my notes and outside
+    #    research to test my theory"), or an explicit time window ("am I
+    #    right my anxiety is worse over the last month" is longitudinal).
+    _deliberation_pull = _pattern_enabled and (
+        explicit_command
+        or bool(_PERSONAL_PLUS_EXTERNAL_RE.search(query))
+        or parse_window_days(query) != 0
+    )
+    if not _deliberation_pull:
+        for pat in _ASSESS_PATTERNS:
+            m = pat.search(query)
+            if m and not _trigger_is_incidental(query, m.start()):
+                theme = _clean_theme(m.groupdict().get("theme") or query)
+                return InsightIntent(
+                    kind="insight_assessment",
+                    theme=theme or query,
+                    wants_document=False,
+                    raw_query=query,
+                )
+
     # Generic longitudinal deliberation owns mixed internal/external requests.
     # The regex identifies only the operation shape; the LLM planner selects
     # the phenomenon and evidence contract from the complete request.
-    deliberation_match = _detect_deliberation_shape(query)
-    explicit_command = bool(_EXPLICIT_PATTERN_COMMAND_RE.search(query))
+    deliberation_match = _detect_deliberation_shape(query) if _pattern_enabled else None
     if deliberation_match and (
         explicit_command or not _trigger_is_incidental(query, deliberation_match.start())
     ):
@@ -361,22 +397,9 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
                              wants_document=False, raw_query=query,
                              window_days=parse_window_days(query))
 
-    # 1. Explicit assessment shapes (checked first: "check this against what
-    #    I've told you" may also contain gather-ish vocabulary).
-    for pat in _ASSESS_PATTERNS:
-        m = pat.search(query)
-        if m and not _trigger_is_incidental(query, m.start()):
-            theme = _clean_theme(m.groupdict().get("theme") or query)
-            return InsightIntent(
-                kind="insight_assessment",
-                theme=theme or query,
-                wants_document=False,
-                raw_query=query,
-            )
-
     # 1.5 Pattern-temporal shapes (before theme sweep: "my pattern with X
     #     over time" would otherwise match nothing and "how often" nothing).
-    for pat in _PATTERN_TEMPORAL_PATTERNS:
+    for pat in (_PATTERN_TEMPORAL_PATTERNS if _pattern_enabled else ()):
         m = pat.search(query)
         if m and not _trigger_is_incidental(query, m.start()):
             theme = _clean_theme(m.groupdict().get("theme") or "")

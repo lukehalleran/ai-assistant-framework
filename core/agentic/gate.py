@@ -492,6 +492,17 @@ _ELEVATED_TONE_MARKERS = (
 )
 
 
+def _pattern_analysis_enabled() -> bool:
+    """Kill switch shared by every pattern_temporal surface (audit F17
+    2026-08-31: it only gated the agentic pattern_scan tool)."""
+    try:
+        # lazy import: live-config read (tests monkeypatch app_config attrs)
+        from config.app_config import PATTERN_ANALYSIS_ENABLED
+    except ImportError:
+        return True
+    return bool(PATTERN_ANALYSIS_ENABLED)
+
+
 def _tone_is_elevated(tone_level) -> bool:
     """True when a tone/crisis level string indicates CONCERN or above."""
     if not tone_level:
@@ -963,7 +974,7 @@ async def evaluate_agentic_gate(
                 _looks_like_pattern_candidate,
                 analyze_for_web_search_llm,
             )
-            if _looks_like_pattern_candidate(user_text):
+            if _looks_like_pattern_candidate(user_text) and _pattern_analysis_enabled():
                 _pattern_decision = await analyze_for_web_search_llm(
                     query=user_text,
                     model_manager=model_manager,
@@ -1045,7 +1056,8 @@ async def evaluate_agentic_gate(
                         model_manager=model_manager,
                         conversation_context=_recent_ctx,
                     )
-                if getattr(trigger_decision, 'needs_pattern_analysis', False) is True:
+                if (getattr(trigger_decision, 'needs_pattern_analysis', False) is True
+                        and _pattern_analysis_enabled()):
                     logger.info(
                         "[Agentic Gate] LLM detected generic pattern-deliberation intent"
                     )

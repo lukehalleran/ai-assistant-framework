@@ -514,6 +514,9 @@ class TestTruthfulStatusAndGrounding:
     def test_runtime_health_reports_calendar_write_scope(self):
         auth = MagicMock()
         auth.is_authenticated = True
+        # Explicit since audit F15: a bare MagicMock auto-attr is truthy and
+        # would read as an expired-unrefreshable token.
+        auth.token_expired_no_refresh = False
         auth.has_scope.return_value = True
         with patch("config.app_config.INTERNET_ACTIONS_ENABLED", True), \
              patch("config.app_config.GOOGLE_CALENDAR_ENABLED", True), \

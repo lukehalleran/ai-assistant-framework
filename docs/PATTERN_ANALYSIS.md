@@ -3,7 +3,13 @@
 **Status:** v2 generic deliberation path (2026-08-30), on-demand only
 **Core:** `memory/pattern_engine.py` · **Planner:** `core/insight/deliberation.py` ·
 **Coordinator:** `core/insight/coordinator.py` · **Rolling stage:** `core/insight/temporal.py`
-**Config:** `pattern_analysis:` (config.yaml) → `PATTERN_*` constants
+**Config:** `pattern_analysis:` (config.yaml) → `PATTERN_*` constants.
+`pattern_analysis.enabled` / `PATTERN_ANALYSIS_ENABLED` is a real kill switch
+(since 2026-09-01, audit F17): it gates the agentic `pattern_scan` tool AND
+every `pattern_temporal` detection arm (deterministic detector shapes,
+deliberation shapes, and both gate-side LLM-classified arms). Insight
+assessment and theme-sweep are not pattern analysis and stay live when it is
+off.
 **Tests:** `tests/unit/test_pattern_engine.py`, `tests/unit/test_insight_pattern_facet.py`
 
 ## Why this exists

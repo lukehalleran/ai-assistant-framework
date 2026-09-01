@@ -216,7 +216,11 @@ def _truncate_query(query: str) -> str:
 # conf 0.9). Retrieved material is passed as a source block and treated
 # exactly like user-pasted material: authoritative for document-specific
 # facts.
-_SOURCE_MATERIAL_TRUNC = 3500
+# Sized to the handlers-side 6000-char collect cap (audit F23 2026-08-31:
+# 3500 silently discarded the tail of what handlers gathered). Truncation is
+# a head-slice, so the [AUTHORITATIVE RUNTIME CLOCK] block handlers prepends
+# FIRST always survives.
+_SOURCE_MATERIAL_TRUNC = 6000
 
 
 def _build_verifier_prompt(query: str, response: str,
@@ -483,7 +487,7 @@ def _parse_verdict(raw: str) -> Optional[GroundingVerdict]:
             verdict.correction = ""
         return verdict
     except (json.JSONDecodeError, ValueError, TypeError, ValidationError) as e:
-        logger.debug(f"[GroundingCheck] Failed to parse verdict JSON: {e}")
+        logger.warning(f"[GroundingCheck] Failed to parse verdict JSON: {e}")
         return None
 
 
@@ -517,10 +521,10 @@ async def verify_grounding(
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.debug("[GroundingCheck] Verifier timed out — fail-open")
+        logger.warning("[GroundingCheck] Verifier timed out — fail-open")
         return None
     except Exception as e:
-        logger.debug(f"[GroundingCheck] Verifier call failed — fail-open: {e}")
+        logger.warning(f"[GroundingCheck] Verifier call failed — fail-open: {e}")
         return None
     return _parse_verdict(raw)
 
@@ -633,10 +637,10 @@ async def integrate_grounding_correction(
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.debug("[GroundingCheck] Integrator timed out — falling back to suffix")
+        logger.warning("[GroundingCheck] Integrator timed out — falling back to suffix")
         return None
     except Exception as e:
-        logger.debug(f"[GroundingCheck] Integrator failed — falling back to suffix: {e}")
+        logger.warning(f"[GroundingCheck] Integrator failed — falling back to suffix: {e}")
         return None
     revised = (raw or "").strip()
     if revised.startswith("```"):

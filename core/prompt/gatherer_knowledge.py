@@ -297,6 +297,9 @@ _WIKI_CHROMA_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="wiki-chroma"
 )
 _WIKI_SEM_INFLIGHT = threading.Semaphore(_WIKI_SEM_MAX_CONCURRENT)
+# Chroma-path twin of _WIKI_SEM_INFLIGHT (audit F26): sized to the executor's
+# 2 workers; released by the worker thread, so stuck queries hold their slot.
+_WIKI_CHROMA_INFLIGHT = threading.Semaphore(2)
 # Hard cap on the wiki FAISS semantic-chunks lookup. The 41M-row index lives on
 # external storage; at the old 8s ceiling this task timed out on ~30% of turns
 # (see daemon_debug logs: "semantic=8.00s") and floored the whole prompt build.
@@ -1303,14 +1306,30 @@ class KnowledgeRetrievalMixin:
         # --- Try local ChromaDB wiki_knowledge first ---
         chroma = getattr(self.memory_coordinator, 'chroma_store', None)
         if chroma:
+            # In-flight guard (audit F26 2026-08-31, same zombie-thread class
+            # as _WIKI_SEM_INFLIGHT): a timed-out chroma query keeps running
+            # in the 2-worker executor; if both slots are still occupied,
+            # skip wiki this turn rather than queue behind them.
+            if not _WIKI_CHROMA_INFLIGHT.acquire(blocking=False):
+                logger.warning(
+                    "[ContextGatherer] Wiki chroma query still running from a "
+                    "previous turn — skipping wiki this turn"
+                )
+                return []
             try:
                 coll = chroma.collections.get('wiki_knowledge')
                 def _query_wiki_chroma():
-                    if not coll or coll.count() <= 0:
-                        return []
-                    return chroma.query_collection(
-                        'wiki_knowledge', query, n_results=limit
-                    )
+                    try:
+                        if not coll or coll.count() <= 0:
+                            return []
+                        return chroma.query_collection(
+                            'wiki_knowledge', query, n_results=limit
+                        )
+                    finally:
+                        # Released by the WORKER THREAD when the query actually
+                        # finishes — not at timeout — so the slot stays held
+                        # while the thread is genuinely stuck.
+                        _WIKI_CHROMA_INFLIGHT.release()
 
                 results = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
@@ -1319,46 +1338,50 @@ class KnowledgeRetrievalMixin:
                     timeout=WIKI_CHROMA_TIMEOUT_S,
                 )
                 if results:
-                    if results:
-                        # Drop disambiguation-page chunks — the embedded corpus
-                        # contains them as plain text and they carry no content
-                        # ("Feel may refer to:" reached [BACKGROUND KNOWLEDGE],
-                        # 2026-08-28); the live-API fallback already drops them
-                        # via page.is_disambiguation.
-                        pre_disambig = len(results)
-                        results = [
-                            r for r in results
-                            if not looks_like_disambiguation_text(
-                                r.get('content', ''),
-                                r.get('metadata', {}).get('title', ''),
-                            )
-                        ]
-                        if pre_disambig != len(results):
-                            logger.debug(
-                                f"[ContextGatherer] Dropped {pre_disambig - len(results)} "
-                                "wiki disambiguation chunk(s)"
-                            )
-                    if results:
-                        # Track wiki titles for session enrichment
-                        from knowledge.wiki_tracker import WikiArticleTracker
-                        for r in results:
-                            t = r.get('metadata', {}).get('title', '')
-                            if t:
-                                WikiArticleTracker.get_instance().track(t, r.get('content', '')[:500])
-                        return [
-                            {
-                                'content': r.get('content', ''),
-                                'metadata': r.get('metadata', {}),
-                                'relevance_score': r.get('relevance_score', 0.0),
-                                'source': 'wiki_knowledge',
-                            }
-                            for r in results
-                        ]
+                    # Drop disambiguation-page chunks — the embedded corpus
+                    # contains them as plain text and they carry no content
+                    # ("Feel may refer to:" reached [BACKGROUND KNOWLEDGE],
+                    # 2026-08-28); the live-API fallback already drops them
+                    # via page.is_disambiguation.
+                    pre_disambig = len(results)
+                    results = [
+                        r for r in results
+                        if not looks_like_disambiguation_text(
+                            r.get('content', ''),
+                            r.get('metadata', {}).get('title', ''),
+                        )
+                    ]
+                    if pre_disambig != len(results):
+                        logger.debug(
+                            f"[ContextGatherer] Dropped {pre_disambig - len(results)} "
+                            "wiki disambiguation chunk(s)"
+                        )
+                if results:
+                    # Track wiki titles for session enrichment
+                    from knowledge.wiki_tracker import WikiArticleTracker
+                    for r in results:
+                        t = r.get('metadata', {}).get('title', '')
+                        if t:
+                            WikiArticleTracker.get_instance().track(t, r.get('content', '')[:500])
+                    return [
+                        {
+                            'content': r.get('content', ''),
+                            'metadata': r.get('metadata', {}),
+                            'relevance_score': r.get('relevance_score', 0.0),
+                            'source': 'wiki_knowledge',
+                        }
+                        for r in results
+                    ]
             except asyncio.TimeoutError:
+                # Audit F26 (2026-08-31): the log has always claimed "skipping
+                # wiki this turn" — honor it. Falling through to the live API
+                # stacked a network fetch on top of a turn that already burned
+                # the chroma timeout.
                 logger.warning(
                     "[Wiki] ChromaDB wiki query timed out (>%ss) — skipping wiki this turn",
                     WIKI_CHROMA_TIMEOUT_S,
                 )
+                return []
             except Exception as e:
                 logger.debug(f"[ContextGatherer] wiki_knowledge query failed, falling back to API: {e}")
 

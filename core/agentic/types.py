@@ -331,7 +331,8 @@ class AgenticSearchSession:
                 rd["error"] = str(r.error)[:200]
             telemetry = next(
                 (entry for entry in self.round_telemetry
-                 if entry.get("round") == r.round_number),
+                 if entry.get("round") == r.round_number
+                 or r.round_number in entry.get("rounds", ())),
                 None,
             )
             if telemetry:
@@ -345,7 +346,7 @@ class AgenticSearchSession:
             for name, cues in {"pattern": ("pattern", "before and after"), "pubmed": ("pubmed", "research"), "web": ("web", "wiki")}.items():
                 if any(c in q for c in cues): channels[name] = "requested"
             for r in self.rounds:
-                q = (r.request.query or "").lower()
+                q = (r.request.query or "").lower() if r.request else ""
                 for name, cue in (("pattern", "pattern_scan"), ("pubmed", "pubmed"), ("web", "web_search"), ("wiki", "wiki")):
                     if cue in q: channels[name] = "attempted"
         return {

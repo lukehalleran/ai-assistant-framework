@@ -2107,8 +2107,15 @@ async def _run_insight_mode(ctx):
             assessment_overall=(assessment.overall if assessment else None),
             document_saved=bool(_save_doc and "Saved as" in doc_line),
         )
+        # Audit F19 (2026-08-31): pass the same patterns/manifest kwargs the
+        # real synthesize_stream calls pass — the debug record understated
+        # the sent prompt by up to 14K chars without them.
         _syn_system, _syn_prompt = build_synthesis_prompts(
-            intent, evidence, assessment, tone_elevated=tone_elevated
+            intent, evidence, assessment, tone_elevated=tone_elevated,
+            patterns=_patterns,
+            deliberation_manifest=(
+                _deliberation.manifest if _deliberation is not None else None
+            ),
         )
         prompt_tokens, system_tokens, total_tokens = _safe_count_tokens(
             _syn_prompt, _syn_system, model_name, orchestrator,
@@ -2543,12 +2550,14 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
 
         from core.agentic.gate import _tone_is_elevated
         elevated = _tone_is_elevated((ctx.raw_context or {}).get("tone_level"))
-        ctx.telemetry["grounding_corrected"] = True
         logger.warning(
             f"[GroundingCheck] Correcting false claim "
             f"(conf={verdict.confidence:.2f}, elevated={elevated}): "
             f"{verdict.claim[:120]!r}"
         )
+        # Audit F24 (2026-08-31): grounding_corrected records what SHIPPED —
+        # it is set only once a correction (integrated or suffix) is actually
+        # returned, never before the integrate attempt.
         if GROUNDING_INTEGRATE_ENABLED:
             revised = await integrate_grounding_correction(
                 response_text, verdict, mm,
@@ -2558,8 +2567,12 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
             )
             if revised:
                 ctx.telemetry["grounding_integrated"] = True
+                ctx.telemetry["grounding_corrected"] = True
                 return (revised, "")
-        return (None, build_grounding_correction(verdict.correction, elevated=elevated))
+        _suffix = build_grounding_correction(verdict.correction, elevated=elevated)
+        if _suffix:
+            ctx.telemetry["grounding_corrected"] = True
+        return (None, _suffix)
     except Exception as e:
         logger.warning(f"[GroundingCheck] failed (non-fatal): {e}")
         return _no_action
@@ -2698,6 +2711,9 @@ async def _run_agentic_search(ctx):
                 "falling through with reason=controller_init_failed"
             )
             ctx.agentic_fallback_reason = "controller_init_failed"
+            # Audit F22 (2026-08-31): land the reason in turn telemetry —
+            # the attribute alone was write-only.
+            ctx.telemetry["agentic_fallback_reason"] = "controller_init_failed"
             return
         model_name = orchestrator.model_manager.get_active_model_name()
 
@@ -3113,6 +3129,16 @@ async def _run_agentic_search(ctx):
         except Exception as _ag_gc_err:
             logger.warning(f"[Handle Submit] Agentic grounding check failed (non-fatal): {_ag_gc_err}")
 
+        # Audit F9 (2026-08-31): contact resolution, the action guard, and the
+        # grounding check above mutate display_output AFTER debug_record was
+        # built — on exactly the turns grounding changed facts, the Debug tab
+        # showed the uncorrected text. Sync the record to what the user sees
+        # (same leading-empty-shell strip _build_debug_record applies; the
+        # enhanced path builds its record post-mutation).
+        debug_record["response"] = _re.sub(
+            r"^\s*<(thinking|think|reasoning|reason)>\s*</\1>\s*", "",
+            display_output,
+        )
         logger.debug(f"[Handle Submit] Agentic yielding final response: {display_output[:100]}...")
         _final_chunk = {"role": "assistant", "content": display_output, "debug": debug_record}
         if _pending_action_id:
@@ -3208,8 +3234,10 @@ async def _run_enhanced(ctx):
             "Never contradict an AVAILABLE backend by claiming the application "
             "lacks access, authentication, or capability."
         )
-    except Exception:
-        pass
+    except Exception as _health_err:
+        logger.warning(
+            f"[Handle Submit] Action-status block build failed (non-fatal): {_health_err}"
+        )
     try:
         from config.app_config import ACTION_CLAIM_GUARD_ENABLED
         if ACTION_CLAIM_GUARD_ENABLED:

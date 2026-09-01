@@ -186,12 +186,19 @@ def _sandbox_learned_relations(tmp_path, monkeypatch):
 def _sandbox_pending_actions(tmp_path, monkeypatch):
     """Keep persisted approval proposals isolated from the live daemon and tests."""
     import sys
-    actions_types = sys.modules.get("core.actions.types")
-    if actions_types is not None:
-        monkeypatch.setattr(
-            actions_types, "_STORE_PATH",
-            str(tmp_path / "pending_actions.json"), raising=False,
-        )
+    # Unconditional (audit F18 2026-08-31): the sys.modules.get() form left a
+    # hole — a test that lazily imported core.actions.types AFTER fixture
+    # setup constructed its store against the PROD path, and the persistent
+    # store would RESTORE that test data into the live daemon. The module is
+    # cheap to import; stores read _STORE_PATH at construction time.
+    import core.actions.types as actions_types
+    monkeypatch.setattr(
+        actions_types, "_STORE_PATH",
+        str(tmp_path / "pending_actions.json"), raising=False,
+    )
+    # core.agentic.tools stays conditional: if it isn't imported yet, its
+    # cached store starts None and any later construction uses the patched
+    # _STORE_PATH above.
     tools_module = sys.modules.get("core.agentic.tools")
     if tools_module is not None:
         monkeypatch.setattr(

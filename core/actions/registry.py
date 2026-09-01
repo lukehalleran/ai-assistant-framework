@@ -257,6 +257,14 @@ def get_runtime_action_health() -> str:
                 "calendar_create_event backend: UNAVAILABLE "
                 "(Google OAuth token is not authenticated)"
             )
+        elif getattr(auth, "token_expired_no_refresh", False):
+            # Audit F15 (2026-08-31): an expired token with no refresh token
+            # reported AVAILABLE — the disk shows it cannot be refreshed.
+            lines.append(
+                "calendar_create_event backend: UNAVAILABLE "
+                "(OAuth token expired with no refresh token — "
+                "owner must run scripts/reauth_google.py)"
+            )
         else:
             from core.actions.google_calendar_create import CALENDAR_EVENTS_SCOPE
             if auth.has_scope(CALENDAR_EVENTS_SCOPE):
