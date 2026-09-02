@@ -432,11 +432,34 @@ def _attach_agentic_provenance(provenance, orchestrator):
         logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
 
 
+def _gate_debug_summary(gate_decision) -> str:
+    """One-line 'why this turn routed as it did' for the debug record — the
+    gate's trigger modes / veto reason + veto-exempt/deferred flags. Added
+    2026-09-02: a debug dump showed mode=agentic-search but not WHY (which
+    tier fired, whether a tone veto was even considered), so a 129s agentic
+    loop on an emotional check-in couldn't be diagnosed from the dump alone."""
+    if gate_decision is None:
+        return ""
+    parts = []
+    reason = getattr(gate_decision, "reason", "") or ""
+    if reason:
+        parts.append(reason)
+    modes = getattr(gate_decision, "modes", None)
+    if modes:
+        parts.append(f"modes={list(modes)}")
+    if getattr(gate_decision, "veto_exempt", False):
+        parts.append("veto_exempt")
+    if getattr(gate_decision, "deferred_request", None):
+        parts.append("deferred_request")
+    return " | ".join(parts)
+
+
 def _build_debug_record(
     mode, user_text, prompt, system_prompt, response, model,
     prompt_tokens, system_tokens, total_tokens,
     citations, orchestrator, provenance=None,
     phase_timings=None, task_timings=None, gather_elapsed=0.0,
+    gate_reason=None,
 ):
     """Build a debug record dict for the Debug Trace tab."""
     # A leading EMPTY reasoning shell ("<thinking></thinking>Answer…") is a
@@ -467,6 +490,7 @@ def _build_debug_record(
             if task_timings else {}
         ),
         'gather_elapsed': round(gather_elapsed, 3) if gather_elapsed else 0.0,
+        'gate_reason': gate_reason or '',
     }
 
 
@@ -1170,6 +1194,7 @@ async def _run_raw(ctx):
         system_prompt=None, response=response_text, model=_raw_model,
         prompt_tokens=_raw_ptok, system_tokens=0, total_tokens=_raw_ttok,
         citations=[], orchestrator=orchestrator,
+        gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
     )
     yield {"role": "assistant", "content": response_text, "debug": debug_record}
     ctx.handled = True
@@ -1277,6 +1302,7 @@ async def _run_duel(ctx, gens, sels, features_duel):
             system_tokens=system_tokens, total_tokens=total_tokens,
             citations=citations, orchestrator=orchestrator,
             provenance=_duel_prov,
+            gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
         )
 
         yield {"role": "assistant", "content": display_output, "debug": debug_record}
@@ -2162,6 +2188,7 @@ async def _run_insight_mode(ctx):
             prompt_tokens=prompt_tokens, system_tokens=system_tokens,
             total_tokens=total_tokens, citations=[], orchestrator=orchestrator,
             provenance=_prov,
+            gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
         )
         yield {"role": "assistant", "content": final_text + doc_line,
                "debug": debug_record}
@@ -3120,6 +3147,7 @@ async def _run_agentic_search(ctx):
             phase_timings=_agentic_handler_timings,
             task_timings=_agentic_tasks,
             gather_elapsed=_agentic_gather,
+            gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
         )
         # Yield final response with debug record (response was already streamed
         # chunk-by-chunk during the loop, so only one yield needed here)
@@ -3797,6 +3825,7 @@ async def _run_enhanced(ctx):
             citations=citations, orchestrator=orchestrator,
             provenance=_enh_prov, phase_timings=_handler_timings,
             task_timings=_task_timings, gather_elapsed=_gather_elapsed,
+            gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
         )
         _enh_final_chunk = {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
         if _enh_pending_action_id:

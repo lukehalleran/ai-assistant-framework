@@ -460,6 +460,44 @@ def _is_advice_shaped(verdict: "GroundingVerdict") -> bool:
     return not _asserts_falsehood(verdict.why_false)
 
 
+# A generic health/safety warning ("working in extreme heat can pose serious
+# health risks... stay hydrated") is NOT a factual correction — it contradicts
+# nothing in the response, it just bolts a PSA on. Live 2026-09-02: this shape
+# survived _is_advice_shaped because the user's own echoed figure ("100
+# degrees") read as a concrete fact. Demote only when the correction asserts
+# no contradiction at all (a real "the safe dose is 400mg, not 4000mg" catch
+# carries a contrast word and survives).
+_SAFETY_PSA_RE = re.compile(
+    r"(?i)"
+    r"\bcan\s+(?:pose|cause|lead\s+to|result\s+in)\b[^.!?]{0,40}"
+    r"\b(?:risk|danger|harm|hazard|injur)"
+    r"|\b(?:health|safety)\s+risks?\b"
+    r"|\bheat\s+(?:exhaustion|stroke)\b|\bdehydrat"
+    r"|\bit'?s\s+important\s+to\b[^.!?]{0,60}"
+    r"\b(?:safe|hydrat|health|cool|careful|rest)"
+    r"|\bstay\s+(?:hydrated|safe|cool)\b"
+    r"|\bseek\s+(?:medical|professional|immediate)\b"
+    r"|\bconsult\s+(?:a\s+)?(?:doctor|physician|professional|healthcare)\b"
+)
+_CONTRADICTION_RE = re.compile(
+    r"(?i)\b(?:not|isn'?t|aren'?t|wasn'?t|weren'?t|rather\s+than|instead\s+of|"
+    r"incorrect|wrong|false|inaccurate|mistaken|should\s+be|actually)\b"
+)
+
+
+def _is_safety_psa(verdict: "GroundingVerdict") -> bool:
+    """True when the 'correction' is a generic health/safety warning that
+    contradicts nothing in the response. Conservative: kept if it asserts a
+    falsehood OR carries any contrast marker (a real dose/value catch)."""
+    if not verdict.false_claim_present:
+        return False
+    if not _SAFETY_PSA_RE.search(verdict.correction or ""):
+        return False
+    if _asserts_falsehood(verdict.why_false) or _asserts_falsehood(verdict.correction):
+        return False
+    return not _CONTRADICTION_RE.search(verdict.correction or "")
+
+
 def _asserts_falsehood(why_false: str) -> bool:
     """Does the text actually assert something is wrong (vs. hedge)?"""
     w = (why_false or "").lower()
@@ -494,6 +532,12 @@ def _parse_verdict(raw: str) -> Optional[GroundingVerdict]:
         if _is_advice_shaped(verdict):
             logger.info(
                 "[GroundingCheck] Advice-shaped verdict demoted to no-flag: "
+                f"correction={verdict.correction[:80]!r}")
+            verdict.false_claim_present = False
+            verdict.correction = ""
+        if _is_safety_psa(verdict):
+            logger.info(
+                "[GroundingCheck] Safety-PSA verdict demoted to no-flag: "
                 f"correction={verdict.correction[:80]!r}")
             verdict.false_claim_present = False
             verdict.correction = ""
@@ -628,6 +672,35 @@ def claim_date_user_stated(claim: str, query: str) -> bool:
     return any(d in query_dates or d[1] in query_days for d in dates)
 
 
+_FIGURE_RE = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)(?![\w])")
+
+
+def _salient_figures(text: str) -> set:
+    """Figures with >= 2 digits (>= 10), commas stripped. 1-digit numbers are
+    ignored — they collide spuriously; the date path already covers day-of-month."""
+    figs = set()
+    for m in _FIGURE_RE.finditer(text or ""):
+        raw = m.group(1).replace(",", "")
+        if len(raw.replace(".", "")) >= 2:
+            figs.add(raw)
+    return figs
+
+
+def claim_figure_user_stated(claim: str, query: str) -> bool:
+    """True when a salient figure (>= 2 digits) in the flagged claim also
+    appears verbatim in the user's own message. The assistant echoing the
+    user's own number ("100-degree day" <- the user's "it is like 100 out")
+    is grounded by construction, so a safety/precision 'correction' of it
+    contradicts the user, not a fabrication. The figure analog of
+    claim_date_user_stated; under-fires (1-digit figures ignored).
+
+    Live 2026-09-02: a warm daily-check-in reply echoing the user's own
+    "100 out" got a heat-safety PSA spliced in mid-sentence at conf 0.9."""
+    if not claim or not query:
+        return False
+    return bool(_salient_figures(claim) & _salient_figures(query))
+
+
 def claim_date_in_source(claim: str, source: str) -> bool:
     """True when a date in the flagged claim appears in the source material
     on a line that shares at least one content word with the claim (the
@@ -698,6 +771,12 @@ async def verify_grounding(
         if claim_date_user_stated(verdict.claim, query):
             logger.warning(
                 "[GroundingCheck] Flagged claim's date matches a date the "
+                f"user stated — demoted: {verdict.claim[:100]!r}"
+            )
+            return None
+        if claim_figure_user_stated(verdict.claim, query):
+            logger.warning(
+                "[GroundingCheck] Flagged claim's figure matches one the "
                 f"user stated — demoted: {verdict.claim[:100]!r}"
             )
             return None

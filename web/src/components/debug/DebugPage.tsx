@@ -114,6 +114,7 @@ function recordToText(rec: DebugRecord, index: number): string {
     if (!text) return
     lines.push('', `--- ${title} ---`, text)
   }
+  textBlock('GATE', rec.gate_reason)
   textBlock('QUERY', rec.query)
   textBlock('PROMPT', rec.prompt)
   textBlock('SYSTEM PROMPT', rec.system_prompt)

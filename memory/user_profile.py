@@ -780,16 +780,31 @@ class UserProfile:
 
                 parts.append(f"{cat.value}: {'; '.join(fact_strs)}")
 
-        # Append mini-timelines for temporal queries
+        # Append mini-timelines for temporal queries. CAPPED (2026-09-02): a
+        # churny relation like works_on/plan accumulates dozens of values over
+        # months; joining the ENTIRE history produced multi-hundred-char lines
+        # that ate the profile budget and truncated real facts out of the
+        # prompt (a single works_on timeline swallowed the whole tail). Keep the
+        # most recent N (history is oldest-first), oldest→newest, each value
+        # capped; an ellipsis marks that older entries were dropped.
         if is_temporal and timeline_relations:
+            try:
+                _tl_max = int(os.getenv("PROFILE_TIMELINE_MAX_ENTRIES", "6"))
+            except ValueError:
+                _tl_max = 6
             for rel, cat in timeline_relations:
                 history = self.get_fact_history(rel, cat)
                 if len(history) > 1:
+                    recent = history[-_tl_max:] if _tl_max > 0 else history
                     entries = []
-                    for h in history:
-                        ts_str = h.get("timestamp", "")[:10]  # Just date
-                        entries.append(f"{h.get('value', '?')} [{ts_str}]")
-                    parts.append(f"{rel} timeline: {' → '.join(entries)}")
+                    for h in recent:
+                        ts_str = (h.get("timestamp", "") or "")[:10]  # Just date
+                        val = str(h.get("value", "?"))
+                        if len(val) > 60:
+                            val = val[:57] + "…"
+                        entries.append(f"{val} [{ts_str}]")
+                    prefix = "…→ " if len(history) > len(recent) else ""
+                    parts.append(f"{rel} timeline: {prefix}{' → '.join(entries)}")
 
         result = "\n".join(parts)
 

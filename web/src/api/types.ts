@@ -47,6 +47,7 @@ export interface DebugRecord {
   phase_timings?: Record<string, number>
   task_timings?: Record<string, number>
   gather_elapsed?: number
+  gate_reason?: string
   [key: string]: unknown
 }
 

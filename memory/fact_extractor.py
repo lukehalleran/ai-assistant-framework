@@ -273,6 +273,41 @@ def _salvage_long_object(obj_orig: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# Repo/machine-state junk (2026-09-02): a read-only git audit query
+# ("report current branch, exact HEAD and tree SHA, git status") was mined into
+# durable profile facts — head_sha=<40hex>, git_status="working tree has 13
+# modified files", role=auditor — all transient machine state, never identity.
+# Drop by relation shape, SHA-shaped object, or repo-state object phrasing.
+# Wired into BOTH _clean_triple and llm_fact_extractor._normalize_triple.
+_GIT_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+_REPO_STATE_RELATIONS = frozenset({
+    "git_status", "head_sha", "tree_sha", "commit_sha", "head", "tree",
+    "current_branch", "branch_head",
+})
+_REPO_STATE_OBJECT_RE = re.compile(
+    r"(?i)\bworking\s+tree\b|\bmodified\s+files?\b|\buntracked\s+files?\b|"
+    r"\bstaged\s+files?\b|\bhead\s+sha\b|\btree\s+sha\b|\bgit\s+status\b"
+)
+
+
+def _is_repo_audit_junk(subj: str, rel: str, obj: str) -> bool:
+    """True for transient git/repo machine-state triples from an audit query —
+    never durable user facts. `role=auditor` (the command verb 'audit' misread
+    as a job title) is included; a genuine professional would resurface it
+    through richer phrasing, and this is a demote-direction guard."""
+    r = (rel or "").strip().lower()
+    o = (obj or "").strip()
+    if r in _REPO_STATE_RELATIONS:
+        return True
+    if r == "role" and o.lower() in {"auditor", "audit"}:
+        return True
+    if _GIT_SHA_RE.fullmatch(o.lower()):
+        return True
+    if _REPO_STATE_OBJECT_RE.search(o):
+        return True
+    return False
+
+
 def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str,str,str]]:
     """Return a cleaned/normalized (s,r,o) or None to drop the triple."""
     if not subj or not obj or not rel:
@@ -306,6 +341,11 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
 
     # Drop adverbial/temporal/negation fragment objects (extraction noise)
     if _is_junk_object(o, r):
+        return None
+
+    # Drop transient git/repo machine-state triples (extraction noise from a
+    # read-only audit query — 2026-09-02)
+    if _is_repo_audit_junk(s, r, obj_orig):
         return None
 
     # Drop bare units as subjects or objects (unless a numeric value is present)

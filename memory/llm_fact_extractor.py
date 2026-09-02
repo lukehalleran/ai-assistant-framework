@@ -131,11 +131,18 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     # and later showed up only as "skipped as duplicate" of itself.
     from memory.fact_extractor import (
         _is_junk_object,
+        _is_repo_audit_junk,
         _fact_object_max_chars,
         _salvage_long_object,
     )
     if _is_junk_object(obj, rel):
         logger.debug(f"[LLM Facts] Blocked junk object: {subj}|{rel}|{obj}")
+        return None
+
+    # Transient git/repo machine-state from an audit query (2026-09-02) — same
+    # guard the regex extractor applies in _clean_triple.
+    if _is_repo_audit_junk(subj, rel, obj):
+        logger.debug(f"[LLM Facts] Blocked repo-audit junk: {subj}|{rel}|{obj}")
         return None
 
     # Long-object cap + salutation salvage (2026-08-26). This path had NO
