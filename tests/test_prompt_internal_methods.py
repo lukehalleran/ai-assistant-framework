@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 from core.prompt import UnifiedPromptBuilder
+from core.prompt.builder import _is_local_repo_audit_query
 from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
@@ -55,6 +56,33 @@ def test_middle_out(prompt_builder):
     )
     assert isinstance(truncated, str)
     assert len(truncated) <= len(long_text)
+
+
+def test_local_repo_audit_query_is_narrowly_detected():
+    assert _is_local_repo_audit_query(
+        "Perform a read-only audit of /srv/project; verify branch and HEAD"
+    )
+    assert not _is_local_repo_audit_query("Can you verify what I said yesterday?")
+    assert not _is_local_repo_audit_query("Tell me about repository design")
+
+
+@pytest.mark.asyncio
+async def test_local_repo_audit_context_excludes_private_sources(prompt_builder):
+    ctx = await prompt_builder.build_prompt(
+        "Perform a read-only audit of /srv/project; verify branch and HEAD",
+        intent_type="project_work",
+    )
+
+    private_keys = (
+        "recent_conversations", "memories", "user_profile", "narrative_state",
+        "recent_summaries", "semantic_summaries", "recent_reflections",
+        "semantic_reflections", "personal_notes", "user_uploads",
+        "graph_context", "unresolved_threads", "upcoming_schedule",
+        "google_calendar", "relevant_emails", "proactive_insights",
+        "daemon_self_notes",
+    )
+    assert all(not ctx.get(key) for key in private_keys)
+    assert not set(ctx.get("_task_timings", {})).intersection(private_keys)
 
 
 def test_middle_out_short_text(prompt_builder):

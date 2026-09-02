@@ -62,6 +62,7 @@ Additional Contract (Agentic Search):
 import re
 import processing.gate_system as gate_system
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Union
 from dataclasses import dataclass, field
 from core.response_parser import ResponseParser
@@ -749,8 +750,10 @@ class DaemonOrchestrator:
                 )
                 if FILE_ACCESS_ENABLED and FILE_ACCESS_APPROVED_FOLDERS:
                     from core.file_access_manager import FileAccessManager
+                    _project_root = str(Path(__file__).resolve().parent.parent)
                     file_access_manager = FileAccessManager(
                         approved_folders=FILE_ACCESS_APPROVED_FOLDERS,
+                        base_dir=_project_root,
                         max_read_bytes=FILE_ACCESS_MAX_READ_BYTES,
                         max_grep_results=FILE_ACCESS_MAX_GREP_RESULTS,
                         max_list_entries=FILE_ACCESS_MAX_LIST_ENTRIES,
@@ -776,6 +779,7 @@ class DaemonOrchestrator:
                 if GIT_STATS_ENABLED:
                     from core.git_stats_manager import GitStatsManager
                     git_stats_manager = GitStatsManager(
+                        repo_path=str(Path(__file__).resolve().parent.parent),
                         timeout=GIT_STATS_TIMEOUT,
                         max_output_lines=GIT_STATS_MAX_OUTPUT_LINES,
                     )

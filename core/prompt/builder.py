@@ -511,6 +511,21 @@ PRIORITY_ORDER = [
 ]
 
 
+def _is_local_repo_audit_query(query: str) -> bool:
+    """Detect explicit local repository inspection/verification turns."""
+    q = (query or "").lower()
+    action = any(term in q for term in (
+        "read-only audit", "readonly audit", "repository audit", "repo audit",
+        "audit of /", "inspect the repo", "inspect the repository",
+        "verify the repo", "verify the repository",
+    ))
+    repo_cue = any(term in q for term in (
+        "repo", "repository", "git status", "branch", "head", "pytest",
+        "test suite", "lint", ".github/", "/home/",
+    ))
+    return action and repo_cue
+
+
 
 
 class UnifiedPromptBuilder:
@@ -883,10 +898,31 @@ class UnifiedPromptBuilder:
                 )
                 return await self._build_lightweight_context(user_input, stm_summary=stm_summary, codebase_changes=codebase_changes)
 
+            # Local repository audits should be grounded by file/git tools, not
+            # unrelated private life context. Keep codebase-change awareness,
+            # but disable every personal/semantic retrieval source.
+            _local_repo_audit = _is_local_repo_audit_query(user_input)
+            _ro = dict(retrieval_overrides or {})
+            if _local_repo_audit:
+                _ro.update({
+                    "max_recent": 0, "max_mems": 0, "max_summaries": 0,
+                    "max_reflections": 0, "max_dreams": 0,
+                    "max_semantic": 0, "max_wiki": 0, "max_skills": 0,
+                    "max_proposals": 0, "max_git_commits": 0,
+                    "max_surfaced_threads": 0, "max_reference_docs": 0,
+                    "max_user_uploads": 0, "max_proactive": 0,
+                    "max_visual_memories": 0, "max_personal_notes": 0,
+                    "max_upcoming_schedule": 0, "max_narrative": 0,
+                })
+                logger.info(
+                    "[BUILD_PROMPT] Local repository audit — using minimized, "
+                    "tool-grounded context"
+                )
+
             # Step 2: Gather narrative context (synchronous, cheap file read)
             # Gated by intent override: max_narrative=0 skips entirely
             narrative_state = ""
-            _ro_pre = retrieval_overrides or {}
+            _ro_pre = _ro
             if _ro_pre.get("max_narrative", 1) > 0:
                 try:
                     narrative_state = self.context_gatherer.get_narrative_context()
@@ -896,22 +932,21 @@ class UnifiedPromptBuilder:
                     logger.debug(f"[PromptBuilder] Failed to get narrative context: {e}")
 
             # Apply intent-driven retrieval count overrides
-            _ro = retrieval_overrides or {}
             eff_max_recent = _ro.get("max_recent", PROMPT_MAX_RECENT)
             eff_max_mems = _ro.get("max_mems", PROMPT_MAX_MEMS)
             eff_max_summaries_r = _ro.get("max_recent_summaries", PROMPT_MAX_RECENT_SUMMARIES)
             eff_max_summaries_s = _ro.get("max_semantic_summaries", PROMPT_MAX_SEMANTIC_SUMMARIES)
             # Convenience: "max_summaries" splits evenly into recent/semantic
             if "max_summaries" in _ro and "max_recent_summaries" not in _ro:
-                half = max(1, _ro["max_summaries"] // 2)
-                eff_max_summaries_r = half
-                eff_max_summaries_s = _ro["max_summaries"] - half
+                total = max(0, int(_ro["max_summaries"]))
+                eff_max_summaries_r = (total + 1) // 2
+                eff_max_summaries_s = total // 2
             eff_max_reflections_r = _ro.get("max_recent_reflections", PROMPT_MAX_RECENT_REFLECTIONS)
             eff_max_reflections_s = _ro.get("max_semantic_reflections", PROMPT_MAX_SEMANTIC_REFLECTIONS)
             if "max_reflections" in _ro and "max_recent_reflections" not in _ro:
-                half = max(1, _ro["max_reflections"] // 2)
-                eff_max_reflections_r = half
-                eff_max_reflections_s = _ro["max_reflections"] - half
+                total = max(0, int(_ro["max_reflections"]))
+                eff_max_reflections_r = (total + 1) // 2
+                eff_max_reflections_s = total // 2
             eff_max_dreams = _ro.get("max_dreams", PROMPT_MAX_DREAMS)
             eff_max_semantic = _ro.get("max_semantic", PROMPT_MAX_SEMANTIC)
             # Wiki-semantic intent gate: skip the external wiki FAISS lookup on turns
@@ -949,6 +984,8 @@ class UnifiedPromptBuilder:
                 logger.debug("[BUILD_PROMPT] No intent overrides + short message — suppressing visual memory")
             eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
             eff_max_upcoming_schedule = _ro.get("max_upcoming_schedule", 0)
+            eff_user_profile_tokens = 0 if _local_repo_audit else 3000
+            eff_max_graph_sentences = 0 if _local_repo_audit else PROMPT_MAX_GRAPH_SENTENCES
 
             # Schedule keyword gating: even without intent override, activate
             # schedule retrieval when query has schedule trigger + temporal signal
@@ -1069,20 +1106,25 @@ class UnifiedPromptBuilder:
                     raise e
 
             # Recent conversations
-            tasks["recent"] = asyncio.create_task(
-                _timed_task("recent", self.context_gatherer._get_recent_conversations(eff_max_recent))
-            )
+            if eff_max_recent > 0:
+                tasks["recent"] = asyncio.create_task(
+                    _timed_task("recent", self.context_gatherer._get_recent_conversations(eff_max_recent))
+                )
 
             # Query-relevant memories (semantic search results only)
-            tasks["memories"] = asyncio.create_task(
-                _timed_task("memories", self.context_gatherer._get_semantic_memories(user_input, eff_max_mems))
-            )
+            if eff_max_mems > 0:
+                tasks["memories"] = asyncio.create_task(
+                    _timed_task("memories", self.context_gatherer._get_semantic_memories(user_input, eff_max_mems))
+                )
 
             # User Profile (replaces semantic_facts + fresh_facts with categorized hybrid retrieval)
             # Increased max_tokens to 3000 to accommodate 12 facts per category (up to 144 facts total)
-            tasks["user_profile"] = asyncio.create_task(
-                _timed_task("user_profile", self.context_gatherer.get_user_profile_context(user_input, max_tokens=3000))
-            )
+            if eff_user_profile_tokens > 0:
+                tasks["user_profile"] = asyncio.create_task(
+                    _timed_task("user_profile", self.context_gatherer.get_user_profile_context(
+                        user_input, max_tokens=eff_user_profile_tokens
+                    ))
+                )
 
             # Summaries (separated into recent + semantic)
             if eff_max_summaries_r > 0 or eff_max_summaries_s > 0:
@@ -1179,14 +1221,18 @@ class UnifiedPromptBuilder:
                 )
 
             # Knowledge graph context (entity relationships)
-            tasks["graph_context"] = asyncio.create_task(
-                _timed_task("graph_context", self.context_gatherer.get_graph_context(user_input, PROMPT_MAX_GRAPH_SENTENCES))
-            )
+            if eff_max_graph_sentences > 0:
+                tasks["graph_context"] = asyncio.create_task(
+                    _timed_task("graph_context", self.context_gatherer.get_graph_context(
+                        user_input, eff_max_graph_sentences
+                    ))
+                )
 
             # Unresolved threads (proactive surfacing)
-            tasks["unresolved_threads"] = asyncio.create_task(
-                _timed_task("unresolved_threads", self.context_gatherer.get_unresolved_threads(eff_max_surfaced_threads))
-            )
+            if eff_max_surfaced_threads > 0:
+                tasks["unresolved_threads"] = asyncio.create_task(
+                    _timed_task("unresolved_threads", self.context_gatherer.get_unresolved_threads(eff_max_surfaced_threads))
+                )
 
             # Proactive cross-domain insights (non-blocking: warm cache or background warmup).
             # Distress gate (2026-08-05): speculative cross-domain suggestions
@@ -1234,7 +1280,7 @@ class UnifiedPromptBuilder:
             # Google Calendar events (real-time, cached 5 min)
             try:
                 from config.app_config import GOOGLE_CALENDAR_ENABLED, GOOGLE_CALENDAR_MAX_EVENTS
-                if GOOGLE_CALENDAR_ENABLED:
+                if GOOGLE_CALENDAR_ENABLED and not _local_repo_audit:
                     tasks["google_calendar"] = asyncio.create_task(
                         _timed_task("google_calendar",
                                     self.context_gatherer.get_google_calendar_events(GOOGLE_CALENDAR_MAX_EVENTS))
@@ -1245,7 +1291,8 @@ class UnifiedPromptBuilder:
             # Relevant emails (passive retrieval, cue-gated + distress-suppressed)
             try:
                 from config.app_config import EMAIL_PASSIVE_CONTEXT_ENABLED, EMAIL_PASSIVE_MAX
-                if EMAIL_PASSIVE_CONTEXT_ENABLED and EMAIL_PASSIVE_MAX > 0:
+                if (EMAIL_PASSIVE_CONTEXT_ENABLED and EMAIL_PASSIVE_MAX > 0
+                        and not _local_repo_audit):
                     tasks["relevant_emails"] = asyncio.create_task(
                         _timed_task("relevant_emails",
                                     self.context_gatherer.get_relevant_emails(user_input, EMAIL_PASSIVE_MAX))
@@ -1256,7 +1303,8 @@ class UnifiedPromptBuilder:
             # Daemon self-notes (working context from prior sessions)
             try:
                 from config.app_config import DAEMON_NOTES_ENABLED, DAEMON_NOTES_MAX_PER_PROMPT
-                if DAEMON_NOTES_ENABLED and DAEMON_NOTES_MAX_PER_PROMPT > 0:
+                if (DAEMON_NOTES_ENABLED and DAEMON_NOTES_MAX_PER_PROMPT > 0
+                        and not _local_repo_audit):
                     tasks["daemon_self_notes"] = asyncio.create_task(
                         _timed_task("daemon_self_notes",
                                     self.context_gatherer.get_daemon_self_notes(user_input, DAEMON_NOTES_MAX_PER_PROMPT))
@@ -1277,11 +1325,12 @@ class UnifiedPromptBuilder:
                 )
             except Exception as _wc_err:
                 logger.debug(f"[BUILD_PROMPT] recent-context for web trigger failed (non-fatal): {_wc_err}")
-            tasks["web_search"] = asyncio.create_task(
-                _timed_task("web_search", self.context_gatherer._get_web_search_results(
-                    user_input, crisis_level, intent_type=intent_type,
-                    conversation_context=_web_conv_ctx))
-            )
+            if not _local_repo_audit:
+                tasks["web_search"] = asyncio.create_task(
+                    _timed_task("web_search", self.context_gatherer._get_web_search_results(
+                        user_input, crisis_level, intent_type=intent_type,
+                        conversation_context=_web_conv_ctx))
+                )
 
             # Gather all results with timeout — use asyncio.wait so completed
             # tasks survive a timeout instead of wiping the entire context.
@@ -1412,8 +1461,10 @@ class UnifiedPromptBuilder:
                 logger.warning(f"[PromptBuilder] Could not sort reflections by timestamp: {e}")
 
             # Top-up with on-demand reflections if needed
-            if (REFLECTIONS_TOPUP and REFLECTIONS_ON_DEMAND and
-                len(session_reflections) < PROMPT_MAX_REFLECTIONS):
+            _effective_reflection_total = eff_max_reflections_r + eff_max_reflections_s
+            if (REFLECTIONS_TOPUP and REFLECTIONS_ON_DEMAND
+                    and _effective_reflection_total > 0
+                    and len(session_reflections) < _effective_reflection_total):
 
                 try:
                     context_for_reflection = {
@@ -1591,18 +1642,23 @@ class UnifiedPromptBuilder:
                 # Targets recent_summaries: the formatter renders the SPLIT keys
                 # only, so topping up the combined "summaries" key (pre-2026-08-14)
                 # added content that never reached the prompt.
-                if len(context.get("recent_summaries", []) or []) < PROMPT_MAX_RECENT_SUMMARIES:
-                    needed = PROMPT_MAX_RECENT_SUMMARIES - len(context.get("recent_summaries", []))
+                if (eff_max_summaries_r > 0 and
+                        len(context.get("recent_summaries", []) or []) < eff_max_summaries_r):
+                    needed = eff_max_summaries_r - len(context.get("recent_summaries", []))
                     try:
                         # try memory_coordinator first (supports sync or async)
                         if hasattr(self.memory_coordinator, 'get_summaries'):
                             logger.debug(f"BEFORE get_summaries: memories count = {len(context.get('memories', []))}")
-                            res = self.memory_coordinator.get_summaries(PROMPT_MAX_SUMMARIES * 2)
+                            res = self.memory_coordinator.get_summaries(
+                                max(1, eff_max_summaries_r + eff_max_summaries_s) * 2
+                            )
                             import asyncio as _asyncio
                             stored = await res if _asyncio.iscoroutine(res) else res
                             logger.debug(f"AFTER get_summaries: memories count = {len(context.get('memories', []))}, stored type = {type(stored).__name__}")
                         elif hasattr(self.memory_coordinator, 'corpus_manager') and hasattr(self.memory_coordinator.corpus_manager, 'get_summaries'):
-                            stored = self.memory_coordinator.corpus_manager.get_summaries(PROMPT_MAX_SUMMARIES * 2)
+                            stored = self.memory_coordinator.corpus_manager.get_summaries(
+                                max(1, eff_max_summaries_r + eff_max_summaries_s) * 2
+                            )
                         else:
                             stored = []
                     except Exception as e:
@@ -1630,19 +1686,24 @@ class UnifiedPromptBuilder:
 
                 # Reflections — if too few, pull most recent historical reflections
                 # (recent_reflections is the rendered key; see summaries note above)
-                if len(context.get("recent_reflections", []) or []) < PROMPT_MAX_RECENT_REFLECTIONS:
-                    needed = PROMPT_MAX_RECENT_REFLECTIONS - len(context.get("recent_reflections", []))
+                if (eff_max_reflections_r > 0 and
+                        len(context.get("recent_reflections", []) or []) < eff_max_reflections_r):
+                    needed = eff_max_reflections_r - len(context.get("recent_reflections", []))
                     stored_refl = []
                     try:
                         if hasattr(self.memory_coordinator, 'get_reflections'):
                             # get_reflections may be async; try both
-                            res = self.memory_coordinator.get_reflections(PROMPT_MAX_REFLECTIONS * 3)
+                            res = self.memory_coordinator.get_reflections(
+                                max(1, _effective_reflection_total) * 3
+                            )
                             if asyncio.iscoroutine(res):
                                 stored_refl = await res
                             else:
                                 stored_refl = res
                         elif hasattr(self.memory_coordinator, 'corpus_manager') and hasattr(self.memory_coordinator.corpus_manager, 'get_reflections'):
-                            res2 = self.memory_coordinator.corpus_manager.get_reflections(PROMPT_MAX_REFLECTIONS * 3)
+                            res2 = self.memory_coordinator.corpus_manager.get_reflections(
+                                max(1, _effective_reflection_total) * 3
+                            )
                             stored_refl = res2 if isinstance(res2, list) else list(res2)
                     except Exception as e:
                         logger.warning(f"[PromptBuilder] Reflection retrieval failed: {e}")
@@ -1673,8 +1734,9 @@ class UnifiedPromptBuilder:
             try:
                 # Recent conversations floor — guarantee session context survives
                 recent_convos = context.get("recent_conversations", []) or []
-                if len(recent_convos) < PROMPT_MIN_RECENT_FLOOR:
-                    needed_recent = PROMPT_MIN_RECENT_FLOOR - len(recent_convos)
+                _recent_floor = min(PROMPT_MIN_RECENT_FLOOR, max(0, int(eff_max_recent)))
+                if len(recent_convos) < _recent_floor:
+                    needed_recent = _recent_floor - len(recent_convos)
                     try:
                         stored_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MIN_RECENT_FLOOR * 2)
                     except Exception as e:
@@ -1693,12 +1755,16 @@ class UnifiedPromptBuilder:
                                 break
                         if add_recent:
                             context['recent_conversations'] = (context.get('recent_conversations') or []) + add_recent
-                            logger.info(f"[POST-BUDGET FLOOR] Restored {len(add_recent)} recent conversations (had {len(recent_convos)}, floor={PROMPT_MIN_RECENT_FLOOR})")
+                            logger.info(f"[POST-BUDGET FLOOR] Restored {len(add_recent)} recent conversations (had {len(recent_convos)}, floor={_recent_floor})")
 
                 # Summaries floor — survival minimum for the rendered key only
                 # (restoring to MAX here would undo the budget trim)
-                if len(context.get("recent_summaries", []) or []) < PROMPT_MIN_SUMMARIES_FLOOR:
-                    needed = PROMPT_MIN_SUMMARIES_FLOOR - len(context.get("recent_summaries", []))
+                _summary_floor = min(
+                    PROMPT_MIN_SUMMARIES_FLOOR,
+                    max(0, int(eff_max_summaries_r)),
+                )
+                if len(context.get("recent_summaries", []) or []) < _summary_floor:
+                    needed = _summary_floor - len(context.get("recent_summaries", []))
                     stored = []
                     try:
                         if hasattr(self.memory_coordinator, 'get_summaries'):
@@ -1733,8 +1799,12 @@ class UnifiedPromptBuilder:
                 logger.warning(f"AFTER SUMMARIES TOP-UP: memories count = {len(context.get('memories', []))}")
 
                 # Reflections floor — survival minimum for the rendered key only
-                if len(context.get("recent_reflections", []) or []) < PROMPT_MIN_REFLECTIONS_FLOOR:
-                    needed = PROMPT_MIN_REFLECTIONS_FLOOR - len(context.get("recent_reflections", []))
+                _reflection_floor = min(
+                    PROMPT_MIN_REFLECTIONS_FLOOR,
+                    max(0, int(eff_max_reflections_r)),
+                )
+                if len(context.get("recent_reflections", []) or []) < _reflection_floor:
+                    needed = _reflection_floor - len(context.get("recent_reflections", []))
                     stored_refl = []
                     try:
                         if hasattr(self.memory_coordinator, 'get_reflections'):

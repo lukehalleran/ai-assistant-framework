@@ -122,3 +122,4 @@ coverage*.json
 # privacy (2026-09-01): real-memory fixtures never ship
 tests/fixtures/*_real*.yaml
 data/benchmarks_private/
+CLAUDE_CHANGELOG.md

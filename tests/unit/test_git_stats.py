@@ -80,6 +80,15 @@ class TestClassifyIntent:
     def test_fallback(self):
         assert _classify_intent("something random about the repo") == "fallback"
 
+    def test_repository_audit(self):
+        assert _classify_intent("perform a read-only repo audit of branch and HEAD") == "repository_identity"
+
+    def test_current_branch(self):
+        assert _classify_intent("what is the current branch?") == "current_branch"
+
+    def test_head_identity(self):
+        assert _classify_intent("show the exact HEAD SHA") == "head_identity"
+
 
 # ── Time Window Parsing ────────────────────────────────────────────
 
@@ -202,6 +211,15 @@ class TestGitStatsManager:
         mgr = GitStatsManager()
         assert mgr.is_available() is False
 
+    @patch("core.git_stats_manager.subprocess.run")
+    def test_explicit_repo_path_is_independent_of_launch_cwd(self, mock_run, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        mock_run.return_value = MagicMock(returncode=0, stdout=f"{repo}\n")
+        mgr = GitStatsManager(repo_path=str(repo))
+        assert mgr.is_available() is True
+        assert mock_run.call_args.kwargs["cwd"] == str(repo.resolve())
+
     @pytest.mark.asyncio
     async def test_execute_query_not_available(self):
         mgr = GitStatsManager()
@@ -246,6 +264,28 @@ class TestGitStatsManager:
         result = await mgr.execute_query("git status")
         assert result["success"] is True
         assert "clean" in result["summary"].lower()
+
+    @pytest.mark.asyncio
+    @patch.object(GitStatsManager, "_run_git")
+    async def test_execute_query_repository_identity(self, mock_run_git):
+        mgr = GitStatsManager()
+        mgr._available = True
+        mgr._repo_root = "/tmp"
+        mock_run_git.side_effect = [
+            "master",
+            "a" * 40,
+            "b" * 40,
+            "## master\n M workflow.yml",
+        ]
+        result = await mgr.execute_query("audit repository branch and HEAD")
+        assert result["success"] is True
+        assert "branch master" in result["summary"]
+        assert result["commands_run"] == [
+            "git branch --show-current",
+            "git rev-parse HEAD",
+            "git rev-parse HEAD^{tree}",
+            "git status --short --branch",
+        ]
 
     def test_format_for_prompt_success(self):
         mgr = GitStatsManager()

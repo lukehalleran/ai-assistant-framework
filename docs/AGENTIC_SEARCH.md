@@ -434,7 +434,12 @@ Others: shows N neighbors on each side by timestamp
 
 ### file_read / file_grep / file_list
 
-File system access (restricted to approved directories).
+File system access (restricted to approved directories). Relative
+`approved_folders` entries (e.g. `.`) are resolved against the repository
+root the orchestrator passes as `base_dir` — NOT the launch CWD — so a
+desktop/systemd/sibling-checkout launch cannot silently approve the wrong
+directory; `is_available()` requires at least one approved folder to
+actually exist on disk [2026-09-02].
 
 ```
 file_read:  filepath (required), start_line/end_line (optional)
@@ -450,6 +455,11 @@ Query the local git repository for activity statistics.
 Parameters: query (required), reason (optional)
 Intent parsing: Keyword-based — no LLM call needed
 Time windows: "today", "this week", "last N days", "this month", etc.
+Identity intents [2026-09-02]: repository_identity (branch + HEAD +
+        tree SHA + status bundled in one round — "repo audit" queries),
+        current_branch, head_identity
+Repo resolution: explicit repo_path from the orchestrator (repo root) —
+        launch-CWD-independent
 Safety: Read-only git subcommands only (log, shortlog, diff, status,
         branch, rev-list, rev-parse, show, describe, tag, stash)
 Output: Formatted summary + raw git output, capped at 50 lines

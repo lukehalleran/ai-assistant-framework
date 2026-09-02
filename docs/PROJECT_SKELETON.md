@@ -1604,11 +1604,12 @@ agentic_search:
 ```
 
 **Git Stats Integration** [NEW 2026-03-29]:
-- `GitStatsManager` in `core/git_stats_manager.py` — keyword-based intent parsing, temporal phrase extraction, safe subprocess
+- `GitStatsManager` in `core/git_stats_manager.py` — keyword-based intent parsing, temporal phrase extraction, safe subprocess. Constructed with an explicit `repo_path` (orchestrator passes the repo root), so repo resolution is launch-CWD-independent [2026-09-02]
+- Identity intents [2026-09-02]: `repository_identity` (branch + HEAD + tree SHA + status in one round — audit queries), `current_branch`, `head_identity`
 - `GIT_STATS_TOOL_DEFINITION` in types.py — tool schema for native protocol
 - `<git_stats>query</git_stats>` XML marker for local models
 - `SearchDecision` extended with `wants_git_stats`, `git_stats_query`, `git_stats_reason`
-- Read-only safety: only allowlisted git subcommands (`log`, `shortlog`, `diff --stat`, `rev-list`)
+- Read-only safety: only allowlisted git subcommands (`log`, `shortlog`, `diff --stat`, `rev-list`, `rev-parse`, `status`, `branch`, `show`, `describe`, `tag`, `stash`)
 - Progress events: `checking_git` → `git_stats_result`
 - Config: `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT` (10s), `GIT_STATS_MAX_OUTPUT_LINES` (50); YAML section `git_stats`
 

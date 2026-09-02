@@ -2497,6 +2497,9 @@ class AgenticSearchSession:
 # GIT_STATS_TOOL_DEFINITION — Git repository activity stats [NEW 2026-03-29]
 # Function name: "git_stats", single param: query (str, required)
 # Natural-language intent parsing → safe git subcommands (log, shortlog, diff, status, etc.)
+# [2026-09-02] identity intents: repository_identity (branch+HEAD+tree+status in one
+#   round, "repo audit" queries), current_branch, head_identity; explicit repo_path
+#   from orchestrator (launch-CWD-independent)
 
 # FETCH_URL_TOOL_DEFINITION — Fetch web page content by URL [NEW 2026-05]
 # Function name: "fetch_url", params: url (str, required), reason (str, optional)

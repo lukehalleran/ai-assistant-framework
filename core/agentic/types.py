@@ -513,6 +513,8 @@ SANDBOX_TOOL_DEFINITION = {
             "Use for: multi-step calculations, data processing with pandas/numpy, "
             "creating visualizations with matplotlib, symbolic math with sympy, "
             "any computation requiring multiple lines of code or intermediate results. "
+            "This is an isolated remote environment: it cannot inspect the local "
+            "filesystem or run this repository's test suite. "
             "Pre-installed packages: numpy, pandas, matplotlib, scipy, sympy, scikit-learn, "
             "requests, beautifulsoup4. "
             "IMPORTANT: Variables persist within this conversation - you can define a variable "
@@ -757,7 +759,8 @@ GIT_STATS_TOOL_DEFINITION = {
         "description": (
             "Query the local git repository for activity statistics. "
             "Use for: commit counts, recent commits, contributors, files changed, "
-            "branch info, diff stats, and other temporal git questions. "
+            "current branch, exact HEAD/tree identity, repository audits, diff stats, "
+            "and other temporal git questions. "
             "Read-only — never modifies the repository."
         ),
         "parameters": {

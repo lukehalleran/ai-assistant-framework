@@ -24,6 +24,7 @@ import logging
 import re
 import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -96,10 +97,30 @@ def _parse_time_window(query: str) -> Optional[datetime]:
 def _classify_intent(query: str) -> str:
     """Classify the git stats intent from a natural-language query.
 
-    Returns one of: commit_count, recent_commits, files_changed,
-    contributors, branches, status, diff_stat, fallback.
+    Returns one of: repository_identity, current_branch, head_identity,
+    commit_count, recent_commits, files_changed, contributors, branches,
+    status, diff_stat, fallback.
     """
     q = query.lower()
+
+    # Operational audits need authoritative identity in one round.  Without
+    # this bundle the model could retrieve status but had no route to HEAD or
+    # the current branch, then spent more rounds guessing.
+    if (
+        "repo audit" in q
+        or "repository audit" in q
+        or ("audit" in q and any(w in q for w in ("repo", "repository", "branch", "head")))
+        or ("verify" in q and "branch" in q and "head" in q)
+    ):
+        return "repository_identity"
+
+    if any(phrase in q for phrase in (
+        "current branch", "active branch", "branch am i on", "which branch",
+    )):
+        return "current_branch"
+
+    if re.search(r"\b(head|head sha|head commit|commit sha)\b", q):
+        return "head_identity"
 
     # Commit count queries
     if any(w in q for w in ("how many commits", "commit count", "number of commits", "total commits")):
@@ -135,10 +156,18 @@ def _classify_intent(query: str) -> str:
 class GitStatsManager:
     """Read-only git repository stats for the agentic loop."""
 
-    def __init__(self, timeout: int = 10, max_output_lines: int = 50):
+    def __init__(
+        self,
+        timeout: int = 10,
+        max_output_lines: int = 50,
+        repo_path: Optional[str] = None,
+    ):
         self.timeout = timeout
         self.max_output_lines = max_output_lines
-        self._repo_root: Optional[str] = None
+        self._configured_repo_root = (
+            str(Path(repo_path).expanduser().resolve()) if repo_path else None
+        )
+        self._repo_root: Optional[str] = self._configured_repo_root
         self._available: Optional[bool] = None
 
     def is_available(self) -> bool:
@@ -148,7 +177,10 @@ class GitStatsManager:
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=5
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=self._configured_repo_root,
             )
             if result.returncode == 0 and result.stdout.strip():
                 self._repo_root = result.stdout.strip()
@@ -230,7 +262,39 @@ class GitStatsManager:
         summary = ""
 
         try:
-            if intent == "commit_count":
+            if intent == "repository_identity":
+                branch = self._run_git(["branch", "--show-current"])
+                head = self._run_git(["rev-parse", "HEAD"])
+                tree = self._run_git(["rev-parse", "HEAD^{tree}"])
+                status = self._run_git(["status", "--short", "--branch"])
+                commands_run.extend([
+                    "git branch --show-current",
+                    "git rev-parse HEAD",
+                    "git rev-parse HEAD^{tree}",
+                    "git status --short --branch",
+                ])
+                summary = f"Repository identity: branch {branch}, HEAD {head[:12]}"
+                output_parts.extend([
+                    f"Current branch: {branch or '(detached)'}",
+                    f"HEAD: {head}",
+                    f"Tree: {tree}",
+                    f"Status:\n{status or '(clean)'}",
+                ])
+
+            elif intent == "current_branch":
+                branch = self._run_git(["branch", "--show-current"])
+                commands_run.append("git branch --show-current")
+                summary = f"Current branch: {branch or '(detached)'}"
+                output_parts.append(summary)
+
+            elif intent == "head_identity":
+                head = self._run_git(["rev-parse", "HEAD"])
+                tree = self._run_git(["rev-parse", "HEAD^{tree}"])
+                commands_run.extend(["git rev-parse HEAD", "git rev-parse HEAD^{tree}"])
+                summary = f"HEAD {head[:12]}"
+                output_parts.extend([f"HEAD: {head}", f"Tree: {tree}"])
+
+            elif intent == "commit_count":
                 # Count + short list
                 count_args = ["rev-list", "--count", "HEAD"]
                 if since_arg:

@@ -436,9 +436,10 @@ Within the agent loop, the LLM may invoke `git_stats` to query repository histor
 git_stats : Q_nl -> {success, summary, output, commands_run}
 
 git_stats(q_nl):
-    intent  <- keyword_match(q_nl)                     // commit_count | recent_commits |
-                                                       // files_changed | contributors |
-                                                       // branches | status | diff_stat
+    intent  <- keyword_match(q_nl)                     // repository_identity | current_branch |
+                                                       // head_identity | commit_count |
+                                                       // recent_commits | files_changed |
+                                                       // contributors | branches | status | diff_stat
     window  <- extract_temporal(q_nl)                  // "this week" -> --since=<ISO date>
     cmd     <- build_command(intent, window)
     assert cmd.subcommand in {log, shortlog, diff,     // safety: allowlist only

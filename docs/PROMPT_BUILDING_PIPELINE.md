@@ -538,6 +538,27 @@ Tests: `tests/unit/test_light_prompt_path.py`.
 
 ---
 
+## Repo-Audit Minimized Context (2026-09-02)
+
+`builder._is_local_repo_audit_query()` (narrow: an explicit audit/inspect/verify
+action term AND a repo cue — "read-only audit", "repo audit", "verify the
+repository"…) routes local repository audit turns to a minimized, tool-grounded
+context: every personal/semantic retrieval override is forced to 0 (recent,
+memories, summaries, reflections, profile, graph, notes, uploads, wiki, threads,
+proposals, git_commits, narrative), and calendar / relevant-emails /
+daemon-self-notes / web-search tasks are not launched at all. Two reasons:
+audit answers must come from file/git TOOLS, not stale retrieval; and audit
+debug dumps get pasted to external models, so personal context must not ride
+along (live win: 257 prompt tokens vs 12,192 on the pre-fix turn).
+
+Same batch: all floor/top-up paths (pre-budget top-ups, post-budget survival
+floors, reflections top-up) now respect zeroed overrides instead of refilling
+past them — a `max_summaries=0` override used to still yield 1 via the
+`max(1, …)` split. Floors clamp to `min(floor, effective_max)` generically.
+Tests: `tests/test_prompt_internal_methods.py::test_local_repo_audit_*`.
+
+---
+
 ## Insight-Mode Bypass (2026-08-23)
 
 Insight / evidence-assembly turns do NOT source their evidence from this

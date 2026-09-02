@@ -88,6 +88,29 @@ def test_is_available_empty():
     assert mgr.is_available() is False
 
 
+def test_is_available_requires_existing_directory(tmp_path):
+    mgr = FileAccessManager(approved_folders=[str(tmp_path / "missing")])
+    assert mgr.is_available() is False
+
+
+def test_relative_allowlist_uses_explicit_base_dir(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "launcher"
+    project.mkdir()
+    elsewhere.mkdir()
+    target = project / "module.py"
+    target.write_text("value = 1\n")
+    monkeypatch.chdir(elsewhere)
+
+    mgr = FileAccessManager(
+        approved_folders=["."],
+        base_dir=str(project),
+        allowed_extensions=[".py"],
+    )
+
+    assert mgr._validate_path(str(target)) == target.resolve()
+
+
 # ── _validate_path ────────────────────────────────────────────────────
 
 

@@ -32,12 +32,23 @@ class FileAccessManager:
     def __init__(
         self,
         approved_folders: List[str],
+        base_dir: Optional[str] = None,
         max_read_bytes: int = 100_000,
         max_grep_results: int = 25,
         max_list_entries: int = 200,
         allowed_extensions: Optional[List[str]] = None,
     ):
-        self.approved_folders = [Path(f).expanduser().resolve() for f in approved_folders]
+        # Relative allowlist entries are configuration paths, not launch-CWD
+        # paths.  The orchestrator supplies the repository root so a desktop,
+        # systemd, or sibling-checkout launch cannot silently approve the wrong
+        # directory.
+        base = Path(base_dir).expanduser().resolve() if base_dir else Path.cwd().resolve()
+        self.approved_folders = [
+            (base / Path(f).expanduser()).resolve()
+            if not Path(f).expanduser().is_absolute()
+            else Path(f).expanduser().resolve()
+            for f in approved_folders
+        ]
         self.max_read_bytes = max_read_bytes
         self.max_grep_results = max_grep_results
         self.max_list_entries = max_list_entries
@@ -45,7 +56,7 @@ class FileAccessManager:
 
     def is_available(self) -> bool:
         """Check if file access is configured with at least one approved folder."""
-        return len(self.approved_folders) > 0
+        return any(folder.is_dir() for folder in self.approved_folders)
 
     def _validate_path(self, filepath: str) -> Path:
         """

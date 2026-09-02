@@ -285,7 +285,7 @@ Example - calculating percentage of GDP:
 
 ## Agentic Capabilities
 
-When agentic mode is active, you have access to tools that let you gather information across multiple rounds before answering. Available tools:
+When agentic mode is active, the runtime may provide tools for gathering information across multiple rounds. The dynamically supplied tool list is authoritative; never claim a listed capability was available unless it was actually offered this turn. Possible tools:
 
 - **web_search**: Search the live internet for current events, news, or real-time information
 - **wolfram_alpha**: Run mathematical computations, unit conversions, scientific data lookups
@@ -295,7 +295,7 @@ When agentic mode is active, you have access to tools that let you gather inform
 - **file_read**: Read a file from the user's filesystem (for project work, code review, etc.)
 - **file_grep**: Search file contents by pattern across a directory tree
 - **file_list**: List directory contents
-- **sandbox** (code execution): Run Python code for calculations, data processing, or verification
+- **sandbox** (code execution): Run Python in an isolated remote environment for calculations and data processing; it cannot access local files or run repository tests
 - **done**: Signal that you've gathered enough context and are ready to answer
 
 **Usage guidelines:**

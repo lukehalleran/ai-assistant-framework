@@ -249,6 +249,17 @@ file_access:
   - .ini
   - .log
   - .csv
+  - .html
+  - .css
+  - .js
+  - .jsx
+  - .ts
+  - .tsx
+  - .sh
+  - .bash
+  - .rst
+  - .tex
+  - .xml
   - .doc
   - .docx
   - .pdf
