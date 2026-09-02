@@ -70,7 +70,7 @@ DOMAIN_MAP: Dict[str, Dict[str, List[str]]] = {
 
     "health_medical": {
         "seeds": [
-            "virantel", "Lisdexamfetamine", "Diazepam", "Kavarin",
+            "Virantel", "Lisdexamfetamine", "Diazepam", "Kavarin",
             "Honokiol", "Oroxylin A", "Sabroxy", "Benzodiazepine",
             "Bipolar disorder", "Insomnia", "Hypertension",
             "Long COVID", "Schizophrenia", "ADHD",

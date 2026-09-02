@@ -626,7 +626,7 @@ graded — every one `status=accepted`** (old composite 0.63–0.79); **69 rejec
 garbage (`fast↔low`, `poor↔google`, `tests↔Excel`) is in the rejected pile and *never reached grading*. So the
 28 are **survivors of the old accept gate, then therapist-graded 3–5** — a curated POSITIVE set, no graded
 negatives. Cross-tab of grade × structural-coherence: the judge floors **20/22** at WEAK regardless of grade,
-and its only 2 passes are the 2 LEAST-personal items (`Lakewood↔suburbanization`, `healthcare↔process-design`).
+and its only 2 passes are the 2 LEAST-personal items (`lakewood↔suburbanization`, `healthcare↔process-design`).
 Looked like hard proof that structural-truth ⊥ reflection-value.
 
 **(2) Flip test (`scripts/test_reflection_rubric_flip.py`).** Re-ran the most-personal therapist-4/5 claims

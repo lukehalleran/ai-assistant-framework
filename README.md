@@ -13,7 +13,7 @@ Daemon is built around persistent memory, evaluated retrieval, knowledge-graph c
 
 It is a stateful agent architecture, not a chatbot wrapper: every query passes through context analysis, intent classification, parallel retrieval, gating, scoring, prompt assembly, generation, and post-response state updates.
 
-*Solo architected and maintained by Luke Halleran. AI coding assistants were used as development tools, but architecture, review, testing, integration decisions, and commits are human-directed — which is why GitHub lists `@claude` as a contributor.*
+*Solo architected and maintained by Luke U_handle. AI coding assistants were used as development tools, but architecture, review, testing, integration decisions, and commits are human-directed — which is why GitHub lists `@claude` as a contributor.*
 
 ---
 
@@ -94,7 +94,7 @@ Images are ingested through OpenCLIP ViT-B/32 → vision-LLM caption → entity 
 
 Retrieval quality is **measured, not asserted** — no scoring or weight change ships without a before/after benchmark run.
 
-- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2), two suites — synthetic seeds + adversarial cases sampled from production ChromaDB (each target paired with its nearest-neighbor distractors). Latest rerun (2026-07-23): **283/296 cases pass (95.6%)**; combined **MRR 0.84** (R@1 0.78) over 280 retrieval cases. ~Half the recall misses are the per-relation TTL filter correctly aging transient facts out of a now-stale seed corpus (not retrieval degradation) — the 2026-05-17 snapshot (MRR 0.89, 305/305) is retained as a dated historical baseline in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md).
+- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2). Two suites: (1) synthetic adversarial cases (openly distributed), and (2) owner-local cases sampled from personal ChromaDB (not distributed — contains personal memory and skips cleanly when absent). Latest rerun (2026-07-23) on the synthetic suite: **283/296 cases pass (95.6%)**; combined **MRR 0.84** (R@1 0.78) over 280 retrieval cases. Historically measured (2026-05-17 baseline snapshot, MRR 0.89, 305/305 on the combined dataset) and retained in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md) for regression tracking.
 - **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
 - **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
 
@@ -242,6 +242,20 @@ pyinstaller daemon.spec --clean --noconfirm   # -> dist/Daemon/Daemon
 ```
 
 See [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) for the full build guide and Windows installer instructions.
+
+---
+
+## Development
+
+### Pre-commit hooks (optional)
+
+To guard against accidentally committing sensitive terms, install the privacy check:
+
+```bash
+ln -s ../../hooks/pre-commit-privacy .git/hooks/pre-commit
+```
+
+This runs `gitleaks protect --staged` if installed and greps staged files against the privacy term list.
 
 ---
 

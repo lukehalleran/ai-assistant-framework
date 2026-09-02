@@ -1044,6 +1044,7 @@ class UnifiedPromptBuilder:
                 "unresolved_threads": "open threads",
                 "procedural_skills": "skills",
                 "google_calendar": "calendar",
+                "relevant_emails": "emails",
                 "visual_memories": "visual memories",
                 "daemon_self_notes": "self notes",
                 "proposed_features": "proposals",
@@ -1237,6 +1238,17 @@ class UnifiedPromptBuilder:
                     tasks["google_calendar"] = asyncio.create_task(
                         _timed_task("google_calendar",
                                     self.context_gatherer.get_google_calendar_events(GOOGLE_CALENDAR_MAX_EVENTS))
+                    )
+            except Exception:
+                pass
+
+            # Relevant emails (passive retrieval, cue-gated + distress-suppressed)
+            try:
+                from config.app_config import EMAIL_PASSIVE_CONTEXT_ENABLED, EMAIL_PASSIVE_MAX
+                if EMAIL_PASSIVE_CONTEXT_ENABLED and EMAIL_PASSIVE_MAX > 0:
+                    tasks["relevant_emails"] = asyncio.create_task(
+                        _timed_task("relevant_emails",
+                                    self.context_gatherer.get_relevant_emails(user_input, EMAIL_PASSIVE_MAX))
                     )
             except Exception:
                 pass
@@ -1465,6 +1477,7 @@ class UnifiedPromptBuilder:
                 "unresolved_threads": gathered.get("unresolved_threads", []),  # Proactive thread surfacing
                 "upcoming_schedule": gathered.get("upcoming_schedule", []),  # Schedule events (gated)
                 "google_calendar": gathered.get("google_calendar", []),  # Real-time Google Calendar events
+                "relevant_emails": gathered.get("relevant_emails", []),  # Relevant emails from Gmail/Outlook
                 "proactive_insights": gathered.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": gathered.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
@@ -1784,6 +1797,7 @@ class UnifiedPromptBuilder:
                 "unresolved_threads": context.get("unresolved_threads", []),  # Proactive thread surfacing
                 "upcoming_schedule": context.get("upcoming_schedule", []),  # Schedule events (gated)
                 "google_calendar": context.get("google_calendar", []),  # Real-time Google Calendar events
+                "relevant_emails": context.get("relevant_emails", []),  # Relevant emails from Gmail/Outlook
                 "proactive_insights": context.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": context.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
@@ -1826,6 +1840,7 @@ class UnifiedPromptBuilder:
                 "unresolved_threads": [],
                 "upcoming_schedule": [],
                 "google_calendar": [],
+                "relevant_emails": [],
                 "proactive_insights": [],
                 "web_search_results": None,
                 "memory_id_map": {}
@@ -2045,6 +2060,7 @@ class UnifiedPromptBuilder:
                 "unresolved_threads": [],
                 "upcoming_schedule": [],
                 "google_calendar": [],
+                "relevant_emails": [],
                 "proactive_insights": [],
                 "web_search_results": None,
                 "codebase_changes": codebase_changes or {},
@@ -2167,6 +2183,7 @@ class PromptBuilder:
                 "unresolved_threads": [],
                 "upcoming_schedule": [],
                 "google_calendar": [],
+                "relevant_emails": [],
                 "proactive_insights": [],
             }
             return self.unified_builder._assemble_prompt(context, user_input)

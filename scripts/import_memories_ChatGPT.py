@@ -279,7 +279,7 @@ class MemoryFactExtractor:
         self.patterns = [
             # Identity patterns
             (r"User(?:'s)?\s+name\s+is\s+(.+?)(?:\.|$)", "name", 0.95),
-            (r"(\w+)(?:'s)?\s+name\s+is\s+(\w+\s+\w+)(?:\.|$)", "full_name", 0.95),  # "Luke's name is Luke Halleran"
+            (r"(\w+)(?:'s)?\s+name\s+is\s+(\w+\s+\w+)(?:\.|$)", "full_name", 0.95),  # "Luke's name is Luke U_handle"
             (r"User\s+is\s+(\d+)\s+(?:years?\s+old)?", "age", 0.90),
             (r"(\w+)\s+is\s+located\s+in\s+([A-Za-z]+\.?\s*[A-Za-z,\s]+?)(?:\.$)", "lives_in", 0.92),  # "Luke is located in X"
             (r"User\s+(?:is\s+)?located\s+in\s+(.+?)(?:\.|$)", "lives_in", 0.90),

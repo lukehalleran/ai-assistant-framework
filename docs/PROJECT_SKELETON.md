@@ -3264,7 +3264,7 @@ class EntityResolver:
                                                   # (atomic write + strict load via utils/safe_json;
                                                   #  corrupt file → quarantine + CorruptStoreError, 2026-07-14)
 ```
-- Possessive alias extraction: "my brother Drew" → alias "brother" → entity "Drew"
+- Possessive alias extraction: "my brother Drew" → alias "brother" → entity "drew"
 - `normalize_relation(text)` → snake_case, strips common prefixes
 
 **`memory/graph_utils.py`** — Shared helpers for graph-boosted scoring and query expansion

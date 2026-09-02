@@ -151,7 +151,7 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False, actions_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False, actions_available: bool = False, email_search_available: bool = False):
         from core.agentic.types import (
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
@@ -175,6 +175,7 @@ class NativeToolsHandler(BaseProtocolHandler):
             GENERATE_DOCUMENT_TOOL_DEFINITION,
             CREATE_DAEMON_NOTE_TOOL_DEFINITION,
             PROPOSE_ACTION_TOOL_DEFINITION,
+            EMAIL_SEARCH_TOOL_DEFINITION,
         )
         self.search_tool = SEARCH_TOOL_DEFINITION
         self.done_tool = DONE_TOOL_DEFINITION
@@ -198,6 +199,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.generate_document_tool = GENERATE_DOCUMENT_TOOL_DEFINITION
         self.create_daemon_note_tool = CREATE_DAEMON_NOTE_TOOL_DEFINITION
         self.propose_action_tool = PROPOSE_ACTION_TOOL_DEFINITION
+        self.email_search_tool = EMAIL_SEARCH_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
         self.memory_available = memory_available
@@ -206,6 +208,7 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.github_available = github_available
         self.fetch_url_available = fetch_url_available
         self.actions_available = actions_available
+        self.email_search_available = email_search_available
 
     def parse_response(self, response: Any) -> List[SearchDecision]:
         """
@@ -650,6 +653,22 @@ class NativeToolsHandler(BaseProtocolHandler):
                 logger.warning(f"[AgenticProtocol] {func_name} called without name/query")
                 return None
 
+        elif func_name == "email_search":
+            query = args.get("query")  # optional
+            window_days = args.get("window_days", 7)
+            reason = args.get("reason")
+            # Query is optional — omit it for recent emails only
+            logger.debug(
+                f"[AgenticProtocol] Native tool email_search: "
+                f"{'query=' + query if query else 'recent'} window={window_days}d"
+            )
+            return SearchDecision(
+                wants_email_search=True,
+                email_query=query,
+                email_window_days=window_days,
+                email_reason=reason
+            )
+
         else:
             logger.warning(f"[AgenticProtocol] Unknown tool called: {func_name}")
             return None
@@ -866,6 +885,9 @@ class NativeToolsHandler(BaseProtocolHandler):
         # Document generation + self-notes — always available
         tools.append(self.generate_document_tool)
         tools.append(self.create_daemon_note_tool)
+        # Email search — only when enabled
+        if self.email_search_available:
+            tools.append(self.email_search_tool)
         # Internet actions — only when enabled
         if self.actions_available:
             tools.append(self.propose_action_tool)
@@ -1104,6 +1126,13 @@ class XMLMarkerHandler(BaseProtocolHandler):
     # interior double quote and ran garbage as "computed evidence".
     PATTERN_SCAN_PATTERN = re.compile(r'<pattern_scan(?:\s+spec=(?:"([^"]*)"|\'([^\']*)\'))?\s*>(.*?)</pattern_scan>', re.DOTALL | re.IGNORECASE)
     PATTERN_SCAN_SELF_PATTERN = re.compile(r'<pattern_scan\s+spec=(?:"([^"]*)"|\'([^\']*)\')\s*/>', re.DOTALL | re.IGNORECASE)
+    # Email search pattern: <email_search query="from Morgan" window_days="7">reason</email_search>
+    # Query and window_days both optional; query defaults to empty, window_days defaults to 7
+    EMAIL_SEARCH_PATTERN = re.compile(
+        r'<email_search(?:\s+query=["\']([^"\']*)["\'])?(?:\s+window_days=["\'](\d+)["\'])?\s*>(.*?)</email_search>',
+        re.DOTALL | re.IGNORECASE
+    )
+    EMAIL_SEARCH_NESTED_PATTERN = re.compile(r'<email_search\s*>(.*?)</email_search>', re.DOTALL | re.IGNORECASE)
     # Expand memory pattern: <expand_memory id="abc12345" collection="conversations" window="3">reason</expand_memory>
     EXPAND_MEMORY_PATTERN = re.compile(
         r'<expand_memory\s+id=["\']([^"\']+)["\']'
@@ -1371,6 +1400,23 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     fetch_url_reason=reason,
                 ))
 
+        # Check for email_search markers
+        for email_search_match in self.EMAIL_SEARCH_PATTERN.finditer(text):
+            query = email_search_match.group(1)  # optional
+            window_days_str = email_search_match.group(2)  # optional
+            reason = email_search_match.group(3).strip() or None
+            window_days = int(window_days_str) if window_days_str else 7
+            logger.debug(
+                f"[AgenticProtocol] XML email_search marker found: "
+                f"{'query=' + query if query else 'recent'} window={window_days}d"
+            )
+            decisions.append(SearchDecision(
+                wants_email_search=True,
+                email_query=query,
+                email_window_days=window_days,
+                email_reason=reason,
+            ))
+
         # Check for file list markers
         for file_list_match in self.FILE_LIST_PATTERN.finditer(text):
             dirpath = file_list_match.group(1).strip()
@@ -1460,6 +1506,22 @@ class XMLMarkerHandler(BaseProtocolHandler):
                     full_document_title=title,
                     full_document_reason=_extract_nested_tag(body, "reason"),
                 ))
+
+        for m in self.EMAIL_SEARCH_NESTED_PATTERN.finditer(text):
+            body = m.group(1)
+            query = _extract_nested_tag(body, "query")  # optional
+            window_days_str = _extract_nested_tag(body, "window_days")  # optional
+            window_days = int(window_days_str) if window_days_str and window_days_str.isdigit() else 7
+            logger.debug(
+                f"[AgenticProtocol] XML email_search nested marker found: "
+                f"{'query=' + query if query else 'recent'} window={window_days}d"
+            )
+            decisions.append(SearchDecision(
+                wants_email_search=True,
+                email_query=query,
+                email_window_days=window_days,
+                email_reason=_extract_nested_tag(body, "reason"),
+            ))
 
         # Check for search markers (content-style: <search>query</search> or <web_search>query</web_search>)
         for search_match in self.SEARCH_PATTERN.finditer(text):
@@ -1692,6 +1754,7 @@ def get_protocol_handler(
     github_available: bool = False,
     fetch_url_available: bool = False,
     actions_available: bool = False,
+    email_search_available: bool = False,
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -1706,6 +1769,7 @@ def get_protocol_handler(
         github_available: Whether GitHub API manager is configured
         fetch_url_available: Whether web search manager supports URL extraction
         actions_available: Whether internet write actions are enabled
+        email_search_available: Whether at least one email provider is configured
 
     Returns:
         Protocol handler instance
@@ -1720,6 +1784,7 @@ def get_protocol_handler(
             github_available=github_available,
             fetch_url_available=fetch_url_available,
             actions_available=actions_available,
+            email_search_available=email_search_available,
         )
     else:
         return XMLMarkerHandler()

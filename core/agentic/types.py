@@ -217,6 +217,11 @@ class SearchDecision:
     wants_lookup_contact: bool = False
     lookup_contact_name: Optional[str] = None
     lookup_contact_reason: Optional[str] = None
+    # Email search (read-only query over Gmail/Outlook)
+    wants_email_search: bool = False
+    email_query: Optional[str] = None
+    email_window_days: Optional[int] = None
+    email_reason: Optional[str] = None
     # Internet action (propose write action requiring user confirmation)
     wants_action: bool = False
     action_type: Optional[str] = None  # ActionType value
@@ -1197,6 +1202,39 @@ LOOKUP_CONTACT_TOOL_DEFINITION = {
     }
 }
 
+EMAIL_SEARCH_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "email_search",
+        "description": (
+            "Search the user's connected email accounts (Gmail/Outlook) by query, "
+            "or retrieve recent messages in a time window. Headers and snippets only, "
+            "read-only. Use for questions about the user's email, inbox, correspondence "
+            "with a person, or what's happening in their mail this week."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Optional search query (subject, sender, snippet keywords). "
+                        "If omitted, returns recent messages in the window."
+                    )
+                },
+                "window_days": {
+                    "type": "integer",
+                    "description": (
+                        "Number of days to search back (default 7). "
+                        "Use 30 for a month or 1 for today only."
+                    ),
+                    "default": 7
+                }
+            }
+        }
+    }
+}
+
 # System prompt injection for local models
 AGENTIC_SYSTEM_PROMPT_INJECTION = """
 [AGENTIC TOOLS ENABLED]
@@ -1283,7 +1321,16 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
     <github>contributors</github>
     <github>closed PRs</github>
 
-14. **Propose Action**: <propose_action type="send_email" recipient="name_or_email" subject="Subject" reason="why">message body</propose_action>
+14. **Email Search**: <email_search query="optional search terms" window_days="7">reason</email_search>
+    Search the user's connected email accounts (Gmail/Outlook) by query or retrieve recent messages.
+    Headers and snippets only, read-only. Use for questions about emails, who they correspond with, or inbox activity.
+    If query is omitted, returns recent messages in the time window (default 7 days).
+    Examples:
+    <email_search query="from Morgan">emails from Morgan</email_search>
+    <email_search query="subject recruitment" window_days="30">emails about recruitment this month</email_search>
+    <email_search window_days="7">what's in my inbox this week</email_search>
+
+15. **Propose Action**: <propose_action type="send_email" recipient="name_or_email" subject="Subject" reason="why">message body</propose_action>
     Propose a write action (email, Telegram, Discord, calendar) that requires user confirmation.
     **For email, the recipient can be just a name (e.g. "Harper") — the system resolves it to an email via Google Contacts automatically.** You do NOT need to look up the contact first.
     Supported types: send_email, send_telegram, send_discord, calendar_create_event, calendar_update_event, calendar_delete_event
@@ -1316,7 +1363,11 @@ You have access to web search, Wolfram Alpha, and Python code execution. Use the
 | Read a specific URL (GitHub, article, docs) | Fetch URL |
 | GitHub issues, PRs, CI status, releases | GitHub |
 | GitHub code search, contributors, labels | GitHub |
+| Search user's email, check inbox, emails from person | Email Search |
 | Send email, Telegram, Discord, create event | Propose Action |
+
+**IMPORTANT — searching email:**
+Use email_search to query the user's Gmail/Outlook by sender, subject, keywords, or just retrieve recent mail in a time window. Headers and snippets only — it's read-only.
 
 **IMPORTANT — sending email:**
 To email someone by name, use propose_action directly with their name as recipient. The system resolves names to email addresses via Google Contacts automatically.

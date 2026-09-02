@@ -192,9 +192,14 @@ def retrieval_env(seeded_stores, reference_time, benchmark_config):
 @pytest.fixture(scope="session")
 def real_benchmark_config():
     """Load real-data benchmark YAML (sampled from production ChromaDB)."""
-    yaml_path = Path(__file__).parent.parent / "fixtures" / "retrieval_benchmarks_real.yaml"
+    repo_root = Path(__file__).resolve().parents[2]
+    private_path = repo_root / "data" / "benchmarks_private" / "retrieval_benchmarks_real.yaml"
+    legacy_ignored_path = repo_root / "tests" / "fixtures" / "retrieval_benchmarks_real.yaml"
+    yaml_path = private_path if private_path.exists() else legacy_ignored_path
     if not yaml_path.exists():
-        pytest.skip("Real-data benchmark YAML not found — run scripts/sample_real_benchmark.py first")
+        pytest.skip(
+            "Private real-data benchmark YAML not found; synthetic benchmark remains available"
+        )
     with open(yaml_path, "r") as f:
         return yaml.safe_load(f)
 

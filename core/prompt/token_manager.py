@@ -71,6 +71,7 @@ PRIORITY_ORDER = [
     ("memories",              5),
     ("web_search_results",    8),  # Real-time web content — high priority, user explicitly asked for current info
     ("google_calendar",       7),  # Real-time calendar events, small + time-sensitive
+    ("relevant_emails",       7),  # Relevant emails from Gmail/Outlook, small + real-time
     ("upcoming_schedule",     7),  # Gated schedule events, small
     ("disambiguation_notes",  6),  # Cross-session phrase disambiguation, small
     ("procedural_skills",     4),  # Adaptive workflows

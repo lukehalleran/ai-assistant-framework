@@ -327,7 +327,13 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         r"|a few (days|weeks|months) ago|earlier today|the other day"
         r"|remember when|what (did|were) we (talk|discuss|chat)"
         r"|what have (i|we) been|(my|our|chat|conversation|message) history"
-        r"|over time|progression"
+        # 'over time'/'progression' anchored to PERSONAL recall (2026-09-01:
+        # bare 'over time' matched "their actions over time could lead" — a
+        # moral-processing vent — at 0.85, above the veto floor, defeating
+        # every tone veto AND teaching the exemplar store. Same class as the
+        # 'history' anchoring above.
+        r"|(my|our) \w+( \w+)? (over time|progression)"
+        r"|how (has|have|did) (my|our) .{0,40}(changed?|progress(ed)?|trended?) over time"
         r"|how (long|much) (have|has) (i|we|my|our|it been)|used to)\b",
         IntentType.TEMPORAL_RECALL, 0.85,
     )
@@ -644,6 +650,21 @@ def _tone_is_elevated(tone_level) -> bool:
     return any(m in tl for m in _ELEVATED_TONE_MARKERS)
 
 
+
+def _query_is_ack_shaped(query: str) -> bool:
+    """Casual-ack / bare-agreement shape — carries no intent signal of its
+    own (the deployed light-path checker, call-time import as patch point)."""
+    try:
+        from utils.query_checker import is_casual_acknowledgment  # lazy import: patch point
+        if is_casual_acknowledgment(query):
+            return True
+    except Exception:
+        pass
+    ql = query.strip().lower()
+    return bool(re.match(
+        r"^(?:oh |ah |yeah|yep|ok(?:ay)?|right|true|exactly|fair|good point|"
+        r"makes sense|got it|i see|no they|no it)\b", ql)) and len(ql.split()) <= 8
+
 def _learn_intent_exemplar(query: str, label: str, source: str) -> None:
     """Teach the adaptive store a CONFIRMED intent classification.
 
@@ -836,7 +857,15 @@ class IntentClassifier:
                     f"STM refined {result.intent.value}→{intent_type.value} "
                     f"(stm_intent='{stm_intent}', conf={refined_conf:.2f})"
                 )
-                if query and not _tone_is_elevated(tone_level):
+                # Shape guard (2026-09-01): the STM teacher had taught terse
+                # acks ("Oh yeah didn't think of that, good point") as
+                # temporal_recall exemplars — an ack inherits the THREAD's
+                # intent from STM context, but its own text carries no intent
+                # signal, so as a prototype it poisons the semantic tier.
+                # Teach only substantive queries.
+                _wc = len((query or "").split())
+                if (query and not _tone_is_elevated(tone_level)
+                        and _wc >= 6 and not _query_is_ack_shaped(query)):
                     _learn_intent_exemplar(query, intent_type.value, "stm_refined")
                 return refined
 

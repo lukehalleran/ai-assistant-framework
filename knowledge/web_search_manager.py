@@ -858,7 +858,7 @@ class WebSearchManager:
             )
 
         # Localization backstop — before the cache check so the cache keys on
-        # the localized text ("weather my area" and "weather Saint Charles, IL"
+        # the localized text ("weather my area" and "weather Springfield, IL"
         # must not share an entry). localize=False for non-conversational
         # callers (literature oracle) whose queries must reach Tavily verbatim.
         if localize:

@@ -96,6 +96,7 @@ RECOVERY_*.tar.gz
 # Local config overrides (personal/sensitive values — never commit)
 config.local.yaml
 config/config.local.yaml
+config/privacy_terms.local.txt
 
 # Commit-message scratchpad (git log is the real archive) + gh token
 commit_message*.txt
@@ -117,3 +118,7 @@ xref_table.tsv
 xref_stderr.txt
 deadcode_xref.py
 coverage*.json
+
+# privacy (2026-09-01): real-memory fixtures never ship
+tests/fixtures/*_real*.yaml
+data/benchmarks_private/

@@ -99,6 +99,7 @@ def run_pattern_stage(
     telemetry_path=None,
     now=None,
     spec=None,
+    email_rows=None,
 ) -> tuple[list[PatternResult], list[EvidenceItem]]:
     """Run the deterministic pattern queries for a pattern_temporal intent.
     Never raises — a failed query degrades to a noted empty result."""
@@ -140,7 +141,7 @@ def run_pattern_stage(
                          relation=keywords[0] if keywords else "",
                          window_days=window, now=now),
             corpus_manager=corpus_manager, user_profile=user_profile,
-            telemetry_path=telemetry_path,
+            telemetry_path=telemetry_path, email_rows=email_rows,
         ))
     else:
         if _MOOD_THEME_RE.search(intent.theme):
@@ -155,6 +156,14 @@ def run_pattern_stage(
                 PatternQuery(dimension="daily_notes", window_days=window, now=now),
                 corpus_manager=corpus_manager, user_profile=user_profile,
                 telemetry_path=telemetry_path,
+            ))
+        if email_rows is not None:
+            # The async caller pre-fetched live email headers (the engine is
+            # sync and never fetches) — rows present = email cue in the theme.
+            results.append(run_pattern_query(
+                PatternQuery(dimension="email", window_days=window, now=now),
+                corpus_manager=corpus_manager, user_profile=user_profile,
+                telemetry_path=telemetry_path, email_rows=email_rows,
             ))
         if _MUSIC_THEME_RE.search(intent.theme):
             results.append(run_pattern_query(

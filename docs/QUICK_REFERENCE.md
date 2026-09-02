@@ -3377,7 +3377,7 @@ pytest -m "not benchmark"
 #   TestRealDataRetrievalQuality + TestRealDataStructure test classes [NEW 2026-05-16]
 # report_generator.py: markdown report grouped by intent type
 # tests/fixtures/retrieval_benchmarks.yaml: synth seed memories + test case definitions
-# tests/fixtures/retrieval_benchmarks_real.yaml: 64 real-data cases [NEW 2026-05-16]
+# data/benchmarks_private/retrieval_benchmarks_real.yaml: local real-data cases [NEW 2026-05-16]
 
 # scripts/sample_real_benchmark.py — Sample real data from production ChromaDB [NEW 2026-05-16]
 # scripts/benchmark_retrieval.py — Full benchmark runner [NEW 2026-05]

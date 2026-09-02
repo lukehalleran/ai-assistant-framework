@@ -1,0 +1,56 @@
+#!/bin/bash
+# pre-commit-privacy — guard against committed sensitive terms
+#
+# Install:
+#   ln -s ../../hooks/pre-commit-privacy .git/hooks/pre-commit
+#
+# Or if .git/hooks already has a pre-commit, append:
+#   ../../hooks/pre-commit-privacy || exit 1
+#
+# Runs gitleaks if available, then greps staged files against privacy_terms.local.txt
+
+set -eu
+
+# Try gitleaks if installed
+if command -v gitleaks &>/dev/null; then
+  # Redact findings so a rejected commit cannot copy a secret into terminal
+  # logs.  A detection *or* scanner failure must block the commit.
+  gitleaks git --pre-commit --redact --staged --verbose
+fi
+
+# Check against our term list if it exists
+if [ ! -f config/privacy_terms.local.txt ]; then
+  exit 0
+fi
+
+# Inspect index blobs, not working-tree files.  This closes the gap where the
+# staged version is sensitive but the subsequently edited worktree is clean.
+offending_files=()
+while IFS= read -r -d '' file; do
+  # Deleted paths have no stage-0 blob. Renames/copies are included by the
+  # ACMR filter and inspected at their destination path.
+  if ! git cat-file -e ":$file" 2>/dev/null; then
+    continue
+  fi
+
+  while IFS= read -r term || [ -n "$term" ]; do
+    term=${term%$'\r'}
+    [ -z "$term" ] && continue
+    [ "${term:0:1}" = "#" ] && continue
+
+    if git show ":$file" | grep -IFq -- "$term"; then
+      offending_files+=("$file")
+      break
+    fi
+  done < config/privacy_terms.local.txt
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ "${#offending_files[@]}" -gt 0 ]; then
+  echo "Privacy term match in staged files:"
+  for file in "${offending_files[@]}"; do
+    printf '  %s\n' "$file"
+  done
+  exit 1
+fi
+
+exit 0

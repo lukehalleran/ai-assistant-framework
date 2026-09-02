@@ -70,7 +70,7 @@ the structural judge and the therapist are measuring **different things**:
 
 The judge floors **20 of 22** (that reached it) at WEAK regardless of grade, and
 its **only two passes are the two least-personal, most discovery-flavored** items
-(`Lakewood↔suburbanization`, `healthcare-analytics↔process-design`). The
+(`lakewood↔suburbanization`, `healthcare-analytics↔process-design`). The
 viscerally personal ones the therapist valued (`in bed↔ecosystem`,
 `fear of not graduating↔economics`, `parents↔family reunion`) are **all WEAK**.
 

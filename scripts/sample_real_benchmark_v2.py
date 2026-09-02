@@ -10,7 +10,7 @@ V2 improvements over v1:
   4. Harder reflection/summary cases with clustered similar items
 
 Usage:
-    python scripts/sample_real_benchmark_v2.py [--seed 42] [--out tests/fixtures/retrieval_benchmarks_real.yaml]
+    python scripts/sample_real_benchmark_v2.py [--seed 42] [--out data/benchmarks_private/retrieval_benchmarks_real.yaml]
 
 The output YAML has the same schema as v1 and works with the existing harness.
 """
@@ -814,7 +814,7 @@ async def main():
     parser.add_argument("--top-k", type=int, default=15)
     parser.add_argument(
         "--out", type=str,
-        default="tests/fixtures/retrieval_benchmarks_real.yaml",
+        default="data/benchmarks_private/retrieval_benchmarks_real.yaml",
         help="Output YAML path",
     )
     args = parser.parse_args()

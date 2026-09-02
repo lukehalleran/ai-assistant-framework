@@ -124,7 +124,12 @@ class TestTriggerWiring:
         import utils.location_resolver as lr
         import utils.web_search_trigger as wst
         orig_inst, orig_loc = ir.get_user_institution, lr.get_user_location
+        orig_anchors = ir.get_user_anchors
         ir.get_user_institution = lambda: institution
+        # The guard call site reads get_user_anchors() (profile-backed) — patch
+        # it too, or this test only passes on a machine whose LIVE profile
+        # carries the institution (exactly the owner-data-dependence class).
+        ir.get_user_anchors = lambda: [institution] if institution else []
         lr.get_user_location = lambda: None
         try:
             return asyncio.run(wst._classify_with_llm_unified(
@@ -135,6 +140,7 @@ class TestTriggerWiring:
             ))
         finally:
             ir.get_user_institution = orig_inst
+            ir.get_user_anchors = orig_anchors
             lr.get_user_location = orig_loc
 
     def test_live_turn_suppressed_at_parse(self):

@@ -91,6 +91,7 @@ DISPATCH_TABLE = [
     (lambda d: d.wants_create_daemon_note and d.daemon_note_title, "_dispatch_create_daemon_note", _args_basic),
     (lambda d: d.wants_action and d.action_type, "_dispatch_action_proposal", _args_basic),
     (lambda d: d.wants_lookup_contact and d.lookup_contact_name, "_dispatch_lookup_contact", _args_basic),
+    (lambda d: d.wants_email_search, "_dispatch_email_search", _args_basic),
 ]
 
 
@@ -274,6 +275,23 @@ class ToolExecutor:
                 lines.append("create_daemon_note: DISABLED")
         except Exception:
             lines.append("create_daemon_note: DISABLED")
+
+        # Email search
+        try:
+            from core.email.service import get_email_service
+            service = get_email_service()
+            if service.providers:
+                provider_names = ", ".join(
+                    p.name for p in service.providers if p.is_configured()
+                )
+                if provider_names:
+                    lines.append(f"email_search: AVAILABLE ({provider_names})")
+                else:
+                    lines.append("email_search: UNAVAILABLE (no providers configured)")
+            else:
+                lines.append("email_search: UNAVAILABLE (no email providers)")
+        except Exception as e:
+            lines.append(f"email_search: UNAVAILABLE ({e})")
 
         # Internet actions — action registry is also the source of runtime
         # OAuth/scope status, shared with the enhanced fallback prompt.
@@ -1309,6 +1327,136 @@ class ToolExecutor:
         except Exception as e:
             logger.warning(f"[ToolExecutor] Contact lookup failed: {e}")
             return f"[Contact lookup error: {e}]"
+
+    async def _dispatch_email_search(
+        self, decision: SearchDecision, round_number: int,
+    ) -> _ToolResult:
+        """Search the user's email (Gmail/Outlook) — read-only, headers & snippets only."""
+        query = decision.email_query
+        window_days = decision.email_window_days or 7
+
+        start_events = [ProgressEvent(
+            event_type="email_search",
+            message=(
+                f"Searching email: {query or f'recent (last {window_days}d)'}"
+            ),
+            round_number=round_number,
+            metadata={
+                "query": query,
+                "window_days": window_days,
+                "reason": decision.email_reason
+            }
+        )]
+
+        start_time = time.time()
+        result_text = await self._execute_email_search(query, window_days)
+        duration = (time.time() - start_time) * 1000
+
+        round_data = SearchRound(
+            round_number=round_number,
+            request=SearchRequest(
+                query=f"[Email] {query or f'last {window_days} days'}",
+                reason=decision.email_reason,
+                round_number=round_number
+            ),
+            results=None,
+            duration_ms=duration
+        )
+        round_data.summary = result_text
+
+        end_events = [ProgressEvent(
+            event_type="email_search_complete",
+            message="Email search complete",
+            round_number=round_number,
+            metadata={"duration_ms": duration}
+        )]
+
+        return _ToolResult(
+            decision=decision,
+            round_data=round_data,
+            formatted_context=(
+                f"\n---\n**Round {round_number}: Email Search**\n"
+                f"{result_text}\n---\n"
+            ),
+            start_events=start_events,
+            end_events=end_events,
+        )
+
+    async def _execute_email_search(self, query: Optional[str], window_days: int) -> str:
+        """Execute email search and format results."""
+        try:
+            # lazy import: service initialization touches the registry
+            from core.email.service import get_email_service
+            try:
+                from config.app_config import EMAIL_MAX_RESULTS, EMAIL_DEFAULT_WINDOW_DAYS
+            except Exception:
+                EMAIL_MAX_RESULTS = 20
+                EMAIL_DEFAULT_WINDOW_DAYS = 7
+
+            service = get_email_service()
+            window_days = window_days or EMAIL_DEFAULT_WINDOW_DAYS
+
+            # Coverage disclosure (2026-09-01): a negative answer is only as
+            # honest as its scope — name the providers actually searched and
+            # the ones not connected (advisor mail in unconnected Outlook
+            # read as "no reply" without this).
+            try:
+                from core.email.registry import coverage_note
+                _coverage = coverage_note()
+            except Exception:
+                _coverage = ""
+
+            # Counting/volume questions (2026-09-01): "how many emails am I
+            # getting" against a 20-result cap is not a count. Fetch wide,
+            # report the true in-window total, list only the newest few.
+            import re as _re
+            counting_shape = bool(query) and bool(_re.search(
+                r"\b(?:how\s+many|how\s+much|how\s+often|count|volume)\b",
+                query, _re.IGNORECASE))
+
+            if counting_shape:
+                messages = await service.recent(window_days=window_days, limit=200)
+            elif query:
+                messages = await service.search(query, window_days=window_days, limit=EMAIL_MAX_RESULTS)
+            else:
+                messages = await service.recent(window_days=window_days, limit=EMAIL_MAX_RESULTS)
+
+            if not messages:
+                return (
+                    f"[No emails found in the last {window_days} days"
+                    f"{f' matching {query}' if query else ''}]"
+                    + (f"\n{_coverage}" if _coverage else "")
+                )
+
+            if counting_shape:
+                header = (
+                    f"[EMAIL RESULTS] {len(messages)} message(s) in the last "
+                    f"{window_days} days"
+                    + (" (fetch cap 200 reached — true total may be higher)"
+                       if len(messages) >= 200 else "")
+                    + f" — newest {min(len(messages), EMAIL_MAX_RESULTS)} listed"
+                )
+                messages = messages[:EMAIL_MAX_RESULTS]
+                lines = [header]
+            else:
+                lines = [f"[EMAIL RESULTS] {len(messages)} message(s)"]
+            for i, msg in enumerate(messages, 1):
+                # Compact one-liner per message: date | provider | sender | subject | snippet
+                date_str = msg.date[:10] if msg.date else "?"  # ISO date only
+                provider_tag = f"[{msg.provider.upper()[:1]}]" if len(service.providers) > 1 else ""
+                sender = msg.sender[:40] if msg.sender else "(no sender)"
+                subject = (msg.subject[:50] if msg.subject else "(no subject)").replace("\n", " ")
+                snippet = (msg.snippet[:120] if msg.snippet else "(no snippet)").replace("\n", " ")
+                lines.append(
+                    f"{i}) {date_str} {provider_tag} {sender} — {subject}\n    {snippet}"
+                )
+
+            if _coverage:
+                lines.append(_coverage)
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"[ToolExecutor] Email search failed: {e}")
+            return f"[Email search error: {e}]"
 
     async def _resolve_email_recipient(self, name: str) -> tuple:
         """Resolve a name to an email address via Google Contacts.

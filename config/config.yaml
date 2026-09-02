@@ -216,6 +216,18 @@ grounding_check:
   integrate_max_response_chars: 4000
   integrate_min_ratio: 0.75   # min (rewritten / original) length ratio
   integrate_max_ratio: 1.30   # max (rewritten / original) length ratio
+email_integration:
+  enabled: true
+  gmail_enabled: true
+  outlook_enabled: false
+  outlook_client_id: ""        # set in config.local.yaml (Azure app registration)
+  outlook_tenant: "common"
+  max_results: 20
+  cache_ttl_seconds: 300
+  passive_context_enabled: true
+  passive_max_emails: 3
+  passive_min_relevance: 0.35
+  default_window_days: 7
 file_access:
   enabled: true
   approved_folders:

@@ -1497,6 +1497,32 @@ GROUNDING_INTEGRATE_MAX_RATIO: float = float(
     GROUNDING_CHECK_CFG.get("integrate_max_ratio", 1.30))
 
 # --------------------------------------------------------------------
+# Email Integration (Gmail, Outlook metadata read-only; 2026-09-01)
+# Doctrine: metadata-first, live-fetch-only, 5-min TTL in-memory cache
+# Consumers: agentic email_search tool, passive [RELEVANT EMAILS] gatherer,
+# pattern-engine email dimension.
+# --------------------------------------------------------------------
+EMAIL_INTEGRATION_CFG = config.get("email_integration", {})
+EMAIL_INTEGRATION_ENABLED: bool = bool(EMAIL_INTEGRATION_CFG.get("enabled", True))
+EMAIL_GMAIL_ENABLED: bool = bool(EMAIL_INTEGRATION_CFG.get("gmail_enabled", True))
+EMAIL_OUTLOOK_ENABLED: bool = bool(EMAIL_INTEGRATION_CFG.get("outlook_enabled", False))
+EMAIL_OUTLOOK_CLIENT_ID: str = str(EMAIL_INTEGRATION_CFG.get("outlook_client_id", ""))
+EMAIL_OUTLOOK_TENANT: str = str(EMAIL_INTEGRATION_CFG.get("outlook_tenant", "common"))
+EMAIL_MAX_RESULTS: int = int(EMAIL_INTEGRATION_CFG.get("max_results", 20))
+EMAIL_CACHE_TTL_SECONDS: float = float(EMAIL_INTEGRATION_CFG.get("cache_ttl_seconds", 300.0))
+EMAIL_PASSIVE_CONTEXT_ENABLED: bool = bool(EMAIL_INTEGRATION_CFG.get("passive_context_enabled", True))
+EMAIL_PASSIVE_MAX: int = int(EMAIL_INTEGRATION_CFG.get("passive_max_emails", 3))
+EMAIL_PASSIVE_MIN_RELEVANCE: float = float(EMAIL_INTEGRATION_CFG.get("passive_min_relevance", 0.35))
+EMAIL_DEFAULT_WINDOW_DAYS: int = int(EMAIL_INTEGRATION_CFG.get("default_window_days", 7))
+
+# Environment overrides
+EMAIL_INTEGRATION_ENABLED = bool(int(os.getenv("EMAIL_INTEGRATION_ENABLED", "1" if EMAIL_INTEGRATION_ENABLED else "0")))
+EMAIL_GMAIL_ENABLED = bool(int(os.getenv("EMAIL_GMAIL_ENABLED", "1" if EMAIL_GMAIL_ENABLED else "0")))
+EMAIL_OUTLOOK_ENABLED = bool(int(os.getenv("EMAIL_OUTLOOK_ENABLED", "1" if EMAIL_OUTLOOK_ENABLED else "0")))
+EMAIL_OUTLOOK_CLIENT_ID = os.getenv("DAEMON_OUTLOOK_CLIENT_ID", EMAIL_OUTLOOK_CLIENT_ID)
+EMAIL_CACHE_TTL_SECONDS = float(os.getenv("EMAIL_CACHE_TTL_SECONDS", str(EMAIL_CACHE_TTL_SECONDS)))
+
+# --------------------------------------------------------------------
 # Agentic File Access (read/grep/list within approved folders)
 # --------------------------------------------------------------------
 FILE_ACCESS_CFG = config.get("file_access", {})

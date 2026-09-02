@@ -1,7 +1,7 @@
 """
 # utils/location_resolver.py
 
-Resolves the user's current location as a short place string ("Saint Charles,
+Resolves the user's current location as a short place string ("Springfield,
 IL") for localizing location-dependent web-search queries (weather, local news,
 "near me").
 
@@ -265,7 +265,7 @@ _US_STATES_INV = {v.lower(): k for k, v in _US_STATES.items()}
 
 
 def _city_variants(city: str) -> list:
-    """'Springfield' and 'Saint Charles' are the same city to a geocoder and
+    """'Springfield' and 'Springfield' are the same city to a geocoder and
     to the LLM — cover both spellings whichever one the resolver returned."""
     variants = [city]
     low = city.lower()

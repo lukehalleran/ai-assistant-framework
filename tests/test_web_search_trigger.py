@@ -916,9 +916,9 @@ class TestUserLocationInjection:
 
         prompt = _build_llm_trigger_prompt(
             "how hot is it in my area", "2026-07-02",
-            user_location="Saint Charles, IL",
+            user_location="Springfield, IL",
         )
-        assert "User location: Saint Charles, IL" in prompt
+        assert "User location: Springfield, IL" in prompt
         assert "LOCAL QUERIES" in prompt
         assert 'NEVER emit "my area"' in prompt
 
@@ -938,18 +938,18 @@ class TestUserLocationInjection:
         mock_manager = MagicMock()
         mock_manager.generate_once = AsyncMock(return_value=(
             '{"should_search": true, "confidence": 0.9, "reason": "weather", '
-            '"search_terms": ["Saint Charles IL weather"], "search_depth": "quick", '
+            '"search_terms": ["Springfield IL weather"], "search_depth": "quick", '
             '"num_searches": 1}'
         ))
 
         with patch("utils.location_resolver.get_user_location",
-                   return_value="Saint Charles, IL"):
+                   return_value="Springfield, IL"):
             await wst._classify_with_llm_unified(
                 "how hot is it in my area", mock_manager
             )
 
         prompt = mock_manager.generate_once.call_args[0][0]
-        assert "User location: Saint Charles, IL" in prompt
+        assert "User location: Springfield, IL" in prompt
 
     @pytest.mark.asyncio
     async def test_classify_survives_location_failure(self):
@@ -982,7 +982,7 @@ class TestUnjustifiedLocationStrip:
 
         prompt = _build_llm_trigger_prompt(
             "my college login keeps failing", "2026-07-08",
-            user_location="Saint Charles, IL",
+            user_location="Springfield, IL",
         )
         assert "LOCATION IS ONLY FOR PHYSICAL SURROUNDINGS" in prompt
         assert "not their college unless they named it" in prompt
@@ -996,12 +996,12 @@ class TestUnjustifiedLocationStrip:
         mock_manager.generate_once = AsyncMock(return_value=(
             '{"should_search": true, "confidence": 0.8, "reason": "login issue", '
             '"search_terms": ["login attempt failed account archived 2026", '
-            '"how to resolve login issues account archived Saint Charles IL"], '
+            '"how to resolve login issues account archived Springfield IL"], '
             '"search_depth": "quick", "num_searches": 2}'
         ))
 
         with patch("utils.location_resolver.get_user_location",
-                   return_value="Saint Charles, IL"):
+                   return_value="Springfield, IL"):
             parsed = await wst._classify_with_llm_unified(
                 "my school account says archived and login failed", mock_manager
             )
@@ -1020,18 +1020,18 @@ class TestUnjustifiedLocationStrip:
         mock_manager = MagicMock()
         mock_manager.generate_once = AsyncMock(return_value=(
             '{"should_search": true, "confidence": 0.9, "reason": "weather", '
-            '"search_terms": ["weather forecast Saint Charles IL today"], '
+            '"search_terms": ["weather forecast Springfield IL today"], '
             '"search_depth": "quick", "num_searches": 1}'
         ))
 
         with patch("utils.location_resolver.get_user_location",
-                   return_value="Saint Charles, IL"):
+                   return_value="Springfield, IL"):
             parsed = await wst._classify_with_llm_unified(
                 "how hot is it in my area today", mock_manager
             )
 
         assert parsed is not None
-        assert parsed.search_terms == ["weather forecast Saint Charles IL today"]
+        assert parsed.search_terms == ["weather forecast Springfield IL today"]
 
 
 if __name__ == "__main__":

@@ -90,6 +90,11 @@ def main() -> int:
     ap.add_argument("--match", action="append", default=[],
                     help="case-insensitive substring of the exemplar text (repeatable)")
     ap.add_argument("--list", action="store_true", help="list all entries in domain/label and exit")
+    ap.add_argument("--all", action="store_true",
+                    help="select EVERY learned entry in domain/label (2026-09-01: "
+                         "the intent/temporal_recall label was wholesale-poisoned by "
+                         "pre-08-21 crisis-day teaching — sometimes the whole label "
+                         "must reset to seeds)")
     ap.add_argument("--non-vent", action="store_true",
                     help="select web_search/no_search entries that fail the DEPLOYED "
                          "gate._is_vent_shaped test (entries the current teacher "
@@ -109,12 +114,15 @@ def main() -> int:
             print(f"  [{i}] ({e.get('source')}, {e.get('ts', '')[:19]}) {e.get('text')!r}")
         return 0
 
-    if not args.match and not args.non_vent:
-        print("No --match terms or --non-vent given (use --list to inspect the store).")
+    if not args.match and not args.non_vent and not args.all:
+        print("No --match terms, --non-vent, or --all given (use --list to inspect the store).")
         return 1
 
     matched, unmatched = ([], [])
-    if args.match:
+    if args.all:
+        entries = data.get(args.domain, {}).get(args.label, [])
+        matched, unmatched = list(entries), []
+    elif args.match:
         matched, unmatched = find_matches(data, args.domain, args.label, args.match)
     if args.non_vent:
         # Score against THE DEPLOYED vent-shape test — never a re-derivation.

@@ -9,7 +9,7 @@ Semi-automated approach:
   4. Export a draft YAML for human review/correction
 
 Usage:
-    python scripts/sample_real_benchmark.py [--n-per-collection 5] [--seed 42] [--out tests/fixtures/retrieval_benchmarks_real.yaml]
+    python scripts/sample_real_benchmark.py [--n-per-collection 5] [--seed 42] [--out data/benchmarks_private/retrieval_benchmarks_real.yaml]
 
 The output YAML has the same schema as retrieval_benchmarks.yaml and can be
 loaded by the existing benchmark harness.
@@ -790,7 +790,7 @@ async def main():
     )
     parser.add_argument(
         "--out", type=str,
-        default="tests/fixtures/retrieval_benchmarks_real.yaml",
+        default="data/benchmarks_private/retrieval_benchmarks_real.yaml",
         help="Output YAML path",
     )
     args = parser.parse_args()

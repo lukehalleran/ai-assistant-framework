@@ -55,7 +55,7 @@ class TestSalvage:
 class TestRegexPath:
     def test_email_object_salvaged_to_recipient(self):
         assert _clean_triple("user", "email_sent", JUNE_EMAIL) == (
-            "user", "email_sent", "Morgan"
+            "user", "email_sent", "morgan"
         )
 
     def test_long_object_without_salutation_dropped(self):
@@ -63,7 +63,7 @@ class TestRegexPath:
 
     def test_normal_object_untouched(self):
         assert _clean_triple("user", "has_advisor", "Morgan Reeves") == (
-            "user", "has_advisor", "Morgan Reeves"
+            "user", "has_advisor", "morgan reeves"
         )
 
     def test_env_cap_override(self, monkeypatch):

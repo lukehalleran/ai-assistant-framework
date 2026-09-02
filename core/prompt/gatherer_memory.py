@@ -332,7 +332,7 @@ class MemoryRetrievalMixin:
         hub (or any node with degree >= GRAPH_EXPANSION_HUB_DEGREE), so an
         incidental token linking to "user" can't dump the whole personal
         neighbourhood into the query — only seed entities expand freely.
-        This bridges vocabulary gaps (e.g. "my brother" -> "Drew").
+        This bridges vocabulary gaps (e.g. "my brother" -> "drew").
 
         Args:
             query: Original user query

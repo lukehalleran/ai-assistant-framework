@@ -356,6 +356,17 @@ class AgenticSearchController:
         """
         return detect_protocol(model_name, self.model_manager.api_models)
 
+    @staticmethod
+    def _email_search_is_available() -> bool:
+        """Cheap runtime capability check used when exposing native tools."""
+        try:
+            from core.email.service import get_email_service
+
+            service = get_email_service()
+            return any(provider.is_configured() for provider in service.providers)
+        except Exception:
+            return False
+
     async def run_agentic_search(
         self,
         query: str,
@@ -418,6 +429,7 @@ class AgenticSearchController:
         git_stats_available = self.git_stats_manager is not None and self.git_stats_manager.is_available()
         github_available = self.github_manager is not None and self.github_manager.is_available()
         fetch_url_available = self.web_search_manager is not None and self.web_search_manager.is_available()
+        email_search_available = self._email_search_is_available()
         try:
             from config.app_config import INTERNET_ACTIONS_ENABLED
             actions_available = INTERNET_ACTIONS_ENABLED
@@ -433,6 +445,7 @@ class AgenticSearchController:
             github_available=github_available,
             fetch_url_available=fetch_url_available,
             actions_available=actions_available,
+            email_search_available=email_search_available,
         )
 
         # Augment system prompt for agentic mode
@@ -1771,7 +1784,7 @@ class AgenticSearchController:
                 prompt=final_prompt + directive,
                 model_name=getattr(self, "_last_final_model", None),
                 system_prompt=getattr(self, "_last_final_system_prompt", None) or "",
-                max_tokens=4096,
+                max_tokens=8192,
                 disable_reasoning=True,
             )
         except Exception as e:
@@ -1881,7 +1894,7 @@ class AgenticSearchController:
                 prompt=final_prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,
-                max_tokens=4096,
+                max_tokens=8192,
                 images=_images,
             )
 
@@ -1983,7 +1996,7 @@ class AgenticSearchController:
                 prompt=final_prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,
-                max_tokens=4096,
+                max_tokens=8192,
                 disable_reasoning=True,
             )
         except Exception as e:

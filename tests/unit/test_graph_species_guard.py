@@ -109,21 +109,21 @@ class TestIngestSpeciesGuard:
     the helper — dead-wiring lesson)."""
 
     def test_live_case_wrong_species_edge_blocked(self, storage):
-        _seed_cat_node(storage, "Daisy", "Daisy")
+        _seed_cat_node(storage, "daisy", "Daisy")
         storage._ingest_fact_to_graph(
             "user", "has_dog", "Daisy",
             fact_id="fact_test", confidence=0.9)
         edges = storage.graph_memory.get_relations("user")
-        assert not any(e.relation == "has_dog" and e.target_id == "Daisy"
+        assert not any(e.relation == "has_dog" and e.target_id == "daisy"
                        for e in edges)
 
     def test_matching_species_edge_allowed(self, storage):
-        _seed_cat_node(storage, "Daisy", "Daisy")
+        _seed_cat_node(storage, "daisy", "Daisy")
         storage._ingest_fact_to_graph(
             "user", "has_cat", "Daisy",
             fact_id="fact_test", confidence=0.9)
         edges = storage.graph_memory.get_relations("user")
-        assert any(e.relation == "has_cat" and e.target_id == "Daisy"
+        assert any(e.relation == "has_cat" and e.target_id == "daisy"
                    for e in edges)
 
     def test_node_without_species_metadata_unaffected(self, storage):
@@ -139,12 +139,12 @@ class TestIngestSpeciesGuard:
                    for e in edges)
 
     def test_non_species_relation_unaffected(self, storage):
-        _seed_cat_node(storage, "Daisy", "Daisy")
+        _seed_cat_node(storage, "daisy", "Daisy")
         storage._ingest_fact_to_graph(
             "user", "plays_with", "Daisy",
             fact_id="fact_test", confidence=0.9)
         edges = storage.graph_memory.get_relations("user")
-        assert any(e.target_id == "Daisy" for e in edges)
+        assert any(e.target_id == "daisy" for e in edges)
 
     def test_fresh_object_node_never_blocked(self, storage):
         # brand-new node has no metadata — first-mention edges always land

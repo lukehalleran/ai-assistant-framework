@@ -326,7 +326,7 @@ _CONCRETE_FACT_RE = re.compile(
 # Rescue for advice-OPENING sentences that nonetheless assert a value:
 # "Check the syllabus again — the correct due date is Sep 20." states a fact
 # (correct X IS Y) and must survive; "Please verify the correct semester for
-context-sensitive term." names no value (no copula after "correct <noun>") and must not.
+# the course?" is advice only and must not survive.
 _ASSERTIVE_CLAUSE_RE = re.compile(
     r"(?i)\bcorrect\b[^.!?]{0,40}\b(?:is|are|was|were)\b"
     r"|\bshould\s+be\b|\bactually\b|\bin\s+fact\b"

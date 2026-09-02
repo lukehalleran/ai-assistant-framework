@@ -56,7 +56,7 @@ INGEST_PASTE = (
     "- Enrolled in MGT 6203 only (3 hrs, part-time). Per advisor recommendation.\n\n"
     "KEY FACTS\n"
     "- Advisor: Morgan Reeves, Academic Advising Manager "
-    "(Morgan.Reeves@lifetimelearning.gatech.edu). Authoritative on deadlines.\n"
+    "(morgan.reeves@lifetimelearning.gatech.edu). Authoritative on deadlines.\n"
     "- Incomplete from last term: unresolved. AWAITING REPLY.\n"
     "- MGT 6203: light course. Check syllabus for group project and the "
     "percent of grade after Oct 31.\n\n"
@@ -70,7 +70,7 @@ INGEST_PASTE = (
     "I received this from Morgan. Hi Luke, I would like to correct your "
     "understanding of the registration deadline for Fall 2026. Best, Morgan "
     "Reeves, Georgia Institute of Technology, "
-    "Morgan.Reeves@lifetimelearning.gatech.edu\n"
+    "morgan.reeves@lifetimelearning.gatech.edu\n"
     "image\n"
     "Book time to meet with me\n"
     "I woke up at maybe 1015 and took 5 mg extra Dexivar today. I dropped cse "
@@ -114,7 +114,7 @@ class TestKeywordWordBounding:
 class TestEmailArmGating:
 
     def test_head_anchored_send_command_matches(self):
-        assert _EMAIL_COMMAND_RE.search("Send this to Morgan@gatech.edu: draft below")
+        assert _EMAIL_COMMAND_RE.search("Send this to morgan@gatech.edu: draft below")
         assert _EMAIL_COMMAND_RE.search("ok, email Meagan the update")
         assert _EMAIL_COMMAND_RE.search("please draft an email to the bursar")
 
@@ -135,7 +135,7 @@ class TestEmailArmGating:
     @pytest.mark.asyncio
     async def test_long_anchored_draft_still_routes_to_tools(self):
         d = await evaluate_agentic_gate(
-            user_text="Send this to Morgan.Reeves@lifetimelearning.gatech.edu: "
+            user_text="Send this to morgan.reeves@lifetimelearning.gatech.edu: "
                       + ("thank you for your guidance " * 20)
         )
         assert d.should_trigger is True
@@ -196,7 +196,7 @@ class _FakeResolver:
         self.aliases = {
             "project": "phase_change_heat_exchanger_project",
             "notes": "phase_change_heat_exchanger_project",
-            "Morgan": "Morgan_Reeves",
+            "morgan": "morgan_reeves",
             "phase change project": "phase_change_heat_exchanger_project",
         }
 
@@ -216,7 +216,7 @@ class TestGenericAliasStoplist:
         ents = extract_graph_entities(
             "did Morgan reply about the deadline", _FakeResolver()
         )
-        assert "Morgan_Reeves" in ents
+        assert "morgan_reeves" in ents
 
     def test_multiword_mention_still_resolves(self):
         # The stoplist only guards SINGLE-word matches — a real multi-word
@@ -258,11 +258,11 @@ class TestGenericAliasBindingGuard:
     def test_named_alias_still_binds(self, tmp_path):
         from memory.graph_models import GraphNode
         g = self._graph(tmp_path)
-        g.add_entity(GraphNode(entity_id="Morgan_Reeves",
+        g.add_entity(GraphNode(entity_id="morgan_reeves",
                                display_name="Morgan Reeves",
                                entity_type="person"))
-        g.register_alias("Morgan", "Morgan_Reeves")
-        assert g.resolve_entity("Morgan") == "Morgan_Reeves"
+        g.register_alias("morgan", "morgan_reeves")
+        assert g.resolve_entity("morgan") == "morgan_reeves"
 
     def test_add_entity_drops_generic_alias(self, tmp_path):
         from memory.graph_models import GraphNode

@@ -321,3 +321,75 @@ class TestDailyNotes:
                          vault_path=str(tmp_path / "nope")))
         assert res.total == 0
         assert any("no daily note" in n or "vault" in n for n in res.notes)
+
+
+class TestEmailDimension:
+    """2026-09-01 email dimension (docs/EMAIL_INTEGRATION_DESIGN.md): the
+    engine is sync and pure — live-fetched headers are INJECTED as rows by
+    the async caller; None (not fetched) and [] (nothing in window) are
+    reported honestly and never conflated."""
+
+    def _rows(self, now):
+        from core.email.provider import EmailMessage
+        mk = lambda days_ago, sender, subject, unread=False: EmailMessage(
+            provider="gmail", message_id=f"m{days_ago}",
+            sender=sender, subject=subject, unread=unread,
+            date=(now - timedelta(days=days_ago)).isoformat(),
+        )
+        return [
+            mk(1, "Dr. Smith <smith@clinic.org>", "Appointment follow-up", True),
+            mk(2, "Advisor <Morgan@gatech.edu>", "Registration"),
+            mk(3, "News <digest@clinic.org>", "Weekly digest"),
+            mk(40, "Old <old@old.com>", "Outside window"),
+            {"provider": "outlook", "message_id": "d1",
+             "sender": "HR <hr@work.com>", "subject": "Benefits",
+             "date": (now - timedelta(days=4)).isoformat(), "unread": False},
+        ]
+
+    def test_counts_domains_and_window(self):
+        from memory.pattern_engine import PatternQuery, run_pattern_query
+        now = datetime(2026, 9, 1, 12, 0)
+        res = run_pattern_query(
+            PatternQuery(dimension="email", window_days=14, now=now),
+            email_rows=self._rows(now))
+        assert sum(b.count for b in res.buckets) == 4  # 40d-old row excluded
+        notes = " ".join(res.notes)
+        assert "clinic.org (2)" in notes
+        assert "4 emails in window; 1 unread" in notes
+        # exemplars are real refs with message ids
+        exemplars = [e for b in res.buckets for e in b.exemplars]
+        assert any(e.source == "email" and e.doc_id for e in exemplars)
+
+    def test_none_rows_honest_unavailable(self):
+        from memory.pattern_engine import PatternQuery, run_pattern_query
+        res = run_pattern_query(
+            PatternQuery(dimension="email", window_days=7,
+                         now=datetime(2026, 9, 1)), email_rows=None)
+        assert sum(b.count for b in res.buckets) == 0
+        assert any("not available" in n for n in res.notes)
+
+    def test_empty_rows_honest_zero(self):
+        from memory.pattern_engine import PatternQuery, run_pattern_query
+        res = run_pattern_query(
+            PatternQuery(dimension="email", window_days=7,
+                         now=datetime(2026, 9, 1)), email_rows=[])
+        assert any("no emails found" in n for n in res.notes)
+
+    def test_dimension_registered(self):
+        from memory.pattern_engine import DIMENSIONS
+        assert "email" in DIMENSIONS
+
+    def test_temporal_stage_auto_arm(self):
+        from core.insight.temporal import run_pattern_stage
+        from core.insight.types import InsightIntent
+        now = datetime(2026, 9, 1, 12, 0)
+        intent = InsightIntent(kind="pattern_temporal",
+                               theme="my email volume lately",
+                               raw_query="how many emails am I getting lately",
+                               window_days=14)
+        results, evidence = run_pattern_stage(
+            intent, corpus_manager=None, user_profile=None, now=now,
+            email_rows=self._rows(now))
+        email_res = [r for r in results if r.dimension == "email"]
+        assert len(email_res) == 1
+        assert sum(b.count for b in email_res[0].buckets) == 4

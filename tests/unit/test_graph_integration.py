@@ -114,16 +114,16 @@ class MockGraphMemory:
 
 @pytest.fixture
 def sample_graph():
-    """Graph: user --has_pet--> sam, user --brother_name--> Drew,
+    """Graph: user --has_pet--> sam, user --brother_name--> drew,
     sam --breed--> golden_retriever"""
     nodes = {
         "user": "User",
         "sam": "Sam",
-        "Drew": "Drew",
+        "drew": "Drew",
         "golden_retriever": "Golden Retriever",
     }
     edges = {
-        "user": [("sam", "has_pet"), ("Drew", "brother_name")],
+        "user": [("sam", "has_pet"), ("drew", "brother_name")],
         "sam": [("golden_retriever", "breed")],
     }
     return MockGraphMemory(nodes, edges)
@@ -135,8 +135,8 @@ def sample_resolver():
         "sam": "sam",
         "my dog": "sam",
         "aug": "sam",
-        "Drew": "Drew",
-        "my brother": "Drew",
+        "drew": "drew",
+        "my brother": "drew",
         "user": "user",
         "golden retriever": "golden_retriever",
     })
@@ -159,7 +159,7 @@ class TestExtractGraphEntities:
     def test_multiple_entities(self, sample_resolver):
         result = extract_graph_entities("What about Sam and Drew?", sample_resolver)
         assert "sam" in result
-        assert "Drew" in result
+        assert "drew" in result
 
     def test_no_match(self, sample_resolver):
         result = extract_graph_entities("What's the weather like?", sample_resolver)
@@ -191,7 +191,7 @@ class TestExtractGraphEntities:
 
     def test_bigram_match(self, sample_resolver):
         result = extract_graph_entities("I love my brother very much", sample_resolver)
-        assert "Drew" in result
+        assert "drew" in result
 
     def test_trigram_match(self):
         resolver = MockResolver({"big red dog": "clifford"})
@@ -206,7 +206,7 @@ class TestExtractGraphEntities:
 class TestGetRelatedDisplayNames:
 
     def test_basic_neighbors(self, sample_graph):
-        # user's 1-hop neighbors: sam, Drew
+        # user's 1-hop neighbors: sam, drew
         names = get_related_display_names({"user"}, sample_graph, depth=1)
         assert "Sam" in names
         assert "Drew" in names
@@ -251,7 +251,7 @@ class TestGetRelatedEntityIds:
     def test_basic(self, sample_graph):
         ids = get_related_entity_ids({"user"}, sample_graph, depth=1)
         assert "sam" in ids
-        assert "Drew" in ids
+        assert "drew" in ids
         assert "user" not in ids
 
     def test_empty(self, sample_graph):
@@ -442,10 +442,10 @@ class TestQueryExpansion:
              patch("config.app_config.GRAPH_QUERY_EXPANSION_MAX_TERMS", 8):
             result = gatherer._expand_query_with_graph("tell me about my brother")
 
-        # "my brother" -> Drew -> user (1-hop) -> sam (1-hop from user)
-        # But skip_ids={"user"}, so we get neighbors of Drew
-        # Drew has no outgoing edges in our mock, but the query might also
-        # resolve "my brother" -> Drew, and Drew's neighbors are found
+        # "my brother" -> drew -> user (1-hop) -> sam (1-hop from user)
+        # But skip_ids={"user"}, so we get neighbors of drew
+        # drew has no outgoing edges in our mock, but the query might also
+        # resolve "my brother" -> drew, and drew's neighbors are found
         assert "tell me about my brother" in result
 
     def test_expansion_adds_names(self, gatherer):
@@ -510,7 +510,7 @@ class TestQueryExpansion:
              patch("config.app_config.GRAPH_QUERY_EXPANSION_MAX_TERMS", 1):
             result = gatherer._expand_query_with_graph("tell me about user")
 
-        # user has 3 reachable neighbors (sam, Drew, golden_retriever)
+        # user has 3 reachable neighbors (sam, drew, golden_retriever)
         # but max_terms=1 so only 1 name appended (may be multi-word)
         original = "tell me about user"
         added = result.replace(original, "").strip()
@@ -685,16 +685,16 @@ class TestHubBarrier:
             "editing": "editing",
             "library": "library",
             "biscuit": "Biscuit",
-            "Daisy": "Daisy",
+            "daisy": "Daisy",
             "python": "Python",
         }
         edges = {
             "videos": [("editing", "relates"), ("user", "mentioned_by"),
                        ("library", "uses")],
-            "user": [("biscuit", "has_pet"), ("Daisy", "has_pet"),
+            "user": [("biscuit", "has_pet"), ("daisy", "has_pet"),
                      ("python", "uses_lang")],
             # lateral edge so biscuit would rank top IF the walk reached it
-            "biscuit": [("Daisy", "sibling")],
+            "biscuit": [("daisy", "sibling")],
         }
         return MockGraphMemory(nodes, edges)
 

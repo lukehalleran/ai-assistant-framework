@@ -815,6 +815,25 @@ class GroundingCheckSection(BaseModel):
     integrate_max_ratio: float = Field(default=1.30, gt=0.0)  # max (rewritten / original) length ratio
 
 
+class EmailIntegrationSection(BaseModel):
+    """Email integration (2026-09-01): metadata-only read access to Gmail and Outlook
+    via adapters conforming to EmailProvider protocol. Results cached in-memory (TTL).
+    Consumers: agentic email_search tool, passive [RELEVANT EMAILS] context gatherer,
+    pattern-engine email dimension."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    gmail_enabled: bool = True
+    outlook_enabled: bool = False
+    outlook_client_id: str = ""  # Azure app registration Application ID; personal values in config.local.yaml
+    outlook_tenant: str = "common"  # Azure tenant ID (common for multi-tenant)
+    max_results: int = Field(default=20, ge=1, le=100)
+    cache_ttl_seconds: float = Field(default=300.0, gt=0.0)
+    passive_context_enabled: bool = True  # inject [RELEVANT EMAILS] into prompts
+    passive_max_emails: int = Field(default=3, ge=0, le=10)
+    passive_min_relevance: float = Field(default=0.35, ge=0.0, le=1.0)
+    default_window_days: int = Field(default=7, ge=1, le=365)
+
+
 class UncertaintyFallbackSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -1103,6 +1122,7 @@ class DaemonConfig(BaseModel):
     uncertainty_fallback: UncertaintyFallbackSection = Field(default_factory=UncertaintyFallbackSection)
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     grounding_check: GroundingCheckSection = Field(default_factory=GroundingCheckSection)
+    email_integration: EmailIntegrationSection = Field(default_factory=EmailIntegrationSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
     light_prompt: LightPromptSection = Field(default_factory=LightPromptSection)
     backup: BackupSection = Field(default_factory=BackupSection)

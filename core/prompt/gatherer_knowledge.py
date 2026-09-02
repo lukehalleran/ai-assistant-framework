@@ -16,6 +16,7 @@ Methods:
   - get_visual_memories(query, max_images, intent_type) -> Dict[str, Any]
   - get_codebase_changes(since_datetime) -> Dict
   - get_narrative_context() -> str
+  - get_relevant_emails(query, limit) -> List[Dict]
   - _get_wiki_content(query, limit) -> List[Dict]
   - _should_skip_wikipedia(query) -> bool
   - _get_wiki_snippet_cached(query) -> Optional[Dict]
@@ -1629,4 +1630,163 @@ class KnowledgeRetrievalMixin:
             return events
         except Exception as e:
             logger.debug(f"[ContextGatherer] Google Calendar fetch failed: {e}")
+            return []
+
+    async def get_relevant_emails(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Fetch relevant emails from Gmail/Outlook when query has email cues or contacts.
+
+        Fire conditions (ALL deterministic, under-fires by design):
+          - EMAIL_PASSIVE_CONTEXT_ENABLED in config
+          - AND (query contains a word-bounded email cue like 'emails', 'inbox', 'gmail', 'outlook'
+                 OR the query has rare proper nouns that match contacts)
+          - Embed query and email (subject+snippet) in bge space (both-sides-fresh)
+          - Filter by EMAIL_PASSIVE_MIN_RELEVANCE (fallback 0.35)
+          - Cap at EMAIL_PASSIVE_MAX (fallback 3)
+          - Suppressed on elevated tone (distress)
+
+        Returns list of email dicts (date, sender, subject, snippet, provider).
+        All failures return [] silently — email is best-effort context.
+        """
+        try:
+            from config.app_config import (
+                EMAIL_PASSIVE_CONTEXT_ENABLED,
+                EMAIL_PASSIVE_MIN_RELEVANCE,
+                EMAIL_PASSIVE_MAX,
+            )
+        except ImportError:
+            return []
+
+        if not EMAIL_PASSIVE_CONTEXT_ENABLED:
+            return []
+
+        # Distress suppression: don't pollute distress context with email context
+        # (follows the refdocs-suppression doctrine — inbox content is an amplifier)
+        if hasattr(self, '_distress_active') and self._distress_active:
+            return []
+
+        try:
+            import re
+            # Fire conditions: email cue OR rare proper nouns (contacts)
+            email_cue = bool(re.search(r'\b(?:e-?mails?|inbox|gmail|outlook)\b', query.lower()))
+
+            # Extract rare proper nouns for contact/entity matching
+            contact_names = []
+            if not email_cue:
+                from utils.query_checker import extract_rare_proper_nouns
+                contact_names = extract_rare_proper_nouns(query)
+
+            if not email_cue and not contact_names:
+                # No signal to fetch emails
+                return []
+
+            # Seed the search
+            from core.email.service import get_email_service
+            service = get_email_service()
+
+            # Search with the contact names or the query itself
+            search_terms = " ".join(contact_names) if contact_names else query
+            window_days = 30  # Default window for passive context
+
+            messages = await service.search(
+                search_terms,
+                window_days=window_days,
+                limit=limit * 3  # Over-fetch, then filter by relevance
+            )
+
+            if not messages:
+                return []
+
+            # Contact-identity preference (2026-09-01): a name-string match is
+            # not an identity match — "Morgan" pulled a Hinge "Morgan & Luke"
+            # marketing mail while the advisor's thread sat elsewhere. Resolve
+            # the anchor to known contact ADDRESSES (Google Contacts, cached)
+            # and prefer sender-identity matches over body mentions.
+            contact_addrs: set = set()
+            sender_name_res = []
+            if contact_names:
+                try:
+                    import asyncio as _asyncio
+                    from core.actions.google_contacts import resolve_contact
+                    _results = await _asyncio.wait_for(
+                        resolve_contact(contact_names[0]), timeout=3.0)
+                    for _c in _results or []:
+                        _addr = str(_c.get("email") or "").strip().lower()
+                        if _addr and "@" in _addr:
+                            contact_addrs.add(_addr)
+                except Exception:
+                    contact_addrs = set()
+                sender_name_res = [
+                    re.compile(r"\b" + re.escape(n) + r"\b", re.IGNORECASE)
+                    for n in contact_names
+                ]
+
+            # Score results by relevance (subject + snippet vs query)
+            try:
+                # Shared MiniLM embedder — the SAME accessor the web-search
+                # trigger's anchor scoring uses (both-sides-fresh). NOTE
+                # 2026-09-01: the original wiring imported a nonexistent
+                # helper and silently fell to the unranked fallback every
+                # turn — mocks of the same wrong path hid it (the
+                # .intent_type dead-wiring class).
+                from models.model_manager import ModelManager
+                embedder = ModelManager._get_cached_embedder()
+                query_embedding = embedder.encode(query, convert_to_tensor=False)
+
+                scored_messages = []
+                for msg in messages:
+                    # Embed email text (subject + snippet)
+                    email_text = f"{msg.subject or ''} {msg.snippet or ''}".strip()
+                    if not email_text:
+                        continue
+                    email_embedding = embedder.encode(email_text, convert_to_tensor=False)
+
+                    # Cosine similarity
+                    import numpy as np
+                    sim = np.dot(query_embedding, email_embedding) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(email_embedding) + 1e-8
+                    )
+
+                    sender_l = (msg.sender or "").lower()
+                    addr_match = any(a in sender_l for a in contact_addrs)
+                    name_in_sender = any(
+                        p.search(msg.sender or "") for p in sender_name_res)
+
+                    if addr_match:
+                        # Resolved-contact sender: identity match, always kept
+                        # and ranked ahead of any semantic hit.
+                        rank = 2.0 + float(sim)
+                    elif name_in_sender:
+                        # The anchor name IS the sender ("Morgan <...>") — a
+                        # genuine from-match even when subject/snippet embed
+                        # poorly; kept, below identity matches.
+                        rank = 1.0 + float(sim)
+                    elif sim >= EMAIL_PASSIVE_MIN_RELEVANCE:
+                        # Body/subject mention only: must clear the bar.
+                        rank = float(sim)
+                    else:
+                        continue
+                    scored_messages.append({
+                        "date": msg.date,
+                        "sender": msg.sender,
+                        "subject": msg.subject,
+                        "snippet": msg.snippet,
+                        "provider": msg.provider,
+                        "relevance": float(sim),
+                        "_rank": rank,
+                    })
+
+                # Identity matches first, then sender-name, then semantic; cap.
+                scored_messages.sort(key=lambda x: x["_rank"], reverse=True)
+                for _m in scored_messages:
+                    _m.pop("_rank", None)
+                return scored_messages[:limit]
+
+            except Exception as e:
+                logger.debug(f"[ContextGatherer] Email relevance filtering failed: {e}")
+                # Relevance could not be established. Fail closed rather than
+                # injecting arbitrary inbox content into the prompt.
+                return []
+
+        except Exception as e:
+            logger.debug(f"[ContextGatherer] Email retrieval failed: {e}")
             return []

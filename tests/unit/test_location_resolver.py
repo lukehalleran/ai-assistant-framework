@@ -23,7 +23,7 @@ def profile_file():
     entries = [
         {
             "relation": "lives_in",
-            "value": "Saint Charles, IL",
+            "value": "Springfield, IL",
             "timestamp": "2026-01-16T00:41:28",
             "is_current": False,
         },
@@ -124,9 +124,9 @@ class TestIpPath:
     def test_cached_ip_location_returned(self, resolver, monkeypatch):
         monkeypatch.setattr(lr, "LOCATION_IP_LOOKUP_ENABLED", True)
         monkeypatch.setattr(lr, "requests", object())  # non-None sentinel
-        resolver._ip_location = "Saint Charles, Illinois"
+        resolver._ip_location = "Springfield, Illinois"
         resolver._ip_fetched_at = __import__("time").time()
-        assert resolver.get_location() == "Saint Charles, Illinois"
+        assert resolver.get_location() == "Springfield, Illinois"
 
     def test_no_cache_falls_back_to_profile_without_blocking(self, resolver, monkeypatch):
         monkeypatch.setattr(lr, "LOCATION_IP_LOOKUP_ENABLED", True)
@@ -140,9 +140,9 @@ class TestIpPath:
 
     def test_refresh_success_populates_cache(self, resolver, monkeypatch):
         monkeypatch.setattr(resolver, "_fetch_ip_location",
-                            lambda: "Saint Charles, Illinois")
+                            lambda: "Springfield, Illinois")
         resolver._refresh_ip_location()
-        assert resolver._ip_location == "Saint Charles, Illinois"
+        assert resolver._ip_location == "Springfield, Illinois"
         assert resolver._ip_fetched_at > 0
 
     def test_refresh_failure_sets_backoff(self, resolver, monkeypatch):
@@ -157,11 +157,11 @@ class TestIpPath:
 
 class TestFormatPlace:
     def test_city_and_region(self):
-        assert LocationResolver._format_place("Saint Charles", "Illinois") == \
-            "Saint Charles, Illinois"
+        assert LocationResolver._format_place("Springfield", "Illinois") == \
+            "Springfield, Illinois"
 
     def test_city_only(self):
-        assert LocationResolver._format_place("Saint Charles", "") == "Saint Charles"
+        assert LocationResolver._format_place("Springfield", "") == "Springfield"
 
     def test_empty(self):
         assert LocationResolver._format_place(None, None) is None
@@ -212,7 +212,7 @@ class TestStripUnjustifiedLocation:
 
     def test_saint_spelling_variant_stripped(self):
         out = lr.strip_unjustified_location(
-            ["university portal login Saint Charles IL"],
+            ["university portal login Springfield IL"],
             "my university portal won't let me log in", self.LOC)
         assert out == ["university portal login"]
 
@@ -229,9 +229,9 @@ class TestStripUnjustifiedLocation:
         assert out == terms
 
     def test_user_named_city_keeps_location_any_spelling(self):
-        terms = ["events Saint Charles IL this weekend"]
+        terms = ["events Springfield IL this weekend"]
         out = lr.strip_unjustified_location(
-            terms, "events in saint charles this weekend", self.LOC)
+            terms, "events in springfield this weekend", self.LOC)
         assert out == terms
 
     def test_ambiguous_weather_needs_current_conditions_cue(self):
@@ -266,7 +266,7 @@ class TestStripUnjustifiedLocation:
     def test_query_justifies_location_shapes(self):
         assert lr.query_justifies_location("weather today", self.LOC)
         assert lr.query_justifies_location("coffee shops near me", self.LOC)
-        assert lr.query_justifies_location("news in Springfield", self.LOC)
+        assert lr.query_justifies_location("news in springfield", self.LOC)
         assert not lr.query_justifies_location(
             "my college login keeps failing", self.LOC)
         assert not lr.query_justifies_location(

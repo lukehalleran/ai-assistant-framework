@@ -1019,7 +1019,7 @@ def _build_llm_trigger_prompt(
             turns. When present, lets the LLM resolve elliptical / deictic
             follow-ups ("check the news", "any updates on that") against the
             active topic instead of emitting generic terms.
-        user_location: Optional user location string ("Saint Charles, IL").
+        user_location: Optional user location string ("Springfield, IL").
             When present, location-dependent queries (weather, local news,
             "near me") get the location baked into search_terms instead of
             leaking literal "my area" into the search engine.

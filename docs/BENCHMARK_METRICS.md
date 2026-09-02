@@ -121,7 +121,7 @@ MRR 0.88 → 0.78 (-11%). The v1 benchmark was too easy: 64 diverse seeds, no ne
 - Hard negatives: family/pet/Python subtopic/project/emotional discrimination
 - Multi-item retrieval: queries expecting 2-3 memories
 
-### Real Suite v2 (`tests/fixtures/retrieval_benchmarks_real.yaml`)
+### Real Suite v2 (`data/benchmarks_private/retrieval_benchmarks_real.yaml`, local-only)
 - **868 seed memories** (200 targets + 668 adversarial distractors)
 - 200 test cases across 4 retrieval methods (60 conv, 60 facts, 40 summaries, 40 reflections)
 - **Near-neighbor adversarial**: 3 nearest neighbors per target included as confusers

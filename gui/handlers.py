@@ -1604,6 +1604,25 @@ async def _run_insight_mode(ctx):
                 normalize_chroma_rows,
             )
             _profile = getattr(_ms, "user_profile", None)
+
+            # Email pattern prefetch (2026-09-01): the engine is sync and
+            # never fetches — when the pattern theme carries an email cue,
+            # fetch live headers HERE (async layer) and inject them as rows
+            # (docs/EMAIL_INTEGRATION_DESIGN.md). Fail-soft: None = the
+            # dimension reports "source not available" honestly.
+            _email_rows = None
+            try:
+                import re as _re_email
+                if _re_email.search(r"\b(?:e-?mails?|inbox|gmail|outlook)\b",
+                                    intent.theme or "", _re_email.IGNORECASE):
+                    from config.app_config import EMAIL_INTEGRATION_ENABLED
+                    if EMAIL_INTEGRATION_ENABLED:
+                        from core.email.service import get_email_service
+                        _email_rows = await get_email_service().recent(
+                            window_days=intent.window_days or 30, limit=200)
+            except Exception as _e:
+                logger.debug(f"[Insight Mode] email pattern prefetch skipped: {_e}")
+                _email_rows = None
             _wsm = getattr(getattr(getattr(orchestrator, "prompt_builder", None), "context_gatherer", None), "web_search_manager", None)
 
             async def _web_adapter(q):
@@ -1732,6 +1751,7 @@ async def _run_insight_mode(ctx):
                         run_pattern_stage, intent,
                         corpus_manager=_corpus, user_profile=_profile,
                         spec=_deliberation.freeze.spec,
+                        email_rows=_email_rows,
                     ))
                     _n = 0
                     while not await _wait_stage(_pattern_task):
@@ -1757,6 +1777,7 @@ async def _run_insight_mode(ctx):
                     _fallback_pattern_task = asyncio.ensure_future(asyncio.to_thread(
                         run_pattern_stage, intent,
                         corpus_manager=_corpus, user_profile=_profile,
+                        email_rows=_email_rows,
                     ))
                     _n = 0
                     while not await _wait_stage(_fallback_pattern_task):

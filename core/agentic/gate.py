@@ -174,7 +174,10 @@ TOOL_KEYWORDS = [
     'search memory', 'search_memory',
     'loc ', 'lines of code', 'lines added', 'lines changed',
     'workflow', 'pull request', 'open issues', 'closed issues',
-    'actions', 'releases',
+    # 2026-09-01: bare 'actions' substring-matched "I am not taking any
+    # ACTIONS" in a MEDIUM-tone vent and silently forced a 152s tools loop
+    # (bare-keyword class #6). These are GITHUB terms — anchor them.
+    'github actions', 'actions workflow', 'github releases',
     # Internet actions (email, telegram, discord). Calendar requests use the
     # registry-backed explicit-action detector below so a bare mention of a
     # calendar event does not trigger tools.
@@ -463,6 +466,26 @@ _EMAIL_COMMAND_RE = re.compile(
 # statements, not continuations — "Yeah they seem like the worst drug to get
 # addicted to" (11 words) matched 'yeah' as a substring and rode the
 # continuation override into a pointless 60s agentic loop (2026-07-15).
+# Hypothetical/negated-action guard (2026-09-01 stress test): a MEDIUM-tone
+# vent — "I am writing emails in my head I will not send ... I am not taking
+# any actions at any point" — hit detect_action_intent and rode the
+# veto-EXEMPT action arm into a 152s tools loop. When the user explicitly
+# says the action is imagined or will not happen, the arm must stand down.
+# Word-bounded, under-fires by design (a genuine "email Morgan the update"
+# contains none of these).
+_ACTION_DISAVOWAL_RE = re.compile(
+    r"\b(?:"
+    r"i (?:will|would|am going to)? ?not (?:be )?(?:send|tak|do|act|writ)\w*"
+    r"|i won'?t (?:send|do|act|write)\b"
+    r"|not taking any actions?\b"
+    r"|i am not taking\b"
+    r"|(?:emails?|messages?|letters?) in my head\b"
+    r"|i(?:'m| am) (?:just )?venting\b"
+    r"|i would never (?:send|do|act)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 CONTINUATION_MAX_WORDS = 6
 
 # Fallback tool-intent inference for LEGACY corpus entries that predate the
@@ -709,6 +732,17 @@ async def evaluate_agentic_gate(
 
     if _TOOL_HIT(_lower):
         needs_tools = True
+        # Log the trigger — this arm fired SILENTLY for months; the 09-01
+        # 'actions' misfire took three probes to attribute because of it.
+        logger.debug("[Agentic Gate] Tier 1: tool keyword detected")
+    if _explicit_action is not None and _ACTION_DISAVOWAL_RE.search(user_text):
+        # The message disavows acting ("I will not send", "in my head",
+        # "I am VENTING") — an action pattern inside it is narration of a
+        # fantasy, not a request. Never force a veto-exempt tools loop on it.
+        logger.info(
+            f"[Agentic Gate] Action intent ({_explicit_action.value}) "
+            "suppressed — message explicitly disavows acting")
+        _explicit_action = None
     if _explicit_action is not None:
         needs_tools = True
         logger.debug(
@@ -743,6 +777,17 @@ async def evaluate_agentic_gate(
             needs_tools = True
         if needs_tools:
             logger.debug("[Agentic Gate] Tier 1: email-by-name intent detected")
+
+    # Email search intent (narrow Tier-1 arm, under-fires by design):
+    # word-bounded email noun + info-seeking shape + ≤30 words.
+    # "What's in my Gmail this week?" → tools mode with email_search.
+    # "I emailed the form yesterday" → narration, no fire.
+    _email_search_cue = bool(_re_gate.search(r'\b(?:e-?mails?|inbox|gmail|outlook)\b', _lower))
+    if (not needs_tools and _email_search_cue
+            and _is_info_seeking(user_text)
+            and len(_words) <= 30):
+        needs_tools = True
+        logger.debug("[Agentic Gate] Tier 1: email search intent detected (narrow: cue+info-seeking+terse)")
 
     # File / saved-document retrieval intent → route to agentic so file_read /
     # file_list / get_full_document are offered. Literal fast-path + robust regex.

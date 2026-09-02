@@ -59,7 +59,7 @@ typing American English — school, job, hobbies, family, health, any category.
 | 16 | Stance evaluative lexicon has no learning channel | `memory/stance_classifier.py` | hand-curated thick-evaluative terms; feasible outcome teacher exists (see loop table) but poisoning risk is high — design carefully or leave |
 | 17 | `visual_profile_context.txt` has no generation path | `data/` (gitignored), consumed by `scripts/backfill_visual_entities.py` only | hand-written owner/pet visual profile; fresh user has none and no way to make one — DERIVE from profile + graph pet/species metadata when visual memory is used |
 | 18 | `PRONOUN_MAP` supports 3 sets, silent they/them fallback | `core/orchestrator.py:1041` | mechanism is CORRECT (pronouns ARE profile-threaded; determiner "her" is right); gap is only custom pronoun sets — accept fallback or pass the profile string through verbatim |
-| 19 | Notes-generator example vocabulary | `core/agentic/types.py:541` ("name=Luke, age=33"), `gatherer_knowledge.py:239` ("Luke Halleran" signature example) | comments/examples in prompt-adjacent strings; low steering risk, tidy when touched |
+| 19 | Notes-generator example vocabulary | `core/agentic/types.py:541` ("name=Luke, age=33"), `gatherer_knowledge.py:239` ("Luke U_handle" signature example) | comments/examples in prompt-adjacent strings; low steering risk, tidy when touched |
 
 ## Rejected agent claims (verified false or reclassified — do not re-file)
 

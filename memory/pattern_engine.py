@@ -58,7 +58,7 @@ from utils.logging_utils import get_logger
 logger = get_logger("pattern_engine")
 
 DIMENSIONS = ("topic_keyword", "tone", "relation", "session_rhythm",
-              "content_type", "daily_notes")
+              "content_type", "daily_notes", "email")
 
 _NON_CONVERSATIONAL = {"concern", "medium", "elevated", "high", "crisis"}
 
@@ -695,6 +695,7 @@ def run_pattern_query(
     corpus_manager=None,
     user_profile=None,
     telemetry_path: Optional[str] = None,
+    email_rows: Optional[list] = None,
 ) -> PatternResult:
     """Run one deterministic pattern query. Never raises — failures degrade
     to an empty result with a note. Synchronous (callers may to_thread)."""
@@ -746,6 +747,8 @@ def run_pattern_query(
             events = _events_content_type(query, corpus_manager, since, until, result)
         elif query.dimension == "daily_notes":
             events = _events_daily_notes(query, since, until, result)
+        elif query.dimension == "email":
+            events = _events_email(email_rows, since, until, result)
         else:
             result.notes.append(f"unknown dimension: {query.dimension}")
             events = []
@@ -1015,6 +1018,63 @@ def _events_daily_notes(query, since, until, result):
         result.notes.append("no daily notes found — vault may be unavailable")
     return events
 
+
+
+def _events_email(email_rows, since, until, result):
+    """Live-fetched email HEADERS injected by the async caller (the engine is
+    sync and pure — it never fetches; docs/EMAIL_INTEGRATION_DESIGN.md).
+    Rows are core.email.provider.EmailMessage objects or equivalent dicts.
+    None = integration disabled/not fetched; [] = fetched, nothing in window
+    — both reported honestly, never conflated with zero activity."""
+    if email_rows is None:
+        result.notes.append(
+            "email source not available (integration disabled or not fetched)")
+        return []
+
+    def _field(row, name, default=""):
+        if isinstance(row, dict):
+            return row.get(name, default)
+        return getattr(row, name, default)
+
+    events = []
+    domain_counts: dict[str, int] = {}
+    unread = 0
+    for row in email_rows:
+        raw_date = _field(row, "date")
+        if not raw_date:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+            ts = ts.replace(tzinfo=None)
+        except (TypeError, ValueError):
+            continue
+        if not (since <= ts <= until):
+            continue
+        sender = str(_field(row, "sender") or "")
+        domain = ""
+        if "@" in sender:
+            domain = sender.rsplit("@", 1)[-1].strip(" >\"'").lower()
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        if _field(row, "unread", False):
+            unread += 1
+        subject = str(_field(row, "subject") or "")[:120]
+        events.append((ts, ExemplarRef(
+            date=ts.date().isoformat(),
+            text=f"{sender} — {subject}"[:240],
+            source="email",
+            doc_id=str(_field(row, "message_id") or "") or None,
+        ), domain or None))
+    if events:
+        top = sorted(domain_counts.items(), key=lambda kv: -kv[1])[:5]
+        if top:
+            result.notes.append(
+                "top sender domains: "
+                + ", ".join(f"{d} ({n})" for d, n in top))
+        result.notes.append(
+            f"{len(events)} emails in window; {unread} unread")
+    else:
+        result.notes.append("no emails found in the window")
+    return events
 
 def _events_content_type(query, corpus_manager, since, until, result):
     from core.content_type_detector import detect_content_type

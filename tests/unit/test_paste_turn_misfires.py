@@ -44,7 +44,7 @@ PASTED_EMAIL = (
     "withdrawal for that term. Do you have a recommendation between them, "
     "and can you point me to the right process for each? Given the Friday "
     "deadline, could we speak by phone today or tomorrow morning? "
-    "Thank you so much. Luke Halleran GTID 000000000 ugh"
+    "Thank you so much. Luke U_handle GTID 000000000 ugh"
 )
 
 # The prior turns from the live session — full of medical-admin vocabulary

@@ -92,9 +92,13 @@ class TestSelfDocsOriginGate:
         assert "upload:syllabus.docx" not in titles # user_upload filter still works
 
     def test_self_docs_dir_points_at_repo_docs(self):
+        # Repo-root-relative, NOT the literal checkout folder name — CI checks
+        # out under a different directory name (me-shaped assertion, fixed 09-01).
+        from pathlib import Path
         import core.prompt.gatherer_knowledge as gk
+        repo_docs = Path(gk.__file__).resolve().parents[2] / "docs"
+        assert gk._SELF_DOCS_DIR == str(repo_docs)
         assert gk._SELF_DOCS_DIR.endswith("/docs")
-        assert "Daemon_v1" in gk._SELF_DOCS_DIR
 
 
 class TestAccuracyClauseDedup:

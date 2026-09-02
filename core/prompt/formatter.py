@@ -1474,6 +1474,37 @@ class PromptFormatter:
                 f"[GOOGLE CALENDAR] n={len(cal_lines)}\n" + "\n".join(cal_lines)
             )
 
+        # Relevant emails from Gmail/Outlook (cue-gated + distress-suppressed)
+        relevant_emails = context.get("relevant_emails", []) or []
+        if relevant_emails:
+            email_lines: list[str] = []
+            for i, email in enumerate(relevant_emails, start=1):
+                date_str = email.get("date", "")[:10]  # ISO date only
+                sender = email.get("sender", "(no sender)")[:50]
+                subject = (email.get("subject", "(no subject)") or "(no subject)")[:60]
+                snippet = (email.get("snippet", "(no snippet)") or "(no snippet)")[:120]
+                provider = email.get("provider", "").upper()[:1]  # [G] or [O]
+
+                # Compact one-liner per email: date [provider] sender — subject
+                email_lines.append(f"{i}) {date_str} [{provider}] {sender} — {subject}\n    {snippet}")
+
+            # Coverage disclosure (2026-09-01): name the providers actually
+            # searched so a "no email from X" reading is honestly scoped —
+            # an unconnected account is invisible, not empty.
+            try:
+                from core.email.registry import coverage_note  # lazy import: live-config read
+                _email_coverage = coverage_note()
+            except Exception:
+                _email_coverage = ""
+            sections.append(
+                f"[RELEVANT EMAILS] n={len(email_lines)}\n"
+                + (f"{_email_coverage} " if _email_coverage else "")
+                + "Read-only context. Cite naturally (\"in the email from X...\"), "
+                "never claim to have 'checked' beyond these results; an account "
+                "listed as not connected was NOT searched.\n"
+                + "\n".join(email_lines)
+            )
+
         # Daemon self-notes (working context from prior sessions)
         daemon_self_notes = context.get("daemon_self_notes", []) or []
         if daemon_self_notes:

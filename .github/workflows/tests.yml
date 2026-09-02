@@ -29,6 +29,44 @@ jobs:
           pip install pytest pytest-asyncio pytest-cov fpdf2 ruff
           python -m spacy download en_core_web_sm
 
+      - name: Privacy guard (test fixtures/docs for medication dosages and fixture size)
+        run: |
+          set -euo pipefail
+
+          # Real-memory fixtures are local-only regardless of size. Search the
+          # Git index so ignored local fixtures cannot enter CI output.
+          tracked_real=$(git ls-files 'tests/fixtures/*_real*.yaml')
+          if [ -n "$tracked_real" ]; then
+            echo "ERROR: Real-memory benchmark fixture paths are tracked:"
+            printf '%s\n' "$tracked_real"
+            exit 1
+          fi
+
+          # The reviewed synthetic retrieval suite is currently ~2.3K lines;
+          # the cap catches accidental bulk fixture additions without rejecting it.
+          while IFS= read -r f; do
+            if [ "$(wc -l < "$f")" -gt 2500 ]; then
+              echo "ERROR: Test fixture $f exceeds 2500 lines"
+              exit 1
+            fi
+          done < <(git ls-files 'tests/fixtures/*.yaml')
+
+          # Dosage-shaped text is reviewed by exact tracked path. Report paths
+          # only (never matching lines) and fail closed on anything new.
+          unexpected=()
+          while IFS= read -r f; do
+            case "$f" in
+              docs/ARCHITECTURE_GUIDE.md|docs/PROJECT_SKELETON.md|docs/QUICK_REFERENCE.md|tests/test_web_search_trigger.py|tests/unit/test_anaphoric_continuation.py|tests/unit/test_correction_gui_wiring.py|tests/unit/test_cross_section_dedup_role_labels.py|tests/unit/test_graph_integration.py)
+                ;;
+              *) unexpected+=("$f") ;;
+            esac
+          done < <(git grep -IlE '[0-9]{3,4}[[:space:]]*mg([^[:alnum:]_]|$)' -- tests docs || true)
+          if [ "${#unexpected[@]}" -gt 0 ]; then
+            echo "ERROR: Dosage-shaped text found in unreviewed tracked paths:"
+            printf '  %s\n' "${unexpected[@]}"
+            exit 1
+          fi
+
       - name: Lint (bug-focused floor — rules in pyproject [tool.ruff])
         run: python -m ruff check .
 

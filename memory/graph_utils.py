@@ -188,7 +188,7 @@ def rank_expansion_candidates(
     (anything in *skip_ids*, or any node whose degree is >= *hub_degree*) may
     be *reached*, but the walk never fans out *through* it.  Seed entities are
     exempt — a seed always expands, even if it is itself a hub.  This keeps the
-    intended relation-bridging (``"my brother"`` → seed ``user`` → ``Drew``)
+    intended relation-bridging (``"my brother"`` → seed ``user`` → ``drew``)
     while preventing the failure where an incidental token resolves to a leaf
     that links to the ``user`` star hub and the 2-hop walk then dumps every one
     of the user's neighbours (pets, project terms, ...) into the query.

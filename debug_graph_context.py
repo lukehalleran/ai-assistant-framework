@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Debug script to trace graph context through the full prompt building pipeline.
-This will help identify where Bean/Daisy information gets lost.
+This will help identify where Bean/daisy information gets lost.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ async def debug_graph_context_pipeline():
     print("=== DEBUGGING GRAPH CONTEXT PIPELINE ===\n")
 
     # Test query
-    test_query = "how is Bean doing"
+    test_query = "how is bean doing"
     print(f"Test query: '{test_query}'\n")
 
     # Step 1: Test direct graph context gathering
@@ -65,12 +65,12 @@ async def debug_graph_context_pipeline():
 
                 # Test entity resolution manually
                 if resolver:
-                    Bean_resolved = resolver.resolve("Bean")
-                    print(f"  - 'Bean' resolves to: '{Bean_resolved}'")
+                    bean_resolved = resolver.resolve("bean")
+                    print(f"  - 'bean' resolves to: '{bean_resolved}'")
 
-                    if Bean_resolved:
-                        ctx_sentences = graph.get_context_sentences(Bean_resolved, depth=2, max_sentences=5)
-                        print(f"  - context sentences for {Bean_resolved}: {ctx_sentences}")
+                    if bean_resolved:
+                        ctx_sentences = graph.get_context_sentences(bean_resolved, depth=2, max_sentences=5)
+                        print(f"  - context sentences for {bean_resolved}: {ctx_sentences}")
 
         print()
 
