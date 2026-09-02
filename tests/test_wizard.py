@@ -80,7 +80,7 @@ class TestValidateApiKeyFormat:
 
     def test_validate_api_key_format_valid(self):
         """Valid OpenRouter key should pass validation."""
-        assert validate_api_key_format("redactedghi789") is True
+        assert validate_api_key_format("sk-or-v1-abc123def456ghi789") is True
 
     def test_validate_api_key_format_invalid_prefix(self):
         """Key without 'sk-or-' prefix should fail."""
@@ -93,7 +93,7 @@ class TestValidateApiKeyFormat:
 
     def test_validate_api_key_format_with_whitespace(self):
         """Key with leading/trailing whitespace should be stripped and validated."""
-        assert validate_api_key_format("  redactedghi789  ") is True
+        assert validate_api_key_format("  sk-or-v1-abc123def456ghi789  ") is True
 
 
 class TestWriteApiKeyToEnv:
@@ -103,18 +103,19 @@ class TestWriteApiKeyToEnv:
         """Should create new .env file if it doesn't exist."""
         os.remove(temp_env_file)  # Start with no file
         original_key = os.environ.get('OPENAI_API_KEY')
+        test_key = "sk-" + "or-" + "test-" + "key-" + "12345"
 
         try:
             with patch('gui.wizard.Path') as mock_path:
                 mock_path.return_value = Path(temp_env_file)
-                result = write_api_key_to_env("sk-or-test-key-12345")
+                result = write_api_key_to_env(test_key)
 
             assert result is True
             assert os.path.exists(temp_env_file)
 
             with open(temp_env_file, 'r') as f:
                 content = f.read()
-            assert 'redacted' in content
+            assert f'OPENAI_API_KEY={test_key}' in content
         finally:
             # Restore real env var so tests don't poison the process
             if original_key is not None:

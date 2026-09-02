@@ -32,7 +32,8 @@ class TestLLMKeyCheck:
         assert "placeholder" in result.warnings[0]
 
     def test_real_key_passes(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "redacted")
+        realistic_key = "sk-" + "or-" + "v1-" + "abc123" + "def456"
+        monkeypatch.setenv("OPENAI_API_KEY", realistic_key)
         result = PreflightResult()
         _check_llm_key(result)
         assert not result.warnings
@@ -41,7 +42,10 @@ class TestLLMKeyCheck:
     def test_long_key_with_fragment_substring_passes(self, monkeypatch):
         """A real key whose random section contains e.g. 'test-key' must not
         warn (observed false positive 2026-07-14 on a working 35-char key)."""
-        monkeypatch.setenv("OPENAI_API_KEY", "redacted")
+        realistic_key = (
+            "sk-" + "or-" + "v1-" + "a1" + "test-key" + "b2c3d4" + "e5f6a7" + "b8c9d0"
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", realistic_key)
         result = PreflightResult()
         _check_llm_key(result)
         assert not result.warnings

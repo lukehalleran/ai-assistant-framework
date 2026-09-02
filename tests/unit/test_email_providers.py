@@ -12,7 +12,7 @@ from core.email.provider import EmailMessage, EmailProvider
 from core.email.gmail_provider import GmailProvider
 from core.email.outlook_provider import OutlookProvider
 from core.email.outlook_auth import OutlookAuthManager
-from core.email.registry import build_enabled_providers
+from core.email.registry import PROVIDERS, build_enabled_providers
 from core.email.service import EmailService, get_email_service
 
 
@@ -463,15 +463,18 @@ class TestEmailRegistry:
 
     def test_registry_build_enables_gmail_when_configured(self):
         mock_gmail = MagicMock(spec=EmailProvider)
+        mock_gmail.name = "gmail"
         mock_gmail.is_configured.return_value = True
+        gmail_factory = MagicMock(return_value=mock_gmail)
 
         with patch("config.app_config.EMAIL_GMAIL_ENABLED", True), \
              patch("config.app_config.EMAIL_INTEGRATION_ENABLED", True), \
-             patch("core.email.registry._build_gmail", return_value=mock_gmail):
+             patch.dict(PROVIDERS["gmail"], {"factory": gmail_factory}):
             providers = build_enabled_providers()
 
         assert len(providers) >= 1
         assert any(p.name == "gmail" for p in providers)
+        gmail_factory.assert_called_once_with()
 
     def test_registry_skips_outlook_when_disabled(self):
         with patch("config.app_config.EMAIL_OUTLOOK_ENABLED", False), \
