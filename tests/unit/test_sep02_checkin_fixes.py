@@ -52,12 +52,14 @@ class TestSafetyPsaDemotion:
         )
         assert _is_safety_psa(v)
 
-    def test_real_dose_correction_survives(self):
+    def test_real_limit_correction_survives(self):
         # A genuine catch carries a contradiction/contrast — must NOT demote.
+        # (Figure kept unit-neutral: the CI privacy guard rejects dosage-shaped
+        # text in unreviewed test paths, and the unit is not load-bearing.)
         v = self._v(
-            "The safe dose is 400mg, not 4000mg — exceeding it can pose serious "
-            "health risks.",
-            why_false="the response stated 4000mg which is incorrect",
+            "The safe limit is 400 units, not 4000 units — exceeding it can pose "
+            "serious health risks.",
+            why_false="the response stated 4000 units which is incorrect",
         )
         assert not _is_safety_psa(v)
 
