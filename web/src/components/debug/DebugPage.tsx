@@ -15,6 +15,7 @@ import { notifications } from '@mantine/notifications'
 import { api } from '../../api/client'
 import { debugBaselineFor } from '../../api/debugSession'
 import type { DebugRecord } from '../../api/types'
+import { redactForExport } from '../../utils/privacy'
 
 // Debug Trace (Gradio dev tab → SPA, 2026-07-14): per-turn Query → Prompt →
 // Response with token counts, timing waterfall, and full-prompt TXT export.
@@ -119,7 +120,7 @@ function recordToText(rec: DebugRecord, index: number): string {
   textBlock('PROMPT', rec.prompt)
   textBlock('SYSTEM PROMPT', rec.system_prompt)
   textBlock('RESPONSE', rec.response)
-  return lines.join('\n')
+  return redactForExport(lines.join('\n'))
 }
 
 // Clipboard write that also works in INSECURE contexts (the SPA is usually

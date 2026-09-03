@@ -15,9 +15,18 @@ doctor" advice was given assuming a patient portal the prescriber doesn't have).
 COVERAGE FIX (2026-08-05): _build_prompt used to include FULL Daemon responses
 per entry and iterate oldest→newest with a hard break on the char budget — only
 ~4-5 pairs of the window ever reached the LLM and the NEWEST turns were dropped
-(weeks of "my doctor doesn't respond" never entered a prompt). Responses are now
-truncated to RESPONSE_SNIPPET_CHARS, selection walks newest→oldest, and defaults
-rose (LLM_FACTS_LAST_TURNS 12→30, MAX_INPUT_CHARS 6000→9000, MAX_TRIPLES 10→16).
+(weeks of "my doctor doesn't respond" never entered a prompt). Selection walks
+newest→oldest and defaults rose (LLM_FACTS_LAST_TURNS 12→30, MAX_INPUT_CHARS
+6000→9000, MAX_TRIPLES 10→16).
+PROVENANCE BOUNDARY (2026-09-02): Daemon responses are EXCLUDED from the prompt
+entirely (generated text is not evidence about the user — a response snippet had
+let entity facts be sourced from Daemon's own words), and every surviving triple
+must join back to a USER-authored span via memory.fact_source
+(find_supporting_user_span): quoted/reported text ("it says you use WHOOP"),
+pasted transcripts, and relation names the span doesn't corroborate (has_dog
+from "playing with Mochi") are dropped; the stored source_excerpt is the
+claim-bearing sentence, not the head of the turn, and carries
+source_role/source_turn_id/source_support/source_anchor metadata.
 LEARNED RELATIONS (2026-08-05): CORE_RELATIONS is a module constant; recurring
 invented relations that SURVIVE the gates are tracked by memory.learned_relations
 and auto-promoted into the prompt's PREFER list — the vocabulary grows itself
@@ -29,19 +38,17 @@ entity_resolver.normalize_relation canonicalization on the read/ingest side).
 
 Contract
 - Inputs: list of recent messages — either plain strings (user-only) or dicts with
-  {"query": str, "response": str} (conversation pairs). model_manager, optional existing_facts list
+  at least {"query": str}. Assistant/Daemon responses are never extraction input.
 - Behavior: calls a compact LLM prompt to extract SRO triples as strict JSON with category metadata
   - When existing_facts provided, prompt instructs LLM to reuse relation names for updates;
     explicit-only guard prevents inferring updates from absence of mentions
   - User facts: subject="user" for personal facts (pronouns normalized)
-  - Entity facts: subject=entity name for people/places/orgs/pets discussed in either
-    user messages OR assistant responses. This allows extracting structured facts about
-    entities that Daemon knows about from conversation history (e.g., pet details, family info)
+  - Entity facts: subject=entity name for people/places/orgs/pets stated by the user
     Entity facts include user_connection field (e.g., "user's boss", "user's mom's cat")
 - Output: list of dict triples (subject, relation, object, value, category, confidence, fact_scope, source_excerpt)
   - fact_scope: "user" or "entity" — indicates whether fact is about the user or a third-party entity
-  - source_excerpt: keyword-matched user message that sourced the fact (200-char truncated);
-    falls back to last message if no keyword match found
+  - source_excerpt: compact user-authored supporting span (200-char cap), with
+    source_role/source_turn_index metadata. Unsupported proposals are dropped.
 - Junk/polarity guards (2026-08-03): _normalize_triple applies
   fact_extractor._is_junk_object (adverbial/temporal/negation-fragment objects dropped,
   schedule relations exempt), and _attach_source_excerpts applies
@@ -253,11 +260,6 @@ def _pet_relation_supported_by_source(source: str, relation: str) -> bool:
 
 
 class LLMFactExtractor:
-    # Daemon responses are truncated to this many chars inside each prompt
-    # entry — facts are extracted from user inputs; the response snippet only
-    # anchors entity references (2026-08-05 coverage fix).
-    RESPONSE_SNIPPET_CHARS = 250
-
     def __init__(self, model_manager, *,
                  model_alias: str = None,
                  max_input_chars: int = 9000,
@@ -299,33 +301,25 @@ class LLMFactExtractor:
         # ~1K-char response per pair meant ~4-5 pairs of the 12-turn window
         # made it in, and the NEWEST turns were the ones dropped. Weeks of
         # care-team facts ("my doctor doesn't care... they aren't even open")
-        # never reached the extractor. Now: responses are truncated to a
-        # context snippet (facts are extracted from USER inputs; the response
-        # snippet only anchors entity references), and selection walks
-        # NEWEST→oldest so budget exhaustion drops the oldest turns instead.
+        # never reached the extractor. Selection walks NEWEST→oldest so budget
+        # exhaustion drops the oldest turns instead. 2026-09-02: responses are
+        # EXCLUDED entirely — generated text is not evidence about the user
+        # (memory.fact_source enforces the same boundary on the output side).
         entries = []
         for m in user_messages[-50:]:  # hard cap safety
             if isinstance(m, dict):
-                # Conversation pair: include query + truncated response
+                # Assistant responses are generated text, not source evidence.
                 q = (m.get("query") or "").strip()
-                r = (m.get("response") or "").strip()
-                # Skip API error responses
-                if r.startswith("[API Error]"):
-                    r = ""
                 if not q:
                     continue
-                if len(r) > self.RESPONSE_SNIPPET_CHARS:
-                    r = r[:self.RESPONSE_SNIPPET_CHARS].rstrip() + "…"
-                if r:
-                    entry = f"User: {q}\nDaemon: {r}"
-                else:
-                    entry = f"User: {q}"
+                entry = f"User: {q}"
             else:
                 entry = (m or "").strip()
                 if not entry:
                     continue
-                # Strip role prefixes if user text contained them
-                entry = re.sub(r"^(?:user|assistant)\s*:\s*", "", entry, flags=re.I)
+                if re.match(r"^(?:assistant|daemon|system|tool)\s*:\s*", entry, re.I):
+                    continue
+                entry = "User: " + re.sub(r"^user\s*:\s*", "", entry, flags=re.I)
             entries.append(entry)
 
         msgs = []
@@ -440,15 +434,15 @@ Output: [
 ]
 
 ENTITY FACTS (in addition to user facts):
-- Extract facts about people, pets, places, topics discussed in EITHER user OR Daemon messages
+- Extract facts about people, pets, places, and topics explicitly stated in USER messages
 - Subject should be the entity name (NOT "user")
 - Add "user_connection" field explaining relation to user (if known)
 - Only extract when clearly stated, not hypothetical
 - Pay special attention to pets, family members, and recurring people — these are high-value entities
 - Example: "My boss Jordan moved from London"
   → {{"subject": "Jordan", "relation": "moved_from", "object": "London", "category": "relationships", "confidence": 0.75, "user_connection": "user's boss"}}
-- Example: Daemon says "Clover is your mom's black cat, male, with long fur"
-  → {{"subject": "Clover", "relation": "species", "object": "cat, black, long fur, male", "category": "hobbies", "confidence": 0.85, "user_connection": "user's mom's cat"}}
+- Never treat Daemon/model/assistant text, quoted text, pasted transcripts, or a
+  user's report of what another model claimed as evidence about the user.
 
 ENTITY-ENTITY RELATIONS (high value — do not skip these):
 - When a statement relates TWO named entities to each other, extract that link as its own
@@ -477,7 +471,7 @@ RULES:
   * One-time actions: "asked_about", "tested", "walked_to"
   These pollute the fact store. Only extract facts that remain true over time.
 {existing_facts}
-MESSAGES (conversation pairs, newest last):
+USER MESSAGES (newest last):
 {messages}
 
 JSON:"""
@@ -605,69 +599,39 @@ JSON:"""
     @staticmethod
     def _attach_source_excerpts(triples: List[Dict[str, str]],
                                 user_messages: List) -> None:
-        """Match each triple to its most likely source message via keyword overlap.
-
-        Also drops (in place) triples whose positive-preference relation the
-        matched source text negates (fact_extractor._polarity_conflict — the
-        LLM path had no polarity check until 2026-08-03).
-        """
+        """Attach direct user evidence and drop unsupported proposals."""
         if not user_messages:
+            triples[:] = []
             return
-        # Clean messages once — handle both plain strings and conversation pair dicts
-        cleaned = []
-        for m in user_messages:
-            if isinstance(m, dict):
-                q = (m.get("query") or "").strip()
-                r = (m.get("response") or "").strip()
-                # Combine both for keyword matching
-                text = q
-                if r and not r.startswith("[API Error]"):
-                    text = f"{q} {r}"
-            else:
-                text = re.sub(r"^(?:user|assistant)\s*:\s*", "", (m or "").strip(), flags=re.I)
-            cleaned.append(text)
-        # Polarity guard shared with the regex path — checked against the FULL
-        # matched message (the stored excerpt is truncated to 200 chars).
+        from memory.fact_source import find_supporting_user_span
         from memory.fact_extractor import _polarity_conflict
         kept: List[Dict[str, str]] = []
         for triple in triples:
-            # Build keyword set from object + relation words
-            keywords = set()
-            for field in ("object", "relation"):
-                val = triple.get(field, "")
-                # Split snake_case and regular words
-                for word in re.split(r"[_\s]+", val.lower()):
-                    if len(word) > 2:
-                        keywords.add(word)
-            # Score each message by keyword overlap
-            best_msg = ""
-            best_score = 0
-            for msg in cleaned:
-                if not msg:
-                    continue
-                msg_lower = msg.lower()
-                score = sum(1 for kw in keywords if kw in msg_lower)
-                if score > best_score:
-                    best_score = score
-                    best_msg = msg
-            # Fallback to last non-empty message if no keyword match
-            if not best_msg:
-                for msg in reversed(cleaned):
-                    if msg:
-                        best_msg = msg
-                        break
-            if _polarity_conflict(best_msg, triple.get("relation", ""), triple.get("object", "")):
+            evidence = find_supporting_user_span(triple, user_messages, excerpt_limit=200)
+            if evidence is None:
+                logger.info(
+                    f"[LLM Facts] Blocked unsupported proposal: "
+                    f"{triple.get('subject')}|{triple.get('relation')}|{triple.get('object')}"
+                )
+                continue
+            if _polarity_conflict(evidence.text, triple.get("relation", ""), triple.get("object", "")):
                 logger.info(
                     f"[LLM Facts] Blocked polarity conflict: {triple.get('relation')}|"
-                    f"{triple.get('object')} vs source: {best_msg[:80]!r}"
+                    f"{triple.get('object')} vs source: {evidence.text[:80]!r}"
                 )
                 continue
-            if not _pet_relation_supported_by_source(best_msg, triple.get("relation", "")):
+            if not _pet_relation_supported_by_source(evidence.text, triple.get("relation", "")):
                 logger.info(
                     f"[LLM Facts] Blocked unsupported pet species relation: "
-                    f"{triple.get('relation')}|{triple.get('object')} vs source: {best_msg[:80]!r}"
+                    f"{triple.get('relation')}|{triple.get('object')} vs source: {evidence.text[:80]!r}"
                 )
                 continue
-            triple["source_excerpt"] = best_msg[:200]
+            triple["source_excerpt"] = evidence.text
+            triple["source_role"] = evidence.role
+            triple["source_turn_index"] = evidence.turn_index
+            triple["source_support"] = evidence.support
+            triple["source_anchor"] = evidence.anchor
+            if evidence.turn_id:
+                triple["source_turn_id"] = evidence.turn_id
             kept.append(triple)
         triples[:] = kept

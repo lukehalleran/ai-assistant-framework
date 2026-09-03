@@ -57,6 +57,114 @@ import re
 logger = logging.getLogger(__name__)
 
 
+_DURATION_AMOUNT = (
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+)
+_STATUS_DURATION_RE = re.compile(
+    rf"\b(?:for\s+)?(?:the\s+)?(?:last\s+)?(?:a\s+)?"
+    rf"{_DURATION_AMOUNT}(?:\s*(?:-|to)\s*{_DURATION_AMOUNT})?\s*"
+    r"(?:days?|weeks?|months?)\b",
+    re.IGNORECASE,
+)
+_STATUS_WORD_RE = re.compile(
+    r"\b(?:stable|stabilized|stability|functional|functioning|functionality|"
+    r"function|healthy|health|recovered|recovery|baseline|good\s+to\s+go)\b",
+    re.IGNORECASE,
+)
+_CONDITIONAL_RE = re.compile(
+    r"\b(?:if|might|may|could|would|risk|in case|do not expect|don't expect)\b",
+    re.IGNORECASE,
+)
+_DRAFT_CONTEXT_RE = re.compile(
+    r"\b(?:draft|email|subject:|look ok|how (?:does|do|we) .*look|send this)\b",
+    re.IGNORECASE,
+)
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[ .-]?)?(?:\(?\d{3}\)?[ .-]?)\d{3}[ .-]?\d{4}(?!\d)")
+_LONG_ID_RE = re.compile(r"(?<!\d)\d{7,}(?!\d)")
+
+
+def _claim_sentence(text: str, start: int, end: int, max_chars: int = 360) -> str:
+    """Return the sentence-like window containing a matched temporal claim."""
+    left_candidates = [text.rfind(mark, 0, start) for mark in ("\n", ".", "?", "!")]
+    left = max(left_candidates) + 1
+    right_candidates = [
+        pos for mark in ("\n", ".", "?", "!")
+        if (pos := text.find(mark, end)) >= 0
+    ]
+    right = min(right_candidates) + 1 if right_candidates else len(text)
+    snippet = " ".join(text[left:right].split())
+    if len(snippet) > max_chars:
+        match_mid = max(0, (start + end) // 2 - left)
+        half = max_chars // 2
+        clip_start = max(0, match_mid - half)
+        clip_end = min(len(snippet), clip_start + max_chars)
+        snippet = snippet[clip_start:clip_end]
+        if clip_start:
+            snippet = "…" + snippet
+        if clip_end < len(" ".join(text[left:right].split())):
+            snippet += "…"
+    return snippet
+
+
+def build_temporal_claim_audit(convos: List[Dict[str, Any]]) -> str:
+    """Extract user-authored status/duration claims for synthesis reconciliation.
+
+    This is deliberately mechanical: it does not decide which duration is true.
+    It preserves the exact predicates and marks conditional or draft context so
+    the summarizer cannot silently collapse competing statements into one fact.
+    """
+    claims = []
+    seen = set()
+    for conv in convos:
+        query = str(conv.get("query") or "")
+        if not query:
+            continue
+        # Redact before locating sentence boundaries: a period inside an email
+        # address must not terminate the window and leak a partial address.
+        audit_text = _EMAIL_RE.sub("[EMAIL]", query)
+        audit_text = _PHONE_RE.sub("[PHONE]", audit_text)
+        audit_text = _LONG_ID_RE.sub("[ID]", audit_text)
+        ts = conv.get("timestamp")
+        if isinstance(ts, datetime):
+            time_str = ts.strftime("%H:%M")
+        elif isinstance(ts, str):
+            try:
+                time_str = datetime.fromisoformat(ts.replace("Z", "+00:00")).strftime("%H:%M")
+            except ValueError:
+                time_str = "??:??"
+        else:
+            time_str = "??:??"
+
+        draft_context = bool(_DRAFT_CONTEXT_RE.search(query))
+        for match in _STATUS_DURATION_RE.finditer(audit_text):
+            snippet = _claim_sentence(audit_text, match.start(), match.end())
+            if not _STATUS_WORD_RE.search(snippet):
+                continue
+            key = snippet.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            if draft_context:
+                status = "draft-or-pasted-text"
+            elif _CONDITIONAL_RE.search(snippet):
+                status = "conditional"
+            else:
+                status = "direct-user-statement"
+            claims.append(f'- [{time_str}] [{status}] "{snippet}"')
+
+    if not claims:
+        return "(No mechanically detected status-duration claims.)"
+    return (
+        "Mechanically detected user-text claims (not independently verified):\n"
+        + "\n".join(claims[:12])
+        + "\nPreserve the exact status predicate and duration for each item. "
+        "Draft/pasted or conditional text is not an established user fact. "
+        "If direct statements appear inconsistent, report the discrepancy; "
+        "do not silently choose or average one."
+    )
+
+
 @dataclass
 class GenerationResult:
     """Result of daily note generation."""
@@ -135,6 +243,9 @@ SYSTEM_PROMPT_TEMPLATE = '''You are Daemon, an AI companion writing a daily note
 CONVERSATIONS FROM {date}:
 {formatted_conversations}
 
+TEMPORAL STATUS CLAIM AUDIT:
+{temporal_claim_audit}
+
 STATISTICS:
 - Conversations: {count}
 - Time span: {first_time} to {last_time} ({span_hours:.1f} hours wall-clock)
@@ -181,6 +292,12 @@ IMPORTANT:
 - For Life Events: ONLY report what was explicitly mentioned. Never assume activities happened or didn't happen. If __USER_NAME__ didn't mention work/study/sleep, say "Not discussed today" - do NOT say "__USER_NAME__ didn't work today."
 - If a section has nothing relevant, acknowledge it briefly
 - Keep it concise but informative
+- Preserve exact time spans and the state they modify (for example, "stable"
+  versus "functional"). Never silently replace one with the other.
+- Treat text in drafts, pasted emails, quotations, and hypothetical/conditional
+  statements as attributed text, not as independent confirmation of a user fact.
+- If the TEMPORAL STATUS CLAIM AUDIT contains competing direct statements,
+  state the discrepancy explicitly or preserve both with their distinct predicates.
 - Do NOT include any preamble or meta-commentary, just the note content
 '''
 
@@ -613,6 +730,7 @@ generated: {datetime.now().isoformat()}
 
         # Format for LLM
         formatted = self._format_conversations(convos)
+        temporal_claim_audit = build_temporal_claim_audit(convos)
         first_time = first_ts.strftime("%H:%M") if first_ts else "??:??"
         last_time = last_ts.strftime("%H:%M") if last_ts else "??:??"
 
@@ -623,6 +741,7 @@ generated: {datetime.now().isoformat()}
         prompt = prompt_template.format(
             date=target_date.strftime("%B %d, %Y"),
             formatted_conversations=formatted,
+            temporal_claim_audit=temporal_claim_audit,
             count=len(convos),
             first_time=first_time,
             last_time=last_time,

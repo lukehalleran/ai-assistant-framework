@@ -5,7 +5,9 @@ uncertainty fallback, review gate, action guard, storage, telemetry) — it only
 translates the yielded dicts into SSE-ready ChatEvents and maintains the API
 session (history append, debug records, pending_action_id). Content events are
 CUMULATIVE full text (Gradio replace semantics), so the client replace-renders
-the last assistant bubble; no delta reassembly.
+the last assistant bubble; no delta reassembly. The `complete` event's debug
+payload is PII-redacted (utils.privacy_redaction) before it reaches the browser;
+the server-held record is kept raw (2026-09-02).
 """
 
 import asyncio
@@ -15,6 +17,7 @@ from typing import AsyncGenerator
 from api.schemas import ChatEvent, ChatRequest
 from api.state import AppState
 from utils.logging_utils import get_logger
+from utils.privacy_redaction import redact_data
 
 logger = get_logger("api_chat")
 
@@ -127,7 +130,10 @@ async def submit_stream(req: ChatRequest, state: AppState) -> AsyncGenerator[Cha
                 yield ChatEvent(event="complete", data={
                     "content": final_content,
                     "pending_action_id": pending_action_id,
-                    "debug": debug if isinstance(debug, dict) else None,
+                    # Keep the raw record server-side for internal pipeline
+                    # inspection, but do not stream the complete prompt and
+                    # recent conversation PII into the browser.
+                    "debug": redact_data(debug) if isinstance(debug, dict) else None,
                     "turn_index": len(session.history) - 1,
                 })
             elif content:

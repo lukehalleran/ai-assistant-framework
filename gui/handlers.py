@@ -440,18 +440,25 @@ def _gate_debug_summary(gate_decision) -> str:
     loop on an emotional check-in couldn't be diagnosed from the dump alone."""
     if gate_decision is None:
         return ""
-    parts = []
-    reason = getattr(gate_decision, "reason", "") or ""
-    if reason:
-        parts.append(reason)
-    modes = getattr(gate_decision, "modes", None)
-    if modes:
-        parts.append(f"modes={list(modes)}")
-    if getattr(gate_decision, "veto_exempt", False):
-        parts.append("veto_exempt")
-    if getattr(gate_decision, "deferred_request", None):
-        parts.append("deferred_request")
-    return " | ".join(parts)
+    # A debug helper must never be able to take down the turn: it is called
+    # inside both the agentic and enhanced paths, and (2026-09-02 evening) a
+    # non-string `reason` raised inside the join, which killed the agentic
+    # turn AND the enhanced fallback ("Streaming error"). Coerce + fail soft.
+    try:
+        parts = []
+        reason = getattr(gate_decision, "reason", "") or ""
+        if reason:
+            parts.append(str(reason))
+        modes = getattr(gate_decision, "modes", None)
+        if modes:
+            parts.append(f"modes={[str(m) for m in modes]}")
+        if getattr(gate_decision, "veto_exempt", False):
+            parts.append("veto_exempt")
+        if getattr(gate_decision, "deferred_request", None):
+            parts.append("deferred_request")
+        return " | ".join(parts)
+    except Exception:
+        return ""
 
 
 def _build_debug_record(
@@ -471,6 +478,20 @@ def _build_debug_record(
         response = _re.sub(
             r"^\s*<(thinking|think|reasoning|reason)>\s*</\1>\s*", "", response
         )
+    # Preserve the exact instructions that were actually injected, not just
+    # their count and tone.  Do not persist the raw planner response or the
+    # context digest: the operative structured fields are sufficient to audit
+    # a reversal, while hashes + section names establish context alignment
+    # without multiplying copies of personal prompt content.
+    plan_audit = None
+    try:
+        plan = getattr(orchestrator, "_current_response_plan", None)
+        if plan is not None and hasattr(plan, "audit_record"):
+            plan_audit = plan.audit_record()
+            if isinstance(provenance, dict):
+                provenance["response_plan"] = plan_audit
+    except Exception as e:
+        logger.debug(f"[Handlers] Could not attach response-plan audit: {e}")
     return {
         'mode': mode,
         'query': user_text,
@@ -491,6 +512,7 @@ def _build_debug_record(
         ),
         'gather_elapsed': round(gather_elapsed, 3) if gather_elapsed else 0.0,
         'gate_reason': gate_reason or '',
+        'response_plan': plan_audit,
     }
 
 

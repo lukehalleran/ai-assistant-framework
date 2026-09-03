@@ -248,5 +248,13 @@ def run_backup(reason: str = "manual",
 
 
 def run_shutdown_backup() -> BackupResult:
-    """Shutdown entry point — config-driven chroma inclusion."""
+    """Shutdown entry point — config-driven chroma inclusion.
+
+    A test process must never write into the owner's data/backups. (2026-09-02:
+    the suspected test-triggered backup turned out to be the daemon's own
+    restart, but this entry point had no guard at all.) Unit tests exercise
+    run_backup() directly against tmp directories, so they are unaffected.
+    """
+    if os.getenv("DAEMON_TEST_MODE"):
+        return BackupResult(ok=True, skipped_reason="test_mode")
     return run_backup(reason="shutdown", include_chroma=None)

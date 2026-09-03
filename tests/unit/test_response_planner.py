@@ -211,6 +211,70 @@ class TestCreatePlan:
         assert plan is not None
         assert plan.tone == "warm"
 
+    @pytest.mark.asyncio
+    async def test_planner_receives_same_gathered_context_digest(self):
+        planner = _make_planner(_VALID_PLAN_JSON)
+        ctx = _FakeContext()
+        digest = '[recent_conversations]\n[{"query":"prior Fable turn"}]'
+        with patch("config.app_config.RESPONSE_PLANNING_MODEL", "planner-model"), \
+             patch("config.app_config.RESPONSE_PLANNING_MAX_TOKENS", 200), \
+             patch("config.app_config.RESPONSE_PLANNING_TIMEOUT", 5.0):
+            plan = await planner.create_plan(
+                "Please analyze the preceding exchange in sufficient detail.",
+                ctx,
+                context_digest=digest,
+                context_sections=["recent_conversations"],
+            )
+
+        sent_prompt = planner.model_manager.generate_once.await_args.args[0]
+        assert digest in sent_prompt
+        assert "literal query is authoritative" in sent_prompt
+        assert plan.context_sections == ["recent_conversations"]
+        assert len(plan.context_digest_sha256) == 64
+        assert plan.planner_model == "planner-model"
+
+    @pytest.mark.asyncio
+    async def test_direct_communication_handoff_is_deterministically_locked(self):
+        """An LLM cannot reverse speaker/addressee for an explicit handoff."""
+        reversing_plan = json.dumps({
+            "key_points": ["Encourage the user to share their Fable experience"],
+            "tone": "warm",
+            "avoid": ["technical jargon"],
+            "strategy": "Ask the user about Fable",
+        })
+        planner = _make_planner(reversing_plan)
+        ctx = _FakeContext()
+        with patch("config.app_config.RESPONSE_PLANNING_MODEL", "planner-model"), \
+             patch("config.app_config.RESPONSE_PLANNING_MAX_TOKENS", 200), \
+             patch("config.app_config.RESPONSE_PLANNING_TIMEOUT", 5.0):
+            plan = await planner.create_plan(
+                "The floor is yours, communicate with Fable",
+                ctx,
+                context_digest="[recent_conversations]\nprior context",
+                context_sections=["recent_conversations"],
+            )
+
+        planner.model_manager.generate_once.assert_not_awaited()
+        assert plan.directive_locked is True
+        assert plan.planner_source == "deterministic_direct_communication"
+        assert "recipient directly" in " ".join(plan.key_points)
+        assert "ask the user" in " ".join(plan.avoid).lower()
+        assert "share their Fable experience" not in " ".join(plan.key_points)
+
+    def test_context_digest_is_bounded_and_excludes_internal_metadata(self):
+        digest, sections = ResponsePlanner.build_context_digest(
+            {
+                "stm_summary": {"intent": "direct communication"},
+                "recent_conversations": [{"query": "x" * 5000}],
+                "_task_timings": {"secret_internal": "not context"},
+            },
+            max_chars=500,
+            max_section_chars=300,
+        )
+        assert len(digest) <= 500
+        assert sections == ["stm_summary", "recent_conversations"]
+        assert "secret_internal" not in digest
+
 
 # ---------------------------------------------------------------------------
 # review_answer() tests
@@ -306,6 +370,25 @@ class TestModels:
         assert plan.avoid == []
         assert plan.strategy == ""
         assert plan.raw_llm_output == ""
+        assert plan.directive_locked is False
+
+    def test_audit_record_preserves_operative_plan_not_raw_output(self):
+        plan = ResponsePlan(
+            key_points=["address Fable directly"],
+            tone="direct",
+            avoid=["reverse the audience"],
+            strategy="hand over the floor",
+            raw_llm_output="arbitrary unparsed chatter",
+            planner_model="planner-model",
+            context_digest_sha256="a" * 64,
+            context_sections=["recent_conversations"],
+        )
+        audit = plan.audit_record()
+        assert audit["key_points"] == ["address Fable directly"]
+        assert audit["strategy"] == "hand over the floor"
+        assert audit["context_digest_sha256"] == "a" * 64
+        assert len(audit["plan_sha256"]) == 64
+        assert "raw_llm_output" not in audit
 
     def test_review_result_defaults(self):
         review = ReviewResult()

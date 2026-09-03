@@ -241,6 +241,32 @@ class TestDebugRecordEmptyShellStrip:
     def test_plain_response_untouched(self):
         assert self._record("Just an answer.")["response"] == "Just an answer."
 
+    def test_exact_response_plan_attached_to_debug_and_provenance(self):
+        from core.response_planner import ResponsePlan
+        from gui.handlers import _build_debug_record
+
+        orch = type("Orchestrator", (), {})()
+        orch.enable_citations = False
+        orch._current_response_plan = ResponsePlan(
+            key_points=["address Fable directly"],
+            tone="direct",
+            avoid=["reverse speaker and audience"],
+            strategy="hand over the floor",
+            context_digest_sha256="c" * 64,
+            context_sections=["recent_conversations"],
+            directive_locked=True,
+        )
+        provenance = {"response_mode": "enhanced"}
+        rec = _build_debug_record(
+            mode="enhanced", user_text="q", prompt="p", system_prompt="s",
+            response="answer", model="m", prompt_tokens=1, system_tokens=1,
+            total_tokens=2, citations=[], orchestrator=orch,
+            provenance=provenance,
+        )
+        assert rec["response_plan"]["key_points"] == ["address Fable directly"]
+        assert rec["response_plan"]["directive_locked"] is True
+        assert provenance["response_plan"] == rec["response_plan"]
+
 
 class TestSpecialTokenStrip:
     """2026-08-21: kimi-3 intermittently emits <|sep|> as the FIRST content

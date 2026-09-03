@@ -67,6 +67,7 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
+from memory.fact_source import supporting_excerpt
 from memory.memory_interface import MemoryNode, MemoryType
 from utils.logging_utils import get_logger, log_and_time
 
@@ -1891,7 +1892,10 @@ class FactExtractor:
             "object": object,
             "confidence": float(confidence),
             "method": method,
-            "source_excerpt": source_text[:400],
+            # Claim-bearing sentence, not the head of the turn (2026-09-02:
+            # lived_in=Atlanta cited 200 chars of song lyrics from a long turn).
+            "source_excerpt": supporting_excerpt(source_text, object, 400),
+            "source_support": "regex_span",
         }
         # Merge entity metadata (fact_scope, entity_type, user_connection)
         if extra_metadata:

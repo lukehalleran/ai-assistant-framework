@@ -1462,6 +1462,8 @@ def build_demo(orchestrator, dev_tabs=None):
                 def _download_full_prompt(entries):
                     """Extract the most recent full prompt and prepare it for download"""
                     try:
+                        from utils.privacy_redaction import build_redacted_prompt_export
+
                         if not entries:
                             return gr.update(visible=False), "❌ No debug entries available. Submit a message first."
 
@@ -1475,38 +1477,16 @@ def build_demo(orchestrator, dev_tabs=None):
                         mode = latest.get('mode', 'unknown')
                         model = latest.get('model', 'unknown')
 
-                        # Build the full prompt text
-                        lines = []
-                        lines.append("="*80)
-                        lines.append("DAEMON RAG AGENT - FULL PROMPT EXPORT")
-                        lines.append("="*80)
-                        lines.append(f"Mode: {mode}")
-                        lines.append(f"Model: {model}")
-                        lines.append("="*80)
-                        lines.append("")
-
-                        if system_prompt and _DAEMON_MODE == "dev":
-                            lines.append("[SYSTEM PROMPT]")
-                            lines.append("-"*80)
-                            lines.append(system_prompt)
-                            lines.append("")
-                            lines.append("="*80)
-                            lines.append("")
-
-                        lines.append("[USER QUERY]")
-                        lines.append("-"*80)
-                        lines.append(query)
-                        lines.append("")
-                        lines.append("="*80)
-                        lines.append("")
-
-                        lines.append("[FULL CONTEXT PROMPT]")
-                        lines.append("-"*80)
-                        lines.append(prompt)
-                        lines.append("")
-                        lines.append("="*80)
-
-                        content = "\n".join(lines)
+                        content = build_redacted_prompt_export(
+                            {
+                                "system_prompt": system_prompt,
+                                "prompt": prompt,
+                                "query": query,
+                                "mode": mode,
+                                "model": model,
+                            },
+                            include_system=_DAEMON_MODE == "dev",
+                        )
 
                         # Write to temporary file
                         from pathlib import Path

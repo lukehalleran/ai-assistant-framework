@@ -99,6 +99,35 @@ class TestChatStream:
         assert complete["debug"]["mode"] == "enhanced"
 
     @pytest.mark.asyncio
+    async def test_complete_event_redacts_debug_record_before_browser(self):
+        orch = _make_orchestrator()
+        app = _make_app(orch)
+
+        async def _with_private_debug(*args, **kwargs):
+            yield {
+                "role": "assistant",
+                "content": "Done.",
+                "debug": {
+                    "mode": "enhanced",
+                    "query": "student@example.edu",
+                    "prompt": "Call 404-555-0123, GTID 900123456",
+                },
+            }
+
+        with patch("gui.handlers.handle_submit", _with_private_debug):
+            _, events = await _post_chat(app, "hello")
+
+        complete = dict(events)["complete"]
+        serialized = str(complete["debug"])
+        assert "student@example.edu" not in serialized
+        assert "404-555-0123" not in serialized
+        assert "900123456" not in serialized
+        assert "[REDACTED EMAIL]" in serialized
+        # Internal state remains available to the application; only the
+        # browser/share boundary is sanitized.
+        assert app.state.daemon.session.debug_records[-1]["query"] == "student@example.edu"
+
+    @pytest.mark.asyncio
     async def test_session_history_updated_after_turn(self):
         orch = _make_orchestrator(streaming_chunks=["Answer."])
         app = _make_app(orch)

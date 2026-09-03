@@ -8,11 +8,16 @@ noise: ambiguous entities, near-duplicates, hedged confidence, and sub-threshold
 facts that should be gated.
 
 Usage:
-    python scripts/generate_test_facts.py              # populate facts + graph
-    python scripts/generate_test_facts.py --dry-run    # show what would be added
-    python scripts/generate_test_facts.py --clear      # wipe test facts first
+    python scripts/generate_test_facts.py --dry-run                       # show what would be added
+    python scripts/generate_test_facts.py --sandbox-dir /tmp/daemon_cal   # populate a SANDBOX
+    python scripts/generate_test_facts.py --sandbox-dir DIR --clear       # wipe the sandbox facts first
 
-Requires: ChromaDB initialized, knowledge graph paths writable.
+SANDBOX ONLY (2026-09-02): this script used to write straight into the live
+CHROMA_PATH / knowledge graph — 48 synthetic `source=test_calibration` facts
+(D&D, half-marathon running, a brewery job, a cat named Mochi…) were found in
+the OWNER's live facts collection and graph, indistinguishable from real memory
+at retrieval. It now REQUIRES --sandbox-dir and refuses any resolved path that
+coincides with the live stores. Live cleanup: scripts/purge_calibration_facts.py.
 """
 
 import argparse
@@ -134,18 +139,51 @@ def build_fact_text(subj, pred, obj):
     return f"{subj} | {pred} | {obj}"
 
 
-def run(dry_run=False, clear=False):
-    from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
-    from memory.graph_memory import GraphMemory
-    from memory.entity_resolver import EntityResolver
-    from memory.graph_models import GraphNode, GraphEdge
-    from config.app_config import (
-        CHROMA_PATH,
-        KNOWLEDGE_GRAPH_PERSIST_PATH,
-        KNOWLEDGE_GRAPH_ALIASES_PATH,
-        KNOWLEDGE_GRAPH_MIN_CONFIDENCE,
-    )
+class LiveStoreRefused(RuntimeError):
+    """Raised when a resolved sandbox path coincides with a live store."""
 
+
+def resolve_sandbox_paths(sandbox_dir):
+    """Chroma dir + graph/alias JSON paths, all UNDER the sandbox directory."""
+    if not sandbox_dir:
+        raise LiveStoreRefused(
+            "--sandbox-dir is required: calibration facts never go into the live stores"
+        )
+    root = Path(sandbox_dir).expanduser().resolve()
+    return {
+        "chroma": root / "chroma",
+        "graph": root / "knowledge_graph.json",
+        "aliases": root / "entity_aliases.json",
+    }
+
+
+def refuse_live_paths(paths, *, live_chroma=None, live_graph=None, live_aliases=None):
+    """Abort when any sandbox path resolves onto a live store path."""
+    if live_chroma is None or live_graph is None or live_aliases is None:
+        from config.app_config import (
+            CHROMA_PATH,
+            KNOWLEDGE_GRAPH_ALIASES_PATH,
+            KNOWLEDGE_GRAPH_PERSIST_PATH,
+        )
+        live_chroma = CHROMA_PATH if live_chroma is None else live_chroma
+        live_graph = KNOWLEDGE_GRAPH_PERSIST_PATH if live_graph is None else live_graph
+        live_aliases = KNOWLEDGE_GRAPH_ALIASES_PATH if live_aliases is None else live_aliases
+    live = {
+        "chroma": Path(str(live_chroma)).expanduser().resolve(),
+        "graph": Path(str(live_graph)).expanduser().resolve(),
+        "aliases": Path(str(live_aliases)).expanduser().resolve(),
+    }
+    for key, path in paths.items():
+        resolved = Path(path).expanduser().resolve()
+        for live_key, live_path in live.items():
+            if resolved == live_path or live_path in resolved.parents or resolved in live_path.parents:
+                raise LiveStoreRefused(
+                    f"refusing: sandbox {key} path {resolved} coincides with live {live_key} store {live_path}"
+                )
+    return paths
+
+
+def run(dry_run=False, clear=False, sandbox_dir=None):
     all_facts = CLEAN_FACTS + NOISY_FACTS
 
     print(f"Facts to add: {len(CLEAN_FACTS)} clean + {len(NOISY_FACTS)} noisy = {len(all_facts)} total")
@@ -162,43 +200,44 @@ def run(dry_run=False, clear=False):
         domains = set(f[4] for f in all_facts)
         print(f"Domains represented: {len(domains)} — {sorted(domains)}")
 
-        # Count expected graph entities
         entities = set()
         for subj, pred, obj, conf, _ in all_facts:
             if conf >= 0.50:
                 entities.add(subj.lower())
-                if len(obj.split()) < 4:  # rough graph-worthiness check
+                if len(obj.split()) < 4:
                     entities.add(obj.lower())
         print(f"Expected graph entities (rough): ~{len(entities)}")
         return
 
-    # Init stores
-    print("\nInitializing ChromaDB...")
-    store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+    paths = refuse_live_paths(resolve_sandbox_paths(sandbox_dir))
+    paths["chroma"].mkdir(parents=True, exist_ok=True)
+
+    from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+    from memory.graph_memory import GraphMemory
+    from memory.entity_resolver import EntityResolver
+    from memory.graph_models import GraphNode, GraphEdge
+    from config.app_config import KNOWLEDGE_GRAPH_MIN_CONFIDENCE
+
+    print(f"\nSandbox: {paths['chroma'].parent}")
+    print("Initializing sandbox ChromaDB...")
+    store = MultiCollectionChromaStore(persist_directory=str(paths["chroma"]))
 
     if clear:
-        print("Clearing existing facts collection...")
-        coll = store.collections.get("facts")
+        print("Clearing sandbox facts collection...")
+        coll = store._get_collection("facts")
         if coll and coll.count() > 0:
-            # Get all IDs and delete
             all_ids = coll.get()["ids"]
             if all_ids:
                 coll.delete(ids=all_ids)
-                print(f"  Deleted {len(all_ids)} existing facts")
+                print(f"  Deleted {len(all_ids)} sandbox facts")
 
-    print("Initializing knowledge graph...")
-    graph = GraphMemory(persist_path=KNOWLEDGE_GRAPH_PERSIST_PATH)
-    resolver = EntityResolver(graph, aliases_path=KNOWLEDGE_GRAPH_ALIASES_PATH)
+    print("Initializing sandbox knowledge graph...")
+    graph = GraphMemory(persist_path=str(paths["graph"]))
+    resolver = EntityResolver(graph, aliases_path=str(paths["aliases"]))
 
-    # Add facts
-    added = 0
-    gated = 0
-    duped = 0
-
+    added = gated = duped = 0
     for subj, pred, obj, conf, domain in all_facts:
         fact_text = build_fact_text(subj, pred, obj)
-
-        # Build metadata
         metadata = {
             "source": "test_calibration",
             "confidence": conf,
@@ -208,8 +247,6 @@ def run(dry_run=False, clear=False):
             "fact_scope": "user" if subj.lower() == "user" else "entity",
             "domain_hint": domain,
         }
-
-        # Add to ChromaDB
         try:
             doc_id = store.add_fact(fact_text, metadata)
             if doc_id is None:
@@ -221,22 +258,17 @@ def run(dry_run=False, clear=False):
             print(f"  ERROR: {fact_text} — {e}")
             continue
 
-        # Ingest to graph (respecting confidence gate)
         if conf < KNOWLEDGE_GRAPH_MIN_CONFIDENCE:
             gated += 1
             print(f"  GATED: {fact_text} (conf={conf:.2f} < {KNOWLEDGE_GRAPH_MIN_CONFIDENCE})")
             continue
 
-        # Graph ingestion (simplified version of _ingest_fact_to_graph)
         try:
             from memory.entity_resolver import normalize_relation
             canon_rel = normalize_relation(pred)
-
             subj_display = subj if subj.lower() != "user" else "User"
             subj_type = "person" if subj.lower() == "user" else "other"
             subj_id = resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
-
-            # Only create object nodes for short, entity-like objects
             obj_words = obj.split()
             if len(obj_words) < 4 and not any(c.isdigit() for c in obj):
                 obj_id = resolver.resolve_or_create(obj, display_name=obj)
@@ -245,7 +277,6 @@ def run(dry_run=False, clear=False):
                     fact_id=doc_id,
                 )
             else:
-                # Store as node metadata
                 node = graph.get_entity(subj_id)
                 if node:
                     graph.add_entity(GraphNode(
@@ -257,23 +288,18 @@ def run(dry_run=False, clear=False):
         except Exception as e:
             print(f"  GRAPH ERR: {fact_text} — {e}")
 
-    # Save graph
     graph.save()
-    resolver_aliases = resolver.graph._alias_index
     print(f"\nResults:")
-    print(f"  Added to ChromaDB: {added}")
+    print(f"  Added to sandbox ChromaDB: {added}")
     print(f"  Duplicates skipped: {duped}")
     print(f"  Sub-threshold gated: {gated}")
     print(f"  Graph nodes: {graph.node_count()}")
     print(f"  Graph edges: {graph.edge_count()}")
-    print(f"  Alias index entries: {len(resolver_aliases)}")
 
-    # Verify domain coverage
-    facts_coll = store.collections.get("facts")
+    facts_coll = store._get_collection("facts")
     if facts_coll:
-        print(f"  Facts collection total: {facts_coll.count()}")
+        print(f"  Sandbox facts collection total: {facts_coll.count()}")
 
-    # Check success criteria
     print(f"\n--- SUCCESS CRITERIA ---")
     nodes_ok = graph.node_count() >= 30
     edges_ok = graph.edge_count() >= 25
@@ -284,12 +310,19 @@ def run(dry_run=False, clear=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate synthetic facts for calibration")
+    parser = argparse.ArgumentParser(description="Generate synthetic facts for calibration (SANDBOX ONLY)")
     parser.add_argument("--dry-run", action="store_true", help="Show facts without adding")
-    parser.add_argument("--clear", action="store_true", help="Clear existing facts first")
+    parser.add_argument("--clear", action="store_true", help="Clear the sandbox facts collection first")
+    parser.add_argument("--sandbox-dir", default=None,
+                        help="Directory to hold the sandbox chroma/ + knowledge_graph.json "
+                             "(REQUIRED unless --dry-run; never a live store path)")
     args = parser.parse_args()
 
-    run(dry_run=args.dry_run, clear=args.clear)
+    try:
+        run(dry_run=args.dry_run, clear=args.clear, sandbox_dir=args.sandbox_dir)
+    except LiveStoreRefused as e:
+        print(f"ABORT: {e}")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

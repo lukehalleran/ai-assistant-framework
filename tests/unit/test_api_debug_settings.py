@@ -63,6 +63,25 @@ class TestDebugRoutes:
         assert body["records"][0]["prompt"].startswith("[MEMORY]")
 
     @pytest.mark.asyncio
+    async def test_records_are_redacted_before_reaching_browser(self):
+        app = create_app(_make_orchestrator(), start_background=False)
+        app.state.daemon.session.debug_records.append(_record(
+            query="Email student@example.edu or call 404-555-0123",
+            prompt="Recent conversation contains GTID 900123456",
+            provenance={"source": "student@example.edu"},
+        ))
+        async with _client(app) as client:
+            resp = await client.get("/api/debug")
+        body = resp.json()["records"][0]
+        serialized = str(body)
+        assert "student@example.edu" not in serialized
+        assert "404-555-0123" not in serialized
+        assert "900123456" not in serialized
+        assert "[REDACTED EMAIL]" in serialized
+        assert "[REDACTED PHONE]" in serialized
+        assert "[REDACTED ID]" in serialized
+
+    @pytest.mark.asyncio
     async def test_prompt_export_latest(self, monkeypatch):
         monkeypatch.setattr("config.app_config.DAEMON_MODE", "dev")
         app = create_app(_make_orchestrator(), start_background=False)
@@ -84,6 +103,26 @@ class TestDebugRoutes:
             resp = await client.get("/api/debug/prompt")
         assert "[SYSTEM PROMPT]" not in resp.text
         assert "[FULL CONTEXT PROMPT]" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_prompt_export_redacts_pii_in_all_sections(self, monkeypatch):
+        monkeypatch.setattr("config.app_config.DAEMON_MODE", "dev")
+        app = create_app(_make_orchestrator(), start_background=False)
+        app.state.daemon.session.debug_records.append(_record(
+            query="Call 404-555-0123",
+            prompt="Recent conversation: student@example.edu, GTID 900123456",
+            system_prompt="SSN 123-45-6789",
+        ))
+        async with _client(app) as client:
+            resp = await client.get("/api/debug/prompt")
+        assert "404-555-0123" not in resp.text
+        assert "student@example.edu" not in resp.text
+        assert "900123456" not in resp.text
+        assert "123-45-6789" not in resp.text
+        assert "[REDACTED PHONE]" in resp.text
+        assert "[REDACTED EMAIL]" in resp.text
+        assert "[REDACTED ID]" in resp.text
+        assert "[REDACTED SSN]" in resp.text
 
     @pytest.mark.asyncio
     async def test_prompt_export_404_when_empty(self):
@@ -117,6 +156,21 @@ class TestDebugRoutes:
         assert prov["prompt_tokens"] == 20
         assert prov["thinking_block"].endswith(" [truncated]")
         assert len(prov["thinking_block"]) == 500 + len(" [truncated]")
+
+    @pytest.mark.asyncio
+    async def test_provenance_is_redacted_before_copying(self):
+        app = create_app(_make_orchestrator(), start_background=False)
+        app.state.daemon.session.debug_records.append(_record(provenance={
+            "session_id": "sess-1",
+            "source": "student@example.edu / 404-555-0123",
+        }))
+        async with _client(app) as client:
+            resp = await client.get("/api/provenance")
+        serialized = str(resp.json())
+        assert "student@example.edu" not in serialized
+        assert "404-555-0123" not in serialized
+        assert "[REDACTED EMAIL]" in serialized
+        assert "[REDACTED PHONE]" in serialized
 
     @pytest.mark.asyncio
     async def test_provenance_404_when_empty(self):

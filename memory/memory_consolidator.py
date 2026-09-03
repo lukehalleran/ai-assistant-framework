@@ -302,6 +302,13 @@ TEMPORAL ACCURACY RULES — these are critical:
   (e.g. "sick May 12-14", "started homework at 2:30 on May 15") — never collapse to a single day.
 - ALWAYS use absolute dates (e.g. "May 18-20"), never vague relative terms like "recently" or "a few days ago".
 - Use day-of-week names anchored to actual dates, not vague relative terms.
+- Keep the predicate attached to every duration: "stable for six days" and
+  "functional for two weeks" are different claims and must not be collapsed.
+- If source notes give competing durations for the same state, preserve both
+  with attribution and mark the discrepancy. Never silently select, average, or
+  harmonize them.
+- A duration appearing in a quoted message, draft, pasted email, or conditional
+  scenario is not independent confirmation of the user's current state.
 
 Write in third person ("The user is..."). Be specific and grounded in the data.
 Prioritize recent daily notes for current state, weekly for active threads, monthly for trajectory.

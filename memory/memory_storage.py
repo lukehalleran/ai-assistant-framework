@@ -28,7 +28,8 @@ Module Contract
   - Triggers summary consolidation (if not SUMMARIZE_AT_SHUTDOWN_ONLY)
   - _maybe_regenerate_narrative(): Triggers narrative context refresh after consolidation [NEW 2026-01-17]
   - Entity metadata forwarding: extract_and_store_facts() uses dict-based source to pass
-    fact_scope, entity_type, user_connection, source_excerpt through to ChromaDB metadata [NEW 2026-03]
+    fact_scope, entity_type, user_connection, source_excerpt through to ChromaDB metadata [NEW 2026-03],
+    plus provenance keys source_support/source_role/source_turn_id/source_anchor (2026-09-02)
   - Thread metadata forwarding: store_interaction() propagates thread_id and thread_depth
     from thread_info to ChromaDB conversation metadata [NEW 2026-03]
   - Thinking-leak storage guard: store_interaction() runs the response through
@@ -1104,7 +1105,8 @@ class MemoryStorage:
                     "confidence": conf,
                 }
                 source_dict.update(stance_md)
-                for key in ("fact_scope", "entity_type", "user_connection", "source_excerpt"):
+                for key in ("fact_scope", "entity_type", "user_connection", "source_excerpt",
+                            "source_support", "source_role", "source_turn_id", "source_anchor"):
                     val = md.get(key)
                     if val:
                         source_dict[key] = val[:200] if key == "source_excerpt" else val

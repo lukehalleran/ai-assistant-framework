@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from core.orchestrator import DaemonOrchestrator
 from core.context_pipeline import ContextResult, ToneLevel
+from core.response_planner import ResponsePlan, ResponsePlanner
 
 
 # =============================================================================
@@ -436,42 +437,56 @@ class TestBuildFullPrompt:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_slow_prompt_build_gets_grace_not_discarded(self, monkeypatch):
-        """Regression (2026-07-03): the combined planner+builder wait timed out with
-        the build still running; .result() on the unfinished task raised
-        InvalidStateError ("Result is not set.") and ALL gathered context was
-        replaced with {} — the agentic loop then ran with no session history.
-        A still-running build must get a grace await; the optional planner is
-        cancelled instead."""
-        import asyncio
-
+    async def test_prompt_context_finishes_before_planner_and_is_passed_as_digest(self):
+        """Planner must not run in parallel, blind to the final gathered context."""
+        events = []
         planner = MagicMock()
         planner.should_plan = MagicMock(return_value=True)
+        planner.format_plan_injection = ResponsePlanner.format_plan_injection
 
-        async def _never_finishes(**kwargs):
-            await asyncio.sleep(30)
+        async def _make_plan(**kwargs):
+            events.append("plan")
+            assert events == ["build", "plan"]
+            assert "prior turn" in kwargs["context_digest"]
+            assert "recent_conversations" in kwargs["context_sections"]
+            return ResponsePlan(
+                key_points=["use gathered context"],
+                tone="direct",
+                avoid=[],
+                strategy="answer",
+            )
 
-        planner.create_plan = MagicMock(side_effect=_never_finishes)
+        planner.create_plan = AsyncMock(side_effect=_make_plan)
         orch = _make_bfp_orch(response_planner=planner)
 
-        async def _slow_build(context):
-            await asyncio.sleep(0.05)
+        async def _build(context):
+            events.append("build")
             return {"recent_conversations": [{"query": "prior turn"}]}
 
-        orch.prompt_builder.build_prompt_from_context = _slow_build
+        orch.prompt_builder.build_prompt_from_context = _build
 
-        # Force the combined wait to "time out" immediately with both tasks pending.
-        real_wait = asyncio.wait
+        _, system_prompt, prompt_ctx = await orch.build_full_prompt(
+            _make_context(), return_raw_context=True
+        )
+        assert prompt_ctx.get("recent_conversations") == [{"query": "prior turn"}]
+        assert events == ["build", "plan"]
+        assert orch._current_response_plan.key_points == ["use gathered context"]
+        assert "[RESPONSE PLAN]" in system_prompt
 
-        async def _instant_timeout_wait(tasks, timeout=None, return_when=None):
-            return await real_wait(tasks, timeout=0, return_when=return_when)
-
-        monkeypatch.setattr(asyncio, "wait", _instant_timeout_wait)
+    @pytest.mark.asyncio
+    async def test_planner_failure_does_not_discard_gathered_context(self):
+        planner = MagicMock()
+        planner.should_plan = MagicMock(return_value=True)
+        planner.create_plan = AsyncMock(side_effect=RuntimeError("planner failed"))
+        orch = _make_bfp_orch(response_planner=planner)
+        orch.prompt_builder.build_prompt_from_context = AsyncMock(
+            return_value={"recent_conversations": [{"query": "prior turn"}]}
+        )
 
         _, _, prompt_ctx = await orch.build_full_prompt(
             _make_context(), return_raw_context=True
         )
-        assert prompt_ctx.get("recent_conversations") == [{"query": "prior turn"}]
+        assert prompt_ctx["recent_conversations"] == [{"query": "prior turn"}]
         assert orch._current_response_plan is None
 
     @pytest.mark.asyncio

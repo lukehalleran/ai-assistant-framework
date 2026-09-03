@@ -14,13 +14,29 @@ from utils.logging_utils import get_logger
 
 logger = get_logger("curation_journal")
 
-_DEFAULT_JOURNAL_PATH = os.path.join("logs", "curation_audit.jsonl")
+_PROD_JOURNAL_PATH = os.path.join("logs", "curation_audit.jsonl")
+_TEST_JOURNAL_PATH = os.path.join("logs", "test_curation_audit.jsonl")
+_DEFAULT_JOURNAL_PATH = _PROD_JOURNAL_PATH
+
+
+def resolve_journal_path(path: str = "") -> str:
+    """Explicit path wins; otherwise the (sandbox-repointable) module default.
+
+    A test process (DAEMON_TEST_MODE) that still resolves to the PROD journal
+    is redirected to a test-only file, so no test can append to the owner's
+    curation audit even when the conftest sandbox is bypassed (subprocess,
+    script, ad-hoc run) — 2026-09-02 defence in depth.
+    """
+    resolved = path or _DEFAULT_JOURNAL_PATH
+    if not path and os.getenv("DAEMON_TEST_MODE") and resolved == _PROD_JOURNAL_PATH:
+        return _TEST_JOURNAL_PATH
+    return resolved
 
 
 class CurationJournal:
     def __init__(self, path: str = ""):
         # Late-bound default so the test sandbox can repoint the module attr.
-        self.path = path or _DEFAULT_JOURNAL_PATH
+        self.path = resolve_journal_path(path)
 
     def record(self, event: str, **detail: Any) -> None:
         """Append one event line. Best-effort: journaling must never break

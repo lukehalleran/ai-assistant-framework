@@ -13,10 +13,9 @@ Module Contract
   - handle_commands(): simple topic switching commands
   - prepare_prompt(): topic update, file processing, optional query rewrite, resolve system prompt, build prompt via prompt_builder
   - build_full_prompt(): assembles final prompt; delegates system-prompt assembly to _build_system_prompt().
-    Runs the response planner and prompt build in parallel under a 35s combined wait; if the build
-    is still running when the wait expires it gets a 30s grace await (the planner is cancelled) —
-    calling .result() on the unfinished task raised InvalidStateError and silently replaced the
-    ENTIRE gathered context with {} (2026-07-03: agentic turn ran with no session history).
+    Completes prompt-context gathering before response planning, then gives the planner a bounded
+    digest derived from that same final context. The planner is optional and has its own timeout;
+    a planner failure never discards gathered context (2026-09-02 speaker/addressee reversal audit).
   - process_user_query(): thin coordinator — builds a _QueryFlow and routes through per-phase
     helper methods (behavior-preserving decomposition; final answer + debug_info returned).
   - _check_narrative_freshness(): Startup check for stale narrative context (>24h) [NEW 2026-01-17]
@@ -1347,52 +1346,35 @@ class DaemonOrchestrator:
         # --- 1) Build System Prompt ---
         system_prompt = self._build_system_prompt(context, use_raw_mode)
 
-        # --- 2) Build prompt context (+ optional response plan in parallel) ---
+        # --- 2) Build prompt context, THEN optionally plan from that context ---
+        # Planning used to run in parallel with retrieval and saw only classifier
+        # labels + a truncated prior exchange.  That let a bad STM label reverse
+        # an explicit request ("communicate with Fable" -> "ask the user about
+        # Fable").  Gather first and give the planner a bounded digest from this
+        # exact prompt_ctx; the essential build is no longer coupled to an
+        # optional planner task or its timeout.
         _plan_result = None
+        try:
+            prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
+        except Exception as e:
+            logger.warning(f"[BUILD_FULL_PROMPT] Prompt build failed: {e}")
+            prompt_ctx = {}
+
         if self.response_planner and self.response_planner.should_plan(context):
-            _plan_task = _aio.create_task(
-                self.response_planner.create_plan(
+            try:
+                from core.response_planner import ResponsePlanner
+                _planner_digest, _planner_sections = ResponsePlanner.build_context_digest(
+                    prompt_ctx
+                )
+                _plan_result = await self.response_planner.create_plan(
                     query=context.original_query,
                     context=context,
+                    context_digest=_planner_digest,
+                    context_sections=_planner_sections,
                 )
-            )
-            _prompt_task = _aio.create_task(
-                self.prompt_builder.build_prompt_from_context(context)
-            )
-            done, _ = await _aio.wait(
-                [_plan_task, _prompt_task],
-                timeout=35.0,
-                return_when=_aio.ALL_COMPLETED,
-            )
-            try:
-                if _prompt_task.done():
-                    prompt_ctx = _prompt_task.result()
-                else:
-                    # The combined wait timed out with the build still running.
-                    # The prompt context is the essential product (the planner is
-                    # optional) — calling .result() here raises InvalidStateError
-                    # and silently discards everything gathered, which downstream
-                    # means an empty-context prompt AND an agentic loop with no
-                    # session history. Give the build a grace period instead.
-                    logger.warning(
-                        "[BUILD_FULL_PROMPT] Prompt build still running after 35s "
-                        "combined wait — extending up to 30s grace"
-                    )
-                    prompt_ctx = await _aio.wait_for(_prompt_task, timeout=30.0)
-            except Exception as e:
-                logger.warning(f"[BUILD_FULL_PROMPT] Prompt build failed: {e}")
-                prompt_ctx = {}
-            try:
-                if _plan_task.done():
-                    _plan_result = _plan_task.result()
-                else:
-                    _plan_task.cancel()
-                    _plan_result = None
             except Exception as e:
                 logger.debug(f"[BUILD_FULL_PROMPT] Response planner failed (non-fatal): {e}")
                 _plan_result = None
-        else:
-            prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
 
         # Inject plan into system prompt
         if _plan_result:
@@ -1423,6 +1405,12 @@ class DaemonOrchestrator:
                 "is_small_talk": bool(getattr(context, "is_small_talk", False)),
                 "plan_points": len(_plan_result.key_points) if _plan_result else None,
                 "plan_tone": getattr(_plan_result, "tone", None) if _plan_result else None,
+                # Exact operative instructions (not the planner's raw response)
+                # plus hashes/section names needed to audit planner alignment.
+                # The digest content itself is deliberately not persisted.
+                "response_plan": (
+                    _plan_result.audit_record() if _plan_result else None
+                ),
             }
         except Exception as e:
             logger.debug(f"[BUILD_FULL_PROMPT] Turn-signal capture failed (non-fatal): {e}")

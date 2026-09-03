@@ -38,7 +38,8 @@ Module Contract
     forwards source_excerpt from MemoryNode metadata to ChromaDB
   - _extract_llm_facts(session_conversations) — LLM-assisted triple extraction with fact verification gate;
     injects existing profile facts so LLM reuses relation names for updates/cancellations;
-    forwards source_excerpt from triples to ChromaDB and UserProfile;
+    forwards source_excerpt (claim-bearing span) + source_role/turn_id/turn_index/support/anchor
+    provenance from triples to ChromaDB and UserProfile (2026-09-02: responses are never extraction input);
     2026-08-23: forwards each triple's "stance" and a capture_tone derived by
     _capture_tone_for_triple (joins the triple's object/subject back to the
     session corpus entry's is_heavy_topic flag; unmatched → "unknown") into
@@ -620,8 +621,8 @@ class ShutdownProcessor:
         # Coverage defaults raised 2026-08-05 (were 12 turns / 10 triples /
         # 6000 chars): with FULL responses in each entry the old budget fit
         # ~4-5 pairs and dropped the newest — weeks of "my doctor doesn't
-        # respond" never reached the extractor. Responses are now truncated
-        # to a snippet inside _build_prompt, so 9000 chars covers ~30 turns.
+        # respond" never reached the extractor. Responses are EXCLUDED from
+        # the prompt since 2026-09-02 (not evidence), so 9000 chars covers ~30 turns.
         try:
             last_turns = int(os.getenv("LLM_FACTS_LAST_TURNS", "30"))
         except (ValueError, TypeError):
@@ -655,14 +656,20 @@ class ShutdownProcessor:
                     if (not self._is_summary(e)) and (not self._is_reflection(e))
                 ]
 
-        # Build conversation pairs (query + response) so LLM can extract entity facts
-        # from both user messages AND Daemon's responses
+        # Build conversation pairs. The extractor reads ONLY the user query
+        # (2026-09-02: Daemon responses are not evidence about the user); the
+        # response rides along for the capture-tone join, and the timestamp
+        # becomes the evidence span's turn_id for provenance.
         conv_pairs = []
         for e in sess_items:
             q = (e.get('query') or '').strip()
             r = (e.get('response') or '').strip()
             if q:
-                conv_pairs.append({"query": q, "response": r})
+                pair = {"query": q, "response": r}
+                ts = e.get('timestamp')
+                if ts:
+                    pair["turn_id"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                conv_pairs.append(pair)
         conv_tail = conv_pairs[-max(1, last_turns):]
 
         if not conv_tail:
@@ -784,6 +791,16 @@ class ShutdownProcessor:
                 src_exc = t.get("source_excerpt", "")
                 if src_exc:
                     src_dict["source_excerpt"] = src_exc[:200]
+                # Provenance (2026-09-02): which user turn + what kind of
+                # support joined this triple to the user's own words.
+                for _pk in ("source_role", "source_turn_id", "source_support", "source_anchor"):
+                    if t.get(_pk) not in (None, ""):
+                        src_dict[_pk] = str(t[_pk])[:80]
+                if t.get("source_turn_index") is not None:
+                    try:
+                        src_dict["source_turn_index"] = int(t["source_turn_index"])
+                    except (TypeError, ValueError):
+                        pass
                 result = self.chroma_store.add_fact(
                     fact=fact_text,
                     source=src_dict,

@@ -1,9 +1,11 @@
 """
 Structured Response Planning + Post-Answer Review Gate.
 
-Pre-answer: lightweight LLM call produces a ResponsePlan (key points,
-tone, strategy, avoid) from query + context signals.  The plan is
-injected into the system prompt so the main LLM follows it.
+Pre-answer: after retrieval finishes, a lightweight LLM call produces a
+ResponsePlan (key points, tone, strategy, avoid) from the query, context
+signals, and a bounded digest of the same gathered context the main model
+will receive.  The plan is injected into the system prompt so the main LLM
+follows it.
 
 Post-answer: lightweight LLM call checks whether the response
 adequately followed the plan.  If it didn't with high confidence, the
@@ -13,10 +15,9 @@ Both calls are advisory — failures return None and never block.
 
 Inputs:
     - model_manager (generate_once)
-    - ContextResult from context_pipeline (incl. last_exchange — the newest
-      prior turn, included in the planner prompt so pronoun-anchored
-      fragments and referent corrections are planned against what they
-      actually refer to instead of blind off the raw query, 2026-07-28)
+    - ContextResult from context_pipeline
+    - a bounded, retrieval-ranked digest derived from PromptBuilder's final
+      prompt-context dictionary (contents are not copied into telemetry)
 
 Outputs:
     - ResponsePlan (Pydantic, or None)
@@ -34,7 +35,9 @@ Config (config/app_config.py):
 """
 
 import asyncio
+import hashlib
 import json
+import re
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -55,6 +58,45 @@ class ResponsePlan(BaseModel):
     avoid: List[str] = Field(default_factory=list, description="1-2 things to avoid")
     strategy: str = Field(default="", description="One sentence approach description")
     raw_llm_output: str = Field(default="", description="Raw LLM output for debugging")
+    planner_source: str = Field(default="llm", description="llm or deterministic safeguard")
+    planner_model: str = Field(default="", description="Model used to create the plan")
+    context_digest_sha256: str = Field(
+        default="", description="Hash of the exact context digest shown to the planner"
+    )
+    context_sections: List[str] = Field(
+        default_factory=list, description="Prompt-context sections represented in the digest"
+    )
+    directive_locked: bool = Field(
+        default=False, description="True when an explicit user speech act was deterministically preserved"
+    )
+
+    def audit_record(self) -> dict:
+        """Return the exact operative plan plus non-content alignment metadata.
+
+        Deliberately omit ``raw_llm_output``: the parsed fields below are the
+        instructions actually injected, while retaining arbitrary raw model
+        chatter would expand the PII surface.  The hash and section names let a
+        trace establish which gathered-context digest the planner saw without
+        persisting that digest a second time.
+        """
+        operative = {
+            "key_points": list(self.key_points),
+            "tone": self.tone,
+            "avoid": list(self.avoid),
+            "strategy": self.strategy,
+        }
+        canonical = json.dumps(
+            operative, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        return {
+            **operative,
+            "plan_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "planner_source": self.planner_source,
+            "planner_model": self.planner_model,
+            "context_digest_sha256": self.context_digest_sha256,
+            "context_sections": list(self.context_sections),
+            "directive_locked": self.directive_locked,
+        }
 
 
 class ReviewResult(BaseModel):
@@ -73,9 +115,9 @@ class ResponsePlanner:
     """
     Lightweight pre-answer planning and post-answer review.
 
-    create_plan() runs in parallel with build_prompt_from_context() in
-    the orchestrator.  review_answer() runs after streaming completes
-    in gui/handlers.py.
+    create_plan() runs after build_prompt_from_context() in the orchestrator,
+    so it cannot plan from classifier labels while blind to retrieved context.
+    review_answer() runs after streaming completes in gui/handlers.py.
     """
 
     def __init__(self, model_manager):
@@ -132,7 +174,142 @@ class ResponsePlanner:
     # Pre-answer planning
     # ------------------------------------------------------------------
 
-    async def create_plan(self, query: str, context) -> Optional[ResponsePlan]:
+    # Retrieval-ranked sections that materially affect what the response says.
+    # Each gets a fair bounded excerpt so one large conversation cannot crowd
+    # every other evidence class out of the planner view.
+    _CONTEXT_DIGEST_KEYS = (
+        "stm_summary",
+        "recent_conversations",
+        "memories",
+        "relevant_emails",
+        "web_search_results",
+        "user_profile",
+        "narrative_state",
+        "graph_context",
+        "recent_summaries",
+        "semantic_summaries",
+        "personal_notes",
+        "reference_docs",
+        "unresolved_threads",
+        "upcoming_schedule",
+        "google_calendar",
+    )
+
+    @staticmethod
+    def build_context_digest(
+        prompt_context: Optional[dict],
+        *,
+        max_chars: int = 6000,
+        max_section_chars: int = 1200,
+    ) -> tuple[str, List[str]]:
+        """Build a bounded digest from the final gathered prompt context.
+
+        The digest is ephemeral planner input.  Audit records retain only its
+        SHA-256 and represented section names, avoiding a second persisted copy
+        of potentially personal context.
+        """
+        if not isinstance(prompt_context, dict) or max_chars <= 0:
+            return "", []
+
+        chunks: List[str] = []
+        included: List[str] = []
+        remaining = max_chars
+        for key in ResponsePlanner._CONTEXT_DIGEST_KEYS:
+            value = prompt_context.get(key)
+            if value in (None, "", [], {}, ()):
+                continue
+
+            # Context lists are already relevance/recency ranked.  Keep the
+            # leading items and bound serialization before composing sections.
+            compact_value = value[:3] if isinstance(value, (list, tuple)) else value
+            try:
+                rendered = json.dumps(
+                    compact_value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError):
+                rendered = str(compact_value)
+            rendered = rendered[:max_section_chars]
+            chunk = f"[{key}]\n{rendered}"
+            if len(chunk) > remaining:
+                if remaining < len(key) + 8:
+                    break
+                chunk = chunk[:remaining]
+            chunks.append(chunk)
+            included.append(key)
+            remaining -= len(chunk) + 2
+            if remaining <= 0:
+                break
+
+        return "\n\n".join(chunks), included
+
+    @staticmethod
+    def _is_direct_communication_command(query: str) -> bool:
+        """Detect an explicit command to address another audience.
+
+        This is intentionally narrow: questions such as "how should I
+        communicate with X?" must not be converted into role-play.  A direct
+        imperative, or the unambiguous "the floor is yours" handoff, is locked
+        so an LLM planner cannot reverse speaker and audience.
+        """
+        text = (query or "").strip()
+        if not text or text.endswith("?"):
+            return False
+        verb_target = re.search(
+            r"\b(?:communicate|speak|talk|address|respond|reply|write)\b"
+            r"[^.!?\n]{0,40}\b(?:to|with)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not verb_target:
+            return False
+        if re.search(r"\bthe\s+floor\s+is\s+yours\b", text, flags=re.IGNORECASE):
+            return True
+        return bool(
+            re.match(
+                r"^(?:please\s+)?(?:communicate|speak|talk|address|respond|reply|write)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _direct_communication_plan(
+        *,
+        planner_model: str,
+        context_digest_sha256: str,
+        context_sections: List[str],
+    ) -> ResponsePlan:
+        """Deterministically preserve the speaker/addressee requested by user."""
+        return ResponsePlan(
+            key_points=[
+                "Carry out the requested communication and address the named recipient directly.",
+                "Treat the user as handing over the floor, not as the person being interviewed about the recipient.",
+            ],
+            tone="direct",
+            avoid=[
+                "Do not ask the user to share or explain the interaction instead.",
+                "Do not reverse the requested speaker and audience.",
+            ],
+            strategy="Speak directly to the requested recipient while using relevant gathered context.",
+            planner_source="deterministic_direct_communication",
+            planner_model=planner_model,
+            context_digest_sha256=context_digest_sha256,
+            context_sections=context_sections,
+            directive_locked=True,
+        )
+
+    async def create_plan(
+        self,
+        query: str,
+        context,
+        *,
+        context_digest: str = "",
+        context_sections: Optional[List[str]] = None,
+    ) -> Optional[ResponsePlan]:
         """
         Generate a response plan from query + context signals.
 
@@ -148,6 +325,23 @@ class ResponsePlanner:
             RESPONSE_PLANNING_MODEL = None
             RESPONSE_PLANNING_MAX_TOKENS = 200
             RESPONSE_PLANNING_TIMEOUT = 5.0
+
+        digest_hash = (
+            hashlib.sha256(context_digest.encode("utf-8")).hexdigest()
+            if context_digest else ""
+        )
+        represented_sections = list(context_sections or [])
+        planner_model = str(RESPONSE_PLANNING_MODEL or "")
+
+        # Preserve explicit speaker/addressee commands without asking a second
+        # model to reinterpret them.  This prevents the exact class of reversal
+        # where "communicate with Fable" became "ask the user about Fable."
+        if self._is_direct_communication_command(query):
+            return self._direct_communication_plan(
+                planner_model=planner_model,
+                context_digest_sha256=digest_hash,
+                context_sections=represented_sections,
+            )
 
         # Extract context signals
         intent_type = "unknown"
@@ -192,6 +386,14 @@ class ResponsePlanner:
             f"Tone level: {tone_level}\n"
             f"Topics: {topics_str}\n"
             f"Thread depth: {thread_depth}\n\n"
+            "The user's literal query is authoritative. Inferred Intent, Topics, "
+            "and short-term summaries are fallible context signals: they must never "
+            "change the requested speech act, speaker, or addressee. If the user asks "
+            "you to communicate with someone, plan direct communication to that "
+            "recipient; do not plan to interview the user about them.\n\n"
+            "Compact digest of the SAME gathered context available to the main "
+            "response model (retrieval-ranked excerpts; may be empty):\n"
+            f"{context_digest or '(no gathered context)'}\n\n"
             "If the query is a fragment, opens with a pronoun (\"It was...\", "
             "\"That's...\"), or corrects an interpretation (\"No I mean...\"), "
             "resolve what it refers to from the previous exchange and plan for "
@@ -226,7 +428,13 @@ class ResponsePlanner:
         if not raw or not raw.strip():
             return None
 
-        return self._parse_plan(raw)
+        plan = self._parse_plan(raw)
+        if plan is not None:
+            plan.planner_source = "llm"
+            plan.planner_model = planner_model
+            plan.context_digest_sha256 = digest_hash
+            plan.context_sections = represented_sections
+        return plan
 
     # ------------------------------------------------------------------
     # Post-answer review

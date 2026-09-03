@@ -30,6 +30,7 @@ Module Contract
 """
 
 import uuid
+import re
 from enum import Enum
 from typing import Dict, List, Set, Optional, TYPE_CHECKING
 
@@ -444,6 +445,18 @@ _PREFIX_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "program": ProfileCategory.EDUCATION,
 }
 
+# Household chores / task-completion activity relations (2026-09-02). The
+# embedding layer had guessed CAREER for laundry_done / cleaned_up / cleans_up
+# and the persisted cache made the guess permanent ("laundry_done" filed under
+# career in the live profile). These are ephemeral activity states
+# (relation_classifier) — checked BEFORE the cache so a poisoned entry is
+# bypassed; filed under PREFERENCES, the documented default bucket, so they can
+# never masquerade as a job fact.
+_HOUSEHOLD_ACTIVITY_RE = re.compile(
+    r"(?:^|_)(?:laundry|dishes|chores?|vacuum(?:ing|ed)?|groceries|grocery|"
+    r"tidy(?:ing|ied)?|clean(?:s|ed|ing)?)(?:_|$)"
+)
+
 # Token-level category keywords for semantic overlap scoring.
 # Each category has a set of discriminative tokens. A relation's tokens are
 # scored against each category — highest overlap wins.
@@ -751,6 +764,8 @@ def categorize_relation(relation: str) -> ProfileCategory:
     Map a relation to its category using 5-layer cascade resolution:
     1. Direct lookup in RELATION_CATEGORY_MAP (exact match)
     2. Prefix lookup (first token of underscore-split relation)
+    2b. Household-activity rule (laundry/dishes/cleaning… → PREFERENCES), checked
+        AHEAD of the persistent cache so a poisoned cache entry is bypassed (2026-09-02)
     3. Token overlap scoring (relation tokens vs category keyword sets, ≥2 overlap required)
     4. Embedding similarity (all-MiniLM-L6-v2 cosine vs category anchor phrases, >0.40)
     5. Default to PREFERENCES if nothing matches
@@ -769,6 +784,10 @@ def categorize_relation(relation: str) -> ProfileCategory:
     prefix = tokens[0] if tokens else ""
     if prefix in _PREFIX_CATEGORY_MAP:
         return _PREFIX_CATEGORY_MAP[prefix]
+
+    # Layer 2b: household activity — deterministic, ahead of the cache.
+    if _HOUSEHOLD_ACTIVITY_RE.search(relation_lower):
+        return ProfileCategory.PREFERENCES
 
     # Check persistent cache (covers Layer 3/4/5 results from prior runs)
     cached = _category_cache.get(relation_lower)

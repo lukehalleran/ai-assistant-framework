@@ -137,12 +137,22 @@ def test_build_prompt_empty_list(llm_extractor):
     assert "JSON" in prompt
 
 
-def test_build_prompt_strips_role_prefixes(llm_extractor):
-    """Test _build_prompt strips role prefixes."""
-    messages = ["user: Hello", "assistant: Hi", "User: How are you?"]
+def test_build_prompt_normalizes_user_role_and_drops_assistant(llm_extractor):
+    """2026-09-02: user entries are normalized to 'User: …'; assistant-prefixed
+    strings are NOT extraction input at all."""
+    messages = ["user: Hello", "assistant: Hi there friend", "User: How are you?"]
     prompt = llm_extractor._build_prompt(messages)
-    assert "user:" not in prompt.lower() or prompt.lower().count("user:") <= 1
+    assert "- User: Hello" in prompt
+    assert "- User: How are you?" in prompt
     assert "assistant:" not in prompt.lower()
+    assert "Hi there friend" not in prompt
+
+
+def test_build_prompt_excludes_daemon_responses_from_pairs(llm_extractor):
+    pairs = [{"query": "I like Python", "response": "Great, Python is a fine language RESPONSE_MARKER"}]
+    prompt = llm_extractor._build_prompt(pairs)
+    assert "I like Python" in prompt
+    assert "RESPONSE_MARKER" not in prompt
 
 
 def test_build_prompt_enforces_char_budget(model_manager):
@@ -265,7 +275,7 @@ async def test_extract_triples_with_junk_around_json(llm_extractor, monkeypatch)
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_junk)
 
-    result = await llm_extractor.extract_triples(["Test"])
+    result = await llm_extractor.extract_triples(["I know Python"])
     assert len(result) == 1
     assert result[0]["relation"] == "knows"
 
@@ -282,7 +292,7 @@ async def test_extract_triples_deduplicates(llm_extractor, monkeypatch):
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_duplicates)
 
-    result = await llm_extractor.extract_triples(["Test"])
+    result = await llm_extractor.extract_triples(["I like Python and I know Java"])
     assert len(result) == 2  # Duplicates removed
 
 
@@ -293,15 +303,17 @@ async def test_extract_triples_max_triples_limit(model_manager, monkeypatch):
 
     async def mock_generate_many(*args, **kwargs):
         return '''[
-            {"subject": "A", "relation": "r1", "object": "X"},
-            {"subject": "B", "relation": "r2", "object": "Y"},
-            {"subject": "C", "relation": "r3", "object": "Z"},
-            {"subject": "D", "relation": "r4", "object": "W"}
+            {"subject": "User", "relation": "likes", "object": "Python"},
+            {"subject": "User", "relation": "knows", "object": "Java"},
+            {"subject": "User", "relation": "uses", "object": "Linux"},
+            {"subject": "User", "relation": "plays", "object": "chess"}
         ]'''
 
     monkeypatch.setattr(extractor.mm, "generate_once", mock_generate_many)
 
-    result = await extractor.extract_triples(["Test"])
+    result = await extractor.extract_triples(
+        ["I like Python, I know Java, I use Linux, and I play chess"]
+    )
     assert len(result) == 2  # Limited to max_triples
 
 
@@ -319,7 +331,7 @@ async def test_extract_triples_skips_invalid_items(llm_extractor, monkeypatch):
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_mixed)
 
-    result = await llm_extractor.extract_triples(["Test"])
+    result = await llm_extractor.extract_triples(["I like Python and I know Java"])
     assert len(result) == 2  # Only valid triples
 
 

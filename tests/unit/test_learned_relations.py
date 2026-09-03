@@ -119,16 +119,17 @@ class TestPromptWiring:
 
 
 class TestCoveragePromptBuild:
-    """2026-08-05 coverage fix: newest-first budget selection + response snippets."""
+    """2026-08-05 coverage fix: newest-first budget selection. 2026-09-02:
+    Daemon responses are excluded from the prompt entirely."""
 
     def _extractor(self, max_chars=1200):
         return LLMFactExtractor(model_manager=None, max_input_chars=max_chars)
 
-    def test_responses_truncated_to_snippet(self):
+    def test_responses_excluded_from_prompt(self):
         pairs = [{"query": "short question", "response": "R" * 2000}]
         prompt = self._extractor(4000)._build_prompt(pairs)
-        assert "R" * (LLMFactExtractor.RESPONSE_SNIPPET_CHARS + 1) not in prompt
-        assert "R" * 50 in prompt  # snippet still present
+        assert "short question" in prompt
+        assert "R" * 50 not in prompt  # generated text is not extraction input
 
     def test_budget_drops_oldest_not_newest(self):
         pairs = [

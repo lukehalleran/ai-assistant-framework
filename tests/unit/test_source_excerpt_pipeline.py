@@ -1,7 +1,8 @@
 """Tests for source_excerpt pipeline: extraction, forwarding, prompt injection, and anti-confabulation.
 
 Covers:
-- LLM fact extractor attaches source_excerpt via keyword matching
+- LLM fact extractor attaches source_excerpt via memory.fact_source provenance
+  matching (2026-09-02: user-authored claim span or the proposal is dropped)
 - Shutdown processor forwards source_excerpt to ChromaDB and UserProfile
 - Per-turn storage forwards source_excerpt to ChromaDB
 - Prompt injection includes source_excerpt in [USER PROFILE] output
@@ -35,18 +36,36 @@ class TestLLMExtractorSourceExcerpt:
         assert "Seattle" in triples[0]["source_excerpt"]
         assert triples[0]["source_excerpt"] == "I moved to Seattle last year"
 
-    def test_fallback_to_last_message(self):
-        """When no keywords match, falls back to last non-empty message."""
+    def test_unsupported_proposal_is_dropped_not_backfilled(self):
+        """2026-09-02: there is NO last-message fallback — a proposal the user's
+        own words don't ground is dropped instead of being pinned to whatever
+        message came last."""
         triples = [{"relation": "mood", "object": "ok", "subject": "user"}]
         messages = ["Just checking in", "Nothing much happening"]
         LLMFactExtractor._attach_source_excerpts(triples, messages)
-        assert triples[0]["source_excerpt"] == "Nothing much happening"
+        assert triples == []
 
     def test_empty_messages(self):
-        """Empty message list doesn't crash."""
+        """No messages = no evidence: every proposal is dropped, nothing crashes."""
         triples = [{"relation": "name", "object": "Luke", "subject": "user"}]
         LLMFactExtractor._attach_source_excerpts(triples, [])
-        assert "source_excerpt" not in triples[0]
+        assert triples == []
+
+    def test_assistant_response_is_never_evidence(self):
+        triples = [{"relation": "has_cat", "object": "Clover", "subject": "user"}]
+        messages = [{"query": "hey", "response": "Clover is your mom's black cat"}]
+        LLMFactExtractor._attach_source_excerpts(triples, messages)
+        assert triples == []
+
+    def test_provenance_metadata_attached(self):
+        triples = [{"relation": "lives_in", "object": "Seattle", "subject": "user"}]
+        messages = [{"query": "I moved to Seattle last year", "timestamp": "2026-09-01T10:00:00"}]
+        LLMFactExtractor._attach_source_excerpts(triples, messages)
+        assert triples[0]["source_role"] == "user"
+        assert triples[0]["source_turn_index"] == 0
+        assert triples[0]["source_turn_id"] == "2026-09-01T10:00:00"
+        assert triples[0]["source_support"] == "exact_object"
+        assert triples[0]["source_anchor"] == "first_person"
 
     def test_truncation_at_200_chars(self):
         """Source excerpt is truncated to 200 chars."""
@@ -59,11 +78,12 @@ class TestLLMExtractorSourceExcerpt:
         """Snake_case relation names are split into keywords for matching."""
         triples = [{"relation": "language_exchange", "object": "Spanish", "subject": "user"}]
         messages = [
-            "I've been doing language exchange with people online",
+            "I've been doing Spanish language exchange with people online",
             "The movie was great",
         ]
         LLMFactExtractor._attach_source_excerpts(triples, messages)
         assert "language" in triples[0]["source_excerpt"]
+        assert "Spanish" in triples[0]["source_excerpt"]
 
     def test_multiple_triples_different_sources(self):
         """Each triple matches its own best source message."""
@@ -73,11 +93,17 @@ class TestLLMExtractorSourceExcerpt:
         ]
         messages = [
             "I live in Boston near the harbor",
-            "Biscuit is being a silly kitten today",
+            "My kitten Biscuit is being silly today",
         ]
         LLMFactExtractor._attach_source_excerpts(triples, messages)
         assert "Boston" in triples[0]["source_excerpt"]
         assert "Biscuit" in triples[1]["source_excerpt"]
+
+    def test_pet_name_without_ownership_phrase_is_dropped(self):
+        """'Biscuit is being a silly kitten' names a cat, not WHOSE cat it is."""
+        triples = [{"relation": "pet_name", "object": "Biscuit", "subject": "user"}]
+        LLMFactExtractor._attach_source_excerpts(triples, ["Biscuit is being a silly kitten today"])
+        assert triples == []
 
     def test_strips_role_prefix(self):
         """Messages with 'user:' prefix are cleaned before matching."""

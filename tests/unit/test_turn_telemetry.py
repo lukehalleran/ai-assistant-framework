@@ -45,6 +45,21 @@ class TestRecordTurn:
         rec = json.loads(open(telemetry_path).read())
         assert len(rec["query"]) == 300
 
+    def test_preserves_exact_structured_response_plan(self, telemetry_path):
+        long_but_bounded_point = "address the requested recipient " + ("x" * 500)
+        plan = {
+            "key_points": [long_but_bounded_point],
+            "tone": "direct",
+            "avoid": ["do not reverse the audience"],
+            "strategy": "speak to the named recipient",
+            "plan_sha256": "a" * 64,
+            "context_digest_sha256": "b" * 64,
+        }
+        record_turn({"query": "q" * 500, "response_plan": plan})
+        rec = json.loads(open(telemetry_path).read())
+        assert len(rec["query"]) == 300
+        assert rec["response_plan"] == plan
+
     def test_enum_values_serialized(self, telemetry_path):
         record_turn({"intent": IntentType.TECHNICAL_HELP,
                      "modes": ["memory", "web_search"]})

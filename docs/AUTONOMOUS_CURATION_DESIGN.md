@@ -157,6 +157,11 @@ flips a flag the retrieval filters already respect. Deletion stops being
 load-bearing — it becomes optional disk hygiene a human can trigger in bulk
 from the UI ("Empty quarantine: 312 docs, 2.1 MB").
 
+Owner-side by-id counterpart (2026-09-02): `scripts/quarantine_facts.py` flips the same
+`curation_quarantined` metadata on facts a provenance audit names directly (dry-run first,
+pre-image backup, `--undo` reverses; Daemon must be down). First use: the WHOOP and two
+invented `has_dog` facts from the 2026-09-02 claim-support trace.
+
 **Wave 2 — deterministic staleness (the drop-deadline class):**
 
 `TemporalStalenessCurator`: any fact/thread/note-flag whose *own content*

@@ -21,6 +21,8 @@ This module unifies the read-side classification and adds a second TTL tier:
   HEALTH_TRANSIENT   illness / recovery / sickness / symptom episode state
                      → ``PROFILE_HEALTH_TRANSIENT_TTL_HOURS`` (medium, ~days)
   STANDARD EPHEMERAL mood / activity / time-of-day state (current_*, woke_*, …)
+                     and household-chore / task-completion activity
+                     (laundry_*, cleaned_up, *_done — 2026-09-02)
                      → ``PROFILE_EPHEMERAL_TTL_HOURS`` (short, ~24h)
   (durable)          everything else → no TTL (never expires)
 
@@ -80,6 +82,7 @@ _EPHEMERAL_SUFFIXES = (
     "_experience", "_plans", "_event",
     "_appointment", "_meeting", "_reschedule",
     "_intake", "_consumption",
+    "_done",  # completed one-off activity ("laundry_done") — 2026-09-02
 )
 
 # Prefix patterns that indicate ephemeral/transient facts
@@ -96,6 +99,15 @@ _EPHEMERAL_EXACT = frozenset({
     "energy_level", "activity_preference",
     "meal", "meal_choice", "drank_alcohol",
 })
+# Household-chore / task-completion activity relations (2026-09-02): a live
+# profile carried laundry_done / cleaned_up / cleans_up as DURABLE facts (filed
+# under career by a cached embedding guess). They are one-off activity states.
+# Substring match on the relation name — no durable relation contains these.
+_EPHEMERAL_SUBSTRINGS = (
+    "laundry", "dishes", "chore", "vacuum", "groceries", "grocery",
+    "tidied", "tidying", "cleaned", "cleaning", "cleans",
+)
+
 # Note: bare "appointment" is a one-time event (sibling of "meeting" and of the
 # already-ephemeral "*_appointment" suffix / "appointment_time"). It must age out
 # like its siblings — a stored "appointment | psychiatry" otherwise surfaced as a
@@ -248,6 +260,8 @@ def _is_standard_ephemeral(rel: str) -> bool:
     if any(rel.startswith(p) for p in _EPHEMERAL_PREFIXES):
         return True
     if any(rel.endswith(s) for s in _EPHEMERAL_SUFFIXES):
+        return True
+    if any(tok in rel for tok in _EPHEMERAL_SUBSTRINGS):
         return True
     return False
 

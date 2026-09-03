@@ -284,7 +284,7 @@ User types: "How's my squat progress looking?"
     │     Token-budgeted: priority-based trimming, middle-out compression,
     │     LLM compression for oversized items
     │     High-signal sections placed at end for transformer attention
-    │     ResponsePlanner runs in parallel with retrieval (Step 4), plan injected into system prompt
+    │     ResponsePlanner runs AFTER retrieval (Step 4) on a bounded digest of the gathered context (2026-09-02; explicit direct-communication commands are deterministically locked), plan injected into system prompt
     │
     ├─ 8. Agentic Gate Check (core/agentic/gate.py)
     │     4-tier: keyword heuristics → entity match → doc/note intent → LLM fallback

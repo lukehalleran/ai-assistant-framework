@@ -9,6 +9,7 @@ by tests/conftest.py; these tests drive the two deployed consumers.
 import json
 import logging
 import os
+from pathlib import Path
 
 import pytest
 
@@ -61,3 +62,54 @@ def test_configure_logging_redirects_file_sink(tmp_path, monkeypatch):
                 h.close()
         root.handlers.clear()
         root.handlers.extend(saved)
+
+
+def _flush_file_handlers(root):
+    for handler in root.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.flush()
+
+
+def test_configure_logging_suppresses_raw_transport_debug(tmp_path, monkeypatch):
+    """A DEBUG file sink must not persist an SDK request body by default."""
+    from utils.logging_utils import configure_logging
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "logs").mkdir()
+    monkeypatch.setenv("DAEMON_MODE", "dev")
+    monkeypatch.delenv("DAEMON_ALLOW_SENSITIVE_HTTP_LOGS", raising=False)
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_levels = {
+        name: logging.getLogger(name).level
+        for name in ("openai", "httpx", "httpcore", "urllib3")
+    }
+    try:
+        configure_logging(file_path="ignored-under-test.log")
+        logging.getLogger("daemon.test").debug("ordinary-debug-marker")
+        logging.getLogger("openai._base_client").debug(
+            "Request options: {'messages': 'private-prompt-marker'}"
+        )
+        _flush_file_handlers(root)
+        content = Path("logs/test_debug.log").read_text()
+        assert "ordinary-debug-marker" in content
+        assert "private-prompt-marker" not in content
+    finally:
+        for handler in root.handlers[:]:
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+        root.handlers.clear()
+        root.handlers.extend(saved_handlers)
+        for name, level in saved_levels.items():
+            logging.getLogger(name).setLevel(level)
+
+
+def test_sensitive_transport_logging_requires_both_dev_flags(monkeypatch):
+    from utils.logging_utils import _sensitive_http_logging_enabled
+
+    monkeypatch.setenv("DAEMON_ALLOW_SENSITIVE_HTTP_LOGS", "1")
+    monkeypatch.setenv("DAEMON_MODE", "user")
+    assert _sensitive_http_logging_enabled() is False
+
+    monkeypatch.setenv("DAEMON_MODE", "dev")
+    assert _sensitive_http_logging_enabled() is True

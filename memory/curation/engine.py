@@ -40,7 +40,19 @@ from utils.safe_json import atomic_write_json
 
 logger = get_logger("curation_engine")
 
-_DEFAULT_QUEUE_PATH = os.path.join("data", "curation_queue.json")
+_PROD_QUEUE_PATH = os.path.join("data", "curation_queue.json")
+_TEST_QUEUE_PATH = os.path.join("data", "test_curation_queue.json")
+_DEFAULT_QUEUE_PATH = _PROD_QUEUE_PATH
+
+
+def resolve_queue_path(queue_path: str = "") -> str:
+    """Explicit path wins; otherwise the module default — redirected to a
+    test-only file when a DAEMON_TEST_MODE process would otherwise write the
+    owner's prod queue (same doctrine as journal.resolve_journal_path)."""
+    resolved = queue_path or _DEFAULT_QUEUE_PATH
+    if not queue_path and os.getenv("DAEMON_TEST_MODE") and resolved == _PROD_QUEUE_PATH:
+        return _TEST_QUEUE_PATH
+    return resolved
 QUEUE_SCHEMA_VERSION = 1
 
 _MODE_ORDER = [CuratorMode.OFF, CuratorMode.SHADOW, CuratorMode.QUEUE, CuratorMode.AUTO]
@@ -83,7 +95,7 @@ class CurationEngine:
     ):
         self.stores = stores
         # Late-bound default so the test sandbox can repoint the module attr.
-        self.queue_path = queue_path or _DEFAULT_QUEUE_PATH
+        self.queue_path = resolve_queue_path(queue_path)
         self.journal = journal or CurationJournal()
         self.max_mode = CuratorMode(max_mode)
         self.curator_modes = {k: CuratorMode(v) for k, v in (curator_modes or {}).items()}
