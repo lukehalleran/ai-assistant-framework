@@ -757,9 +757,15 @@ class TestDocGenPath:
         content = _final_content(results)
         assert "Document saved" in content
         assert "Quantum Computing" in content
-        # Doc-gen does its own store_interaction and emits NO debug chunk
+        # Doc-gen does its own store_interaction AND (2026-09-04 fix) now
+        # attaches a debug record to its final yield, same as every other
+        # mode — a session made entirely of doc-gen turns must still show up
+        # in the SPA Debug view / Provenance.
         orch.memory_system.store_interaction.assert_awaited_once()
-        assert _debug_record(results) is None
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "doc-generation"
+        assert debug["response"]
 
     @pytest.mark.asyncio
     async def test_doc_gen_failure_falls_through_to_agentic(self):
@@ -816,7 +822,12 @@ class TestSelfNotePath:
         assert "Self-note saved" in content
         assert "Project status" in content
         orch.memory_system.store_interaction.assert_awaited_once()
-        assert _debug_record(results) is None
+        # 2026-09-04 fix: self-note's final yield now carries a debug record
+        # too (same gap/fix as doc-generation).
+        debug = _debug_record(results)
+        assert debug is not None
+        assert debug["mode"] == "self-note"
+        assert debug["response"]
 
 
 class TestDuelFallthrough:

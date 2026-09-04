@@ -800,6 +800,11 @@ class GroundingCheckSection(BaseModel):
     check — deterministic pre-filter → LLM verifier → visible correction."""
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
+    # 2026-09-04: LOG-ONLY by default (same class as the review-gate LOG-ONLY
+    # fix, 2026-08-28) — telemetry over the window showed 42 verifier fires ->
+    # 27 flags -> 25 shipped corrections, >=9 documented false, 0 documented
+    # true. "correct" restores the pre-09-04 integrate/suffix behavior.
+    mode: Literal["log_only", "correct"] = "log_only"
     model: Optional[str] = None  # None → falls back to response_planning.review_model
     confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     timeout_s: float = Field(default=5.0, gt=0.0)

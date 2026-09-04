@@ -45,7 +45,7 @@ python main.py
 | `POST /api/uploads` | multipart ≤100MB; returns `file_ids` referenced by ChatRequest |
 | `GET /api/models` / `PUT /api/models/active` | model list + switch (persists to config.yaml) |
 | `GET /api/status`, `GET /api/graph?limit=N` | showcase-panel data (corpus stats; degree-trimmed knowledge graph) |
-| `GET /api/debug` | server-held per-turn debug records (query, full prompt, response, tokens, timings, provenance), PII/credential-redacted at the server boundary since 2026-09-02 (`utils/privacy_redaction.py`; the held record stays raw) — cleared with DELETE /api/session. The SPA shows only the ongoing UI session's turns (Gradio parity): `web/src/api/debugSession.ts` snapshots the record count at page load and Debug/Provenance hide everything before it [2026-07-15] |
+| `GET /api/debug` | server-held per-turn debug records (query, full prompt, response, tokens, timings, provenance), PII/credential-redacted at the server boundary since 2026-09-02 (`utils/privacy_redaction.py`; the held record stays raw) — cleared with DELETE /api/session. Default view (2026-09-04): the SPA shows EVERY record the server has, newest first; "only since this page load" is an explicit opt-in toggle (default off) — a page refresh used to re-capture the session baseline AFTER the turn the owner just ran and hide it even though this endpoint still returned it [toggle added 2026-09-04, baseline mechanism from 2026-07-15]. The doc-generation and self-note bypass paths (`gui/handlers.py` `_run_doc_generation`/`_save_daemon_note`) now attach a debug record to their final SSE chunk too (2026-09-04) — before that fix, `api/chat_service.py`'s `is_final = "debug" in chunk` check never saw one, so a session made only of those turns produced an empty Debug view and a 404 on Provenance |
 | `GET /api/debug/prompt?index=-1` | one turn's full prompt as redacted TXT (Content-Disposition attachment; system prompt included only in dev mode — mirrors the Gradio download button) [2026-07-14] |
 | `GET /api/provenance?index=-1` | one turn's provenance view (provenance dict + mode/model/citations/tokens, thinking display-capped at 500 chars) [2026-07-14] |
 | `GET /api/settings` / `PUT /api/settings/{streaming,web-search,duel,tokens,temperature,summary-cadence,synthesis,proposals}` | Settings tab parity: GET snapshot + per-section apply. Thin layer over `gui/settings_core.py` — THE same functions the Gradio tab calls (no forked logic); 400 = validation error, `persisted:false` = runtime applied but YAML write failed [2026-07-14; synthesis/proposals shutdown-LLM toggles + count sliders added 2026-07-15] |
@@ -87,13 +87,15 @@ Provenance = per-turn JSON (copy button) with turn selector; Settings = the
 eight Gradio sections (streaming, web search, duel, tokens, temperature,
 summary cadence, and — 2026-07-15 — the two shutdown-LLM steps: synthesis
 dreaming and code proposals, each an on/off toggle plus a per-shutdown count
-slider) applying through the shared `gui/settings_core.py`. Both Debug and
-Provenance are scoped to the ongoing UI session (2026-07-15): Gradio's
-`debug_state` is a per-page-load `gr.State`, so its debug tab never shows a
-backlog — the SPA matches by snapshotting the server record count at app mount
-(`web/src/api/debugSession.ts`; reset by Clear chat, self-heals if the count
-shrinks after a server restart; prompt-export links keep absolute indices).
-Components: `web/src/components/debug/DebugPage.tsx`,
+slider) applying through the shared `gui/settings_core.py`. Debug and
+Provenance default to showing the WHOLE session the server holds, newest
+first (2026-09-04 — see the `GET /api/debug` row above for why the prior
+"ongoing UI session only" default was wrong on a page refresh); a "since
+this page load only" `Switch` on each view opts back into the 2026-07-15
+Gradio-parity scoping (`web/src/api/debugSession.ts` still supplies the
+baseline for that toggle and for the absolute indices prompt-export links
+and the turn selector need; self-heals if the count shrinks after a server
+restart). Components: `web/src/components/debug/DebugPage.tsx`,
 `debug/ProvenancePage.tsx`, `settings/SettingsPage.tsx`.
 
 Not yet: graph view (stretch), PyInstaller packaging.

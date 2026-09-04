@@ -1,5 +1,21 @@
 # G12: Response Integrity and Atomic Revision
 
+> **Status note (2026-09-04, appended without rewriting the doc below):**
+> the suffix-based correction path this document describes as unresolved was
+> replaced by an in-prose integrator on 2026-08-29 (`integrate_grounding_correction()`
+> in `core/grounding_check.py`, called from `gui/handlers.py` — display ==
+> storage via whole-bubble replacement, not an appended suffix). Separately,
+> on 2026-09-04 the grounding verifier was
+> put into `log_only` mode by default (`GROUNDING_MODE` in
+> `config/app_config.py`, `grounding_check.mode` in `config/config.yaml`) —
+> the full prefilter+verifier+demotion pipeline still runs and records a
+> verdict to telemetry, but nothing ships to the user, pending a precision
+> measurement (>=9 documented false corrections vs 0 documented true over
+> the 07-15..09-04 window). The acceptance-test contract below (one coherent
+> answer, no visible/stored contradiction) is what "correct" mode restores
+> to once precision is re-measured; it is not itself invalidated by the
+> log-only default.
+
 This workstream is intentionally separate from tone, escalation, graph, and
 agentic-routing changes. It addresses a specific production failure: a factual
 reviewer appended a correction that contradicted an earlier sentence instead of

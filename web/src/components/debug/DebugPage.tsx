@@ -9,6 +9,7 @@ import {
   ScrollArea,
   Spoiler,
   Stack,
+  Switch,
   Text,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
@@ -19,9 +20,16 @@ import { redactForExport } from '../../utils/privacy'
 
 // Debug Trace (Gradio dev tab → SPA, 2026-07-14): per-turn Query → Prompt →
 // Response with token counts, timing waterfall, and full-prompt TXT export.
-// Like the Gradio tab, only the ongoing UI session's turns are shown — the
-// server-held backlog before this page load is hidden via debugSession's
-// baseline (absolute indices are kept for the prompt-export links).
+//
+// 2026-09-04: refreshing the page used to hide the turn the owner just ran —
+// App.tsx's debugSession baseline is re-captured on every fresh page load
+// (module state resets on reload), so a refresh's baseline included the
+// turn that just happened, and the "only turns since this page load" filter
+// hid it even though GET /api/debug still returned it. Now the default view
+// shows EVERY record the server returns (newest first); "only since this
+// page load" is an explicit opt-in toggle (default OFF). Absolute server
+// indices (needed for the prompt-export link) are tracked per record rather
+// than assumed contiguous from the baseline.
 
 function seconds(v: unknown): string {
   const n = typeof v === 'number' ? v : parseFloat(String(v))
@@ -178,10 +186,20 @@ function CopyAllButton({ value, label }: { value: string; label: string }) {
   )
 }
 
+// A record paired with its ABSOLUTE server-side index (needed for the
+// prompt-export link) — tracked explicitly rather than assumed contiguous
+// from a baseline, since the default view no longer slices from one.
+interface IndexedRecord {
+  rec: DebugRecord
+  absIndex: number
+}
+
 export default function DebugPage() {
-  const [records, setRecords] = useState<DebugRecord[]>([])
-  // Absolute index of this session's first record (for prompt-export links)
+  const [allRecords, setAllRecords] = useState<IndexedRecord[]>([])
+  // Absolute index of this session's first record — only used when the
+  // "since this page load" toggle is on.
   const [baseline, setBaseline] = useState(0)
+  const [sinceLoadOnly, setSinceLoadOnly] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const refresh = useCallback(() => {
@@ -191,7 +209,7 @@ export default function DebugPage() {
       .then(async (r) => {
         const base = await debugBaselineFor(r.count)
         setBaseline(base)
-        setRecords(r.records.slice(base))
+        setAllRecords(r.records.map((rec, absIndex) => ({ rec, absIndex })))
       })
       .catch((err) =>
         notifications.show({
@@ -205,16 +223,31 @@ export default function DebugPage() {
 
   useEffect(refresh, [refresh])
 
+  // Default: every record the server has. Opt-in toggle: only this page
+  // load's turns. Either way, shown newest first.
+  const scoped = sinceLoadOnly ? allRecords.filter((r) => r.absIndex >= baseline) : allRecords
+  const visible = scoped.slice().reverse()
+
   return (
     <ScrollArea h="calc(100dvh - 56px)" offsetScrollbars style={{ flex: 1, minWidth: 0 }}>
       <Stack gap="md" p="md" maw={960} mx="auto">
-        <Group justify="space-between">
+        <Group justify="space-between" wrap="wrap">
           <Text fw={700}>🔎 Query → Prompt → Response</Text>
           <Group gap="xs">
-            {records.length > 0 && (
+            <Switch
+              size="xs"
+              label="Since this page load only"
+              checked={sinceLoadOnly}
+              onChange={(e) => setSinceLoadOnly(e.currentTarget.checked)}
+            />
+            {visible.length > 0 && (
               <CopyAllButton
                 label="Copy session"
-                value={records.map((r, i) => recordToText(r, i)).join('\n\n\n')}
+                value={visible
+                  .slice()
+                  .reverse()
+                  .map(({ rec, absIndex }) => recordToText(rec, absIndex))
+                  .join('\n\n\n')}
               />
             )}
             <Button size="xs" variant="outline" color="gray" loading={loading} onClick={refresh}>
@@ -223,25 +256,27 @@ export default function DebugPage() {
           </Group>
         </Group>
 
-        {!records.length && (
+        {!visible.length && (
           <Text size="sm" c="dimmed">
-            No debug entries yet this session. Send a message in Chat, then refresh.
+            {sinceLoadOnly
+              ? 'No debug entries yet this session. Send a message in Chat, then refresh.'
+              : 'No debug entries yet. Send a message in Chat, then refresh.'}
           </Text>
         )}
 
         <Accordion
           multiple
           variant="separated"
-          defaultValue={records.length ? [String(records.length - 1)] : []}
+          defaultValue={visible.length ? [String(visible[0].absIndex)] : []}
         >
-          {records.map((rec, i) => {
+          {visible.map(({ rec, absIndex }) => {
             const totalWall = rec.phase_timings?.total_wall
             return (
-              <Accordion.Item key={i} value={String(i)}>
+              <Accordion.Item key={absIndex} value={String(absIndex)}>
                 <Accordion.Control>
                   <Group gap="xs" wrap="nowrap">
                     <Badge size="sm" variant="light">
-                      #{i + 1}
+                      #{absIndex + 1}
                     </Badge>
                     <Text size="sm" truncate style={{ flex: 1 }}>
                       {rec.query || '(no query)'}
@@ -264,7 +299,7 @@ export default function DebugPage() {
                       ) : (
                         <span />
                       )}
-                      <CopyAllButton label="Copy all" value={recordToText(rec, i)} />
+                      <CopyAllButton label="Copy all" value={recordToText(rec, absIndex)} />
                     </Group>
                     {rec.phase_timings && (
                       <TimingBars title="Pipeline phases" timings={rec.phase_timings} />
@@ -286,7 +321,7 @@ export default function DebugPage() {
                         size="xs"
                         variant="outline"
                         component="a"
-                        href={api.promptExportUrl(baseline + i)}
+                        href={api.promptExportUrl(absIndex)}
                       >
                         📥 Download full prompt as TXT
                       </Button>

@@ -949,6 +949,16 @@ class ContextPipeline:
         Uses LLM to expand casual queries into semantic-rich versions.
         Only rewrites if query is a question or command with sufficient tokens.
 
+        DISABLED by default: config.yaml ships `features.rewrite_timeout_s: 0`,
+        which app_config resolves to REWRITE_TIMEOUT_S=0.0 — the `_rewrite_timeout
+        == 0` guard below returns None immediately in the shipped config (see
+        DaemonOrchestrator._build_context_pipeline_config for the wiring that
+        used to silently override this with a nonzero default). Enabling it is
+        not a free win: it changes the retrieval vector fed to the memory gate
+        (the bge cosine thresholds — gate_rel_threshold_retrieval etc. — were
+        calibrated against RAW queries, not LLM-rewritten ones), and it can
+        overwrite an already-processed_query set by a file upload.
+
         Returns:
             Rewritten query or None if no rewrite needed
         """
@@ -984,7 +994,7 @@ Rewritten query (just the rewritten text, no explanation):"""
             async with asyncio.timeout(self._rewrite_timeout):
                 result = await self.model_manager.generate_once(
                     prompt=rewrite_prompt,
-                    model="gpt-4o-mini",
+                    model_name="gpt-4o-mini",
                     temperature=0.3,
                     max_tokens=150
                 )

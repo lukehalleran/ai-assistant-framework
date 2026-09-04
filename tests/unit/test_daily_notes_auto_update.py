@@ -43,6 +43,8 @@ def generator(vault_path):
     mock_corpus = MagicMock()
     mock_corpus.corpus = []
     mock_model = MagicMock()
+    mock_profile = MagicMock()
+    mock_profile.get_current_view.return_value = {}
 
     with patch("utils.daily_notes_generator.DailyNotesGenerator.__init__", lambda self, **kw: None):
         gen = DailyNotesGenerator.__new__(DailyNotesGenerator)
@@ -51,6 +53,9 @@ def generator(vault_path):
     gen._corpus_manager = mock_corpus
     gen._model_manager = mock_model
     gen._tag_generator = None
+    # Benign fake profile (2026-09-04 status-claim guard) — keeps the test
+    # hermetic instead of lazy-loading the real on-disk UserProfile.
+    gen._user_profile = mock_profile
     gen.vault_path = vault_path
     gen.output_dir = vault_path / "Daily Notes and To Do's"
     gen.output_dir.mkdir(parents=True)

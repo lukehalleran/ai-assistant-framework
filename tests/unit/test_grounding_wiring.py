@@ -76,9 +76,19 @@ def _ctx(response_tone="CrisisLevel.CONVERSATIONAL", mm=None, user_text="tell me
 @pytest.fixture
 def no_integrate(monkeypatch):
     """Suffix-contract tests: pin the integrator off so behavior is the
-    pre-2026-08-29 append path."""
+    pre-2026-08-29 append path. Also pins mode=="correct" (2026-09-04
+    default is log_only) — these tests assert a SHIPPED correction."""
     import config.app_config as ac
     monkeypatch.setattr(ac, "GROUNDING_INTEGRATE_ENABLED", False)
+    monkeypatch.setattr(ac, "GROUNDING_MODE", "correct")
+
+
+@pytest.fixture
+def correct_mode(monkeypatch):
+    """Pin mode=='correct' (2026-09-04 default is log_only) for tests that
+    assert a SHIPPED correction/integration."""
+    import config.app_config as ac
+    monkeypatch.setattr(ac, "GROUNDING_MODE", "correct")
 
 
 @pytest.mark.asyncio
@@ -185,7 +195,7 @@ async def test_missing_model_manager_fails_open():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_integration_returns_revised_text_no_suffix():
+async def test_integration_returns_revised_text_no_suffix(correct_mode):
     mm = _StubModelManager(responses=[VERDICT_JSON, REVISED_RESPONSE])
     ctx = _ctx(mm=mm)
     revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
@@ -197,7 +207,7 @@ async def test_integration_returns_revised_text_no_suffix():
 
 
 @pytest.mark.asyncio
-async def test_integration_failure_falls_back_to_suffix():
+async def test_integration_failure_falls_back_to_suffix(correct_mode):
     # Integrator returns something wildly out of length bounds → guard trips
     # → the appended-suffix fallback ships instead of a bad rewrite.
     mm = _StubModelManager(responses=[VERDICT_JSON, "Nope."])

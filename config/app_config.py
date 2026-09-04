@@ -1463,6 +1463,16 @@ RESPONSE_REVIEW_ENABLED = bool(int(os.getenv(
 # --------------------------------------------------------------------
 GROUNDING_CHECK_CFG = config.get("grounding_check", {})
 GROUNDING_CHECK_ENABLED: bool = bool(GROUNDING_CHECK_CFG.get("enabled", True))
+# 2026-09-04: LOG-ONLY by default — same class as the 2026-08-28 review-gate
+# LOG-ONLY fix. Telemetry over the window: 42 verifier fires -> 27 flags ->
+# 25 shipped corrections, >=9 documented false, 0 documented true. "correct"
+# restores the pre-09-04 integrate/suffix behavior.
+GROUNDING_MODE: str = str(GROUNDING_CHECK_CFG.get("mode", "log_only") or "log_only").strip().lower()
+if GROUNDING_MODE not in ("log_only", "correct"):
+    GROUNDING_MODE = "log_only"
+GROUNDING_MODE = os.getenv("GROUNDING_MODE", GROUNDING_MODE).strip().lower()
+if GROUNDING_MODE not in ("log_only", "correct"):
+    GROUNDING_MODE = "log_only"
 GROUNDING_CHECK_MODEL: Optional[str] = (
     GROUNDING_CHECK_CFG.get("model") or RESPONSE_REVIEW_MODEL
 )

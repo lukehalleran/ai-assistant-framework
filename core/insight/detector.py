@@ -33,6 +33,7 @@ Module Contract
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Optional
 
 from core.insight.types import InsightIntent
@@ -75,6 +76,23 @@ _THEME_SWEEP_PATTERNS = [
         re.IGNORECASE,
     ),
 ]
+
+# Explicit "evidence sweep" cue (2026-09-04). None of the shapes above match
+# "sweep" as a bare noun-phrase opener — only "sweep across/through my
+# history ... for X". Live miss: "Evidence sweep request. From 2026-07-15
+# through today, find every turn where I corrected something you said ..."
+# matched nothing. Narrow and word-bounded (the 'sweep' substring inside
+# "sweeper" must NOT match — same class as the 'solve'⊂"resolution" bug):
+# either "evidence sweep"/"memory sweep" literally, or "sweep" followed
+# within a short gap by an "our/my conversations/chats/history/memory"
+# anchor. Still requires the SAME first-person/possessive anchor
+# (gate._FIRST_PERSON_RE) detect_insight_statement already relies on, so a
+# bystander mention ("the street sweeper came by") can't qualify.
+_EVIDENCE_SWEEP_RE = re.compile(
+    r"\b(?:evidence|memory)\s+sweep\b"
+    r"|\bsweep\b[^.?!]{0,40}\b(?:our|my)\s+(?:conversations?|chats?|history|memory)\b",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Personal-theme document shapes (must beat detect_document_intent)
@@ -263,6 +281,53 @@ def parse_window_days(text: str) -> int:
     return 0
 
 
+# Explicit ISO date windows for the theme-sweep evidence path (2026-09-04).
+# Distinct from parse_window_days: that function returns a relative day
+# COUNT for the pattern engine's rolling buckets; this returns an absolute
+# (start, end) pair used to FILTER sweep evidence by content date. A live
+# "from 2026-07-15 through today" request named a seven-week window that
+# nothing enforced — the sweep returned everything and truncation collapsed
+# it to the last few days. Deliberately narrow: only explicit ISO dates
+# ("between 2026-07-15 and 2026-08-01", "from 2026-07-15 through today",
+# "since 2026-07-15"); relative phrasing stays parse_window_days's job.
+_ISO = r"\d{4}-\d{2}-\d{2}"
+_DATE_WINDOW_BETWEEN_RE = re.compile(
+    rf"\bbetween\s+({_ISO})\s+and\s+({_ISO})\b", re.IGNORECASE)
+_DATE_WINDOW_RANGE_RE = re.compile(
+    rf"\b(?:from\s+)?({_ISO})\s*(?:through|thru|to|until|-|–|—)\s*({_ISO}|today)\b",
+    re.IGNORECASE)
+_DATE_WINDOW_SINCE_RE = re.compile(rf"\bsince\s+({_ISO})\b", re.IGNORECASE)
+
+
+def parse_date_window(text: str, *, now: Optional[datetime] = None) -> Optional[tuple[str, str]]:
+    """Parse an explicit ISO date window from free text.
+
+    Handles "between A and B", "from A through B", "from A through today",
+    and "since A" (an open end defaults to today). Returns an inclusive
+    ``(start_iso, end_iso)`` date-string pair, or None when no explicit ISO
+    window is present.
+    """
+    if not text:
+        return None
+    today = (now or datetime.now()).date().isoformat()
+    m = _DATE_WINDOW_BETWEEN_RE.search(text)
+    if m:
+        start, end = m.group(1), m.group(2)
+    else:
+        m = _DATE_WINDOW_RANGE_RE.search(text)
+        if m:
+            start = m.group(1)
+            end = today if m.group(2).lower() == "today" else m.group(2)
+        else:
+            m = _DATE_WINDOW_SINCE_RE.search(text)
+            if not m:
+                return None
+            start, end = m.group(1), today
+    if start > end:
+        start, end = end, start
+    return (start, end)
+
+
 # ---------------------------------------------------------------------------
 # Explicit assessment shapes
 # ---------------------------------------------------------------------------
@@ -348,6 +413,10 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
     if not text or not text.strip():
         return None
     query = text.strip()
+    # Explicit ISO window ("from 2026-07-15 through today") for the
+    # theme-sweep evidence path only; pattern_temporal keeps its own
+    # relative-day window_days.
+    _date_window = list(parse_date_window(query) or ())
 
     # Factual/calendar/memory lookups are not longitudinal self-analysis even
     # when they contain words such as "before" or "how many times".
@@ -431,7 +500,27 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
                     theme=theme,
                     wants_document=False,
                     raw_query=query,
+                    date_window=_date_window,
                 )
+
+    # 2.5 Explicit "evidence sweep" cue — narrow addition (2026-09-04); see
+    # _EVIDENCE_SWEEP_RE. Requires the same first-person/possessive anchor
+    # detect_insight_statement already relies on (do not weaken it here).
+    m = _EVIDENCE_SWEEP_RE.search(query)
+    if m and not _trigger_is_incidental(query, m.start()):
+        try:
+            # lazy import: cycle (gate imports insight.detector at call time)
+            from core.agentic.gate import _FIRST_PERSON_RE
+        except ImportError:
+            _FIRST_PERSON_RE = None
+        if _FIRST_PERSON_RE is not None and _FIRST_PERSON_RE.search(query.lower()):
+            return InsightIntent(
+                kind="theme_sweep",
+                theme=_clean_theme(query),
+                wants_document=False,
+                raw_query=query,
+                date_window=_date_window,
+            )
 
     # 3. Personal-theme document shapes → theme_sweep + wants_document.
     m = _PERSONAL_DOC_RE.search(query)
@@ -443,6 +532,7 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
                 theme=theme,
                 wants_document=True,
                 raw_query=query,
+                date_window=_date_window,
             )
 
     return None

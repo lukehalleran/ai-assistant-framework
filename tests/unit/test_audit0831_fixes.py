@@ -375,6 +375,10 @@ class TestGroundingFixes:
         from gui import handlers
         monkeypatch.setattr(ac, "GROUNDING_CHECK_ENABLED", True, raising=False)
         monkeypatch.setattr(ac, "GROUNDING_INTEGRATE_ENABLED", False, raising=False)
+        # 2026-09-04: default is log_only (which short-circuits before this
+        # test's suffix/integration path even runs) — pin 'correct' so this
+        # stays a test of the shipped-correction telemetry contract.
+        monkeypatch.setattr(ac, "GROUNDING_MODE", "correct", raising=False)
         monkeypatch.setattr(gc, "build_grounding_correction", lambda *a, **k: "")
         ctx = _gctx(_StubMM(FIRING_VERDICT))
         revised, suffix = await handlers._apply_grounding_check(
@@ -389,6 +393,9 @@ class TestGroundingFixes:
         from gui import handlers
         monkeypatch.setattr(ac, "GROUNDING_CHECK_ENABLED", True, raising=False)
         monkeypatch.setattr(ac, "GROUNDING_INTEGRATE_ENABLED", False, raising=False)
+        # 2026-09-04: default is log_only — pin 'correct' to exercise the
+        # shipped-correction (suffix) path this test asserts.
+        monkeypatch.setattr(ac, "GROUNDING_MODE", "correct", raising=False)
         ctx = _gctx(_StubMM(FIRING_VERDICT))
         revised, suffix = await handlers._apply_grounding_check(
             ctx, self.FIRING_RESPONSE)

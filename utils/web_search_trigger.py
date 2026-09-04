@@ -78,6 +78,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
 from utils.query_checker import is_personal_doc_search
+from utils.trigger_match import is_negated as _trigger_is_negated
 import json
 
 logger = get_logger("web_search_trigger")
@@ -401,6 +402,24 @@ def _matches_phrase(text: str, phrases: Tuple[str, ...]) -> Tuple[bool, List[str
     return len(matched) > 0, matched
 
 
+def _matches_phrase_non_negated(text: str, phrases: Tuple[str, ...]) -> Tuple[bool, List[str]]:
+    """Same as _matches_phrase, but drops a phrase hit whose immediate
+    preceding context (5-token lookback) negates the request — "no need to
+    search for this" / "don't look that up" must not count as an explicit
+    search phrase (2026-09-04). Used only for EXPLICIT_SEARCH_PHRASES, whose
+    hit is a strong positive signal (+0.6 confidence) — SUPPRESSION_PATTERNS
+    stays plain substring (negating a suppression would need to mean
+    "allow search", a different and out-of-scope direction)."""
+    text_lower = _normalize(text)
+    matched = []
+    for phrase in phrases:
+        idx = text_lower.find(phrase)
+        if idx == -1 or _trigger_is_negated(text_lower, idx):
+            continue
+        matched.append(phrase)
+    return len(matched) > 0, matched
+
+
 # ========================================================================
 # Semantic similarity layer for search trigger
 # ========================================================================
@@ -575,7 +594,7 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
         )
 
     # Check explicit search phrases (strongest signal)
-    has_explicit, explicit_matches = _matches_phrase(query, EXPLICIT_SEARCH_PHRASES)
+    has_explicit, explicit_matches = _matches_phrase_non_negated(query, EXPLICIT_SEARCH_PHRASES)
     if has_explicit:
         confidence += 0.6
         all_matched_patterns.extend(explicit_matches)

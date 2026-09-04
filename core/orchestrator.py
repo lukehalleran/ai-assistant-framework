@@ -24,18 +24,24 @@ Module Contract
     _handle_command → _handle_deictic → _resolve_model_name → _build_prompt_phase →
     _maybe_document_generation → _maybe_agentic_search → _resolve_max_tokens →
     _generate_response → _postprocess_response → _store_interaction →
-    _run_post_response_detectors → _finalize_debug.
+    _run_post_response_hooks → _finalize_debug.
   - Early-exit helpers (_handle_command, _handle_deictic, _maybe_document_generation,
     _maybe_agentic_search) return (text, debug_info) or None (None = fall through).
   - The outer try/except logs, sets debug_info["error"], and re-raises.
   - run_post_response_detectors(user_input) [PUBLIC 2026-08-23]: the correction/
-    confirmation → truth-event → staleness-cascade pipeline, now also called from
-    the GUI path (handlers._write_turn_telemetry) — it was dead in production
-    while only the unused process_user_query ran it (same class as the 08-18
-    escalation bug). Also flags the cached narrative context stale
-    (utils/narrative_staleness.mark_stale) when the message carries a correction
-    signal ≥0.6, so "6 weeks off vryalr not 1."-class corrections stop
-    re-entering prompts via stale [TEMPORAL GROUNDING] until regeneration.
+    confirmation → truth-event → staleness-cascade pipeline. Also flags the cached
+    narrative context stale (utils/narrative_staleness.mark_stale) when the message
+    carries a correction signal ≥0.6, so "6 weeks off vryalr not 1."-class corrections
+    stop re-entering prompts via stale [TEMPORAL GROUNDING] until regeneration.
+  - POST_RESPONSE_HOOKS [2026-09-04]: process_user_query() (RAW mode via
+    gui/handlers._run_raw, and `python main.py cli`) and the GUI dispatcher
+    (gui/handlers._write_turn_telemetry, enhanced/agentic/duel/doc-gen/self-note/...)
+    used to run separate, hand-maintained per-turn hook sequences that silently
+    drifted — the class behind the 08-18 escalation-tracker and 08-23
+    correction-pipeline dead-wiring bugs. Both paths now iterate the same
+    module-level POST_RESPONSE_HOOKS registry (run_post_response_hooks());
+    process_user_query reaches it via _run_post_response_hooks(). See
+    tests/unit/test_request_path_parity.py.
 - System prompt flow:
   - Composed from file-based personality (config/prompts/default_personality.txt or custom_personality.txt) + immutable operating principles (config/prompts/operating_principles.txt) via load_personality_text() + load_operating_principles(). Falls back to load_system_prompt() if files fail.
   - Conditional section instructions (2026-08-02): build_full_prompt() appends core/prompt/section_instructions.conditional_instruction_tail(prompt_ctx) to the system prompt AFTER the cache breakpoint — the [USER'S PERSONAL NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING] guidance blocks (moved out of operating_principles.txt) are injected only when their section exists in the gathered context (~1.2K tok saved on turns without those sections).
@@ -62,7 +68,7 @@ import re
 import processing.gate_system as gate_system
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List, Union
+from typing import Dict, Any, Optional, Tuple, List, Union, Callable
 from dataclasses import dataclass, field
 from core.response_parser import ResponseParser
 from utils.logging_utils import get_logger
@@ -262,12 +268,167 @@ class _QueryFlow:
     citations: List[Any] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Shared post-response hook registry (2026-09-04)
+#
+# Dead-wiring class closed by this batch: three real production bugs (the
+# 08-18 EscalationTracker/SafetyCanary gap, the 08-23 correction-pipeline
+# gap, and this one) all trace to the same root cause — process_user_query()
+# and the GUI dispatcher (gui/handlers.py) grew separate, hand-maintained
+# per-turn hook sequences that silently drifted apart. process_user_query()
+# is NOT dead code: gui/handlers._run_raw() (RAW mode) and `python main.py
+# cli` (main.py:test_orchestrator) are its production callers. Both paths
+# now execute the SAME hook list below, so a new hook added here reaches
+# every caller automatically.
+#
+# The escalation tracker's tone-accounting update is deliberately NOT one
+# of these hooks — it must run BEFORE generation (it needs the turn's tone,
+# not its response), and already has a single shared call site inside
+# _update_safety_trackers()
+# (invoked from build_full_prompt, used by both prepare_prompt and
+# _build_prompt_phase) — pinned by
+# tests/unit/test_escalation_gui_wiring.py::TestNoDoubleCount. This registry
+# covers the hooks that need the FINAL response text and therefore run
+# after generation + storage.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PostResponseHookContext:
+    """Per-turn state passed to every POST_RESPONSE_HOOKS entry.
+
+    Built once by whichever code path just finished generating (+ storing)
+    a response: gui/handlers._write_turn_telemetry() (enhanced/agentic/
+    duel/doc-gen/self-note/insight-assembly/... dispatcher modes) or
+    DaemonOrchestrator._run_post_response_hooks() (process_user_query's
+    RAW/enhanced flow). Field names mirror what each caller already has on
+    hand so both can build one without extra plumbing.
+    """
+    orchestrator: Any
+    user_input: str
+    response_text: Optional[str] = None
+    mode: str = "enhanced"
+    session_id: Optional[str] = None
+    model_name: Optional[str] = None
+    response_len: int = 0
+    telemetry: Dict[str, Any] = field(default_factory=dict)
+    t_prepare_elapsed: float = 0.0
+
+
+def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
+    """Append the per-turn telemetry JSONL record (utils/turn_telemetry.py)."""
+    from utils.turn_telemetry import record_turn
+    rec = dict(getattr(ctx.orchestrator, "_last_turn_signals", {}) or {})
+    rec.update(ctx.telemetry or {})
+    rec.update({
+        "query": (ctx.user_input or "")[:300],
+        "mode": ctx.mode,
+        "session_id": ctx.session_id,
+        "model": ctx.model_name,
+        "response_len": int(ctx.response_len or 0),
+        "prepare_elapsed_s": round(ctx.t_prepare_elapsed or 0.0, 3),
+    })
+    record_turn(rec)
+
+
+def _hook_search_worthy_teach(ctx: PostResponseHookContext) -> None:
+    """Outcome-confirmed web-trigger teaching: a response that cited
+    [WEB_ markers teaches the adaptive "search_worthy" anchor (2026-08-02).
+    Elevated-tone turns never teach (self-reinforcement guard)."""
+    if not (ctx.response_text and "[WEB_" in ctx.response_text and ctx.user_input):
+        return
+    from core.agentic.gate import _tone_is_elevated
+    rec_tone = None
+    try:
+        rec_tone = (getattr(ctx.orchestrator, "_last_turn_signals", {}) or {}).get("tone_level")
+    except Exception:
+        pass
+    if _tone_is_elevated(rec_tone):
+        return
+    from utils.adaptive_exemplars import get_store
+    get_store().record("web_search", "search_worthy", ctx.user_input, "citation")
+
+
+def _hook_escalation_record_response(ctx: PostResponseHookContext) -> None:
+    """Feed the final response to the escalation tracker so next turn's
+    engagement detection (ignored-suggestion -> QUIET_COMPANIONSHIP) has
+    something to compare against."""
+    tracker = getattr(ctx.orchestrator, "escalation_tracker", None)
+    if tracker and ctx.response_text:
+        tracker.record_response(ctx.response_text)
+
+
+def _hook_post_response_detectors(ctx: PostResponseHookContext) -> None:
+    """Correction/confirmation -> truth events -> staleness cascade.
+
+    Delegates to DaemonOrchestrator._run_post_response_detectors (a thin
+    flow-shaped wrapper around the public run_post_response_detectors())
+    rather than calling the public method a second time here, so that
+    method keeps exactly ONE call site (pinned by
+    tests/unit/test_correction_gui_wiring.py).
+    """
+    orch = ctx.orchestrator
+    if orch is not None and ctx.user_input:
+        orch._run_post_response_detectors(ctx)
+
+
+POST_RESPONSE_HOOKS: List[Tuple[str, Callable[[PostResponseHookContext], None]]] = [
+    ("turn_telemetry", _hook_turn_telemetry),
+    ("search_worthy_teach", _hook_search_worthy_teach),
+    ("escalation_record_response", _hook_escalation_record_response),
+    ("post_response_detectors", _hook_post_response_detectors),
+]
+
+
+def run_post_response_hooks(ctx: PostResponseHookContext) -> None:
+    """Execute every POST_RESPONSE_HOOKS entry for one completed turn.
+
+    Single execution point shared by gui/handlers._write_turn_telemetry()
+    and DaemonOrchestrator._run_post_response_hooks(). Each hook is
+    isolated: an exception in one is logged at DEBUG and never blocks the
+    rest, matching the "telemetry/safety hooks must never break a turn"
+    invariant every hook already followed individually before this
+    registry existed.
+    """
+    for name, fn in POST_RESPONSE_HOOKS:
+        try:
+            fn(ctx)
+        except Exception as exc:  # noqa: BLE001 - hooks must never break a turn
+            logger.debug(f"[PostResponseHooks] {name} skipped: {exc}")
+
+
 class DaemonOrchestrator:
     """
     Single orchestrator (prepare + generate split).
     - prepare_prompt: topic update, file processing, optional rewrite, prompt build
     - process_user_query: optional personality switch, commands, deictic check, generate, store
     """
+
+    def _build_context_pipeline_config(self) -> Dict[str, Any]:
+        """Build the config dict handed to ContextPipeline.
+
+        Factored out of __init__ (2026-09-04) so the wiring is testable
+        without constructing the full heavy-dep DaemonOrchestrator —
+        tests/unit/test_query_rewrite_wiring.py drives this directly.
+
+        REWRITE_TIMEOUT_S fallback fix: this used to hardcode a literal 2.0
+        default. config.yaml ships `features.rewrite_timeout_s: 0` (the
+        rewrite feature is DISABLED) and app_config.REWRITE_TIMEOUT_S
+        resolves that to 0.0 — but because the literal 2.0 was used whenever
+        self.config had no explicit "REWRITE_TIMEOUT_S" key (the normal
+        case; nothing ever sets that root key), ContextPipeline always got a
+        nonzero timeout and ran the rewrite LLM call anyway. The fallback is
+        now the live app_config value, so an absent override actually
+        reflects the committed/local config; an explicit
+        self.config["REWRITE_TIMEOUT_S"] still overrides it.
+        """
+        # lazy import: live-config read (tests monkeypatch app_config attrs)
+        from config.app_config import REWRITE_TIMEOUT_S as _default_rewrite_timeout
+        return {
+            "USE_STM_PASS": self.config.get("features", {}).get("use_stm_pass", True) if self.config else True,
+            "STM_MIN_CONVERSATION_DEPTH": getattr(self, 'stm_min_depth', 3),
+            "enable_query_rewrite": self.config.get("features", {}).get("enable_query_rewrite", True) if self.config else True,
+            "REWRITE_TIMEOUT_S": self.config.get("REWRITE_TIMEOUT_S", _default_rewrite_timeout) if self.config else _default_rewrite_timeout,
+        }
 
     def __init__(
         self,
@@ -367,12 +528,7 @@ class DaemonOrchestrator:
                 stm_analyzer=self.stm_analyzer,
                 user_profile=self.user_profile,
                 memory_system=memory_system,
-                config={
-                    "USE_STM_PASS": self.config.get("features", {}).get("use_stm_pass", True) if self.config else True,
-                    "STM_MIN_CONVERSATION_DEPTH": getattr(self, 'stm_min_depth', 3),
-                    "enable_query_rewrite": self.config.get("features", {}).get("enable_query_rewrite", True) if self.config else True,
-                    "REWRITE_TIMEOUT_S": self.config.get("REWRITE_TIMEOUT_S", 2.0) if self.config else 2.0,
-                }
+                config=self._build_context_pipeline_config(),
             )
             self.logger.info("[Orchestrator] ContextPipeline initialized")
         except Exception as e:
@@ -1669,7 +1825,11 @@ class DaemonOrchestrator:
             await self._generate_response(flow)
             self._postprocess_response(flow)
             await self._store_interaction(flow)
-            self._run_post_response_detectors(flow)
+            # Runs the shared POST_RESPONSE_HOOKS registry, which includes
+            # the "post_response_detectors" hook -> self._run_post_response_detectors(ctx)
+            # -> self.run_post_response_detectors(...) (single call site, see
+            # tests/unit/test_correction_gui_wiring.py).
+            self._run_post_response_hooks(flow)
             self._finalize_debug(flow)
 
             return flow.answer_for_storage, debug_info
@@ -2154,9 +2314,10 @@ class DaemonOrchestrator:
             if has_web_sources:
                 debug_info['web_source_map'] = self._web_source_map
 
-        # Record response in escalation tracker for engagement detection
-        if self.escalation_tracker:
-            self.escalation_tracker.record_response(answer_for_storage)
+        # Escalation-tracker record_response() moved to the shared
+        # POST_RESPONSE_HOOKS registry (_run_post_response_hooks, called
+        # later in the pipeline) — calling it here too would double-record
+        # every turn (2026-09-04 dead-wiring consolidation).
         flow.answer_for_storage = answer_for_storage
         flow.citations = citations
 
@@ -2181,6 +2342,28 @@ class DaemonOrchestrator:
         if self.logger:
             self.logger.debug("[orchestrator] Persisted exchange; considering consolidation")
         flow.t_store_elapsed = _t_store_elapsed
+
+    def _run_post_response_hooks(self, flow):
+        """Execute the shared POST_RESPONSE_HOOKS registry for this turn
+        (2026-09-04). This is process_user_query's side of the same
+        registry gui/handlers._write_turn_telemetry() drives for the GUI
+        dispatcher modes — the two used to run hand-maintained, drifting
+        copies of this sequence (turn telemetry write, adaptive
+        "search_worthy" teaching, escalation_tracker.record_response,
+        run_post_response_detectors); this is now the single source.
+        """
+        ctx = PostResponseHookContext(
+            orchestrator=self,
+            user_input=flow.user_input,
+            response_text=flow.answer_for_storage or None,
+            mode=(flow.debug_info or {}).get("mode", "enhanced"),
+            session_id=getattr(self.memory_system, "session_id", None) if self.memory_system else None,
+            model_name=flow.model_name,
+            response_len=len(flow.answer_for_storage or ""),
+            telemetry={},
+            t_prepare_elapsed=(flow.t_ctx_elapsed or 0.0) + (flow.t_build_elapsed or 0.0),
+        )
+        run_post_response_hooks(ctx)
 
     def _run_post_response_detectors(self, flow):
         """Truth/correction/confirmation detection, staleness cascade, entity + attribution detection."""

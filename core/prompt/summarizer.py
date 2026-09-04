@@ -33,6 +33,7 @@ import inspect
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from utils.logging_utils import get_logger
+from utils.ordered_slice import head as _ordered_head
 
 logger = get_logger("prompt_summarizer")
 
@@ -165,9 +166,12 @@ class LLMSummarizer:
 
             generate_async = getattr(self.model_manager, "generate_async", None)
             if callable(generate_async):
+                # generate_async(self, prompt, raw=False, images=None, **kwargs)
+                # has no `model` param — it always uses the manager's active
+                # model and forwards **kwargs into the local-model generate()
+                # path, where an unexpected `model=` kwarg used to raise.
                 return await _collect(generate_async(
                     prompt,
-                    model=model_name,
                     max_tokens=max_tokens,
                     temperature=0.3,
                 ))
@@ -205,8 +209,19 @@ class LLMSummarizer:
         try:
             model_name = self._ensure_summaries_model()
 
-            # Limit conversations to avoid token overflow
-            limited_convs = conversations[-max_conversations:] if len(conversations) > max_conversations else conversations
+            # Limit conversations to avoid token overflow — keep the NEWEST
+            # max_conversations. conversations arrives newest-first (see
+            # memory.corpus_manager._get_episodic_sorted, the source behind
+            # gatherer_memory._get_recent_conversations), so a bare
+            # conversations[-max_conversations:] took the OLDEST slice
+            # whenever more than max_conversations were passed in — the
+            # same newest-first-then-truncate class utils.ordered_slice.head
+            # (single source of truth for "sort by timestamp before
+            # slicing") exists to close (2026-09-04).
+            limited_convs = _ordered_head(
+                conversations, max_conversations,
+                ts_key=lambda c: c.get("timestamp") if isinstance(c, dict) else None,
+            ) if len(conversations) > max_conversations else conversations
 
             # Build conversation text
             conv_parts = []
@@ -309,9 +324,13 @@ Summary:"""
         # Count conversations and extract key topics
         conv_count = len(conversations)
 
-        # Extract some keywords from queries
+        # Extract some keywords from queries — the newest 5 (conversations
+        # arrives newest-first; see the _llm_summarize_recent note above).
         keywords = set()
-        for conv in conversations[-5:]:  # Look at last 5 for keywords
+        for conv in _ordered_head(
+            conversations, 5,
+            ts_key=lambda c: c.get("timestamp") if isinstance(c, dict) else None,
+        ):
             query = conv.get("query", "").strip().lower()
             if query:
                 # Simple keyword extraction

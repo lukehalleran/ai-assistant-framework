@@ -39,6 +39,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
+from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
 from pathlib import Path
 import re
 
@@ -124,14 +125,18 @@ class MemoryConsolidator:
         consolidation_threshold: int | None = None,
         lookback: int | None = None,
         min_gap_minutes: int | None = None,
+        user_profile=None,
         **_unused,  # tolerate extra kwargs from older callers
     ):
         """
         consolidation_threshold: how many exchanges between stored summaries (default from env SUMMARY_EVERY_N)
         lookback:                how many recent exchanges to compress (default from env SUMMARY_LOOKBACK)
         min_gap_minutes:         minimum minutes between stored summaries (default from env SUMMARY_MIN_GAP_MIN)
+        user_profile:            UserProfile instance for the status-claim conflict guard
+                                  (2026-09-04); lazy-loaded on first use if not supplied.
         """
         self.model_manager = model_manager
+        self._user_profile = user_profile
 
         # Prefer explicit args from caller; fall back to env defaults
         self.consolidation_threshold = consolidation_threshold or SUMMARY_EVERY_N
@@ -142,6 +147,42 @@ class MemoryConsolidator:
             "[Consolidator] init threshold=%s lookback=%s min_gap_min=%s",
             self.consolidation_threshold, self.lookback, self.min_gap_minutes
         )
+
+    @property
+    def user_profile(self):
+        """Lazy-load UserProfile (read-only use here — never saved by this
+        class). Failure is non-critical: callers fall back to an empty
+        status-facts list, which disables the status-claim guard for that
+        call but never blocks narrative generation."""
+        if self._user_profile is None:
+            try:
+                from memory.user_profile import UserProfile  # lazy import: startup cost
+                self._user_profile = UserProfile()
+            except Exception as e:
+                logger.debug(f"[Consolidator] UserProfile unavailable for status-claim guard: {e}")
+                return None
+        return self._user_profile
+
+    def _current_status_facts(self) -> List[Dict[str, Any]]:
+        """Collect CURRENT enrollment/employment/residence facts for the
+        status-claim conflict guard (utils/status_claims.py)."""
+        from utils.status_claims import STATUS_RELATIONS
+
+        profile = self.user_profile
+        if profile is None:
+            return []
+        try:
+            current = profile.get_current_view()
+        except Exception as e:
+            logger.debug(f"[Consolidator] Could not read profile facts for status guard: {e}")
+            return []
+
+        facts: List[Dict[str, Any]] = []
+        for cat_facts in (current or {}).values():
+            for f in cat_facts or []:
+                if isinstance(f, dict) and f.get("relation") in STATUS_RELATIONS:
+                    facts.append(f)
+        return facts
 
     # ------------------------------------------------------------------
     # Core consolidation (single source of truth for the extractive path)
@@ -286,6 +327,8 @@ DAILY NOTES (immediate context — last few days, most recent first):
 CORPUS SUMMARIES (fallback, if available):
 {corpus_summaries}
 
+{authoritative_status_facts}
+
 Synthesize a 250-300 word "Current Life State" narrative covering:
 1. CURRENT CHAPTER: What life phase is the user in? Use the monthly summary for arc. (1-2 sentences)
 2. ACTIVE THREADS: What's actively in progress this week? Use weekly summaries. (bullet list, 3-5 items)
@@ -309,6 +352,9 @@ TEMPORAL ACCURACY RULES — these are critical:
   harmonize them.
 - A duration appearing in a quoted message, draft, pasted email, or conditional
   scenario is not independent confirmation of the user's current state.
+- If an AUTHORITATIVE CURRENT FACTS block is present above, never write a
+  sentence that contradicts it (e.g. do not claim someone withdrew from
+  school/a program while a current enrollment fact is listed there).
 
 Write in third person ("The user is..."). Be specific and grounded in the data.
 Prioritize recent daily notes for current state, weekly for active threads, monthly for trajectory.
@@ -600,6 +646,12 @@ Do NOT make up information not present in the summaries."""
                 logger.debug("[NarrativeSynthesis] No content available for synthesis")
                 return ""
 
+            # Status-claim conflict guard (2026-09-04): current enrollment/
+            # employment/residence facts, injected as an authoritative block
+            # AND used as a post-generation contradiction check below.
+            status_facts = self._current_status_facts()
+            status_block = authoritative_facts_block(status_facts)
+
             # Build prompt from template
             from datetime import date as _date
             prompt = self.NARRATIVE_SYNTHESIS_PROMPT.format(
@@ -607,7 +659,8 @@ Do NOT make up information not present in the summaries."""
                 monthly_summaries=monthly_text,
                 weekly_summaries=weekly_text,
                 daily_notes=daily_text,
-                corpus_summaries=corpus_text
+                corpus_summaries=corpus_text,
+                authoritative_status_facts=status_block,
             )
 
             # Generate via LLM
@@ -627,6 +680,13 @@ Do NOT make up information not present in the summaries."""
             if not narrative:
                 logger.debug("[NarrativeSynthesis] LLM returned empty result")
                 return ""
+
+            narrative, status_conflicts = remove_conflicting_claims(narrative, status_facts)
+            for c in status_conflicts:
+                logger.warning(
+                    f'[NarrativeSynthesis] Removed status-claim conflict ({c.family}): '
+                    f'"{c.claim_text}" contradicts current {c.relation}={c.value}'
+                )
 
             sources = []
             if obsidian_monthlies:

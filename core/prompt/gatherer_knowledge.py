@@ -59,6 +59,7 @@ from datetime import datetime, timedelta
 
 from core.wiki_util import get_wiki_snippet, clean_query, looks_like_disambiguation_text
 from knowledge.semantic_search import semantic_search_with_neighbors
+from utils.trigger_match import is_negated as _trigger_is_negated
 from .formatter import _parse_bool
 import time as _t
 
@@ -271,6 +272,32 @@ _VISUAL_REQUEST_VERBS = frozenset({
 })
 _VISUAL_SENTENCE_MAX_WORDS = 15
 
+# Whole-word regex forms of the noun/weak-verb vocabularies above, used only
+# to locate a MATCH POSITION for the negation check below (2026-09-04:
+# "don't show me the photos" was still treated as visual intent — the
+# token-set membership test had no position to check for a preceding
+# negation cue). Kept as \b...\b (both boundaries) to preserve the exact
+# token-equality semantics of the `words & _VISUAL_NOUN_WORDS` checks above
+# — a left-boundary-only match (as core.agentic.gate's keyword matcher uses)
+# would let bare 'pic' match inside "picture"/"picnic".
+_VISUAL_NOUN_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(_VISUAL_NOUN_WORDS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+_VISUAL_WEAK_VERB_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(_VISUAL_WEAK_VERBS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _non_negated_pattern_hit(text: str, pattern: "re.Pattern") -> bool:
+    """True if `pattern` matches `text` at a position not preceded (within 5
+    tokens) by a negation cue."""
+    for m in pattern.finditer(text):
+        if not _trigger_is_negated(text, m.start()):
+            return True
+    return False
+
 
 def _long_message_visual_request(query: str) -> bool:
     """In a long message, visual intent must be its own short request line.
@@ -278,7 +305,10 @@ def _long_message_visual_request(query: str) -> bool:
     Splits on sentence/line boundaries and passes only when some short
     sentence contains a visual noun AND either a request verb or a question
     mark — "Show me the screenshot" appended after a paste qualifies;
-    "Screenshot saved." (narration) does not.
+    "Screenshot saved." (narration) does not. Negation-aware (2026-09-04):
+    "don't show me the screenshot" within the same sentence does not qualify
+    — is_negated() is checked against the SENTENCE text, so a cue anywhere
+    earlier in that sentence is caught without needing absolute offsets.
     """
     for sent in re.split(r"[.!?\n]+", query):
         stoks = [re.sub(r"[^\w]", "", w.lower()) for w in sent.split()]
@@ -288,7 +318,8 @@ def _long_message_visual_request(query: str) -> bool:
         if sset & _VISUAL_NOUN_WORDS and (
             sset & _VISUAL_REQUEST_VERBS or "?" in sent
         ):
-            return True
+            if _non_negated_pattern_hit(sent, _VISUAL_NOUN_RE):
+                return True
     return False
 
 
@@ -304,16 +335,24 @@ def _query_wants_visual(query: str, intent_type: Optional[str]) -> bool:
     an email signature, or "Screenshot saved." narration inside pasted
     content) from pulling a photo into an unrelated message. Under-fires
     by design.
+
+    Negation-aware (2026-09-04): "don't show me the photos" must not count —
+    a negation cue within 5 tokens before the noun/verb match stands the
+    corresponding arm down.
     """
     tokens = [re.sub(r"[^\w]", "", w.lower()) for w in query.split()]
     words = set(tokens)
     n = len(tokens)
-    if words & _VISUAL_NOUN_WORDS:
+    if words & _VISUAL_NOUN_WORDS and _non_negated_pattern_hit(query, _VISUAL_NOUN_RE):
         if n <= _VISUAL_INTENT_MAX_WORDS:
             return True
         if _long_message_visual_request(query):
             return True
-    if words & _VISUAL_WEAK_VERBS and n <= _VISUAL_WEAK_VERB_MAX_WORDS:
+    if (
+        words & _VISUAL_WEAK_VERBS
+        and n <= _VISUAL_WEAK_VERB_MAX_WORDS
+        and _non_negated_pattern_hit(query, _VISUAL_WEAK_VERB_RE)
+    ):
         return True
     return (
         (intent_type or "") in _VISUAL_OK_INTENTS

@@ -1,5 +1,18 @@
 # Fable Midflight Handoff
 
+> **Status note (2026-09-04, appended without rewriting the doc below):**
+> the two open items this document flags have since shipped. `relation_species_conflict()`
+> was wired into graph ingestion on 2026-08-28 (`memory/memory_storage.py::_ingest_fact_to_graph`
+> calls it before adding an edge; `memory/graph_memory.py` also checks it on
+> strengthen) — see `tests/unit/test_graph_species_guard.py` and the
+> 2026-09-03 cat-session batch (CLAUDE.md) that added the read-side
+> `edge_is_suppressed()` companion. The suffix-based grounding correction
+> this document calls "a separate unresolved problem" was replaced by an
+> in-prose integrator on 2026-08-29 (see the same note added to
+> `docs/generalization/12-response-integrity.md`); as of 2026-09-04 the
+> grounding verifier additionally defaults to `log_only` mode pending a
+> precision measurement.
+
 Prepared for the next session after the 2026-08-28 credit/session limit. The
 worktree is shared. Do not reset, clean, or overwrite existing changes.
 

@@ -206,6 +206,10 @@ response_planning:
   review_timeout: 5.0
 grounding_check:
   enabled: true
+  mode: log_only          # log_only = run the full pipeline and record the verdict to telemetry but
+                           # never touch the shown/stored response; correct = ship the integrated/suffix
+                           # correction as before. LOG-ONLY default (2026-09-04): 42 fires -> 27 flags
+                           # -> 25 shipped corrections, >=9 documented false, 0 documented true
   model: null            # null -> falls back to response_planning.review_model
   confidence_threshold: 0.85
   timeout_s: 5.0

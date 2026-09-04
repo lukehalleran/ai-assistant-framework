@@ -104,6 +104,7 @@ from .base import _FallbackMemoryCoordinator
 from .hygiene import ContentHygiene
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
 import hashlib as _hashlib
+from utils.ordered_slice import newest_first as _ordered_newest_first
 
 logger = get_logger("prompt_builder")
 
@@ -359,24 +360,23 @@ def select_floor_topup(stored, have_contents, needed):
     but get_summaries/get_reflections return newest-first, so the floor
     restored the OLDEST items in the fetch buffer (live 2026-08-27:
     [RECENT SUMMARIES] rendered July 26/28 while Aug 22-26 summaries sat
-    unread; same class as the agentic digest-order inversion). Sort by
-    timestamp explicitly so either input order works.
+    unread; same class as the agentic digest-order inversion). Sorts by
+    timestamp explicitly (utils.ordered_slice.newest_first — single source
+    of truth for "sort by timestamp before slicing", 2026-09-04) so either
+    input order works.
     """
     if needed <= 0:
         return []
 
     def _ts_key(item):
-        ts = item.get("timestamp") if isinstance(item, dict) else None
-        if hasattr(ts, "isoformat"):
-            return ts.isoformat()
-        return str(ts or "")
+        return item.get("timestamp") if isinstance(item, dict) else None
 
     have = set(have_contents or ())
     add = []
-    for s in sorted(
-        (s for s in (stored or []) if isinstance(s, dict)),
-        key=_ts_key, reverse=True,
-    ):
+    ordered = _ordered_newest_first(
+        [s for s in (stored or []) if isinstance(s, dict)], _ts_key,
+    )
+    for s in ordered:
         content = (s.get("content") or "").strip()
         if content and content not in have:
             add.append(s)

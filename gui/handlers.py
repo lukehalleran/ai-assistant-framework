@@ -73,14 +73,19 @@ Module Contract
   uncertainty/review outcomes (_run_enhanced) + grounding-check outcomes (2026-08-28:
   grounding_prefilter_fired / grounding_verifier_fired / grounding_flagged /
   grounding_confidence / grounding_corrected, set by _apply_grounding_check on the
-  enhanced AND agentic paths); _write_turn_telemetry() merges those with
+  enhanced AND agentic paths; 2026-09-04: grounding_mode ("log_only"/"correct") +
+  grounding_verdict (redacted correction text, <=300 chars) so precision can be
+  measured later — LOG-ONLY is the default, same class as the 08-28 review-gate
+  LOG-ONLY fix; see GROUNDING_MODE in config.app_config); _write_turn_telemetry() merges those with
   orchestrator._last_turn_signals (intent/tone/plan, captured in build_full_prompt) and writes
   at the duel/agentic/enhanced storage-dispatch sites plus the doc-generation and
   self-note bypass paths (2026-07-05 — those turns previously vanished from the record). Never raises.
-  Also hosts the post-response truth pipeline hook (2026-08-23):
-  orchestrator.run_post_response_detectors(ctx.user_text) — corrections/confirmations →
-  truth events + staleness cascade + narrative-stale flag; dead on the GUI path before
-  (only the unused process_user_query ran it — same class as the escalation bug above).
+  Also hosts the post-response truth pipeline hook (2026-08-23; consolidated 2026-09-04
+  into core.orchestrator.run_post_response_hooks()'s "post_response_detectors" entry,
+  which calls orchestrator.run_post_response_detectors — corrections/confirmations →
+  truth events + staleness cascade + narrative-stale flag; process_user_query drives
+  the SAME registry via its own _run_post_response_hooks(), closing the class of
+  GUI/process_user_query dead-wiring drift the escalation bug above also belonged to).
 - Extracted helpers:
   - _safe_count_tokens(), _safe_extract_citations(), _build_debug_record(), _build_provenance(),
     _attach_agentic_provenance(), _sanitize_response_text(), _strip_echoed_headers(),
@@ -669,6 +674,7 @@ _API_ERROR_DISPLAY = {
     "[SERVER ERROR]": "🔥 **Server Error**\n\n{msg}",
     "[API Error]": "⚠️ **API Error**\n\n{msg}",
     "[API unavailable]": "⚠️ **API Unavailable**\n\n{msg}",
+    "[OpenAI unavailable": "⚠️ **Provider Unavailable**\n\n{msg}\n\nThe model provider is down; retry in a moment or switch models in the dropdown above.",
     "[Streaming Error": "🔥 **Stream Interrupted**\n\n{msg}\n\nThe provider dropped the connection mid-response — retrying your message usually works.",
     "[Error: Model returned empty response": "⚠️ **Empty Response**\n\nThe model returned no usable answer after retrying without reasoning. Retry your message or switch models.",
 }
@@ -683,9 +689,11 @@ def _friendly_api_error(text):
     for prefix, template in _API_ERROR_DISPLAY.items():
         if stripped.startswith(prefix):
             msg = stripped[len(prefix):].strip()
-            if prefix == "[Streaming Error":
-                # This prefix doesn't include the closing bracket (two emit
-                # shapes: "[Streaming Error: msg]" / "[Streaming Error] msg")
+            if prefix in ("[Streaming Error", "[OpenAI unavailable"):
+                # These prefixes don't include the closing bracket (emit
+                # shapes: "[Streaming Error: msg]" / "[Streaming Error] msg"
+                # and "[OpenAI unavailable] msg") — strip the stray leading
+                # "]" the naive slice above would otherwise leave in msg.
                 msg = msg.lstrip(":]").strip().rstrip("]").strip()
             return template.format(msg=msg)
     return None
@@ -693,69 +701,48 @@ def _friendly_api_error(text):
 
 def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
                           response_text=None):
-    """Assemble + append the per-turn telemetry JSONL record (never raises).
+    """Run the shared per-turn post-response hook registry (never raises).
 
-    Merges orchestrator._last_turn_signals (intent/tone/plan, captured in
-    build_full_prompt) with ctx.telemetry (gate + post-answer check fields)
-    and the per-call outcome fields. See utils/turn_telemetry.py.
+    Delegates to core.orchestrator.run_post_response_hooks() — the single
+    POST_RESPONSE_HOOKS registry also driven by
+    DaemonOrchestrator._run_post_response_hooks() (process_user_query's own
+    pipeline, reached by RAW mode / `python main.py cli`). Before
+    2026-09-04 this function and process_user_query maintained separate,
+    hand-written copies of this sequence, which is exactly how the 2026-08-21
+    EscalationTracker and 2026-08-23 correction-pipeline dead-wiring bugs
+    happened — see tests/unit/test_request_path_parity.py.
 
-    When response_text is provided and the response actually CITED web
-    results ([WEB_ markers), the query teaches the web-trigger's positive
-    anchors via utils.adaptive_exemplars — an outcome-confirmed "this was
-    search-worthy" signal (2026-08-02; elevated-tone turns never teach).
+    Hooks run (in order): turn-telemetry write (merges
+    orchestrator._last_turn_signals — intent/tone/plan, captured in
+    build_full_prompt — with ctx.telemetry — gate + post-answer check
+    fields — and this call's outcome fields; see utils/turn_telemetry.py);
+    outcome-confirmed adaptive "search_worthy" teaching when response_text
+    actually cited web results ([WEB_ markers, 2026-08-02; elevated-tone
+    turns never teach); escalation_tracker.record_response (feeds next
+    turn's engagement detection); orchestrator.run_post_response_detectors
+    (corrections/confirmations -> truth events -> staleness cascade).
     """
     try:
-        from utils.turn_telemetry import record_turn
-        rec = dict(getattr(ctx.orchestrator, "_last_turn_signals", {}) or {})
-        rec.update(ctx.telemetry or {})
-        rec.update({
-            "query": (ctx.user_text or "")[:300],
-            "mode": mode,
-            "session_id": session_id,
-            "model": model_name,
-            "response_len": int(response_len or 0),
-            "prepare_elapsed_s": round(ctx.t_prepare_elapsed or 0.0, 3),
-        })
-        record_turn(rec)
+        from core.orchestrator import PostResponseHookContext, run_post_response_hooks
+        # getattr-defensive: some callers (e.g. _run_pending_proposal's
+        # lightweight SimpleNamespace ctx) don't carry every SubmitContext
+        # field. The pre-registry code wrapped each ctx.* read in its own
+        # try/except; this preserves the same "never raises on a partial
+        # ctx" contract in one place.
+        hook_ctx = PostResponseHookContext(
+            orchestrator=getattr(ctx, "orchestrator", None),
+            user_input=getattr(ctx, "user_text", "") or "",
+            response_text=response_text,
+            mode=mode,
+            session_id=session_id,
+            model_name=model_name,
+            response_len=response_len,
+            telemetry=getattr(ctx, "telemetry", None) or {},
+            t_prepare_elapsed=getattr(ctx, "t_prepare_elapsed", 0.0) or 0.0,
+        )
+        run_post_response_hooks(hook_ctx)
     except Exception as e:
-        logger.debug(f"[Telemetry] turn record skipped: {e}")
-    try:
-        if response_text and "[WEB_" in response_text and ctx.user_text:
-            from core.agentic.gate import _tone_is_elevated
-            rec_tone = None
-            try:
-                rec_tone = (getattr(ctx.orchestrator, "_last_turn_signals", {}) or {}).get("tone_level")
-            except Exception:
-                pass
-            if not _tone_is_elevated(rec_tone):
-                from utils.adaptive_exemplars import get_store
-                get_store().record(
-                    "web_search", "search_worthy", ctx.user_text, "citation"
-                )
-    except Exception as e:
-        logger.debug(f"[Telemetry] search-worthy learning skipped: {e}")
-    try:
-        # Feed the final response to the escalation tracker so next turn's
-        # engagement detection (ignored-suggestion → QUIET_COMPANIONSHIP) has
-        # suggestions to compare against. The GUI path never called
-        # record_response before 2026-08-21 — only process_user_query did —
-        # so the QUIET tier was unreachable in production.
-        tracker = getattr(ctx.orchestrator, "escalation_tracker", None)
-        if tracker and response_text:
-            tracker.record_response(response_text)
-    except Exception as e:
-        logger.debug(f"[Telemetry] escalation record_response skipped: {e}")
-    try:
-        # Post-response truth pipeline: corrections/confirmations → truth
-        # events, staleness cascade, entity + attribution detection. Dead on
-        # the GUI path until 2026-08-23 — only the unused process_user_query
-        # ran it, so "6 weeks off vryalr not 1"-class corrections never
-        # updated stored facts (same class as the escalation bug above).
-        orch = getattr(ctx, "orchestrator", None)
-        if orch is not None and ctx.user_text:
-            orch.run_post_response_detectors(ctx.user_text)
-    except Exception as e:
-        logger.debug(f"[Telemetry] post-response detectors skipped: {e}")
+        logger.debug(f"[Telemetry] post-response hooks skipped: {e}")
 
 
 async def _silent_agentic_retry(
@@ -1489,10 +1476,25 @@ async def _run_doc_generation(ctx):
             except Exception:
                 pass
 
-        yield {"role": "assistant", "content": _doc_response}
+        # Debug record (2026-09-04): this bypass path used to yield the final
+        # chunk with no "debug" key at all, so api/chat_service.py's
+        # `is_final = "debug" in chunk` check never fired — a session whose
+        # turns were all doc-gen never got a debug_records entry and
+        # Provenance 404'd. Mirror _run_raw's pattern exactly (token counts
+        # are zeroed rather than counted — this path never builds a metered
+        # prompt/system_prompt the way the LLM-generation paths do).
+        _doc_model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
+        debug_record = _build_debug_record(
+            mode='doc-generation', user_text=ctx.user_text, prompt=_source_material,
+            system_prompt=None, response=_doc_response, model=_doc_model,
+            prompt_tokens=0, system_tokens=0, total_tokens=0,
+            citations=[], orchestrator=orchestrator,
+            gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+        )
+        yield {"role": "assistant", "content": _doc_response, "debug": debug_record}
         _write_turn_telemetry(
             ctx, 'doc-generation', _get_session_id(orchestrator),
-            getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+            _doc_model,
             len(_doc_response or ""),
         )
         ctx.handled = True
@@ -1512,17 +1514,20 @@ def _interleave_phase_events(comparisons):
     cap: the 2026-08-31 sleep/functioning run had 25 stable-on + 29 taper
     outcome events, so the 50-item cap dropped ALL 62 post-cessation ("off")
     events — the synthesis had no quotable post-cessation statement while the
-    manifest reported the phase counts."""
+    manifest reported the phase counts.
+
+    2026-09-04: delegates to utils.ordered_slice.round_robin_merge (same
+    "don't let one group starve the others under a cap" fairness primitive
+    core.insight.sweep.interleave_evidence_for_coverage uses for ISO-week
+    buckets — here the grouping axis is PHASE, not time, so it calls the
+    shared merge loop directly rather than window_fair_sample).
+    """
+    from utils.ordered_slice import round_robin_merge
     queues = [
         list(comparison.events) + list(comparison.proxy_events)
         for comparison in comparisons
     ]
-    interleaved = []
-    while any(queues):
-        for queue in queues:
-            if queue:
-                interleaved.append(queue.pop(0))
-    return interleaved
+    return round_robin_merge(queues)
 
 
 def _window_scan_collection(chroma_store, collection_name, window, cap):
@@ -1532,39 +1537,16 @@ def _window_scan_collection(chroma_store, collection_name, window, cap):
     calendar window is a metadata question, not a similarity question. Scans
     the collection's metadata (small collections only — notes/facts, a few
     thousand chunks) and prefers note_date (content date) over index-time
-    timestamps. Read-only; failures degrade to an empty list."""
-    try:
-        coll = chroma_store._get_collection(collection_name)
-        if coll is None:
-            return []
-        data = coll.get(include=["documents", "metadatas"])
-        start, end = window
-        rows = []
-        for doc, meta, chunk_id in zip(
-            data.get("documents") or [],
-            data.get("metadatas") or [],
-            data.get("ids") or [],
-        ):
-            meta = meta or {}
-            date = str(
-                meta.get("note_date") or meta.get("date")
-                or meta.get("timestamp") or ""
-            )[:10]
-            if not (start <= date <= end):
-                continue
-            rows.append((date, {"id": chunk_id, "content": doc, "metadata": meta}))
-        # Date-sorted, evenly-sampled cap: a first-N cap starved the LATER
-        # weeks of a long window (coverage bias would masquerade as a trend).
-        rows.sort(key=lambda item: item[0])
-        if len(rows) > cap:
-            step = len(rows) / cap
-            rows = [rows[int(i * step)] for i in range(cap)]
-        return [row for _, row in rows]
-    except Exception as exc:
-        logger.warning(
-            f"[Insight] window scan failed for {collection_name}: {exc}"
-        )
-        return []
+    timestamps. Read-only; failures degrade to an empty list.
+
+    2026-09-04: the implementation moved to
+    ``core.insight.sweep.window_scan_collection`` (the theme-sweep date-range
+    arm needed the SAME logic for conversations/summaries — single source of
+    truth instead of a second copy); this name stays as a thin delegating
+    alias so existing call sites/tests keep working unchanged.
+    """
+    from core.insight.sweep import window_scan_collection
+    return window_scan_collection(chroma_store, collection_name, window, cap)
 
 
 async def _run_insight_mode(ctx):
@@ -1595,7 +1577,11 @@ async def _run_insight_mode(ctx):
         from core.insight.assessor import assess
         from core.insight.facets import decompose
         from core.insight.provenance import label_evidence
-        from core.insight.sweep import run_sweep
+        from core.insight.sweep import (
+            exclude_current_request_evidence,
+            interleave_evidence_for_coverage,
+            run_sweep,
+        )
         from core.insight.synthesizer import build_synthesis_prompts, synthesize_stream
         from core.insight.types import InsightIntent, EvidenceItem
 
@@ -1933,11 +1919,20 @@ async def _run_insight_mode(ctx):
                        "is_progress": True}
             plan = _plan_task.result()
 
+        # Explicit ISO date window from the request ("from 2026-07-15 through
+        # today") — theme-sweep only; pattern_temporal/deliberation own their
+        # own windowing (window_days / the frozen phase spec) and never set
+        # intent.date_window.
+        _date_window = (
+            tuple(intent.date_window) if len(intent.date_window) == 2 else None
+        )
         if plan.facets:
             _sweep_task = asyncio.ensure_future(run_sweep(
                 plan, chroma_store=_chroma, corpus_manager=_corpus,
                 graph_memory=_graph, entity_resolver=_resolver,
                 memory_expander=_expander,
+                request_text=intent.raw_query or intent.theme,
+                date_window=_date_window,
             ))
             _n = 0
             while not await _wait_stage(_sweep_task):
@@ -1948,7 +1943,19 @@ async def _run_insight_mode(ctx):
             evidence = _sweep_task.result()
         else:
             evidence = []
-        label_evidence(evidence)
+        evidence = label_evidence(evidence)
+        # Self-reference exclusion: the sweep can surface the current
+        # request's own turn or a prior exchange discussing it — those are
+        # not history (2026-09-04 live incident: 7 of 37 rendered items were
+        # the request itself / the reply about it; round 2 same day: the
+        # PREVIOUS day's near-identical request turns also survived because
+        # they overlapped below the any-day 60% bar — current_turn_date is
+        # now threaded through so the same-day-tightened bar can engage).
+        from datetime import datetime as _insight_now
+        evidence = exclude_current_request_evidence(
+            evidence, intent.raw_query or intent.theme,
+            current_turn_date=_insight_now.now().isoformat(),
+        )
         if _is_pattern:
             # Engine exemplars are already provenance-labeled; join after
             # label_evidence so their stance_labels are preserved. Put frozen
@@ -2000,6 +2007,15 @@ async def _run_insight_mode(ctx):
             if _is_pattern and len(_deduped_evidence) >= 50:
                 break
         evidence = _deduped_evidence
+
+        # Window-fair rendering (2026-09-04): reorder for the eventual
+        # render_evidence_block cap so a long request window survives
+        # truncation instead of collapsing to the newest few days. Theme
+        # sweeps only — pattern_temporal narrates a computed aggregate and
+        # deliberation owns its own frozen manifest ordering; reordering
+        # either would fight the numbers they restate.
+        if intent.kind == "theme_sweep":
+            evidence = interleave_evidence_for_coverage(evidence)
 
         _stores = {e.collection for e in evidence}
         yield {"role": "assistant",
@@ -2343,10 +2359,21 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
         except Exception:
             pass
 
-    yield {"role": "assistant", "content": _resp}
+    # Debug record (2026-09-04): same gap as _run_doc_generation — this
+    # bypass path yielded the final chunk with no "debug" key, so a
+    # self-note-only session never produced a debug_records entry.
+    _note_model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
+    debug_record = _build_debug_record(
+        mode='self-note', user_text=ctx.user_text, prompt=body,
+        system_prompt=None, response=_resp, model=_note_model,
+        prompt_tokens=0, system_tokens=0, total_tokens=0,
+        citations=[], orchestrator=orchestrator,
+        gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+    )
+    yield {"role": "assistant", "content": _resp, "debug": debug_record}
     _write_turn_telemetry(
         ctx, 'self-note', _get_session_id(orchestrator),
-        getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)(),
+        _note_model,
         len(_resp or ""),
     )
     ctx.handled = True
@@ -2575,6 +2602,16 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
       whole-bubble replacement on every path, so display == storage holds).
     - (None, suffix) — fallback: append suffix to display AND final_output.
     - (None, "")     — no action.
+    - (response_text, "") — 2026-09-04 GROUNDING_MODE=="log_only" (the
+      default): the full prefilter+verifier+demotion pipeline ran and a
+      flagged verdict was recorded to telemetry (grounding_mode,
+      grounding_verdict) and logged at WARNING, but the response is returned
+      UNCHANGED — same class as the 2026-08-28 review-gate LOG-ONLY fix
+      (>=9 documented false corrections, 0 documented true, in the window
+      that motivated it). This is a deliberate no-op for the caller (the
+      value equals what was passed in), never an integrated/suffixed
+      correction. Set grounding_check.mode: correct in config to restore
+      the pre-09-04 shipped-correction behavior.
 
     source_material: text the assistant retrieved while answering (agentic
     tool-round results). The verifier treats it like user-pasted material —
@@ -2641,6 +2678,29 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
                     f" or empty correction): {verdict.correction[:120]!r}"
                 )
             return _no_action
+
+        # Live-config doctrine: read at call time — GROUNDING_MODE is a
+        # module attr tests monkeypatch, and a module-level `from` import
+        # would freeze the pre-patch value.
+        from config.app_config import GROUNDING_MODE
+        from utils.privacy_redaction import redact_text
+
+        ctx.telemetry["grounding_mode"] = GROUNDING_MODE
+        _redacted_verdict = redact_text(verdict.correction)[:300]
+        ctx.telemetry["grounding_verdict"] = _redacted_verdict
+
+        if GROUNDING_MODE == "log_only":
+            # 2026-09-04: same class as the 2026-08-28 review-gate LOG-ONLY
+            # fix — telemetry over the window showed 42 verifier fires -> 27
+            # flags -> 25 shipped corrections, >=9 documented false, 0
+            # documented true. Run the full prefilter+verifier+demotion
+            # pipeline (so precision can still be measured) but never touch
+            # the shown/stored response.
+            logger.warning(
+                f"[Grounding] LOG-ONLY flagged conf={verdict.confidence:.2f} "
+                f": {_redacted_verdict}"
+            )
+            return (response_text, "")
 
         from core.agentic.gate import _tone_is_elevated
         elevated = _tone_is_elevated((ctx.raw_context or {}).get("tone_level"))

@@ -105,6 +105,10 @@ from typing import Any, Dict, List, Optional, Set
 import re as _re_gate
 import re as _re_gate2
 
+from utils.trigger_match import compile_keyword_matcher as _compile_keyword_matcher
+from utils.trigger_match import find_hits as _find_trigger_hits
+from utils.trigger_match import is_negated as _trigger_is_negated
+
 logger = logging.getLogger("agentic_gate")
 
 
@@ -351,32 +355,38 @@ CONTINUATION_PHRASES = (
 )
 
 
-def _compile_keyword_matcher(keywords):
-    """Left-word-boundary matching for bare-word keywords, substring for the rest.
+# _compile_keyword_matcher is now utils.trigger_match.compile_keyword_matcher
+# (imported above, aliased to this historical name so existing call sites and
+# tests that import `_compile_keyword_matcher` from this module keep working
+# unchanged) — word-boundary matching for bare-word keywords, substring for
+# the rest. 'solve' must not match "resolution"/"unresolved" — a memory-
+# ingest paste titled "crisis resolution" keyword-routed to a 49s
+# computation+tools loop on 2026-08-28 (same substring class as
+# 'document'⊂"documented", fixed 2026-08-27).
+#
+# 2026-09-04: negation. "I'm not asking you to calculate it" still matched
+# 'calculate' and forced computation mode — none of these _HIT matchers
+# checked whether the keyword was negated. `_hit_non_negated()` below wraps a
+# matcher with utils.trigger_match.find_hits() (5-token negation lookback)
+# for use at the actual decision sites in evaluate_agentic_gate(); the plain
+# `matcher(lower_text)` boolean call (used directly by a few tests that only
+# exercise raw keyword-hit behavior) is intentionally left negation-blind so
+# those tests keep passing unchanged.
+def _hit_non_negated(lower_text: str, matcher) -> bool:
+    """True if `matcher` has at least one NON-negated hit in `lower_text`."""
+    return bool(_find_trigger_hits(lower_text, matcher))
 
-    'solve' must not match "resolution"/"unresolved" — a memory-ingest paste
-    titled "crisis resolution" keyword-routed to a 49s computation+tools loop
-    on 2026-08-28 (same substring class as 'document'⊂"documented", fixed
-    2026-08-27). Only the LEFT boundary is enforced so 'solve' still matches
-    "solves"/"solving"; keywords containing spaces, apostrophes, or
-    trailing-space sentinels keep their original substring semantics
-    ('go to http' must still match "go to https://...").
-    """
-    word_pats = []
-    substrings = []
-    for kw in keywords:
-        if re.fullmatch(r"[a-z][a-z0-9_]*", kw):
-            word_pats.append(re.compile(rf"\b{re.escape(kw)}"))
-        else:
-            substrings.append(kw)
 
-    def _hit(lower_text: str) -> bool:
-        return (
-            any(p.search(lower_text) for p in word_pats)
-            or any(k in lower_text for k in substrings)
-        )
-
-    return _hit
+def _pattern_hit_non_negated(text: str, patterns) -> bool:
+    """True if any raw `re.Pattern` in `patterns` matches `text` at a
+    position not preceded (within 5 tokens) by a negation cue. For sites
+    whose triggers are ad-hoc regexes rather than a compiled KeywordMatcher
+    (FILE_ACCESS_PATTERNS, FILE_RETRIEVAL_PRONOUN_PATTERN, ...)."""
+    for p in patterns:
+        m = p.search(text)
+        if m and not _trigger_is_negated(text, m.start()):
+            return True
+    return False
 
 
 _COMPUTATION_HIT = _compile_keyword_matcher(COMPUTATION_KEYWORDS)
@@ -384,6 +394,7 @@ _WEB_SEARCH_HIT = _compile_keyword_matcher(WEB_SEARCH_KEYWORDS)
 _TOOL_HIT = _compile_keyword_matcher(TOOL_KEYWORDS)
 _MEMORY_HIT = _compile_keyword_matcher(MEMORY_KEYWORDS)
 _KNOWLEDGE_HIT = _compile_keyword_matcher(KNOWLEDGE_KEYWORDS)
+_FILE_ACCESS_KEYWORD_HIT = _compile_keyword_matcher(FILE_ACCESS_KEYWORDS)
 # Tier-2's recall-signal test used bare substring — 'how' ⊂ "sHOWer" fired
 # memory mode on "I am in bathroom with shower running…" (live 2026-08-29;
 # 4th occurrence of the substring class after 'solve'⊂"resolution",
@@ -404,8 +415,15 @@ _CLAUSE_OPEN_WH_RE = re.compile(
 
 
 def _recall_signal_hit(lower_text: str) -> bool:
+    """True if `lower_text` carries a recall cue (phrase, or a clause-opening
+    bare interrogative) that is not negated within the preceding 5 tokens —
+    "don't remind me" or "never mind what happened" must not force memory
+    mode just because 'remind'/'what' appears (2026-09-04)."""
     text = (lower_text or "").strip()
-    return bool(_RECALL_PHRASE_HIT(text) or _CLAUSE_OPEN_WH_RE.search(text))
+    if _hit_non_negated(text, _RECALL_PHRASE_HIT):
+        return True
+    m = _CLAUSE_OPEN_WH_RE.search(text)
+    return bool(m and not _trigger_is_negated(text, m.start()))
 
 
 _RECALL_SIGNAL_HIT = _recall_signal_hit
@@ -480,6 +498,26 @@ _EMAIL_COMMAND_RE = re.compile(
     r"(?:please\s+)?(?:send|e-?mail|draft|write|compose|forward|shoot|fire\s+off)\b",
     re.IGNORECASE,
 )
+
+# Negation guard (2026-09-04) for the email arms below: "don't email them
+# about this" or "no need to send that message" must not fire the
+# email-by-name / address-co-occurrence arms just because an action verb
+# appears. Narrower than _ACTION_DISAVOWAL_RE (which covers hypothetical/
+# fantasy phrasing like "I will not send... I am venting") — this is the
+# generic 5-token negation-cue lookback shared by every other trigger site.
+# Under-fires by design: a message needs EVERY email-verb occurrence negated
+# to count — "don't just email him, call him too" still has a live verb.
+_EMAIL_VERB_RE = re.compile(
+    r"\b(?:email|send|message|write|mail|contact|draft|compose|fire\s+off)\b",
+    re.IGNORECASE,
+)
+
+
+def _email_intent_negated(text: str) -> bool:
+    hits = list(_EMAIL_VERB_RE.finditer(text))
+    if not hits:
+        return False
+    return all(_trigger_is_negated(text, m.start()) for m in hits)
 
 # A genuine continuation/affirmation is terse ("yes please", "ok try again").
 # Longer messages that merely CONTAIN one of the phrases above are new
@@ -722,7 +760,9 @@ async def evaluate_agentic_gate(
     needs_tools = False
 
     # ── Tier 1: Keyword heuristics (instant, no LLM) ─────────────────
-    needs_computation = _COMPUTATION_HIT(_lower)
+    # Negation-aware (2026-09-04): "I'm not asking you to calculate it" must
+    # not force computation mode just because 'calculate' appears.
+    needs_computation = _hit_non_negated(_lower, _COMPUTATION_HIT)
 
     # Personal-document search (2026-08-29): "please search for documents
     # related to the MGT class I am currently enrolled in" hit the WEB
@@ -746,11 +786,14 @@ async def evaluate_agentic_gate(
         logger.debug(f"[Agentic Gate] Action-intent detection failed (non-fatal): {e}")
         _explicit_action = None
 
-    if _has_url or (_WEB_SEARCH_HIT(_lower) and not _personal_doc_search):
+    # Negation-aware (2026-09-04): "don't search the web for this, just tell
+    # me" must not force web-search mode just because 'search the web'
+    # appears — a bare URL still always counts (pasting a link is explicit).
+    if _has_url or (_hit_non_negated(_lower, _WEB_SEARCH_HIT) and not _personal_doc_search):
         needs_web_search = True
         logger.debug("[Agentic Gate] Tier 1: explicit web search/URL keyword detected")
 
-    if _TOOL_HIT(_lower):
+    if _hit_non_negated(_lower, _TOOL_HIT):
         needs_tools = True
         # Log the trigger — this arm fired SILENTLY for months; the 09-01
         # 'actions' misfire took three probes to attribute because of it.
@@ -776,7 +819,7 @@ async def evaluate_agentic_gate(
     _email_action_plausible = (
         len(_words) <= EMAIL_ACTION_MAX_WORDS
         or bool(_EMAIL_COMMAND_RE.search(user_text.strip()))
-    )
+    ) and not _email_intent_negated(_lower)
 
     # Email address + action verb → internet action intent
     if not needs_tools and _email_action_plausible:
@@ -802,7 +845,11 @@ async def evaluate_agentic_gate(
     # word-bounded email noun + info-seeking shape + ≤30 words.
     # "What's in my Gmail this week?" → tools mode with email_search.
     # "I emailed the form yesterday" → narration, no fire.
-    _email_search_cue = bool(_re_gate.search(r'\b(?:e-?mails?|inbox|gmail|outlook)\b', _lower))
+    _email_search_match = _re_gate.search(r'\b(?:e-?mails?|inbox|gmail|outlook)\b', _lower)
+    _email_search_cue = bool(
+        _email_search_match
+        and not _trigger_is_negated(_lower, _email_search_match.start())
+    )
     if (not needs_tools and _email_search_cue
             and _is_info_seeking(user_text)
             and len(_words) <= 30):
@@ -810,21 +857,24 @@ async def evaluate_agentic_gate(
         logger.debug("[Agentic Gate] Tier 1: email search intent detected (narrow: cue+info-seeking+terse)")
 
     # File / saved-document retrieval intent → route to agentic so file_read /
-    # file_list / get_full_document are offered. Literal fast-path + robust regex.
+    # file_list / get_full_document are offered. Literal fast-path + robust
+    # regex. Negation-aware (2026-09-04): "don't pull up that file" must not
+    # route to file tools.
     needs_files = (
-        any(kw in _lower for kw in FILE_ACCESS_KEYWORDS)
-        or ("pattern tool" not in _lower_normalized and any(p.search(_lower) for p in FILE_ACCESS_PATTERNS))
+        _hit_non_negated(_lower, _FILE_ACCESS_KEYWORD_HIT)
+        or ("pattern tool" not in _lower_normalized
+            and _pattern_hit_non_negated(_lower, FILE_ACCESS_PATTERNS))
         or _personal_doc_search
     )
     if needs_files:
         needs_tools = True
         logger.debug("[Agentic Gate] Tier 1: file/document access intent detected")
 
-    needs_memory = _MEMORY_HIT(_lower)
+    needs_memory = _hit_non_negated(_lower, _MEMORY_HIT)
 
     # Knowledge keywords require 4+ words and no computation trigger
     if len(_words) >= 4 and not needs_computation:
-        needs_knowledge = _KNOWLEDGE_HIT(_lower)
+        needs_knowledge = _hit_non_negated(_lower, _KNOWLEDGE_HIT)
 
     # ── Tier 2: Entity match (instant, no LLM) ───────────────────────
     # 2026-08-29 live-session hardening (three agentic loops on emotional
@@ -959,11 +1009,15 @@ async def evaluate_agentic_gate(
         # pasted message can contain incidental matches for either shape
         # (an email's own "can you ..." matched request-shape and rode this
         # arm into a 106s tool loop).
+        # Negation-aware (2026-09-04): "no, don't pull it up" must not count
+        # as a pronoun-retrieval continuation.
+        _pronoun_match = FILE_RETRIEVAL_PRONOUN_PATTERN.search(_lower)
         _is_pronoun_retrieval = (
             not _self_report
             and len(_words) <= REQUEST_CONTINUATION_MAX_WORDS
             and (
-                bool(FILE_RETRIEVAL_PRONOUN_PATTERN.search(_lower))
+                (_pronoun_match is not None
+                 and not _trigger_is_negated(_lower, _pronoun_match.start()))
                 or _is_request_shaped(user_text)
             )
         )

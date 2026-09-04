@@ -78,6 +78,7 @@ import os
 from utils.logging_utils import get_logger
 from memory.user_profile_schema import ProfileCategory, categorize_relation
 from collections import defaultdict
+from utils.ordered_slice import newest_first as _ordered_newest_first
 
 logger = get_logger("llm_facts")
 
@@ -324,14 +325,16 @@ class LLMFactExtractor:
         # exhaustion drops the oldest turns instead. 2026-09-02: responses are
         # EXCLUDED entirely — generated text is not evidence about the user
         # (memory.fact_source enforces the same boundary on the output side).
-        entries = []
+        entries = []  # each: (rendered_text, ts_or_None)
         for m in user_messages[-50:]:  # hard cap safety
+            ts_val = None
             if isinstance(m, dict):
                 # Assistant responses are generated text, not source evidence.
                 q = (m.get("query") or "").strip()
                 if not q:
                     continue
                 entry = f"User: {q}"
+                ts_val = m.get("turn_id") or m.get("timestamp")
             else:
                 entry = (m or "").strip()
                 if not entry:
@@ -344,11 +347,29 @@ class LLMFactExtractor:
             # partner name were mined from pasted song lyrics on 08-29).
             if _entry_is_shared_content(entry):
                 continue
-            entries.append(entry)
+            entries.append((entry, ts_val))
+
+        # 2026-09-04: when every entry carries a per-item timestamp (the
+        # shutdown_processor caller stamps conv_pairs with turn_id), sort
+        # defensively via utils.ordered_slice — single source of truth for
+        # "sort by timestamp before slicing" — instead of trusting the
+        # caller's positional order. When timestamps are absent (e.g.
+        # gui/wizard.py's bare-string onboarding call), fall back to the
+        # ORIGINAL positional contract (entries arrive oldest-first, so
+        # reversed() walks newest-first) rather than the generic per-item
+        # None-handling, which would treat every entry as tied-"oldest" and
+        # silently walk oldest-first here — the exact 2026-08-05 regression
+        # (newest turns dropped by the budget break) this code was fixed to
+        # avoid; pinned by
+        # test_learned_relations.py::TestCoveragePromptBuild.
+        if entries and all(ts is not None for _, ts in entries):
+            ordered = _ordered_newest_first(entries, lambda pair: pair[1])
+        else:
+            ordered = list(reversed(entries))
 
         msgs = []
         total = 0
-        for entry in reversed(entries):  # newest first — oldest drop off
+        for entry, _ts in ordered:  # newest first — oldest drop off
             if total + len(entry) + 10 > self.max_input_chars:
                 break
             msgs.append(entry)

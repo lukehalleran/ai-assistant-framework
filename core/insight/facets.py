@@ -68,6 +68,53 @@ _STOPWORDS = frozenset(
     "a an the my our your i me is are was were of about on for with and or to in it this that".split()
 )
 
+# Quoted cue phrases (2026-09-04): a theme-sweep request often carries the
+# user's OWN correction language verbatim in quotes ("find every time I said
+# 'no I mean' or 'that's wrong'") — the facet decomposer above only keeps
+# ≤6 single-word keywords, so those exact phrases never became a literal
+# corpus scan target. Deliberately narrow: only double-quoted 2-6 word spans;
+# a bare single-capital-letter token (X, N, M — a templated placeholder, not
+# a real quote) or an all-stopword phrase is skipped.
+_QUOTED_PHRASE_RE = re.compile(r'["“]([^"”]{2,80})["”]')
+_PLACEHOLDER_LETTER_RE = re.compile(r"\b([A-Z])\b")
+_LEGIT_SINGLE_LETTER_WORDS = frozenset({"I", "A"})
+
+
+def _has_placeholder_token(phrase: str) -> bool:
+    return any(
+        m.group(1) not in _LEGIT_SINGLE_LETTER_WORDS
+        for m in _PLACEHOLDER_LETTER_RE.finditer(phrase)
+    )
+
+
+def extract_quoted_phrases(text: str, *, min_words: int = 2, max_words: int = 6) -> list[str]:
+    """Extract double-quoted 2-6 word phrases from free text as literal
+    corpus-scan targets (see core.insight.sweep's quoted-phrase scan).
+
+    Skips a phrase containing a bare single-capital-letter placeholder token
+    (X, N, M — a templated example, never a real quote — "I"/"A" are real
+    words and exempt) and a phrase that is only stopwords. Order-preserving,
+    de-duplicated case-insensitively."""
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for m in _QUOTED_PHRASE_RE.finditer(text or ""):
+        phrase = " ".join(m.group(1).split())
+        if not phrase:
+            continue
+        words = phrase.split()
+        if not (min_words <= len(words) <= max_words):
+            continue
+        if _has_placeholder_token(phrase):
+            continue
+        if all(w.strip(".,!?;:'\"’").lower() in _STOPWORDS for w in words):
+            continue
+        key = phrase.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        phrases.append(phrase)
+    return phrases
+
 
 def _fallback_plan(intent: InsightIntent) -> FacetPlan:
     """Deterministic single-facet plan when decomposition fails."""

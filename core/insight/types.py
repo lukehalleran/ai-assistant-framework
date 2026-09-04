@@ -50,6 +50,12 @@ class InsightIntent(BaseModel):
     # default, -1 = all history) and optional engine-dimension hint.
     window_days: int = Field(default=0)
     dimension: str = Field(default="")
+    # theme_sweep only (2026-09-04): an explicit ISO date window parsed from
+    # the request ("from 2026-07-15 through today", "since 2026-07-15",
+    # "between A and B") — [] when the request named no explicit window.
+    # Two-element [start_iso, end_iso] when present. See
+    # core.insight.detector.parse_date_window.
+    date_window: list[str] = Field(default_factory=list)
 
 
 class FacetQuery(BaseModel):

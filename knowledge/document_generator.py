@@ -87,6 +87,8 @@ from typing import Any, Literal, Optional
 
 from config import app_config
 from utils.logging_utils import get_logger
+from utils.trigger_match import DEFAULT_NEGATION_WINDOW_TOKENS as _NEGATION_LOOKBACK_TOKENS
+from utils.trigger_match import is_negated as _is_negated
 
 logger = get_logger("document_generator")
 
@@ -1045,6 +1047,44 @@ DOCUMENT_TRIGGER_PATTERN = re.compile(
 _DOC_INTENT_SHORT_MSG_WORDS = 60   # at/under this word count, trust the trigger anywhere
 _DOC_INTENT_EDGE_CHARS = 220       # in longer messages, trigger must touch head/tail window
 
+# Negation guard (2026-09-04). Live regression: "... Order by date. ... Do not
+# save a document for this. Plain list in the reply is fine." matched
+# DOCUMENT_TRIGGER_PATTERN on "save ... document" and fired document
+# generation despite the explicit negation — the trigger pattern only checks
+# for verb+noun co-occurrence, not whether the verb is negated. A save-verb
+# preceded within ~5 tokens by a negation/avoidance cue does not count as a
+# genuine request. This is a lookback check applied to a MATCH, not a rewrite
+# of the (already-tuned) bounded-gap regex.
+#
+# The cue regex + lookback logic live in utils/trigger_match.py (single
+# chokepoint shared by every deterministic trigger site in the codebase,
+# 2026-09-04, imported at module top) — this module reuses it rather than
+# keeping its own copy.
+
+
+def _trigger_match_is_negated(query: str, match: re.Match) -> bool:
+    """True if the save-verb in this DOCUMENT_TRIGGER_PATTERN match is
+    preceded within ~5 tokens by a negation/avoidance cue ("do not save a
+    document", "no need to write a report") — such a match does not count as
+    a genuine save-document request. A negation cue AFTER the match ("write a
+    report ..., don't just answer in chat") does not disqualify it — only a
+    cue that scopes the verb itself does.
+    """
+    return _is_negated(query, match.start(), _NEGATION_LOOKBACK_TOKENS)
+
+
+def _non_negated_trigger_matches(query: str):
+    """Yield DOCUMENT_TRIGGER_PATTERN matches whose save-verb is not negated.
+
+    Single chokepoint used by every deterministic doc-trigger site in this
+    module (detect_document_intent's existence check and the incidental-
+    trigger placement guard) so the negation guard can't be forgotten at one
+    site and applied at another.
+    """
+    for m in DOCUMENT_TRIGGER_PATTERN.finditer(query):
+        if not _trigger_match_is_negated(query, m):
+            yield m
+
 
 def _doc_trigger_is_incidental(query: str) -> bool:
     """True if the only doc-trigger phrase(s) are buried mid-body of a long message.
@@ -1057,7 +1097,7 @@ def _doc_trigger_is_incidental(query: str) -> bool:
         return False
     n = len(query)
     tail_start = max(0, n - _DOC_INTENT_EDGE_CHARS)
-    for m in DOCUMENT_TRIGGER_PATTERN.finditer(query):
+    for m in _non_negated_trigger_matches(query):
         if m.start() < _DOC_INTENT_EDGE_CHARS or m.start() >= tail_start:
             return False  # at least one trigger is at the head or tail → genuine
     return True
@@ -1067,9 +1107,11 @@ def detect_document_intent(query: str) -> dict[str, Any] | None:
     """Detect whether a query requests document generation.
 
     Returns a dict with {topic, doc_type, focus} if detected, else None.
-    Does NOT trigger on plain "research X" or "summarize X".
+    Does NOT trigger on plain "research X" or "summarize X". A save-verb
+    negated within ~5 tokens ("do not save a document", "no need to write a
+    report") also does not trigger (_non_negated_trigger_matches).
     """
-    if not DOCUMENT_TRIGGER_PATTERN.search(query):
+    if next(_non_negated_trigger_matches(query), None) is None:
         return None
 
     # Incidental-trigger guard: a doc-phrase buried in the body of a long

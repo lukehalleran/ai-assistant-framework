@@ -54,7 +54,11 @@ gets its own visible place — never buried.
 then hand interpretation back to the user with at most ONE open question. \
 Calibrated causal and forward-looking assessment is allowed when tied to the
 retrieved evidence and uncertainty. Do not diagnose, prescribe a medication or
-dose, or claim clinical review is unnecessary; keep claims A–E separate."""
+dose, or claim clinical review is unnecessary; keep claims A–E separate.
+ATTRIBUTION: only the user's own first-person words correcting you count as \
+"you corrected me" — a third party correcting the user inside quoted or \
+pasted text, or the user correcting themselves, is NOT the user correcting \
+the assistant; do not count either as one."""
 
 # A user's explanation of their own symptoms is relevant context, but it is
 # not an observed outcome. This distinction is essential for assessment mode:

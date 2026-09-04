@@ -122,6 +122,7 @@ from core.agentic.formatters import AgenticFormatter
 from core.agentic.tools import ToolExecutor
 from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
+from utils.ordered_slice import oldest_first as _ordered_oldest_first
 
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
@@ -2134,8 +2135,16 @@ class AgenticSearchController:
         ordered = list(recent)
         stamps = [_conv_ts(c) for c in ordered]
         if all(s is not None for s in stamps):
-            return [c for _, c in sorted(zip(stamps, ordered), key=lambda p: p[0])]
-        # Gatherer contract when timestamps are absent: newest-first.
+            # utils.ordered_slice.oldest_first (single source of truth for
+            # "sort by timestamp") — same semantics as the hand-rolled
+            # sorted(zip(...)) this replaced, since every stamp parses here.
+            return _ordered_oldest_first(ordered, _conv_ts)
+        # No generic per-item fallback applies when timestamps are MISSING
+        # (not merely unparseable-per-item): the gatherer's contract in that
+        # case is "the whole list is newest-first", so the correct recovery
+        # is a full reversal, not treating unstamped items as individually
+        # "oldest" (utils.ordered_slice's default) — pinned by
+        # test_agentic_digest_order.py::test_unparseable_timestamps_assume_newest_first.
         return list(reversed(ordered))
 
     @staticmethod

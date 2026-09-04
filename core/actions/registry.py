@@ -16,8 +16,10 @@ Module Contract
 - Public: ActionSpec, ACTION_SPECS, is_action_enabled(spec), enabled_action_types(),
   detect_action_intent(query), backfill_params(action_type, query),
   get_runtime_action_health().
-- Dependencies: core.actions.types only (executor modules imported lazily on use); config.app_config
-  read lazily for enable flags. No dependency on core.agentic.* (correct layering).
+- Dependencies: core.actions.types + utils.trigger_match (leaf module, negation
+  lookback for detect_action_intent) only; executor modules imported lazily on
+  use; config.app_config read lazily for enable flags. No dependency on
+  core.agentic.* (correct layering).
 """
 
 import importlib
@@ -26,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.actions.types import ActionType
+from utils.trigger_match import is_negated as _is_trigger_negated
 
 
 # ---------------------------------------------------------------------------
@@ -384,14 +387,22 @@ def _action_request_is_plausible(query: str) -> bool:
 
 
 def detect_action_intent(query: str) -> Optional[ActionType]:
-    """Return the ActionType for an explicit, plausibly user-authored request."""
+    """Return the ActionType for an explicit, plausibly user-authored request.
+
+    Negation-aware (2026-09-04): "don't add that to my calendar" must not
+    return CALENDAR_CREATE_EVENT just because the pattern's verb+object
+    co-occur — a negation/avoidance cue within 5 tokens before the match
+    (utils.trigger_match.is_negated) disqualifies it.
+    """
     if not query:
         return None
     for at, spec in ACTION_SPECS.items():
         for pattern in spec.intent_patterns:
+            m = re.search(pattern, query, re.IGNORECASE)
             if (
-                re.search(pattern, query, re.IGNORECASE)
+                m
                 and _action_request_is_plausible(query)
+                and not _is_trigger_negated(query, m.start())
             ):
                 return at
     return None

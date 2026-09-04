@@ -128,6 +128,41 @@ class TestChatStream:
         assert app.state.daemon.session.debug_records[-1]["query"] == "student@example.edu"
 
     @pytest.mark.asyncio
+    async def test_final_chunk_with_debug_populates_records_and_complete_debug(self):
+        """Plumbing regression (2026-09-04, companion to the doc-generation
+        / self-note debug-record gap fixed in gui/handlers.py): whenever the
+        pipeline's final yield carries a "debug" dict, chat_service must file
+        it into session.debug_records AND surface a non-None debug on the
+        complete event. Bypasses handle_submit entirely (chat_service.py
+        itself is untouched by that fix) so this only exercises the
+        adapter's own is_final/debug wiring."""
+        orch = _make_orchestrator()
+        app = _make_app(orch)
+        session = app.state.daemon.session
+        assert session.debug_records == []
+
+        async def _with_debug(*args, **kwargs):
+            yield {
+                "role": "assistant",
+                "content": "Document saved: something.",
+                "debug": {
+                    "mode": "doc-generation",
+                    "query": "write a report",
+                    "response": "Document saved: something.",
+                },
+            }
+
+        with patch("gui.handlers.handle_submit", _with_debug):
+            _, events = await _post_chat(app, "write a report")
+
+        assert len(session.debug_records) == 1
+        assert session.debug_records[-1]["mode"] == "doc-generation"
+
+        complete = dict(events)["complete"]
+        assert complete["debug"] is not None
+        assert complete["debug"]["mode"] == "doc-generation"
+
+    @pytest.mark.asyncio
     async def test_session_history_updated_after_turn(self):
         orch = _make_orchestrator(streaming_chunks=["Answer."])
         app = _make_app(orch)

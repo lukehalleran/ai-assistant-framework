@@ -54,6 +54,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 import re
 
+from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
+
 logger = logging.getLogger(__name__)
 
 
@@ -246,6 +248,8 @@ CONVERSATIONS FROM {date}:
 TEMPORAL STATUS CLAIM AUDIT:
 {temporal_claim_audit}
 
+{authoritative_status_facts}
+
 STATISTICS:
 - Conversations: {count}
 - Time span: {first_time} to {last_time} ({span_hours:.1f} hours wall-clock)
@@ -298,6 +302,9 @@ IMPORTANT:
   statements as attributed text, not as independent confirmation of a user fact.
 - If the TEMPORAL STATUS CLAIM AUDIT contains competing direct statements,
   state the discrepancy explicitly or preserve both with their distinct predicates.
+- If an AUTHORITATIVE CURRENT FACTS block is present above, never write a
+  sentence that contradicts it (e.g. do not claim someone withdrew from
+  school/a program while a current enrollment fact is listed there).
 - Do NOT include any preamble or meta-commentary, just the note content
 '''
 
@@ -305,7 +312,8 @@ IMPORTANT:
 class DailyNotesGenerator:
     """Generate daily summary notes from Daemon conversations."""
 
-    def __init__(self, corpus_manager=None, model_manager=None, vault_path: str = None, tag_generator=None):
+    def __init__(self, corpus_manager=None, model_manager=None, vault_path: str = None,
+                 tag_generator=None, user_profile=None):
         """
         Initialize DailyNotesGenerator.
 
@@ -314,10 +322,13 @@ class DailyNotesGenerator:
             model_manager: ModelManager instance (lazy-loaded if None)
             vault_path: Path to Obsidian vault (defaults to config)
             tag_generator: TagGenerator instance (lazy-loaded if None)
+            user_profile: UserProfile instance for the status-claim conflict
+                guard (2026-09-04; lazy-loaded if None)
         """
         self._corpus_manager = corpus_manager
         self._model_manager = model_manager
         self._tag_generator = tag_generator
+        self._user_profile = user_profile
 
         # Load config
         try:
@@ -386,6 +397,42 @@ class DailyNotesGenerator:
                 # Non-critical, can continue without tag generation
                 self._tag_generator = None
         return self._tag_generator
+
+    @property
+    def user_profile(self):
+        """Lazy-load UserProfile (read-only use here — this class never
+        saves it). Failure is non-critical: callers fall back to an empty
+        status-facts list, which disables the status-claim guard for that
+        call but never blocks daily-note generation."""
+        if getattr(self, "_user_profile", None) is None:
+            try:
+                from memory.user_profile import UserProfile  # lazy import: startup cost
+                self._user_profile = UserProfile()
+            except Exception as e:
+                logger.debug(f"[DailyNotes] UserProfile unavailable for status-claim guard: {e}")
+                return None
+        return self._user_profile
+
+    def _current_status_facts(self) -> List[Dict[str, Any]]:
+        """Collect CURRENT enrollment/employment/residence facts for the
+        status-claim conflict guard (utils/status_claims.py)."""
+        from utils.status_claims import STATUS_RELATIONS
+
+        profile = self.user_profile
+        if profile is None:
+            return []
+        try:
+            current = profile.get_current_view()
+        except Exception as e:
+            logger.debug(f"[DailyNotes] Could not read profile facts for status guard: {e}")
+            return []
+
+        facts: List[Dict[str, Any]] = []
+        for cat_facts in (current or {}).values():
+            for f in cat_facts or []:
+                if isinstance(f, dict) and f.get("relation") in STATUS_RELATIONS:
+                    facts.append(f)
+        return facts
 
     def _format_filename(self, target_date: date) -> str:
         """Format filename to match existing convention: 'M D YY Daily Note.md'."""
@@ -734,6 +781,12 @@ generated: {datetime.now().isoformat()}
         first_time = first_ts.strftime("%H:%M") if first_ts else "??:??"
         last_time = last_ts.strftime("%H:%M") if last_ts else "??:??"
 
+        # Status-claim conflict guard (2026-09-04): current enrollment/
+        # employment/residence facts, injected as an authoritative block
+        # AND used as a post-generation contradiction check below.
+        status_facts = self._current_status_facts()
+        status_block = authoritative_facts_block(status_facts)
+
         # Build prompt with user display name substitution
         from utils.user_identity import get_user_display_name  # lazy import: live-config read
         user_name = get_user_display_name()
@@ -742,6 +795,7 @@ generated: {datetime.now().isoformat()}
             date=target_date.strftime("%B %d, %Y"),
             formatted_conversations=formatted,
             temporal_claim_audit=temporal_claim_audit,
+            authoritative_status_facts=status_block,
             count=len(convos),
             first_time=first_time,
             last_time=last_time,
@@ -814,6 +868,13 @@ generated: {datetime.now().isoformat()}
             result.error = f"All LLM models failed. Last error: {last_error}"
             logger.error(f"[DailyNotes] All models failed for {target_date}: {last_error}")
             return result
+
+        llm_response, status_conflicts = remove_conflicting_claims(llm_response, status_facts)
+        for c in status_conflicts:
+            logger.warning(
+                f'[DailyNotes] Removed status-claim conflict ({c.family}) for {target_date}: '
+                f'"{c.claim_text}" contradicts current {c.relation}={c.value}'
+            )
 
         # Extract main quest for frontmatter
         main_quest = self._extract_main_quest(llm_response)

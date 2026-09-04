@@ -33,6 +33,11 @@ from typing import Dict, List, Any
 from datetime import datetime
 
 from .formatter import _as_summary_dict, _parse_bool
+from utils.ordered_slice import newest_first as _ordered_newest_first
+
+
+def _summary_ts_key(item):
+    return item.get('timestamp') if isinstance(item, dict) else None
 
 logger = logging.getLogger("prompt_context_gatherer")
 
@@ -209,9 +214,15 @@ class MemoryRetrievalMixin:
                 recent_limit = limit // 2
                 semantic_limit = limit - recent_limit
 
-                # Get recent summaries (most recent first)
-                recent_summaries = summaries[:recent_limit] if summaries else []
-                remaining_summaries = summaries[recent_limit:] if len(summaries) > recent_limit else []
+                # Get recent summaries (most recent first). Re-sort
+                # defensively by timestamp (utils.ordered_slice — single
+                # source of truth) rather than trusting the store's
+                # returned order — a bare summaries[:recent_limit] here
+                # is exactly the newest-first-then-truncate class (2026-
+                # 07-25's empty-query summaries bug lived one call away).
+                ordered_summaries = _ordered_newest_first(summaries, _summary_ts_key)
+                recent_summaries = ordered_summaries[:recent_limit]
+                remaining_summaries = ordered_summaries[recent_limit:]
 
                 result["recent"] = recent_summaries
 
@@ -281,13 +292,17 @@ class MemoryRetrievalMixin:
             result = {"recent": [], "semantic": []}
 
             if summaries:
-                # Get recent summaries (most recent first, no filtering)
-                recent_summaries = summaries[:recent_limit] if summaries else []
+                # Get recent summaries (most recent first, no filtering).
+                # Re-sort defensively (utils.ordered_slice — single source
+                # of truth for "sort by timestamp before slicing") rather
+                # than trusting the store's returned order.
+                ordered_summaries = _ordered_newest_first(summaries, _summary_ts_key)
+                recent_summaries = ordered_summaries[:recent_limit]
                 result["recent"] = recent_summaries
 
                 # Apply semantic filtering to remaining summaries
-                if query and len(summaries) > recent_limit:
-                    remaining_summaries = summaries[recent_limit:]
+                if query and len(ordered_summaries) > recent_limit:
+                    remaining_summaries = ordered_summaries[recent_limit:]
                     logger.debug(f"Applying semantic filtering to {len(remaining_summaries)} older summaries with query: {query[:50]}...")
                     gated_summaries = await self._get_summaries_hybrid_filtered(remaining_summaries, query, semantic_limit)
                     result["semantic"] = gated_summaries
