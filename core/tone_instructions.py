@@ -353,5 +353,10 @@ def get_session_headers_instructions() -> str:
         "- When duration matters and wasn't stated, ask (\"how long has this round\n"
         "  been going?\") instead of inferring it.\n"
         "\n"
+        "**Deadlines in a pasted document:** if an attached/pasted document states a\n"
+        "deadline in a timezone different from the user's own (e.g. \"11:59 PM Eastern\"\n"
+        "when the user is in Central), state the converted local time explicitly —\n"
+        "don't let the source document's timezone silently become the user's deadline.\n"
+        "\n"
         "**[CURRENT USER QUERY]**: The only query to respond to. All other sections are context only."
     )

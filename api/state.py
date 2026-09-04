@@ -48,9 +48,17 @@ class AppState:
         return file_id
 
     def resolve_uploads(self, file_ids: List[str]) -> List[SimpleNamespace]:
-        """Resolve file_ids to shim objects with `.name` (the FileProcessor contract)."""
+        """Resolve file_ids to shim objects with `.name` (the FileProcessor contract).
+
+        Dedupes file_ids first, preserving order (2026-09-04, homework-
+        attachment turn audit item 1): a repeated id in the request — e.g. a
+        client-side double-fire of the attach handler that resent the same
+        batch — would otherwise resolve to the same upload twice, and every
+        downstream consumer (FileProcessor) has no way to know it's the same
+        file rather than two files with identical content.
+        """
         files = []
-        for fid in file_ids or []:
+        for fid in dict.fromkeys(file_ids or []):
             entry = self._uploads.get(fid)
             if not entry:
                 logger.warning(f"[API] Unknown upload file_id: {fid}")

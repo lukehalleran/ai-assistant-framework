@@ -48,10 +48,15 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     # North-American numbers, with an optional country code and common
     # separators.  Word boundaries alone are insufficient around parentheses.
+    # Separators are a SINGLE non-newline char (space/dot/hyphen/paren), not
+    # `\s*` (2026-09-04, homework-attachment turn audit item 5): `\s` matches
+    # newlines, so an unrelated CSV table's adjacent numeric cells across a
+    # line break ("1085\n999  1000") could accidentally line up into a
+    # phone-shaped 3-3-4 digit run and get redacted as a real phone number.
     (
         re.compile(
-            r"(?<![\w\d])(?:\+?1[\s.()-]*)?"
-            r"\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}(?![\w\d])"
+            r"(?<![\w\d])(?:\+?1[ .()-]?)?"
+            r"\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}(?![\w\d])"
         ),
         "[REDACTED PHONE]",
     ),

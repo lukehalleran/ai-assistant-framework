@@ -197,6 +197,19 @@ def _upload_is_live(
     return _upload_is_fresh(doc, now)
 
 
+def _upload_title_filename(doc: Dict[str, Any]) -> str:
+    """The stored filename for an upload doc, lowercased ("" if unknown).
+
+    Uploads are titled "upload:<basename>" (gui/handlers.py._persist_uploads)
+    — strip the prefix so it can be compared against this turn's attached
+    basenames (2026-09-04 homework-attachment turn audit item 3).
+    """
+    title = str((doc.get('metadata', {}) or {}).get('title', ''))
+    if title.startswith('upload:'):
+        return title[len('upload:'):].strip().lower()
+    return ''
+
+
 def _note_text_substance(content) -> int:
     """Chars of real prose in a note chunk after stripping image embeds."""
     if not content:
@@ -719,6 +732,29 @@ class KnowledgeRetrievalMixin:
 
             # Filter to only user uploads
             uploads = [d for d in docs if d.get('metadata', {}).get('type') == 'user_upload']
+
+            # Same-turn upload dedupe (2026-09-04, homework-attachment turn
+            # audit item 3): a file attached THIS turn is persisted to
+            # reference_docs by a fire-and-forget background task and can
+            # already be visible to this same turn's retrieval — surfacing
+            # it again here is a THIRD copy of content already verbatim in
+            # [CURRENT QUERY] (a 1,264-row CSV became a 265K-token prompt
+            # partly from this). Skip chunks whose stored title
+            # ("upload:<filename>") names a file attached this turn.
+            _this_turn_names = {
+                n.lower() for n in (getattr(self, '_current_turn_upload_filenames', None) or [])
+            }
+            if _this_turn_names and uploads:
+                _before_dupe = len(uploads)
+                uploads = [
+                    d for d in uploads
+                    if _upload_title_filename(d) not in _this_turn_names
+                ]
+                if len(uploads) < _before_dupe:
+                    logger.debug(
+                        f"[ContextGatherer] Dropped {_before_dupe - len(uploads)} "
+                        f"same-turn upload(s) already verbatim in [CURRENT QUERY]"
+                    )
 
             # Staleness gate (2026-08-05): months-old homework docs/photos
             # were injected every turn — see _upload_is_live. Query threaded

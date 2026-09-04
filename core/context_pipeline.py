@@ -41,6 +41,7 @@ from typing import List, Dict, Any, Optional, Protocol, Union, TYPE_CHECKING
 from enum import Enum
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 
 from config.app_config import (
@@ -135,6 +136,12 @@ class ContextResult:
 
     # File context
     file_context: Optional[str] = None
+
+    # Basenames of files attached THIS turn (2026-09-04, homework-attachment
+    # turn audit item 3) — lets the uploads gatherer avoid re-surfacing a
+    # just-persisted chunk of a file whose full content is already present
+    # verbatim in [CURRENT QUERY] this same turn.
+    uploaded_filenames: List[str] = field(default_factory=list)
 
     # Thread context
     thread_context: Optional[Dict[str, Any]] = None
@@ -376,12 +383,24 @@ class ContextPipeline:
             logger.debug(f"Stage 2 (Tone): level={tone_level.value}")
 
         # Stage 3: File Processing
+        uploaded_filenames: List[str] = []
         if files and not use_raw_mode:
             file_context = await self._process_files(user_input, files)
             if file_context and file_context != user_input:
                 # Files were processed, update processed_query
                 processed_query = file_context
                 logger.debug(f"Stage 3 (Files): processed {len(files)} files")
+            # This turn's attached basenames (2026-09-04, homework-attachment
+            # turn audit item 3) — lets the uploads gatherer skip retrieving
+            # a just-persisted chunk of a file that's already fully present
+            # verbatim in [CURRENT QUERY] this same turn.
+            for _f in files:
+                try:
+                    _bn = os.path.basename(getattr(_f, 'name', '') or '')
+                    if _bn:
+                        uploaded_filenames.append(_bn)
+                except Exception:
+                    pass
 
         # Stage 4a: Intent Classification (regex-first, no LLM, <1ms)
         # Moved BEFORE heavy topic check so we can skip expensive LLM calls
@@ -526,6 +545,7 @@ class ContextPipeline:
             topics=topics,
             primary_topic=primary_topic,
             file_context=file_context,
+            uploaded_filenames=uploaded_filenames,
             thread_context=thread_context,
             stm_summary=stm_summary,
             identity_block=identity_block,

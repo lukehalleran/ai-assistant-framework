@@ -412,6 +412,23 @@ def _should_suppress_reference_docs(files_suppress: bool, distress_active: bool,
 # emotional language. Self-docs exist for meta/technical queries about Daemon
 # itself — they surface only for those intents or an explicit self-referential
 # query cue.
+# Analysis-query bound (2026-09-04, homework-attachment turn audit item 2):
+# context.processed_query is normally either the short raw user text (no
+# rewrite fired) or an LLM-rewritten short query — but when a huge merged
+# attachment blob's word count clears the query-rewrite floor without the
+# rewrite firing for some other reason, it can still be the RAW merged
+# blob (a 130K-token homework turn measured ~130K of that as one giant
+# "query"). Every retrieval-adjacent consumer downstream of build_prompt's
+# `user_input` (obsidian keyword search, web-search trigger, agentic gate,
+# memory semantic search) scores against that same string; a query that
+# large either can't embed meaningfully (models truncate at their own max
+# sequence length) or pathologically saturates keyword/overlap scoring.
+# When processed_query is this large AND the untouched original (pre-merge)
+# user text is short, fall back to the short text for analysis purposes —
+# the full content still reaches the model via context.file_context in
+# build_full_prompt's `[CURRENT QUERY]` assembly, a separate code path.
+ANALYSIS_QUERY_MAX_CHARS = 2000
+
 _SELF_DOC_INTENTS = {"meta_conversational", "technical_help", "project_work"}
 _SELF_REFERENTIAL_CUE_RE = re.compile(
     r"\b(?:daemon|agentic|chroma(?:db)?|"
@@ -1033,6 +1050,14 @@ class UnifiedPromptBuilder:
             if _distress_active:
                 logger.info(f"[BUILD_PROMPT] Distress session — valence-aware retrieval active (crisis_level={crisis_level})")
 
+            # Same-turn upload dedupe (2026-09-04, homework-attachment turn
+            # audit item 3): basenames of files attached THIS turn, so
+            # get_user_uploads can skip a just-persisted chunk of a file
+            # whose full content is already verbatim in [CURRENT QUERY].
+            self.context_gatherer._current_turn_upload_filenames = (
+                kwargs.get('_uploaded_filenames') or []
+            )
+
             # Apply intent-driven gate threshold override (cleared after gather)
             _gate_override = kwargs.get('_gate_threshold_override')
             _saved_gate_threshold = None
@@ -1418,6 +1443,11 @@ class UnifiedPromptBuilder:
                 # Clear distress flag from gatherer (set before gather)
                 try:
                     self.context_gatherer._distress_active = False
+                except Exception:
+                    pass
+                # Clear same-turn upload filenames (set before gather)
+                try:
+                    self.context_gatherer._current_turn_upload_filenames = []
                 except Exception:
                     pass
                 # Restore gate threshold (set before gather)
@@ -1996,13 +2026,28 @@ class UnifiedPromptBuilder:
             _it = getattr(context.intent, 'intent_type', None)
             _intent_type = getattr(_it, 'value', str(_it)) if _it else None
 
+        # Bounded analysis query (item 2): fall back to the short original
+        # (pre-merge) user text when processed_query is pathologically long
+        # and the original text is not. See ANALYSIS_QUERY_MAX_CHARS above.
+        _analysis_query = context.processed_query
+        if (context.original_query
+                and len(_analysis_query) > ANALYSIS_QUERY_MAX_CHARS
+                and len(context.original_query) <= ANALYSIS_QUERY_MAX_CHARS):
+            logger.info(
+                f"[BUILD_PROMPT] processed_query is {len(_analysis_query)} chars — "
+                f"using the {len(context.original_query)}-char original user text for "
+                f"retrieval/gating analysis instead (full content still reaches the "
+                f"rendered prompt via context.file_context)"
+            )
+            _analysis_query = context.original_query
+
         # Map ContextResult to build_prompt parameters
         # When files are uploaded, pass flag to suppress reference docs
         # so file content dominates the context window
         return await self.build_prompt(
-            user_input=context.processed_query,
+            user_input=_analysis_query,
             config=config,
-            search_query=context.processed_query if context.processed_query != context.original_query else None,
+            search_query=_analysis_query if _analysis_query != context.original_query else None,
             current_topic=context.primary_topic,
             fresh_facts=context.extracted_facts if context.is_heavy_topic else None,
             memories=memories,
@@ -2013,6 +2058,7 @@ class UnifiedPromptBuilder:
             intent_type=_intent_type,
             _suppress_reference_docs=context.has_files,
             _gate_threshold_override=gate_threshold_override,
+            _uploaded_filenames=getattr(context, 'uploaded_filenames', None),
         )
 
     def _should_use_light_path(self, query_analysis: Any, crisis_level: Optional[str]) -> bool:

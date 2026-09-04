@@ -39,6 +39,7 @@ Module Contract
 """
 import os
 import base64
+import hashlib
 import tempfile
 import time
 import docx2txt
@@ -141,6 +142,16 @@ class FileProcessor:
         # Track total size across all files
         total_size = 0
 
+        # Content-level duplicate guard (2026-09-04, homework-attachment
+        # turn audit item 1): a same-batch duplicate — two distinct file_ids
+        # (e.g. from a client-side double-fire of the attach handler) whose
+        # resolved uploads are byte-identical — used to double every
+        # attached document's text in the rendered prompt (~130K of a
+        # 265K-token turn was pure duplication). Dedupe by (basename,
+        # content hash); the file_id-level dedupe in api/state.py handles
+        # the literal-same-id case, this handles the same-content case.
+        seen_doc_signatures = set()
+
         for file in files:
             try:
                 basename = os.path.basename(getattr(file, 'name', 'unknown'))
@@ -172,7 +183,17 @@ class FileProcessor:
                 else:
                     result.documents.append(pf)
                     if pf.content_text:
-                        result.text_content += "\n\n" + pf.content_text
+                        sig = (pf.filename, hashlib.md5(
+                            pf.content_text.encode('utf-8', errors='ignore')
+                        ).hexdigest())
+                        if sig in seen_doc_signatures:
+                            logger.warning(
+                                f"[FileProcessor] Duplicate attachment content skipped: "
+                                f"{pf.filename} matches an earlier file in this same batch"
+                            )
+                        else:
+                            seen_doc_signatures.add(sig)
+                            result.text_content += "\n\n" + pf.content_text
                     logger.debug(f"Processed document: {pf.filename} ({pf.file_size} bytes)")
 
             except ValueError as e:
@@ -517,7 +538,15 @@ class FileProcessor:
                         if df[col].dtype == 'object':  # String columns
                             df[col] = df[col].apply(self._sanitize_csv_cell)
 
-                    result = df.to_string()
+                    # Deterministic manifest (2026-09-04, homework-attachment
+                    # turn audit item 4): a model asked to reason about an
+                    # attached dataset's size ("~1,400 rows") answered from
+                    # prior knowledge of a similarly-named public dataset
+                    # instead of the 1,264 rows actually provided. Prepending
+                    # the true shape — computed from the parsed table, never
+                    # from raw text — gives it away for free.
+                    manifest = self._tabular_manifest(basename, len(df), df.columns)
+                    result = manifest + "\n\n" + df.to_string()
 
                 elif file_ext == '.pdf':
                     result = self._extract_pdf_with_tables(safe_path, basename)
@@ -530,6 +559,30 @@ class FileProcessor:
                 raise ValueError(f"Failed to process {file_ext} file: {e}")
 
         return result, file_size
+
+    # Max column names shown by name in a tabular manifest before truncating
+    # with an ellipsis (keeps the line short for wide tables).
+    _MANIFEST_MAX_COLS = 8
+
+    @staticmethod
+    def _tabular_manifest(basename: str, n_rows: int, columns) -> str:
+        """Deterministic "[name: N rows x M columns (...)]" line for an
+        attached CSV/XLSX table, computed from the PARSED table (never from
+        raw text) — see the 2026-09-04 homework-attachment turn audit item 4.
+        Carries the data-fidelity instruction inline so it reaches the model
+        on every tabular attachment regardless of any later prompt trimming.
+        """
+        cols = [str(c) for c in columns]
+        if len(cols) > FileProcessor._MANIFEST_MAX_COLS:
+            cols_display = cols[:FileProcessor._MANIFEST_MAX_COLS] + ['…']
+        else:
+            cols_display = cols
+        return (
+            f"[{basename}: {n_rows:,} rows × {len(cols)} columns "
+            f"({', '.join(cols_display)}). Use only this data for any counts "
+            f"or figures about it — do not rely on prior knowledge of "
+            f"similarly named datasets.]"
+        )
 
     @staticmethod
     def _extract_pdf_with_tables(path: Path, basename: str = "document") -> str:
@@ -646,13 +699,22 @@ class FileProcessor:
         parts = []
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
+            raw_rows = list(ws.iter_rows(values_only=True))
             rows = []
-            for row in ws.iter_rows(values_only=True):
+            for row in raw_rows:
                 cells = [str(c).strip() if c is not None else '' for c in row]
                 rows.append('| ' + ' | '.join(cells) + ' |')
             if rows:
+                # Deterministic per-sheet manifest (2026-09-04 audit item 4):
+                # same rationale as the CSV manifest above — computed from
+                # the parsed rows, header row treated as column names.
+                header_cols = raw_rows[0] if raw_rows else []
+                data_row_count = max(len(raw_rows) - 1, 0)
+                manifest = FileProcessor._tabular_manifest(
+                    f"{basename} [{sheet_name}]", data_row_count, header_cols
+                )
                 # Add sheet heading + header separator after first row
-                parts.append(f"### {sheet_name}")
+                parts.append(f"### {sheet_name}\n{manifest}")
                 header_sep = '| ' + ' | '.join('---' for _ in row) + ' |'
                 rows.insert(1, header_sep)
                 parts.append('\n'.join(rows))

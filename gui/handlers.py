@@ -111,6 +111,7 @@ from core.response_parser import ResponseParser
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult
+from utils.attachment_audit import audit_attachments, deadline_timezone_note
 import json
 from config.app_config import load_system_prompt
 import re as _re_draft
@@ -1010,6 +1011,12 @@ class SubmitContext:
     file_names: list
     merged_input: str
     files_result: Any
+    # user_text plus any deterministic attachment/deadline notes (items 8-9,
+    # 2026-09-04 homework-attachment turn audit) — what enhanced mode passes
+    # as prepare_prompt's user_input (see _prepare_submit_context). Short:
+    # ContextPipeline classification stages (topic/tone/intent/STM/query
+    # rewrite) key off exactly this text before file content is merged in.
+    analysis_text: str = ""
     agentic_enabled: bool = False
     # Agentic gate evaluated CONCURRENTLY with prepare_prompt (intent veto
     # applied post-hoc in the dispatcher once the context pipeline's intent
@@ -1097,7 +1104,27 @@ async def _prepare_submit_context(ctx):
     _progress_q = turn_progress.begin_turn()
     try:
         prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
-            user_input=ctx.merged_input,
+            # user_input=ctx.user_text, NOT ctx.merged_input (2026-09-04,
+            # homework-attachment turn audit items 1+2): ctx.merged_input is
+            # already the file-processor's merged text (user text + every
+            # attached file's content). Passing THAT plus files=ctx.files
+            # made ContextPipeline.build()'s Stage 3 (_process_files)
+            # re-run FileProcessor.process_files() on the SAME files against
+            # the ALREADY-merged text, appending each attachment's content a
+            # SECOND time — ~130K of a 265K-token turn was pure duplication.
+            # Passing the raw user text + files instead lets Stage 3 do the
+            # ONE canonical merge (context.file_context), which is what
+            # build_full_prompt renders into [CURRENT QUERY] (has_files ?
+            # file_context : original_query) — so the rendered prompt still
+            # carries the full attachment content exactly once. It also
+            # fixes the intent/tone/topic/STM/query-rewrite misclassification
+            # class for free: every one of those stages keys off THIS
+            # `user_input` parameter, evaluated BEFORE Stage 3 merges files
+            # in, so they now see the user's own words instead of the
+            # attachment blob (a "history/timeline/previous" hit inside a
+            # lecture transcript no longer routes the turn to
+            # temporal_recall).
+            user_input=ctx.analysis_text or ctx.user_text,
             files=ctx.files,
             use_raw_mode=False,  # enhanced mode
             return_context=True  # Always get raw context for images and agentic search
@@ -4270,6 +4297,33 @@ async def _handle_submit_inner(
     files_result = await file_processor.process_files_structured(user_text, files or [])
     merged_input = files_result.text_content
 
+    # Deterministic attachment audit + deadline-timezone notes (2026-09-04,
+    # homework-attachment turn audit items 8-9). No LLM calls; silent when
+    # nothing to flag. Appended once to the analysis/merge text so both the
+    # rendered [CURRENT QUERY] (via merged_input / ContextPipeline Stage 3)
+    # and enhanced-mode classification (via analysis_text) see it.
+    _attachment_note = ""
+    if files_result.documents:
+        try:
+            _notes = []
+            _audit_note = audit_attachments(user_text, files, files_result.documents)
+            if _audit_note:
+                _notes.append(_audit_note)
+            _deadline_source = user_text + "\n" + "\n".join(
+                d.content_text or "" for d in files_result.documents
+            )
+            _dl_note = deadline_timezone_note(_deadline_source)
+            if _dl_note:
+                _notes.append(_dl_note)
+            _attachment_note = "\n".join(_notes)
+        except Exception as e:
+            logger.debug(f"[Handle Submit] attachment/deadline audit failed: {e}")
+
+    analysis_text = user_text
+    if _attachment_note:
+        merged_input += "\n\n" + _attachment_note
+        analysis_text = user_text + "\n\n" + _attachment_note
+
     # Persist uploads to ChromaDB in background (fire-and-forget)
     if files_result.documents or files_result.images:
         persist_task = asyncio.create_task(_persist_uploads(orchestrator, files_result))
@@ -4289,6 +4343,7 @@ async def _handle_submit_inner(
         file_names=file_names,
         merged_input=merged_input,
         files_result=files_result,
+        analysis_text=analysis_text,
     )
 
     # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
