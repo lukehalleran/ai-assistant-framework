@@ -97,6 +97,40 @@ def _paste_guard_filter(query: str, facts: list) -> list:
             f"facts from a {len(query)}-char message")
     return kept
 
+# Shared content guard (2026-09-03): a lyrics/poem/quote paste yields no
+# facts at all — first-person lyrics ("I was over Time…") are not the user's
+# claims (lived_in=Atlanta + a partner name were mined from a song on 08-29).
+# Uses THE deployed content_type_detector; under-fires by design (message
+# type, code, dreams still extract).
+_FACT_EXTRACT_SKIP_CONTENT_TYPES = frozenset({"lyrics", "poem", "quote"})
+_FACT_EXTRACT_SKIP_CONTENT_MIN_CONF = float(
+    os.getenv("FACT_EXTRACT_SKIP_CONTENT_MIN_CONF", "0.7"))
+
+
+def fact_extraction_skip_reason(query: str) -> str:
+    """Return a non-empty reason when per-turn fact extraction must be skipped."""
+    try:
+        from core.content_type_detector import detect_content_type
+        ct = detect_content_type(query or "")
+    except Exception:
+        return ""
+    if (ct.content_type in _FACT_EXTRACT_SKIP_CONTENT_TYPES
+            and float(ct.confidence or 0.0) >= _FACT_EXTRACT_SKIP_CONTENT_MIN_CONF):
+        return f"shared content ({ct.content_type} @ {float(ct.confidence):.2f})"
+    return ""
+
+
+def fact_extraction_source_text(query: str) -> str:
+    """The text the regex extractor may mine: pasted email blocks removed
+    (2026-09-03 — a quoted Aug-27 email re-asserted an enrollment the user
+    had since dropped). Framing lines around the paste are kept."""
+    try:
+        from memory.fact_source import strip_quoted_correspondence
+        return strip_quoted_correspondence(query or "")
+    except Exception:
+        return query or ""
+
+
 # Knowledge graph config (imported inside methods to avoid circular imports)
 def _get_graph_enabled():
     try:
@@ -810,7 +844,11 @@ class MemoryStorage:
             # Thread detection (if available)
             thread_info = {}
             if self._thread_detect_fn:
-                thread_info = self._thread_detect_fn(query, is_heavy)
+                # Pass the turn's topic label so thread detection reuses it
+                # instead of re-classifying (2026-09-03 label stability).
+                thread_info = self._thread_detect_fn(
+                    query, is_heavy, current_topic=self.current_topic
+                )
 
             # Add to corpus (JSON) with stable timestamp and thread metadata
             self.corpus_manager.add_entry(
@@ -1036,7 +1074,16 @@ class MemoryStorage:
                 _turn_is_heavy = bool(_is_heavy_topic_heuristic(query))
             except Exception:
                 pass
-            facts = await self.fact_extractor.extract_facts(query, "") or []
+            _skip_reason = fact_extraction_skip_reason(query)
+            if _skip_reason:
+                logger.info(f"[MemoryStorage] Fact extraction skipped: {_skip_reason}")
+                return
+            _source_text = fact_extraction_source_text(query)
+            if _source_text != query:
+                logger.info(
+                    f"[MemoryStorage] Fact extraction: pasted correspondence removed "
+                    f"({len(query)}→{len(_source_text)} chars)")
+            facts = await self.fact_extractor.extract_facts(_source_text, "") or []
             total = len(facts)
             logger.debug(f"[MemoryStorage] Extracted {total} facts (raw)")
 

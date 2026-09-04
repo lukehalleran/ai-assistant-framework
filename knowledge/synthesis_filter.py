@@ -65,7 +65,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from config.app_config import (
-    SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD,
     SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD,
     SYNTHESIS_COHERENCE_MIN_LEVEL,
     SYNTHESIS_COHERENCE_MODEL,

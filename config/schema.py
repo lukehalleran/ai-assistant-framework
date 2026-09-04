@@ -462,7 +462,7 @@ class ObsidianSection(BaseModel):
     vault_path: str = "~/Documents/Notes"
     chunk_threshold: int = Field(default=1500, ge=100)
     max_notes_prompt: int = Field(default=5, ge=0)
-    gate_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    gate_threshold: float = Field(default=0.60, ge=0.0, le=1.0)  # blended gate score; 2026-09-03: 0.45→0.60
     include_images: bool = True
     max_images_per_note: int = Field(default=3, ge=0)
     max_image_size_mb: float = Field(default=10.0, gt=0.0)

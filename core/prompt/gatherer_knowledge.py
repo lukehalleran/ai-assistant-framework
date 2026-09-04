@@ -87,8 +87,72 @@ PERSONAL_NOTES_MIN_CHARS = int(os.getenv("PERSONAL_NOTES_MIN_CHARS", "60"))
 # two year-old photos cleared it on an emotional check-in turn). 0.62 ≈
 # cosine 0.69 — above the memory gate's 0.60 ordinary-relevance bar, which
 # is the right posture for OVERRIDING the staleness cutoff.
-USER_UPLOADS_MAX_AGE_DAYS = int(os.getenv("USER_UPLOADS_MAX_AGE_DAYS", "7"))
+# 2026-09-03: 7→3 days — a fresh homework .docx surfaced on every casual turn
+# for a week regardless of relevance; after 3 days it must clear the bar.
+USER_UPLOADS_MAX_AGE_DAYS = int(os.getenv("USER_UPLOADS_MAX_AGE_DAYS", "3"))
 USER_UPLOADS_MIN_RELEVANCE = float(os.getenv("USER_UPLOADS_MIN_RELEVANCE", "0.62"))
+
+
+_NON_CONTACT_ENTITY_TYPES = frozenset({"animal", "pet"})
+
+
+_ROLLUP_TITLE_RE = re.compile(
+    r"^(?:week\s*\d+\b.*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4})"
+    r"\s+summary\s*$",
+    re.IGNORECASE,
+)
+
+
+def _note_title(note: Dict[str, Any]) -> str:
+    md = note.get("metadata") if isinstance(note, dict) else None
+    title = (note.get("title") if isinstance(note, dict) else None) or (md or {}).get("title") or ""
+    return str(title)
+
+
+_MOOD_SECTIONS = frozenset({"emotional state", "emotional-state", "mood", "feelings", "emotional"})
+
+
+def _note_section(note: Dict[str, Any]) -> str:
+    md = note.get("metadata") if isinstance(note, dict) else None
+    sec = (note.get("section") if isinstance(note, dict) else None) or (md or {}).get("section") or ""
+    return str(sec).strip().lower()
+
+
+def _is_negative_mood_note(note: Dict[str, Any]) -> bool:
+    """A daily-note mood/emotional-state chunk whose text carries negative
+    affect (deployed ``memory.valence`` lexicon, config threshold)."""
+    if _note_section(note) not in _MOOD_SECTIONS:
+        return False
+    try:
+        from memory.valence import negative_affect_score
+        from config.app_config import VALENCE_NEGATIVE_THRESHOLD  # lazy import: live-config read
+        return negative_affect_score(str(note.get("content", ""))) >= float(VALENCE_NEGATIVE_THRESHOLD)
+    except Exception:
+        return False
+
+
+def _is_rollup_note_title(title: str) -> bool:
+    """True for the vault's weekly/monthly rollup notes ("Week 6 Feb 2026
+    Summary", "March 2026 Summary")."""
+    return bool(_ROLLUP_TITLE_RE.match((title or "").strip()))
+
+
+def _is_non_contact_entity(graph_memory, name: str) -> bool:
+    """True when ``name`` resolves in the knowledge graph to a node whose
+    curated ``entity_type`` is an animal/pet — such a proper noun must not seed
+    a passive email search (2026-09-03). Missing graph, unresolved name, or any
+    failure → False (under-fires: unknown names still seed)."""
+    if graph_memory is None or not name:
+        return False
+    try:
+        eid = graph_memory.resolve_entity(name)
+        if not isinstance(eid, str) or not eid.strip():
+            eid = name.strip().lower()
+        node = graph_memory.get_entity(eid)
+        et = getattr(node, "entity_type", None)
+        return isinstance(et, str) and et.strip().lower() in _NON_CONTACT_ENTITY_TYPES
+    except Exception:
+        return False
 
 
 def _upload_is_fresh(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:
@@ -376,7 +440,9 @@ class KnowledgeRetrievalMixin:
         query: str,
         limit: int = 10,
         include_images: bool = False,
-        max_images_per_note: int = 3
+        max_images_per_note: int = 3,
+        allow_rollups: bool = True,
+        allow_mood_sections: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Get relevant personal notes from Obsidian vault.
@@ -409,7 +475,7 @@ class KnowledgeRetrievalMixin:
             logger.debug(f"[ContextGatherer] Personal notes query: '{query}' -> '{search_query}'")
 
             # Retrieve notes via semantic search (with optional image loading)
-            logger.warning(f"[ContextGatherer] IMAGE DEBUG: Calling get_notes with include_images={include_images}")
+            logger.debug(f"[ContextGatherer] IMAGE DEBUG: Calling get_notes with include_images={include_images}")
             notes = await manager.get_notes(
                 search_query,
                 limit=limit,
@@ -419,7 +485,7 @@ class KnowledgeRetrievalMixin:
             # Debug: check what we got back
             if notes:
                 total_images = sum(len(n.get('image_data', [])) for n in notes)
-                logger.warning(f"[ContextGatherer] IMAGE DEBUG: Got {len(notes)} notes with {total_images} total images")
+                logger.debug(f"[ContextGatherer] IMAGE DEBUG: Got {len(notes)} notes with {total_images} total images")
 
             # Substance filter (2026-07-25): image-only/near-empty note chunks
             # embed as noise and outscore real matches on unrelated queries.
@@ -435,6 +501,33 @@ class KnowledgeRetrievalMixin:
                     logger.info(
                         f"[ContextGatherer] Dropped {_before - len(notes)} near-empty note chunk(s) "
                         f"(< {PERSONAL_NOTES_MIN_CHARS} chars of prose)"
+                    )
+            # Rollup notes (2026-09-03): weekly/monthly "… Summary" rollups are long,
+            # broad, and match almost any personal query (a March monthly summary
+            # full of meds/sleep/supplement notes surfaced on a pet anecdote at 0.69). They
+            # earn a slot only when the user is asking about the past.
+            if notes and not allow_rollups:
+                _before_r = len(notes)
+                notes = [n for n in notes if not _is_rollup_note_title(_note_title(n))]
+                if len(notes) < _before_r:
+                    logger.info(
+                        f"[ContextGatherer] Dropped {_before_r - len(notes)} rollup summary note(s) "
+                        f"(non-retrospective query)"
+                    )
+
+            # Mood sections (2026-09-03): a daily-note "Emotional State" chunk
+            # with negative affect surfaced (0.74) on a cheerful pet anecdote —
+            # mood-congruent injection on a turn with no emotional cue. Such
+            # chunks earn a slot only when the query is heavy/negative or
+            # distress is active (the builder decides); positive mood chunks
+            # are never dropped.
+            if notes and not allow_mood_sections:
+                _before_m = len(notes)
+                notes = [n for n in notes if not _is_negative_mood_note(n)]
+                if len(notes) < _before_m:
+                    logger.info(
+                        f"[ContextGatherer] Dropped {_before_m - len(notes)} negative mood-section "
+                        f"note(s) on a non-emotional query"
                     )
 
             # Track note IDs for citations
@@ -1674,6 +1767,12 @@ class KnowledgeRetrievalMixin:
             if not email_cue:
                 from utils.query_checker import extract_rare_proper_nouns
                 contact_names = extract_rare_proper_nouns(query)
+                # 2026-09-03: a capitalized PET name is not a contact — a cat
+                # anecdote pulled a shelter newsletter into the prompt.
+                _graph = getattr(getattr(self, "memory_coordinator", None), "graph_memory", None)
+                contact_names = [
+                    n for n in contact_names if not _is_non_contact_entity(_graph, n)
+                ]
 
             if not email_cue and not contact_names:
                 # No signal to fetch emails
@@ -1685,7 +1784,8 @@ class KnowledgeRetrievalMixin:
 
             # Search with the contact names or the query itself
             search_terms = " ".join(contact_names) if contact_names else query
-            window_days = 30  # Default window for passive context
+            from config.app_config import EMAIL_DEFAULT_WINDOW_DAYS  # lazy import: live-config read
+            window_days = int(EMAIL_DEFAULT_WINDOW_DAYS)  # 2026-09-03: was a hardcoded 30
 
             messages = await service.search(
                 search_terms,

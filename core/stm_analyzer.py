@@ -37,12 +37,180 @@ Module Contract
   - None beyond LLM API call and logging
 """
 import json
+import re
 from typing import List, Dict, Any, Optional
 from utils.logging_utils import get_logger
 from datetime import date, timedelta
 from datetime import datetime
+from utils.query_checker import _PROPER_NOUN_STOPWORDS, extract_rare_proper_nouns
 
 logger = get_logger("stm_analyzer")
+
+# Graph entity types whose sentence-initial mention is name-shaped enough to
+# count as a novel referent (a person or a pet — not a place/concept/project,
+# whose TitleCase tokens are far more often ordinary sentence-initial words).
+_NOVELTY_ENTITY_TYPES = frozenset({"animal", "pet", "person"})
+_SENTENCE_INITIAL_TOKEN_RE = re.compile(r"^[A-Z][a-zA-Z'’-]{2,}$")
+
+
+def _word_in_text(word: str, text: str) -> bool:
+    """Case-insensitive word-bounded containment; garbage → False."""
+    if not word or not text:
+        return False
+    try:
+        return re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", text, re.IGNORECASE) is not None
+    except re.error:
+        return False
+
+
+def _sentence_initial_candidates(user_query: str) -> List[str]:
+    """TitleCase tokens in sentence-INITIAL position — the ones
+    ``extract_rare_proper_nouns`` deliberately drops. Mirrors its tokenizer,
+    stoplist, possessive strip and ALL-CAPS exclusion; returns surfaces in
+    order of first appearance."""
+    if not user_query or not user_query.strip():
+        return []
+    pieces = re.findall(r"[A-Za-z'’-]+|[.!?\n]", user_query)
+    _title_abbrevs = {"dr", "mr", "mrs", "ms", "prof", "st"}
+    found: List[str] = []
+    seen: set = set()
+    sentence_initial = True
+    prev_word = ""
+    for tok in pieces:
+        if tok in (".", "!", "?", "\n"):
+            if not (tok == "." and prev_word.lower() in _title_abbrevs):
+                sentence_initial = True
+            continue
+        is_initial = sentence_initial
+        sentence_initial = False
+        prev_word = tok
+        if not is_initial:
+            continue
+        surface = tok.removesuffix("'s").removesuffix("’s").rstrip("'’-")
+        if not _SENTENCE_INITIAL_TOKEN_RE.match(surface):
+            continue
+        if surface.isupper():
+            continue
+        low = surface.lower()
+        if low in _PROPER_NOUN_STOPWORDS or low in seen:
+            continue
+        seen.add(low)
+        found.append(surface)
+    return found
+
+
+def _resolve_graph_node(name: str, graph_memory=None, entity_resolver=None):
+    """Resolve a mention to a graph node via the deployed alias index
+    (``GraphMemory.resolve_entity`` → ``get_entity``); optional
+    ``entity_resolver`` (memory_coordinator.entity_resolver) tried first.
+    Any failure or a non-string resolution → None (Mock-safe)."""
+    eid = None
+    try:
+        if entity_resolver is not None and hasattr(entity_resolver, "resolve"):
+            cand = entity_resolver.resolve(name)
+            if isinstance(cand, str) and cand.strip():
+                eid = cand
+    except Exception:
+        eid = None
+    if eid is None and graph_memory is not None:
+        try:
+            cand = graph_memory.resolve_entity(name)
+            if isinstance(cand, str) and cand.strip():
+                eid = cand
+        except Exception:
+            eid = None
+    if not isinstance(eid, str) or not eid.strip():
+        return None
+    try:
+        node = graph_memory.get_entity(eid) if graph_memory is not None else None
+    except Exception:
+        node = None
+    return node
+
+
+def _node_type(node) -> str:
+    et = getattr(node, "entity_type", None)
+    return et.strip().lower() if isinstance(et, str) else ""
+
+
+def _node_surfaces(node, name: str) -> List[str]:
+    """Every string the node could appear as in the window: the mention, its
+    id/display name, aliases, and metadata['original_name']."""
+    surfaces = [name]
+    for attr in ("entity_id", "display_name"):
+        v = getattr(node, attr, None)
+        if isinstance(v, str) and v.strip():
+            surfaces.append(v.strip())
+    aliases = getattr(node, "aliases", None)
+    if isinstance(aliases, (list, tuple, set)):
+        surfaces.extend(a.strip() for a in aliases if isinstance(a, str) and a.strip())
+    md = getattr(node, "metadata", None)
+    if isinstance(md, dict):
+        orig = md.get("original_name")
+        if isinstance(orig, str) and orig.strip():
+            surfaces.append(orig.strip())
+    return surfaces
+
+
+def novel_named_entities(
+    user_query: str,
+    window_text: str,
+    graph_memory=None,
+    entity_resolver=None,
+) -> List[str]:
+    """Names in the current message that appear NOWHERE in the short-term
+    window (2026-09-03 STM novelty override).
+
+    The STM prompt biases reference_type toward "recall" when in doubt, and
+    the formatter then injects "the current message restates an event already
+    in context" — which was wrong for a message naming an entity absent from
+    the whole window. Candidates:
+      * mid-sentence rare proper nouns (``extract_rare_proper_nouns``), always;
+      * sentence-initial TitleCase tokens ONLY when a graph is given and the
+        token resolves to a person/pet/animal node (no dictionary separates
+        "Biscuit caught a moth" from "Please pass the salt" otherwise).
+    A candidate is novel only if neither the name nor any alias / original
+    name of its resolved node appears word-bounded in ``window_text``.
+    Under-fires: missing input, resolver failures, Mock objects → [].
+    """
+    if not isinstance(user_query, str) or not user_query.strip():
+        return []
+    window = window_text if isinstance(window_text, str) else ""
+    try:
+        candidates = list(extract_rare_proper_nouns(user_query))
+    except Exception:
+        candidates = []
+    ordered: List[tuple] = [(c, False) for c in candidates]
+    if graph_memory is not None or entity_resolver is not None:
+        try:
+            for tok in _sentence_initial_candidates(user_query):
+                if tok.lower() not in {c.lower() for c, _ in ordered}:
+                    ordered.append((tok, True))
+        except Exception:
+            pass
+
+    novel: List[str] = []
+    seen: set = set()
+    for name, needs_graph in ordered:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if name.lower() in seen:
+            continue
+        node = None
+        if graph_memory is not None or entity_resolver is not None:
+            node = _resolve_graph_node(name, graph_memory, entity_resolver)
+        if needs_graph:
+            if node is None or _node_type(node) not in _NOVELTY_ENTITY_TYPES:
+                continue
+        surfaces = _node_surfaces(node, name) if node is not None else [name]
+        try:
+            if any(_word_in_text(surf, window) for surf in surfaces):
+                continue
+        except Exception:
+            continue
+        seen.add(name.lower())
+        novel.append(name)
+    return novel
 
 
 class STMAnalyzer:
@@ -69,7 +237,8 @@ class STMAnalyzer:
         self,
         recent_memories: List[Dict[str, Any]],
         user_query: str,
-        last_assistant_response: Optional[str] = None
+        last_assistant_response: Optional[str] = None,
+        graph_memory=None,
     ) -> Dict[str, Any]:
         """
         Analyze short-term conversation context.
@@ -78,6 +247,10 @@ class STMAnalyzer:
             recent_memories: Recent conversation turns (list of dicts with 'query'/'response')
             user_query: Current user input
             last_assistant_response: Optional last assistant message for additional context
+            graph_memory: Optional GraphMemory — enables the sentence-initial
+                name allow-gate of the novelty override (a known pet/person
+                named at sentence start counts as a novel referent when
+                absent from the window)
 
         Returns:
             Dict with fields:
@@ -202,6 +375,32 @@ Return JSON only, no markdown or extra text:"""
                         "Apply the user's selected option to the immediately "
                         "preceding request without asking for it again"
                     )
+            except Exception:
+                pass
+            # Novelty override (2026-09-03): "recall" asserts the message
+            # restates something already in context, but the prompt biases
+            # toward it when in doubt. A message naming an entity that appears
+            # NOWHERE in the STM window (conversation + daily notes + the
+            # immediately preceding reply) cannot be a restatement of that
+            # window — demote to "unclear" so the formatter's verify-first
+            # warning replaces the "do not count it as a separate occurrence"
+            # one. Deterministic, under-fires (no names → no-op).
+            try:
+                if parsed.get("reference_type") == "recall":
+                    window = "\n".join(filter(None, [
+                        conversation_text,
+                        daily_notes_text,
+                        str(last_assistant_response or ""),
+                    ]))
+                    novel = novel_named_entities(user_query, window, graph_memory)
+                    if novel:
+                        parsed["reference_type"] = "unclear"
+                        parsed["novelty_override"] = True
+                        parsed["novel_entities"] = novel
+                        logger.debug(
+                            f"[STMAnalyzer] Novelty override: recall → unclear "
+                            f"(names absent from window: {novel})"
+                        )
             except Exception:
                 pass
             logger.debug(f"[STMAnalyzer] Analysis complete: topic={parsed.get('topic')}, tone={parsed.get('tone')}")

@@ -17,7 +17,17 @@ Module Contract
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Protocol, runtime_checkable
+
+
+def message_timestamp(message: "EmailMessage") -> float:
+    """Comparable instant for provider dates; malformed dates sort last."""
+    value = (message.date or "").strip()
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return float("-inf")
 
 
 @dataclass

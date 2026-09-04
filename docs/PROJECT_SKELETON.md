@@ -2833,7 +2833,7 @@ DAILY_NOTES_UPDATE_MIN_NEW = 3  # Auto-update threshold: re-generate if conversa
 - `python main.py daily-note yesterday` - Generate for yesterday
 - `python main.py daily-note 2026-01-15` - Generate for specific date
 - `python main.py daily-note --force` - Overwrite existing
-- `python main.py daily-note-catchup` - Startup hook (yesterday if missing)
+- `python main.py daily-note-catchup` - Startup hook (yesterday if missing); the 02:00 systemd timer runs the thin `scripts/daily_note_catchup.py` instead (templates in `scripts/systemd/`)
 
 **Filename Convention**: Matches user's existing format: `M D YY Daily Note.md` (e.g., `1 16 26 Daily Note.md`)
 

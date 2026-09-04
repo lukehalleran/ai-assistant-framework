@@ -22,13 +22,15 @@ def iter_collection(chroma_store, collection_name: str,
         ids = res.get("ids") or []
         if not ids:
             return
-        docs = res.get("documents") or [None] * len(ids)
-        metas = res.get("metadatas") or [{}] * len(ids)
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
         for i, doc_id in enumerate(ids):
             yield {
                 "id": doc_id,
-                "document": docs[i],
-                "metadata": metas[i] or {},
+                # Chroma normally returns aligned arrays, but a partially
+                # malformed/migrated response should not abort a whole scan.
+                "document": docs[i] if i < len(docs) else None,
+                "metadata": (metas[i] if i < len(metas) else {}) or {},
             }
             seen += 1
             if seen >= max_docs:

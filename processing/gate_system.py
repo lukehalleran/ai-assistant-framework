@@ -182,8 +182,10 @@ async def gated_wiki_fetch(query: str, timeout: float = WIKI_TIMEOUT_S) -> tuple
             _cache_wiki(query, snippet)
             return True, snippet
         return False, ""
-    except (asyncio.TimeoutError, OSError, IOError, ValueError) as e:
-        # timeout or transient error — just skip
+    except Exception as e:
+        # The wiki assist is strictly best-effort.  In addition to transport
+        # errors, injected fetchers and response decoders can raise arbitrary
+        # runtime exceptions; none should break prompt construction.
         logger.debug(f"[WikiSnippet] Fetch failed for query '{query[:30]}': {type(e).__name__}")
         return False, ""
 

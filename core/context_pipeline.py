@@ -189,6 +189,24 @@ class ContextResult:
         return self.tone_level.value
 
 
+
+def stm_skip_shape(user_input: str, is_small_talk: bool = False, max_words: int = 6) -> bool:
+    """True when the message has nothing for the STM analyzer to summarize: a
+    small-talk turn (light path) or a short greeting / casual acknowledgement
+    (2026-09-03 — "Hey" after a 2 h gap ran STM, which summarized the PREVIOUS
+    turn as a restatement and injected the recall warning). Failure → False."""
+    if is_small_talk:
+        return True
+    try:
+        from utils.query_checker import is_greeting_opener, is_casual_acknowledgment
+        text = user_input or ""
+        if len(text.split()) > max_words:
+            return False
+        return bool(is_greeting_opener(text) or is_casual_acknowledgment(text))
+    except Exception:
+        return False
+
+
 class ContextPipelineProtocol(Protocol):
     """Protocol for context pipeline implementations."""
 
@@ -424,7 +442,15 @@ class ContextPipeline:
             and not is_small_talk
             and (intent_result is None or intent_result.intent not in _skip_rewrite_intents)
         )
-        run_stm = not use_raw_mode and self._should_run_stm(conversation_history)
+        # 2026-09-03: a bare greeting/ack after a gap ran STM, which summarized
+        # the PREVIOUS turn as if the user had restated it and injected the
+        # "restates an event" warning onto "Hey". Nothing to analyze there.
+        _stm_skip_shape = stm_skip_shape(user_input, is_small_talk=is_small_talk)
+        run_stm = (
+            not use_raw_mode
+            and not _stm_skip_shape
+            and self._should_run_stm(conversation_history)
+        )
 
         if run_rewrite and run_stm:
             # Both needed — run in parallel for ~1-2s savings
@@ -551,6 +577,7 @@ class ContextPipeline:
                 is_anaphoric_continuation,
                 is_continuation_answer,
                 is_fragment_continuation,
+                topics_related,
             )
             prev_topic = getattr(self.topic_manager, "last_topic", None)
             last_response = ""
@@ -587,6 +614,34 @@ class ContextPipeline:
 
             # Get primary topic (also updates internal state + has LLM cache)
             primary = self.topic_manager.get_primary_topic(query)
+
+            # Label stabilization (2026-09-03): when the fresh label is merely
+            # a RELABEL of the previous turn's topic (loose match via the same
+            # topics_related predicate thread detection uses), keep the
+            # previous label — classifier granularity noise ("Playing Fetch"
+            # → "Playing Games") had been resetting thread depth and
+            # asserting shifts on one continuous conversation. The classifier
+            # still runs (it maintains its own state); only the returned label
+            # is anchored. Real shifts (unrelated labels) pass through.
+            if (
+                isinstance(prev_topic, str)
+                and isinstance(primary, str)
+                and prev_topic.strip()
+                and primary.strip()
+                and prev_topic.strip().lower() != "general"
+                and primary.strip().lower() != "general"
+                and prev_topic.strip().lower() != primary.strip().lower()
+                and topics_related(prev_topic, primary)
+            ):
+                logger.debug(
+                    f"[ContextPipeline] Topic label '{primary}' is a relabel of "
+                    f"'{prev_topic}' — keeping the previous label for continuity"
+                )
+                primary = prev_topic
+                try:
+                    self.topic_manager.last_topic = prev_topic
+                except Exception:
+                    pass
 
             # Get all topics (primary + any extracted entities)
             topics = []
@@ -1060,7 +1115,8 @@ Rewritten query (just the rewritten text, no explanation):"""
             result = await self.stm_analyzer.analyze(
                 recent_memories=recent_memories,
                 user_query=query,
-                last_assistant_response=last_response
+                last_assistant_response=last_response,
+                graph_memory=getattr(self.memory_system, "graph_memory", None),
             )
 
             return result

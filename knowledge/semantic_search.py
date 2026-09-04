@@ -119,6 +119,7 @@ class SemanticSearchIndex:
         self._rg_offsets: list[int] = []  # cumulative row offsets per row group
         self._total_rows: int = 0
         self.loaded = False
+        self.disabled_reason: str = ""
 
     def load(self) -> None:
         """Load model + FAISS + row-group index once. Fast-return if already loaded."""
@@ -133,10 +134,26 @@ class SemanticSearchIndex:
                     faiss is not None, os.path.exists(INDEX_PATH), os.path.exists(META_PATH))
 
         if not (faiss and os.path.exists(INDEX_PATH) and os.path.exists(META_PATH)):
-            if not _warned_missing:
-                logger.error("[Semantic] Missing FAISS or metadata — fast-failing search "
-                             "(index=%s, meta=%s)", INDEX_PATH, META_PATH)
-                _warned_missing = True
+            # 2026-09-03 (Codex audit #6): an ABSENT external index is an
+            # expected disabled state (the ~2 GB wiki FAISS index is optional
+            # and often unmounted) — log it once at INFO so real errors stand
+            # out. Only "faiss cannot be imported while the files exist" is an
+            # actual fault and stays at ERROR.
+            files_present = os.path.exists(INDEX_PATH) and os.path.exists(META_PATH)
+            if faiss is None and files_present:
+                self.disabled_reason = "faiss import failed"
+                if not _warned_missing:
+                    logger.error("[Semantic] FAISS index files exist but the faiss module "
+                                 "cannot be imported — semantic wiki search unavailable")
+                    _warned_missing = True
+            else:
+                missing = [p for p in (INDEX_PATH, META_PATH) if not os.path.exists(p)]
+                self.disabled_reason = f"external index not present: {missing}"
+                if not _warned_missing:
+                    logger.info("[Semantic] External FAISS index not present — semantic wiki "
+                                "search DISABLED for this process (missing=%s). Mount the index "
+                                "or ignore if intentional.", missing)
+                    _warned_missing = True
             return
 
         try:

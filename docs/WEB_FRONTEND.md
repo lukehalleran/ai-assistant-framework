@@ -137,7 +137,7 @@ dropped connection doesn't SIGHUP the server past the clean shutdown sequence.
 ```bash
 python main.py                      # backend :8000 (serves web/dist if built, /admin, /health)
 cd web && npm run dev               # Vite :5173, proxies /api + /health → 8000
-npm run build                       # tsc --noEmit + vite build → web/dist
+npm run build                       # tsc --noEmit + vite build → web/dist (function-form manualChunks: react / mantine / highlight / katex / vendor; Debug/Provenance/Settings/Curation views are React.lazy — main chunk 1.07 MB → ~21 kB app + cacheable vendor chunks, 2026-09-03)
 python main.py --legacy-gui         # old standalone Gradio on :7860
 ```
 

@@ -622,9 +622,13 @@ class MemoryCoordinator:
         """Delegates to ThreadManager."""
         return self.thread_manager.get_thread_context()
 
-    def _detect_or_create_thread(self, query: str, is_heavy: bool) -> Dict:
+    def _detect_or_create_thread(
+        self, query: str, is_heavy: bool, current_topic: Optional[str] = None
+    ) -> Dict:
         """Delegates to ThreadManager."""
-        return self.thread_manager.detect_or_create_thread(query, is_heavy)
+        return self.thread_manager.detect_or_create_thread(
+            query, is_heavy, current_topic=current_topic
+        )
 
     async def get_semantic_top_memories(self, query: str, limit: int = 10) -> List[Dict]:
         """Delegates to MemoryRetriever."""

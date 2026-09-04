@@ -1,0 +1,6 @@
+[Unit]
+Description=Desktop alert when the Daemon daily-notes job fails
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/notify-send --urgency=critical --app-name="Daemon Notes" "Daemon daily note FAILED" "Check: journalctl --user -u daemon-daily-notes.service -n 30 and tail %h/Daemon_v1/logs/daily_notes.log"

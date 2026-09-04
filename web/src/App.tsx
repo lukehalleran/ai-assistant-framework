@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import {
   ActionIcon,
   AppShell,
@@ -23,10 +23,12 @@ import ChatInput from './components/chat/ChatInput'
 import MessageList from './components/chat/MessageList'
 import ProgressIndicator from './components/chat/ProgressIndicator'
 import MemoryPanel from './components/showcase/MemoryPanel'
-import DebugPage from './components/debug/DebugPage'
-import ProvenancePage from './components/debug/ProvenancePage'
-import SettingsPage from './components/settings/SettingsPage'
-import CurationPage from './components/curation/CurationPage'
+// Non-chat views are lazy-loaded (2026-09-03): they are opened rarely and
+// carried a large share of the main bundle.
+const DebugPage = lazy(() => import('./components/debug/DebugPage'))
+const ProvenancePage = lazy(() => import('./components/debug/ProvenancePage'))
+const SettingsPage = lazy(() => import('./components/settings/SettingsPage'))
+const CurationPage = lazy(() => import('./components/curation/CurationPage'))
 
 type View = 'chat' | 'debug' | 'provenance' | 'settings' | 'curation'
 
@@ -212,10 +214,12 @@ export default function App() {
       <AppShell.Main style={{ display: 'flex' }}>
         {/* Non-chat views mount on demand; the chat column stays MOUNTED but
             hidden so an in-flight stream keeps rendering into it. */}
-        {view === 'debug' && <DebugPage />}
-        {view === 'provenance' && <ProvenancePage />}
-        {view === 'settings' && <SettingsPage />}
-        {view === 'curation' && <CurationPage />}
+        <Suspense fallback={null}>
+          {view === 'debug' && <DebugPage />}
+          {view === 'provenance' && <ProvenancePage />}
+          {view === 'settings' && <SettingsPage />}
+          {view === 'curation' && <CurationPage />}
+        </Suspense>
         {/* minWidth/overflowX clamp: a long unbroken line anywhere in the chat
             column must shrink within the viewport, never widen the page */}
         <Stack

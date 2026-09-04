@@ -3,7 +3,67 @@ gui/tabs/synthesis.py — Synthesis audit queue tab for blind review and grading
 
 Extracted from gui/launch.py to reduce file size.
 """
+import html
+
 import gradio as gr
+
+
+def render_synth_card(doc_id: str, result, show_grade: bool = False) -> str:
+    """Render one synthesis result as an escaped HTML audit card.
+
+    Kept module-level so the renderer can be tested independently of Gradio's
+    component context.
+    """
+    status = html.escape(str(result.status.value if result.status else "unknown"))
+    coherence = html.escape(str(result.coherence_level.name if result.coherence_level else "N/A"))
+    composite = f"{result.composite_score:.3f}" if result.composite_score else "N/A"
+    status_colors = {
+        "accepted": "#10b981", "converging": "#6366f1",
+        "rejected": "#ef4444", "pending": "#6b7280",
+    }
+    color = status_colors.get(status, "#6b7280")
+    grade_html = ""
+    if show_grade and result.human_grade:
+        grade_labels = {"1": "Nonsense", "2": "Surface metaphor", "3": "True/obvious",
+                        "4": "Real insight", "5": "Breakthrough"}
+        try:
+            gn = int(result.human_grade)
+            gc = "#ef4444" if gn <= 2 else "#f59e0b" if gn == 3 else "#10b981"
+        except (ValueError, TypeError):
+            gc = "#6b7280"
+        grade_value = html.escape(str(result.human_grade))
+        label = html.escape(str(grade_labels.get(str(result.human_grade), result.human_grade)))
+        grade_html = (f' <span style="background:{gc};color:white;padding:2px 8px;'
+                      f'border-radius:4px;font-size:0.8em;">{grade_value}: {label}</span>')
+        binary_parts = []
+        if result.changes_thinking is not None:
+            binary_parts.append(f"Thinking: {'Y' if result.changes_thinking else 'N'}")
+        if result.mechanism_real:
+            binary_parts.append(f"Real: {html.escape(str(result.mechanism_real))}")
+        if result.heard_before is not None:
+            binary_parts.append(f"Heard: {'Y' if result.heard_before else 'N'}")
+        if binary_parts:
+            grade_html += f' <span style="font-size:0.8em;color:#aaa;">({" | ".join(binary_parts)})</span>'
+        if result.grade_notes:
+            grade_html += f' <em style="font-size:0.85em;">— {html.escape(str(result.grade_notes))}</em>'
+    candidate = result.candidate
+    claim = html.escape(str(candidate.connection_claim if candidate else ""))
+    concept_a = html.escape(str(candidate.concept_a if candidate else ""))
+    concept_b = html.escape(str(candidate.concept_b if candidate else ""))
+    rejection_info = ""
+    if result.rejection_stage:
+        rejection_info = (f"<p style='color:#ef4444;font-size:0.85em;'>"
+                          f"Rejected at: {html.escape(str(result.rejection_stage))} — "
+                          f"{html.escape(str(result.rejection_reason))}</p>")
+    return (f'<details style="margin:8px 0;padding:8px;border:1px solid #444;border-radius:6px;">'
+            f'<summary style="cursor:pointer;font-weight:bold;">{concept_a} &harr; {concept_b} '
+            f'<span style="background:{color};color:white;padding:2px 8px;'
+            f'border-radius:4px;font-size:0.8em;">{status}</span>{grade_html}</summary>'
+            f'<p style="margin:8px 0;">{claim}</p>'
+            f'<p style="font-size:0.85em;color:#aaa;">Coherence: {coherence} | Composite: {composite} | '
+            f'Novelty: {result.novelty_score_external:.3f} | '
+            f'Co-occur: {result.cooccurrence_similarity:.3f}</p>{rejection_info}'
+            f'<p style="font-size:0.8em;color:#666;">ID: {html.escape(str(doc_id))}</p></details>')
 
 
 def build_synthesis_tab(orchestrator, _show_dev_tabs):
@@ -111,76 +171,9 @@ def build_synthesis_tab(orchestrator, _show_dev_tabs):
             ]
             return "\n".join(lines)
 
-        def _render_synth_card(doc_id: str, result, show_grade: bool = False) -> str:
-            """Render one synthesis result as an HTML card. No generator label (blind)."""
-            status = result.status.value if result.status else "unknown"
-            coherence = result.coherence_level.name if result.coherence_level else "N/A"
-            composite = f"{result.composite_score:.3f}" if result.composite_score else "N/A"
-
-            status_colors = {
-                "accepted": "#10b981", "converging": "#6366f1",
-                "rejected": "#ef4444", "pending": "#6b7280",
-            }
-            color = status_colors.get(status, "#6b7280")
-
-            grade_html = ""
-            if show_grade and result.human_grade:
-                grade_labels = {
-                    "1": "Nonsense", "2": "Surface metaphor",
-                    "3": "True/obvious", "4": "Real insight", "5": "Breakthrough",
-                }
-                try:
-                    gn = int(result.human_grade)
-                    gc = "#ef4444" if gn <= 2 else "#f59e0b" if gn == 3 else "#10b981"
-                except (ValueError, TypeError):
-                    gn = 0
-                    gc = "#6b7280"
-                label = grade_labels.get(result.human_grade, result.human_grade)
-                grade_html = (
-                    f' <span style="background:{gc};color:white;padding:2px 8px;'
-                    f'border-radius:4px;font-size:0.8em;">{result.human_grade}: {label}</span>'
-                )
-                # Binary screening answers
-                binary_parts = []
-                if result.changes_thinking is not None:
-                    binary_parts.append(f"Thinking: {'Y' if result.changes_thinking else 'N'}")
-                if result.mechanism_real:
-                    binary_parts.append(f"Real: {result.mechanism_real}")
-                if result.heard_before is not None:
-                    binary_parts.append(f"Heard: {'Y' if result.heard_before else 'N'}")
-                if binary_parts:
-                    grade_html += f' <span style="font-size:0.8em;color:#aaa;">({" | ".join(binary_parts)})</span>'
-                if result.grade_notes:
-                    grade_html += f' <em style="font-size:0.85em;">— {result.grade_notes}</em>'
-
-            claim = result.candidate.connection_claim if result.candidate else ""
-            concept_a = result.candidate.concept_a if result.candidate else ""
-            concept_b = result.candidate.concept_b if result.candidate else ""
-
-            rejection_info = ""
-            if result.rejection_stage:
-                rejection_info = (
-                    f"<p style='color:#ef4444;font-size:0.85em;'>"
-                    f"Rejected at: {result.rejection_stage} — {result.rejection_reason}</p>"
-                )
-
-            return (
-                f'<details style="margin:8px 0;padding:8px;border:1px solid #444;border-radius:6px;">'
-                f'<summary style="cursor:pointer;font-weight:bold;">'
-                f'{concept_a} &harr; {concept_b} '
-                f'<span style="background:{color};color:white;padding:2px 8px;'
-                f'border-radius:4px;font-size:0.8em;">{status}</span>'
-                f'{grade_html}'
-                f'</summary>'
-                f'<p style="margin:8px 0;">{claim}</p>'
-                f'<p style="font-size:0.85em;color:#aaa;">'
-                f'Coherence: {coherence} | Composite: {composite} | '
-                f'Novelty: {result.novelty_score_external:.3f} | '
-                f'Co-occur: {result.cooccurrence_similarity:.3f}</p>'
-                f'{rejection_info}'
-                f'<p style="font-size:0.8em;color:#666;">ID: {doc_id}</p>'
-                f'</details>'
-            )
+        # Keep the renderer module-level so its escaping is independently
+        # testable; all queue cards use that same implementation.
+        _render_synth_card = render_synth_card
 
         def _load_synth_queue(view_filter: str):
             sm = _get_synth_memory()

@@ -259,6 +259,25 @@ def _pet_relation_supported_by_source(source: str, relation: str) -> bool:
     return bool(rx.search(source or ""))
 
 
+SHARED_CONTENT_TYPES = frozenset({"lyrics", "poem", "quote"})
+SHARED_CONTENT_MIN_CONF = float(os.getenv("FACT_EXTRACT_SKIP_CONTENT_MIN_CONF", "0.7"))
+
+
+def _entry_is_shared_content(entry: str) -> bool:
+    """True when a user turn is a lyrics/poem/quote paste per THE deployed
+    content_type_detector (confidence >= SHARED_CONTENT_MIN_CONF)."""
+    try:
+        from core.content_type_detector import detect_content_type
+        text = re.sub(r"^user\s*:\s*", "", entry or "", flags=re.I)
+        ct = detect_content_type(text)
+        return bool(
+            ct.content_type in SHARED_CONTENT_TYPES
+            and float(ct.confidence or 0.0) >= SHARED_CONTENT_MIN_CONF
+        )
+    except Exception:
+        return False
+
+
 class LLMFactExtractor:
     def __init__(self, model_manager, *,
                  model_alias: str = None,
@@ -320,6 +339,11 @@ class LLMFactExtractor:
                 if re.match(r"^(?:assistant|daemon|system|tool)\s*:\s*", entry, re.I):
                     continue
                 entry = "User: " + re.sub(r"^user\s*:\s*", "", entry, flags=re.I)
+            # Shared content (lyrics/poems/quotes) is not evidence about the
+            # user even in first person (2026-09-03: lived_in=Atlanta and a
+            # partner name were mined from pasted song lyrics on 08-29).
+            if _entry_is_shared_content(entry):
+                continue
             entries.append(entry)
 
         msgs = []
@@ -422,15 +446,17 @@ Output: [
   {{"subject": "user", "relation": "lives_in", "object": "Seattle", "category": "identity", "confidence": 0.95}}
 ]
 
-Input: "I built this app and I'm testing it now"
+Input: "I'm a data analyst; I built this app and I'm testing it now"
 Output: [
-  {{"subject": "user", "relation": "role", "object": "app builder", "category": "projects", "confidence": 0.85}}
+  {{"subject": "user", "relation": "occupation", "object": "data analyst", "category": "career", "confidence": 0.95}},
+  {{"subject": "user", "relation": "works_on", "object": "this app", "category": "projects", "confidence": 0.8}}
 ]
+(Building or testing something is an ACTIVITY, not a title — no "role" fact.)
 
 Input: "My name is Alex, I created you"
 Output: [
   {{"subject": "user", "relation": "name", "object": "Alex", "category": "identity", "confidence": 0.95}},
-  {{"subject": "user", "relation": "role", "object": "creator", "category": "projects", "confidence": 0.9}}
+  {{"subject": "user", "relation": "works_on", "object": "this assistant", "category": "projects", "confidence": 0.9}}
 ]
 
 ENTITY FACTS (in addition to user facts):
@@ -461,7 +487,7 @@ RULES:
 - Extract DURABLE facts — things that are true across sessions, not just right now
 - Confidence: 0.9+ for direct statements, 0.7-0.8 for inferred, <0.7 for uncertain
 - Do NOT extract questions or hypotheticals
-- IMPORTANT: If user introduces themselves or describes their role/activity, extract those as facts
+- IMPORTANT: If the user introduces themselves, extract identity facts. A job title the user STATES ("I'm a nurse", "I work as a data analyst") is `occupation`; what they are building or doing is `works_on`. Never derive a role or title from an activity ("testing the app", "monitoring myself").
 - TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Monday", "the following day"), resolve them to absolute dates in the object field. Example: "I work tomorrow" on 2026-03-12 → object: "work on Thu 2026-03-13"
 - Do NOT extract transient/ephemeral state that changes constantly:
   * current_activity, current_mood, current_feeling, feeling, feels

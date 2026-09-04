@@ -3,9 +3,20 @@
 Persistent knowledge graph wrapping NetworkX.
 
 Provides CRUD operations, alias resolution, BFS traversal, and
-JSON serialization.  Uses a DiGraph (directed, single edge per
-source+relation+target pair) with weight strengthening on repeated
-mentions.
+JSON serialization, with weight strengthening on repeated mentions.
+
+Storage model [2026-09-03]: the NetworkX DiGraph is a TOPOLOGY index
+(degree / shortest_path / successors) holding ONE edge per (source, target)
+pair; the edge attributes on it are advisory only (they mirror the FIRST
+relation stored for the pair).  ``_edge_index`` (keyed ``src|rel|tgt``) plus
+the ``_out_keys`` / ``_in_keys`` adjacency maps are the source of truth for
+relations — every relation-level read (get_relations → neighbors →
+subgraph_around → get_context_sentences) goes through them.  Before this,
+reads rebuilt the key from the nx pair's single ``relation`` attribute, so a
+second relation on the same pair was invisible: 146 of 982 live edges were
+never returned (``user→<pet>`` carried 8 relations, 7 of them shadowed), and
+strengthening one relation overwrote the nx attrs of another.  The on-disk
+JSON always stored the full relation-keyed list, so no schema change.
 
 Persistence uses a dirty-flag so saves only happen when the graph
 has actually changed (not on every insertion).  Uses orjson for
@@ -63,8 +74,20 @@ import networkx as nx
 
 from memory.graph_models import GraphEdge, GraphNode
 from utils.logging_utils import get_logger
+from memory.graph_utils import (
+    _DEFAULT_HUB_DEGREE,
+    _DEFAULT_MIN_MENTIONS,
+    relation_species_conflict,
+)
 
 logger = get_logger("graph_memory")
+
+# Code-level STRUCTURAL relations (co-occurrence bookkeeping written by the
+# ingestion path, weight up to ~2.5 live) that must never render into prompt
+# graph context nor route its traversal (2026-09-03): "Python mentioned
+# alongside <name>" is not a fact about either entity.  Storage/expansion
+# scoring untouched — read-time render/traversal filter only.
+_NO_RENDER_RELATIONS = frozenset({"mentioned_alongside"})
 
 # On-disk schema version for knowledge_graph.json. Files without the field
 # are v1 (pre-versioning). Bump when the payload shape changes and add a
@@ -106,8 +129,17 @@ class GraphMemory:
         self.persist_path = persist_path
         # alias -> canonical entity_id  (lowered alias -> lowered entity_id)
         self._alias_index: dict[str, str] = {}
-        # edge_key -> GraphEdge  (for fast duplicate detection)
+        # edge_key -> GraphEdge  (authoritative relation store; save() writes it)
         self._edge_index: dict[str, GraphEdge] = {}
+        # Relation-level adjacency (2026-09-03): node -> ordered set of edge
+        # keys (dict-as-ordered-set — insertion order is the read order).
+        # The nx DiGraph collapses multi-relation pairs; these maps do not.
+        self._out_keys: dict[str, dict[str, None]] = {}
+        self._in_keys: dict[str, dict[str, None]] = {}
+        # Number of edge keys currently indexed in the adjacency maps.  A
+        # mismatch with len(_edge_index) (a script mutated the index
+        # directly) triggers rebuild_edge_indexes() on the next read.
+        self._adj_count = 0
         self._dirty = False
         self._modification_count = 0
         self._bulk_mode = False
@@ -195,11 +227,15 @@ class GraphMemory:
                     if edge.metadata.get(_k):
                         existing.metadata[_k] = edge.metadata[_k]
             self._track_appraisal_settledness(existing, edge.metadata or {}, now)
-            # Update NetworkX edge data
-            self.graph[src][tgt]["weight"] = existing.weight
-            self.graph[src][tgt]["last_seen"] = now.isoformat()
-            self.graph[src][tgt]["source_fact_ids"] = existing.source_fact_ids
-            self.graph[src][tgt]["metadata"] = existing.metadata
+            # Mirror onto the advisory nx attrs ONLY when the pair's nx edge
+            # holds THIS relation — writing unconditionally cross-contaminated
+            # a sibling relation's weight/metadata on multi-relation pairs.
+            if (self.graph.has_edge(src, tgt)
+                    and self.graph[src][tgt].get("relation") == rel):
+                self.graph[src][tgt]["weight"] = existing.weight
+                self.graph[src][tgt]["last_seen"] = now.isoformat()
+                self.graph[src][tgt]["source_fact_ids"] = existing.source_fact_ids
+                self.graph[src][tgt]["metadata"] = existing.metadata
         else:
             # New edge
             edge_copy = GraphEdge(
@@ -217,15 +253,12 @@ class GraphMemory:
                 edge_copy.source_fact_ids.append(fact_id)
             self._track_appraisal_settledness(edge_copy, edge.metadata or {}, now)
             self._edge_index[ekey] = edge_copy
-            self.graph.add_edge(src, tgt, **{
-                "relation": rel,
-                "weight": edge_copy.weight,
-                "truth_score": edge_copy.truth_score,
-                "first_seen": edge_copy.first_seen.isoformat() if edge_copy.first_seen else now.isoformat(),
-                "last_seen": edge_copy.last_seen.isoformat() if edge_copy.last_seen else now.isoformat(),
-                "source_fact_ids": edge_copy.source_fact_ids,
-                "metadata": edge_copy.metadata,
-            })
+            self._index_edge(edge_copy)
+            # The FIRST relation stored for a pair owns the nx pair's advisory
+            # attrs; a later relation on the same pair must not overwrite them
+            # (the DiGraph keeps one edge per pair — topology only).
+            if not self.graph.has_edge(src, tgt):
+                self.graph.add_edge(src, tgt, **self._nx_edge_attrs(edge_copy))
 
         # Touch node timestamps
         for nid in (src, tgt):
@@ -291,21 +324,24 @@ class GraphMemory:
         if not self.graph.has_node(eid):
             return []
 
-        edges = []
+        # Relation-level reads come from the authoritative index via the
+        # adjacency maps (2026-09-03) — never from the nx pair's single
+        # 'relation' attribute, which hid every second relation on a pair.
+        if self._adj_count != len(self._edge_index):
+            self.rebuild_edge_indexes()
+
+        edges: list[GraphEdge] = []
+        index = self._edge_index
         if direction in ("out", "both"):
-            for _, tgt, data in self.graph.out_edges(eid, data=True):
-                ekey = f"{eid}|{data.get('relation', '')}|{tgt}"
-                if ekey in self._edge_index:
-                    edges.append(self._edge_index[ekey])
-                else:
-                    edges.append(GraphEdge.from_dict({**data, "source_id": eid, "target_id": tgt}))
+            for key in self._out_keys.get(eid, ()):
+                e = index.get(key)
+                if e is not None:
+                    edges.append(e)
         if direction in ("in", "both"):
-            for src, _, data in self.graph.in_edges(eid, data=True):
-                ekey = f"{src}|{data.get('relation', '')}|{eid}"
-                if ekey in self._edge_index:
-                    edges.append(self._edge_index[ekey])
-                else:
-                    edges.append(GraphEdge.from_dict({**data, "source_id": src, "target_id": eid}))
+            for key in self._in_keys.get(eid, ()):
+                e = index.get(key)
+                if e is not None:
+                    edges.append(e)
         return edges
 
     def remove_entity(self, entity_id: str) -> bool:
@@ -323,16 +359,84 @@ class GraphMemory:
             return False
         # Drop incident edges from the authoritative edge index (save() writes
         # edges from this index, so stale entries would resurrect dangling edges).
-        stale = [k for k, e in self._edge_index.items()
+        stale = [(k, e) for k, e in self._edge_index.items()
                  if e.source_id == eid or e.target_id == eid]
-        for k in stale:
+        for k, e in stale:
             del self._edge_index[k]
+            self._unindex_edge(e, key=k)
+        # The node's own adjacency rows must not linger (a dangling key would
+        # make the far endpoint report an edge to a node that no longer exists).
+        for maps in (self._out_keys, self._in_keys):
+            leftover = maps.pop(eid, None)
+            if leftover:
+                self._adj_count -= len(leftover)
         # Drop alias entries pointing at this entity
         self._alias_index = {a: t for a, t in self._alias_index.items() if t != eid}
         # Remove the node (networkx drops its incident graph edges too)
         self.graph.remove_node(eid)
         self._mark_dirty()
         return True
+
+    # ------------------------------------------------------------------
+    # Relation-level adjacency index (2026-09-03)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _nx_edge_attrs(edge: GraphEdge) -> dict:
+        """Advisory attribute mirror written onto the nx pair edge."""
+        return {
+            "relation": edge.relation,
+            "weight": edge.weight,
+            "truth_score": edge.truth_score,
+            "first_seen": edge.first_seen.isoformat() if edge.first_seen else None,
+            "last_seen": edge.last_seen.isoformat() if edge.last_seen else None,
+            "source_fact_ids": edge.source_fact_ids,
+            "metadata": edge.metadata,
+        }
+
+    def _index_edge(self, edge: GraphEdge, key: Optional[str] = None) -> None:
+        """Record ``edge`` in both adjacency maps (idempotent per key)."""
+        key = key or edge.edge_key()
+        out = self._out_keys.setdefault(edge.source_id, {})
+        if key not in out:
+            self._adj_count += 1
+        out[key] = None
+        self._in_keys.setdefault(edge.target_id, {})[key] = None
+
+    def _unindex_edge(self, edge: GraphEdge, key: Optional[str] = None) -> None:
+        """Forget ``edge`` in both adjacency maps (no-op if absent)."""
+        key = key or edge.edge_key()
+        out = self._out_keys.get(edge.source_id)
+        if out is not None and key in out:
+            del out[key]
+            self._adj_count -= 1
+            if not out:
+                del self._out_keys[edge.source_id]
+        inn = self._in_keys.get(edge.target_id)
+        if inn is not None and key in inn:
+            del inn[key]
+            if not inn:
+                del self._in_keys[edge.target_id]
+
+    def rebuild_edge_indexes(self) -> None:
+        """Rebuild the adjacency maps from ``_edge_index`` (insertion order).
+
+        Public so maintenance scripts that mutate ``_edge_index`` directly
+        (relation canonicalization, calibration purges) can re-sync before
+        save().  Also restores any nx pair the topology index is missing —
+        ``graph.add_edge`` is called only when the pair is absent, so existing
+        advisory attrs are never overwritten.  Never marks the graph dirty.
+        """
+        self._out_keys = {}
+        self._in_keys = {}
+        for key, edge in self._edge_index.items():
+            # The dict key is authoritative (scripts re-key entries in place).
+            self._out_keys.setdefault(edge.source_id, {})[key] = None
+            self._in_keys.setdefault(edge.target_id, {})[key] = None
+            if not self.graph.has_edge(edge.source_id, edge.target_id):
+                self.graph.add_edge(edge.source_id, edge.target_id,
+                                    **self._nx_edge_attrs(edge))
+        self._adj_count = len(self._edge_index)
 
     # ------------------------------------------------------------------
     # Alias Resolution
@@ -370,11 +474,39 @@ class GraphMemory:
     # Traversal
     # ------------------------------------------------------------------
 
-    def neighbors(self, entity_id: str, depth: int = 1) -> dict[str, list[GraphEdge]]:
-        """BFS traversal to depth N.  Returns {entity_id: [edges_from_that_entity]}."""
+    def neighbors(
+        self,
+        entity_id: str,
+        depth: int = 1,
+        *,
+        hub_barrier: bool = False,
+        hub_degree: Optional[int] = None,
+        skip_relations: frozenset = frozenset(),
+    ) -> dict[str, list[GraphEdge]]:
+        """BFS traversal to depth N.  Returns {entity_id: [edges_from_that_entity]}.
+
+        Default behaviour is a plain BFS (graph_utils' related-name/expansion
+        consumers depend on that reach).  ``hub_barrier`` (2026-09-03, prompt
+        injection only) applies the expansion doctrine from
+        ``graph_utils.rank_expansion_candidates``: the seed always expands, but
+        a NON-seed node is never expanded THROUGH when it is the ``user`` star
+        hub or has ``hub_degree`` (default GRAPH_EXPANSION_HUB_DEGREE) or more
+        edges — its own edges are still collected (reached), its neighbours are
+        not enqueued.  Before this, a pet seed at depth 2 fanned out through
+        ``user`` (degree 770) into python/gym edges.  ``skip_relations`` are
+        neither traversed nor returned (``mentioned_alongside`` is structural).
+        """
         eid = entity_id.lower().strip()
         if not self.graph.has_node(eid):
             return {}
+        limit = hub_degree if hub_degree is not None else _DEFAULT_HUB_DEGREE
+        if hub_barrier:
+            try:
+                from config.app_config import GRAPH_EXPANSION_HUB_DEGREE  # lazy import: live-config read
+                if hub_degree is None:
+                    limit = int(GRAPH_EXPANSION_HUB_DEGREE)
+            except Exception:
+                pass
 
         visited: set[str] = set()
         result: dict[str, list[GraphEdge]] = {}
@@ -387,10 +519,16 @@ class GraphMemory:
             visited.add(current)
 
             edges = self.get_relations(current, direction="both")
+            if skip_relations:
+                edges = [e for e in edges if e.relation not in skip_relations]
             if edges:
                 result[current] = edges
 
             if d < depth:
+                if hub_barrier and current != eid and (
+                    current == "user" or len(edges) >= limit
+                ):
+                    continue  # reached, never expanded through
                 # Enqueue neighbors
                 for e in edges:
                     next_id = e.target_id if e.source_id == current else e.source_id
@@ -399,9 +537,10 @@ class GraphMemory:
 
         return result
 
-    def subgraph_around(self, entity_id: str, depth: int = 2) -> list[GraphEdge]:
-        """Return all edges within depth hops of an entity (flat list)."""
-        neighborhood = self.neighbors(entity_id, depth=depth)
+    def subgraph_around(self, entity_id: str, depth: int = 2, **traversal_kwargs) -> list[GraphEdge]:
+        """Return all edges within depth hops of an entity (flat list).
+        ``traversal_kwargs`` pass through to ``neighbors`` (hub_barrier, …)."""
+        neighborhood = self.neighbors(entity_id, depth=depth, **traversal_kwargs)
         seen_keys: set[str] = set()
         edges: list[GraphEdge] = []
         for edge_list in neighborhood.values():
@@ -460,6 +599,36 @@ class GraphMemory:
             return False
         return age_hours > ttl_hours
 
+    def edge_is_suppressed(self, edge: GraphEdge) -> bool:
+        """Read-side neutralizer for an edge that must never render (2026-09-03).
+
+        Two deterministic cases, both "never wrong > always active":
+          * ``metadata.curation_quarantined`` — the reversible flag the
+            curation ladder prefers over deletion (``scripts/
+            quarantine_graph_edges.py``); the edge stays on disk, never
+            surfaces.
+          * species conflict — a species-typed relation (``has_dog``) whose
+            TARGET node carries curated ``species`` metadata naming a
+            different animal. The ingestion guard (memory_storage, 2026-08-28)
+            only protects NEW edges; ``user|has_dog|Biscuit`` and
+            ``user|has_dog|Mochi`` (shutdown LLM, 2026-08-18) pre-dated it and
+            rendered "User has dog Mochi" into every turn — the planner then
+            planned "common in dogs" and the reply called the cat a dog.
+        Nodes without species metadata are never blocked (under-fires).
+        """
+        try:
+            md = getattr(edge, "metadata", None) or {}
+            if md.get("curation_quarantined"):
+                return True
+            tgt = self.get_entity(edge.target_id)
+            if tgt is not None and relation_species_conflict(
+                edge.relation, getattr(tgt, "metadata", None) or {}
+            ):
+                return True
+        except Exception:
+            return False
+        return False
+
     def get_context_sentences(self, entity_id: str, depth: int = 2, max_sentences: int = 15, with_attribution: bool = False) -> list[str]:
         """Return natural language sentences about an entity's neighborhood.
 
@@ -474,12 +643,53 @@ class GraphMemory:
             max_sentences: Maximum sentences to return
             with_attribution: If True, append derivation markers to sentences
         """
-        edges = self.subgraph_around(entity_id, depth=depth)
+        seed = entity_id.lower().strip()
+        edges = self.subgraph_around(
+            entity_id, depth=depth, hub_barrier=True, skip_relations=_NO_RENDER_RELATIONS
+        )
         # Drop transient-state edges past their TTL (illness/recovery/mood/...)
         now = datetime.now()
-        edges = [e for e in edges if not self._edge_is_stale_transient(e, now)]
-        # Sort by weight descending
-        edges.sort(key=lambda e: e.weight, reverse=True)
+        edges = [
+            e for e in edges
+            if e.relation not in _NO_RENDER_RELATIONS
+            and not self._edge_is_stale_transient(e, now)
+            and not self.edge_is_suppressed(e)
+        ]
+        # Ordering (2026-09-03): edges incident to the seed first, by weight
+        # (depth-1 behaviour unchanged); then reached-through edges, by weight,
+        # with a FAR node mentioned fewer than GRAPH_EXPANSION_MIN_MENTIONS times
+        # sorted last — deprioritized, never dropped ("never wrong > always active").
+        try:
+            from config.app_config import GRAPH_EXPANSION_MIN_MENTIONS  # lazy import: live-config read
+            min_mentions = int(GRAPH_EXPANSION_MIN_MENTIONS)
+        except Exception:
+            min_mentions = _DEFAULT_MIN_MENTIONS
+
+        def _mentions(nid: str) -> int:
+            node = self.get_entity(nid)
+            try:
+                return int(getattr(node, "mention_count", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _rank(e: GraphEdge):
+            # tier 0: incident to the seed (weight order — depth-1 contract)
+            # tier 1: reached-through edge whose endpoints are well-mentioned
+            # tier 2: reached-through edge touching a rarely-mentioned node
+            # tier 3: an edge of the ``user`` star hub reached through a pet/
+            #         project seed — legitimate, but never ahead of the seed's
+            #         own neighbourhood (the pre-fix "Python mentioned alongside
+            #         name" class)
+            if e.source_id == seed or e.target_id == seed:
+                return (0, -e.weight)
+            if seed != "user" and "user" in (e.source_id, e.target_id):
+                return (3, -e.weight)
+            # both endpoints are non-seed here; the lower-mention endpoint is
+            # the "far" one (a one-off object like ``huge`` or ``possibly``)
+            far_mentions = min(_mentions(e.source_id), _mentions(e.target_id))
+            return (1 if far_mentions >= min_mentions else 2, -e.weight)
+
+        edges.sort(key=_rank)
 
         sentences = []
         for e in edges[:max_sentences]:
@@ -568,22 +778,19 @@ class GraphMemory:
                 if _alias_bindable(a_lower, nid):
                     self._alias_index[a_lower] = nid
 
-        # Load edges
+        # Load edges — every relation lands in the index + adjacency maps;
+        # the nx pair is created once (first relation in file order owns the
+        # advisory attrs).  Pre-2026-09-03 this add_edge ran unconditionally,
+        # so JSON order decided which relation survived a multi-relation pair.
         for edata in payload.get("edges", []):
             edge = GraphEdge.from_dict(edata)
             src = edge.source_id
             tgt = edge.target_id
             ekey = edge.edge_key()
             self._edge_index[ekey] = edge
-            self.graph.add_edge(src, tgt, **{
-                "relation": edge.relation,
-                "weight": edge.weight,
-                "truth_score": edge.truth_score,
-                "first_seen": edata.get("first_seen"),
-                "last_seen": edata.get("last_seen"),
-                "source_fact_ids": edge.source_fact_ids,
-                "metadata": edge.metadata,
-            })
+            self._index_edge(edge, key=ekey)
+            if not self.graph.has_edge(src, tgt):
+                self.graph.add_edge(src, tgt, **self._nx_edge_attrs(edge))
 
         self._dirty = False
         self._modification_count = 0
@@ -721,9 +928,23 @@ class GraphMemory:
                 logger.info(f"  [{reason}] {s_dn} --[{edge.relation}]--> {t_dn}")
         else:
             for ekey, edge, reason in to_remove:
-                del self._edge_index[ekey]
-                if self.graph.has_edge(edge.source_id, edge.target_id):
-                    self.graph.remove_edge(edge.source_id, edge.target_id)
+                self._edge_index.pop(ekey, None)
+                self._unindex_edge(edge, key=ekey)
+                src, tgt = edge.source_id, edge.target_id
+                if not self.graph.has_edge(src, tgt):
+                    continue
+                # The nx pair stays while ANY relation on it survives; if the
+                # removed relation owned the advisory attrs, re-point them.
+                survivor = None
+                for k in self._out_keys.get(src, ()):
+                    cand = self._edge_index.get(k)
+                    if cand is not None and cand.target_id == tgt:
+                        survivor = cand
+                        break
+                if survivor is None:
+                    self.graph.remove_edge(src, tgt)
+                elif self.graph[src][tgt].get("relation") == edge.relation:
+                    self.graph[src][tgt].update(self._nx_edge_attrs(survivor))
             self._mark_dirty()
             logger.info(
                 f"[GraphMemory] Bridge cleanup: removed {len(to_remove)} edges — {categories}"

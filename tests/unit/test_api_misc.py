@@ -1,6 +1,8 @@
 """Tests for the remaining API surface: uploads, models, status/graph, config schema."""
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 import httpx
@@ -42,6 +44,48 @@ class TestUploads:
     async def test_unknown_file_id_is_skipped(self):
         app = create_app(_make_orchestrator(), start_background=False)
         assert app.state.daemon.resolve_uploads(["nope"]) == []
+
+    @pytest.mark.asyncio
+    async def test_upload_limit_rolls_back_prior_files(self, monkeypatch):
+        import api.routes.files as files_route
+        monkeypatch.setattr(files_route, "MAX_TOTAL_BYTES", 5)
+        app = create_app(_make_orchestrator(), start_background=False)
+        async with _client(app) as client:
+            resp = await client.post(
+                "/api/uploads",
+                files=[
+                    ("files", ("one.txt", b"1234", "text/plain")),
+                    ("files", ("two.txt", b"56", "text/plain")),
+                ],
+            )
+        assert resp.status_code == 413
+        assert app.state.daemon._uploads == {}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_upload_removes_partial_file(self, tmp_path, monkeypatch):
+        import api.routes.files as files_route
+
+        class CancelledUpload:
+            filename = "partial.txt"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def read(self, _size):
+                self.calls += 1
+                if self.calls == 1:
+                    return b"partial"
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(files_route, "_UPLOAD_DIR", str(tmp_path))
+        app = create_app(_make_orchestrator(), start_background=False)
+        request = SimpleNamespace(app=app)
+
+        with pytest.raises(asyncio.CancelledError):
+            await files_route.upload_files(request, [CancelledUpload()])
+
+        assert list(tmp_path.iterdir()) == []
+        assert app.state.daemon._uploads == {}
 
 
 class TestModels:

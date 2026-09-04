@@ -72,22 +72,41 @@ import time as _time_mod
 logger = get_logger("orchestrator")
 
 
-def _topics_related(thread_topic: str, current_topic: str) -> bool:
-    """Loose continuity check between the (previous turn's) thread topic and
-    the current query topic. Related when either contains the other or they
-    share a substantive (>3-char) word. Unclassified topics ("general", empty)
-    give no signal → treated as related so the thread wording is preserved
-    rather than asserting a shift we can't support.
+# Topic-continuity predicate is SHARED with storage-time thread detection
+# (utils.query_checker.belongs_to_thread) since 2026-09-03 — the two used to
+# disagree (loose here, exact-equality there), so thread depth reset on
+# every classifier relabel while the read side called the topics related.
+from utils.query_checker import topics_related as _topics_related
+
+
+def _thread_context_is_stale(thread_ctx: dict, now: Optional[datetime] = None) -> bool:
+    """True when the thread context's ``last_timestamp`` is older than the
+    thread hard cutoff (THREAD_TIME_HARD_CUTOFF, 2h) — i.e. the stored thread
+    belongs to a PREVIOUS session and the current message must not be
+    rendered as "message #N in an ongoing thread" (2026-09-03).
+
+    Under-fires by design: a missing key, a non-dict, an unparseable
+    timestamp, or any other surprise → False (the caller then falls back to
+    the time manager's first-message signal).
     """
-    a = (thread_topic or "").strip().lower()
-    b = (current_topic or "").strip().lower()
-    if not a or not b or a == "general" or b == "general":
-        return True
-    if a == b or a in b or b in a:
-        return True
-    a_words = {w for w in re.split(r"\W+", a) if len(w) > 3}
-    b_words = {w for w in re.split(r"\W+", b) if len(w) > 3}
-    return bool(a_words & b_words)
+    if not isinstance(thread_ctx, dict):
+        return False
+    raw = thread_ctx.get("last_timestamp")
+    if not raw:
+        return False
+    try:
+        if isinstance(raw, datetime):
+            ts = raw
+        elif isinstance(raw, str):
+            ts = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        else:
+            return False
+        ts = ts.replace(tzinfo=None)
+        ref = now or datetime.now()
+        ref = ref.replace(tzinfo=None)
+        return (ref - ts).total_seconds() > THREAD_TIME_HARD_CUTOFF
+    except Exception:
+        return False
 
 
 def _thread_topic_shifted(
@@ -140,7 +159,7 @@ from core.truth_event_handler import get_recent_profile_facts as _ext_get_recent
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
 gate_system.wikipedia_api = wiki_api  # This sets it globally
-from utils.query_checker import is_deictic
+from utils.query_checker import is_deictic, THREAD_TIME_HARD_CUTOFF
 
 
 class _SimplePromptBuilder:
@@ -986,6 +1005,20 @@ class DaemonOrchestrator:
 
         return context
 
+    def _is_session_start(self) -> bool:
+        """True when the time manager reports no previous message this session
+        ("N/A (first message in session)"). Shared by the [THREAD CONTEXT]
+        honesty branch and proactive thread surfacing. Missing time manager or
+        any failure → False (under-fires)."""
+        tm = getattr(self, "time_manager", None)
+        if not tm:
+            return False
+        try:
+            gap = tm.time_since_previous_message()
+            return isinstance(gap, str) and "N/A" in gap
+        except Exception:
+            return False
+
     def _build_system_prompt(self, context: ContextResult, use_raw_mode: bool = False) -> str:
         """
         Assemble the system prompt from personality/principles + all contextual injections.
@@ -1113,11 +1146,26 @@ class DaemonOrchestrator:
             _stm_ref = None
             if isinstance(getattr(context, "stm_summary", None), dict):
                 _stm_ref = context.stm_summary.get("reference_type")
+            # Session-start honesty (2026-09-03): the stored thread belongs
+            # to the PREVIOUS session when this is the first message of the
+            # session or the thread's last turn is past the hard cutoff —
+            # "Hey" 13h later had rendered "message #3 in an ongoing
+            # conversation thread about <yesterday's topic>" + "Maintain
+            # conversational continuity." because a greeting read as a
+            # fragment continuation and "general" read as related.
+            _session_start = self._is_session_start() or _thread_context_is_stale(thread_ctx)
             _shifted = thread_topic and _thread_topic_shifted(
                 thread_topic, topic_str, context.original_query, stm_reference_type=_stm_ref
             )
             thread_msg = f"\n\n[THREAD CONTEXT]"
-            if _shifted:
+            if _session_start:
+                thread_msg += (
+                    f"\nNew session. The previous session's last thread "
+                    f"({thread_depth} message(s)) was about "
+                    f"{thread_topic or 'an unlabeled topic'}; treat the current "
+                    f"message as a fresh start unless it clearly continues it."
+                )
+            elif _shifted:
                 thread_msg += (
                     f"\nThe previous message was #{thread_depth} in a thread about "
                     f"{thread_topic}; the current message appears to shift topic "
@@ -1125,11 +1173,11 @@ class DaemonOrchestrator:
                 )
             else:
                 thread_msg += f"\nThis is message #{thread_depth} in an ongoing conversation thread"
-                if thread_topic:
+                if thread_topic and str(thread_topic).strip().lower() != "general":
                     thread_msg += f" about {thread_topic}"
             if is_heavy:
                 thread_msg += "\nThis is a sensitive/heavy topic. Be empathetic and specific."
-            elif thread_depth >= 3 and not _shifted:
+            elif thread_depth >= 3 and not _shifted and not _session_start:
                 thread_msg += "\nMaintain conversational continuity."
 
             system_prompt = system_prompt.rstrip() + thread_msg
@@ -1198,13 +1246,7 @@ class DaemonOrchestrator:
             try:
                 from config.app_config import THREAD_SURFACING_ENABLED
                 if THREAD_SURFACING_ENABLED:
-                    is_first_message = False
-                    if hasattr(self, 'time_manager') and self.time_manager:
-                        try:
-                            gap = self.time_manager.time_since_previous_message()
-                            is_first_message = isinstance(gap, str) and "N/A" in gap
-                        except (AttributeError, TypeError):
-                            pass
+                    is_first_message = self._is_session_start()
                     if is_first_message:
                         system_prompt = system_prompt.rstrip() + (
                             "\n\n## PROACTIVE THREAD SURFACING\n"
@@ -1456,7 +1498,7 @@ class DaemonOrchestrator:
             # Debug: Check if note_images was added to prompt_ctx by _assemble_prompt
             _note_imgs = prompt_ctx.get("note_images", []) if prompt_ctx else []
             if _note_imgs:
-                self.logger.warning(f"[BUILD_FULL_PROMPT] note_images in prompt_ctx: {len(_note_imgs)} images")
+                self.logger.debug(f"[BUILD_FULL_PROMPT] note_images in prompt_ctx: {len(_note_imgs)} images")
             else:
                 self.logger.warning(f"[BUILD_FULL_PROMPT] NO note_images in prompt_ctx! Keys: {list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
 
@@ -1727,9 +1769,9 @@ class DaemonOrchestrator:
         if self.logger:
             if note_images:
                 total_size = sum(len(img.get("data", "")) for img in note_images)
-                self.logger.warning(f"[Orchestrator] IMAGE DEBUG: {len(note_images)} images extracted from prompt_ctx, total base64={total_size//1024}KB")
+                self.logger.debug(f"[Orchestrator] IMAGE DEBUG: {len(note_images)} images extracted from prompt_ctx, total base64={total_size//1024}KB")
             else:
-                self.logger.warning(f"[Orchestrator] IMAGE DEBUG: No images in prompt_ctx. Keys={list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
+                self.logger.debug(f"[Orchestrator] IMAGE DEBUG: No images in prompt_ctx. Keys={list(prompt_ctx.keys()) if prompt_ctx else 'None'}")
 
         # Escalation tracker + safety canary updates happen inside
         # build_full_prompt (_update_safety_trackers) — updating here too

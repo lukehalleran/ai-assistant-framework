@@ -13,6 +13,7 @@ from knowledge.synthesis_models import (
     SynthesisCandidate,
     SynthesisResult,
 )
+from gui.tabs.synthesis import render_synth_card
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,24 @@ def _make_result(
     r.rejection_stage = rejection_stage
     r.rejection_reason = rejection_reason
     return r
+
+
+def test_render_synth_card_escapes_untrusted_fields():
+    result = _make_result(
+        concept_a="<img src=x onerror=alert(1)>",
+        claim="<script>alert('xss')</script>",
+        human_grade="5",
+        rejection_stage="<b>stage</b>",
+        rejection_reason="<svg onload=alert(2)>",
+    )
+    result.grade_notes = "<iframe src='evil'>"
+    rendered = render_synth_card("<a href='evil'>id</a>", result, show_grade=True)
+
+    assert "<script>" not in rendered
+    assert "<img" not in rendered
+    assert "<svg" not in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "&lt;img" in rendered
 
 
 class FakeChromaStore:

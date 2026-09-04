@@ -193,6 +193,15 @@ class ContextSurfacer:
             self._session_insights = []
             return []
 
+    def _live_edges(self, edges):
+        """Drop edges the graph's read-side neutralizer suppresses (quarantined
+        or species-conflicting — 2026-09-03: ``user|has_dog|Mochi`` fed the
+        insight "your relationship with your dog Mochi")."""
+        pred = getattr(self._graph_memory, "edge_is_suppressed", None)
+        if not callable(pred):
+            return list(edges)
+        return [e for e in edges if pred(e) is not True]  # bool only: test doubles return mocks
+
     def _classify_user_edges(self) -> Dict[str, "DomainCluster"]:
         """Walk all edges from 'user' and classify targets by domain.
 
@@ -205,7 +214,7 @@ class ContextSurfacer:
         from memory.surfacing_models import DomainCluster, DomainEntity
         from memory.user_profile_schema import categorize_relation
 
-        edges = self._graph_memory.get_relations("user", direction="out")
+        edges = self._live_edges(self._graph_memory.get_relations("user", direction="out"))
         clusters: Dict[str, DomainCluster] = {}
 
         for edge in edges:

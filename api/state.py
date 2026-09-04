@@ -60,3 +60,7 @@ class AppState:
                 continue
             files.append(SimpleNamespace(name=entry["path"], orig_name=entry["name"]))
         return files
+
+    def unregister_upload(self, file_id: str) -> None:
+        """Remove an upload registration after a failed batch request."""
+        self._uploads.pop(file_id, None)

@@ -304,7 +304,7 @@ These systems are complete and working. Listed here for context, not as active w
 - Updated routing table for profile/biographical queries to prefer summaries over facts
 
 ### Personal Notes Filtering + Web Search Robustness (2026-03-23)
-- Personal notes: stricter post-gate relevance threshold (`PERSONAL_NOTES_GATE_THRESHOLD=0.30` vs general 0.18) prevents topically-similar but contextually-irrelevant Obsidian notes from leaking into responses
+- Personal notes: stricter post-gate relevance threshold (`PERSONAL_NOTES_GATE_THRESHOLD`, config `obsidian.gate_threshold`, 0.60 since 2026-09-03 on the gate's blended 0.85·cos+0.15·truth score) prevents topically-similar but contextually-irrelevant Obsidian notes from leaking into responses; weekly/monthly rollup notes surface only on retrospective queries and negative mood-section notes only when the turn carries an emotional cue
 - Web search: query length truncation at 400 chars to prevent Tavily 400 Bad Request errors
 - Web search: long-paste prefilter (>500 chars without explicit search phrases) skips LLM trigger to save time
 - Web search: LLM-optimized search terms now always use first term as primary query with `auto_decompose=False`

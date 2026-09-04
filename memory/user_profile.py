@@ -47,7 +47,7 @@ from pathlib import Path
 import threading
 
 from utils.logging_utils import get_logger
-from utils.safe_json import load_critical_json
+from utils.safe_json import corrupt_store, load_critical_json
 from memory.user_profile_schema import (
     ProfileCategory, ProfileFact, categorize_relation,
     ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
@@ -56,6 +56,27 @@ import config.app_config as app_config
 from memory.truth_scorer import TruthScorer
 
 logger = get_logger("user_profile")
+
+
+def profile_shape_error(data) -> str:
+    """Return a description of the structural problem with a loaded profile
+    payload, or "" when the containers the runtime reads are all present with
+    the right types. Deliberately minimal (under-fires): only the top-level
+    object and the three containers every code path indexes."""
+    if not isinstance(data, dict):
+        return f"top-level JSON is {type(data).__name__}, expected object"
+    checks = (("categories", dict), ("raw_log", list), ("quick_profile", dict))
+    for key, typ in checks:
+        val = data.get(key)
+        if val is None:
+            continue  # legacy files may omit a container; the runtime defaults it
+        if not isinstance(val, typ):
+            return f"'{key}' is {type(val).__name__}, expected {typ.__name__}"
+    cats = data.get("categories") or {}
+    for cat, facts in cats.items():
+        if not isinstance(facts, list):
+            return f"categories[{cat!r}] is {type(facts).__name__}, expected list"
+    return ""
 
 
 class UserProfile:
@@ -93,9 +114,6 @@ class UserProfile:
 
     def __init__(self, profile_path: str = None):
 
-        print(f"[DEBUG UserProfile] DEFAULT_PATH={self.DEFAULT_PATH}")
-        print(f"[DEBUG UserProfile] profile_path arg={profile_path}")
-        print(f"[DEBUG UserProfile] frozen={getattr(sys, 'frozen', False)}")
         self.profile_path = profile_path or self.DEFAULT_PATH
         self._lock = threading.Lock()
         self.profile = self._load_or_init()
@@ -132,6 +150,13 @@ class UserProfile:
         """
         data = load_critical_json(self.profile_path, "User profile")
         if data is not None:
+            # 2026-09-03 (Codex audit #1): parseable JSON with the wrong SHAPE is
+            # the same class as corrupt JSON — it would fail later with
+            # AttributeError/KeyError or, worse, be "repaired" by a save that
+            # drops the user's facts. Quarantine + abort, never continue.
+            shape_error = profile_shape_error(data)
+            if shape_error:
+                raise corrupt_store(self.profile_path, "User profile", ValueError(shape_error))
             logger.debug(f"[UserProfile] Loaded {len(data.get('raw_log', []))} facts")
             return data
 

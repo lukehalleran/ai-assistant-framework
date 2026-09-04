@@ -17,7 +17,7 @@ Module Contract
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from core.email.provider import EmailMessage
+from core.email.provider import EmailMessage, message_timestamp
 from utils.logging_utils import get_logger
 
 logger = get_logger("outlook_provider")
@@ -188,7 +188,7 @@ class OutlookProvider:
                     results.append(email_msg)
 
             # Newest first
-            results.sort(key=lambda m: m.date or "", reverse=True)
+            results.sort(key=message_timestamp, reverse=True)
             return results[:limit]
 
         except Exception as e:
@@ -263,7 +263,7 @@ class OutlookProvider:
                     results.append(email_msg)
 
             # Already ordered by Graph, but re-sort to be safe
-            results.sort(key=lambda m: m.date or "", reverse=True)
+            results.sort(key=message_timestamp, reverse=True)
             return results
 
         except Exception as e:

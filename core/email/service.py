@@ -20,10 +20,11 @@ Module Contract
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from typing import Dict, List, Optional
 
-from core.email.provider import EmailMessage, EmailProvider
+from core.email.provider import EmailMessage, EmailProvider, message_timestamp
 from utils.logging_utils import get_logger
 
 logger = get_logger("email_service")
@@ -59,17 +60,22 @@ class EmailService:
                     f"failed: {res}")
                 continue
             merged.extend(res or [])
-        merged.sort(key=lambda m: m.date or "", reverse=True)
+        merged = [m for m in merged if isinstance(m, EmailMessage)]
+        merged.sort(key=message_timestamp, reverse=True)
         return merged
 
     def _cached(self, key: tuple) -> Optional[List[EmailMessage]]:
         hit = self._cache.get(key)
         if hit and (time.monotonic() - hit[0]) < self._cache_ttl:
-            return hit[1]
+            # Do not expose the cached list/records to callers: consumers
+            # commonly sort, annotate, or truncate results in place.
+            return copy.deepcopy(hit[1])
         return None
 
     async def search(self, query: str, *, window_days: int = 30,
                      limit: int = 20) -> List[EmailMessage]:
+        limit = max(0, int(limit))
+        window_days = max(0, int(window_days))
         key = ("search", (query or "").strip().lower(), window_days, limit)
         cached = self._cached(key)
         if cached is not None:
@@ -79,11 +85,13 @@ class EmailService:
             for p in self.providers
         ])
         merged = merged[:limit]
-        self._cache[key] = (time.monotonic(), merged)
-        return merged
+        self._cache[key] = (time.monotonic(), copy.deepcopy(merged))
+        return copy.deepcopy(merged)
 
     async def recent(self, *, window_days: int = 7,
                      limit: int = 25) -> List[EmailMessage]:
+        limit = max(0, int(limit))
+        window_days = max(0, int(window_days))
         key = ("recent", window_days, limit)
         cached = self._cached(key)
         if cached is not None:
@@ -93,8 +101,8 @@ class EmailService:
             for p in self.providers
         ])
         merged = merged[:limit]
-        self._cache[key] = (time.monotonic(), merged)
-        return merged
+        self._cache[key] = (time.monotonic(), copy.deepcopy(merged))
+        return copy.deepcopy(merged)
 
     async def health(self) -> Dict[str, dict]:
         out: Dict[str, dict] = {}

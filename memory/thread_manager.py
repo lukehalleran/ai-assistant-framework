@@ -68,6 +68,11 @@ class ThreadManager:
             "thread_started": last_conv.get("thread_started"),
             "thread_topic": last_conv.get("thread_topic"),
             "is_heavy_topic": last_conv.get("is_heavy_topic", False),
+            # Consumers (orchestrator [THREAD CONTEXT]) need the age of the
+            # thread's last turn to tell a fresh session from a live thread
+            # (2026-09-03: "Hey" 13h later rendered "message #3 in an ongoing
+            # conversation thread").
+            "last_timestamp": last_conv.get("timestamp"),
         }
 
     def detect_topic_for_query(self, query: str) -> str:
@@ -95,19 +100,31 @@ class ThreadManager:
             logger.debug(f"[Thread] Topic detection failed: {e}")
             return "general"
 
-    def detect_or_create_thread(self, query: str, is_heavy: bool) -> Dict:
+    def detect_or_create_thread(
+        self, query: str, is_heavy: bool, current_topic: Optional[str] = None
+    ) -> Dict:
         """
         Detect if current query continues immediate previous conversation.
         Returns thread metadata dict with thread_id, depth, started, topic.
         Only checks the most recent conversation for strict consecutive threading.
+
+        ``current_topic`` (2026-09-03): the label the orchestrator ALREADY
+        assigned this turn (the same value stored as the entry's ``topic``).
+        When given it is used verbatim — even "general" — instead of running
+        a SECOND classification here, which could disagree with the first
+        and break the thread on a label the prompt never saw.
         """
         from utils.query_checker import belongs_to_thread
 
         # Get only the most recent conversation (limit=1 for strict consecutive check)
         recent = self.corpus_manager.get_recent_memories(count=1)
 
-        # Detect topic for current query to avoid using stale topic
-        current_query_topic = self.detect_topic_for_query(query)
+        # Reuse the turn's label when the caller passed one; otherwise detect
+        # a topic for this specific query to avoid using a stale topic.
+        if isinstance(current_topic, str) and current_topic.strip():
+            current_query_topic = current_topic.strip()
+        else:
+            current_query_topic = self.detect_topic_for_query(query)
 
         if not recent:
             # First conversation - create new thread

@@ -279,18 +279,28 @@ async def test_get_recent_conversations(prompt_builder, memory_coordinator):
     assert isinstance(recent, list)
 
 
-@pytest.mark.asyncio
-async def test_persist_summary(prompt_builder):
-    """Test _persist_summary stores summary."""
-    summary_text = "Test summary of conversations"
+def test_persist_summary():
+    """The summarizer must send a structured summary to its coordinator."""
+    from core.prompt.summarizer import LLMSummarizer
 
-    try:
-        await prompt_builder._persist_summary(summary_text)
-        # Should not crash
-        assert True
-    except Exception:
-        # May need specific setup
-        pass
+    summary_text = "Test summary of conversations"
+    coordinator = Mock()
+    summarizer = LLMSummarizer(
+        model_manager=Mock(),
+        memory_coordinator=coordinator,
+    )
+
+    summarizer._persist_summary(
+        summary_text,
+        [{"query": "Question", "response": "Answer"}],
+        topic="testing",
+    )
+
+    coordinator.add_summary.assert_called_once()
+    stored = coordinator.add_summary.call_args.args[0]
+    assert stored["content"] == summary_text
+    assert stored["source_count"] == 1
+    assert "topic_testing" in stored["tags"]
 
 
 @pytest.mark.asyncio

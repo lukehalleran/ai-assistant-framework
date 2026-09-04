@@ -248,7 +248,7 @@ class TokenManager:
 
             # Special handling: stm_summary is metadata, not content - preserve without token counting
             if name == "stm_summary":
-                logger.warning(f"[TOKEN BUDGET] Preserving stm_summary (metadata, no token cost)")
+                logger.debug(f"[TOKEN BUDGET] Preserving stm_summary (metadata, no token cost)")
                 continue
 
             # Special handling: narrative_state has a hard cap of 500 tokens
@@ -263,7 +263,7 @@ class TokenManager:
                 current_tokens += t
                 continue
 
-            logger.warning(f"[TOKEN BUDGET] Processing section '{name}' with {len(val) if isinstance(val, list) else 1} items, current_tokens={current_tokens}")
+            logger.debug(f"[TOKEN BUDGET] Processing section '{name}' with {len(val) if isinstance(val, list) else 1} items, current_tokens={current_tokens}")
             if isinstance(val, list):
                 kept = []
                 for i, item in enumerate(val):
@@ -294,10 +294,10 @@ class TokenManager:
                         current_tokens += t
                     else:
                         if name == "memories":
-                            logger.warning(f"[TOKEN BUDGET] Stopped adding memories at item {i}/{len(val)}: budget={self.token_budget}, current={current_tokens}, item_tokens={t}")
+                            logger.debug(f"[TOKEN BUDGET] Stopped adding memories at item {i}/{len(val)}: budget={self.token_budget}, current={current_tokens}, item_tokens={t}")
                         break
                 if name == "memories":
-                    logger.warning(f"[TOKEN BUDGET] Kept {len(kept)}/{len(val)} memories, budget={self.token_budget}, used={current_tokens}")
+                    logger.debug(f"[TOKEN BUDGET] Kept {len(kept)}/{len(val)} memories, budget={self.token_budget}, used={current_tokens}")
                 trimmed[name] = kept
             else:
                 # For string sections (like wiki content), apply middle-out if too large

@@ -985,7 +985,7 @@ class UnifiedPromptBuilder:
             eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
             eff_max_upcoming_schedule = _ro.get("max_upcoming_schedule", 0)
             eff_user_profile_tokens = 0 if _local_repo_audit else 3000
-            eff_max_graph_sentences = 0 if _local_repo_audit else PROMPT_MAX_GRAPH_SENTENCES
+            eff_max_graph_sentences = 0 if _local_repo_audit else _ro.get("max_graph_sentences", PROMPT_MAX_GRAPH_SENTENCES)
 
             # Schedule keyword gating: even without intent override, activate
             # schedule retrieval when query has schedule trigger + temporal signal
@@ -1163,12 +1163,35 @@ class UnifiedPromptBuilder:
             logger.debug(f"[PromptBuilder] image check: model={current_model}, OBSIDIAN_INCLUDE_IMAGES={OBSIDIAN_INCLUDE_IMAGES}, is_multimodal={_is_multimodal_model(current_model)}, include_note_images={include_note_images}")
 
             if eff_max_personal_notes > 0:
+                # Rollup (weekly/monthly summary) notes only on retrospective
+                # queries (2026-09-03): question-shaped or carrying a recall cue.
+                try:
+                    from core.agentic.gate import _recall_signal_hit  # lazy import: cycle
+                    _notes_allow_rollups = ("?" in user_input) or _recall_signal_hit(user_input.lower())
+                except Exception:
+                    _notes_allow_rollups = True
+                # Negative mood-section notes only when the turn has an emotional
+                # cue: heavy topic, active distress, or negative affect in the
+                # message itself (2026-09-03).
+                try:
+                    from utils.query_checker import _is_heavy_topic_heuristic
+                    from memory.valence import negative_affect_score
+                    from config.app_config import VALENCE_NEGATIVE_THRESHOLD  # lazy import: live-config read
+                    _notes_allow_mood = bool(
+                        getattr(self.context_gatherer, "_distress_active", False)
+                        or _is_heavy_topic_heuristic(user_input)
+                        or negative_affect_score(user_input) >= float(VALENCE_NEGATIVE_THRESHOLD)
+                    )
+                except Exception:
+                    _notes_allow_mood = True
                 tasks["personal_notes"] = asyncio.create_task(
                     _timed_task("personal_notes", self.context_gatherer.get_personal_notes(
                         user_input,
                         eff_max_personal_notes,
                         include_images=include_note_images,
-                        max_images_per_note=OBSIDIAN_MAX_IMAGES_PER_NOTE
+                        max_images_per_note=OBSIDIAN_MAX_IMAGES_PER_NOTE,
+                        allow_rollups=_notes_allow_rollups,
+                        allow_mood_sections=_notes_allow_mood,
                     ))
                 )
 
@@ -1291,11 +1314,14 @@ class UnifiedPromptBuilder:
             # Relevant emails (passive retrieval, cue-gated + distress-suppressed)
             try:
                 from config.app_config import EMAIL_PASSIVE_CONTEXT_ENABLED, EMAIL_PASSIVE_MAX
-                if (EMAIL_PASSIVE_CONTEXT_ENABLED and EMAIL_PASSIVE_MAX > 0
+                # 2026-09-03: intent profiles may zero passive email (casual_social /
+                # emotional_support) via the max_relevant_emails override key.
+                _eff_emails = int(_ro.get("max_relevant_emails", EMAIL_PASSIVE_MAX))
+                if (EMAIL_PASSIVE_CONTEXT_ENABLED and _eff_emails > 0
                         and not _local_repo_audit):
                     tasks["relevant_emails"] = asyncio.create_task(
                         _timed_task("relevant_emails",
-                                    self.context_gatherer.get_relevant_emails(user_input, EMAIL_PASSIVE_MAX))
+                                    self.context_gatherer.get_relevant_emails(user_input, _eff_emails))
                     )
             except Exception:
                 pass
@@ -1560,11 +1586,14 @@ class UnifiedPromptBuilder:
                 personal_notes = context.get("personal_notes", [])
                 if personal_notes and hasattr(self.context_gatherer, 'gate_system'):
                     try:
+                        # min_results=0 (2026-09-03): notes never get the gate's
+                        # forced below-threshold backfill (GATE_MIN_MEMORIES).
                         gated_notes = await self.context_gatherer.gate_system.filter_memories(
-                            user_input, personal_notes
+                            user_input, personal_notes, min_results=0
                         )
-                        # Apply stricter relevance threshold for personal notes
-                        # (general gate threshold is 0.18; personal notes need 0.30+)
+                        # Apply the personal-notes bar on the gate's BLENDED score
+                        # (0.85·cosine + 0.15·truth; notes carry truth 0.9, so the
+                        # 0.60 default ≈ cosine 0.55) — see obsidian.gate_threshold.
                         pre_filter_count = len(gated_notes)
                         gated_notes = [n for n in gated_notes
                                        if n.get("relevance_score", 0) >= PERSONAL_NOTES_GATE_THRESHOLD]
@@ -1796,7 +1825,7 @@ class UnifiedPromptBuilder:
                     if add:
                         context['recent_summaries'] = (context.get('recent_summaries') or []) + add
 
-                logger.warning(f"AFTER SUMMARIES TOP-UP: memories count = {len(context.get('memories', []))}")
+                logger.debug(f"AFTER SUMMARIES TOP-UP: memories count = {len(context.get('memories', []))}")
 
                 # Reflections floor — survival minimum for the rendered key only
                 _reflection_floor = min(
@@ -1840,7 +1869,7 @@ class UnifiedPromptBuilder:
             except (TypeError, AttributeError, KeyError) as e:
                 logger.debug(f"Post-budget floor top-up failed: {e}")
 
-            logger.warning(f"BEFORE FINAL ASSEMBLY: memories count = {len(context.get('memories', []))}")
+            logger.debug(f"BEFORE FINAL ASSEMBLY: memories count = {len(context.get('memories', []))}")
 
             # Step 8: Final context assembly
             prompt_ctx = {
@@ -1877,7 +1906,7 @@ class UnifiedPromptBuilder:
 
             build_time = time.time() - start_time
             logger.info(f"Prompt built in {build_time:.2f}s")
-            logger.warning(f"RETURNING CONTEXT: memories count = {len(prompt_ctx.get('memories', []))}")
+            logger.debug(f"RETURNING CONTEXT: memories count = {len(prompt_ctx.get('memories', []))}")
 
             # Attach timing metadata for interpretability (underscore-prefixed to avoid collision)
             prompt_ctx["_task_timings"] = dict(task_timings)

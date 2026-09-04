@@ -560,6 +560,36 @@ class TestEmailService:
         assert result[0].provider == "gmail"
 
     @pytest.mark.asyncio
+    async def test_service_orders_messages_by_instant_across_offsets(self):
+        """Newest-first ordering must compare instants, not offset strings."""
+        later = EmailMessage(
+            provider="gmail", message_id="later",
+            subject="Later", date="2026-09-01T10:00:00-05:00",
+        )  # 15:00 UTC
+        earlier = EmailMessage(
+            provider="outlook", message_id="earlier",
+            subject="Earlier", date="2026-09-01T14:00:00+00:00",
+        )
+        provider = AsyncMock(spec=EmailProvider)
+        provider.name = "mixed"
+        provider.search.return_value = [earlier, later]
+
+        result = await EmailService(providers=[provider]).search("test")
+
+        assert [m.message_id for m in result] == ["later", "earlier"]
+
+    @pytest.mark.asyncio
+    async def test_direct_provider_sort_helper_handles_mixed_offsets(self):
+        """Both adapters share the direct-result timestamp contract."""
+        from core.email.provider import message_timestamp
+        values = [
+            EmailMessage(provider="gmail", message_id="early", date="2026-09-01T14:00:00+00:00"),
+            EmailMessage(provider="outlook", message_id="late", date="2026-09-01T10:00:00-05:00"),
+        ]
+        values.sort(key=message_timestamp, reverse=True)
+        assert [m.message_id for m in values] == ["late", "early"]
+
+    @pytest.mark.asyncio
     async def test_service_caches_results(self):
         """Test that search results are cached by TTL."""
         msg1 = EmailMessage(

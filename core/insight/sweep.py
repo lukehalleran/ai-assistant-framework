@@ -230,6 +230,9 @@ async def run_sweep(
                 for edge in graph_memory.get_relations(entity_id, direction="both"):
                     if graph_memory._edge_is_stale_transient(edge, now):
                         continue
+                    _supp = getattr(graph_memory, "edge_is_suppressed", None)
+                    if callable(_supp) and _supp(edge) is True:  # bool only: test doubles return mocks
+                        continue
                     src = graph_memory.get_entity(edge.source_id)
                     tgt = graph_memory.get_entity(edge.target_id)
                     sentence = edge.to_natural_language(

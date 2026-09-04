@@ -388,7 +388,27 @@ _KNOWLEDGE_HIT = _compile_keyword_matcher(KNOWLEDGE_KEYWORDS)
 # memory mode on "I am in bathroom with shower running…" (live 2026-08-29;
 # 4th occurrence of the substring class after 'solve'⊂"resolution",
 # 'document'⊂"documented", 'cat'⊂"catalog").
-_RECALL_SIGNAL_HIT = _compile_keyword_matcher(RECALL_SIGNAL_WORDS)
+# 2026-09-03: bare interrogatives are recall cues only where they OPEN a
+# clause. "…doesn't know what to do at that point" (a cat-fetch anecdote
+# naming graph entity Biscuit) matched 'what' mid-clause and ran an 18s
+# memory loop. Phrase cues ("tell me", "remember", …) still hit anywhere;
+# how/what/when/where/who/why must start the message, follow sentence
+# punctuation, or follow a coordinating conjunction ("so what happened…").
+_BARE_INTERROGATIVES = frozenset({"how", "what", "when", "where", "who", "why"})
+_RECALL_PHRASE_HIT = _compile_keyword_matcher(
+    [w for w in RECALL_SIGNAL_WORDS if w not in _BARE_INTERROGATIVES]
+)
+_CLAUSE_OPEN_WH_RE = re.compile(
+    r"(?:^|[.!?;:,]\s*|\b(?:and|but|so|or)\s+)(?:how|what|when|where|who|why)\b"
+)
+
+
+def _recall_signal_hit(lower_text: str) -> bool:
+    text = (lower_text or "").strip()
+    return bool(_RECALL_PHRASE_HIT(text) or _CLAUSE_OPEN_WH_RE.search(text))
+
+
+_RECALL_SIGNAL_HIT = _recall_signal_hit
 
 # Tier-2 entity+recall arm is only trusted on short messages (2026-08-29:
 # a lyrics paste with an embedded '?' ran a 151s memory loop).

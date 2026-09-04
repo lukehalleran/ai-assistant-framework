@@ -163,6 +163,7 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_narrative": 5,     # eval: KEEP (100%/50%)
             "max_visual_memories": 0,
             "max_skills": 0,        # procedural workflows are tone-deaf during distress
+            "max_relevant_emails": 0,  # 2026-09-03: no inbox mining on emotional turns
         },
         "gate": 0.35,
     },
@@ -182,6 +183,9 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_user_uploads": 0,      # eval: DROP (25%/40%)
             "max_proactive": 0,         # eval: low-impact (29%/14%)
             "max_visual_memories": 0,   # no images for greetings/chat
+            "max_personal_notes": 0,    # 2026-09-03: vault notes on a greeting = noise
+            "max_relevant_emails": 0,   # 2026-09-03: passive email off for small talk
+            "max_graph_sentences": 0,   # 2026-09-03: graph edges off for small talk
         },
         "gate": 0.65,
     },
@@ -322,10 +326,22 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
     # "how long has the war lasted"), which then classify temporal_recall@0.85
     # and lose wiki-semantic retrieval (WIKI_SEMANTIC_SUPPRESS_INTENTS) —
     # exactly the queries the wiki index exists for.
+    # 2026-09-03: bare temporal adverbs ("last week", "yesterday", "earlier
+    # today", "the other day", "a few days ago") are ordinary NARRATION —
+    # "Biscuit turned 2 last week" classified temporal_recall@0.85 and the
+    # profile pulled 20 turns + 8 summaries into a pet anecdote. They count
+    # only when the message is question/recall-shaped; the inherently-recall
+    # cues below are unchanged.
     _add(
-        r"\b(last (week|month|time|session|night|year)|yesterday"
-        r"|a few (days|weeks|months) ago|earlier today|the other day"
-        r"|remember when|what (did|were) we (talk|discuss|chat)"
+        r"^(?=.*(?:\?|\b(?:remember|recall|remind|what (?:did|were|was|happened)"
+        r"|when (?:did|was|were)|how long|did (?:i|we|you)|have (?:i|we)|was it)\b))"
+        r".*\b(last (week|month|time|session|night|year)|yesterday"
+        r"|a few (days|weeks|months) ago|earlier today|the other day)\b",
+        IntentType.TEMPORAL_RECALL, 0.85,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    _add(
+        r"\b(remember when|what (did|were) we (talk|discuss|chat)"
         r"|what have (i|we) been|(my|our|chat|conversation|message) history"
         # 'over time'/'progression' anchored to PERSONAL recall (2026-09-01:
         # bare 'over time' matched "their actions over time could lead" — a
@@ -881,6 +897,7 @@ class IntentClassifier:
     _PHASE8_GATING_KEYS = frozenset({
         "max_reference_docs", "max_narrative", "max_user_uploads",
         "max_proactive", "max_personal_notes",
+        "max_relevant_emails", "max_graph_sentences",  # 2026-09-03
     })
 
     def _build_result(self, intent: IntentType, confidence: float) -> IntentResult:

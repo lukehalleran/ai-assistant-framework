@@ -100,6 +100,9 @@ def apply_plan(gm: GraphMemory, renames, merges) -> tuple[int, int]:
         _sync_nx_edge(gm, edge)
         renamed += 1
 
+    # The adjacency maps are keyed by edge key; re-sync them after the direct
+    # _edge_index re-keying above so reads + save() agree (2026-09-03).
+    gm.rebuild_edge_indexes()
     gm._mark_dirty()
     return renamed, merged
 

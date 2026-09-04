@@ -1,0 +1,21 @@
+# Daemon daily-notes catch-up — systemd USER unit template.
+# Install: copy this file, the .timer, the .service.d/ drop-in and the -failed
+# unit into ~/.config/systemd/user/ then `systemctl --user daemon-reload &&
+# systemctl --user enable --now daemon-daily-notes.timer` (see README.md).
+# The interpreter MUST be the project environment (pyproject: python >=3.11,<3.12).
+# Running it under the system Python printed numpy ABI tracebacks on every run
+# and used a different chromadb major version than the live store.
+[Unit]
+Description=Daemon Daily Notes Generator
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Daemon_v1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.pyenv/versions/3.11.8/bin/python %h/Daemon_v1/scripts/daily_note_catchup.py
+StandardOutput=append:%h/Daemon_v1/logs/daily_notes.log
+StandardError=append:%h/Daemon_v1/logs/daily_notes.log
+
+[Install]
+WantedBy=default.target

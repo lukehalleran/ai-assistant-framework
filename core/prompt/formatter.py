@@ -799,9 +799,9 @@ class PromptFormatter:
         if system_prompt and not directives:
             directives = system_prompt
 
-        logger.warning(f"PROMPT ASSEMBLY START: context has {len(context)} keys: {list(context.keys())}")
-        logger.warning(f"PROMPT ASSEMBLY START: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
-        logger.warning(f"PROMPT ASSEMBLY START: stm_summary present = {context.get('stm_summary') is not None}, value = {context.get('stm_summary')}")
+        logger.debug(f"PROMPT ASSEMBLY START: context has {len(context)} keys: {list(context.keys())}")
+        logger.debug(f"PROMPT ASSEMBLY START: recent_summaries={len(context.get('recent_summaries', []))}, semantic_summaries={len(context.get('semantic_summaries', []))}")
+        logger.debug(f"PROMPT ASSEMBLY START: stm_summary present = {context.get('stm_summary') is not None}")
 
         def mem_parts(mem: Dict[str, Any]) -> tuple[str, str]:
             try:
@@ -915,26 +915,26 @@ class PromptFormatter:
 
         # Relevant memories
         memories = context.get("memories", []) or []
-        logger.warning(f"PROMPT BUILD: FINAL COUNT - Got {len(memories)} memories from context BEFORE ASSEMBLY")
+        logger.debug(f"PROMPT BUILD: FINAL COUNT - Got {len(memories)} memories from context BEFORE ASSEMBLY")
         memory_lines: list[str] = []
         for i, mem in enumerate(memories, start=1):
             content, ts = mem_parts(mem)
             memory_lines.append(f"{i}) {ts}: {content}" if ts else f"{i}) {content}")
         if memory_lines:
             sections.append(f"[RELEVANT MEMORIES] n={len(memory_lines)}\n" + "\n\n".join(memory_lines))
-            logger.warning(f"PROMPT BUILD: FINAL COUNT - [RELEVANT MEMORIES] section will contain {len(memory_lines)} memories")
+            logger.debug(f"PROMPT BUILD: FINAL COUNT - [RELEVANT MEMORIES] section will contain {len(memory_lines)} memories")
         else:
-            logger.warning("PROMPT BUILD: FINAL COUNT - No memories to display in [RELEVANT MEMORIES] section")
+            logger.debug("PROMPT BUILD: FINAL COUNT - No memories to display in [RELEVANT MEMORIES] section")
 
         # Summaries and reflections (4 sections, shared format via _format_summary_section)
         recent_summaries = context.get("recent_summaries", []) or []
-        logger.warning(f"PROMPT ASSEMBLY: Got {len(recent_summaries)} recent summaries")
+        logger.debug(f"PROMPT ASSEMBLY: Got {len(recent_summaries)} recent summaries")
         _sec = _format_summary_section(recent_summaries, "RECENT SUMMARIES")
         if _sec:
             sections.append(_sec)
-            logger.warning(f"PROMPT ASSEMBLY: Added recent summaries section")
+            logger.debug(f"PROMPT ASSEMBLY: Added recent summaries section")
         else:
-            logger.warning("PROMPT ASSEMBLY: No recent summaries to add")
+            logger.debug("PROMPT ASSEMBLY: No recent summaries to add")
 
         _sec = _format_summary_section(context.get("semantic_summaries", []) or [], "SEMANTIC SUMMARIES")
         if _sec:
@@ -1096,11 +1096,11 @@ class PromptFormatter:
         if note_images:
             context["note_images"] = note_images
             total_data_size = sum(len(img.get("data", "")) for img in note_images)
-            logger.warning(f"[PromptBuilder] IMAGE DEBUG: {len(note_images)} images collected, total base64 size={total_data_size//1024}KB")
+            logger.debug(f"[PromptBuilder] IMAGE DEBUG: {len(note_images)} images collected, total base64 size={total_data_size//1024}KB")
         else:
             # Check why no images
             total_image_data = sum(len(note.get("image_data", [])) for note in personal_notes if isinstance(note, dict))
-            logger.warning(f"[PromptBuilder] IMAGE DEBUG: No images in note_images list. personal_notes has {len(personal_notes)} notes, total image_data entries={total_image_data}")
+            logger.debug(f"[PromptBuilder] IMAGE DEBUG: No images in note_images list. personal_notes has {len(personal_notes)} notes, total image_data entries={total_image_data}")
 
         # User Uploaded Items (files and images uploaded during sessions)
         user_uploads = context.get("user_uploads", []) or []
@@ -1596,9 +1596,9 @@ class PromptFormatter:
 
         # STM (Short-Term Memory) Summary - placed right before query for maximum attention
         stm_summary = context.get("stm_summary")
-        logger.warning(f"STM RENDERING CHECK: stm_summary = {stm_summary}")
+        logger.debug(f"STM RENDERING CHECK: stm_summary keys = {sorted(stm_summary.keys()) if isinstance(stm_summary, dict) else type(stm_summary).__name__}")
         if stm_summary:
-            logger.warning("STM RENDERING: Rendering STM section before query")
+            logger.debug("STM RENDERING: Rendering STM section before query")
             stm_lines = []
             stm_lines.append(f"Topic: {stm_summary.get('topic', 'unknown')}")
             stm_lines.append(f"User Question: {stm_summary.get('user_question', '')}")
@@ -1630,6 +1630,18 @@ class PromptFormatter:
                     "or [RECENT CONVERSATION]. Do NOT invent counts or patterns from a "
                     "single underlying occurrence."
                 )
+            # Novelty override (2026-09-03): the analyzer demoted "recall" →
+            # "unclear" because the message names entities absent from the
+            # short-term window; say which so the model checks long-term
+            # memory instead of assuming a restatement.
+            if stm_summary.get('novelty_override'):
+                _novel = stm_summary.get('novel_entities') or []
+                _novel = [str(n) for n in _novel if isinstance(n, str) and n.strip()]
+                if _novel:
+                    stm_lines.append(
+                        f"Note: the current message names {', '.join(_novel)}, "
+                        "which do not appear in the short-term window."
+                    )
 
             temporal_facts = stm_summary.get('temporal_facts', [])
             if temporal_facts:
@@ -1644,9 +1656,9 @@ class PromptFormatter:
                 stm_lines.append(f"Constraints: {', '.join(constraints)}")
 
             sections.append(f"[SHORT-TERM CONTEXT SUMMARY]\n" + "\n".join(stm_lines))
-            logger.warning(f"STM RENDERING: Added STM section before query")
+            logger.debug(f"STM RENDERING: Added STM section before query")
         else:
-            logger.warning("STM RENDERING: No stm_summary in context, skipping section")
+            logger.debug("STM RENDERING: No stm_summary in context, skipping section")
 
         # Disambiguation notes (injected just before user query for maximum attention)
         disambiguation = context.get("disambiguation_notes", []) or []

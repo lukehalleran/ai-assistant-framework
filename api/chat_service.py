@@ -74,6 +74,7 @@ async def submit_stream(req: ChatRequest, state: AppState) -> AsyncGenerator[Cha
         fast_mode=req.fast_mode,
     )
 
+    next_task = None
     try:
         next_task = asyncio.ensure_future(agen.__anext__())
         while True:
@@ -158,3 +159,14 @@ async def submit_stream(req: ChatRequest, state: AppState) -> AsyncGenerator[Cha
                 "debug": None,
                 "turn_index": len(session.history) - 1,
             })
+    finally:
+        # If the client disconnects or the pipeline raises, the shielded
+        # __anext__ task must not keep running against session state after the
+        # stream lock is released. Close both the task and async generator.
+        if next_task is not None and not next_task.done():
+            next_task.cancel()
+            try:
+                await next_task
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
+        await agen.aclose()

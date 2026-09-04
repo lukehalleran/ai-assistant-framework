@@ -146,6 +146,9 @@ class LearnedRelationStore:
         rows = [
             (rel, row) for rel, row in self._data["relations"].items()
             if len(row.get("days", [])) >= need
+            # 2026-09-03: a row tracked before its relation became core/ephemeral
+            # (`role` → occupation) can never be promoted.
+            and self._acceptable(rel) == rel
         ]
         rows.sort(key=lambda kv: (len(kv[1].get("days", [])), kv[1].get("last_seen", "")), reverse=True)
         return [rel for rel, _ in rows[:cap]]

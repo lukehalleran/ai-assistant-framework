@@ -29,9 +29,9 @@ Module Contract
 
 import os
 import asyncio
+import inspect
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from utils.time_manager import TimeManager
 from utils.logging_utils import get_logger
 
 logger = get_logger("prompt_summarizer")
@@ -109,6 +109,83 @@ class LLMSummarizer:
             "model": model_name
         }
 
+    async def _generate_text(self, prompt: str, *, timeout: float,
+                             max_tokens: int) -> str:
+        """Run an internal generation and normalize streaming/non-streaming APIs.
+
+        ``ModelManager.generate_async`` intentionally returns an async stream for
+        API models but a plain string for local models.  Internal summarization
+        needs one complete string, so prefer the non-streaming contract and keep
+        a compatibility adapter for older/custom managers.  The timeout wraps
+        both request creation and stream consumption.
+        """
+        model_name = self._ensure_summaries_model()
+
+        async def _collect(result: Any) -> str:
+            if inspect.isawaitable(result):
+                result = await result
+            if result is None:
+                return ""
+            if isinstance(result, str):
+                return result.strip()
+            if isinstance(result, dict):
+                return str(result.get("content") or "").strip()
+            # Only TEXT content counts: a Mock/stub manager auto-creates a
+            # `.content` attribute, and stringifying it produced a fake
+            # "<Mock …>" summary (test_llm_summarize_recent_no_model_manager).
+            content = getattr(result, "content", None)
+            if isinstance(content, str):
+                return content.strip()
+            if hasattr(result, "__aiter__"):
+                parts: List[str] = []
+                async for chunk in result:
+                    if isinstance(chunk, str):
+                        parts.append(chunk)
+                        continue
+                    if isinstance(chunk, dict):
+                        piece = chunk.get("content", "")
+                    else:
+                        choices = getattr(chunk, "choices", None) or []
+                        delta = getattr(choices[0], "delta", None) if choices else None
+                        piece = getattr(delta, "content", "") if delta is not None else ""
+                    if piece:
+                        parts.append(str(piece))
+                return "".join(parts).strip()
+            return ""
+
+        async def _run() -> str:
+            generate_once = getattr(self.model_manager, "generate_once", None)
+            if callable(generate_once):
+                return await _collect(generate_once(
+                    prompt,
+                    model_name=model_name,
+                    max_tokens=max_tokens,
+                    temperature=0.3,
+                ))
+
+            generate_async = getattr(self.model_manager, "generate_async", None)
+            if callable(generate_async):
+                return await _collect(generate_async(
+                    prompt,
+                    model=model_name,
+                    max_tokens=max_tokens,
+                    temperature=0.3,
+                ))
+
+            generate = getattr(self.model_manager, "generate", None)
+            if callable(generate):
+                result = await asyncio.to_thread(
+                    generate,
+                    prompt,
+                    model_name=model_name,
+                    max_tokens=max_tokens,
+                    temperature=0.3,
+                )
+                return await _collect(result)
+            return ""
+
+        return await asyncio.wait_for(_run(), timeout=timeout)
+
     async def _llm_summarize_recent(self, conversations: List[Dict[str, Any]],
                                   topic: str = "", max_conversations: int = 10) -> Optional[str]:
         """
@@ -156,25 +233,11 @@ class LLMSummarizer:
 
 Summary:"""
 
-            # Generate summary
-            gen_params = self._decide_gen_params(model_name)
-
-            # Use model manager to generate
-            if hasattr(self.model_manager, 'generate_async'):
-                response = await asyncio.wait_for(
-                    self.model_manager.generate_async(summary_prompt, **gen_params),
-                    timeout=SUM_TIMEOUT
-                )
-            else:
-                # Fallback to sync generation
-                response = self.model_manager.generate(summary_prompt, **gen_params)
-
-            if response and hasattr(response, 'content'):
-                summary = response.content.strip()
-            elif isinstance(response, str):
-                summary = response.strip()
-            else:
-                summary = str(response).strip() if response else None
+            summary = await self._generate_text(
+                summary_prompt,
+                timeout=SUM_TIMEOUT,
+                max_tokens=self._decide_gen_params(model_name)["max_tokens"],
+            )
 
             if summary:
                 logger.info(f"Generated LLM summary: {len(summary)} chars")
@@ -337,34 +400,11 @@ Return exactly {needed} reflections, each on its own line prefixed with "- ". Ke
             gen_params = self._decide_gen_params(model_name)
             gen_params["max_tokens"] = 150 + (needed - 1) * 80  # allow a bit more for multiple items
 
-            if hasattr(self.model_manager, 'generate_async'):
-                async_stream = await asyncio.wait_for(
-                    self.model_manager.generate_async(reflection_prompt, **gen_params),
-                    timeout=15  # Shorter timeout for reflections
-                )
-
-                # Consume the async stream to get the actual text
-                reflection_text = ""
-                try:
-                    async for chunk in async_stream:
-                        if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
-                            delta = chunk.choices[0].delta
-                            if hasattr(delta, 'content') and delta.content:
-                                reflection_text += delta.content
-                except Exception as e:
-                    logger.warning(f"Error consuming reflection stream: {e}")
-                    reflection_text = ""
-            else:
-                response = self.model_manager.generate(reflection_prompt, **gen_params)
-                if response:
-                    if hasattr(response, 'content'):
-                        reflection_text = response.content.strip()
-                    elif isinstance(response, str):
-                        reflection_text = response.strip()
-                    else:
-                        reflection_text = str(response).strip()
-                else:
-                    reflection_text = ""
+            reflection_text = await self._generate_text(
+                reflection_prompt,
+                timeout=15,
+                max_tokens=gen_params["max_tokens"],
+            )
 
             reflection_text = (reflection_text or "").strip()
             if not reflection_text:

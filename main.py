@@ -1063,31 +1063,13 @@ if __name__ == "__main__":
             sys.exit(0)
 
         elif mode == "daily-note-catchup":
-            # Generate yesterday's note if missing (for startup hooks)
-            import asyncio
-            from utils.daily_notes_generator import DailyNotesGenerator
-            from models.model_manager import ModelManager
-
-            print(f"\n{'='*60}")
-            print("DAILY NOTE CATCH-UP")
-            print(f"{'='*60}")
-
-            # Create ModelManager with API key to ensure LLM is available
-            model_manager = ModelManager()
-            generator = DailyNotesGenerator(model_manager=model_manager)
-            result = asyncio.run(generator.generate_yesterday_if_missing())
-
-            if result is None:
-                print("Yesterday's note already exists, nothing to do.")
-            elif result.success:
-                print(f"Generated yesterday's note:")
-                print(f"  Output: {result.output_path}")
-                print(f"  Conversations: {result.conversation_count}")
-            elif result.skipped_reason:
-                print(f"Skipped: {result.skipped_reason}")
-            else:
-                print(f"Failed: {result.error}")
-            sys.exit(0)
+            # Generate yesterday's note if missing (for startup hooks).
+            # 2026-09-03: delegated to scripts/daily_note_catchup.py — the
+            # systemd timer calls that thin entrypoint directly so it never
+            # pays main.py's module-level runtime imports; this mode stays for
+            # compatibility and now exits non-zero on a generation error.
+            from scripts.daily_note_catchup import run_catchup
+            sys.exit(run_catchup())
 
         elif mode == "weekly-note":
             # Generate weekly summary for current or specified week

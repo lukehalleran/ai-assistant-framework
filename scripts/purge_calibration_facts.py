@@ -217,6 +217,10 @@ def main() -> int:
                 edge_rel = g.graph[e["source_id"]][e["target_id"]].get("relation")
                 if edge_rel == e["relation"]:
                     g.graph.remove_edge(e["source_id"], e["target_id"])
+        # Re-sync the relation-level adjacency maps (and restore any nx pair
+        # a surviving sibling relation still needs) after the direct
+        # _edge_index mutation above (2026-09-03).
+        g.rebuild_edge_indexes()
         g._mark_dirty()
         g.save()
         print(f"Removed {removed} fully-synthetic graph edge(s). Nodes untouched "

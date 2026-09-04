@@ -133,15 +133,40 @@ _LIKES_CUES = (
     r"like|likes|liked|love|loves|loved|prefer|prefers|enjoy|enjoys|enjoyed|into|fan|favorite|"
     r"favourite|obsessed|adore"
 )
+# Enrollment is a claim in the relation NAME (2026-09-03): "I dropped CSE 6040
+# and kept MGT 6203" token-matched a stale enrolled_in="CSE 6040 and MGT 6203"
+# object with no enrollment cue at all.
+_ENROLLMENT_CUES = (
+    r"enrol|enrolled|enrolling|enrollment|enrolment|register|registered|registering|"
+    r"registration|taking|take|takes|took|signed\s+up|sign\s+up|signing\s+up|class|classes|"
+    r"course|courses|semester|this\s+term|next\s+term|this\s+fall|this\s+spring|this\s+summer|"
+    r"studying|study"
+)
+_OCCUPATION_CUES = (
+    r"work|works|working|worked|job|hired|employed|role|position|title|career|"
+    r"i'm\s+a|i\s+am\s+a|as\s+an?\b"
+)
 _RELATION_CUE_RES = {
+    "enrolled_in": _ENROLLMENT_CUES,
+    "enrolled": _ENROLLMENT_CUES,
+    "registered_for": _ENROLLMENT_CUES,
+    "takes_class": _ENROLLMENT_CUES,
+    "taking_class": _ENROLLMENT_CUES,
+    "taking_course": _ENROLLMENT_CUES,
+    "current_course": _ENROLLMENT_CUES,
+    "current_courses": _ENROLLMENT_CUES,
     "lives_in": _RESIDENCE_CUES,
     "lived_in": _RESIDENCE_CUES,
     "location": _RESIDENCE_CUES,
     "hometown": r"grew\s+up|hometown|born|raised|from|originally",
     "works_at": r"work|works|working|worked|job|hired|employed|employer|start(?:ed|ing)?\s+at|"
                 r"internship|intern|shift|shifts|office",
-    "works_as": r"work|works|working|worked|job|hired|employed|role|position|title",
-    "occupation": r"work|works|working|worked|job|hired|employed|role|position|title|i'm\s+a|i\s+am\s+a",
+    "works_as": _OCCUPATION_CUES,
+    "occupation": _OCCUPATION_CUES,
+    # 2026-09-03: `role`/`job_title` name a claim too — "Fixed a small bug"
+    # had minted role="bug fixer" with no work/job/title cue in the span.
+    "role": _OCCUPATION_CUES,
+    "job_title": _OCCUPATION_CUES,
     "studies_at": r"study|studies|studying|studied|attend|attending|attends|enrolled|class|classes|"
                   r"course|school|program|degree|major|semester|omsa|university|college",
     "attends": r"study|studies|studying|studied|attend|attending|attends|enrolled|class|classes|"
@@ -222,10 +247,77 @@ def iter_user_messages(messages: Iterable[Any]) -> Iterator[tuple[int, str, str]
             yield index, text, turn_id
 
 
+# Pasted correspondence (2026-09-03).  A user turn that quotes an email —
+# their own outgoing one included — is reported/historical text, not a live
+# claim: "I'm … enrolled in two courses (CSE 6040 and MGT 6203)" inside a
+# pasted Aug-27 email superseded the curated enrolled_in=MGT 6203 fact on
+# Sep 2, days after the drop.  A block runs from a greeting line to a closing
+# line plus the contiguous signature run after it; BOTH ends are required so a
+# bare chat "Hi," never swallows a message.
+_EMAIL_GREETING_RE = re.compile(
+    r"^\s*(?:hi|hello|hey|dear|good\s+(?:morning|afternoon|evening))\b[^\n]{0,80}?[,:!]?\s*$",
+    re.IGNORECASE,
+)
+_EMAIL_CLOSING_RE = re.compile(
+    r"^\s*(?:thanks|thank\s+you|thanks\s+again|thank\s+you\s+(?:so\s+much|again)|many\s+thanks|"
+    r"best|all\s+the\s+best|best\s+regards|regards|kind\s+regards|warm\s+regards|warmly|"
+    r"sincerely|cheers|take\s+care|talk\s+soon|respectfully|gratefully|yours(?:\s+truly)?)"
+    r"\s*[,.!]?\s*$",
+    re.IGNORECASE,
+)
+_SIGNATURE_MAX_LINES = 8
+
+
+def quoted_correspondence_lines(text: str) -> set[int]:
+    """Indexes of lines that sit inside a pasted email block (greeting →
+    closing → signature run).  Empty set when no complete block exists."""
+    lines = (text or "").splitlines()
+    inside: set[int] = set()
+    i = 0
+    while i < len(lines):
+        if not _EMAIL_GREETING_RE.match(lines[i]):
+            i += 1
+            continue
+        close = None
+        for j in range(i + 1, len(lines)):
+            if _EMAIL_CLOSING_RE.match(lines[j]):
+                close = j
+                break
+        if close is None:
+            i += 1
+            continue
+        end = close
+        k = close + 1
+        while k < len(lines) and not lines[k].strip():
+            k += 1
+        run = 0
+        while k < len(lines) and lines[k].strip() and run < _SIGNATURE_MAX_LINES:
+            if _EMAIL_GREETING_RE.match(lines[k]):
+                break
+            end = k
+            k += 1
+            run += 1
+        inside.update(range(i, end + 1))
+        i = end + 1
+    return inside
+
+
+def strip_quoted_correspondence(text: str) -> str:
+    """Return ``text`` with pasted email blocks removed (framing lines kept)."""
+    skip = quoted_correspondence_lines(text)
+    if not skip:
+        return text or ""
+    kept = [ln for idx, ln in enumerate((text or "").splitlines()) if idx not in skip]
+    return "\n".join(kept)
+
+
 def _claim_spans(text: str) -> Iterator[str]:
     """Yield prose spans, excluding code fences, blockquotes and role dumps."""
     in_fence = False
-    for raw_line in (text or "").splitlines() or [text]:
+    quoted = quoted_correspondence_lines(text)
+    for line_idx, raw_line in enumerate((text or "").splitlines() or [text]):
+        if line_idx in quoted:
+            continue
         line = raw_line.strip()
         if line.startswith("```"):
             in_fence = not in_fence

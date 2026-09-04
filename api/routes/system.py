@@ -30,7 +30,13 @@ async def status(request: Request):
         pass
     try:
         graph = getattr(orchestrator.memory_system, "graph_memory", None)
-        if graph is not None and hasattr(graph, "graph"):
+        if graph is not None and hasattr(graph, "edge_count"):
+            # Relation-level counts (2026-09-03): the nx DiGraph holds one
+            # edge per node PAIR, so number_of_edges() under-reported
+            # multi-relation pairs (836 vs 982 live).
+            out["graph_nodes"] = int(graph.node_count())
+            out["graph_edges"] = int(graph.edge_count())
+        elif graph is not None and hasattr(graph, "graph"):
             out["graph_nodes"] = int(graph.graph.number_of_nodes())
             out["graph_edges"] = int(graph.graph.number_of_edges())
     except Exception:

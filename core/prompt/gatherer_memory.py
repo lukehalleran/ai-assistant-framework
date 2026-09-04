@@ -143,14 +143,14 @@ class MemoryRetrievalMixin:
 
             # Track memory IDs for citations
             result_memories = memories or []
-            logger.warning(f"[DEBUG RECENT] _get_recent_conversations: Returning {len(result_memories)} memories")
+            logger.debug(f"[DEBUG RECENT] _get_recent_conversations: Returning {len(result_memories)} memories")
             for idx, mem in enumerate(result_memories, start=1):
                 mem_id = f"MEM_RECENT_{idx}"
                 ts = mem.get('timestamp', 'NO_TS')
                 query = mem.get('query', '')[:80]
                 # Log first 3 and last 3
                 if idx < 3 or idx >= len(result_memories) - 3:
-                    logger.warning(f"[DEBUG RECENT] Memory {idx}: ts={ts}, query={query}...")
+                    logger.debug(f"[DEBUG RECENT] Memory {idx}: ts={ts}, query_chars={len(query)}")
                 _content = str(mem.get('content', '')) or ''
                 if not _content.strip():
                     _q = str(mem.get('query', ''))[:200]
@@ -428,7 +428,7 @@ class MemoryRetrievalMixin:
             # FAST MODE: Reduce retrieval pool 50x (2150 -> ~45) for 15x speed boost
             if hasattr(self, '_fast_mode') and self._fast_mode:
                 # With retrieval_limit=15: memory_retriever does 15*3=45, hybrid does 45*1=45 total
-                logger.warning(f"[FAST MODE] Quick semantic search: {limit} results from ~45 candidates (vs 2150)")
+                logger.debug(f"[FAST MODE] Quick semantic search: {limit} results from ~45 candidates (vs 2150)")
                 retrieval_limit = 15  # Tiny candidate pool for mobile
             else:
                 retrieval_limit = SEMANTIC_RETRIEVAL_LIMIT  # Full 2150

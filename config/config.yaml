@@ -593,6 +593,10 @@ user_profile:
 obsidian:
   enabled: true
   vault_path: ~/Documents/Notes
+  # Bar on the gate's BLENDED score (0.85·cosine + 0.15·truth; notes carry truth 0.9,
+  # so 0.60 ≈ cosine 0.55). 2026-09-03: 0.45→0.60 — an unrelated study note at 0.59
+  # surfaced on pet small-talk. Lower to 0.55 if genuinely related notes vanish.
+  gate_threshold: 0.60
 git_stats:
   enabled: true
   timeout_s: 10

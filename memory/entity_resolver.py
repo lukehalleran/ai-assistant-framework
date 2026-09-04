@@ -48,6 +48,10 @@ RELATION_SYNONYMS: dict[str, list[str]] = {
     "works_on": ["works on", "building", "developing", "working on"],
     "created": ["created", "built", "made", "authored", "wrote"],
     "works_at": ["works at", "works for", "employed at", "employed by"],
+    # 2026-09-03: `role` was an invented relation minted from activities
+    # ("bug fixer", "PR approver"); folding it into occupation gives profile
+    # canonicalization, graph ingest AND learned-relation hygiene one chokepoint.
+    "occupation": ["role", "job_title", "job title"],
     "wants_to_move_to": ["wants to move to", "plans to move to", "moving to"],
     "wants_to": ["wants to", "plans to", "intends to", "hopes to", "desire",
                  "desires", "aspiration", "aspires_to", "hopes_to", "hoping_to"],

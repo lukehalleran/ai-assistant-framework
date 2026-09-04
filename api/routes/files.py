@@ -19,6 +19,7 @@ logger = get_logger("api_routes")
 router = APIRouter(prefix="/api", tags=["files"])
 
 MAX_TOTAL_BYTES = 100 * 1024 * 1024  # match the Gradio 100mb cap
+_READ_CHUNK_BYTES = 1024 * 1024
 _UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "daemon_api_uploads")
 
 
@@ -28,23 +29,43 @@ async def upload_files(request: Request, files: List[UploadFile]):
     os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
     results = []
+    created_paths = []
     total = 0
-    for f in files:
-        data = await f.read()
-        total += len(data)
-        if total > MAX_TOTAL_BYTES:
-            raise HTTPException(status_code=413, detail="Upload exceeds 100MB total limit.")
+    try:
+        for f in files:
+            # Keep the original extension so FileProcessor type-routing works;
+            # never trust the client filename for the path itself.
+            base = os.path.basename(f.filename or "upload")
+            suffix = os.path.splitext(base)[1][:16]
+            fd, path = tempfile.mkstemp(suffix=suffix, dir=_UPLOAD_DIR)
+            created_paths.append(path)
+            size = 0
+            with os.fdopen(fd, "wb") as out:
+                while True:
+                    chunk = await f.read(_READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    total += len(chunk)
+                    if total > MAX_TOTAL_BYTES:
+                        raise HTTPException(status_code=413, detail="Upload exceeds 100MB total limit.")
+                    out.write(chunk)
 
-        # Keep the original extension so FileProcessor type-routing works;
-        # never trust the client filename for the path itself.
-        base = os.path.basename(f.filename or "upload")
-        suffix = os.path.splitext(base)[1][:16]
-        fd, path = tempfile.mkstemp(suffix=suffix, dir=_UPLOAD_DIR)
-        with os.fdopen(fd, "wb") as out:
-            out.write(data)
-
-        file_id = state.register_upload(path=path, name=base, size=len(data))
-        results.append(UploadedFileInfo(file_id=file_id, name=base, size=len(data)))
-        logger.info(f"[API] Upload registered: {base} ({len(data)} bytes) -> {file_id}")
+            file_id = state.register_upload(path=path, name=base, size=size)
+            results.append(UploadedFileInfo(file_id=file_id, name=base, size=size))
+            logger.info(f"[API] Upload registered: {base} ({size} bytes) -> {file_id}")
+    except BaseException:
+        # A rejected multi-file request must not leave unregistered temp files
+        # behind (including the partially written file that exceeded the cap).
+        # Cancellation is a BaseException on supported Python versions, and a
+        # disconnected client needs the same transactional cleanup.
+        for path in created_paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        for info in results:
+            state.unregister_upload(info.file_id)
+        raise
 
     return UploadResult(files=results)

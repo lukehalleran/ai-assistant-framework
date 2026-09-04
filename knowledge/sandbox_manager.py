@@ -62,6 +62,26 @@ logger = logging.getLogger(__name__)
 # Data Classes
 # ============================================================================
 
+
+def _kill_sandbox_quietly(sandbox, context: str = "") -> bool:
+    """Kill an E2B sandbox treating "already gone" as success (2026-09-03,
+    Codex audit #7). E2B reaps sandboxes server-side (idle timeout / crash), so
+    a DELETE 404 (``NotFoundException``) on cleanup is the expected idempotent
+    case, not an error. Returns True when the sandbox is gone either way; any
+    other failure is logged at WARNING and returns False."""
+    try:
+        sandbox.kill()
+        return True
+    except Exception as e:  # noqa: BLE001 — SDK exception types vary by version
+        name = type(e).__name__
+        text = str(e)
+        if name == "NotFoundException" or "404" in text or "not found" in text.lower():
+            logger.debug(f"[Sandbox] {context or 'sandbox'} already gone server-side (idempotent cleanup)")
+            return True
+        logger.warning(f"[Sandbox] Error closing {context or 'sandbox'}: {e}")
+        return False
+
+
 @dataclass
 class SandboxResult:
     """Result from code execution."""
@@ -311,7 +331,7 @@ class SandboxManager:
 
                 return result
             finally:
-                sandbox.kill()
+                _kill_sandbox_quietly(sandbox, "one-shot sandbox")
 
         except Exception as e:
             logger.error(f"[Sandbox] Execution error: {e}")
@@ -624,13 +644,11 @@ class PersistentSession:
         """
         if not self._closed:
             try:
-                self._sandbox.kill()
-                logger.info(
-                    f"[Sandbox] Closed sandbox session after {self._execution_count} executions "
-                    f"({self.age_seconds:.1f}s lifetime)"
-                )
-            except Exception as e:
-                logger.warning(f"[Sandbox] Error closing sandbox session: {e}")
+                if _kill_sandbox_quietly(self._sandbox, "sandbox session"):
+                    logger.info(
+                        f"[Sandbox] Closed sandbox session after {self._execution_count} executions "
+                        f"({self.age_seconds:.1f}s lifetime)"
+                    )
             finally:
                 self._closed = True
 

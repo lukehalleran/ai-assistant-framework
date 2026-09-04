@@ -192,6 +192,15 @@ _JUNK_OBJECT_PATTERNS = [
 # very check whenever the LLM phrased the object as "no ...".
 _NEGATION_JUNK_PATTERN = re.compile(r"^(?:not|no)\s")
 _NEGATION_OK_RELATIONS = {"doctor_communication", "has_doctor"}
+_FAMILY_HAS_RE = re.compile(
+    r"^has_(?:mom|mother|dad|father|parents?|brother|sister|sibling|partner|girlfriend|"
+    r"boyfriend|wife|husband|spouse|son|daughter|kid|friend|roommate|cousin|aunt|uncle|"
+    r"grandma|grandpa|grandmother|grandfather)$"
+)
+_CLAUSE_OBJECT_RE = re.compile(
+    r"\b(?:is|are|was|were|will|would|going|picking|providing|taking|coming|getting|"
+    r"said|told|texted|called|wants|needs|has to|have to)\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b"
+)
 _NEGATION_OK_RELATION_SUFFIXES = ("_communication", "_status", "_access", "_availability")
 
 
@@ -206,6 +215,15 @@ def _is_junk_object(obj: str, rel: str) -> bool:
     if r in _TEMPORAL_OK_RELATIONS:
         return False
     if o in _FEELING_ADJ_OBJECTS:
+        return True
+    # 2026-09-03: `has_<family member>` names a RELATIONSHIP; an object that is
+    # a clause or a timed event ("dad is picking up at 5:30", "dad is providing
+    # insurance settlement for next 3 months") is a plan/event mined into the
+    # wrong relation. Care-team relations (has_doctor …) are excluded — their
+    # status objects are the content by design (2026-08-05).
+    if _FAMILY_HAS_RE.match(r) and (
+        _CLAUSE_OBJECT_RE.search(o) or len(o.split()) >= 5
+    ):
         return True
     if _NEGATION_JUNK_PATTERN.match(o) and not (
         r in _NEGATION_OK_RELATIONS or r.endswith(_NEGATION_OK_RELATION_SUFFIXES)

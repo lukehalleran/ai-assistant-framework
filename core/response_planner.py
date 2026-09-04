@@ -54,6 +54,7 @@ logger = get_logger("response_planner")
 class ResponsePlan(BaseModel):
     """Pre-answer response plan produced by the planner LLM call."""
     key_points: List[str] = Field(default_factory=list, description="2-4 things the response must cover")
+    dropped_points: List[str] = Field(default_factory=list, description="Planner key points removed by the embellishment guard (2026-09-03)")
     tone: str = Field(default="neutral", description="Single word: warm, analytical, empathetic, casual, etc.")
     avoid: List[str] = Field(default_factory=list, description="1-2 things to avoid")
     strategy: str = Field(default="", description="One sentence approach description")
@@ -195,6 +196,14 @@ class ResponsePlanner:
         "google_calendar",
     )
 
+    # Sections that are Daemon-synthesized (graph edges, narrative, summaries):
+    # labelled in the digest so the planner weighs them below user-authored
+    # memories (2026-09-03: "User has dog Mochi" + a "Dog Behavior" topic
+    # label out-voted twenty memories calling the cat a cat).
+    _DERIVED_DIGEST_KEYS = frozenset({
+        "graph_context", "narrative_state", "recent_summaries", "semantic_summaries",
+    })
+
     @staticmethod
     def build_context_digest(
         prompt_context: Optional[dict],
@@ -233,7 +242,11 @@ class ResponsePlanner:
             except (TypeError, ValueError):
                 rendered = str(compact_value)
             rendered = rendered[:max_section_chars]
-            chunk = f"[{key}]\n{rendered}"
+            label = (
+                f"{key} — derived, not the user's words"
+                if key in ResponsePlanner._DERIVED_DIGEST_KEYS else key
+            )
+            chunk = f"[{label}]\n{rendered}"
             if len(chunk) > remaining:
                 if remaining < len(key) + 8:
                     break
@@ -391,6 +404,16 @@ class ResponsePlanner:
             "change the requested speech act, speaker, or addressee. If the user asks "
             "you to communicate with someone, plan direct communication to that "
             "recipient; do not plan to interview the user about them.\n\n"
+            "Named entities keep the attributes the user's own words give them. "
+            "Never assign or infer a species, gender, role, relationship, or "
+            "location for a person, pet, or place from the Topics label, the "
+            "Intent, or general knowledge — only from the query, the previous "
+            "exchange, or user-authored memories in the digest; when those "
+            "describe the entity, that description wins over the Topics label. "
+            "If an attribute is unknown, plan around the name alone.\n\n"
+            "Key points restate what the user said and what the context holds. Never add an "
+            "event, activity, feeling, or detail the user did not state (\"turned 2\" is an age, "
+            "not a celebration; \"sent the email\" is not a reply).\n\n"
             "Compact digest of the SAME gathered context available to the main "
             "response model (retrieval-ranked excerpts; may be empty):\n"
             f"{context_digest or '(no gathered context)'}\n\n"
@@ -430,6 +453,16 @@ class ResponsePlanner:
 
         plan = self._parse_plan(raw)
         if plan is not None:
+            # Embellishment guard (2026-09-03): the planner turned "turned 2
+            # last week" into "recent birthday celebration". A key point that
+            # introduces an event noun or a name absent from the query, the
+            # previous exchange and the digest is dropped (never rewritten).
+            sources = "\n".join(filter(None, [query or "", exchange_block or "", context_digest or ""]))
+            kept, dropped = self.unsupported_key_points(plan.key_points, sources)
+            if dropped:
+                logger.info(f"[RESPONSE PLANNER] Dropped {len(dropped)} unsupported key point(s): {dropped}")
+                plan.key_points = kept
+                plan.dropped_points = dropped
             plan.planner_source = "llm"
             plan.planner_model = planner_model
             plan.context_digest_sha256 = digest_hash
@@ -534,6 +567,52 @@ class ResponsePlanner:
     # ------------------------------------------------------------------
     # JSON parsing helpers
     # ------------------------------------------------------------------
+
+    # Event nouns the planner tends to invent around a bare fact. Each entry is
+    # a stem regex applied to BOTH the key point and the sources, so "celebrated"
+    # in the query licenses "celebration" in the plan.
+    _EVENT_STEMS = (
+        r"celebrat\w*", r"part(?:y|ies)", r"cake", r"gifts?", r"trips?", r"vacations?",
+        r"wedding", r"funeral", r"ceremon\w*", r"surger\w*", r"interview\w*",
+        r"anniversar\w*", r"graduat\w*", r"concert", r"holiday", r"dinner", r"lunch",
+        r"brunch", r"meeting", r"appointment", r"visit\w*", r"reunion",
+    )
+    _POINT_NAME_RE = re.compile(r"\b[A-Z][a-z]{2,}\b")
+    _POINT_NAME_STOP = frozenset({
+        "The", "This", "That", "These", "Those", "Their", "They", "User", "Daemon", "Also",
+        "Share", "Cover", "Note", "Ask", "Offer", "Keep", "Avoid", "Acknowledge", "Mention",
+    })
+
+    @classmethod
+    def unsupported_key_points(cls, points: List[str], sources: str) -> tuple:
+        """Split ``points`` into (kept, dropped). A point is dropped when it
+        carries an event stem or a TitleCase name (past its first word) that
+        the sources never mention. Under-fires: only the listed event stems
+        and capitalised names are checked; if every point would be dropped the
+        original list is kept (an empty plan is worse than an embellished one)."""
+        src = (sources or "").lower()
+        kept: List[str] = []
+        dropped: List[str] = []
+        for pt in points or []:
+            text = str(pt or "")
+            low = text.lower()
+            bad = False
+            for stem in cls._EVENT_STEMS:
+                if re.search(r"\b" + stem + r"\b", low) and not re.search(r"\b" + stem + r"\b", src):
+                    bad = True
+                    break
+            if not bad:
+                words = text.split()
+                for tok in cls._POINT_NAME_RE.findall(" ".join(words[1:])):
+                    if tok in cls._POINT_NAME_STOP:
+                        continue
+                    if tok.lower() not in src and tok.lower().rstrip("s") not in src:
+                        bad = True
+                        break
+            (dropped if bad else kept).append(text)
+        if points and not kept:
+            return list(points), []
+        return kept, dropped
 
     @staticmethod
     def _parse_plan(raw: str) -> Optional[ResponsePlan]:

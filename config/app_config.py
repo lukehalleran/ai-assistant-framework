@@ -721,7 +721,7 @@ OBSIDIAN_MAX_NOTES_PROMPT: int = int(OBSIDIAN_CFG.get("max_notes_prompt", 5))
 # Stricter relevance threshold for personal notes (vs 0.18 general gate)
 # Notes below this score are filtered out post-gating to prevent topically-similar
 # but contextually-irrelevant notes from leaking into responses
-PERSONAL_NOTES_GATE_THRESHOLD: float = float(OBSIDIAN_CFG.get("gate_threshold", 0.45))
+PERSONAL_NOTES_GATE_THRESHOLD: float = float(OBSIDIAN_CFG.get("gate_threshold", 0.60))
 
 # Environment variable overrides for Obsidian
 OBSIDIAN_ENABLED = bool(int(os.getenv("OBSIDIAN_ENABLED", "1" if OBSIDIAN_ENABLED else "0")))

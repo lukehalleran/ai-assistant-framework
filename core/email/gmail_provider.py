@@ -18,7 +18,7 @@ import asyncio
 from email.utils import parsedate_to_datetime
 from typing import List, Optional
 
-from core.email.provider import EmailMessage
+from core.email.provider import EmailMessage, message_timestamp
 from utils.logging_utils import get_logger
 
 logger = get_logger("gmail_provider")
@@ -180,7 +180,7 @@ class GmailProvider:
 
             results = [r for r in fetch_results if r is not None]
             # Newest first (Gmail search already returns newest-first, but re-sort to be safe)
-            results.sort(key=lambda m: m.date or "", reverse=True)
+            results.sort(key=message_timestamp, reverse=True)
             return results
 
         except Exception as e:
@@ -259,7 +259,7 @@ class GmailProvider:
 
             results = [r for r in fetch_results if r is not None]
             # Newest first
-            results.sort(key=lambda m: m.date or "", reverse=True)
+            results.sort(key=message_timestamp, reverse=True)
             return results
 
         except Exception as e:

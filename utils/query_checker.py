@@ -147,6 +147,41 @@ ACK_STARTERS: frozenset = frozenset({
     "damn", "dang", "sheesh", "wow", "oh", "ah", "aw", "meh", "nope", "nah",
 })
 
+# Session-opening greetings. Deliberately NOT in ACK_STARTERS: a greeting
+# must keep the FULL builder path (so [UNRESOLVED THREADS] surface at session
+# start), but it never inherits the previous turn's topic and never suppresses
+# a thread-shift assertion (2026-09-03: "Hey" 13h after the last session was
+# treated as a fragment continuation and rendered "message #3 in an ongoing
+# conversation thread about <yesterday's topic>").
+GREETING_STARTERS: frozenset = frozenset({
+    "hey", "heyy", "hi", "hii", "hello", "yo", "sup", "hiya", "heya",
+    "howdy", "greetings", "morning", "evening", "afternoon",
+})
+_GREETING_GOOD_SUFFIXES: frozenset = frozenset({
+    "morning", "afternoon", "evening", "night",
+})
+
+
+def is_greeting_opener(q: str) -> bool:
+    """True when the message OPENS with a greeting ("Hey", "hi there",
+    "Good morning!"). Only the opener is inspected — "hey can you look up X"
+    is still a greeting opener for topic-inheritance purposes (a greeting
+    never continues the previous turn's fragment), and that is all this
+    predicate decides. Missing/garbage input → False.
+    """
+    ql = _normalize(q)
+    if not ql:
+        return False
+    words = ql.split()
+    first = words[0].strip(".,!…:;'\"")
+    if first in GREETING_STARTERS:
+        return True
+    if first == "good" and len(words) >= 2:
+        second = words[1].strip(".,!…:;'\"")
+        return second in _GREETING_GOOD_SUFFIXES
+    return False
+
+
 # Words that signal an actual information request even without a "?"
 _REQUEST_MARKERS: tuple = (
     "can you", "could you", "would you", "will you", "do you", "should i",
@@ -325,6 +360,8 @@ def is_fragment_continuation(q: str, max_words: int = 4) -> bool:
     first = words[0].strip(".,!…:;'\"")
     if first in ACK_STARTERS:
         return False  # casual acks have their own (light-path) routing
+    if is_greeting_opener(ql):
+        return False  # greetings never inherit topic / suppress shift (2026-09-03)
     try:
         from core.agentic.gate import _is_request_shaped
         if _is_request_shaped(q):
@@ -1090,6 +1127,29 @@ def calculate_thread_continuity_score(
     return score
 
 
+def topics_related(thread_topic: str, current_topic: str) -> bool:
+    """Loose continuity check between the (previous turn's) thread topic and
+    the current query topic. Related when either contains the other or they
+    share a substantive (>3-char) word. Unclassified topics ("general", empty)
+    give no signal → treated as related so the thread wording is preserved
+    rather than asserting a shift we can't support.
+
+    Moved here from core.orchestrator (2026-09-03) so storage-time thread
+    depth (``belongs_to_thread``) and the read-time [THREAD CONTEXT] honesty
+    branch judge topic continuity with ONE predicate — they used to disagree
+    (exact-equality at storage vs. loose containment at read time).
+    """
+    a = (thread_topic or "").strip().lower()
+    b = (current_topic or "").strip().lower()
+    if not a or not b or a == "general" or b == "general":
+        return True
+    if a == b or a in b or b in a:
+        return True
+    a_words = {w for w in re.split(r"\W+", a) if len(w) > 3}
+    b_words = {w for w in re.split(r"\W+", b) if len(w) > 3}
+    return bool(a_words & b_words)
+
+
 def belongs_to_thread(
     current_query: str,
     last_conversation: dict,
@@ -1127,9 +1187,20 @@ def belongs_to_thread(
     last_heavy = last_conversation.get("is_heavy_topic", False)
     curr_heavy = _is_heavy_topic_heuristic(current_query)
 
-    # Check if same topic
+    # Check if same topic. Loose match via the SAME predicate the read-time
+    # [THREAD CONTEXT] honesty branch uses (2026-09-03) — exact equality made
+    # every classifier relabel ("Playing Fetch" → "Playing Games") reset the
+    # thread depth to 1 while the read side called the topics related.
+    # "general"/empty carry no signal and never earn the bonus (topics_related
+    # deliberately returns True for them, so exclude explicitly here).
     last_topic = last_conversation.get("topic", "general")
-    same_topic = (last_topic == current_topic) if current_topic else False
+    same_topic = (
+        bool(current_topic)
+        and bool(last_topic)
+        and str(last_topic).lower() != "general"
+        and str(current_topic).lower() != "general"
+        and topics_related(str(last_topic), str(current_topic))
+    )
 
     # Build previous conversation text (query + response for better keyword matching)
     last_query = last_conversation.get("query", "")

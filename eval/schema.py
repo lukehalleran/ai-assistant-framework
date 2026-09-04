@@ -145,9 +145,13 @@ class SnapshotLayer:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> SnapshotLayer:
-        raw_sections = d.pop("sections", {})
+        # Do not mutate the caller's decoded snapshot.  Callers may validate
+        # or reuse the raw payload after deserialization (and ``pop`` made
+        # repeated reads silently lose the sections field).
+        payload = dict(d)
+        raw_sections = payload.pop("sections", {})
         sections = {k: SectionSnapshot.from_dict(v) for k, v in raw_sections.items()}
-        return cls(sections=sections, **d)
+        return cls(sections=sections, **payload)
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +197,11 @@ class PromptSnapshot:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> PromptSnapshot:
-        provenance = PromptProvenance.from_dict(d.pop("provenance"))
-        raw_layers = d.pop("layers", {})
+        payload = dict(d)
+        provenance = PromptProvenance.from_dict(payload.pop("provenance"))
+        raw_layers = payload.pop("layers", {})
         layers = {k: SnapshotLayer.from_dict(v) for k, v in raw_layers.items()}
-        return cls(provenance=provenance, layers=layers, **d)
+        return cls(provenance=provenance, layers=layers, **payload)
 
     def to_json(self) -> str:
         return _json_dumps(self.to_dict())
@@ -271,9 +276,10 @@ class PersistenceSnapshot:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> PersistenceSnapshot:
-        raw_fps = d.pop("fingerprints", {})
+        payload = dict(d)
+        raw_fps = payload.pop("fingerprints", {})
         fps = {k: StoreFingerprint.from_dict(v) for k, v in raw_fps.items()}
-        return cls(fingerprints=fps, **d)
+        return cls(fingerprints=fps, **payload)
 
     def diff(self, other: PersistenceSnapshot) -> Dict[str, Any]:
         """Compare this snapshot to another. Returns dict of differences.

@@ -112,3 +112,12 @@ class TestCurationRoutes:
         assert resp.status_code == 200
         events = [e["event"] for e in resp.json()["events"]]
         assert "applied" in events and "scan_finished" in events
+
+    @pytest.mark.asyncio
+    async def test_activity_negative_limit_returns_empty(self, tmp_path, monkeypatch):
+        _install_engine(tmp_path, monkeypatch, [])
+        app = create_app(_make_orchestrator(), start_background=False)
+        async with _client(app) as client:
+            resp = await client.get("/api/curation/activity", params={"limit": -1})
+        assert resp.status_code == 200
+        assert resp.json()["events"] == []

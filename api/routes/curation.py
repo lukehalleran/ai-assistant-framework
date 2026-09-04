@@ -111,4 +111,6 @@ async def undo(proposal_id: str, request: Request):
 @router.get("/activity")
 async def activity(request: Request, limit: int = 100):
     engine = _engine(request)
-    return {"events": engine.journal.tail(limit=min(limit, 500))}
+    # A count is never meaningful when negative; normalize it before passing
+    # it to journal implementations, whose negative slicing semantics differ.
+    return {"events": engine.journal.tail(limit=min(max(limit, 0), 500))}

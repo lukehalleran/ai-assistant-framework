@@ -27,7 +27,7 @@ from typing import Any, Dict
 
 _PERSONAL_NOTES = """### [USER'S PERSONAL NOTES] — Obsidian Vault
 These are notes from the user's personal Obsidian vault - their own writing, journals, project notes, and references.
-- **Relevance first**: Only reference notes that directly relate to the current query. If a note was retrieved but isn't relevant, ignore it — don't mention it just because it's there. Notes with low relevance scores (< 0.30) are marginal matches.
+- **Relevance first**: Only reference notes that directly relate to the current query. If a note was retrieved but isn't relevant, ignore it — don't mention it just because it's there. Notes are already filtered by relevance; treat lower-scored notes as weaker matches and prefer the highest-scored ones.
 - **Use naturally**: Reference these when relevant to the conversation, like "Based on your notes about X..."
 - **Trust them**: These are the user's own words and knowledge - high confidence
 - **Don't over-cite**: Weave insights naturally rather than quoting section headers

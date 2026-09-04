@@ -563,7 +563,7 @@ class MultiStageGateSystem:
     # effective_retrieval_threshold() (×~0.38 std ratio).
 
 # Post-gate filter for personal notes (builder.py) [NEW 2026-03-20]
-# After filter_memories(), notes below PERSONAL_NOTES_GATE_THRESHOLD (0.45)
+# After filter_memories(), notes below PERSONAL_NOTES_GATE_THRESHOLD (0.60; blended gate score, notes carry truth 0.9 → ≈cos 0.55)
 # are dropped. General gate threshold is 0.18 (MiniLM space); personal notes need stricter filtering.
 gated_notes = [n for n in gated_notes if n.get("relevance_score", 0) >= PERSONAL_NOTES_GATE_THRESHOLD]
 ```
@@ -1048,7 +1048,7 @@ async def _persist_uploads(orchestrator, files_result):
 async def get_user_uploads(query, limit=5) -> List[Dict]:
     """Fetch from reference_docs, filter to type='user_upload' only.
     Staleness gate (2026-08-05): _upload_is_live keeps an upload only if fresh
-    (<= USER_UPLOADS_MAX_AGE_DAYS=7) or relevance >= USER_UPLOADS_MIN_RELEVANCE=0.62
+    (<= USER_UPLOADS_MAX_AGE_DAYS=3) or relevance >= USER_UPLOADS_MIN_RELEVANCE=0.62
     (recalibrated 0.5->0.62 2026-08-14: rel=1/(1+2(1-cos)) in bge space; 0.5 ~ cos 0.5 = any-text)."""
 async def get_reference_docs(query, limit) -> List[Dict]:
     """Fetch from reference_docs, filter OUT type='user_upload'."""
@@ -2151,6 +2151,7 @@ python main.py daily-note yesterday          # Generate for yesterday
 python main.py daily-note 2026-01-15         # Specific date (YYYY-MM-DD)
 python main.py daily-note --force            # Overwrite existing
 python main.py daily-note-catchup            # Startup hook (yesterday if missing)
+python scripts/daily_note_catchup.py         # Same job, thin entrypoint for the systemd timer (scripts/systemd/)
 
 # Weekly Notes - auto-generated weekly summaries [NEW 2026-01-19]
 python main.py weekly-note                   # Generate for current week

@@ -549,6 +549,9 @@ class TopicManager:
             "Examples: 'I am lonely' → 'Loneliness', 'School starts soon' → 'School starting', "
             "'Having trouble with dating' → 'Dating struggles'. "
             "No pronouns or vague words (that/this/it/stuff). "
+            "Use only entities and attributes the message states; never infer a "
+            "species, gender, role, or relationship it does not say (a pet playing "
+            "fetch is not thereby a dog). "
             "No punctuation. If impossible, return CONTINUE."
         )
         prompt = text.strip()

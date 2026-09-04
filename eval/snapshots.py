@@ -23,7 +23,6 @@ from eval.schema import (
 )
 from eval.section_registry import (
     SECTION_REGISTRY,
-    get_context_sections,
     match_header_to_key,
 )
 

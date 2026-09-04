@@ -85,7 +85,7 @@ corpus, claim index) share one safety contract via `utils/safe_json.py`:
 ### Knowledge Graph
 | File | Purpose |
 |------|---------|
-| `memory/graph_memory.py` | NetworkX DiGraph: CRUD, BFS traversal, JSON persistence |
+| `memory/graph_memory.py` | NetworkX DiGraph as a TOPOLOGY index (one edge per node pair; attrs advisory) + relation-keyed `_edge_index` with `_out_keys`/`_in_keys` adjacency maps as the source of truth for every relation read (2026-09-03 — 146 of 982 live edges had been invisible); BFS traversal with an opt-in hub barrier for the prompt path; read-side suppression (`edge_is_suppressed`: quarantine flag / species conflict); JSON persistence |
 | `memory/graph_models.py` | Pydantic models: GraphNode, GraphEdge |
 | `memory/entity_resolver.py` | Alias resolution + relation normalization (synonym table + family-collapse patterns, e.g. `asked_about_*` → `asked_about`) |
 | `memory/graph_utils.py` | Entity extraction, neighbor lookups, expansion ranking |

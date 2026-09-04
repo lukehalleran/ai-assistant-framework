@@ -71,11 +71,9 @@ import torch
 # Optional OpenAI dependency (tests may run without the package installed)
 try:
     from openai import OpenAI, AsyncOpenAI
-    import openai as _openai_module
 except ImportError:  # pragma: no cover - triggered in trimmed test envs
     OpenAI = None  # type: ignore
     AsyncOpenAI = None  # type: ignore
-    _openai_module = None  # type: ignore
 import httpx
 import asyncio
 import json
@@ -87,6 +85,11 @@ import json
 API_ERROR_PREFIXES: tuple = (
     "[API Error]",
     "[API unavailable]",
+    # 2026-09-03: a 2025-12 provider outage stored "[OpenAI unavailable] …"
+    # as replies (50 conversation docs); one surfaced under [RELEVANT
+    # MEMORIES] on a pet turn. Registered so the retrieval junk filter and
+    # purge_error_memories.py treat them like every other sentinel.
+    "[OpenAI unavailable",
     "[CREDITS EXHAUSTED]",
     "[RATE LIMITED]",
     "[AUTH ERROR]",

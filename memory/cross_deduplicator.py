@@ -309,6 +309,9 @@ class CrossCollectionDeduplicator:
         pairs: List[DuplicatePair] = []
         # Track which doc IDs have already been marked for deletion
         # to avoid cascading (deleting A because of B, then B because of C)
+        # Chroma IDs are scoped to a collection; the same ID in two
+        # collections is not the same document.  Keep the collection in the
+        # guard key so one duplicate cannot suppress an unrelated pair.
         marked_for_delete = set()
 
         for i in range(n):
@@ -321,7 +324,9 @@ class CrossCollectionDeduplicator:
                 doc_b = docs[j]
 
                 # Skip if either already marked for deletion
-                if doc_a["id"] in marked_for_delete or doc_b["id"] in marked_for_delete:
+                key_a = (doc_a["collection"], doc_a["id"])
+                key_b = (doc_b["collection"], doc_b["id"])
+                if key_a in marked_for_delete or key_b in marked_for_delete:
                     continue
 
                 # Skip ephemeral fact pairs — "tired" yesterday vs "fine" today
@@ -354,7 +359,7 @@ class CrossCollectionDeduplicator:
                     confidence=min(1.0, score),
                 )
                 pairs.append(pair)
-                marked_for_delete.add(delete["id"])
+                marked_for_delete.add((delete["collection"], delete["id"]))
 
         logger.info("[CrossDedup] Found %d duplicate pairs above threshold %.3f", len(pairs), self.duplicate_threshold)
         return pairs
@@ -607,7 +612,9 @@ class CrossCollectionDeduplicator:
             Number of documents acted on (deleted + superseded).
         """
         deleted = 0
-        deleted_ids: set = set()  # Track IDs deleted in any phase
+        # Chroma IDs are collection-scoped, so track the full address rather
+        # than a bare ID across duplicate and contradiction phases.
+        deleted_ids: set = set()
 
         # Delete duplicate pairs
         for pair in plan.duplicate_pairs:
@@ -623,7 +630,7 @@ class CrossCollectionDeduplicator:
                 if coll:
                     coll.delete(ids=[pair.delete_id])
                     deleted += 1
-                    deleted_ids.add(pair.delete_id)
+                    deleted_ids.add((coll_name, pair.delete_id))
                     logger.debug(
                         "[CrossDedup] Deleted %s from %s (dup of %s in %s, sim=%.3f)",
                         pair.delete_id, coll_name, pair.keep_id,
@@ -641,7 +648,7 @@ class CrossCollectionDeduplicator:
             self._apply_contradiction_truth_penalties(cluster, deleted_ids)
 
             for del_id in cluster.delete_ids:
-                if del_id in deleted_ids:
+                if ("facts", del_id) in deleted_ids:
                     continue
                 try:
                     ok = self.chroma_store.update_metadata("facts", del_id, {
@@ -650,7 +657,7 @@ class CrossCollectionDeduplicator:
                     })
                     if ok:
                         deleted += 1
-                        deleted_ids.add(del_id)
+                        deleted_ids.add(("facts", del_id))
                         logger.debug(
                             "[CrossDedup] Superseded contradicting fact %s "
                             "(subject=%s, pred=%s, kept %s)",
@@ -677,7 +684,7 @@ class CrossCollectionDeduplicator:
 
             # Penalize older contradicting facts (skip already-deleted)
             for del_id in cluster.delete_ids:
-                if del_id in already_deleted:
+                if ("facts", del_id) in already_deleted:
                     continue
                 try:
                     self.chroma_store.update_metadata("facts", del_id, {
@@ -687,7 +694,7 @@ class CrossCollectionDeduplicator:
                     pass  # Best-effort; fact may be about to be deleted anyway
 
             # Small boost for the kept (most recent) fact
-            if cluster.keep_id and cluster.keep_id not in already_deleted:
+            if cluster.keep_id and ("facts", cluster.keep_id) not in already_deleted:
                 try:
                     coll = self.chroma_store._get_collection("facts")
                     if coll:
