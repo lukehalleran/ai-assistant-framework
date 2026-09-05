@@ -245,7 +245,7 @@ class TestFloorBudgetBindsFloor:
     def _heavy_history(self):
         from datetime import datetime, timedelta
         now = datetime.now()
-        return [{"query": "heavy stuff", "is_heavy_topic": True,
+        return [{"query": "my heavy stuff", "is_heavy_topic": True,
                  "timestamp": (now - timedelta(minutes=5)).isoformat()}]
 
     def _detect(self, allow_sticky_floor):

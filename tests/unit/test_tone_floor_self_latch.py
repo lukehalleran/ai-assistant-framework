@@ -98,7 +98,7 @@ class TestHistoryScanOrderAgnostic:
         from utils.tone_detector import _recent_distress_from_history
         now = datetime.now()
         newest_first = [
-            {"query": "short msg", "timestamp": now.isoformat(), "is_heavy_topic": True},
+            {"query": "my short msg", "timestamp": now.isoformat(), "is_heavy_topic": True},
             {"query": "older", "timestamp": (now - timedelta(minutes=5)).isoformat()},
             {"query": "older2", "timestamp": (now - timedelta(minutes=8)).isoformat()},
             {"query": "older3", "timestamp": (now - timedelta(minutes=12)).isoformat()},

@@ -63,7 +63,7 @@ class TestSessionDistressExactMatch:
 
     def test_none_falls_through_to_history(self):
         now = datetime.now()
-        heavy = [{"query": "x", "timestamp": now.isoformat(),
+        heavy = [{"query": "my pain is back again today", "timestamp": now.isoformat(),
                   "is_heavy_topic": True}]
         assert _session_in_distress(None, heavy) is True
         assert _session_in_distress(None, []) is False
@@ -71,7 +71,7 @@ class TestSessionDistressExactMatch:
     def test_conversational_previous_tone_still_checks_history(self):
         # exact-match must not short-circuit the heavy-history path
         now = datetime.now()
-        heavy = [{"query": "x", "timestamp": now.isoformat(),
+        heavy = [{"query": "my pain is back again today", "timestamp": now.isoformat(),
                   "is_heavy_topic": True}]
         assert _session_in_distress(CrisisLevel.CONVERSATIONAL, heavy) is True
 

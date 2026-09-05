@@ -63,7 +63,7 @@ import re
 import socket
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
@@ -570,6 +570,17 @@ class WebSearchRateLimiter:
         return min(base + num_extracts, self.per_query_limit)
 
 
+# 2026-09-05 13:07 daemon_debug.log incident: the enhanced-path gatherer searched
+# "Were any UK or US politicians charged with crimes this week? What did the police
+# or courts announce?" at QUICK depth (1 credit, cached at 13:07:27), and 11 seconds
+# later the agentic loop's Round-1 seeded search re-ran the IDENTICAL string at
+# STANDARD depth (2 more credits, "Credits used: 2.0, total today: 3.0/100") because
+# WebSearchCache._generate_cache_key keys on (query, depth) and the exact-key lookup
+# missed at the different depth. Within one turn, a same-string re-search at a
+# different depth is waste, not a quality upgrade.
+WEB_SEARCH_SAME_QUERY_REUSE_S = int(os.getenv("WEB_SEARCH_SAME_QUERY_REUSE_S", "180"))
+
+
 class WebSearchCache:
     """
     ChromaDB-backed cache for web search results.
@@ -589,6 +600,10 @@ class WebSearchCache:
         self._store = chroma_store
         self._collection = None
         self._initialized = False
+        # In-process same-query (across depths) reuse map — see
+        # WEB_SEARCH_SAME_QUERY_REUSE_S above for the incident this guards against.
+        self._recent_by_query: Dict[str, Tuple[float, WebSearchResult]] = {}
+        self._recent_max = 64
         if ttl_hours is None:
             try:
                 from config.app_config import WEB_SEARCH_CACHE_TTL_HOURS
@@ -629,46 +644,90 @@ class WebSearchCache:
         content = f"{query.lower().strip()}:{depth.value}"
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 
-    def get(self, query: str, depth: WebSearchDepth) -> Optional[WebSearchResult]:
-        """Retrieve cached result if available and not expired."""
-        if not self._ensure_initialized():
+    @staticmethod
+    def _norm(query: str) -> str:
+        """Normalize a query string for the in-process same-query reuse map."""
+        return (query or "").lower().strip()
+
+    def _get_same_query_recent(self, query: str, depth: WebSearchDepth) -> Optional[WebSearchResult]:
+        """
+        Same-normalized-query reuse across search depths within one turn.
+
+        See WEB_SEARCH_SAME_QUERY_REUSE_S above for the incident this closes:
+        a same-string re-search at a different depth within the reuse window
+        is waste, not a quality upgrade. Never serves across different
+        normalized queries; expired entries are dropped from the map.
+        """
+        if WEB_SEARCH_SAME_QUERY_REUSE_S <= 0:
             return None
 
-        try:
-            cache_key = self._generate_cache_key(query, depth)
+        norm = self._norm(query)
+        entry = self._recent_by_query.get(norm)
+        if entry is None:
+            return None
 
-            # Query by ID first (exact match)
-            result = self._collection.get(ids=[cache_key], include=["metadatas", "documents"])
+        ts, stored = entry
+        age = time.time() - ts
+        if age > WEB_SEARCH_SAME_QUERY_REUSE_S:
+            self._recent_by_query.pop(norm, None)
+            return None
 
-            if result and result.get("ids") and len(result["ids"]) > 0:
-                metadata = result["metadatas"][0] if result.get("metadatas") else {}
-                cached_time = metadata.get("timestamp", 0)
+        log.debug(
+            f"[WebSearchCache] Same-query reuse within {age:.0f}s "
+            f"(cached depth {stored.search_depth.value} → requested {depth.value})"
+        )
+        return replace(stored, from_cache=True)
 
-                # Check TTL
-                if time.time() - cached_time > (self.ttl_hours * 3600):
-                    log.debug(f"[WebSearchCache] Cache expired for query: {query[:50]}...")
-                    return None
+    def get(self, query: str, depth: WebSearchDepth) -> Optional[WebSearchResult]:
+        """Retrieve cached result if available and not expired."""
+        if self._ensure_initialized():
+            try:
+                cache_key = self._generate_cache_key(query, depth)
 
-                # Reconstruct result from cache
-                pages_json = metadata.get("pages_json", "[]")
-                pages_data = json.loads(pages_json)
-                pages = [WebPage(**p) for p in pages_data]
+                # Query by ID first (exact match)
+                result = self._collection.get(ids=[cache_key], include=["metadatas", "documents"])
 
-                return WebSearchResult(
-                    query=query,
-                    pages=pages,
-                    total_credits_used=0,  # No credits used for cache hit
-                    search_depth=depth,
-                    from_cache=True,
-                    timestamp=cached_time
-                )
-        except Exception as e:
-            log.debug(f"[WebSearchCache] Cache lookup failed: {e}")
+                if result and result.get("ids") and len(result["ids"]) > 0:
+                    metadata = result["metadatas"][0] if result.get("metadatas") else {}
+                    cached_time = metadata.get("timestamp", 0)
 
-        return None
+                    # Check TTL
+                    if time.time() - cached_time > (self.ttl_hours * 3600):
+                        log.debug(f"[WebSearchCache] Cache expired for query: {query[:50]}...")
+                        return None
+
+                    # Reconstruct result from cache
+                    pages_json = metadata.get("pages_json", "[]")
+                    pages_data = json.loads(pages_json)
+                    pages = [WebPage(**p) for p in pages_data]
+
+                    return WebSearchResult(
+                        query=query,
+                        pages=pages,
+                        total_credits_used=0,  # No credits used for cache hit
+                        search_depth=depth,
+                        from_cache=True,
+                        timestamp=cached_time
+                    )
+            except Exception as e:
+                log.debug(f"[WebSearchCache] Cache lookup failed: {e}")
+
+        # Exact (query, depth) miss (or store unavailable) — fall back to the
+        # in-process same-query-different-depth reuse map.
+        return self._get_same_query_recent(query, depth)
 
     def put(self, result: WebSearchResult) -> None:
         """Cache a search result."""
+        if result.has_results:
+            norm = self._norm(result.query)
+            self._recent_by_query[norm] = (time.time(), result)
+            if len(self._recent_by_query) > self._recent_max:
+                oldest_key = min(
+                    self._recent_by_query,
+                    key=lambda k: self._recent_by_query[k][0]
+                )
+                self._recent_by_query.pop(oldest_key, None)
+
         if not self._ensure_initialized() or not result.has_results:
             return
 

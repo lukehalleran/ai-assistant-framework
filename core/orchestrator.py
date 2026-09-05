@@ -150,6 +150,31 @@ def _thread_topic_shifted(
     return not _topics_related(thread_topic, current_topic)
 
 
+def _thread_labels_diverge(thread_topic: str, current_topic: str) -> bool:
+    """Previous-thread label and current label are unrelated (shared topics_related predicate)."""
+    return (
+        bool((thread_topic or "").strip())
+        and bool((current_topic or "").strip())
+        and not _topics_related(thread_topic, current_topic)
+    )
+
+
+def _continuity_asserted_by_stm_override(
+    original_query: str, stm_reference_type: Optional[str]
+) -> bool:
+    """True when the ONLY reason a shift is not asserted is the STM
+    recall/clarification/correction override (anaphoric/fragment
+    continuations keep the old continuity wording — their label divergence
+    is a known classifier miss, 2026-07-28), not the STM override.
+    """
+    from utils.query_checker import is_anaphoric_continuation, is_fragment_continuation
+    if is_anaphoric_continuation(original_query or ""):
+        return False
+    if is_fragment_continuation(original_query or ""):
+        return False
+    return (stm_reference_type or "").strip().lower() in ("recall", "clarification", "correction")
+
+
 from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import CrisisLevel
 from utils.emotional_context import EmotionalContext
@@ -1313,6 +1338,27 @@ class DaemonOrchestrator:
             _shifted = thread_topic and _thread_topic_shifted(
                 thread_topic, topic_str, context.original_query, stm_reference_type=_stm_ref
             )
+            # Neutral-divergence branch (2026-09-05): _thread_topic_shifted
+            # correctly refuses to assert a shift when STM classified this
+            # turn recall/clarification/correction (2026-08-05 override,
+            # anaphoric-continuation doctrine) — but that override is meant
+            # for a continuous conversation with classifier-noisy labels, not
+            # for two genuinely unrelated topics. Live incident: turn 1 was a
+            # public-news question ("Politicians Charged With Crimes",
+            # heavy), turn 2 was an unrelated 77-word request to read an
+            # advisor email ("Project Timeline Deadlines") that the STM
+            # analyzer matched to a prior-day memory as "recall" — the old
+            # code fell into the plain continuity `else` branch and rendered
+            # "message #1 in an ongoing conversation thread about Politicians
+            # Charged With Crimes" plus the carried-over "sensitive/heavy
+            # topic" line on a turn that was neither. When the labels
+            # actually diverge under the override, render a neutral note
+            # instead of endorsing the old topic as current.
+            _diverged_by_stm = (
+                not _shifted
+                and _thread_labels_diverge(thread_topic, topic_str)
+                and _continuity_asserted_by_stm_override(context.original_query, _stm_ref)
+            )
             thread_msg = f"\n\n[THREAD CONTEXT]"
             if _session_start:
                 thread_msg += (
@@ -1327,13 +1373,32 @@ class DaemonOrchestrator:
                     f"{thread_topic}; the current message appears to shift topic "
                     f"({topic_str}). Follow the current query."
                 )
+            elif _diverged_by_stm:
+                thread_msg += (
+                    f"\nThe previous message was #{thread_depth} in a thread about "
+                    f"{thread_topic}. The current message is labeled {topic_str} and reads "
+                    f"as a continuation or recall; treat it as part of that thread only if "
+                    f"it clearly is, and never restate that thread's topic as the current one."
+                )
             else:
                 thread_msg += f"\nThis is message #{thread_depth} in an ongoing conversation thread"
                 if thread_topic and str(thread_topic).strip().lower() != "general":
                     thread_msg += f" about {thread_topic}"
-            if is_heavy:
+            # The heavy-topic flag belongs to the PREVIOUS thread — only
+            # carry it forward when this turn is actually being presented as
+            # that same thread (the continuity `else` branch) or as the
+            # previous session's last thread (session-start branch); a
+            # shift or a neutral STM-divergence note must not also assert
+            # "this is a sensitive/heavy topic" about the CURRENT turn.
+            _carry_heavy = is_heavy and (_session_start or (not _shifted and not _diverged_by_stm))
+            if _carry_heavy:
                 thread_msg += "\nThis is a sensitive/heavy topic. Be empathetic and specific."
-            elif thread_depth >= 3 and not _shifted and not _session_start:
+            elif (
+                thread_depth >= 3
+                and not _shifted
+                and not _session_start
+                and not _diverged_by_stm
+            ):
                 thread_msg += "\nMaintain conversational continuity."
 
             system_prompt = system_prompt.rstrip() + thread_msg

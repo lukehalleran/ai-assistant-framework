@@ -794,6 +794,14 @@ async def evaluate_agentic_gate(
         needs_web_search = True
         logger.debug("[Agentic Gate] Tier 1: explicit web search/URL keyword detected")
 
+    # Clear dated public-event questions must not depend on the optional
+    # classifier succeeding. Share the same rule with enhanced-mode retrieval.
+    from utils.web_search_trigger import requires_fresh_public_evidence
+    if requires_fresh_public_evidence(user_text):
+        needs_web_search = True
+        search_terms = [user_text]
+        logger.debug("[Agentic Gate] Tier 1: fresh public evidence required")
+
     if _hit_non_negated(_lower, _TOOL_HIT):
         needs_tools = True
         # Log the trigger — this arm fired SILENTLY for months; the 09-01

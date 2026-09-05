@@ -71,7 +71,7 @@ import asyncio
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
@@ -359,6 +359,61 @@ SUPPRESSION_PATTERNS: Tuple[str, ...] = (
 )
 
 
+# A second-person REQUEST wrapper ("can you check if...", "did you see
+# that...") is a request SHAPE, not a personal-topic pronoun — but only when
+# it opens the text; a "you"/"your"/"me" anywhere in the remainder still
+# means the question is about the user's own stuff, not a bare public event.
+_REQUEST_WRAPPER_RE = re.compile(
+    r"^(?:(?:can|could|would|will|did|do|have)\s+you\s+(?:please\s+)?"
+    r"(?:check|search|look\s*(?:up|into)|find\s+out|verify|confirm|see|hear|tell\s+me)"
+    r"(?:\s+(?:if|whether|that|about|what|who|when|why|how))?\s*)"
+)
+
+# Weak public-event terms are generic enough to also describe the user's own
+# private-sphere business ("my company announced...", "the syllabus reports
+# ..."); they only count toward a public-event verdict when nothing in the
+# text is one of the private-sphere-generic nouns (school/work/appointment
+# vocabulary, defined below). Strong terms (arrests, courts, sanctions, ...)
+# always count — a real incident can legitimately mention "meeting" in passing.
+_PUBLIC_EVENT_WEAK_RE = re.compile(r"\b(?:reports?|reported|announced|compan(?:y|ies))\b")
+_PUBLIC_EVENT_STRONG_RE = re.compile(
+    r"\b(?:news|headlines?|elections?|government|"
+    r"ministers?|presidents?|parliament|courts?|police|crimes?|criminal|"
+    r"illegal|corruption|arrested|charged|resigned|sanctions?|lawsuits?|"
+    r"merger|bankruptcy|recalled|outbreak|regulations?)\b"
+)
+
+
+def requires_fresh_public_evidence(query: str) -> bool:
+    """Conservative positive rule, not a general-purpose intent classifier.
+
+    A dated question about a public event needs verification even when the
+    optional classifier is unavailable. False means 'use normal routing',
+    NOT 'fresh evidence is unnecessary'. Personal/mixed requests stay there.
+    No people, parties or outlets are special-cased.
+    """
+    text = (query or "").strip().lower()
+    if not text or is_personal_doc_search(query):
+        return False
+    if re.search(r"\b(?:do not|don't|dont|without|no need to)\s+(?:\w+\s+){0,2}(?:search|browse|look up)\b", text):
+        return False
+    wrapper_match = _REQUEST_WRAPPER_RE.match(text)
+    remainder = text[wrapper_match.end():] if wrapper_match else text
+    if re.search(r"\b(?:i|me|my|mine|we|our|ours|you|your)\b", remainder):
+        return False
+    temporal = _count_keyword_matches(
+        remainder, RECENCY_KEYWORDS_STRONG | {"yesterday", "last week", "recently"}
+    )[0] > 0
+    question = bool(wrapper_match) or "?" in remainder or bool(re.match(
+        r"^(?:what|why|how|when|where|who|is|are|was|were|did|does|has|have)\b", remainder
+    ))
+    public_event = bool(_PUBLIC_EVENT_STRONG_RE.search(remainder)) or (
+        bool(_PUBLIC_EVENT_WEAK_RE.search(remainder))
+        and not any(tok in _PRIVATE_SPHERE_GENERIC_TOKENS for tok in re.findall(r"[a-z]+", remainder))
+    )
+    return temporal and question and public_event
+
+
 def _normalize(text: str) -> str:
     """Normalize text for matching."""
     return (text or "").strip().lower()
@@ -556,6 +611,14 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
             reason="Empty query",
             matched_keywords=[],
             matched_patterns=[]
+        )
+
+    if requires_fresh_public_evidence(query):
+        return WebSearchDecision(
+            should_search=True, depth=WebSearchDepth.QUICK, confidence=0.85,
+            reason="Time-sensitive public-event question requires fresh evidence",
+            matched_keywords=[], matched_patterns=["fresh_public_evidence"],
+            search_terms=[query], num_searches=1, source="freshness_rule",
         )
 
     confidence = 0.0
@@ -1478,10 +1541,12 @@ async def analyze_for_web_search_llm(
     pattern_candidate = _looks_like_pattern_candidate(query)
 
     # Check cache first (prevents duplicate LLM calls within same request).
-    # Hash on (query, conversation_context): the SAME elliptical query ("check the
+    # Hash on query, context and policy: the SAME elliptical query ("check the
     # news") must resolve to different search terms under different prior topics, so
-    # context is part of the cache identity. crisis_level is intentionally excluded.
-    cache_key = hash((query, conversation_context))
+    # context is part of the cache identity. A prior permitted lookup must not
+    # bypass a later disabled/crisis policy, or reuse a different credit plan.
+    cache_key = hash((query, conversation_context, web_search_enabled,
+                      (crisis_level or "").upper(), remaining_credits))
     now = time.time()
     if cache_key in _llm_trigger_cache:
         cached_time, cached_result = _llm_trigger_cache[cache_key]
@@ -1631,7 +1696,8 @@ async def analyze_for_web_search_llm(
     # If LLM failed, fall back to heuristics
     if llm_response is None:
         logger.debug("[WebSearchTrigger] LLM failed, falling back to heuristics")
-        return heuristic_result
+        return replace(heuristic_result, source="fallback",
+                       reason="Classifier unavailable; " + heuristic_result.reason)
 
     # A mixed longitudinal request owns the turn. Do not let the ordinary web
     # confidence blend or a personal-topic search veto erase this independent

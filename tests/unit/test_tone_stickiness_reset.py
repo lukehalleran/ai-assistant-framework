@@ -75,7 +75,7 @@ def test_history_distress_ignores_stale_heavy_turn(monkeypatch):
     monkeypatch.setattr(cfg, "TONE_STICKINESS_MAX_GAP_MINUTES", 30, raising=False)
 
     stale = {
-        "query": "old heavy turn",
+        "query": "my old heavy turn",
         "response": "...",
         "is_heavy_topic": True,
         "timestamp": datetime.now() - timedelta(hours=12),

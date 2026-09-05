@@ -714,12 +714,58 @@ def _is_casual_short_message(message: str) -> bool:
     return False
 
 
+# A heavy-flagged history row's own text must carry a first-person marker to
+# count as distress evidence (2026-09-05, see _recent_distress_from_history).
+# Word-bounded so "imagine"/"him"/"Idaho" cannot match "im"/"i". "us" and "id"
+# are deliberately absent: "UK or US politicians" lowercases to the pronoun "us"
+# and "student id" to "I'd" — both ambiguous, neither carries distress alone.
+_HISTORY_FIRST_PERSON_RE = re.compile(
+    r"\b(?:i|i'm|im|i've|ive|i'd|me|my|mine|myself|we|our|ours)\b"
+)
+
+
+def _heavy_row_is_first_person(turn: dict) -> bool:
+    """Whether a heavy-flagged history row carries the user's own first-person
+    material, vs. being purely about the outside world (a news question, a
+    third party's situation).
+
+    Text is read from ``query``, falling back to ``user``, then ``content``
+    (first truthy value wins), coerced to str. A row with NONE of those
+    fields present is counted as distress evidence exactly as before
+    (fail-closed for legacy rows that predate this field). A row WITH text
+    but no first-person marker is not distress evidence.
+    """
+    text = turn.get("query") or turn.get("user") or turn.get("content")
+    if not text:
+        return True  # fail-closed: no text field to inspect
+    text = str(text)
+    if _HISTORY_FIRST_PERSON_RE.search(text.lower()):
+        return True
+    logger.debug(
+        "[ToneDetector] heavy history turn has no first-person marker "
+        "(observational) — not distress evidence"
+    )
+    return False
+
+
 def _recent_distress_from_history(conversation_history: Optional[List[dict]]) -> bool:
     """True if any recent in-session turn was flagged as heavy/crisis.
 
     The history path must obey the same gap boundary as previous_tone
     stickiness. Otherwise a stale heavy turn from yesterday can re-latch the
     floor after ContextPipeline correctly cleared _last_tone_level.
+
+    2026-09-05: a heavy-flagged row about the outside world (turn 1 was a
+    public-news question — "Were any UK or US politicians charged with
+    crimes this week?" — whose own tone was CONVERSATIONAL but the LLM
+    heavy-topic classifier still flagged it) was latching the sticky floor
+    on turn 2, an unrelated logistics request, into an unwarranted CONCERN /
+    LIGHT SUPPORT reply. Heavy SUBJECT MATTER about the outside world is not
+    distress evidence; only the user's own first-person material is (same
+    doctrine as the 2026-08-15 vent-shape narrowing of the agentic veto). A
+    fresh heavy row now counts toward session distress only when its text
+    carries a first-person marker (or the row has no text field at all, in
+    which case it counts as before).
     """
     if not conversation_history:
         return False
@@ -746,7 +792,12 @@ def _recent_distress_from_history(conversation_history: Optional[List[dict]]) ->
         # fetch (the digest-order bug class). The freshness bound above does
         # the real limiting; scan every row passed (callers fetch <=5).
         for turn in conversation_history:
-            if isinstance(turn, dict) and turn.get("is_heavy_topic", False) and _fresh(turn):
+            if (
+                isinstance(turn, dict)
+                and turn.get("is_heavy_topic", False)
+                and _fresh(turn)
+                and _heavy_row_is_first_person(turn)
+            ):
                 return True
     except Exception as e:  # pragma: no cover - defensive
         logger.debug(f"[ToneDetector] history distress check failed: {e}")

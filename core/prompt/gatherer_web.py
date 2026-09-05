@@ -57,7 +57,9 @@ class WebSearchMixin:
         Args:
             query: User query to analyze and potentially search
             crisis_level: Current tone/crisis level (HIGH/MEDIUM suppresses search)
-            intent_type: Intent classifier result (e.g. "casual_social") — skips search for non-search intents
+            intent_type: Intent classifier result (e.g. "casual_social") — skips search for
+                intents that are explicitly non-search; ambiguous fallback intents still
+                consult the shared trigger
             conversation_context: Compact digest of prior turns so an elliptical
                 follow-up ("they're only giving us 7 days") can be resolved to the
                 topic just discussed. Without it a pronoun-only claim scores 0 on
@@ -73,7 +75,10 @@ class WebSearchMixin:
             return None
 
         # Skip web search for intents that never need it
-        _no_search_intents = {"casual_social", "meta_conversational", "emotional_support", "general"}
+        # ``general`` is the classifier's low-confidence/unknown bucket.  It is
+        # intentionally not a veto: unrecognized current-news questions can
+        # land here, so the shared trigger must decide.
+        _no_search_intents = {"casual_social", "meta_conversational", "emotional_support"}
         if intent_type and str(intent_type) in _no_search_intents:
             logger.debug(f"[ContextGatherer] Web search skipped for intent={intent_type}")
             return None
