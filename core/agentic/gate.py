@@ -108,6 +108,7 @@ import re as _re_gate2
 from utils.trigger_match import compile_keyword_matcher as _compile_keyword_matcher
 from utils.trigger_match import find_hits as _find_trigger_hits
 from utils.trigger_match import is_negated as _trigger_is_negated
+from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
 
 logger = logging.getLogger("agentic_gate")
 
@@ -855,6 +856,9 @@ async def evaluate_agentic_gate(
             and len(_words) <= 30):
         needs_tools = True
         logger.debug("[Agentic Gate] Tier 1: email search intent detected (narrow: cue+info-seeking+terse)")
+    elif not needs_tools and _email_search_cue and _email_read_request_clause(user_text):
+        needs_tools = True
+        logger.debug("[Agentic Gate] Tier 1: email search intent detected (clause-level read request in a longer message)")
 
     # File / saved-document retrieval intent → route to agentic so file_read /
     # file_list / get_full_document are offered. Literal fast-path + robust
@@ -1385,6 +1389,51 @@ def _is_info_seeking(query: str) -> bool:
     if _LOOKUP_CUE_RE.search(q):
         return True
     return any(c in q for c in _INFO_SEEKING_CUES)
+
+
+# Email-READ request at CLAUSE level (2026-09-04). The terse email-search arm
+# caps the whole message at 30 words, so "I got an email from X in my outlook
+# inbox recently can you read the last one I received from them? I think it
+# was about … (95 words)" never routed to email_search — the model then told
+# the user "I can't read your Outlook inbox" with the tool never offered. A
+# single sentence that carries the email noun, an explicit read/check request
+# shape and is itself ≤30 words routes regardless of message length. Pasted
+# correspondence is stripped first (a forwarded "can you check the attached
+# email?" inside a quote is not the user's request); signatures ("Email:
+# x@y.com") and narration ("I emailed the form yesterday") have no request
+# shape and still don't fire.
+_EMAIL_NOUN_RE = re.compile(r"\b(?:e-?mails?|inbox|gmail|outlook)\b", re.IGNORECASE)
+_EMAIL_READ_REQUEST_RE = re.compile(
+    r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"(?:read|check|pull\s+up|look\s+(?:at|for|up)|find|open|show\s+me|search|see|summari[sz]e)\b"
+    r"|\b(?:please\s+)?(?:read|check|pull\s+up|look\s+(?:at|for|up)|find|open|show\s+me|search|summari[sz]e)"
+    r"\s+(?:the|my|that|this|our)\b"
+    r"|\bwhat(?:'s| is| was| did)\b",
+    re.IGNORECASE,
+)
+_EMAIL_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+EMAIL_READ_CLAUSE_MAX_WORDS = 30
+
+
+def _email_read_request_clause(text: str) -> bool:
+    """True when some ≤30-word sentence of `text` is an explicit request to
+    read/check email (noun + request shape + info-seeking), after pasted
+    correspondence has been stripped. Under-fires by design."""
+    try:
+        body = _strip_quoted_correspondence(text or "")
+    except Exception:
+        body = text or ""
+    for sent in _EMAIL_SENTENCE_SPLIT_RE.split(body):
+        s = sent.strip()
+        if not s or len(s.split()) > EMAIL_READ_CLAUSE_MAX_WORDS:
+            continue
+        s_lower = s.lower()
+        m = _EMAIL_NOUN_RE.search(s_lower)
+        if not m or _trigger_is_negated(s_lower, m.start()):
+            continue
+        if _EMAIL_READ_REQUEST_RE.search(s) and _is_info_seeking(s):
+            return True
+    return False
 
 
 # First-person pronoun anywhere in the text — the marker that a non-info-seeking

@@ -4312,7 +4312,7 @@ async def _handle_submit_inner(
             _deadline_source = user_text + "\n" + "\n".join(
                 d.content_text or "" for d in files_result.documents
             )
-            _dl_note = deadline_timezone_note(_deadline_source)
+            _dl_note = deadline_timezone_note(_deadline_source, user_text=user_text)
             if _dl_note:
                 _notes.append(_dl_note)
             _attachment_note = "\n".join(_notes)

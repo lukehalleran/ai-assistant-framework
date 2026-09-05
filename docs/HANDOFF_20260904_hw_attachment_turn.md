@@ -162,3 +162,31 @@ Diff reviewed line by line (8 modified + 3 new files). Kept everything in §C; c
 Verified, not changed: `pd.read_csv` has no row cap (manifest count is the true count); `_persist_uploads` titles are `upload:<filename>` (matches the dedupe); the agentic gate evaluates raw `user_text`, so the notes never reach it; ruff clean on all touched files; exactly one live daemon (pid started 16:28, after the edits — it is running this code). Post-review run: `test_sep04_attachment_turn.py` 33 passed; combined with handle_submit/file_processor/privacy_redaction/context_pipeline/sep03_live_probe/retrieval_context_quality: 222 passed, 0 failed.
 
 Live observation for the owner (not chased): `logs/turn_records.jsonl` has the 16:39:30 and 16:40:41 turns carrying the identical Outlook-inbox query — same text submitted twice 71 s apart (resend, or the ingress dedupe window is shorter than that gap).
+
+## E. Evening follow-ups (Fable, 2026-09-04 ~18:30) — retest, Outlook thread, cost audit
+
+Three live dumps after the 17:14 restart. All code changes are working-tree (uncommitted); the afternoon batch is commit e6e515d.
+
+**Retest verdict (279K-token HW turn):** the double-merge fix held (attachments appear once in [CURRENT QUERY]) but the prompt got BIGGER because the 14:14 turn's 401,972-char query was carried verbatim in [RECENT CONVERSATION] — GPT's cost-audit bug, fixed below. `[ATTACHMENT NOTE]` fired but listed `adj.r, read.csv, write.csv, tmpi6ivi0qj.csv` alongside the real catch (`Housing.csv`, Part 1). `[DEADLINE NOTE]` did not fire. Kimi's answer nonetheless caught all three misses from the afternoon (Part 2 / onHousing, the calendar title mismatch, 10:59 PM Central) — the TEMPORAL REASONING rule and the attachment note did their job.
+
+1. `core/prompt/token_manager.py` — conversation-shaped entries metered as rendered; query field capped at `CONVERSATION_QUERY_MAX_TOKENS`=600, response at the section item cap, each in its own key.
+2. `core/agentic/gate.py` — `_email_read_request_clause`: clause-level email-read request (≤30-word sentence, noun + request shape + info-seeking, pasted correspondence stripped). Deployed probe on the live Outlook message: `True ['tools']`.
+3. `utils/file_processor.py` `attachment_display_name()` + `core/context_pipeline.py` `_upload_basename()` — orig_name at every display site; `.name` stays the security-checked path.
+4. `utils/attachment_audit.py` — code-identifier / dotted-identifier / case-sensitive-`.R` guards, strict mode for attached-document text, temp basenames excluded; deadline scan skips same-zone times and reports the user's stated-time discrepancy (`user_text=` from handlers). Deployed probe on the live HW text: `[DEADLINE NOTE] 11:59 PM Eastern = 10:59 PM Central (your timezone). Your message says 11:00 PM Central; the document's converted deadline is 10:59 PM.`
+
+Tests: `tests/unit/test_sep04_evening_fixes.py` (23); focused set (sep04_attachment_turn, file_processor*, context_pipeline, handle_submit) 188 passed; wide batch of the 72 test files importing the gate / token manager / file processor / context pipeline / attachment audit, run as two halves: 1,475 passed, 10 pre-existing skips, 0 failed (all 72 in one process stalled past 10 min at 63% — run halves). Pre-existing collection error, untouched: `tests/memory_test.py` (module-level script, `_SimplePromptBuilder` has no `_assemble_prompt`; last edited 2025-11-12). Metrics regenerated (819 py files / 8,535 tests / 397 files).
+
+**Outlook — owner checklist (the Azure step you remembered, plus what else is needed):**
+1. https://portal.azure.com → App registrations → New registration. Name anything; supported account types "Accounts in any organizational directory"; platform "Mobile and desktop applications" with redirect `http://localhost`; Authentication → enable "Allow public client flows".
+2. API permissions → Add → Microsoft Graph → Delegated → `Mail.Read` (User.Read is default).
+3. Copy the Application (client) ID into `config/config.local.yaml`:
+   ```yaml
+   email_integration:
+     outlook_enabled: true
+     outlook_client_id: "<application id>"
+   ```
+4. `python scripts/auth_outlook.py` (device-code flow; prints a URL + code; writes `data/outlook_token.json`).
+5. Restart the daemon. `get_runtime_action_health()` will then list Outlook alongside Gmail.
+Risk: if the mailbox is the Georgia Tech account, the GT Entra tenant may require admin consent for delegated Mail.Read and the device-code sign-in will fail with "Need admin approval". Fallback: forward GT mail to the Gmail account that is already connected.
+
+Not chased: the 16:39/16:40 duplicate Outlook submissions (identical text, 71 s apart).

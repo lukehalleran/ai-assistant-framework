@@ -111,6 +111,18 @@ class ToneLevel(Enum):
         return cls.CONVERSATIONAL
 
 
+def _upload_basename(file: Any) -> str:
+    """Basename of an attached file as the persisted `upload:<name>` title
+    spells it: the client's original name when the API shim carries one
+    (`orig_name`), else the basename of `.name` (2026-09-04 — the same-turn
+    upload dedupe compared server temp names against real names and never
+    matched)."""
+    orig = getattr(file, 'orig_name', None)
+    if isinstance(orig, (str, os.PathLike)) and str(orig).strip():
+        return os.path.basename(str(orig))
+    return os.path.basename(str(getattr(file, 'name', '') or ''))
+
+
 @dataclass
 class ContextResult:
     """
@@ -396,7 +408,7 @@ class ContextPipeline:
             # verbatim in [CURRENT QUERY] this same turn.
             for _f in files:
                 try:
-                    _bn = os.path.basename(getattr(_f, 'name', '') or '')
+                    _bn = _upload_basename(_f)
                     if _bn:
                         uploaded_filenames.append(_bn)
                 except Exception:

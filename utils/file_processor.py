@@ -45,7 +45,7 @@ import time
 import docx2txt
 import pandas as pd
 from pathlib import Path
-from typing import List, Any, Optional
+from typing import List, Optional, Any
 from dataclasses import dataclass, field
 from utils.logging_utils import get_logger
 from config.app_config import (
@@ -101,6 +101,28 @@ class ProcessedFilesResult:
     documents: List[ProcessedFile] = field(default_factory=list)    # Convenience: just the text files
 
 
+def attachment_display_name(file: Any) -> str:
+    """The user-facing filename of an upload.
+
+    Prefers the client's original name when the upload shim carries one
+    (`orig_name` — api/state.py resolve_uploads), else the basename of `.name`.
+    2026-09-04: API uploads arrive as SimpleNamespace(name=<server temp path>,
+    orig_name=<real name>) and every display site had used the temp basename
+    — a live prompt carried "[tmpi6ivi0qj.csv: 1,264 rows …]" as the CSV
+    manifest, the persisted title was "upload:tmpi6ivi0qj.csv" (so the
+    same-turn upload dedupe could never match a re-attached file), and the
+    missing-attachment audit then reported that temp name as a file "not
+    attached". Reading still uses `.name` (the real path); only the label
+    changes.
+    """
+    # Only a real string counts: test doubles (Mock) answer every attribute
+    # with a truthy object, and a PathLike is fine too.
+    orig = getattr(file, "orig_name", None)
+    if isinstance(orig, (str, os.PathLike)) and str(orig).strip():
+        return os.path.basename(str(orig))
+    return os.path.basename(str(getattr(file, "name", "") or "unknown"))
+
+
 class FileProcessor:
     """Handles processing of uploaded files with security hardening"""
 
@@ -154,7 +176,7 @@ class FileProcessor:
 
         for file in files:
             try:
-                basename = os.path.basename(getattr(file, 'name', 'unknown'))
+                basename = attachment_display_name(file)
                 ext = Path(basename).suffix.lower()
 
                 if ext in IMAGE_EXTENSIONS:
@@ -345,7 +367,7 @@ class FileProcessor:
         Returns:
             ProcessedFile with content_text populated
         """
-        basename = os.path.basename(getattr(file, 'name', 'unknown'))
+        basename = attachment_display_name(file)
         ext = Path(basename).suffix.lower()
         pf = ProcessedFile(filename=basename, extension=ext)
 
@@ -386,6 +408,10 @@ class FileProcessor:
         # Extract basename - file.name may be a full path (e.g., from Gradio: /tmp/gradio/.../file.txt)
         # or just a filename. We validate the basename to prevent malicious filenames.
         basename = os.path.basename(file.name)
+        # User-facing label for manifests/messages (orig_name when the API
+        # shim carries it); `basename`/`file.name` stay the SECURITY-checked
+        # real path below.
+        display_name = attachment_display_name(file)
 
         # SECURITY: Detect malicious path patterns before checking if it's a legitimate temp path
         # Check for explicit path traversal attempts (../ or ..\)
@@ -435,7 +461,7 @@ class FileProcessor:
                 break
 
         if not file_ext:
-            return f"[Unsupported file type: {basename}]", 0
+            return f"[Unsupported file type: {display_name}]", 0
 
         # SECURITY: Read file content with size limit
         # Handle two types of file objects:
@@ -522,12 +548,12 @@ class FileProcessor:
                     result = f"```xml\n{content}\n```"
 
                 elif file_ext == '.xlsx':
-                    result = self._extract_xlsx(safe_path, basename)
+                    result = self._extract_xlsx(safe_path, display_name)
 
                 elif file_ext == '.docx':
                     result = self._extract_docx_with_tables(safe_path)
                     if not result or not result.strip():
-                        result = f"[No text content extracted from {basename}]"
+                        result = f"[No text content extracted from {display_name}]"
 
                 elif file_ext == '.csv':
                     # SECURITY: Sanitize CSV to prevent formula injection
@@ -545,14 +571,14 @@ class FileProcessor:
                     # instead of the 1,264 rows actually provided. Prepending
                     # the true shape — computed from the parsed table, never
                     # from raw text — gives it away for free.
-                    manifest = self._tabular_manifest(basename, len(df), df.columns)
+                    manifest = self._tabular_manifest(display_name, len(df), df.columns)
                     result = manifest + "\n\n" + df.to_string()
 
                 elif file_ext == '.pdf':
-                    result = self._extract_pdf_with_tables(safe_path, basename)
+                    result = self._extract_pdf_with_tables(safe_path, display_name)
 
                 else:
-                    result = f"[Unsupported file type: {basename}]"
+                    result = f"[Unsupported file type: {display_name}]"
 
             except Exception as e:
                 logger.error(f"Error processing {basename}: {e}")
