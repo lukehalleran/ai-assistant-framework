@@ -22,6 +22,7 @@ Module Contract
   - _extract_pdf_with_tables(path) -> str  [pdfplumber table extraction as markdown]
   - _extract_docx_with_tables(path) -> str  [python-docx table extraction as markdown]
   - _extract_xlsx(path, basename) -> str  [openpyxl sheet-per-table extraction as markdown]
+  - _render_dataframe_preview(df) -> str  [dtypes + numeric summary + head/tail sample for tables over ATTACHMENT_TABLE_FULL_MAX_ROWS]
   - _sanitize_csv_cell(value) -> Any  [CSV formula injection protection]
 - Security features:
   - Path traversal protection (validates filenames against traversal patterns)
@@ -64,6 +65,17 @@ MAX_FILE_SIZE = FILE_UPLOAD_MAX_SIZE
 MAX_TOTAL_SIZE = FILE_UPLOAD_MAX_TOTAL_SIZE
 ALLOWED_EXTENSIONS = FILE_UPLOAD_ALLOWED_EXTENSIONS
 CSV_FORMULA_PREFIXES = FILE_UPLOAD_CSV_FORMULA_PREFIXES
+
+# Attachment table preview caps (2026-09-05, live defect 13:44 debug record +
+# stored corpus entry): a 1,264-row CSV rendered via df.to_string() put
+# 216,318 of a 270,559-char query into raw rows — the agentic final prompt
+# logged "still over ceiling after trimming: 103926/40000 tokens". A model
+# can't use 1,264 raw rows anyway; it needs the true shape (already in the
+# manifest), column dtypes, summary statistics, and a small head/tail sample.
+# Tables at or under the row cap still render in full, unchanged.
+ATTACHMENT_TABLE_FULL_MAX_ROWS = int(os.getenv("ATTACHMENT_TABLE_FULL_MAX_ROWS", "60"))
+ATTACHMENT_TABLE_HEAD_ROWS = 20
+ATTACHMENT_TABLE_TAIL_ROWS = 5
 
 # Image file extensions
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
@@ -572,7 +584,19 @@ class FileProcessor:
                     # the true shape — computed from the parsed table, never
                     # from raw text — gives it away for free.
                     manifest = self._tabular_manifest(display_name, len(df), df.columns)
-                    result = manifest + "\n\n" + df.to_string()
+                    # 2026-09-05 (live defect, debug record + stored corpus
+                    # entry 13:44): a 1,264-row CSV rendered via
+                    # df.to_string() put 216,318 of a 270,559-char query into
+                    # raw rows (agentic final prompt: "still over ceiling
+                    # after trimming: 103926/40000 tokens"). Beyond the row
+                    # cap, render a preview (dtypes + numeric summary +
+                    # head/tail sample) instead of every row — the manifest
+                    # above already gives the model the true shape.
+                    if len(df) > ATTACHMENT_TABLE_FULL_MAX_ROWS:
+                        body = self._render_dataframe_preview(df)
+                    else:
+                        body = df.to_string()
+                    result = manifest + "\n\n" + body
 
                 elif file_ext == '.pdf':
                     result = self._extract_pdf_with_tables(safe_path, display_name)
@@ -609,6 +633,53 @@ class FileProcessor:
             f"or figures about it — do not rely on prior knowledge of "
             f"similarly named datasets.]"
         )
+
+    @staticmethod
+    def _render_dataframe_preview(df: "pd.DataFrame") -> str:
+        """Bounded preview for a table beyond ATTACHMENT_TABLE_FULL_MAX_ROWS
+        rows (2026-09-05, live defect: rendering a 1,264-row CSV via
+        df.to_string() put 216,318 of a 270,559-char query into raw rows,
+        and the agentic final prompt logged "still over ceiling after
+        trimming: 103926/40000 tokens"). A model can't use 1,264 raw rows
+        anyway — this gives it what it CAN use: column dtypes, summary
+        statistics, and a small head/tail sample. The caller's manifest
+        line already carries the true row/column count.
+
+        Rounding rule: describe() stats are rounded via DataFrame.round(4)
+        (4 decimal places) before rendering — simple and reproducible,
+        per the "(use float_format or .round)" allowance.
+        """
+        parts = []
+
+        dtype_line = "Columns: " + ", ".join(
+            f"{col} ({dtype})"
+            for col, dtype in zip(df.columns.astype(str), df.dtypes.astype(str))
+        )
+        parts.append(dtype_line)
+
+        numeric_df = df.select_dtypes(include="number")
+        if not numeric_df.empty:
+            summary = numeric_df.describe().T.round(4)
+            parts.append(
+                "Numeric summary (count/mean/std/min/25%/50%/75%/max):\n"
+                + summary.to_string()
+            )
+
+        head_n = ATTACHMENT_TABLE_HEAD_ROWS
+        tail_n = ATTACHMENT_TABLE_TAIL_ROWS
+        omitted = len(df) - head_n - tail_n
+
+        parts.append(f"First {head_n} rows:\n" + df.head(head_n).to_string())
+        if omitted > 0:
+            parts.append(
+                f"… [{omitted:,} rows omitted — the manifest count above is "
+                f"the true size; use the numeric summary for any figure "
+                f"beyond these rows] …"
+            )
+        if tail_n > 0:
+            parts.append(f"Last {tail_n} rows:\n" + df.tail(tail_n).to_string())
+
+        return "\n\n".join(parts)
 
     @staticmethod
     def _extract_pdf_with_tables(path: Path, basename: str = "document") -> str:
@@ -718,7 +789,16 @@ class FileProcessor:
 
     @staticmethod
     def _extract_xlsx(path: Path, basename: str = "spreadsheet") -> str:
-        """Extract text from XLSX, rendering each sheet as a markdown table."""
+        """Extract text from XLSX, rendering each sheet as a markdown table.
+
+        2026-09-05 (same unbounded-rows defect as the CSV path — see
+        ATTACHMENT_TABLE_FULL_MAX_ROWS): a sheet with more than
+        ATTACHMENT_TABLE_FULL_MAX_ROWS data rows renders only the first
+        ATTACHMENT_TABLE_HEAD_ROWS and last ATTACHMENT_TABLE_TAIL_ROWS data
+        rows, with an omission line between — the per-sheet manifest above
+        already carries the true row count. No numeric summary here
+        (openpyxl rows aren't a DataFrame); kept simple.
+        """
         import openpyxl
 
         wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
@@ -742,8 +822,31 @@ class FileProcessor:
                 # Add sheet heading + header separator after first row
                 parts.append(f"### {sheet_name}\n{manifest}")
                 header_sep = '| ' + ' | '.join('---' for _ in row) + ' |'
-                rows.insert(1, header_sep)
-                parts.append('\n'.join(rows))
+                if data_row_count > ATTACHMENT_TABLE_FULL_MAX_ROWS:
+                    header_md = rows[0]
+                    data_mds = rows[1:]
+                    head_mds = data_mds[:ATTACHMENT_TABLE_HEAD_ROWS]
+                    tail_mds = (
+                        data_mds[-ATTACHMENT_TABLE_TAIL_ROWS:]
+                        if ATTACHMENT_TABLE_TAIL_ROWS else []
+                    )
+                    omitted = (
+                        data_row_count
+                        - ATTACHMENT_TABLE_HEAD_ROWS
+                        - ATTACHMENT_TABLE_TAIL_ROWS
+                    )
+                    block = [header_md, header_sep] + head_mds
+                    if omitted > 0:
+                        block.append(
+                            f"… [{omitted:,} rows omitted — the manifest "
+                            f"count above is the true size; use it for any "
+                            f"figure beyond these rows] …"
+                        )
+                    block += tail_mds
+                    parts.append('\n'.join(block))
+                else:
+                    rows.insert(1, header_sep)
+                    parts.append('\n'.join(rows))
         wb.close()
         return '\n\n'.join(parts) if parts else f"[No data extracted from {basename}]"
 
