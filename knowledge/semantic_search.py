@@ -120,12 +120,23 @@ class SemanticSearchIndex:
         self._total_rows: int = 0
         self.loaded = False
         self.disabled_reason: str = ""
+        self._load_lock = threading.Lock()
 
     def load(self) -> None:
-        """Load model + FAISS + row-group index once. Fast-return if already loaded."""
-        global _warned_missing
+        """Publish one fully initialized index across concurrent cold searches."""
         if self.loaded:
             return
+        # get_index() protects singleton construction, not initialization.
+        # Searches run in multiple worker threads and can overlap after an
+        # async timeout; without this lock both load the multi-GB index and
+        # mutate its metadata offsets concurrently.
+        with self._load_lock:
+            if not self.loaded:
+                self._load_once()
+
+    def _load_once(self) -> None:
+        """Load resources while holding this instance's initialization lock."""
+        global _warned_missing
 
         t0 = time.time()
 

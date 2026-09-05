@@ -5,13 +5,17 @@ adapter with the same mock-orchestrator factory as test_handle_submit.py —
 no re-derived stand-in for the streaming contract.
 """
 
+import asyncio
 import json
 
 import pytest
 import httpx
+from fastapi import HTTPException
 from unittest.mock import MagicMock, patch
 
 from api.app import create_app
+from api.routes.chat import chat as chat_route
+from api.schemas import ChatRequest
 from tests.unit.helpers_orchestrator import (
     _make_file_processor_mock,
     _make_orchestrator,
@@ -47,6 +51,13 @@ def _client(app):
 
 def _make_app(orch):
     return create_app(orch, start_background=False)
+
+
+def _route_request(app):
+    """Minimal Request for calling the decorated route before consuming SSE."""
+    from starlette.requests import Request
+
+    return Request({"type": "http", "app": app})
 
 
 async def _post_chat(app, text, **kwargs):
@@ -216,6 +227,88 @@ class TestChatStream:
             session.stream_lock.release()
 
     @pytest.mark.asyncio
+    async def test_second_chat_rejected_before_first_response_body_is_consumed(self):
+        """Admission is reserved by the endpoint, not lazily by its iterator."""
+        app = _make_app(_make_orchestrator())
+        request = _route_request(app)
+
+        first = await chat_route(ChatRequest(text="first"), request)
+        assert app.state.daemon.session.stream_lock.locked()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_route(ChatRequest(text="second"), request)
+        assert exc_info.value.status_code == 409
+
+        # Close through the response lifecycle so the reservation is released.
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        first.body_iterator = _empty_async_iterator()
+        await first(
+            {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send
+        )
+        assert not app.state.daemon.session.stream_lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_body_iteration_releases_chat_reservation(self):
+        app = _make_app(_make_orchestrator())
+        response = await chat_route(ChatRequest(text="first"), _route_request(app))
+        response_started = asyncio.Event()
+        hold_headers = asyncio.Event()
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                response_started.set()
+                await hold_headers.wait()
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        response_task = asyncio.create_task(response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send
+        ))
+        await response_started.wait()
+        # StreamingResponse has not entered its body iterator yet.
+        response_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await response_task
+
+        assert not app.state.daemon.session.stream_lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_send_failure_closes_pipeline_before_releasing_admission(self):
+        from api.schemas import ChatEvent
+        app = _make_app(_make_orchestrator())
+        session = app.state.daemon.session
+        closed = []
+
+        async def stream(*args):
+            try:
+                yield ChatEvent(event="message", data={"content": "partial"})
+                await asyncio.Future()
+            finally:
+                closed.append(session.stream_lock.locked())
+
+        async def send(message):
+            if message["type"] == "http.response.body":
+                raise OSError("client disconnected")
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        with patch("api.routes.chat.submit_stream", stream):
+            response = await chat_route(ChatRequest(text="first"), _route_request(app))
+            with pytest.raises(Exception):
+                await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+        assert closed == [True]
+        assert not session.stream_lock.locked()
+
+    @pytest.mark.asyncio
     async def test_pending_action_id_surfaces_in_complete(self):
         orch = _make_orchestrator(streaming_chunks=["Done."])
         app = _make_app(orch)
@@ -319,3 +412,23 @@ class TestSessionRoutes:
         assert not any(
             "delete" in str(c) for c in orch.memory_system.chroma_store.mock_calls
         ), "session clear must not call any chroma delete API"
+
+    @pytest.mark.asyncio
+    async def test_clear_session_rejected_while_streaming(self):
+        app = _make_app(_make_orchestrator())
+        session = app.state.daemon.session
+        session.history.append({"role": "user", "content": "keep me"})
+
+        await session.stream_lock.acquire()
+        try:
+            async with _client(app) as client:
+                resp = await client.delete("/api/session")
+            assert resp.status_code == 409
+            assert session.history == [{"role": "user", "content": "keep me"}]
+        finally:
+            session.stream_lock.release()
+
+
+async def _empty_async_iterator():
+    if False:
+        yield None

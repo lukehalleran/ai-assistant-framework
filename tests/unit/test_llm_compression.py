@@ -34,6 +34,12 @@ def mock_tokenizer():
     return tokenizer
 
 
+@pytest.fixture(autouse=True)
+def enable_optional_compression(monkeypatch):
+    """This suite tests the explicitly enabled feature, disabled by default."""
+    monkeypatch.setattr("core.prompt.builder.LLM_COMPRESSION_ENABLED", True)
+
+
 @pytest.fixture
 def builder(mock_model_manager, mock_tokenizer):
     """Create a UnifiedPromptBuilder with mocked dependencies."""

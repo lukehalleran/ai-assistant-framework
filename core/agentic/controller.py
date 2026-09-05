@@ -338,7 +338,12 @@ class AgenticSearchController:
         while len(blocks) > 1 and self._estimate_tokens("\n\n---\n".join(blocks)) > self.context_budget_tokens:
             blocks.pop(0)
 
-        session.accumulated_context = "\n\n---\n".join(blocks)
+        # A single tool response may exceed the budget, or contain no round
+        # delimiter at all. Dropping old blocks alone cannot bound that case.
+        from utils.text_budget import fit_text_to_tokens
+        session.accumulated_context = fit_text_to_tokens(
+            "\n\n---\n".join(blocks), self.context_budget_tokens, self._estimate_tokens,
+        )
         logger.info(
             f"[AgenticSearch] Trimmed accumulated_context to fit budget: "
             f"{total_tokens} -> {self._estimate_tokens(session.accumulated_context)} tokens "

@@ -29,13 +29,17 @@ def _tm(counts_per_word=1.0):
 
 
 class TestMiddleOutNoGrow:
-    def test_token_dense_text_returns_original(self):
+    def test_token_dense_text_shrinks_to_measured_cap(self):
         tm = _tm()
         # Short "words" → ~2 chars/token. 4-chars/token heuristic would keep
         # max_tokens*4 chars ≈ 2x max_tokens tokens: a growth, not a squeeze.
         text = "a " * 900  # 900 tokens, 1800 chars
         out = tm._middle_out(text, max_tokens=800, force=True)
-        assert out == text  # never grow — return original unchanged
+        # The former implementation returned an over-budget original to
+        # avoid growth. Measured clipping now satisfies BOTH requirements.
+        assert len(out) < len(text)
+        assert tm.get_token_count(out) <= 800
+        assert tm.get_token_count(out) < tm.get_token_count(text)
 
     def test_compressible_text_shrinks(self):
         tm = _tm()

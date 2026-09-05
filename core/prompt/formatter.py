@@ -809,7 +809,7 @@ class PromptFormatter:
                 # - Hybrid retriever uses 'content' field
                 # - Corpus manager uses 'query'/'response' fields
                 # Try content field first (from hybrid retriever)
-                content_field = mem.get("content", "")
+                content_field = mem.get("content", "") or mem.get("text", "")
 
                 if content_field:
                     # Content field has full conversation text

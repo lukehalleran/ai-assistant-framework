@@ -53,6 +53,7 @@ asserts formatter↔PRIORITY_ORDER parity so a new rendered section can't go unm
 import os
 from typing import Dict, Any, Optional
 from utils.logging_utils import get_logger
+from utils.text_budget import fit_text_to_tokens
 
 logger = get_logger("prompt_token_manager")
 
@@ -131,6 +132,20 @@ ENABLE_MIDDLE_OUT = _parse_bool(os.getenv("ENABLE_MIDDLE_OUT", "1"))
 USER_INPUT_MAX_TOKENS = int(os.getenv("USER_INPUT_MAX_TOKENS", "4096"))
 MEMORY_ITEM_MAX_TOKENS = int(os.getenv("MEMORY_ITEM_MAX_TOKENS", "512"))
 SEMANTIC_ITEM_MAX_TOKENS = int(os.getenv("SEMANTIC_ITEM_MAX_TOKENS", "800"))
+# The profile gatherer already selects up to 3000 tokens of identity context.
+# It is a whole section, not an individual retrieved snippet; do not silently
+# reduce that allocation when enforcing measured snippet caps.
+USER_PROFILE_MAX_TOKENS = 3000
+# Per-field cap for the QUERY of a conversation-shaped item ({query, response}
+# corpus entries — recent_conversations and the memories fallback shape).
+# 2026-09-04: the formatter renders "User: <query>\nDaemon: <response>" but
+# _extract_text read only the RESPONSE key, so a 401,972-char attachment-heavy
+# query rode into the NEXT turn's [RECENT CONVERSATION] unmetered and
+# untrimmed — a one-line follow-up question billed 146K prompt tokens and the
+# attachment retest 279K. The query field is now capped on its own (head+tail
+# middle-out keeps the user's words and the end of the paste) and metering
+# counts the rendered pair exactly as the formatter emits it.
+CONVERSATION_QUERY_MAX_TOKENS = int(os.getenv("CONVERSATION_QUERY_MAX_TOKENS", "600"))
 
 
 class TokenManager:
@@ -161,20 +176,60 @@ class TokenManager:
                 return key
         return None
 
+    @staticmethod
+    def _is_conversation_item(item: Any) -> bool:
+        """A {query, response} corpus entry with no pre-rendered content/text
+        field — the shape formatter.mem_parts renders as User:/Daemon: lines."""
+        return (
+            isinstance(item, dict)
+            and not item.get("content")
+            and not item.get("text")
+            and bool(item.get("query"))
+        )
+
+    @staticmethod
+    def _render_conversation_item(item: dict) -> str:
+        """Mirror formatter.mem_parts' query/response fallback byte-for-byte so
+        metering sees what the prompt will actually carry."""
+        q = str(item.get("query", "") or "").strip()
+        r = str(item.get("response", "") or "").strip()
+        if q and r:
+            return f"User: {q}\nDaemon: {r}"
+        if r:
+            return f"Daemon: {r}"
+        return f"User: {q}"
+
     def _extract_text(self, item: Any) -> str:
         """Extract text from various item formats for token counting."""
         if isinstance(item, str):
             return item
         if isinstance(item, dict):
+            if self._is_conversation_item(item):
+                return self._render_conversation_item(item)
             key = self._text_key(item)
             return str(item[key]) if key else str(item)
         return str(item)
 
+    def _cap_conversation_item(self, item: dict, response_max_tokens: int, model_name: str) -> dict:
+        """Cap a conversation entry's query and response FIELDS independently
+        (2026-09-04). Each field is middle-out'd in place under its own cap so
+        the formatter's rendering shape is untouched; a joined blob is never
+        written back into a single key (the 2026-09-01 write-back bug class)."""
+        capped = dict(item)
+        q = str(capped.get("query", "") or "")
+        if q and self.get_token_count(q, model_name) > CONVERSATION_QUERY_MAX_TOKENS:
+            capped["query"] = self._middle_out(q, CONVERSATION_QUERY_MAX_TOKENS, force=True)
+        r = str(capped.get("response", "") or "")
+        if r and self.get_token_count(r, model_name) > response_max_tokens:
+            capped["response"] = self._middle_out(r, response_max_tokens, force=True)
+        return capped
+
     def _middle_out(self, text: str, max_tokens: int, head_ratio: float = 0.6, force: bool = False) -> str:
         """Compress text by keeping the head and tail, trimming the middle.
 
-        Uses tokenizer_manager to decide if compression is needed, but slices by characters
-        to avoid requiring a full encode/decode path. Good enough for budget safety.
+        Slice by characters, then measure candidates with the active tokenizer.
+        The marker is included in the cap; four characters per token is only
+        an initial estimate, never a budget guarantee.
 
         Args:
             text: Text to potentially compress
@@ -185,6 +240,8 @@ class TokenManager:
         """
         if not ENABLE_MIDDLE_OUT:
             return text
+        if max_tokens <= 0:
+            return ""
 
         # Only apply middle-out if we're above the token budget
         # unless explicitly forced
@@ -201,29 +258,10 @@ class TokenManager:
             toks = len((text or "").split())
         if toks <= max_tokens:
             return text
-        s = text or ""
-        # Roughly map tokens to characters; assume ~4 chars per token as a conservative heuristic
-        approx_chars = max_tokens * 4
-        head_chars = int(approx_chars * head_ratio)
-        tail_chars = max(0, approx_chars - head_chars)
-        # Always compress if we're over the token limit (removed character length check)
-        head = s[:head_chars]
-        tail = s[-tail_chars:] if tail_chars > 0 else ""
-        # Real newlines — this used to emit literal "\n" characters into the
-        # prompt around every snip marker (visible in live prompt dumps).
-        snip = f"\n… [middle-out snipped {len(s) - (head_chars + tail_chars)} chars] …\n"
-        result = head + snip + tail
-        # The ~4-chars/token heuristic overshoots on token-dense text —
-        # "compression" once grew git_commits 829 → 900 tokens (2026-07-25).
-        # Never return a result that isn't actually smaller than the input.
-        if len(result) >= len(s):
-            return s
-        try:
-            if self.get_token_count(result, model_name) >= toks:
-                return s
-        except (AttributeError, RuntimeError):
-            pass
-        return result
+        return fit_text_to_tokens(
+            text or "", max_tokens,
+            lambda value: self.get_token_count(value, model_name), head_ratio,
+        )
 
     def _manage_token_budget(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -241,7 +279,7 @@ class TokenManager:
             return self.get_token_count(text, model_name)
 
         # First pass: optimistic inclusion with per-item compression
-        for name, _prio in PRIORITY_ORDER:
+        for name, _prio in sorted(PRIORITY_ORDER, key=lambda entry: entry[1], reverse=True):
             val = trimmed.get(name)
             if not val:
                 continue
@@ -267,27 +305,40 @@ class TokenManager:
             if isinstance(val, list):
                 kept = []
                 for i, item in enumerate(val):
-                    # Get item text and token count
-                    item_text = self._extract_text(item)
-                    t = self.get_token_count(item_text, model_name)
-
-                    # Apply middle-out to oversized individual items before considering removal
                     max_item_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
-                    if t > max_item_tokens and ENABLE_MIDDLE_OUT:
-                        compressed_text = self._middle_out(item_text, max_item_tokens, force=True)
-                        # Update item with compressed text — written back to
-                        # the SAME key _extract_text read (see _TEXT_KEYS).
-                        if isinstance(item, dict):
-                            compressed_item = dict(item)
-                            _wb_key = self._text_key(compressed_item)
-                            if _wb_key:
-                                compressed_item[_wb_key] = compressed_text
-                            item = compressed_item
-                        else:
-                            item = compressed_text
-                        # Recount tokens after compression
-                        t = self.get_token_count(compressed_text, model_name)
-                        logger.debug(f"[MIDDLE-OUT] Compressed {name}[{i}]: {self.get_token_count(item_text, model_name)} → {t} tokens")
+                    if self._is_conversation_item(item) and ENABLE_MIDDLE_OUT:
+                        # Conversation-shaped entry ({query, response}): cap the
+                        # two FIELDS independently and meter the rendered pair
+                        # (2026-09-04) — see CONVERSATION_QUERY_MAX_TOKENS.
+                        _before = self.get_token_count(self._extract_text(item), model_name)
+                        item = self._cap_conversation_item(item, max_item_tokens, model_name)
+                        item_text = self._extract_text(item)
+                        t = self.get_token_count(item_text, model_name)
+                        if t < _before:
+                            logger.debug(f"[MIDDLE-OUT] Capped conversation entry {name}[{i}]: {_before} → {t} tokens")
+                    else:
+                        # Get item text and token count
+                        item_text = self._extract_text(item)
+                        t = self.get_token_count(item_text, model_name)
+
+                        # Apply middle-out to oversized individual items before considering removal
+                        if t > max_item_tokens and ENABLE_MIDDLE_OUT:
+                            compressed_text = self._middle_out(item_text, max_item_tokens, force=True)
+                            # Update item with compressed text — written back to
+                            # the SAME key _extract_text read (see _TEXT_KEYS).
+                            if isinstance(item, dict):
+                                compressed_item = dict(item)
+                                _wb_key = self._text_key(compressed_item)
+                                if _wb_key:
+                                    compressed_item[_wb_key] = compressed_text
+                                item = compressed_item
+                            else:
+                                item = compressed_text
+                            # Recount tokens after compression
+                            # A dictionary with no recognized text key was
+                            # not changed. Meter the object actually retained.
+                            t = _item_tokens(item)
+                            logger.debug(f"[MIDDLE-OUT] Compressed {name}[{i}]: {self.get_token_count(item_text, model_name)} → {t} tokens")
 
                     if current_tokens + t <= self.token_budget:
                         kept.append(item)
@@ -303,8 +354,9 @@ class TokenManager:
                 # For string sections (like wiki content), apply middle-out if too large
                 item_text = str(val)
                 t = self.get_token_count(item_text, model_name)
-                if t > SEMANTIC_ITEM_MAX_TOKENS and ENABLE_MIDDLE_OUT:
-                    item_text = self._middle_out(item_text, SEMANTIC_ITEM_MAX_TOKENS, force=True)
+                section_cap = USER_PROFILE_MAX_TOKENS if name == "user_profile" else SEMANTIC_ITEM_MAX_TOKENS
+                if t > section_cap and ENABLE_MIDDLE_OUT and not isinstance(val, dict):
+                    item_text = self._middle_out(item_text, section_cap, force=True)
                     t = self.get_token_count(item_text, model_name)
                     trimmed[name] = item_text
                     logger.debug(f"[MIDDLE-OUT] Compressed {name} section: {self.get_token_count(str(val), model_name)} → {t} tokens")
@@ -349,8 +401,10 @@ class TokenManager:
                         # Drop a conservative slice from the tail
                         drop_n = max(1, int(len(v) * 0.25))
                         trimmed[name] = v[:-drop_n]
-                    elif isinstance(v, str) and v:
-                        trimmed[name] = ""
+                    elif isinstance(v, (str, dict)) and v:
+                        # Structured sections (e.g. codebase_changes) must
+                        # retain their schema; drop them whole if necessary.
+                        trimmed[name] = {} if isinstance(v, dict) else ""
 
                     usage = _total_tokens(trimmed)
                     if usage <= self.token_budget:

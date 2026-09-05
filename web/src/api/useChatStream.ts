@@ -48,6 +48,7 @@ type Action =
   | { type: 'stream_ended' }
   | { type: 'append_assistant'; content: string }
   | { type: 'clear_pending_action' }
+  | { type: 'clear_failed'; message: string }
   | { type: 'cleared' }
 
 function replaceLastAssistant(messages: ChatMessage[], content: string): ChatMessage[] {
@@ -136,6 +137,8 @@ function reducer(state: StreamState, action: Action): StreamState {
       }
     case 'clear_pending_action':
       return { ...state, pendingActionId: null }
+    case 'clear_failed':
+      return { ...state, error: action.message }
     case 'cleared':
       return { ...initialState }
     default:
@@ -146,6 +149,7 @@ function reducer(state: StreamState, action: Action): StreamState {
 export function useChatStream() {
   const [state, dispatch] = useReducer(reducer, initialState)
   const abortRef = useRef<AbortController | null>(null)
+  const inFlightRef = useRef(false)
 
   // Restore session on mount (refresh-safe UI)
   useEffect(() => {
@@ -159,7 +163,10 @@ export function useChatStream() {
 
   const send = useCallback(
     async (req: ChatRequest) => {
-      if (!req.text.trim()) return
+      if (!req.text.trim() || inFlightRef.current) return
+      // State updates render asynchronously, so `streaming` alone cannot stop
+      // two clicks/key events fired in the same render from submitting twice.
+      inFlightRef.current = true
       const ctrl = new AbortController()
       abortRef.current = ctrl
       dispatch({ type: 'stream_started', userText: req.text })
@@ -206,7 +213,8 @@ export function useChatStream() {
           dispatch({ type: 'error', message: err instanceof Error ? err.message : String(err) })
         }
       } finally {
-        abortRef.current = null
+        if (abortRef.current === ctrl) abortRef.current = null
+        inFlightRef.current = false
         dispatch({ type: 'stream_ended' })
       }
     },
@@ -226,9 +234,27 @@ export function useChatStream() {
   }, [])
 
   const clearAll = useCallback(async () => {
-    await fetch('/api/session', { method: 'DELETE' })
-    resetDebugBaseline() // server records are gone; new turns start at index 0
-    dispatch({ type: 'cleared' })
+    try {
+      const response = await fetch('/api/session', { method: 'DELETE' })
+      if (!response.ok) {
+        let message = `Could not clear chat (${response.status}).`
+        try {
+          const body = await response.json()
+          if (body?.detail) message = body.detail
+        } catch {
+          // Keep the status-based fallback for non-JSON error responses.
+        }
+        dispatch({ type: 'clear_failed', message })
+        return
+      }
+      resetDebugBaseline() // server records are gone; new turns start at index 0
+      dispatch({ type: 'cleared' })
+    } catch (err) {
+      dispatch({
+        type: 'clear_failed',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   }, [])
 
   return { ...state, send, abort, appendAssistant, clearPendingAction, clearAll }

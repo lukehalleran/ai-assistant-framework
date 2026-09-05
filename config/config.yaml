@@ -397,7 +397,9 @@ token_budget:
   ceiling: 16000
   context_fraction: 0.12
 llm_compression:
-  enabled: true
+  # Sep 4 audit: 39 runtime timeouts, zero successes in the available day's
+  # logs. Keep optional; measured deterministic caps handle the default path.
+  enabled: false
   model: gpt-4o-mini
   timeout_s: 3.0
   ratio_threshold: 3.0

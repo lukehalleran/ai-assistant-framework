@@ -1683,7 +1683,7 @@ PROMPT_TOKEN_BUDGET_OVERRIDE: Optional[int] = int(_BUDGET_ENV) if _BUDGET_ENV el
 # use an LLM summary instead of middle-out character slicing.
 # Mildly oversized items still use middle-out compression.
 LLM_COMPRESS_CFG = config.get("llm_compression", {})
-LLM_COMPRESSION_ENABLED: bool = bool(LLM_COMPRESS_CFG.get("enabled", True))
+LLM_COMPRESSION_ENABLED: bool = bool(LLM_COMPRESS_CFG.get("enabled", False))
 LLM_COMPRESSION_MODEL: str = str(LLM_COMPRESS_CFG.get("model", "gpt-4o-mini"))
 LLM_COMPRESSION_TIMEOUT: float = float(LLM_COMPRESS_CFG.get("timeout_s", 3.0))
 LLM_COMPRESSION_RATIO_THRESHOLD: float = float(LLM_COMPRESS_CFG.get("ratio_threshold", 3.0))

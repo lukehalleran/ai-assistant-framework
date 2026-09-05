@@ -854,7 +854,7 @@ class ProvenanceSection(BaseModel):
 
 class LlmCompressionSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
+    enabled: bool = False
     model: str = "gpt-4o-mini"
     timeout_s: float = Field(default=3.0, gt=0.0)
     ratio_threshold: float = Field(default=3.0, ge=1.0)

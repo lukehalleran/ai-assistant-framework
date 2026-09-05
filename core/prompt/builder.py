@@ -99,7 +99,7 @@ from .formatter import (
     _staleness_prefix, _is_multimodal_model, _load_upload_image,
 )
 from .summarizer import LLMSummarizer
-from .token_manager import TokenManager
+from .token_manager import TokenManager, USER_PROFILE_MAX_TOKENS
 from .base import _FallbackMemoryCoordinator
 from .hygiene import ContentHygiene
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
@@ -156,7 +156,7 @@ try:
         LLM_COMPRESSION_MAX_BATCH,
     )
 except ImportError:
-    LLM_COMPRESSION_ENABLED = True
+    LLM_COMPRESSION_ENABLED = False
     LLM_COMPRESSION_MODEL = "gpt-4o-mini"
     LLM_COMPRESSION_TIMEOUT = 3.0
     LLM_COMPRESSION_RATIO_THRESHOLD = 3.0
@@ -701,6 +701,11 @@ class UnifiedPromptBuilder:
             skip_threshold = max_tokens * LLM_COMPRESSION_RATIO_THRESHOLD * 2
 
             for i, item in enumerate(val):
+                # Keep user/assistant provenance intact. These fields have
+                # independent deterministic caps in TokenManager; a summary
+                # of the pair must never be written into the user's query.
+                if self.token_manager._is_conversation_item(item):
+                    continue
                 item_text = self.token_manager._extract_text(item)
                 try:
                     t = self.token_manager.get_token_count(item_text, model_name)
@@ -772,6 +777,9 @@ class UnifiedPromptBuilder:
                         new_tokens = self.token_manager.get_token_count(compressed.strip(), model_name)
                     except Exception:
                         new_tokens = len(compressed.strip().split())
+                    if new_tokens >= item_tokens:
+                        logger.warning("[LLM-COMPRESS] Rejected non-shrinking result for %s[%s]", section, idx)
+                        return None
                     logger.info(
                         f"[LLM-COMPRESS] {section}[{idx}]: {item_tokens}→{new_tokens} tokens (LLM)"
                     )
@@ -804,12 +812,10 @@ class UnifiedPromptBuilder:
                 original = items[idx]
                 if isinstance(original, dict):
                     updated = dict(original)
-                    for text_key in ('content', 'text', 'query', 'response'):
-                        if text_key in updated:
-                            updated[text_key] = compressed_text
-                            break
-                    else:
-                        updated['content'] = compressed_text
+                    text_key = self.token_manager._text_key(original)
+                    if text_key is None:
+                        continue
+                    updated[text_key] = compressed_text
                     items[idx] = updated
                 else:
                     items[idx] = compressed_text
@@ -855,7 +861,8 @@ class UnifiedPromptBuilder:
             - dreams
             - web_search_results (if triggered)
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
+        phase_timings = {}
         config = config or {}
 
         # Clear memory_id_map at start of each query to prevent memory leaks
@@ -1001,7 +1008,7 @@ class UnifiedPromptBuilder:
                 logger.debug("[BUILD_PROMPT] No intent overrides + short message — suppressing visual memory")
             eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
             eff_max_upcoming_schedule = _ro.get("max_upcoming_schedule", 0)
-            eff_user_profile_tokens = 0 if _local_repo_audit else 3000
+            eff_user_profile_tokens = 0 if _local_repo_audit else USER_PROFILE_MAX_TOKENS
             eff_max_graph_sentences = 0 if _local_repo_audit else _ro.get("max_graph_sentences", PROMPT_MAX_GRAPH_SENTENCES)
 
             # Schedule keyword gating: even without intent override, activate
@@ -1115,10 +1122,10 @@ class UnifiedPromptBuilder:
 
             async def _timed_task(name: str, coro):
                 """Wrapper to time individual tasks"""
-                _start = time.time()
+                _start = time.perf_counter()
                 try:
                     result = await coro
-                    task_timings[name] = time.time() - _start
+                    task_timings[name] = time.perf_counter() - _start
                     # Surface slow/fruitful tasks live; skip sub-perceptual ones
                     _dur = task_timings[name]
                     if _dur >= 0.2:
@@ -1127,7 +1134,7 @@ class UnifiedPromptBuilder:
                         _progress_emit(f"📥 {_label} ✓ {_dur:.1f}s{_n}")
                     return result
                 except Exception as e:
-                    task_timings[name] = time.time() - _start
+                    task_timings[name] = time.perf_counter() - _start
                     raise e
 
             # Recent conversations
@@ -1386,14 +1393,16 @@ class UnifiedPromptBuilder:
             # Gather all results with timeout — use asyncio.wait so completed
             # tasks survive a timeout instead of wiping the entire context.
             _progress_emit(f"🔎 Retrieving context from {len(tasks)} sources in parallel…")
-            _gather_start = time.time()
+            _gather_start = time.perf_counter()
+            phase_timings["before_retrieval"] = _gather_start - start_time
             try:
                 done, pending = await asyncio.wait(
                     list(tasks.values()),
                     timeout=30.0,
                     return_when=asyncio.ALL_COMPLETED,
                 )
-                _gather_elapsed = time.time() - _gather_start
+                _gather_elapsed = time.perf_counter() - _gather_start
+                phase_timings["retrieval"] = _gather_elapsed
 
                 gathered = {}
                 timed_out_names = []
@@ -1405,7 +1414,7 @@ class UnifiedPromptBuilder:
                                 logger.debug(f"MEMORIES TASK: Got {len(gathered[name])} memories")
                             if name == "proposed_features":
                                 logger.info(f"[PROPOSED_FEATURES] Task returned {len(gathered[name])} proposals")
-                        except Exception as exc:
+                        except (Exception, asyncio.CancelledError) as exc:
                             logger.warning("Context task %s failed: %s", name, exc)
                             gathered[name] = []
                     else:
@@ -1433,6 +1442,14 @@ class UnifiedPromptBuilder:
                 logger.warning("Unexpected error during context gathering: %s", _gather_exc)
                 gathered = {name: [] for name in tasks.keys()}
             finally:
+                # asyncio.wait does not cancel its children when this request
+                # is cancelled. Drain them before clearing request-specific
+                # scorer/gatherer state or admitting the next turn.
+                for task in tasks.values():
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks.values(), return_exceptions=True)
                 # Clear intent weight overrides from scorer (set before gather)
                 if scorer and weight_overrides:
                     scorer._intent_weight_overrides = None
@@ -1454,6 +1471,7 @@ class UnifiedPromptBuilder:
                 if _saved_gate_threshold is not None and _gate_obj is not None:
                     _gate_obj.cosine_threshold = _saved_gate_threshold
 
+            _post_start = time.perf_counter()
             # Step 3: Post-fetch processing
 
             # Apply skill activation policy (filter/rerank by intent, relevance, cooldown)
@@ -1588,6 +1606,7 @@ class UnifiedPromptBuilder:
                 "proactive_insights": gathered.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": gathered.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
+                "daemon_self_notes": gathered.get("daemon_self_notes", []),
                 "codebase_changes": codebase_changes,  # Git changes since last session (first message only)
             }
             logger.debug(f"CONTEXT BUILT: recent_summaries={len(recent_summaries)}, semantic_summaries={len(semantic_summaries)}, recent_reflections={len(recent_reflections)}, semantic_reflections={len(semantic_reflections)}")
@@ -1780,16 +1799,16 @@ class UnifiedPromptBuilder:
             # Step 6.9: LLM-compress heavily oversized items (async pre-pass)
             # Items >= 3x over their token limit get LLM summary instead of middle-out slicing.
             # Mildly oversized items (1x-3x) still use middle-out in token_manager.
+            _compression_start = time.perf_counter()
+            phase_timings["post_retrieval"] = _compression_start - _post_start
             context = await self._llm_compress_oversized(context)
+            phase_timings["compression"] = time.perf_counter() - _compression_start
+            _floor_start = time.perf_counter()
 
-            # Step 7: Token budget management
-            logger.debug(f"BEFORE TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
-            context = self.token_manager._manage_token_budget(context)
-            logger.debug(f"AFTER TOKEN BUDGET: memories count = {len(context.get('memories', []))}")
-
-            # Step 7.1: Post-budget floors for critical sections
-            # Ensure recent conversations, summaries, and reflections are not
-            # dropped entirely by budget trimming.
+            # Complete recency candidates BEFORE budgeting. Restoring raw
+            # records after trimming reintroduced unbounded attachment-heavy
+            # conversations and repeated queries whose results were discarded.
+            # Floors are best effort: the final hard budget takes precedence.
             try:
                 # Recent conversations floor — guarantee session context survives
                 recent_convos = context.get("recent_conversations", []) or []
@@ -1814,7 +1833,7 @@ class UnifiedPromptBuilder:
                                 break
                         if add_recent:
                             context['recent_conversations'] = (context.get('recent_conversations') or []) + add_recent
-                            logger.info(f"[POST-BUDGET FLOOR] Restored {len(add_recent)} recent conversations (had {len(recent_convos)}, floor={_recent_floor})")
+                            logger.info(f"[RECENCY FLOOR] Added {len(add_recent)} conversation candidates (had {len(recent_convos)}, floor={_recent_floor})")
 
                 # Summaries floor — survival minimum for the rendered key only
                 # (restoring to MAX here would undo the budget trim)
@@ -1897,7 +1916,14 @@ class UnifiedPromptBuilder:
                     if add_refl:
                         context['recent_reflections'] = (context.get('recent_reflections') or []) + add_refl
             except (TypeError, AttributeError, KeyError) as e:
-                logger.debug(f"Post-budget floor top-up failed: {e}")
+                logger.debug(f"Recency floor top-up failed: {e}")
+
+            # Last content mutation before assembly: every top-up must pass
+            # the same field caps and priority budget as retrieved candidates.
+            _budget_start = time.perf_counter()
+            phase_timings["recency_topup"] = _budget_start - _floor_start
+            context = self.token_manager._manage_token_budget(context)
+            phase_timings["token_budget"] = time.perf_counter() - _budget_start
 
             logger.debug(f"BEFORE FINAL ASSEMBLY: memories count = {len(context.get('memories', []))}")
 
@@ -1930,11 +1956,13 @@ class UnifiedPromptBuilder:
                 "proactive_insights": context.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": context.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
+                "daemon_self_notes": context.get("daemon_self_notes", []),
+                "codebase_changes": context.get("codebase_changes", {}),
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
             }
 
-            build_time = time.time() - start_time
+            build_time = time.perf_counter() - start_time
             logger.info(f"Prompt built in {build_time:.2f}s")
             logger.debug(f"RETURNING CONTEXT: memories count = {len(prompt_ctx.get('memories', []))}")
 
@@ -1942,6 +1970,10 @@ class UnifiedPromptBuilder:
             prompt_ctx["_task_timings"] = dict(task_timings)
             prompt_ctx["_gather_elapsed"] = locals().get('_gather_elapsed', 0.0)
             prompt_ctx["_build_time"] = build_time
+            prompt_ctx["_phase_timings"] = phase_timings
+            logger.info("[BUILD_PROMPT PHASES] %s", " | ".join(
+                f"{name}={elapsed:.3f}s" for name, elapsed in phase_timings.items()
+            ))
 
             return prompt_ctx
 
@@ -2178,7 +2210,9 @@ class UnifiedPromptBuilder:
             except Exception as e:
                 logger.debug(f"[AmbiguityDetector] Detection failed (non-fatal): {e}")
 
-            return context
+            # A short follow-up can follow a huge attachment turn. The light
+            # path skips retrieval sources, not the conversation field caps.
+            return self.token_manager._manage_token_budget(context)
         except Exception as e:
             logger.warning(f"Lightweight context building failed: {e}")
             return {
