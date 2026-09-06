@@ -1291,7 +1291,12 @@ class DaemonOrchestrator:
         # the volatile tail rides uncached and can change every turn without
         # invalidating the cached prefix. Inserted once, before the first append.
         from config.app_config import PROMPT_CACHE_BREAKPOINT
-        system_prompt = system_prompt.rstrip() + PROMPT_CACHE_BREAKPOINT
+        # UNIVERSAL_GROUNDING is static and domain-neutral, so it belongs in the
+        # cached prefix; the DECISION_SUPPORT block is per-turn conditional and
+        # is appended below the breakpoint by conditional_instruction_tail
+        # (2026-09-06 — the first version put ~440 incident-specific tokens here).
+        from core.response_guidance import UNIVERSAL_GROUNDING
+        system_prompt = system_prompt.rstrip() + "\n" + UNIVERSAL_GROUNDING + PROMPT_CACHE_BREAKPOINT
 
         # --- Citation instructions ---
         if self.enable_citations:
@@ -1694,6 +1699,11 @@ class DaemonOrchestrator:
         # Forward detected tone alongside it — the post-hoc veto corroborates
         # a sub-floor emotional_support intent with an elevated tone reading.
         prompt_ctx['tone_level'] = context.crisis_level_str
+        # Generic turn signals for the conditional instruction tail
+        # (decision-support block gate — signals only, never topic vocab).
+        prompt_ctx['is_heavy_topic'] = bool(getattr(context, 'is_heavy_topic', False))
+        prompt_ctx['is_small_talk'] = bool(getattr(context, 'is_small_talk', False))
+        prompt_ctx['user_query'] = getattr(context, 'original_query', None) or ''
 
         # --- 2b) Conditional section-usage instructions ---
         # The per-section guidance blocks (Obsidian notes / self-docs /

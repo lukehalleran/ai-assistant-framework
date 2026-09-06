@@ -56,6 +56,7 @@ def default_caps() -> dict:
         "per_facet_cap": cfg.INSIGHT_PER_FACET_CAP,
         "total_evidence_cap": cfg.INSIGHT_TOTAL_EVIDENCE_CAP,
         "evidence_snippet_chars": cfg.INSIGHT_EVIDENCE_SNIPPET_CHARS,
+        "external_snippet_chars": cfg.INSIGHT_EXTERNAL_SNIPPET_CHARS,
         "keyword_scan_max": cfg.INSIGHT_KEYWORD_SCAN_MAX,
         "expand_top_k": cfg.INSIGHT_EXPAND_TOP_K,
         "expand_window": cfg.INSIGHT_EXPAND_WINDOW,
@@ -173,6 +174,8 @@ async def run_sweep(
                 if coll == "conversations":
                     if is_junk_conversation_doc(content=content):
                         continue
+                    if _user_side_is_greeting_or_ack(content):
+                        continue
                     # Prior-sweep-output feedback-loop guard (round 3).
                     if _is_sweep_output_mode(metadata.get("response_mode")):
                         _prior_sweep_dropped[0] += 1
@@ -190,6 +193,11 @@ async def run_sweep(
                     # Skip superseded facts (is_current=False or superseded_by set)
                     if metadata.get("is_current") is False or metadata.get("superseded_by"):
                         continue
+                    # Read-time junk guard (2026-09-06 retest: "psychologist |
+                    # is | tuesday" rendered as evidence) — the deployed
+                    # extractor predicate, never a second list.
+                    if fact_triple_is_junk(content):
+                        continue
 
                 collected.append(EvidenceItem(
                     doc_id=row.get("id"),
@@ -198,6 +206,7 @@ async def run_sweep(
                     collection=coll,
                     speaker="",
                     facet=facet.name,
+                    metadata=metadata,
                 ))
                 if coll == "conversations":
                     conversation_hits.append(row)
@@ -210,6 +219,7 @@ async def run_sweep(
                         facet.keywords, max_results=caps["keyword_scan_max"],
                         context_chars=caps["evidence_snippet_chars"],
                         include_entry=True,
+                        authored_only=True,
                     )
                 )
             except Exception as e:
@@ -273,6 +283,7 @@ async def run_sweep(
                         collection="conversations",
                         speaker="",
                         facet=facet.name,
+                        metadata=turn_meta,
                     ))
 
     def _sweep_graph(facet: FacetQuery, out: list[EvidenceItem]) -> None:
@@ -362,6 +373,7 @@ async def run_sweep(
                     phrases, max_results=scan_cap,
                     context_chars=caps["evidence_snippet_chars"],
                     include_entry=True,
+                    authored_only=True,
                     **kw_kwargs,
                 )
             )
@@ -424,6 +436,8 @@ async def run_sweep(
                 if coll == "conversations":
                     if is_junk_conversation_doc(content=content):
                         continue
+                    if _user_side_is_greeting_or_ack(content):
+                        continue
                     if _is_sweep_output_mode(metadata.get("response_mode")):
                         _prior_sweep_dropped[0] += 1
                         continue
@@ -439,6 +453,7 @@ async def run_sweep(
                     collection=coll,
                     speaker="",
                     facet="date-range",
+                    metadata=metadata,
                 ))
 
     async def _run_all() -> None:
@@ -475,7 +490,10 @@ def _finalize(
     → proportional trim."""
     seen: set[str] = set()
     deduped: list[EvidenceItem] = []
-    for item in items:
+    # Attribution must run on full records: clipping a combined exchange
+    # first made assistant prose look like the user's evidence.
+    from core.insight.provenance import label_evidence
+    for item in label_evidence(items):
         key = _dedupe_key(item)
         if key in seen:
             continue
@@ -610,6 +628,97 @@ def _content_words(text: str) -> set[str]:
     correction you made about X" shares almost none of the request's exact
     8-word runs but almost all of its content words)."""
     return {w for w in _word_tokens(text) if len(w) >= _CONTENT_WORD_MIN_LEN}
+
+
+def _user_side_is_greeting_or_ack(content: str) -> bool:
+    """A conversation doc whose USER side is a bare greeting/ack ("Hey",
+    "ok", "thanks") is not evidence about anything (live 15:57: [E5] "Hey").
+    Reads the ``User:`` span the store renders; shape only."""
+    text = content or ""
+    if "User:" in text:
+        user_part = text.split("User:", 1)[1].split("Assistant:", 1)[0]
+    else:
+        user_part = text
+    user_part = " ".join(user_part.split())
+    if not user_part or len(user_part.split()) > 6:
+        return False
+    # lazy import: cycle (query_checker <- gate <- insight.detector)
+    from utils.query_checker import is_casual_acknowledgment, is_greeting_opener
+    return bool(is_greeting_opener(user_part) or is_casual_acknowledgment(user_part))
+
+
+def fact_triple_is_junk(content: str) -> bool:
+    """True when a facts-collection doc ("subject | relation | object") carries
+    a junk OBJECT by THE deployed extractor predicate
+    (``memory.fact_extractor._is_junk_object``). Non-triple text is never
+    junk here (other filters own it)."""
+    parts = [p.strip() for p in (content or "").split("|")]
+    if len(parts) != 3 or not parts[2]:
+        return False
+    subject, relation, obj = parts
+    # Junk SUBJECT: a function word or an empty/one-letter token can't be an
+    # entity ("and | is | reported as evidence", "means | is | plausibly …",
+    # live 15:57). Closed grammatical set + shape, no entity vocabulary.
+    if not subject or subject.casefold() in _JUNK_SUBJECTS or len(subject) < 2:
+        return True
+    # Bare numeric duration/quantity as the whole object on a non-schedule
+    # relation ("user | belief | 3 months") carries no claim.
+    if _BARE_QUANTITY_RE.fullmatch(obj) and not _SCHEDULE_RELATION_RE.search(relation):
+        return True
+    # lazy import: cycle (fact_extractor -> memory package -> insight consumers)
+    from memory.fact_extractor import _is_junk_object
+    try:
+        return bool(_is_junk_object(obj, relation))
+    except Exception:
+        return False
+
+
+_JUNK_SUBJECTS = frozenset({
+    "and", "or", "but", "so", "means", "it", "this", "that", "these", "those",
+    "there", "here", "which", "what", "who", "the", "a", "an", "of", "in", "on",
+    "is", "was", "be", "to", "for", "with", "as", "if", "then", "also",
+})
+_BARE_QUANTITY_RE = re.compile(
+    r"(?:about\s+|roughly\s+|~)?\d+(?:\.\d+)?\s*"
+    r"(?:seconds?|minutes?|mins?|hours?|hrs?|days?|weeks?|wks?|months?|years?|yrs?)?",
+    re.IGNORECASE,
+)
+_SCHEDULE_RELATION_RE = re.compile(
+    r"schedule|_time$|_at$|duration|frequency|streak|days_|_days|dose|amount|count",
+    re.IGNORECASE,
+)
+
+
+_ASSISTANT_DIRECTED_MAX_WORDS = 80
+
+
+def exclude_assistant_directed_items(items: list[EvidenceItem]) -> list[EvidenceItem]:
+    """Drop user-authored evidence that is a REQUEST TO THE ASSISTANT rather
+    than an observation about the user's life (2026-09-06 retest: "Give me a
+    detailed analysis…", "Does my history actually support…", "…can you read
+    the last one I received in outlook…", "search my claim and fact check"
+    all rendered as [E#] history). Shape only — ``query_checker.is_request_shaped``
+    (imperative/“can you” openers, info-seeking cues, an address to the
+    assistant) on a short user turn. Long user turns are kept: a request can
+    frame a substantive report. Assistant, notes, facts, research items are
+    never touched here."""
+    # lazy import: cycle (query_checker <- gate <- insight.detector)
+    from utils.query_checker import is_request_shaped
+    kept: list[EvidenceItem] = []
+    dropped = 0
+    for item in items:
+        text = (item.text or "").strip()
+        if (item.collection in ("corpus", "conversations")
+                and item.speaker != "assistant"
+                and text
+                and len(text.split()) <= _ASSISTANT_DIRECTED_MAX_WORDS
+                and is_request_shaped(text)):
+            dropped += 1
+            continue
+        kept.append(item)
+    if dropped:
+        logger.debug("[Insight Sweep] Dropped %d assistant-directed request items", dropped)
+    return kept
 
 
 def exclude_current_request_evidence(

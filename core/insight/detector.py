@@ -42,6 +42,16 @@ from core.insight.types import InsightIntent
 _SHORT_MSG_WORDS = 25
 _EDGE_CHARS = 160
 
+
+def allows_pattern_classification(query: str) -> bool:
+    """An LLM flag cannot turn a self-report into an unsolicited analysis.
+
+    This checks speech act, not a medication/topic keyword list. Explicit
+    detector matches and affirmed offers retain their existing routes.
+    """
+    from core.agentic.gate import _is_info_seeking, _is_request_shaped
+    return bool(query and (_is_info_seeking(query) or _is_request_shaped(query)))
+
 # ---------------------------------------------------------------------------
 # Theme-sweep shapes
 # ---------------------------------------------------------------------------
@@ -204,10 +214,32 @@ _PERSONAL_RECORD_RE = re.compile(
 _DELIBERATION_OPERATION_RE = re.compile(
     r"\b(?:compare|contrast|analy[sz]e|evaluate|assess|test|verify|weigh|"
     r"check|examine|investigate|determine|decide|correlat\w*|covar\w*|track|trend\w*|"
-    r"changed?|changes?|different|theory|hypothesis|hunch|decision)\b|"
+    r"changed?|changes?|different|theory|hypothesis|hunch|decision|"
+    # analysis-NOUN family (fix 1.4, 2026-09-06): the verb-only "analy[sz]e"
+    # above never matched the noun "analysis"/"analyses" a request actually
+    # asks FOR ("give me a detailed analysis ..."). See
+    # _find_operation_outside for why this can't just fold in bare vocabulary
+    # overlap with _PERSONAL_RECORD_RE's own "my analysis" clause.
+    r"analys[ie]s|analytic\w*|breakdown|assessment|review|"
+    # "record establishes/shows/says ..." verb family — the live miss was
+    # "what my record can establish about X"; no operation verb matched.
+    r"establish\w*|show\w*|says?|indicat\w+|support\w*|suggest\w*|"
+    r"(?:can\s+)?tell\s+(?:me|us))\b|"
     r"\bbefore\s+(?:versus|vs\.?|and)\s+after\b|"
     r"\b(?:what|which)\s+tends?\s+to\s+happen\s+when\b",
     re.IGNORECASE,
+)
+# Dedicated "what my record establishes/shows/says ..." shape — used as an
+# independent OR branch alongside the record+operation test below, so a
+# personal-record anchor immediately followed by one of these verbs is caught
+# even when _find_operation_outside excludes an overlapping bare noun match
+# elsewhere in the sentence. The personal anchor is still mandatory (record
+# noun family only, not the free-standing analysis/assessment/comparison
+# family _PERSONAL_RECORD_RE also recognizes).
+_RECORD_ESTABLISHES_RE = re.compile(
+    r"\bwhat\s+(?:my|our)\s+(?:record|history|notes?|data|corpus|messages?|logs?)\b"
+    r".{0,60}\b(?:establish\w*|show\w*|says?|indicat\w+|support\w*|suggest\w*|can\s+tell)\b",
+    re.IGNORECASE | re.DOTALL,
 )
 _NON_INSIGHT_LOOKUP_RE = re.compile(
     r"^\s*(?:how\s+many\s+times\s+has\b|"
@@ -235,6 +267,24 @@ _PERSONAL_PLUS_EXTERNAL_RE = re.compile(
 )
 
 
+def _find_operation_outside(query: str, record: Optional[re.Match]) -> Optional[re.Match]:
+    """First _DELIBERATION_OPERATION_RE match that doesn't overlap `record`.
+
+    The operation regex's analysis/assessment/comparison/review noun family
+    shares vocabulary with _PERSONAL_RECORD_RE's own "my analysis" clause —
+    without this guard, a bare "my analysis" (with no separate operation cue
+    anywhere else) would satisfy both sides of the record-and-operation test
+    off the SAME word (regression: test_possessive_analysis_cue_is_tight —
+    "The teacher said my analysis was wrong" must stay None).
+    """
+    if record is None:
+        return _DELIBERATION_OPERATION_RE.search(query)
+    for match in _DELIBERATION_OPERATION_RE.finditer(query):
+        if match.start() >= record.end() or match.end() <= record.start():
+            return match
+    return None
+
+
 def _detect_deliberation_shape(query: str) -> Optional[re.Match]:
     explicit = _EXPLICIT_PATTERN_COMMAND_RE.search(query)
     if explicit:
@@ -243,9 +293,12 @@ def _detect_deliberation_shape(query: str) -> Optional[re.Match]:
     if implicit:
         return implicit
     record = _PERSONAL_RECORD_RE.search(query)
-    operation = _DELIBERATION_OPERATION_RE.search(query)
+    operation = _find_operation_outside(query, record)
     if record and operation:
         return record if record.start() <= operation.start() else operation
+    record_establishes = _RECORD_ESTABLISHES_RE.search(query)
+    if record_establishes:
+        return record_establishes
     mixed = _PERSONAL_PLUS_EXTERNAL_RE.search(query)
     if mixed and _DELIBERATION_OPERATION_RE.search(query):
         return mixed

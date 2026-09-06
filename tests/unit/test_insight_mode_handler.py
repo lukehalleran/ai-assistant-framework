@@ -97,12 +97,16 @@ class TestInsightModeHandler:
         )
         ctx = _ctx({"kind": "theme_sweep", "theme": "sleep",
                     "wants_document": False, "raw_query": "gather it"})
+        ctx.history = [("The dose was at 11 AM.", "I misread the timing.")]
         chunks = _collect(ctx)
         assert ctx.handled is True
         assert ctx.storage_dispatched is True
         final = chunks[-1]
         assert "record shows" in final["content"]
         assert "debug" in final
+        assert "User: The dose was at 11 AM." in stages["synth_calls"]["conversation_context"]
+        assert "The dose was at 11 AM." in final["debug"]["prompt"]
+        assert final["debug"]["phase_timings"]["total_wall"] >= 0
         assert dispatched["mode"] == "insight-assembly"
         assert dispatched["prov"]["response_mode"] == "insight-assembly"
         assert dispatched["prov"]["insight_kind"] == "theme_sweep"

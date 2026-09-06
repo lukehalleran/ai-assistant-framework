@@ -417,6 +417,104 @@ def is_meta_conversational(q: str) -> bool:
     return any(marker in ql for marker in META_CONVERSATIONAL_MARKERS)
 
 
+# Closed grammatical sets for the self-report shape (2026-09-06). Pronouns
+# and auxiliaries are grammar, not topic vocabulary — this predicate must hold
+# for any American-English user's status update ("I took it at 10 and I'm
+# resting", "we finally moved the couch", "im so tired today").
+_FIRST_PERSON_OPENERS: frozenset = frozenset({
+    "i", "i'm", "im", "i've", "ive", "i'd", "id", "i'll", "ill",
+    "we", "we're", "we've", "we'd", "we'll", "my", "our", "me",
+})
+_FIRST_PERSON_VERB_RE = re.compile(
+    r"\b(?:i|we)(?:'m|'ve|'d|'re|'ll"
+    r"|\s+(?:am|are|was|were|have|had|been|just|already|finally|still|currently|kinda|kind\s+of|sorta|sort\s+of))?"
+    r"\s+[a-z]+(?:ed|ing|t)?\b",
+    re.IGNORECASE,
+)
+_ADDRESSING_ASSISTANT_RE = re.compile(
+    r"\b(?:can|could|would|will|should)\s+you\b"
+    r"|\b(?:want|need|like|'d\s+like)\s+you\s+to\b"
+    r"|\byou\s+(?:should|need\s+to|could|can)\b"
+    r"|\bfor\s+me\b\s*[.!]?$",
+    re.IGNORECASE,
+)
+_SELF_REPORT_ACK_PREFIX_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|alright|all\s+right|so|and|well|yeah|yep|also|now|then|honestly|anyway|update)[,:\s]+){0,3}",
+    re.IGNORECASE,
+)
+
+
+# Generic imperative request openers — the gate's own _REQUEST_SHAPED_RE is
+# deliberately limited to RETRIEVAL verbs (it routes tools); a decision or
+# analysis request ("give me a breakdown", "weigh both sides", "walk me
+# through it") is request-shaped without naming a tool. Grammar, not topic.
+_IMPERATIVE_REQUEST_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|alright|all\s+right|so|and|now|then|also|well|hey|yeah|please)[,\s]+){0,3}"
+    r"(?:please\s+)?"
+    r"(?:give|tell|write|make|draft|explain|help|analy[sz]e|assess|evaluate|weigh|compare|"
+    r"outline|describe|walk|break|lay|put|plan|suggest|recommend|figure|work|think|go|talk|"
+    r"remind|create|generate|build|calculate|estimate|rank|sort|prioriti[sz]e|translate|rewrite|"
+    r"proofread|edit|fix|debug|design|map|track|log|note|save)\b",
+    re.IGNORECASE,
+)
+
+
+def is_request_shaped(q: str) -> bool:
+    """Public request-shape predicate: the agentic gate's retrieval-imperative
+    / "can you …" shapes and info-seeking cues, plus a generic imperative
+    opener ("give me…", "weigh both sides") and an explicit address to the
+    assistant ("I want you to…"). Call-time import: gate imports this module
+    lazily in function bodies, so a module-level import here would cycle."""
+    text = (q or "").strip()
+    if not text:
+        return False
+    from core.agentic.gate import _is_info_seeking, _is_request_shaped
+    if _is_request_shaped(text) or _is_info_seeking(text):
+        return True
+    ql = _normalize(text)
+    if _ADDRESSING_ASSISTANT_RE.search(ql):
+        return True
+    return bool(_IMPERATIVE_REQUEST_RE.match(ql))
+
+
+def is_self_report(q: str, max_words: int = 40) -> bool:
+    """A short first-person statement about the user's own state or action —
+    "I took my stimulant at 10 AM today and I'm just resting" — that requests
+    nothing. Under-fires by design: any question, command, meta remark,
+    request shape, or address to the assistant disqualifies; a pasted block
+    (≥3 lines or over ``max_words``) disqualifies. Consumers: the retrieval
+    budget trim and the decision-support gate (2026-09-06)."""
+    raw = (q or "").strip()
+    if not raw:
+        return False
+    # Paste guard — but soft-wrapped chat text ("...I'm just\n  resting this
+    # afternoon...", the live 2026-09-06 shape pasted from a code block) is
+    # ONE message: a paste is blank-line paragraphs, or ≥3 lines of which ≥2
+    # end in terminal punctuation (greeting/closing/signature lines).
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    paragraphs = [blk for blk in re.split(r"\n\s*\n", raw) if blk.strip()]
+    if len(paragraphs) >= 2:
+        return False
+    if len(lines) >= 3 and sum(1 for ln in lines if ln[-1] in ".!?:,;") >= 2:
+        return False
+    ql = _normalize(" ".join(raw.split()))
+    words = ql.split()
+    if not words or len(words) > max_words:
+        return False
+    if "?" in ql or is_question(ql) or is_command(ql) or is_meta_conversational(ql):
+        return False
+    if _ADDRESSING_ASSISTANT_RE.search(ql) or is_request_shaped(ql):
+        return False
+    stripped = _SELF_REPORT_ACK_PREFIX_RE.sub("", ql, count=1).strip()
+    if not stripped:
+        return False
+    head = stripped.split()
+    if head[0].strip(".,!") in _FIRST_PERSON_OPENERS:
+        return True
+    window = " ".join(head[:12])
+    return bool(_FIRST_PERSON_VERB_RE.search(window))
+
+
 def extract_temporal_window(q: str) -> int:
     """
     Extract the temporal window (in days) from a query based on time markers.
@@ -1240,3 +1338,119 @@ def belongs_to_thread(
     )
 
     return score >= THREAD_CONTINUITY_THRESHOLD
+
+
+# --- New-data override support (2026-09-06) ---------------------------------
+# The STM analyzer's LLM prompt is deliberately biased toward "recall" when
+# in doubt, which mislabels two shapes: a REQUEST for analysis (not a report
+# of an event at all) and a fresh present-tense self-report that carries a
+# data point (clock time, date, dose, day count) absent from the short-term
+# window. Both predicates below are closed grammatical/numeric sets — no
+# topic vocabulary — per project doctrine.
+
+# Closed deictic set: present-tense time anchors. Order matters only for
+# readability; matching below is word-bounded so overlap (e.g. "now" inside
+# "right now") is harmless.
+PRESENT_DEICTIC_ANCHORS: tuple = (
+    "today", "tonight", "right now", "now", "currently", "at the moment",
+    "this morning", "this afternoon", "this evening", "so far today",
+)
+_PRESENT_DEICTIC_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(a) for a in PRESENT_DEICTIC_ANCHORS) + r")\b",
+    re.IGNORECASE,
+)
+
+# First-person present-progressive / present-state verb forms.
+_PRESENT_PROGRESSIVE_RE = re.compile(
+    r"\b(?:i'?m|i\s+am|we'?re|we\s+are)\s+(?:\w+\s+){0,2}?\w+ing\b",
+    re.IGNORECASE,
+)
+_PRESENT_STATE_VERB_RE = re.compile(
+    r"\bi\s+(?:feel|am|have\s+been|'ve\s+been)\b",
+    re.IGNORECASE,
+)
+
+# Data-shaped token families: clock times, dates, number+unit, "day N".
+_CLOCK_TIME_RE = re.compile(
+    r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)\b|\b\d{1,2}:\d{2}\b",
+    re.IGNORECASE,
+)
+_ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_SLASH_DATE_RE = re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b")
+_MONTH_DAY_RE = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+"
+    r"\d{1,2}(?:st|nd|rd|th)?\b",
+    re.IGNORECASE,
+)
+_ORDINAL_DAY_RE = re.compile(r"\bday\s+\d+\b", re.IGNORECASE)
+# Any number+unit-suffix shape — no named units (closed grammatical shape,
+# not a topic vocabulary): "5 mg", "3 miles", "20%".
+_NUMBER_UNIT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*[a-z%]{1,6}\b", re.IGNORECASE)
+
+_DATA_TOKEN_RE = re.compile(
+    "|".join([
+        _CLOCK_TIME_RE.pattern,
+        _ISO_DATE_RE.pattern,
+        _SLASH_DATE_RE.pattern,
+        _MONTH_DAY_RE.pattern,
+        _ORDINAL_DAY_RE.pattern,
+        _NUMBER_UNIT_RE.pattern,
+    ]),
+    re.IGNORECASE,
+)
+
+
+def _canonicalize_clock_time(raw: str) -> Optional[str]:
+    """Canonicalize a matched clock-time span to "HH:MM" via the deployed
+    single-time parser (utils.temporal_resolver._parse_single_time) so "10
+    AM" and "10:00" compare equal. None if unparseable."""
+    cleaned = (raw or "").strip().lower()
+    try:
+        from utils.temporal_resolver import _parse_single_time
+        hour, minute, _has_explicit = _parse_single_time(cleaned)
+    except Exception:
+        hour, minute = None, None
+    if hour is None:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _canonicalize_data_token(raw: str) -> str:
+    cleaned = (raw or "").strip()
+    if _CLOCK_TIME_RE.fullmatch(cleaned):
+        canon = _canonicalize_clock_time(cleaned)
+        if canon:
+            return canon
+    return re.sub(r"\s+", "", cleaned.lower())
+
+
+def extract_data_tokens(q: str) -> List[str]:
+    """Data-shaped tokens (clock times, dates, number+unit, "day N") in
+    ``q``, normalized so equivalent forms compare equal (canonical clock
+    times; lowercase + internal-whitespace-stripped otherwise). Order of
+    first appearance; missing/garbage input -> []."""
+    text = q if isinstance(q, str) else ""
+    if not text.strip():
+        return []
+    tokens: List[str] = []
+    for m in _DATA_TOKEN_RE.finditer(text):
+        canon = _canonicalize_data_token(m.group(0))
+        if canon:
+            tokens.append(canon)
+    return tokens
+
+
+def has_present_state_report(q: str) -> bool:
+    """A first-person present-progressive/state form ("I'm resting", "I
+    feel...") co-occurring with a present-tense deictic anchor ("today",
+    "right now"...) — the shape of a fresh self-report, as opposed to a
+    request or a report of a past event. Closed grammatical set; missing
+    input -> False."""
+    text = q if isinstance(q, str) else ""
+    if not text.strip():
+        return False
+    ql = _normalize(text)
+    if not _PRESENT_DEICTIC_RE.search(ql):
+        return False
+    return bool(_PRESENT_PROGRESSIVE_RE.search(ql) or _PRESENT_STATE_VERB_RE.search(ql))

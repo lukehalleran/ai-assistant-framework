@@ -1516,42 +1516,31 @@ class AgenticSearchController:
     ) -> str:
         """Generate a decision response WITHOUT native reasoning.
 
-        For the agentic iteration phase, models like DeepSeek burn their
+        For the agentic iteration phase, models like DeepSeek/Kimi burn their
         token budget on chain-of-thought reasoning, leaving no room for
         actual XML tool markers. This method bypasses reasoning and uses
         a higher token limit so the model can emit tool tags directly.
+
+        2026-09-06 (fix 1.5): delegates to THE deployed
+        ``model_manager.generate_once(disable_reasoning=True)`` instead of
+        building the API call directly. A direct call that simply omits the
+        ``reasoning`` key does NOT disable reasoning for reasoning-by-default
+        models (kimi-k3, the active model) — live: three memory_search
+        decision rounds took 45.6s of decision time for 45ms of tool time.
+        The direct call also bypassed ``resolve_top_p`` (kimi-k3 mandates
+        top_p=0.95 or 400s) and the ``extra_body={"usage":{"include":True}}``
+        cache-usage accounting ``generate_once`` already sends.
         """
-        target_model = model_name or self.model_manager.active_model_name
-        full_model = self.model_manager.api_models.get(target_model, target_model)
-
-        if self.model_manager.async_client is None:
-            return ""
-
-        messages = [
-            # Strip the prompt-cache breakpoint marker — this path builds the
-            # system message directly (no cache split), so the marker must not
-            # reach the model. No-op when absent.
-            {"role": "system", "content": self.model_manager._strip_cache_breakpoint(system_prompt)},
-            {"role": "user", "content": prompt},
-        ]
-
         from config.app_config import AGENTIC_DECISION_MAX_TOKENS
-        create_kwargs = dict(
-            model=full_model,
-            messages=messages,
-            max_tokens=AGENTIC_DECISION_MAX_TOKENS,
-            temperature=0.3,
-            stream=False,
-        )
-        # Explicitly do NOT add reasoning params
-
         try:
-            response = await self.model_manager.async_client.chat.completions.create(
-                **create_kwargs
+            return await self.model_manager.generate_once(
+                prompt=prompt,
+                model_name=model_name,
+                system_prompt=system_prompt,
+                max_tokens=AGENTIC_DECISION_MAX_TOKENS,
+                temperature=0.3,
+                disable_reasoning=True,
             )
-            if response and response.choices:
-                return response.choices[0].message.content or ""
-            return ""
         except Exception as e:
             logger.error(f"[AgenticSearch] Decision generation (no-reasoning) failed: {e}")
             return ""
@@ -1586,6 +1575,7 @@ class AgenticSearchController:
                 tools=tools,
                 tool_choice=tool_choice,
                 max_tokens=AGENTIC_DECISION_MAX_TOKENS,
+                disable_reasoning=True,
             )
         else:
             # Fallback to standard generation

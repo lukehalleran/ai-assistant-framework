@@ -169,6 +169,7 @@ insight_mode:
   per_facet_cap: 10        # evidence items kept per facet per source
   total_evidence_cap: 80   # hard cap on assembled evidence items
   evidence_snippet_chars: 280
+  external_snippet_chars: 560  # per-item clip for external-research evidence (pubmed/web/wolfram)
   keyword_scan_max: 50     # corpus keyword-search result cap per facet
   expand_top_k: 3          # conversation hits expanded via memory_expander
   expand_window: 2         # turns of surrounding context per expansion

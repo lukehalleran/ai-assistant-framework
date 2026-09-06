@@ -38,6 +38,24 @@ _FRAMING_TERMS = frozenset({
     "verify", "consider", "weigh", "record", "history",
 })
 
+# Words a planner model writes instead of actually omitting a date field —
+# the prompt template shows the LITERAL word "null" as an example value, and
+# a quoted "null" string is truthy where a real JSON null is not. Structural
+# sentinel handling, not a domain vocabulary: every one of these means "no
+# date was supplied here", never a topic term.
+_DATE_SENTINELS = frozenset({
+    "null", "none", "nil", "n/a", "present", "today", "now", "ongoing",
+    "open", "tbd", "",
+})
+
+
+def _clean_date_field(value: Any) -> Optional[str]:
+    """Normalize a planner-supplied date string, mapping sentinels to None."""
+    text = str(value if value is not None else "").strip()
+    if not text or text.casefold() in _DATE_SENTINELS:
+        return None
+    return text[:40]
+
 
 @dataclass
 class SpecFreezeResult:
@@ -207,11 +225,11 @@ Return this JSON shape:
     "decrease": ["literal phrase meaning less/lower of the outcome"]
   }},
   "phases": [
-    {{"label": "phase name", "start": "ISO date or null", "end": "ISO date or null",
+    {{"label": "phase name", "start": "YYYY-MM-DD" or omit the key, "end": "YYYY-MM-DD" or omit the key,
       "date_basis": "why these bounds are justified", "uncertainty_days": 0,
       "metadata": {{"start_offset_days": -30, "end_offset_days": -1}}}}
   ],
-  "anchor": {{"label": "event", "date": "ISO date or null",
+  "anchor": {{"label": "event", "date": "YYYY-MM-DD" or omit the key,
     "relative_value": 7, "relative_unit": "weeks", "direction": "past",
     "uncertainty_days": 7, "search_terms": ["terms for locating this event"],
     "date_basis": "user said seven weeks ago"}},
@@ -459,14 +477,97 @@ def _clean_list(
     return out
 
 
+_STRUCTURAL_DEFAULT_WINDOW_DAYS = 30
+_STRUCTURAL_ALL_HISTORY_DAYS = 180
+_STRUCTURAL_MIN_RECENT_DAYS = 3
+
+
+def structural_phases(
+    query: str,
+    *,
+    now: Optional[datetime] = None,
+    anchor: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    """Two phases derived from STRUCTURE only when the planner supplied none
+    for an event_phased spec (2026-09-06 live: the planner returned zero
+    phases and the whole pattern channel died with "requires at least 2
+    phase(s)" — the `"null"`-end fix could not help a spec with no phases).
+
+    - anchor with an explicit date → "before <anchor>" [date-W, date-1] and
+      "after <anchor>" [date, today];
+    - explicit ISO window in the request → split in two halves;
+    - otherwise the named window (or 30 days; "all history" = 180) split into
+      "earlier period" and "recent period" (recent = max(3, W//4) days).
+    No outcome, domain, or label vocabulary is inferred — dates and labels are
+    purely structural; the freeze records a non-blocking note.
+    """
+    # lazy import: cycle (detector -> agentic.gate -> insight.detector ring)
+    from core.insight.detector import parse_date_window, parse_window_days
+    today = (now or datetime.now()).date()
+    window_days = parse_window_days(query or "")
+    if window_days == -1:
+        window_days = _STRUCTURAL_ALL_HISTORY_DAYS
+    elif window_days <= 0:
+        window_days = _STRUCTURAL_DEFAULT_WINDOW_DAYS
+    basis = "structural fallback: planner supplied no phases"
+
+    anchor_date = None
+    if isinstance(anchor, dict) and anchor.get("date"):
+        try:
+            anchor_date = datetime.fromisoformat(str(anchor["date"])[:10]).date()
+        except ValueError:
+            anchor_date = None
+    if anchor_date and anchor_date <= today:
+        label = str(anchor.get("label") or "anchor").strip()[:60] or "anchor"
+        return [
+            {"label": f"before {label}", "start": (anchor_date - timedelta(days=window_days)).isoformat(),
+             "end": (anchor_date - timedelta(days=1)).isoformat(), "date_basis": basis,
+             "uncertainty_days": 0, "metadata": {}},
+            {"label": f"after {label}", "start": anchor_date.isoformat(),
+             "end": today.isoformat(), "date_basis": basis, "uncertainty_days": 0, "metadata": {}},
+        ]
+
+    explicit = parse_date_window(query or "", now=now)
+    if explicit:
+        try:
+            start = datetime.fromisoformat(explicit[0]).date()
+            end = datetime.fromisoformat(explicit[1]).date()
+        except ValueError:
+            start = end = None
+        if start and end and end > start:
+            mid = start + (end - start) // 2
+            return [
+                {"label": "earlier period", "start": start.isoformat(), "end": mid.isoformat(),
+                 "date_basis": basis, "uncertainty_days": 0, "metadata": {}},
+                {"label": "later period", "start": (mid + timedelta(days=1)).isoformat(),
+                 "end": end.isoformat(), "date_basis": basis, "uncertainty_days": 0, "metadata": {}},
+            ]
+
+    recent_days = max(_STRUCTURAL_MIN_RECENT_DAYS, window_days // 4)
+    recent_start = today - timedelta(days=recent_days)
+    return [
+        {"label": "earlier period", "start": (today - timedelta(days=window_days)).isoformat(),
+         "end": (recent_start - timedelta(days=1)).isoformat(), "date_basis": basis,
+         "uncertainty_days": 0, "metadata": {}},
+        {"label": "recent period", "start": recent_start.isoformat(), "end": today.isoformat(),
+         "date_basis": basis, "uncertainty_days": 0, "metadata": {}},
+    ]
+
+
 def validate_and_freeze(
     proposed: dict[str, Any],
     *,
     available_channels: Iterable[str] = DEFAULT_CHANNELS,
     required_channels: Iterable[str] = (),
     planner_provenance: str = "proposed",
+    query: str = "",
+    now: Optional[datetime] = None,
 ) -> SpecFreezeResult:
-    """Validate and normalize an untrusted planner proposal."""
+    """Validate and normalize an untrusted planner proposal.
+
+    ``query``/``now`` (optional, 2026-09-06) enable the structural phase
+    fallback for an event_phased spec that arrived with fewer than two
+    phases; without them the prior behavior (insufficient) is unchanged."""
     if not isinstance(proposed, dict):
         return SpecFreezeResult("insufficient", None, ["planner returned no object"], planner_provenance)
 
@@ -644,13 +745,28 @@ def validate_and_freeze(
             uncertainty = 0
         normalized_phases.append({
             "label": str(raw_phase.get("label") or "").strip()[:100],
-            "start": str(raw_phase.get("start") or "").strip()[:40] or None,
-            "end": str(raw_phase.get("end") or "").strip()[:40] or None,
+            "start": _clean_date_field(raw_phase.get("start")),
+            "end": _clean_date_field(raw_phase.get("end")),
             "date_basis": str(raw_phase.get("date_basis") or "").strip()[:400],
             "uncertainty_days": uncertainty,
             "metadata": bounded_metadata,
         })
     data["phases"] = normalized_phases
+    structural_note: Optional[str] = None
+    if data["analysis_kind"] == "event_phased" and len(normalized_phases) < 2 and query:
+        raw_anchor_for_phases = data.get("anchor") if isinstance(data.get("anchor"), dict) else None
+        anchor_for_phases = None
+        if raw_anchor_for_phases:
+            anchor_for_phases = {
+                "label": raw_anchor_for_phases.get("label"),
+                "date": _clean_date_field(raw_anchor_for_phases.get("date")),
+            }
+        data["phases"] = structural_phases(query, now=now, anchor=anchor_for_phases)
+        structural_note = (
+            "phases derived structurally from the request window/anchor "
+            f"(planner supplied {len(normalized_phases)}); the comparison is a "
+            "period split, not a planned event contrast"
+        )
 
     raw_anchor = data.get("anchor")
     if isinstance(raw_anchor, dict):
@@ -675,7 +791,7 @@ def validate_and_freeze(
             anchor_uncertainty = 0
         data["anchor"] = {
             "label": str(raw_anchor.get("label") or "").strip()[:160],
-            "date": str(raw_anchor.get("date") or "").strip()[:40] or None,
+            "date": _clean_date_field(raw_anchor.get("date")),
             "relative_value": relative_value,
             "relative_unit": relative_unit,
             "direction": direction,
@@ -750,7 +866,8 @@ def validate_and_freeze(
 
     if limitations or spec is None:
         return SpecFreezeResult("insufficient", None, limitations, planner_provenance)
-    return SpecFreezeResult("ready", spec.model_copy(deep=True), [], planner_provenance)
+    notes = [structural_note] if structural_note else []
+    return SpecFreezeResult("ready", spec.model_copy(deep=True), notes, planner_provenance)
 
 
 async def plan_deliberation(
@@ -767,7 +884,7 @@ async def plan_deliberation(
         return validate_and_freeze(
             proposed, available_channels=available_channels,
             required_channels=required_channels,
-            planner_provenance="caller-proposed",
+            planner_provenance="caller-proposed", query=query, now=now,
         )
     if model_manager is None:
         return SpecFreezeResult("insufficient", None, ["no deliberation planner was available; outcome selection was not guessed"], "unavailable")
@@ -878,7 +995,7 @@ async def plan_deliberation(
     return validate_and_freeze(
         parsed, available_channels=available_channels,
         required_channels=required_channels,
-        planner_provenance=provenance,
+        planner_provenance=provenance, query=query, now=now,
     )
 
 
@@ -973,7 +1090,7 @@ async def compact_recovery_plan(
     return validate_and_freeze(
         proposal, available_channels=available_channels,
         required_channels=_explicit_channels(query, available_channels),
-        planner_provenance="compact-recovery",
+        planner_provenance="compact-recovery", query=query, now=now,
     )
 
 
@@ -1038,7 +1155,7 @@ def freeze_query(query: str, proposed: Optional[dict[str, Any]] = None) -> SpecF
     return validate_and_freeze(
         proposed,
         required_channels=_explicit_channels(query, DEFAULT_CHANNELS),
-        planner_provenance="caller-proposed",
+        planner_provenance="caller-proposed", query=query,
     )
 
 

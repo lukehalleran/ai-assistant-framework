@@ -1109,9 +1109,13 @@ class PromptFormatter:
                         header_parts.append(" ".join(f"#{t}" for t in tag_list))
 
                 # Add relevance score so the LLM can see match strength
-                relevance = note.get("relevance_score", 0.0)
+                relevance = note.get("relevance_score", 0.0) if isinstance(note, dict) else 0.0
                 if relevance > 0:
                     header_parts.append(f"[relevance: {relevance:.2f}]")
+                metadata = note.get("metadata", {}) if isinstance(note, dict) else {}
+                if (str(metadata.get("author", "")).lower() == "daemon"
+                        or metadata.get("source_type") == "daemon_daily_summary"):
+                    header_parts.append("[Daemon-generated summary; not the user's words]")
 
                 # Add image indicator if images are present
                 if image_data:
@@ -1164,8 +1168,11 @@ class PromptFormatter:
                 image_path = meta.get("image_path", "")
                 content = upload.get("content", "")
                 content = _sanitize_embedded_headers(content) if content else ""
+                relevance = upload.get("relevance_score", 0.0)
+                match_type = upload.get("match_type", "")
             else:
                 title, is_image, media_type, image_path, content = "", False, "", "", str(upload)
+                relevance, match_type = 0.0, ""
 
             if content:
                 header_parts = []
@@ -1173,6 +1180,14 @@ class PromptFormatter:
                     # Strip "upload:" prefix for cleaner display
                     display_title = title[7:] if title.startswith("upload:") else title
                     header_parts.append(f"**{display_title}**")
+                # Relevance marker (2026-09-06, fix 1.1 observability):
+                # mirrors the [USER'S PERSONAL NOTES] marker above — lets a
+                # debug reader see WHY a stale doc did/didn't survive
+                # (keyword-typed scores no longer admit uploads on their own).
+                if relevance and relevance > 0:
+                    kind = {"keyword": "kw", "semantic": "sem"}.get(match_type, match_type)
+                    marker = f"[relevance: {relevance:.2f}" + (f" · {kind}]" if kind else "]")
+                    header_parts.append(marker)
                 if is_image:
                     header_parts.append(f"[image: {media_type}]")
                     # Load persisted image for multimodal API calls
@@ -1690,6 +1705,27 @@ class PromptFormatter:
                         f"Note: the current message names {', '.join(_novel)}, "
                         "which do not appear in the short-term window."
                     )
+
+            # New-data override (2026-09-06): the analyzer demoted "recall" ->
+            # "unclear" because the message is a request, or a fresh
+            # self-report carrying a data point absent from the window.
+            _new_data_reason = stm_summary.get('new_data_override')
+            if _new_data_reason == 'new_data':
+                _novel_data = stm_summary.get('novel_data') or []
+                _novel_data = [str(n) for n in _novel_data if isinstance(n, str) and n.strip()]
+                if _novel_data:
+                    stm_lines.append(
+                        "Note: the current message carries details not present "
+                        f"in the short-term window ({', '.join(_novel_data)}); "
+                        "treat those details as new information while verifying "
+                        "the underlying event against memory."
+                    )
+            elif _new_data_reason == 'request':
+                stm_lines.append(
+                    "Note: the current message is a request for analysis or "
+                    "action, not a report of an event; do not treat it as "
+                    "restating or introducing an occurrence."
+                )
 
             temporal_facts = stm_summary.get('temporal_facts', [])
             if temporal_facts:

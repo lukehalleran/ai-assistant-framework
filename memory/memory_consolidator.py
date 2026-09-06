@@ -39,6 +39,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
+from utils.completed_plan_claims import remove_completed_plan_claims
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
 from utils.streak_claims import remove_stale_streak_claims, streak_ledger, streak_ledger_block
 from pathlib import Path
@@ -707,6 +708,7 @@ Do NOT make up information not present in the summaries."""
             # projected to today — injected as a block AND used as a
             # post-generation stale-count check below.
             from datetime import date as _date
+            from datetime import timedelta as _timedelta
             _today = _date.today()
             streak_claims = []
             try:
@@ -763,6 +765,23 @@ Do NOT make up information not present in the summaries."""
                 logger.warning(
                     f'[NarrativeSynthesis] Removed stale streak count: "{s.claim_text}" '
                     f"says day {s.stated_count}; the user's own count as of today is day {s.current_count}"
+                )
+
+            # Completed-plan guard (2026-09-06, Codex audit): a forward-looking
+            # plan sentence ("hanging out with a friend Saturday is pending")
+            # the user has already reported done in a later message. Runs
+            # AFTER the streak check on the same post-generation text and the
+            # same user_statements source.
+            # Floor = the narrative's own horizon (it describes the last ~1-2
+            # weeks); user_statements are COUNT-windowed, so "today" would
+            # miss a plan reported done yesterday.
+            narrative, completed_plans = remove_completed_plan_claims(
+                narrative, user_statements or [], _today - _timedelta(days=14),
+            )
+            for claim_text in completed_plans:
+                logger.warning(
+                    f'[NarrativeSynthesis] Removed completed-plan claim: "{claim_text}" '
+                    "— the user reported it done in a later message"
                 )
 
             sources = []

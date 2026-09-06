@@ -37,6 +37,14 @@ def get_wiki_snippet(query: str) -> str:
     if not page or page.is_disambiguation:
         return ""
     if page.summary:
+        # Fix 1.6 (2026-09-06): the live-API fallback
+        # (WikiManager._fetch_extract_action_api) hardcodes
+        # is_disambiguation=False, so a text-shaped stub ("Give may refer
+        # to: ...") sailed past the flag check above and reached
+        # [BACKGROUND KNOWLEDGE] — check the shape here too, regardless of
+        # which fetch path populated `page`.
+        if looks_like_disambiguation_text(page.summary, getattr(page, "title", "")):
+            return ""
         return page.summary
     return ""
 

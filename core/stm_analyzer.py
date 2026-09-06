@@ -42,7 +42,14 @@ from typing import List, Dict, Any, Optional
 from utils.logging_utils import get_logger
 from datetime import date, timedelta
 from datetime import datetime
-from utils.query_checker import _PROPER_NOUN_STOPWORDS, extract_rare_proper_nouns
+from utils.query_checker import (
+    _PROPER_NOUN_STOPWORDS,
+    extract_rare_proper_nouns,
+    extract_data_tokens,
+    has_present_state_report,
+    is_request_shaped,
+    keyword_tokens,
+)
 
 logger = get_logger("stm_analyzer")
 
@@ -211,6 +218,75 @@ def novel_named_entities(
         seen.add(name.lower())
         novel.append(name)
     return novel
+
+
+def novel_data_tokens(user_query: str, window_text: str) -> List[str]:
+    """Data-shaped tokens (clock times, dates, dose/quantity, "day N") in the
+    current message that appear NOWHERE in the short-term window — the
+    numeric analogue of ``novel_named_entities`` (2026-09-06 new-data
+    override). Comparison is on the CANONICAL form (a query's "10 AM"
+    matches a window's "10:00"). Order of first appearance in the query;
+    under-fires on missing input or any failure -> []."""
+    if not isinstance(user_query, str) or not user_query.strip():
+        return []
+    window = window_text if isinstance(window_text, str) else ""
+    try:
+        query_tokens = extract_data_tokens(user_query)
+        window_tokens = set(extract_data_tokens(window))
+    except Exception:
+        return []
+    novel: List[str] = []
+    seen: set = set()
+    for tok in query_tokens:
+        if tok in seen:
+            continue
+        seen.add(tok)
+        if tok not in window_tokens:
+            novel.append(tok)
+    return novel
+
+
+def new_data_override(user_query: str, window_text: str) -> Dict[str, Any]:
+    """Deterministic post-check (2026-09-06): the STM prompt biases "recall"
+    when in doubt, which mislabels two shapes it never accounts for —
+    (a) a REQUEST for analysis/action, not a report of an event at all, and
+    (b) a fresh present-tense self-report carrying a data point (clock time,
+    date, dose, day count) the short-term window has no record of. Ladder,
+    first hit wins:
+      1. request-shaped message                                -> "request"
+      2. a data-shaped token in the query absent from the window
+                                                                 -> "new_data"
+      3. a present-tense self-report whose salient (len>=4) keyword
+         vocabulary is majority-absent from the window          -> "new_data"
+    Deterministic, under-fires by design; {} on no hit or any failure.
+    Companion to ``novel_named_entities`` — apply only when the novelty
+    override above did NOT already demote this turn."""
+    try:
+        text = user_query if isinstance(user_query, str) else ""
+        if not text.strip():
+            return {}
+        window = window_text if isinstance(window_text, str) else ""
+        if is_request_shaped(text):
+            return {"reason": "request"}
+        novel = novel_data_tokens(text, window)
+        if novel:
+            return {"reason": "new_data", "novel_data": novel}
+        if has_present_state_report(text):
+            raw_kws = keyword_tokens(text, min_len=4)
+            kws: List[str] = []
+            seen_kw: set = set()
+            for w in raw_kws:
+                clean = w.strip(".,!?;:'\"()")
+                if clean and clean not in seen_kw:
+                    seen_kw.add(clean)
+                    kws.append(clean)
+            if kws:
+                absent = [w for w in kws if not _word_in_text(w, window)]
+                if len(absent) / len(kws) >= 0.5:
+                    return {"reason": "new_data", "novel_data": absent[:5]}
+        return {}
+    except Exception:
+        return {}
 
 
 class STMAnalyzer:
@@ -400,6 +476,31 @@ Return JSON only, no markdown or extra text:"""
                         logger.debug(
                             f"[STMAnalyzer] Novelty override: recall → unclear "
                             f"(names absent from window: {novel})"
+                        )
+            except Exception:
+                pass
+            # New-data override (2026-09-06): runs only when the novelty
+            # step above did NOT already demote this turn (still "recall").
+            # Covers two more shapes the recall-biased prompt gets wrong:
+            # a REQUEST for analysis/action (not a report at all), and a
+            # fresh present-tense self-report carrying a data point (clock
+            # time, date, dose, day count) absent from the same window.
+            try:
+                if parsed.get("reference_type") == "recall":
+                    window = "\n".join(filter(None, [
+                        conversation_text,
+                        daily_notes_text,
+                        str(last_assistant_response or ""),
+                    ]))
+                    override = new_data_override(user_query, window)
+                    if override:
+                        parsed["reference_type"] = "unclear"
+                        parsed["new_data_override"] = override["reason"]
+                        if override.get("novel_data"):
+                            parsed["novel_data"] = override["novel_data"]
+                        logger.debug(
+                            f"[STMAnalyzer] New-data override: recall → unclear "
+                            f"(reason={override['reason']})"
                         )
             except Exception:
                 pass

@@ -89,6 +89,7 @@ class EvidenceItem(BaseModel):
     stance_label: str = "user-stated"   # one of STANCE_LABELS
     is_appraisal: bool = False
     facet: str = ""
+    metadata: dict = Field(default_factory=dict)  # authorship/lineage survives retrieval
 
 
 class ClaimAssessment(BaseModel):

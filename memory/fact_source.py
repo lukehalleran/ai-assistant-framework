@@ -261,6 +261,69 @@ _RELATION_CUE_RES = {
 }
 _RELATION_CUE_CACHE: dict[str, re.Pattern[str]] = {}
 
+# Clause structure is grammar, not vocabulary (2026-09-06): a coordinated
+# sentence ("Had the 5mg at 11 and went out with a friend and his dad") reads as
+# ONE sentence but is several clauses, and a third-party pronoun in one clause
+# ("his dad") must not disqualify a DIFFERENT clause's own claim ("Had the
+# 5mg at 11"). Split on commas/semicolons and coordinating conjunctions.
+_CLAUSE_SPLIT_RE = re.compile(r"\s*[,;]\s*|\s+(?:and|but|so|then)\s+", re.IGNORECASE)
+
+# Negation governors are a closed grammatical set — never relation/medication
+# vocabulary. Bare "no" is deliberately excluded: "no patient portal" is an
+# affirmative claim ABOUT an absence, not a negated claim about an object.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|no\s+longer|without|neither|nor)\b|n't\b",
+    re.IGNORECASE,
+)
+
+
+def _split_clauses(sentence: str) -> list[str]:
+    parts = _CLAUSE_SPLIT_RE.split(sentence or "")
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _object_bearing_clause(
+    clauses: list[str], object_val: str, object_tokens: set[str]
+) -> str | None:
+    """The clause with the strongest grounding signal for the object, or
+    ``None`` when no single clause carries it (e.g. the object phrase itself
+    straddles a coordinating conjunction) — callers fall back to the whole
+    span in that case."""
+    obj_low = (object_val or "").lower().strip()
+    best: str | None = None
+    best_score = 0
+    for clause in clauses:
+        low = clause.lower()
+        exact = bool(obj_low and obj_low in low)
+        overlap = len(object_tokens & _tokens(clause))
+        score = (100 if exact else 0) + overlap
+        if score > best_score:
+            best_score, best = score, clause
+    return best
+
+
+def _object_position(clause: str, object_val: str, object_tokens: set[str]) -> int | None:
+    low = clause.lower()
+    obj_low = (object_val or "").lower().strip()
+    if obj_low and obj_low in low:
+        return low.find(obj_low)
+    best: int | None = None
+    for token in object_tokens:
+        pos = low.find(token)
+        if pos >= 0 and (best is None or pos < best):
+            best = pos
+    return best
+
+
+def _clause_is_negated(clause: str, object_val: str, object_tokens: set[str]) -> bool:
+    """True when a negation governor precedes the object's position within
+    ``clause`` — "I did not take Zelphex today" negates ``take``d Zelphex``
+    even though the object token itself (``zelphex``) is untouched."""
+    pos = _object_position(clause, object_val, object_tokens)
+    if pos is None:
+        return False
+    return any(m.start() < pos for m in _NEGATION_RE.finditer(clause))
+
 
 @dataclass(frozen=True)
 class EvidenceSpan:
@@ -282,9 +345,10 @@ def _message_text_and_id(message: Any) -> tuple[str, str] | None:
         # store the merged form so retrieval renders attachments). Attachment
         # content — lecture transcripts, CSV rows, PDFs — is not user-authored
         # evidence, so the provenance join reads the raw text when present.
-        text = str(
-            message.get("user_text") or message.get("query") or message.get("user") or ""
-        ).strip()
+        authored = message.get("user_text") if "user_text" in message else (
+            message.get("query") or message.get("user") or ""
+        )
+        text = str(authored or "").strip()
         turn_id = str(
             message.get("turn_id")
             or message.get("interaction_id")
@@ -338,6 +402,17 @@ def quoted_correspondence_lines(text: str) -> set[int]:
     closing → signature run).  Empty set when no complete block exists."""
     lines = (text or "").splitlines()
     inside: set[int] = set()
+    # Workflow relay convention: agent output is quoted evidence even when
+    # its first-person sentences have no Markdown blockquote markers.
+    # A closing marker lets the user resume speaking after a relayed block.
+    in_relay = False
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*\[relay:\s*[^\]]+\]", line, re.IGNORECASE):
+            in_relay = True
+        if in_relay:
+            inside.add(index)
+        if re.match(r"^\s*\[/relay\]\s*$", line, re.IGNORECASE):
+            in_relay = False
     i = 0
     while i < len(lines):
         if not _EMAIL_GREETING_RE.match(lines[i]):
@@ -422,7 +497,7 @@ def _tokens(value: str) -> set[str]:
     }
 
 
-def _span_is_user_owned(span: str) -> str | None:
+def _span_is_user_owned(span: str, object_clause: str | None = None) -> str | None:
     """Return the anchor kind when the span asserts something about the USER.
 
     ``"first_person"``: an explicit I/we subject, or a first-person possessive
@@ -430,16 +505,23 @@ def _span_is_user_owned(span: str) -> str | None:
     fragment with an implied subject ("Started Lorvatin today").  ``None``: the
     span is about someone else ("Sam told me he moved", "My brother moved",
     "Biscuit is being a silly kitten", "it says you use WHOOP").
+
+    ``object_clause`` (2026-09-06) narrows the third-party/possessive and
+    sentence-opener checks to the CLAUSE that actually carries the object —
+    a coordinated sentence's unrelated clause ("...and his dad...") must not
+    disqualify a different clause's own claim ("Had the 5mg at 11").  When
+    omitted it defaults to ``span`` (whole-sentence behavior, unchanged for
+    every direct caller).  The relative-subject check ("My partner/brother
+    …") stays deliberately ambiguous on its own — it is rescued ONLY by an
+    explicit first-person subject elsewhere in the full sentence, never by a
+    different clause's third party (that already fails the check above it).
     """
-    if _FIRST_PERSON_SUBJECT_RE.search(span):
+    clause = object_clause if object_clause is not None else span
+    if _FIRST_PERSON_SUBJECT_RE.search(clause):
         return "first_person"
-    if _RELATIVE_SUBJECT_RE.match(span):
+    if _OTHER_PERSON_RE.search(clause) or _POSSESSIVE_PROPER_RE.search(clause):
         return None
-    if _OTHER_PERSON_RE.search(span) or _POSSESSIVE_PROPER_RE.search(span):
-        return None
-    if _FIRST_PERSON_ANY_RE.search(span) or _PROFILE_FIELD_RE.search(span):
-        return "first_person"
-    words = span.split()
+    words = clause.split()
     if len(words) > 1:
         first = words[0].strip("\"'“”‘’([")
         if (
@@ -448,6 +530,12 @@ def _span_is_user_owned(span: str) -> str | None:
             and _THIRD_PERSON_CONTINUATION_RE.match(words[1])
         ):
             return None
+    if _RELATIVE_SUBJECT_RE.match(clause):
+        if clause != span and _FIRST_PERSON_SUBJECT_RE.search(span):
+            return "first_person"
+        return None
+    if _FIRST_PERSON_ANY_RE.search(clause) or _PROFILE_FIELD_RE.search(clause):
+        return "first_person"
     return "implicit_first_person"
 
 
@@ -554,7 +642,10 @@ def find_supporting_user_span(
     the stance layer (``"user's …"``) are user-owned by construction.  Entity
     facts require both the named subject and the object in one span.  Every
     fact requires object grounding; there is intentionally no "last message"
-    fallback.
+    fallback.  A span whose object-bearing CLAUSE is negated ("I did not take
+    Zelphex today") never supports the triple, even when an unrelated
+    negated sentence is the only other candidate mentioning the object
+    (2026-09-06).
     """
     subject = str(triple.get("subject") or "").strip()
     relation = str(triple.get("relation") or triple.get("predicate") or "").strip().lower()
@@ -578,26 +669,45 @@ def find_supporting_user_span(
     # the object carries three or more.
     min_overlap = 1 if len(object_tokens) <= 2 else 2
 
+    # Excerpt integrity (2026-09-06): a lone token overlap is only evidence
+    # when that token is the object's own head noun (its last content word —
+    # "5 mg Zelphex" -> "zelphex") — an incidental shared adjective/modifier
+    # is not the claim.
+    _ordered_object_tokens = [
+        tok.lower() for tok in _WORD_RE.findall(object_val)
+        if len(tok) >= 3 and tok.lower() not in _STOPWORDS
+    ]
+    object_head_token = _ordered_object_tokens[-1] if _ordered_object_tokens else None
+
     best: tuple[int, int, str, str, str, str] | None = None
     for turn_index, text, turn_id in iter_user_messages(messages):
         for span in _claim_spans(text):
             low = span.lower()
             exact_object = bool(object_val and object_val.lower() in low)
-            overlap = len(object_tokens & _tokens(span))
-            if not exact_object and overlap < min_overlap:
+            overlap_tokens = object_tokens & _tokens(span)
+            overlap = len(overlap_tokens)
+            if not exact_object:
+                if overlap < min_overlap:
+                    continue
+                if overlap == 1 and object_head_token and next(iter(overlap_tokens)) != object_head_token:
+                    continue
+
+            clauses = _split_clauses(span)
+            object_clause = _object_bearing_clause(clauses, object_val, object_tokens) or span
+            if _clause_is_negated(object_clause, object_val, object_tokens):
                 continue
 
             if is_user:
                 if relation in _PET_OWNERSHIP_SPECIES:
-                    if not _pet_ownership_supported(span, relation):
+                    if not _pet_ownership_supported(object_clause, relation):
                         continue
                     anchor = "pet_ownership"
                 elif relation in _CARE_TEAM_RELATIONS:
-                    if not _care_team_supported(span):
+                    if not _care_team_supported(object_clause):
                         continue
                     anchor = "care_team"
                 else:
-                    anchor = _span_is_user_owned(span)
+                    anchor = _span_is_user_owned(span, object_clause)
                     if anchor is None:
                         continue
                     if not _relation_cue_supported(span, relation):

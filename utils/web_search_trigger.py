@@ -1765,6 +1765,10 @@ async def analyze_for_web_search_llm(
     # A mixed longitudinal request owns the turn. Do not let the ordinary web
     # confidence blend or a personal-topic search veto erase this independent
     # routing decision; the frozen planner will audit every requested channel.
+    from core.insight.detector import allows_pattern_classification
+    if llm_response.needs_pattern_analysis and not allows_pattern_classification(query):
+        logger.info("[WebSearchTrigger] Suppressed unsolicited pattern analysis of a self-report")
+        llm_response.needs_pattern_analysis = False
     if llm_response.needs_pattern_analysis:
         result = WebSearchDecision(
             should_search=False,

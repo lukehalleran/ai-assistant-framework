@@ -28,6 +28,7 @@ Module Contract
 from __future__ import annotations
 
 from datetime import datetime
+import re
 
 from core.insight.sweep import week_bucket_key
 from core.insight.types import EvidenceItem
@@ -51,6 +52,39 @@ _LABEL_DISPLAY = {
     "quoted-correspondence": "quoted third-party text inside your message",
 }
 
+_SPEAKER_RE = re.compile(r"(?:^|\n)[ \t]*(User|Human|Q|Assistant|Daemon|A):[ \t]*")
+
+
+def _split_speakers(item: EvidenceItem) -> list[EvidenceItem]:
+    """Separate full speaker spans BEFORE snippet clipping can erase labels."""
+    if item.collection != "conversations" or item.speaker:
+        return [item]
+    if "user_text" in item.metadata and "response" in item.metadata:
+        return [item.model_copy(update={
+            "text": text, "speaker": speaker,
+            "doc_id": f"{item.doc_id}:{speaker}:0" if item.doc_id else None,
+        }) for speaker, text in (("user", item.metadata["user_text"]),
+                                 ("assistant", item.metadata["response"]))
+                if isinstance(text, str) and text.strip()]
+    matches = list(_SPEAKER_RE.finditer(item.text))
+    if not matches:
+        return [item]
+    if len(matches) == 1:
+        item.speaker = "user" if matches[0].group(1) in {"User", "Human", "Q"} else "assistant"
+        return [item]
+    parts = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(item.text)
+        text = item.text[match.end():end].strip()
+        if not text:
+            continue
+        speaker = "user" if match.group(1) in {"User", "Human", "Q"} else "assistant"
+        parts.append(item.model_copy(update={
+            "text": text, "speaker": speaker,
+            "doc_id": f"{item.doc_id}:{speaker}:{index}" if item.doc_id else None,
+        }))
+    return parts or [item]
+
 
 def _split_quoted_correspondence(item: EvidenceItem) -> list[EvidenceItem]:
     """Split a user-authored item into (optional framing, quoted-block)
@@ -64,6 +98,11 @@ def _split_quoted_correspondence(item: EvidenceItem) -> list[EvidenceItem]:
     user correcting the assistant (2026-09-04 live incident). The user's own
     framing lines, if any remain once the block is removed, stay "you said".
     """
+    if item.stance_label == "quoted-correspondence":
+        # Already split: label_evidence runs in sweep._finalize AND again in
+        # handlers (engine/frozen-contract items join late) — a second pass
+        # must not re-suffix the doc_id (":quoted:quoted").
+        return [item]
     quoted_idx = quoted_correspondence_lines(item.text)
     if not quoted_idx:
         return [item]
@@ -102,7 +141,7 @@ def label_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
     must use the RETURNED list, not assume in-place-only mutation.
     """
     expanded: list[EvidenceItem] = []
-    for item in items:
+    for item in [part for original in items for part in _split_speakers(original)]:
         if item.collection in ("corpus", "conversations") and item.speaker != "assistant":
             expanded.extend(_split_quoted_correspondence(item))
         else:
@@ -123,7 +162,11 @@ def label_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
             # frontmatter (e.g. Daemon-generated daily summaries). Preserve
             # that classification instead of treating every vault note as a
             # first-person user record.
-            if item.stance_label not in {"assistant-inferred", "extracted-fact"}:
+            metadata = item.metadata
+            if (str(metadata.get("author", "")).lower() == "daemon"
+                    or metadata.get("source_type") == "daemon_daily_summary"):
+                item.stance_label = "assistant-inferred"
+            elif item.stance_label not in {"assistant-inferred", "extracted-fact"}:
                 item.stance_label = "users-own-note"
         elif coll == "facts":
             item.stance_label = "extracted-fact"
@@ -132,7 +175,10 @@ def label_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
         elif coll in _ASSISTANT_AUTHORED_COLLECTIONS:
             item.stance_label = "assistant-inferred"
         elif coll == "conversations":
-            item.stance_label = _label_conversation_doc(item)
+            item.stance_label = (
+                "assistant-inferred" if item.speaker == "assistant"
+                else _label_conversation_doc(item)
+            )
         elif item.stance_label in {"external-research", "computed-evidence"}:
             # Adapters assign these explicitly; never relabel independent
             # evidence as the user's statement because its collection is novel.
@@ -165,6 +211,24 @@ def _fact_is_appraisal(item: EvidenceItem) -> bool:
     return is_evaluative_text(item.text)
 
 
+def format_evidence_line(index: int, item: EvidenceItem) -> str:
+    """Render a single numbered, dated, attributed evidence line:
+    ``[E<index>] date · source · label: "text" [markers]``.
+
+    Extracted from ``render_evidence_block`` (2026-09-06) so a layout pass
+    can estimate an item's rendered cost without duplicating the format.
+    """
+    date = (item.date or "undated")[:10]
+    display = _LABEL_DISPLAY.get(item.stance_label, item.stance_label)
+    source = item.collection or "memory"
+    markers = ""
+    if item.stance_label == "assistant-inferred":
+        markers = " [assistant's interpretation, not your words]"
+    elif item.is_appraisal:
+        markers = " [value judgment — an appraisal, not an objective fact]"
+    return f'[E{index}] {date} · {source} · {display}: "{item.text}"{markers}'
+
+
 def render_evidence_block(items: list[EvidenceItem], max_chars: int = 12000) -> str:
     """Render numbered, dated, attributed evidence lines: ``[E1] date · source``.
 
@@ -182,17 +246,12 @@ def render_evidence_block(items: list[EvidenceItem], max_chars: int = 12000) -> 
     omitted: list[EvidenceItem] = []
     for i, item in enumerate(items, start=1):
         date = (item.date or "undated")[:10]
-        display = _LABEL_DISPLAY.get(item.stance_label, item.stance_label)
-        source = item.collection or "memory"
-        markers = ""
-        if item.stance_label == "assistant-inferred":
-            markers = " [assistant's interpretation, not your words]"
-        elif item.is_appraisal:
-            markers = " [value judgment — an appraisal, not an objective fact]"
-        line = f'[E{i}] {date} · {source} · {display}: "{item.text}"{markers}'
+        line = format_evidence_line(i, item)
         if used + len(line) > max_chars:
-            omitted = items[i - 1:]
-            break
+            # Skip, don't stop: a single oversized item must not hide every
+            # item behind it (2026-09-06). E-numbers keep the original index.
+            omitted.append(item)
+            continue
         lines.append(line)
         used += len(line) + 1
         if date != "undated":

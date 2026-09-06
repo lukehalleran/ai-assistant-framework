@@ -103,12 +103,15 @@ class TestUploadStalenessGate:
     relevance clears USER_UPLOADS_MIN_RELEVANCE; undated legacy docs must
     clear the relevance bar."""
 
-    def _doc(self, relevance=0.0, ts=None):
+    def _doc(self, relevance=0.0, ts=None, match_type=None):
         from datetime import datetime
         meta = {"type": "user_upload"}
         if ts is not None:
             meta["timestamp"] = ts.isoformat() if isinstance(ts, datetime) else ts
-        return {"relevance_score": relevance, "metadata": meta}
+        doc = {"relevance_score": relevance, "metadata": meta}
+        if match_type is not None:
+            doc["match_type"] = match_type
+        return doc
 
     def test_stale_irrelevant_upload_dropped(self):
         from datetime import datetime, timedelta
@@ -123,10 +126,28 @@ class TestUploadStalenessGate:
         assert _upload_is_live(self._doc(relevance=0.0, ts=fresh))
 
     def test_relevant_old_upload_survives(self):
+        # Fix 1.1 (2026-09-06): only a SEMANTIC score is real relevance
+        # evidence — this is the case the test always meant to pin.
         from datetime import datetime, timedelta
         from core.prompt.gatherer_knowledge import _upload_is_live, USER_UPLOADS_MIN_RELEVANCE
         old = datetime.now() - timedelta(days=180)
-        assert _upload_is_live(self._doc(relevance=USER_UPLOADS_MIN_RELEVANCE + 0.05, ts=old))
+        assert _upload_is_live(
+            self._doc(relevance=USER_UPLOADS_MIN_RELEVANCE + 0.05, ts=old, match_type="semantic")
+        )
+
+    def test_keyword_typed_old_upload_dropped_despite_high_score(self):
+        # Fix 1.1 (2026-09-06): reference_docs_manager._keyword_search's
+        # empty-section containment bug scored every single-chunk upload
+        # chunk 0.9 on EVERY query regardless of actual relevance — a
+        # keyword-typed score must not admit a stale, unrelated upload on
+        # its own (the freshness/document-cue leg is unaffected).
+        from datetime import datetime, timedelta
+        from core.prompt.gatherer_knowledge import _upload_is_live, USER_UPLOADS_MIN_RELEVANCE
+        old = datetime.now() - timedelta(days=180)
+        assert not _upload_is_live(
+            self._doc(relevance=USER_UPLOADS_MIN_RELEVANCE + 0.28, ts=old, match_type="keyword"),
+            query="rest after taking my medication",
+        )
 
     def test_undated_doc_needs_relevance(self):
         from core.prompt.gatherer_knowledge import _upload_is_live

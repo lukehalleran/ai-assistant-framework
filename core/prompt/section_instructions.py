@@ -25,11 +25,11 @@ Module Contract:
 
 from typing import Any, Dict
 
-_PERSONAL_NOTES = """### [USER'S PERSONAL NOTES] — Obsidian Vault
-These are notes from the user's personal Obsidian vault - their own writing, journals, project notes, and references.
+_PERSONAL_NOTES = """### [USER'S PERSONAL NOTES] — Personal Notes Vault
+These are notes from the user's personal notes vault: their writing, reference material, and Daemon-generated daily summaries. Vault ownership does not establish authorship.
 - **Relevance first**: Only reference notes that directly relate to the current query. If a note was retrieved but isn't relevant, ignore it — don't mention it just because it's there. Notes are already filtered by relevance; treat lower-scored notes as weaker matches and prefer the highest-scored ones.
 - **Use naturally**: Reference these when relevant to the conversation, like "Based on your notes about X..."
-- **Trust them**: These are the user's own words and knowledge - high confidence
+- **Authorship**: Respect each note's provenance. Generated summaries are assistant interpretations, not the user's own words or independent confirmation. Unmarked notes may contain copied material; use recent direct statements to resolve conflicts.
 - **Don't over-cite**: Weave insights naturally rather than quoting section headers
 - **Daily notes exist**: You automatically generate daily summaries of conversations that get saved to this vault
 - **Images**: Notes may contain embedded images (`![[image.png]]`). If you're a multimodal model (Claude Opus/Sonnet, GPT-4o, Gemini, etc.), these images are **loaded and sent to you as visual content**. When you see "[X image(s) attached]" markers or actual image content:
@@ -84,16 +84,38 @@ SECTION_INSTRUCTIONS = [
 ]
 
 
+def _decision_support_applies(prompt_ctx: Dict[str, Any]) -> bool:
+    """Signal-keyed gate for the decision-support grounding block: heavy
+    topic, elevated tone, or a request-shaped message that is neither small
+    talk nor a bare self-report (2026-09-06)."""
+    # lazy import: cycle (response_guidance -> agentic.gate -> insight.detector -> web_search_trigger)
+    from core.response_guidance import include_decision_support
+    return include_decision_support(
+        prompt_ctx.get("user_query"),
+        tone_level=prompt_ctx.get("tone_level"),
+        is_heavy_topic=bool(prompt_ctx.get("is_heavy_topic")),
+        is_small_talk=bool(prompt_ctx.get("is_small_talk")),
+    )
+
+
 def conditional_instruction_tail(prompt_ctx: Dict[str, Any]) -> str:
     """Return the instruction blocks for sections present in this turn's
-    context, or "" when none apply. Fail-open: a missing/None ctx injects
-    nothing (raw mode, agentic bail-outs)."""
+    context plus any signal-gated guidance block, or "" when none apply.
+    Fail-open: a missing/None ctx injects nothing (raw mode, agentic
+    bail-outs); a failing predicate injects nothing for that block."""
     if not prompt_ctx:
         return ""
     blocks = [text for key, text in SECTION_INSTRUCTIONS if prompt_ctx.get(key)]
-    if not blocks:
-        return ""
-    return (
-        "\n\n## Context Section Guidance (sections present this turn)\n\n"
-        + "\n\n".join(blocks)
-    )
+    tail = ""
+    if blocks:
+        tail += (
+            "\n\n## Context Section Guidance (sections present this turn)\n\n"
+            + "\n\n".join(blocks)
+        )
+    try:
+        if _decision_support_applies(prompt_ctx):
+            from core.response_guidance import DECISION_SUPPORT_GROUNDING
+            tail += "\n" + DECISION_SUPPORT_GROUNDING.rstrip() + "\n"
+    except Exception:
+        pass
+    return tail

@@ -190,6 +190,13 @@ ALLOWLIST = (
       "for r in reflections[:2]"),
      "Same function: reflections via get_reflections_hybrid(query, "
      "limit=2) above — redundant no-op re-cap."),
+    (("core/insight/synthesizer.py", "recent_conversation_context",
+      "for entry in history[-8:]:"),
+     "history is the chat UI transcript (Gradio messages / API session "
+     "history), appended per turn so oldest-first by construction — [-8:] "
+     "keeps the NEWEST four exchanges; the corpus fallback in the same "
+     "function iterates reversed(get_recent_memories(4)) for the "
+     "newest-first source."),
     (("memory/corpus_manager.py", "CorpusManager.create_summary_now",
       "for entry in recent[:num_recent]:"),
      "create_summary_now: recent = self.get_recent_memories(num_recent) "

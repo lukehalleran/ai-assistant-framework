@@ -290,6 +290,7 @@ class InsightModeSection(BaseModel):
     per_facet_cap: int = Field(default=10, ge=1)
     total_evidence_cap: int = Field(default=80, ge=1)
     evidence_snippet_chars: int = Field(default=280, ge=50)
+    external_snippet_chars: int = Field(default=560, ge=50)
     keyword_scan_max: int = Field(default=50, ge=1)
     expand_top_k: int = Field(default=3, ge=0)
     expand_window: int = Field(default=2, ge=1)

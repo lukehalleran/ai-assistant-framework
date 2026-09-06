@@ -1132,6 +1132,7 @@ INSIGHT_MAX_FACETS: int = int(os.getenv("INSIGHT_MAX_FACETS", INSIGHT_CFG.get("m
 INSIGHT_PER_FACET_CAP: int = int(os.getenv("INSIGHT_PER_FACET_CAP", INSIGHT_CFG.get("per_facet_cap", 10)))
 INSIGHT_TOTAL_EVIDENCE_CAP: int = int(os.getenv("INSIGHT_TOTAL_EVIDENCE_CAP", INSIGHT_CFG.get("total_evidence_cap", 80)))
 INSIGHT_EVIDENCE_SNIPPET_CHARS: int = int(os.getenv("INSIGHT_EVIDENCE_SNIPPET_CHARS", INSIGHT_CFG.get("evidence_snippet_chars", 280)))
+INSIGHT_EXTERNAL_SNIPPET_CHARS: int = int(os.getenv("INSIGHT_EXTERNAL_SNIPPET_CHARS", INSIGHT_CFG.get("external_snippet_chars", 560)))
 INSIGHT_KEYWORD_SCAN_MAX: int = int(os.getenv("INSIGHT_KEYWORD_SCAN_MAX", INSIGHT_CFG.get("keyword_scan_max", 50)))
 INSIGHT_EXPAND_TOP_K: int = int(os.getenv("INSIGHT_EXPAND_TOP_K", INSIGHT_CFG.get("expand_top_k", 3)))
 INSIGHT_EXPAND_WINDOW: int = int(os.getenv("INSIGHT_EXPAND_WINDOW", INSIGHT_CFG.get("expand_window", 2)))

@@ -160,7 +160,12 @@ def _upload_is_fresh(doc: Dict[str, Any], now: Optional[datetime] = None) -> boo
     ts_raw = doc.get('metadata', {}).get('timestamp', '')
     try:
         ts = datetime.fromisoformat(str(ts_raw))
-        return ((now or datetime.now()) - ts).days <= USER_UPLOADS_MAX_AGE_DAYS
+        current = now or datetime.now(ts.tzinfo)
+        if current.tzinfo is None and ts.tzinfo is not None:
+            current = current.astimezone(ts.tzinfo)
+        elif current.tzinfo is not None and ts.tzinfo is None:
+            ts = ts.astimezone(current.tzinfo)
+        return 0 <= (current - ts).days <= USER_UPLOADS_MAX_AGE_DAYS
     except (ValueError, TypeError):
         return False
 
@@ -179,8 +184,8 @@ def _upload_is_live(
     now: Optional[datetime] = None,
     query: str = "",
 ) -> bool:
-    """An upload surfaces while fresh (recent = active working material) OR
-    when clearly relevant to the current query. Undated legacy docs must
+    """An upload surfaces when relevant, or fresh during document work.
+    Freshness alone is not relevance on a new conversational topic. Undated docs must
     clear the relevance bar.
 
     Image stubs are the exception (2026-08-27): their stored text is a
@@ -191,10 +196,28 @@ def _upload_is_live(
     in the query, never a text-relevance score.
     """
     if _upload_is_image_stub(doc):
-        return _upload_is_fresh(doc, now) or _query_wants_visual(query, None)
-    if doc.get('relevance_score', 0.0) >= USER_UPLOADS_MIN_RELEVANCE:
+        return _query_wants_visual(query, None) or (not query and _upload_is_fresh(doc, now))
+    # Fix 1.1 (2026-09-06): reference_docs_manager._keyword_search's bare
+    # `'' in query_lower` containment bug scored every empty-section
+    # single-chunk upload 0.9 on EVERY query — a keyword-typed score is not
+    # semantic relevance evidence and must not admit a doc on its own; only
+    # a semantic hit (or the freshness/document-cue leg below) can.
+    relevance = doc.get('relevance_score', 0.0)
+    if doc.get('match_type') == 'keyword':
+        relevance = 0.0
+    if relevance >= USER_UPLOADS_MIN_RELEVANCE:
         return True
-    return _upload_is_fresh(doc, now)
+    # Preserve low-score continuation of freshly uploaded material without
+    # admitting homework on an unrelated medication/energy/time correction.
+    document_context = not query or bool(re.search(
+        r"\b(?:attachments?|uploads?|documents?|pdf|docx|csv|spreadsheet|"
+        r"dataset|homework|assignment|syllabus|lecture|transcript|"
+        r"(?:question|task|part|page)\s+\d+)\b",
+        query, re.IGNORECASE,
+    ))
+    filename = _upload_title_filename(doc)
+    named = bool(filename and filename in query.lower())
+    return _upload_is_fresh(doc, now) and (document_context or named)
 
 
 def _upload_title_filename(doc: Dict[str, Any]) -> str:
@@ -768,6 +791,15 @@ class KnowledgeRetrievalMixin:
                     f"relevance < {USER_UPLOADS_MIN_RELEVANCE})"
                 )
             uploads = uploads[:limit]
+
+            if uploads:
+                _admitted = ", ".join(
+                    f"{_upload_title_filename(d) or d.get('metadata', {}).get('title', '?')}"
+                    f"(score={d.get('relevance_score', 0.0):.2f},"
+                    f"type={d.get('match_type', '?')})"
+                    for d in uploads
+                )
+                logger.debug(f"[ContextGatherer] Admitted user uploads: {_admitted}")
 
             # Track for citations
             if uploads:
@@ -1556,11 +1588,17 @@ class KnowledgeRetrievalMixin:
 
         # --- Fallback: live Wikipedia API ---
         try:
-            search_terms = []
-            words = query.lower().split()
-            for word in words:
-                if len(word) > 3 and word.isalpha():
-                    search_terms.append(word)
+            # Fix 1.6 (2026-09-06): this loop used to split the raw query on
+            # whitespace with no stopword filter, so a verbose request like
+            # "Give me a detailed analysis ... " probed the live API for
+            # "Give" and "Detail(s)" — both resolved to disambiguation stubs
+            # ("Give may refer to: ...") that reached [BACKGROUND KNOWLEDGE].
+            # WikiManager._keywords_from_query already strips exactly this
+            # vocabulary (give/show/tell/please/me/my/...) for its own probe
+            # selection — reuse the single stopword list instead of a second one.
+            # lazy import: startup cost (WikiManager loads sentence_transformers at import)
+            from knowledge.WikiManager import _keywords_from_query as _wiki_keywords_from_query
+            search_terms = _wiki_keywords_from_query(query)
 
             wiki_results = []
             for term in search_terms[:limit]:

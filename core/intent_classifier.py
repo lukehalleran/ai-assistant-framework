@@ -157,7 +157,12 @@ _PROFILES: Dict[IntentType, dict] = {
             "importance": 0.05, "continuity": 0.40, "structure": 0.05,
         },
         "retrieval": {
-            "max_recent": 20, "max_mems": 10, "max_facts": 5,
+            "max_recent": 20, "max_mems": 10,
+            "max_facts": 5,  # INERT (2026-09-06 audit): builder.build_prompt never
+                             # reads a "max_facts" key from retrieval_overrides — the
+                             # [USER PROFILE] section's budget is governed separately
+                             # by max_profile_tokens/USER_PROFILE_MAX_TOKENS. Kept here
+                             # (not removed) pending a decision on wiring it up.
             "max_dreams": 3,
             "max_reflections": 8,   # eval: KEEP for emotional (50%/100%)
             "max_narrative": 5,     # eval: KEEP (100%/50%)
@@ -173,7 +178,8 @@ _PROFILES: Dict[IntentType, dict] = {
             "importance": 0.05, "continuity": 0.25, "structure": 0.05,
         },
         "retrieval": {
-            "max_recent": 5, "max_mems": 3, "max_facts": 3,
+            "max_recent": 5, "max_mems": 3,
+            "max_facts": 3,  # INERT — see EMOTIONAL_SUPPORT.retrieval comment above.
             "max_summaries": 1,         # eval: tightened from 2 (26%/38% BL)
             "max_reflections": 0,       # eval: confirms DROP (21%/37%)
             "max_dreams": 0, "max_wiki": 0, "max_skills": 0,

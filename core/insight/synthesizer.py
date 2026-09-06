@@ -25,13 +25,89 @@ Module Contract
 from __future__ import annotations
 
 import json
+import re
 from typing import AsyncGenerator, Optional
 
 from core.insight.provenance import render_evidence_block
 from core.insight.types import Assessment, EvidenceItem, InsightIntent
+from core.response_guidance import DECISION_SUPPORT_GROUNDING, UNIVERSAL_GROUNDING
 from utils.logging_utils import get_logger
 
 logger = get_logger("insight_synthesizer")
+
+# Prompt-budget ceiling for the rendered evidence block. Shared with
+# gui.handlers' evidence layout pass (core.insight.evidence_layout) so the
+# fairness pass that decides WHICH items make the cut and the renderer that
+# enforces the cut can never drift apart (2026-09-06).
+SYNTHESIS_MAX_EVIDENCE_CHARS = 12000
+
+
+def uses_conversational_synthesis(intent: InsightIntent) -> bool:
+    """Gathering longitudinal evidence does not itself request a report."""
+    if intent.wants_document or intent.kind == "theme_sweep" or not intent.raw_query:
+        return False
+    return not bool(re.search(
+        r"\b(?:report|table|timeline|chronological|itemi[sz]e|enumerate|"
+        r"every\s+(?:turn|instance|occurrence)|detailed\s+(?:review|analysis)|"
+        r"evidence\s+sweep|phase\s+bounds|denominators?)\b",
+        intent.raw_query, re.IGNORECASE,
+    ))
+
+
+def recent_conversation_context(history, corpus_manager=None) -> str:
+    """Bound the last four exchanges, preserving speaker roles and corrections.
+
+    UI history is oldest-first. Corpus fallback is newest-first and uses the
+    typed user text when stored separately from attachments. No LLM calls.
+    """
+    messages = []
+    if isinstance(history, (list, tuple)):
+        for entry in history[-8:]:
+            if isinstance(entry, dict) and entry.get("role") in {"user", "assistant"}:
+                content = entry.get("content")
+                if isinstance(content, str):
+                    messages.append((entry["role"], content))
+            elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+                messages.extend((role, text) for role, text in zip(("user", "assistant"), entry)
+                                if isinstance(text, str))
+    if not messages and corpus_manager is not None:
+        try:
+            recent = corpus_manager.get_recent_memories(4)
+            if isinstance(recent, list):
+                for entry in reversed(recent):
+                    user = entry.get("user_text", entry.get("query", ""))
+                    reply = entry.get("response", "")
+                    messages.extend((role, text) for role, text in (("user", user), ("assistant", reply))
+                                    if isinstance(text, str))
+        except Exception as exc:
+            logger.debug("[Insight] Recent conversation unavailable: %s", exc)
+    return "\n".join(f"{role.title()}: {text[:500]}" for role, text in messages[-8:] if text)
+
+
+_CONVERSATION_SYSTEM = """You are Daemon, continuing a conversation with the user.
+The evidence and analysis below are background for your answer. Address the
+current request in context, in natural connected prose. Lead with a useful,
+qualified answer and develop the relevant tradeoffs; do not merely validate
+or paraphrase. Usually two or three substantive paragraphs suffice, but honor
+the user's requested depth. Do not output an internal evidence report, manifest,
+pipeline error, numbered claim audit, or boilerplate methodology sections.
+
+Use only directly relevant evidence, with a date and [E#] when making a
+historical claim; don't list unrelated entries to fill space. Keep dates and
+speakers attached to their own observations. Generated notes and old assistant
+interpretations are weaker context, not the user's words or independent support.
+Appraisals belong to their author. Quote names, doses and abbreviations as
+written — never guess what a shortened or misspelled term means — and never
+assign a diagnostic or categorical label the user did not use. Counterevidence must actually challenge the
+same claim: discussing work while medicated doesn't establish ability to rest.
+Preserve each supported finding despite uncertainty elsewhere. Mention sampling
+limits briefly when drawing a pattern from chat history. A failed/unattempted
+analysis is unavailable, not a measured zero or proof that the history is thin.
+Explain only the resulting uncertainty in plain language. Keep current reports,
+historical findings, research, hypotheses and personal treatment decisions
+distinct. Do not invent an aggregate, counterexample, phase or research result.
+Ask at most one question, only if it advances the user's actual decision.
+"""
 
 _BASE_SYSTEM = """You are assembling evidence from a user's own recorded history \
 (conversations, notes, extracted facts) about a personal theme. Non-negotiable rules:
@@ -41,6 +117,7 @@ _BASE_SYSTEM = """You are assembling evidence from a user's own recorded history
 2. NEVER assert a value judgment in your own voice. Evidence marked as an \
 appraisal is the author's take at the time: render it as "you described X as \
 '…' (date)", never as "X is …".
+2b. AS WRITTEN: quote names, doses, abbreviations, and misspellings exactly as the user wrote them; never guess or expand what a shortened or misspelled term refers to. Never assign a diagnostic, clinical, or categorical label (a disorder, a syndrome, "non-adherence", a trait) the user did not use — describe the dated behavior instead.
 3. Evidence marked "assistant's interpretation, not your words" is the \
 system's own prior inference. If you use it at all, attribute it explicitly \
 ("I suggested at the time that…") and give it less weight than the user's words.
@@ -107,10 +184,11 @@ aggregate — if mentions rose in a bucket where total talking also rose, say \
 so explicitly. Record-frequency is not life-frequency."""
 
 _DELIBERATION_TAIL = """
-11. FROZEN DELIBERATION CONTRACT: the supplied longitudinal manifest was
-planned and validated before retrieval. State its outcome definition, phase
-bounds, analytical assumptions, missing requested channels, counterevidence,
-and sensitivity limitations before giving the bottom-line assessment.
+11. FROZEN DELIBERATION CONTRACT: the supplied manifest records planning and
+execution status. Report only outcome definitions, phase bounds, assumptions,
+channel results and limitations actually present. An insufficient or failed
+freeze does not establish that a comparison ran; do not invent missing phases
+or treat an unattempted channel's count as a computed aggregate.
 12. CLAIM CHAIN: report every claim's own status/confidence/coverage and honor
 dependencies. Never collapse the chain to the weakest downstream claim. An
 outside-authority prescription/diagnosis claim does not erase supported
@@ -237,30 +315,43 @@ def build_synthesis_prompts(
     assessment: Optional[Assessment],
     *,
     tone_elevated: bool = False,
-    max_evidence_chars: int = 12000,
+    max_evidence_chars: int = SYNTHESIS_MAX_EVIDENCE_CHARS,
     patterns: Optional[list] = None,
     deliberation_manifest: Optional[dict] = None,
+    conversation_context: str = "",
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the synthesis call. Pure.
     ``patterns`` is a list of memory.pattern_engine.PatternResult for
     pattern_temporal runs — rendered as a computed-numbers block."""
-    system = _BASE_SYSTEM
-    if intent.kind == "insight_assessment":
+    conversational = uses_conversational_synthesis(intent)
+    system = _CONVERSATION_SYSTEM if conversational else _BASE_SYSTEM
+    if not conversational and intent.kind == "insight_assessment":
         system += _ASSESS_TAIL
-    elif intent.kind == "pattern_temporal":
+    elif not conversational and intent.kind == "pattern_temporal":
         system += _PATTERN_TAIL
-    else:
+    elif not conversational:
         system += _SWEEP_TAIL
     if tone_elevated:
         system += _ELEVATED_TAIL
-    if deliberation_manifest is not None:
+    if deliberation_manifest is not None and not conversational:
         system += _DELIBERATION_TAIL
     if intent.kind in {"pattern_temporal", "insight_assessment"}:
         system += _HYPOTHESIS_RULE
+    # Insight synthesis is a decision/evidence turn by construction: both
+    # grounding blocks, unconditionally (the orchestrator gates the second).
+    system += UNIVERSAL_GROUNDING + DECISION_SUPPORT_GROUNDING
+    system += "\nAn absent aggregate or an unattempted channel is not a measured zero. " \
+              "Analysis failure does not establish insufficient historical data.\n"
 
     evidence_block = render_evidence_block(evidence, max_chars=max_evidence_chars)
 
-    parts = [f"Theme / stated insight: {intent.theme}", ""]
+    parts = []
+    if conversation_context:
+        parts.extend([
+            "Recent conversation (context only; earlier assistant replies are not evidence):",
+            conversation_context, "",
+        ])
+    parts.extend([f"Theme / stated insight: {intent.theme}", ""])
     if intent.raw_query and intent.raw_query != intent.theme:
         parts.append(f"The user's request, verbatim: {intent.raw_query}")
         parts.append("")
@@ -273,8 +364,8 @@ def build_synthesis_prompts(
         parts.append("")
     if deliberation_manifest is not None:
         parts.append(
-            "Frozen longitudinal deliberation manifest (COMPUTED/VALIDATED; "
-            "do not silently change its evidence set):"
+            "Longitudinal deliberation manifest (check execution status; "
+            "only completed channels contain computed results):"
         )
         parts.append(_render_deliberation_manifest(deliberation_manifest))
         parts.append("")
@@ -293,6 +384,7 @@ def build_synthesis_prompts(
         parts.append("")
     parts.append(f"Assembled evidence ({len(evidence)} items):")
     parts.append(evidence_block or "(the sweep found no evidence on this theme)")
+    parts.extend(["", "Current user request — respond to this:", intent.raw_query or intent.theme])
     return system, "\n".join(parts)
 
 
@@ -307,6 +399,7 @@ async def synthesize_stream(
     patterns: Optional[list] = None,
     deliberation_manifest: Optional[dict] = None,
     disable_reasoning: bool = False,
+    conversation_context: str = "",
 ) -> AsyncGenerator[str, None]:
     """Stream visible synthesis chunks (reasoning-channel filtered)."""
     from config.app_config import INSIGHT_SYNTHESIS_MAX_TOKENS
@@ -315,6 +408,7 @@ async def synthesize_stream(
     system_prompt, prompt = build_synthesis_prompts(
         intent, evidence, assessment, tone_elevated=tone_elevated,
         patterns=patterns, deliberation_manifest=deliberation_manifest,
+        conversation_context=conversation_context,
     )
 
     stream = await model_manager.generate_async(

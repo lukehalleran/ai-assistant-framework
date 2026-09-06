@@ -33,6 +33,21 @@ def storage():
 
 class TestApiErrorStorageGuard:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("authored", ["Scope check only", ""])
+    async def test_semantic_store_preserves_authored_attachment_boundary(self, storage, authored):
+        ms, corpus, chroma = storage
+        await ms.store_interaction(
+            query="Scope check only\nAttached lecture text", response="Here is the scope.",
+            user_text=authored,
+        )
+        assert corpus.add_entry.call_args.kwargs["user_text"] == authored
+        call = chroma.add_conversation_memory.call_args
+        assert call is not None
+        # Deployed call shape: add_conversation_memory(query, response, metadata)
+        metadata = call.kwargs.get("metadata") if "metadata" in call.kwargs else call.args[2]
+        assert metadata["user_text"] == authored
+
+    @pytest.mark.asyncio
     async def test_api_error_response_not_stored(self, storage):
         ms, corpus_manager, chroma_store = storage
         result = await ms.store_interaction(

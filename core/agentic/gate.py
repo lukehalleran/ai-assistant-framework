@@ -1112,7 +1112,9 @@ async def evaluate_agentic_gate(
                     conversation_context=_build_recent_context(corpus_manager),
                 )
                 _prefetched_trigger_decision = _pattern_decision
-                if getattr(_pattern_decision, "needs_pattern_analysis", False) is True:
+                from core.insight.detector import allows_pattern_classification
+                if (getattr(_pattern_decision, "needs_pattern_analysis", False) is True
+                        and allows_pattern_classification(user_text)):
                     logger.info(
                         "[Agentic Gate] LLM preempted mixed tools with generic "
                         "pattern-deliberation intent"
@@ -1187,7 +1189,9 @@ async def evaluate_agentic_gate(
                         model_manager=model_manager,
                         conversation_context=_recent_ctx,
                     )
+                from core.insight.detector import allows_pattern_classification
                 if (getattr(trigger_decision, 'needs_pattern_analysis', False) is True
+                        and allows_pattern_classification(user_text)
                         and _pattern_analysis_enabled()):
                     logger.info(
                         "[Agentic Gate] LLM detected generic pattern-deliberation intent"
@@ -1225,10 +1229,25 @@ async def evaluate_agentic_gate(
                     search_terms = []
 
                 if getattr(trigger_decision, 'needs_memory_search', False):
-                    logger.debug("[Agentic Gate] LLM detected memory search intent")
-                    should_trigger = True
-                    needs_memory = True
-                    search_terms = []
+                    # Deterministic backstop (2026-09-06): a bare first-person
+                    # self-report with no recall cue ("I took my stimulant at
+                    # 10 AM today and I'm just resting...") is the user
+                    # narrating, not asking — the enhanced path already
+                    # retrieves memories for it; a 4-round memory loop adds
+                    # latency and nothing else (live 15:10 retest: the LLM
+                    # trigger flipped to memory on the identical text that got
+                    # "no trigger" that morning).
+                    # lazy import: patch point (tests monkeypatch query_checker predicates)
+                    from utils.query_checker import is_self_report
+                    if is_self_report(user_text) and not _recall_signal_hit(_lower):
+                        logger.info(
+                            "[Agentic Gate] LLM memory-search suppressed — bare "
+                            "first-person self-report, no recall cue")
+                    else:
+                        logger.debug("[Agentic Gate] LLM detected memory search intent")
+                        should_trigger = True
+                        needs_memory = True
+                        search_terms = []
                 elif getattr(trigger_decision, 'needs_knowledge_search', False):
                     # Deterministic backstop: honor knowledge search only when the
                     # query actually reads as a knowledge QUESTION. A collaborative-

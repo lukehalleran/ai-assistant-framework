@@ -57,7 +57,9 @@ from core.agentic.types import SearchDecision, SearchProtocol
 
 logger = logging.getLogger(__name__)
 
-# Models known to support native tool calling
+# Models known to support native tool calling. Hand-curated substring
+# prefixes — kept verbatim (2026-09-06, fix 1.5) so detect_protocol's
+# existing behavior for these entries is unchanged.
 NATIVE_TOOL_MODELS = [
     # OpenAI
     "gpt-4", "gpt-4o", "gpt-4-turbo", "gpt-5",
@@ -69,6 +71,41 @@ NATIVE_TOOL_MODELS = [
     # routes; "deepseek-chat" already covers v3.1 (deepseek-chat-v3.1).
     "deepseek-chat", "deepseek-coder", "deepseek-v4",
 ]
+
+_native_tool_registry_cache: Optional[List[str]] = None
+
+
+def _native_tool_registry() -> List[str]:
+    """NATIVE_TOOL_MODELS plus every model_manager MODEL_CAPABILITIES slug/alias
+    declaring tools: True (2026-09-06, fix 1.5).
+
+    NATIVE_TOOL_MODELS was a hand-curated substring list that drifted from the
+    capability registry: moonshotai/kimi-k3 (the active model) has tools: True
+    in MODEL_CAPABILITIES but no substring here ever matched it, so it always
+    used the XML-marker protocol — the fix 1.5 latency incident (45.6s of
+    decision time for 45ms of tool time on a reasoning-by-default model) rode
+    on top of that misroute. Computed lazily and cached: model_manager pulls
+    in torch/transformers at module level, and callers that only need the
+    protocol Handler classes (not detect_protocol) shouldn't pay that cost.
+    """
+    global _native_tool_registry_cache
+    if _native_tool_registry_cache is None:
+        derived = set(NATIVE_TOOL_MODELS)
+        try:
+            # lazy import: startup cost (model_manager imports torch/transformers
+            # at module level)
+            from models.model_manager import API_MODEL_ALIASES, MODEL_CAPABILITIES
+            derived.update(
+                slug for slug, caps in MODEL_CAPABILITIES.items() if caps.get("tools")
+            )
+            derived.update(
+                alias for alias, slug in API_MODEL_ALIASES.items()
+                if MODEL_CAPABILITIES.get(slug, {}).get("tools")
+            )
+        except ImportError:
+            pass
+        _native_tool_registry_cache = sorted(derived)
+    return _native_tool_registry_cache
 
 
 def detect_protocol(model_name: str, api_models: Optional[Dict[str, str]] = None) -> SearchProtocol:
@@ -90,7 +127,7 @@ def detect_protocol(model_name: str, api_models: Optional[Dict[str, str]] = None
     model_lower = full_model.lower()
 
     # Check if model supports native tool calling
-    for prefix in NATIVE_TOOL_MODELS:
+    for prefix in _native_tool_registry():
         if prefix.lower() in model_lower:
             logger.debug(f"[AgenticProtocol] Model {model_name} supports native tools")
             return SearchProtocol.NATIVE_TOOLS

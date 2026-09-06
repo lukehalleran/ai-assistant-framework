@@ -186,7 +186,7 @@ class CorpusManager:
         # content (transcripts, CSV rows) is never user-authored evidence.
         # Retrieval and prompt rendering keep using `query`.
         ut = (user_text or "").strip() if isinstance(user_text, str) else ""
-        if ut and ut != q:
+        if isinstance(user_text, str) and ut != q:
             entry["user_text"] = ut
 
         # Add thread metadata if provided
@@ -275,6 +275,7 @@ class CorpusManager:
         max_results: int = 50,
         context_chars: int = 280,
         include_entry: bool = False,
+        authored_only: bool = False,
     ) -> List[Dict]:
         """
         Word-boundary, case-insensitive keyword search over episodic corpus
@@ -291,6 +292,9 @@ class CorpusManager:
             include_entry: attach the raw corpus entry dict as ``entry`` on
                 each hit — the keyword-anchor retrieval fallback (2026-08-26)
                 needs the full turn, not just the excerpt
+            authored_only: search the user's typed text instead of merged
+                attachments when available. General document lookup keeps
+                its existing merged-text behavior.
 
         Returns newest-first list of hits. Query and response text are scanned
         SEPARATELY so each hit carries an accurate ``speaker`` field
@@ -340,6 +344,8 @@ class CorpusManager:
             if end is not None and (ts is None or ts > end):
                 continue
             query = entry.get("query", "") or ""
+            if authored_only and "user_text" in entry:
+                query = entry.get("user_text") or ""
             response = entry.get("response", "") or ""
             if is_junk_conversation_doc(query=query, response=response):
                 continue

@@ -117,3 +117,40 @@ def test_deepseek_r1_tools_enabled():
     assert _slug_supports_tools(slug) is True
     assert _slug_supports_reasoning(slug) is True
     assert _slug_supports_vision(slug) is False  # R1 is text-only
+
+
+@pytest.mark.parametrize("slug", MODEL_CAPABILITIES.keys())
+def test_detect_protocol_agrees_with_declared_tools(slug):
+    """core.agentic.protocols.detect_protocol must agree with MODEL_CAPABILITIES.
+
+    Fix 1.5 (2026-09-06): NATIVE_TOOL_MODELS was a hand-curated substring list
+    that drifted from the capability registry — moonshotai/kimi-k3 (the active
+    model) declares tools: True but no substring ever matched it, so every
+    agentic decision round on that model silently used the XML-marker protocol
+    instead of native tool calling. This asserts the two can never drift again:
+    every tools: True slug is detected as native-tools, and (by the same
+    parametrization) any future tools: False slug would be caught detecting
+    native-tools when it shouldn't.
+    """
+    from core.agentic.protocols import detect_protocol
+    from core.agentic.types import SearchProtocol
+
+    caps = MODEL_CAPABILITIES[slug]
+    protocol = detect_protocol(slug)
+    if caps["tools"]:
+        assert protocol == SearchProtocol.NATIVE_TOOLS, (
+            f"{slug} declares tools: True but detect_protocol chose {protocol}"
+        )
+    else:
+        assert protocol != SearchProtocol.NATIVE_TOOLS, (
+            f"{slug} declares tools: False but detect_protocol chose NATIVE_TOOLS"
+        )
+
+
+def test_kimi_k3_detected_as_native_tools():
+    """Regression: the exact slug fix 1.5 fixes."""
+    from core.agentic.protocols import SearchProtocol, detect_protocol
+
+    assert detect_protocol("moonshotai/kimi-k3") == SearchProtocol.NATIVE_TOOLS
+    # Also via the short alias + api_models resolution path used in prod.
+    assert detect_protocol("kimi-3", api_models=API_MODEL_ALIASES) == SearchProtocol.NATIVE_TOOLS

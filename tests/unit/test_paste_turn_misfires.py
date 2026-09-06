@@ -263,9 +263,9 @@ class TestUploadImageStubGate:
         assert _upload_is_live(_image_stub(relevance=0.1),
                                query="show me that photo I uploaded")
 
-    def test_fresh_stub_passes(self):
+    def test_fresh_stub_requires_visual_context(self):
         from datetime import datetime
-        assert _upload_is_live(
+        assert not _upload_is_live(
             _image_stub(relevance=0.0, ts=datetime.now().isoformat()),
             query="anything at all",
         )

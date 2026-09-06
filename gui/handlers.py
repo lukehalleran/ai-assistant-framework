@@ -1588,8 +1588,8 @@ async def _run_insight_mode(ctx):
     / high-collective-signal evidence sets) → provenance labeling → adversarial
     assessment (assessment kind only) → streamed synthesis → optional
     prewritten-document save. Does its own store_interaction dispatch and sets
-    ctx.handled on success. On exception, logs and returns with ctx.handled
-    False so the dispatcher falls through to agentic/enhanced.
+    ctx.handled on success. Failures terminate honestly without storing an
+    unrelated fallback response.
     """
     orchestrator = ctx.orchestrator
     _intent_dict = dict(getattr(ctx.gate_decision, "insight_intent", None) or {})
@@ -1603,18 +1603,24 @@ async def _run_insight_mode(ctx):
         )
         return
     logger.warning(f"[Handle Submit] INSIGHT MODE: {_intent_dict}")
+    _insight_started = _time.monotonic()
+    _insight_timings = {}
     try:
         from core.agentic.gate import _tone_is_elevated
         from core.insight.assessor import assess
         from core.insight.facets import decompose
         from core.insight.provenance import label_evidence
         from core.insight.sweep import (
+            exclude_assistant_directed_items,
             exclude_current_request_evidence,
             interleave_evidence_for_coverage,
             run_sweep,
         )
-        from core.insight.synthesizer import build_synthesis_prompts, synthesize_stream
+        from core.insight.synthesizer import (
+            build_synthesis_prompts, recent_conversation_context, synthesize_stream,
+        )
         from core.insight.types import InsightIntent, EvidenceItem
+        from core.insight.streaming import synthesis_events
 
         intent = InsightIntent(**_intent_dict)
         tone_level = (ctx.raw_context or {}).get("tone_level")
@@ -1623,6 +1629,7 @@ async def _run_insight_mode(ctx):
         _ms = getattr(orchestrator, "memory_system", None)
         _chroma = getattr(_ms, "chroma_store", None)
         _corpus = getattr(_ms, "corpus_manager", None)
+        _conversation_context = recent_conversation_context(ctx.history, _corpus)
         _graph = getattr(_ms, "graph_memory", None)
         _resolver = getattr(_ms, "entity_resolver", None)
         if _chroma is None:
@@ -1705,12 +1712,16 @@ async def _run_insight_mode(ctx):
                     "source": getattr(page, "source", "web"),
                 } for page in getattr(result, "pages", [])]
 
-            async def _pubmed_adapter(q):
+            async def _pubmed_adapter(q, anchor_terms=None, concept_synonyms=None):
                 from knowledge.pubmed_search import search_pubmed
                 # Literature requests need enough breadth to expose adjacent
                 # endpoints (aggression, agitation, behavior scales), not just
-                # the first few keyword hits.
-                return await search_pubmed(q, max_results=10)
+                # the first few keyword hits. The coordinator passes the frozen
+                # spec's axes so every rung is ranked against them (2026-09-06).
+                return await search_pubmed(
+                    q, max_results=10, anchor_terms=anchor_terms,
+                    concept_synonyms=concept_synonyms,
+                )
 
             async def _arxiv_adapter(q):
                 from knowledge.research_search import search_arxiv
@@ -1876,22 +1887,12 @@ async def _run_insight_mode(ctx):
                     ))
             # External research remains usable even when a fuzzy personal
             # anchor prevents the before/after phase scan from running.
+            from core.insight.evidence_layout import external_evidence_item
+            from core.insight.sweep import default_caps as _insight_default_caps
+            _insight_caps = _insight_default_caps()
             for _src in _deliberation.external_evidence:
-                _pattern_evidence.append(EvidenceItem(
-                    doc_id=str(_src.get("source_id") or _src.get("id") or _src.get("pmid") or ""),
-                    text=str(
-                        _src.get("snippet") or _src.get("abstract")
-                        or _src.get("text") or _src.get("content")
-                        or _src.get("document") or _src.get("title") or ""
-                    )[:800],
-                    date=_src.get("date") or _src.get("published_date"),
-                    collection=str(_src.get("source_class") or "research"),
-                    stance_label=(
-                        "computed-evidence"
-                        if _src.get("source_class") == "wolfram"
-                        else "external-research"
-                    ),
-                    facet="deliberation:research",
+                _pattern_evidence.append(external_evidence_item(
+                    _src, snippet_chars=_insight_caps["external_snippet_chars"],
                 ))
 
         if (_deliberation is not None
@@ -1987,12 +1988,31 @@ async def _run_insight_mode(ctx):
             evidence, intent.raw_query or intent.theme,
             current_turn_date=_insight_now.now().isoformat(),
         )
+        # Prior requests TO the assistant are not observations (2026-09-06).
+        evidence = exclude_assistant_directed_items(evidence)
+        # Phase events / window-scan chunks bypass the sweep clip — cap every
+        # text before layout so one whole note cannot starve the block.
+        from core.insight.evidence_layout import clip_evidence_texts
+        from core.insight.sweep import default_caps as _clip_caps
+        evidence = clip_evidence_texts(
+            evidence, max_chars=_clip_caps()["external_snippet_chars"],
+        )
         if _is_pattern:
             # Engine exemplars are already provenance-labeled; join after
             # label_evidence so their stance_labels are preserved. Put frozen
             # contract/recovery evidence first so the generic sweep cannot
             # crowd it out of the synthesis prompt's bounded evidence block.
             evidence = _pattern_evidence + evidence
+            # Phase events / research join AFTER the exclusion passes above —
+            # a corpus phase event can be the user's own earlier request
+            # (live 15:57: [E1] was the 15:20 request text). Re-apply the
+            # self-reference + assistant-directed exclusions post-merge
+            # (both are idempotent on already-filtered lists).
+            evidence = exclude_current_request_evidence(
+                evidence, intent.raw_query or intent.theme,
+                current_turn_date=_insight_now.now().isoformat(),
+            )
+            evidence = exclude_assistant_directed_items(evidence)
 
         # The generic adapters and the cross-store sweep can surface the same
         # source. Keep one prompt item while preserving first-seen provenance.
@@ -2035,8 +2055,6 @@ async def _run_insight_mode(ctx):
                 continue
             _seen_evidence.add(_evidence_key)
             _deduped_evidence.append(_item)
-            if _is_pattern and len(_deduped_evidence) >= 50:
-                break
         evidence = _deduped_evidence
 
         # Window-fair rendering (2026-09-04): reorder for the eventual
@@ -2044,9 +2062,28 @@ async def _run_insight_mode(ctx):
         # truncation instead of collapsing to the newest few days. Theme
         # sweeps only — pattern_temporal narrates a computed aggregate and
         # deliberation owns its own frozen manifest ordering; reordering
-        # either would fight the numbers they restate.
+        # personal sweep evidence among itself would fight the numbers
+        # they restate.
         if intent.kind == "theme_sweep":
             evidence = interleave_evidence_for_coverage(evidence)
+        elif _is_pattern:
+            # Evidence-layout fairness (2026-09-06): pattern/deliberation
+            # runs put computed aggregates and raw external-research
+            # sources at the FRONT of `evidence` ahead of the sweep's
+            # personal items (see the _pattern_evidence + evidence join
+            # above) — a handful of long external abstracts could
+            # previously fill the entire render cap before a single
+            # personal item was ever seen. This is a PURE PERMUTATION
+            # (computed evidence stays first and in order; external
+            # evidence is capped to a bounded share of the render budget;
+            # nothing is dropped — the hard 50-item cap that used to live
+            # in the dedup loop above is now this single trim, applied
+            # fairly instead of first-come-first-served).
+            from core.insight.evidence_layout import layout_evidence
+            from core.insight.synthesizer import SYNTHESIS_MAX_EVIDENCE_CHARS
+            evidence = layout_evidence(
+                evidence, max_chars=SYNTHESIS_MAX_EVIDENCE_CHARS, max_items=50,
+            )
 
         _stores = {e.collection for e in evidence}
         yield {"role": "assistant",
@@ -2071,47 +2108,14 @@ async def _run_insight_mode(ctx):
             orchestrator.model_manager, 'get_active_model_name', lambda: None
         )()
 
-        async def _synthesis_with_keepalive(stream):
-            """Yield synthesis text while keeping the GUI connection alive.
+        def _synthesis_with_keepalive(stream):
+            return synthesis_events(
+                stream, heartbeat_s=_KEEPALIVE_S,
+                max_seconds=_SYNTHESIS_STREAM_MAX_S,
+            )
 
-            Runaway watchdog (2026-08-31): a degenerate kimi-3 stream looped
-            garbage for ~3.5 min — chunks kept arriving so the keepalive
-            timer never fired and nothing bounded it. Wall-clock ceiling +
-            periodic degenerate-shape check; a tripped watchdog yields a
-            terminal {"kind": "runaway"} event and stops consuming.
-            """
-            _stream_iter = stream.__aiter__()
-            _elapsed = 0
-            _accum = ""
-            _checked_at = 0
-            _started = _time.monotonic()
-            while True:
-                _next_task = asyncio.ensure_future(_stream_iter.__anext__())
-                try:
-                    while True:
-                        _done, _ = await asyncio.wait({_next_task}, timeout=_KEEPALIVE_S)
-                        if _done:
-                            break
-                        _elapsed += int(_KEEPALIVE_S)
-                        yield {"kind": "progress", "seconds": _elapsed}
-                    try:
-                        _piece = _next_task.result()
-                    except StopAsyncIteration:
-                        break
-                    _accum += _piece
-                    if _time.monotonic() - _started > _SYNTHESIS_STREAM_MAX_S:
-                        yield {"kind": "runaway", "reason": "duration"}
-                        return
-                    if len(_accum) - _checked_at > 2000:
-                        _checked_at = len(_accum)
-                        if ResponseParser.looks_degenerate_stream(_accum):
-                            yield {"kind": "runaway", "reason": "degenerate"}
-                            return
-                    yield {"kind": "text", "value": _piece}
-                finally:
-                    if not _next_task.done():
-                        _next_task.cancel()
-
+        _synthesis_started = _time.monotonic()
+        _insight_timings["insight_evidence"] = _synthesis_started - _insight_started
         _buffer = ""
         _primary_stream = synthesize_stream(
             intent, evidence, assessment,
@@ -2123,6 +2127,7 @@ async def _run_insight_mode(ctx):
                 _deliberation.manifest if _deliberation is not None else None
             ),
             disable_reasoning=True,
+            conversation_context=_conversation_context,
         )
         _runaway_reason = None
         async for _event in _synthesis_with_keepalive(_primary_stream):
@@ -2172,6 +2177,7 @@ async def _run_insight_mode(ctx):
                     _deliberation.manifest if _deliberation is not None else None
                 ),
                 disable_reasoning=True,
+                conversation_context=_conversation_context,
             )
             async for _event in _synthesis_with_keepalive(_retry_stream):
                 if _event["kind"] == "progress":
@@ -2194,6 +2200,7 @@ async def _run_insight_mode(ctx):
             if not final_text:
                 raise RuntimeError("insight synthesis returned no visible content after reasoning-off retry")
 
+        _insight_timings["llm_streaming"] = _time.monotonic() - _synthesis_started
         # Optional document save. Explicit wants_document requests save when no
         # assessment gates them; an assessment gates on agree/partial (fail-
         # honest: never hand the user a document the record disputes). An
@@ -2243,6 +2250,7 @@ async def _run_insight_mode(ctx):
         # the sent prompt by up to 14K chars without them.
         _syn_system, _syn_prompt = build_synthesis_prompts(
             intent, evidence, assessment, tone_elevated=tone_elevated,
+            conversation_context=_conversation_context,
             patterns=_patterns,
             deliberation_manifest=(
                 _deliberation.manifest if _deliberation is not None else None
@@ -2258,6 +2266,7 @@ async def _run_insight_mode(ctx):
             total_tokens=total_tokens, citations=[], orchestrator=orchestrator,
             provenance=_prov,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            phase_timings={**_insight_timings, "total_wall": _time.monotonic() - _insight_started},
         )
         yield {"role": "assistant", "content": final_text + doc_line,
                "debug": debug_record}

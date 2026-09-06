@@ -49,6 +49,7 @@ import hashlib
 from pathlib import Path
 
 from utils.text_chunking import chunk_by_headers
+from utils.query_checker import keyword_tokens
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -586,6 +587,30 @@ class ReferenceDocsManager:
             logger.warning(f"[RefDocs] Failed to retrieve documents: {e}")
             return []
 
+    @staticmethod
+    def _containment_match(a: str, b: str) -> bool:
+        """True when the shorter of ``a``/``b`` is a substring of the other
+        AND carries >=2 content tokens (min length 3).
+
+        Fix 1.1 (2026-09-06): single-chunk uploads store ``section=''``
+        (utils/text_chunking.py returns section=None for single-chunk docs,
+        stored as '' — reference_docs_manager.py:332), and bare
+        ``'' in query_lower`` is unconditionally True, so every empty-section
+        upload chunk scored 0.9 on EVERY query and topped every
+        [USER UPLOADED ITEMS] retrieval regardless of relevance. Requiring
+        the contained string to carry real content (not empty, not a single
+        short word) closes that hole without touching genuine title/section
+        matches.
+        """
+        a = (a or "").strip()
+        b = (b or "").strip()
+        if not a or not b:
+            return False
+        contained, container = (a, b) if len(a) <= len(b) else (b, a)
+        if contained not in container:
+            return False
+        return len(keyword_tokens(contained)) >= 2
+
     def _keyword_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search documents by keyword matching on title, section, content."""
         try:
@@ -612,10 +637,10 @@ class ReferenceDocsManager:
                 score = 0.0
 
                 # Title match (highest priority)
-                if query_lower in title or title in query_lower:
+                if self._containment_match(query_lower, title):
                     score = 1.0
                 # Section header match
-                elif query_lower in section or section in query_lower:
+                elif self._containment_match(query_lower, section):
                     score = 0.9
                 # Partial title match
                 elif query_words & set(title.split()):

@@ -543,6 +543,89 @@ def _is_local_repo_audit_query(query: str) -> bool:
     return action and repo_cue
 
 
+# Self-report retrieval trim (2026-09-06): a one-line first-person status
+# update with no request ("I took my stimulant at 10 AM today and I'm just
+# resting this afternoon, feels good honestly even though I got nothing
+# done") built an 11K-token prompt — [RELEVANT MEMORIES] n=14, [USER PROFILE]
+# n=60 facts, 5 personal notes, a stale upload, full narrative — because
+# nothing keyed off the message's SHAPE (as opposed to intent, which
+# classified general@low-confidence and applied no override) trimmed
+# retrieval for it. Distress/heavy-topic turns are deliberately exempt: a
+# self-report shape during a crisis or emotionally heavy conversation still
+# needs full context for safety-relevant continuity — see
+# _apply_self_report_trim.
+SELF_REPORT_RETRIEVAL_TRIM = {
+    "max_mems": 4,
+    "max_summaries": 2,
+    "max_personal_notes": 2,
+    "max_user_uploads": 0,
+    "max_wiki": 0,
+    "max_semantic": 0,
+    "max_reference_docs": 0,
+    "max_profile_tokens": 800,
+    # 2026-09-06 retest: on a one-line status update the weight was NOT the
+    # profile — [PROJECT COMMIT HISTORY] n=5 cost 2.4K tokens and ten
+    # [RECENT CONVERSATION] turns 4.8K. Commits are noise on a personal
+    # self-report; six recent turns keep continuity.
+    "max_git_commits": 0,
+    "max_recent": 6,
+}
+
+
+def _distress_from_crisis_level(crisis_level: Optional[str]) -> bool:
+    """True when `crisis_level` encodes any distress-adjacent tone. Accepts
+    any encoding the caller may pass ("CrisisLevel.CONCERN", "light_support",
+    "crisis_support", ...) — extracted from build_prompt's distress-flagging
+    logic (originally inline at the valence-aware-retrieval gate) so a second
+    call site (the self-report retrieval trim) shares the identical rule
+    rather than re-deriving it."""
+    _cl = (crisis_level or "").upper()
+    return any(
+        k in _cl for k in (
+            "HIGH", "MEDIUM", "CONCERN", "CRISIS", "ELEVATED",
+            "LIGHT_SUPPORT", "ELEVATED_SUPPORT", "CRISIS_SUPPORT",
+        )
+    )
+
+
+def _apply_self_report_trim(
+    ro: Dict[str, Any], user_input: str, crisis_level: Optional[str]
+) -> Dict[str, Any]:
+    """Trim retrieval-override counts for a first-person status-update turn
+    that requests nothing (see SELF_REPORT_RETRIEVAL_TRIM). Pure: returns a
+    NEW dict — `ro` is never mutated. Min-merge semantics: an override an
+    intent already set LOWER than the trim value is left alone (the trim
+    never raises a count), a key absent from `ro` takes the trim value
+    outright, and a higher intent value is capped down to the trim value.
+    No-op (returns `ro` unchanged) unless the message is self-report shaped
+    (`utils.query_checker.is_self_report`), and even then only when the turn
+    is neither distress (`_distress_from_crisis_level`) nor a heavy topic
+    (`utils.query_checker._is_heavy_topic_heuristic`) — both need full
+    context regardless of the terse, request-free surface shape.
+    """
+    from utils.query_checker import is_self_report, _is_heavy_topic_heuristic
+
+    if not is_self_report(user_input):
+        return ro
+    if _distress_from_crisis_level(crisis_level):
+        return ro
+    if _is_heavy_topic_heuristic(user_input):
+        return ro
+
+    merged = dict(ro)
+    for key, trim_value in SELF_REPORT_RETRIEVAL_TRIM.items():
+        if key in merged:
+            try:
+                merged[key] = min(int(merged[key]), int(trim_value))
+            except (TypeError, ValueError):
+                merged[key] = trim_value
+        else:
+            merged[key] = trim_value
+    logger.debug(
+        "[BUILD_PROMPT] Self-report shape — trimming retrieval overrides: "
+        f"{user_input[:60]!r}"
+    )
+    return merged
 
 
 class UnifiedPromptBuilder:
@@ -845,6 +928,10 @@ class UnifiedPromptBuilder:
             crisis_level: Current crisis level (HIGH/MEDIUM suppresses web search)
             retrieval_overrides: Optional dict of {max_*: count} to override
                 global PROMPT_MAX_* constants. Used by intent classifier.
+                `max_profile_tokens` overrides USER_PROFILE_MAX_TOKENS (the
+                [USER PROFILE] section's token budget) — live since 2026-09-06,
+                also set by the self-report retrieval trim (see
+                SELF_REPORT_RETRIEVAL_TRIM / _apply_self_report_trim).
             weight_overrides: Optional dict of {weight_name: value} to override
                 global SCORE_WEIGHTS. Used by intent classifier.
 
@@ -943,6 +1030,12 @@ class UnifiedPromptBuilder:
                     "tool-grounded context"
                 )
 
+            # Self-report retrieval trim (2026-09-06): a terse first-person
+            # status update with no request gets a tighter retrieval ceiling
+            # (see SELF_REPORT_RETRIEVAL_TRIM) — no-op on distress/heavy-topic
+            # turns or anything that isn't self-report shaped.
+            _ro = _apply_self_report_trim(_ro, user_input, crisis_level)
+
             # Step 2: Gather narrative context (synchronous, cheap file read)
             # Gated by intent override: max_narrative=0 skips entirely
             narrative_state = ""
@@ -1008,7 +1101,9 @@ class UnifiedPromptBuilder:
                 logger.debug("[BUILD_PROMPT] No intent overrides + short message — suppressing visual memory")
             eff_max_personal_notes = _ro.get("max_personal_notes", PROMPT_MAX_PERSONAL_NOTES)
             eff_max_upcoming_schedule = _ro.get("max_upcoming_schedule", 0)
-            eff_user_profile_tokens = 0 if _local_repo_audit else USER_PROFILE_MAX_TOKENS
+            eff_user_profile_tokens = 0 if _local_repo_audit else int(
+                _ro.get("max_profile_tokens", USER_PROFILE_MAX_TOKENS)
+            )
             eff_max_graph_sentences = 0 if _local_repo_audit else _ro.get("max_graph_sentences", PROMPT_MAX_GRAPH_SENTENCES)
 
             # Schedule keyword gating: even without intent override, activate
@@ -1046,13 +1141,7 @@ class UnifiedPromptBuilder:
             # Flag distress on the gatherer so valence-aware retrieval caps
             # mood-congruent recall this turn (cleared after gather). Accepts any
             # crisis_level encoding ("CrisisLevel.CONCERN", "light_support", ...).
-            _cl = (crisis_level or "").upper()
-            _distress_active = any(
-                k in _cl for k in (
-                    "HIGH", "MEDIUM", "CONCERN", "CRISIS", "ELEVATED",
-                    "LIGHT_SUPPORT", "ELEVATED_SUPPORT", "CRISIS_SUPPORT",
-                )
-            )
+            _distress_active = _distress_from_crisis_level(crisis_level)
             self.context_gatherer._distress_active = _distress_active
             if _distress_active:
                 logger.info(f"[BUILD_PROMPT] Distress session — valence-aware retrieval active (crisis_level={crisis_level})")

@@ -318,10 +318,33 @@ def _resolve_phases(
     now: datetime,
 ) -> tuple[Optional[list[EvidencePhase]], list[str], list[str]]:
     """Resolve explicit or anchor-relative phases without domain defaults."""
-    if spec.phases and all(phase.start and phase.end for phase in spec.phases):
-        phases = [phase.model_copy(deep=True) for phase in spec.phases]
+    if spec.phases and all(phase.start for phase in spec.phases):
         candidates: list[str] = []
         notes = ["planner supplied explicit phase bounds"]
+        resolved: list[EvidencePhase] = []
+        for phase in spec.phases:
+            start_dt = _parse_date(phase.start)
+            if start_dt is None:
+                notes.append(f"phase {phase.label} dropped: invalid bounds")
+                continue
+            end_dt = _parse_date(phase.end)
+            if end_dt is None:
+                # A start with no parseable end is open-ended (still running)
+                # rather than malformed — extend it to "now" instead of
+                # discarding the whole comparison over one missing field.
+                end_date = now.date().isoformat()
+                phase = phase.model_copy(update={"end": end_date}, deep=True)
+                end_dt = _parse_date(end_date)
+                notes.append(f"phase {phase.label}: open end coerced to {end_date}")
+            if start_dt > end_dt:
+                notes.append(f"phase {phase.label} dropped: invalid bounds")
+                continue
+            resolved.append(phase)
+        if not resolved:
+            return None, candidates, notes + ["no valid phases remained after bounds resolution"]
+        if len(spec.phases) >= 2 and len(resolved) < 2:
+            return None, candidates, notes + ["fewer than 2 valid phases"]
+        phases = resolved
     else:
         anchor_date, candidates, notes = _resolve_anchor(spec.anchor, events=events, now=now)
         if anchor_date is None:
@@ -726,6 +749,13 @@ class LongitudinalDeliberationCoordinator:
         except (TypeError, ValueError):
             return False
 
+    @staticmethod
+    def _adapter_accepts(adapter, name: str) -> bool:
+        try:
+            return name in inspect.signature(adapter).parameters
+        except (TypeError, ValueError):
+            return False
+
     async def _call_adapter(
         self, channel: str, query: str,
         window: Optional[tuple[str, str]] = None,
@@ -734,10 +764,17 @@ class LongitudinalDeliberationCoordinator:
         if adapter is None:
             return [], ChannelStatus(channel, "unavailable", attempted=False, reason="adapter not configured")
         try:
+            kwargs: dict[str, Any] = {}
             if window is not None and self._adapter_accepts_window(adapter):
-                value = adapter(query, window=window)
-            else:
-                value = adapter(query)
+                kwargs["window"] = window
+            # Research anchors (2026-09-06): the frozen spec's series/outcome
+            # axes + synonyms, for adapters that rank rows (pubmed). Set per
+            # run in ``_research_anchor`` before the adapter jobs fan out.
+            anchor = getattr(self, "_research_anchor", None) or {}
+            for name in ("anchor_terms", "concept_synonyms"):
+                if anchor.get(name) and self._adapter_accepts(adapter, name):
+                    kwargs[name] = anchor[name]
+            value = adapter(query, **kwargs) if kwargs else adapter(query)
             if hasattr(value, "__await__"):
                 value = await asyncio.wait_for(value, timeout=self.adapter_timeout_s)
             source_status = str(getattr(value, "status", "succeeded") or "succeeded")
@@ -974,12 +1011,20 @@ class LongitudinalDeliberationCoordinator:
                 # conversational recovery prose. The ladder is generic and
                 # driven entirely by the frozen spec/query.
                 from knowledge.pubmed_search import build_pubmed_query_ladder
+                # The frozen spec's own named subjects are a better anchor
+                # signal than positional word order — a crude term extractor
+                # can lose the actual subject noun to stopwording (2026-09-06:
+                # "rest days off medication effects" anchored on "rest").
+                # Named series come first (co_occurrence's own compared
+                # subjects), then outcome terms.
+                anchor_terms = [*spec.series_terms.keys(), *spec.outcome_terms]
                 queries = build_pubmed_query_ladder(
                     channel_query,
                     supporting_facets=spec.supporting_facets,
                     refuting_facets=spec.refuting_facets,
                     rival_explanations=spec.rival_explanations,
                     concept_synonyms=spec.concept_synonyms,
+                    anchor_terms=anchor_terms,
                     limit=8,
                 )
             else:
@@ -990,6 +1035,10 @@ class LongitudinalDeliberationCoordinator:
                 queries.extend(spec.rival_explanations)
                 queries.extend(spec.confounder_indicators)
             adapter_jobs.append((channel, queries))
+        self._research_anchor = {
+            "anchor_terms": [*spec.series_terms.keys(), *spec.outcome_terms],
+            "concept_synonyms": dict(spec.concept_synonyms or {}),
+        }
         adapter_results = await asyncio.gather(*(
             self._call_channel_queries(
                 channel, queries,

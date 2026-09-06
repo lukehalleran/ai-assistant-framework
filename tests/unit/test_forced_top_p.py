@@ -167,3 +167,33 @@ def test_alias_roster_unchanged():
     # The fix keys off these aliases; fail loudly if they're renamed.
     assert API_MODEL_ALIASES["kimi-3"] == KIMI_SLUG
     assert API_MODEL_ALIASES["kimi-k3"] == KIMI_SLUG
+
+
+# ---------------------------------------------------------------------------
+# generate_async local-model branch: per-call model_name must not collide
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_async_local_branch_tolerates_model_name_kwarg(manager, monkeypatch):
+    """Callers (insight synthesizer, grounding check) pass model_name= to
+    generate_async, which routes on active_model_name and ignored the override
+    — but the local-model branch forwarded kwargs AND an explicit model_name=
+    to asyncio.to_thread(self.generate, ...):
+    "to_thread() got multiple values for keyword argument 'model_name'"
+    (2026-09-06 synthesis probe). Drives THE deployed generate_async."""
+    seen = {}
+
+    def _fake_generate(prompt, model_name=None, **kwargs):
+        seen["prompt"], seen["model_name"], seen["kwargs"] = prompt, model_name, kwargs
+        return "local reply"
+
+    manager.models["local-stub"] = object()
+    manager.switch_model("local-stub")
+    monkeypatch.setattr(manager, "generate", _fake_generate)
+    out = await manager.generate_async(
+        prompt="hi", model_name="kimi-3", system_prompt="sys", max_tokens=5,
+    )
+    assert out == "local reply"
+    assert seen["model_name"] == "local-stub"
+    assert "model_name" not in seen["kwargs"]
+    assert seen["kwargs"]["max_tokens"] == 5

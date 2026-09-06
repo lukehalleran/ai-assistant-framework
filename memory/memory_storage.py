@@ -911,6 +911,10 @@ class MemoryStorage:
                 "access_count": 0,
                 "last_accessed": self._now_iso(),
             }
+            if isinstance(user_text, str) and user_text.strip() != (query or "").strip():
+                # Preserve the authored/attachment boundary for semantic
+                # evidence retrieval, including attachment-only turns.
+                raw_metadata["user_text"] = user_text.strip()
 
             # Forward thread metadata to ChromaDB for expand_memory window slicing
             if thread_info.get("thread_id"):

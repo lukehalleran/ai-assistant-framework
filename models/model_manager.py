@@ -1234,6 +1234,7 @@ class ModelManager:
         tool_choice: str = "auto",
         max_tokens: int = 500,
         temperature: float = 0.3,
+        disable_reasoning: bool = False,
     ):
         """
         Generate a response with function/tool calling support.
@@ -1249,6 +1250,13 @@ class ModelManager:
             tool_choice: "auto", "none", or specific tool name
             max_tokens: Maximum tokens for response
             temperature: Temperature for generation
+            disable_reasoning: when True, explicitly send
+                extra_body["reasoning"]={"enabled": False} (2026-09-06 fix
+                1.5). Omitting the reasoning key entirely does NOT disable
+                reasoning for reasoning-by-default models (kimi-k3) — the
+                pre-fix code relied on that omission for the tools branch,
+                which is the same bug generate_once's disable_reasoning
+                already closed for the no-tools path.
 
         Returns:
             Raw response message object with potential tool_calls attribute.
@@ -1267,7 +1275,8 @@ class ModelManager:
                 model_name=target_model,
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                disable_reasoning=disable_reasoning,
             )
             return {"content": response_text, "tool_calls": None}
 
@@ -1306,6 +1315,11 @@ class ModelManager:
 
                 if not tools and self.supports_reasoning(target_model):
                     request_params["extra_body"]["reasoning"] = {"effort": "medium"}
+                elif tools and disable_reasoning and self.supports_reasoning(target_model):
+                    # Omitting the key does NOT disable reasoning for
+                    # reasoning-by-default models (kimi-k3) — explicit
+                    # off-switch required (2026-09-06 fix 1.5).
+                    request_params["extra_body"]["reasoning"] = {"enabled": False}
 
                 response = await self.async_client.chat.completions.create(**request_params)
 
@@ -1365,6 +1379,13 @@ class ModelManager:
         # Recovery flag: suppress native reasoning separation even for reasoning
         # models. Popped so it never leaks into local-model / create() kwargs.
         disable_reasoning = bool(kwargs.pop('disable_reasoning', False))
+        # Callers (insight synthesizer, grounding check, handlers) still pass a
+        # per-call model_name= even though routing is by active_model_name.
+        # Both local branches below forward **kwargs beside an explicit
+        # model_name=target_model — the duplicate raised
+        # "to_thread() got multiple values for keyword argument 'model_name'"
+        # (2026-09-06 synthesis probe). Dropped once, here, for every branch.
+        kwargs.pop('model_name', None)
 
         target_model = self.active_model_name  # No longer allows override
         logger.debug(f"[generate_async] Active model: {target_model}")
