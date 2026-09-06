@@ -515,6 +515,11 @@ def extract_rare_proper_nouns(q: str, max_terms: int = 3) -> List[str]:
         return []
 
     token_re = re.compile(r"^[A-Z][a-zA-Z'’-]{2,}$")
+    # "I'm" / "I'll" / "I've" / "I'd" pass the TitleCase shape (capital I +
+    # apostrophe + letters) but are the pronoun, not a name — the STM novelty
+    # override rendered "Note: the current message names I'm, which do not
+    # appear in the short-term window" on a live turn (2026-09-05).
+    i_contraction_re = re.compile(r"^I['’](?:m|ll|ve|d)$")
     # Walk word tokens plus sentence-boundary punctuation so we know which
     # tokens sit in a position where capitalization is expected anyway.
     pieces = re.findall(r"[A-Za-z'’-]+|[.!?\n]", q)
@@ -542,7 +547,7 @@ def extract_rare_proper_nouns(q: str, max_terms: int = 3) -> List[str]:
         surface = tok.removesuffix("'s").removesuffix("’s").rstrip("'’-")
         if not token_re.match(surface):
             continue
-        if surface.isupper():
+        if surface.isupper() or i_contraction_re.match(surface):
             continue
         low = surface.lower()
         if low in _PROPER_NOUN_STOPWORDS:

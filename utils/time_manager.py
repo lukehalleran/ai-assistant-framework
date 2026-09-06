@@ -83,6 +83,19 @@ class TimeManager:
         # Session tracking - fixed path since sessions are app-wide, not per-instance
         self.session_file = "data/last_session_time.json"
         self.last_session_end_time = self._load_last_session_time()
+        # The PREVIOUS session's last user message (2026-09-05). "Time since
+        # last session" used to be measured from last_session_end_time, which
+        # mark_session_end() stamps at process shutdown / idle close — so a
+        # 13:45 last message + 15:37 restart + 16:06 first message rendered
+        # "Time since last session: 30 m" (the gap since the RESTART), and the
+        # model saw no 2h21m break to acknowledge. The gap the prompt guidance
+        # describes is between the user's last message and now; seed it from
+        # the persisted last_query_time when that message predates the
+        # recorded session end, and refresh it on every new-session ingress.
+        self.previous_session_last_query_time = None
+        if (self.last_query_time and self.last_session_end_time
+                and self.last_query_time <= self.last_session_end_time):
+            self.previous_session_last_query_time = self.last_query_time
 
     # ---------- persistence ----------
     def _load_last_query_time(self):
@@ -241,9 +254,12 @@ class TimeManager:
 
     def elapsed_since_last_session(self) -> str:
         """Get formatted elapsed time since last session ended."""
-        if not self.last_session_end_time:
+        if not self.last_session_end_time and not self.previous_session_last_query_time:
             return "N/A (first session)"
-        delta = self.current() - self.last_session_end_time
+        # Prefer the previous session's last MESSAGE over the shutdown stamp
+        # (see __init__): the user-visible gap, not the process-restart gap.
+        anchor = self.previous_session_last_query_time or self.last_session_end_time
+        delta = self.current() - anchor
         if delta.days:
             return f"{delta.days} d {delta.seconds//3600} h"
         if delta.seconds >= 3600:
@@ -265,6 +281,9 @@ class TimeManager:
         # Store previous query time before updating (but reset if new session)
         if is_new_session:
             self.previous_query_time = None  # First message of new session
+            # The last message of the session that just ended anchors
+            # elapsed_since_last_session() for the whole new session.
+            self.previous_session_last_query_time = self.last_query_time
         else:
             self.previous_query_time = self.last_query_time
 

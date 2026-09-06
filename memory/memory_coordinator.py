@@ -351,11 +351,13 @@ class MemoryCoordinator:
         tags: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         provenance: Optional[dict] = None,
+        user_text: Optional[str] = None,
     ) -> Optional[str]:
         """
         Persist a turn in both corpus & Chroma with computed metadata.
 
-        Delegates to MemoryStorage component.
+        Delegates to MemoryStorage component. `user_text` (2026-09-05) is the
+        user's own typed text for an attachment turn — forwarded verbatim.
 
         Returns:
             str: Database ID (UUID) of the stored memory, or None if storage failed
@@ -368,6 +370,7 @@ class MemoryCoordinator:
             query, response, tags,
             session_id=session_id,
             provenance=provenance,
+            user_text=user_text,
         )
 
         # Sync state back from storage

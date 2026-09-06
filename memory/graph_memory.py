@@ -77,6 +77,7 @@ from utils.logging_utils import get_logger
 from memory.graph_utils import (
     _DEFAULT_HUB_DEGREE,
     _DEFAULT_MIN_MENTIONS,
+    is_temporal_deictic,
     relation_species_conflict,
 )
 
@@ -615,11 +616,28 @@ class GraphMemory:
             rendered "User has dog Mochi" into every turn — the planner then
             planned "common in dogs" and the reply called the cat a dog.
         Nodes without species metadata are never blocked (under-fires).
+          * temporal-fragment endpoint (2026-09-05) — an edge whose source or
+            target node is a bare when-word (`user|dad|today`,
+            `user|feels_better|today`, `auggie|texted|on_thursday`; the
+            live `today` node carried 11 such in-edges) renders as nonsense
+            ("User dad today") and pre-dates the ingestion junk guard.
+            Read-time neutralize is the ladder's first instrument: the
+            edges stay on disk for the owner's graph_junk_cleanup review.
         """
         try:
             md = getattr(edge, "metadata", None) or {}
             if md.get("curation_quarantined"):
                 return True
+            if is_temporal_deictic(str(edge.source_id or "")) or is_temporal_deictic(
+                str(edge.target_id or "")
+            ):
+                return True
+            # Node-level quarantine (2026-09-05, curation graph adapter): a
+            # flagged node hides every edge touching it — reversible, on-disk.
+            for nid in (edge.source_id, edge.target_id):
+                node = self.get_entity(str(nid or ""))
+                if node is not None and (getattr(node, "metadata", None) or {}).get("curation_quarantined"):
+                    return True
             tgt = self.get_entity(edge.target_id)
             if tgt is not None and relation_species_conflict(
                 edge.relation, getattr(tgt, "metadata", None) or {}
@@ -644,6 +662,11 @@ class GraphMemory:
             with_attribution: If True, append derivation markers to sentences
         """
         seed = entity_id.lower().strip()
+        # A when-word is never an entity (2026-09-05): even if a caller hands
+        # one in, don't walk from it into the user hub and render the hub's
+        # unrelated edges as "context" for "today".
+        if is_temporal_deictic(seed):
+            return []
         edges = self.subgraph_around(
             entity_id, depth=depth, hub_barrier=True, skip_relations=_NO_RENDER_RELATIONS
         )

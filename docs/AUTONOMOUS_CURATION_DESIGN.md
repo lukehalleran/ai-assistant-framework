@@ -151,6 +151,8 @@ exemplars) applied to the curator itself. The FP-halt pattern
 | stance backfill | `backfill_stance` | metadata (additive tags) |
 | proposal risk reclassify | `reclassify_proposals` | metadata |
 | relation re-canonicalization | `graph_relation_normalize` | metadata (rename, journaled) |
+| profile junk-fact retirement (2026-09-05) | `purge_profile_facts` + curated id file | metadata (`supersede_profile_fact`, reason `junk_object`; the quick profile — what [USER PROFILE] renders — was uncovered by the chroma-side junk-fact curator) |
+| when-word graph-node quarantine (2026-09-05) | `graph_junk_cleanup` T1 temporal class (`today`, `tomorrow`, `on_thursday`, weekdays) | metadata (node-level `curation_quarantined` through the graph adapter; `GraphMemory.edge_is_suppressed` hides every edge touching a flagged node; the T2/T3 judgment classes stay with `GraphNodeReviewer` below) |
 
 Note the quarantine move: today's purge scripts delete; the curator instead
 flips a flag the retrieval filters already respect. Deletion stops being
@@ -186,7 +188,9 @@ engine as a queued curator first, per the trust ladder.
   fact or a conversational artifact?", shown WITH the source excerpt (already
   stored on profile facts). Agreement → queued proposal to supersede.
   Disagreement → nothing (not even a queue entry — anti-noise).
-- `GraphNodeReviewer`: the T2/T3 graph-junk class, same shape.
+- `GraphNodeReviewer`: the T2/T3 graph-junk class, same shape. (The
+  deterministic T1 temporal subset moved to Wave 1 on 2026-09-05 —
+  `GraphTemporalNodeCurator`.)
 - These may reasonably stay queue-forever. The queue IS the win: the human
   decision collapses from "run a scanner, read a candidate file in an editor,
   uncomment lines, run --apply with the daemon down" to one glance and one
@@ -252,6 +256,10 @@ inflow guards.
 
 1. **Engine + journal + undo + quarantine flag + Wave 1 curators** (shutdown
    phase, shadow→queue). Largest de-risking step; no new judgment anywhere.
+   *Status 2026-09-05:* shipped, plus the profile junk-fact and when-word
+   graph-node curators and a graph store adapter (`StoreBundle.graph_memory`,
+   `store="graph"` / `quarantine_node`, pre-image + undo). Stores the engine
+   can write: chroma collections, the quick profile, graph node metadata.
 2. **Curation Center SPA page** (queue + activity + undo). From this point
    the terminal is no longer needed for any recurring curation.
 3. **TemporalStalenessCurator** (the drop-deadline class) + contradiction
@@ -265,7 +273,9 @@ inflow guards.
 
 Ongoing human-gated needs found: synthesis grading (UI exists),
 adaptive-exemplar poisoning recovery (guarded, script-only), profile/graph
-junk review (script + candidate files), intent labeling (optional, LLM path
+junk review (script + candidate files — the deterministic subset became
+in-app cards on 2026-09-05; node DELETION and the T2/T3 judgment classes
+remain script/candidate-file work), intent labeling (optional, LLM path
 exists). One-time repairs pending: profile 9-fact list + graph candidates
 (20260805 files), error-sentinel purge remainder. ~15 automatic hygiene
 mechanisms already deployed (TTL, supersession, junk filters, learned

@@ -30,6 +30,7 @@ def _engine(request: Request):
                 chroma_store=getattr(ms, "chroma_store", None),
                 user_profile=getattr(ms, "user_profile", None),
                 corpus_manager=getattr(ms, "corpus_manager", None),
+                graph_memory=getattr(ms, "graph_memory", None),
             )
     if engine is None:
         raise HTTPException(status_code=503, detail="curation disabled")

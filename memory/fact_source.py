@@ -107,6 +107,21 @@ _WORD_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _STOPWORDS = frozenset({
     "a", "an", "and", "at", "for", "from", "in", "is", "it", "my", "of",
     "on", "or", "the", "to", "user", "with", "years", "old",
+    # Function words / discourse filler (2026-09-05): a single one of these
+    # shared between an object and a span is not evidence — "this" (in
+    # "this week") joined `works_on = this assistant` to an attachment paste,
+    # and "drinking" alone joined a friend's accident story to a meds turn.
+    "this", "that", "these", "those", "there", "here", "what", "which",
+    "when", "where", "who", "how", "some", "any", "all", "also", "just",
+    "like", "really", "very", "have", "has", "had", "been", "being", "was",
+    "were", "are", "will", "would", "could", "should", "can", "about",
+    "into", "than", "then", "them", "they", "you", "your", "but", "not",
+    "yet", "out", "get", "got", "one", "two", "still", "even", "only",
+    "other", "over", "own", "same", "too", "did", "does", "doing", "done",
+    "thing", "things", "stuff", "bit", "lot", "more", "most", "much", "many",
+    "yes", "yeah", "okay", "hmm", "idk", "lol", "kinda", "sorta", "maybe",
+    "today", "now", "day", "days", "week", "weeks", "time", "way", "due",
+    "past", "because", "since", "while", "after", "before", "around",
 })
 
 # Relations whose NAME asserts ownership of a pet.  The possessive species
@@ -146,6 +161,25 @@ _OCCUPATION_CUES = (
     r"work|works|working|worked|job|hired|employed|role|position|title|career|"
     r"i'm\s+a|i\s+am\s+a|as\s+an?\b"
 )
+# Care-team relations name a CLINICAL role in the relation itself (2026-09-05:
+# `has_doctor = "Rowan is cautious about drinking …"` — a friend — and
+# `doctor_communication = "received email from advisor about project
+# timeline"` — an academic advisor — were both stored on the same afternoon).
+# The span must name a clinician; "advisor"/"friend" are not cues.
+_CARE_TEAM_CUES = (
+    r"doctor|doctors|dr|psychiatrist|psychiatrists|psych|therapist|therapists|physician|"
+    r"prescriber|provider|pcp|gp|nurse|np|clinic|clinician|counselor|counsellor|psychologist|"
+    r"dentist|pharmacist|pharmacy|prescription|prescribed|refill|portal"
+)
+# Project-work relations (`works_on`) make a claim too: the LLM path minted
+# `works_on = this assistant` whose provenance join hit the word "this" in an
+# attachment paste (2026-09-05).
+_PROJECT_WORK_CUES = (
+    r"work|works|working|worked|build|builds|building|built|project|projects|coding|code|"
+    r"coded|develop|develops|developing|developed|writing|wrote|maintain|maintains|"
+    r"maintaining|refactor|refactoring|fix|fixes|fixed|fixing|ship|shipped|commit|commits|"
+    r"committed|repo|repository|feature|features|implement|implemented|implementing"
+)
 _RELATION_CUE_RES = {
     "enrolled_in": _ENROLLMENT_CUES,
     "enrolled": _ENROLLMENT_CUES,
@@ -167,6 +201,30 @@ _RELATION_CUE_RES = {
     # had minted role="bug fixer" with no work/job/title cue in the span.
     "role": _OCCUPATION_CUES,
     "job_title": _OCCUPATION_CUES,
+    "works_on": _PROJECT_WORK_CUES,
+    "working_on": _PROJECT_WORK_CUES,
+    "builds": _PROJECT_WORK_CUES,
+    "building": _PROJECT_WORK_CUES,
+    "has_doctor": _CARE_TEAM_CUES,
+    "has_therapist": _CARE_TEAM_CUES,
+    "has_psychiatrist": _CARE_TEAM_CUES,
+    "has_psychologist": _CARE_TEAM_CUES,
+    "has_prescriber": _CARE_TEAM_CUES,
+    "has_physician": _CARE_TEAM_CUES,
+    "has_pcp": _CARE_TEAM_CUES,
+    "has_nurse": _CARE_TEAM_CUES,
+    "has_dentist": _CARE_TEAM_CUES,
+    "has_counselor": _CARE_TEAM_CUES,
+    "has_provider": _CARE_TEAM_CUES,
+    "doctor_communication": _CARE_TEAM_CUES,
+    "doctor_relationship": _CARE_TEAM_CUES,
+    "doctor_status": _CARE_TEAM_CUES,
+    "doctor_availability": _CARE_TEAM_CUES,
+    "therapist_communication": _CARE_TEAM_CUES,
+    "psychiatrist_communication": _CARE_TEAM_CUES,
+    "prescriber_communication": _CARE_TEAM_CUES,
+    "provider_communication": _CARE_TEAM_CUES,
+    "care_team": _CARE_TEAM_CUES,
     "studies_at": r"study|studies|studying|studied|attend|attending|attends|enrolled|class|classes|"
                   r"course|school|program|degree|major|semester|omsa|university|college",
     "attends": r"study|studies|studying|studied|attend|attending|attends|enrolled|class|classes|"
@@ -219,7 +277,14 @@ class EvidenceSpan:
 def _message_text_and_id(message: Any) -> tuple[str, str] | None:
     """Return only the user-authored portion of a supported message shape."""
     if isinstance(message, Mapping):
-        text = str(message.get("query") or message.get("user") or "").strip()
+        # `user_text` (2026-09-05) is the user's OWN typed text for a turn whose
+        # `query` is the merged user-text + attachment blob (corpus entries
+        # store the merged form so retrieval renders attachments). Attachment
+        # content — lecture transcripts, CSV rows, PDFs — is not user-authored
+        # evidence, so the provenance join reads the raw text when present.
+        text = str(
+            message.get("user_text") or message.get("query") or message.get("user") or ""
+        ).strip()
         turn_id = str(
             message.get("turn_id")
             or message.get("interaction_id")
@@ -311,6 +376,20 @@ def strip_quoted_correspondence(text: str) -> str:
     return "\n".join(kept)
 
 
+# A period after a title/common abbreviation is not a sentence boundary
+# (2026-09-05: "My doctor Dr. Patel called" split into "My doctor Dr." and
+# "Patel called", so no span held both the possessive anchor and the name).
+_ABBREV_PERIOD_RE = re.compile(
+    r"\b(?:dr|mr|mrs|ms|prof|st|mt|vs|etc|e\.g|i\.e|jr|sr|no)\.\s+(?=\S)", re.IGNORECASE
+)
+_ABBREV_SENTINEL = "\u0000"
+
+
+def _split_sentences(line: str) -> list[str]:
+    protected = _ABBREV_PERIOD_RE.sub(lambda m: m.group(0).replace(".", _ABBREV_SENTINEL), line)
+    return [s.replace(_ABBREV_SENTINEL, ".") for s in re.split(r"(?<=[.!?])\s+|\s*[;]\s*", protected)]
+
+
 def _claim_spans(text: str) -> Iterator[str]:
     """Yield prose spans, excluding code fences, blockquotes and role dumps."""
     in_fence = False
@@ -329,7 +408,7 @@ def _claim_spans(text: str) -> Iterator[str]:
         # A labelled transcript can occur halfway through a pasted user turn.
         if _INLINE_ROLE_SPLIT_RE.search(line):
             line = _INLINE_ROLE_SPLIT_RE.split(line, maxsplit=1)[0]
-        for span in re.split(r"(?<=[.!?])\s+|\s*[;]\s*", line):
+        for span in _split_sentences(line):
             span = span.strip(" \t-*•")
             if not span or _EXTERNAL_ATTRIBUTION_RE.search(span):
                 continue
@@ -370,6 +449,27 @@ def _span_is_user_owned(span: str) -> str | None:
         ):
             return None
     return "implicit_first_person"
+
+
+# Care-team relations (2026-09-05): "My psychiatrist has no portal" names the
+# clinician as the grammatical subject, which _span_is_user_owned reads as a
+# third party ("My brother moved") — but for a care-team relation the
+# possessive clinician phrase IS the anchor, exactly like "my cat Biscuit" for
+# pet ownership. Otherwise the span must be user-owned AND carry a cue.
+_CARE_TEAM_RELATIONS = frozenset(
+    rel for rel, cues in _RELATION_CUE_RES.items() if cues is _CARE_TEAM_CUES
+)
+_CARE_TEAM_POSSESSIVE_RE = re.compile(
+    rf"\b(?:my|our)\s+(?:(?:new|old|current|former|regular|primary)\s+)?(?:{_CARE_TEAM_CUES})\b",
+    re.IGNORECASE,
+)
+_CARE_TEAM_CUE_RE = re.compile(rf"\b(?:{_CARE_TEAM_CUES})\b", re.IGNORECASE)
+
+
+def _care_team_supported(span: str) -> bool:
+    if _CARE_TEAM_POSSESSIVE_RE.search(span):
+        return True
+    return _span_is_user_owned(span) is not None and bool(_CARE_TEAM_CUE_RE.search(span))
 
 
 def _pet_ownership_supported(span: str, relation: str) -> bool:
@@ -470,13 +570,21 @@ def find_supporting_user_span(
     if not object_tokens and len(object_val.strip()) < 2:
         return None
 
+    # Overlap floor (2026-09-05): a multi-token object joined on ONE shared
+    # token is coincidence, not evidence — `has_doctor = "Rowan is cautious
+    # about drinking due to past accident"` was anchored to a meds sentence
+    # via the single word "drinking" after the real (third-party) source
+    # sentence was correctly rejected. Two content tokens are required once
+    # the object carries three or more.
+    min_overlap = 1 if len(object_tokens) <= 2 else 2
+
     best: tuple[int, int, str, str, str, str] | None = None
     for turn_index, text, turn_id in iter_user_messages(messages):
         for span in _claim_spans(text):
             low = span.lower()
             exact_object = bool(object_val and object_val.lower() in low)
             overlap = len(object_tokens & _tokens(span))
-            if not exact_object and overlap == 0:
+            if not exact_object and overlap < min_overlap:
                 continue
 
             if is_user:
@@ -484,6 +592,10 @@ def find_supporting_user_span(
                     if not _pet_ownership_supported(span, relation):
                         continue
                     anchor = "pet_ownership"
+                elif relation in _CARE_TEAM_RELATIONS:
+                    if not _care_team_supported(span):
+                        continue
+                    anchor = "care_team"
                 else:
                     anchor = _span_is_user_owned(span)
                     if anchor is None:

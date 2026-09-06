@@ -319,7 +319,7 @@ def get_session_headers_instructions() -> str:
         "  - Quick replies (seconds) = active engagement, possible urgency\n"
         "  - Long pauses (minutes/hours) = user returned after break, may need context refresh\n"
         "  - 'N/A (first message in session)' = session just started\n"
-        "- **Time since last session**: Gap between previous session end and now\n"
+        "- **Time since last session**: Gap between the previous session's last message and now\n"
         "  - Hours/days = acknowledge the gap (\"welcome back\", \"it's been a while\")\n"
         "  - Seconds/minutes = continuation, no greeting needed\n"
         "  - 'N/A (first session)' = first time ever using the system\n"

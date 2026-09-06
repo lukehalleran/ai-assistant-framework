@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
+from utils.streak_claims import remove_stale_streak_claims, streak_ledger, streak_ledger_block
 from pathlib import Path
 import re
 
@@ -115,6 +116,42 @@ class ConsolidatedSummary(BaseModel):
         default_factory=lambda: ["summary:consolidated", "source:consolidator"]
     )
     importance_score: float = 0.7
+
+
+_TRUNCATED_TAIL_RE = re.compile(r"[A-Za-z0-9,;:\-—–]$")
+
+
+def _trim_truncated_tail(text: str) -> str:
+    """Drop a trailing line that ends mid-sentence (2026-09-05: the live
+    narrative ended "…since the crisis began in June. September" when the
+    LLM hit max_tokens). A complete line ends in terminal punctuation, a
+    closing quote/bracket, or is a markdown heading; anything ending in a
+    letter/digit/comma/dash is a fragment. A heading left dangling after the
+    trim is dropped too. Returns the text unchanged when nothing looks cut."""
+    lines = (text or "").rstrip().split("\n")
+    while lines:
+        last = lines[-1].rstrip()
+        if not last:
+            lines.pop()
+            continue
+        if last.lstrip().startswith("#"):
+            # A heading with nothing under it is a leftover of a trim.
+            if len(lines) < len((text or "").rstrip().split("\n")):
+                lines.pop()
+                continue
+            break
+        if _TRUNCATED_TAIL_RE.search(last):
+            # Keep the complete sentences on the line, drop only the fragment
+            # after the last terminal punctuation ("…since June. September"
+            # → "…since June."); a line with no complete sentence goes.
+            cut = max(last.rfind(". "), last.rfind("! "), last.rfind("? "))
+            if cut > 0:
+                lines[-1] = last[:cut + 1]
+                break
+            lines.pop()
+            continue
+        break
+    return "\n".join(lines).rstrip() if lines else (text or "").rstrip()
 
 
 class MemoryConsolidator:
@@ -329,6 +366,8 @@ CORPUS SUMMARIES (fallback, if available):
 
 {authoritative_status_facts}
 
+{streak_ledger}
+
 Synthesize a 250-300 word "Current Life State" narrative covering:
 1. CURRENT CHAPTER: What life phase is the user in? Use the monthly summary for arc. (1-2 sentences)
 2. ACTIVE THREADS: What's actively in progress this week? Use weekly summaries. (bullet list, 3-5 items)
@@ -355,6 +394,11 @@ TEMPORAL ACCURACY RULES — these are critical:
 - If an AUTHORITATIVE CURRENT FACTS block is present above, never write a
   sentence that contradicts it (e.g. do not claim someone withdrew from
   school/a program while a current enrollment fact is listed there).
+- STREAK / DAY COUNTS ("day 6", "six days in a row") are only true on the day
+  the user said them. If a STREAK LEDGER block is present, use its CURRENT
+  COUNT for today, or give an older count WITH the date it was said. Never
+  copy a count from an older note or an assistant reply as today's count,
+  and never invent a start date or a date range for a streak.
 
 Write in third person ("The user is..."). Be specific and grounded in the data.
 Prioritize recent daily notes for current state, weekly for active threads, monthly for trajectory.
@@ -576,7 +620,8 @@ Do NOT make up information not present in the summaries."""
         self,
         recent_weeklies: List[Dict] = None,
         recent_monthlies: List[Dict] = None,
-        max_tokens: int = 400
+        max_tokens: int = 700,
+        user_statements: List[Dict] = None,
     ) -> str:
         """
         Synthesize monthly/weekly/daily notes into a 'Current Life State' narrative.
@@ -587,7 +632,13 @@ Do NOT make up information not present in the summaries."""
         Args:
             recent_weeklies: Corpus weekly summaries (fallback, optional)
             recent_monthlies: Corpus monthly summaries (fallback, optional)
-            max_tokens: Max tokens for output (default 400, ~300 words)
+            max_tokens: Max tokens for output (default 700 since 2026-09-05 —
+                the 250-300-word target plus markdown headers overran 400 and
+                the live narrative was cut mid-sentence at "September")
+            user_statements: Recent corpus entries (user_text/query +
+                timestamp) — the STREAK LEDGER source; assistant responses
+                are ignored (2026-09-05: "six days" copied from a Sep 2 note
+                into the Sep 5 narrative, with an invented Aug 31–Sep 5 range)
 
         Returns:
             Synthesized narrative string, or empty string on failure
@@ -652,15 +703,27 @@ Do NOT make up information not present in the summaries."""
             status_facts = self._current_status_facts()
             status_block = authoritative_facts_block(status_facts)
 
-            # Build prompt from template
+            # Streak ledger (2026-09-05): the user's own day counts, dated and
+            # projected to today — injected as a block AND used as a
+            # post-generation stale-count check below.
             from datetime import date as _date
+            _today = _date.today()
+            streak_claims = []
+            try:
+                streak_claims = streak_ledger(user_statements or [], as_of=_today)
+            except Exception as e:
+                logger.debug(f"[NarrativeSynthesis] Streak ledger unavailable: {e}")
+            streak_block = streak_ledger_block(streak_claims, _today)
+
+            # Build prompt from template
             prompt = self.NARRATIVE_SYNTHESIS_PROMPT.format(
-                today=_date.today().strftime("%A, %B %d, %Y"),
+                today=_today.strftime("%A, %B %d, %Y"),
                 monthly_summaries=monthly_text,
                 weekly_summaries=weekly_text,
                 daily_notes=daily_text,
                 corpus_summaries=corpus_text,
                 authoritative_status_facts=status_block,
+                streak_ledger=streak_block,
             )
 
             # Generate via LLM
@@ -681,11 +744,25 @@ Do NOT make up information not present in the summaries."""
                 logger.debug("[NarrativeSynthesis] LLM returned empty result")
                 return ""
 
+            trimmed = _trim_truncated_tail(narrative)
+            if trimmed != narrative:
+                logger.info(
+                    "[NarrativeSynthesis] Dropped a truncated trailing fragment "
+                    f"({len(narrative) - len(trimmed)} chars) — output hit the token cap mid-sentence"
+                )
+                narrative = trimmed
+
             narrative, status_conflicts = remove_conflicting_claims(narrative, status_facts)
             for c in status_conflicts:
                 logger.warning(
                     f'[NarrativeSynthesis] Removed status-claim conflict ({c.family}): '
                     f'"{c.claim_text}" contradicts current {c.relation}={c.value}'
+                )
+            narrative, stale_streaks = remove_stale_streak_claims(narrative, streak_claims, _today)
+            for s in stale_streaks:
+                logger.warning(
+                    f'[NarrativeSynthesis] Removed stale streak count: "{s.claim_text}" '
+                    f"says day {s.stated_count}; the user's own count as of today is day {s.current_count}"
                 )
 
             sources = []

@@ -1386,11 +1386,15 @@ class DaemonOrchestrator:
                     thread_msg += f" about {thread_topic}"
             # The heavy-topic flag belongs to the PREVIOUS thread — only
             # carry it forward when this turn is actually being presented as
-            # that same thread (the continuity `else` branch) or as the
-            # previous session's last thread (session-start branch); a
-            # shift or a neutral STM-divergence note must not also assert
-            # "this is a sensitive/heavy topic" about the CURRENT turn.
-            _carry_heavy = is_heavy and (_session_start or (not _shifted and not _diverged_by_stm))
+            # that same thread (the continuity `else` branch). A shift, a
+            # neutral STM-divergence note, AND a session start (2026-09-05:
+            # "New session … treat the current message as a fresh start" +
+            # "This is a sensitive/heavy topic" rendered together on a
+            # casual gym/plans update because the previous session's last
+            # thread happened to be flagged) must not assert "this is a
+            # sensitive/heavy topic" about the CURRENT turn — the current
+            # turn's own tone/crisis instructions already cover it.
+            _carry_heavy = is_heavy and not _shifted and not _diverged_by_stm and not _session_start
             if _carry_heavy:
                 thread_msg += "\nThis is a sensitive/heavy topic. Be empathetic and specific."
             elif (

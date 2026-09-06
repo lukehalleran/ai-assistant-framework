@@ -183,6 +183,19 @@ _JUNK_OBJECT_PATTERNS = [
     # Profanity-intensifier fragments are rant phrasing, not entities
     # ("my fucking life")
     re.compile(r"\b(?:fucking|fuckin|goddamn|damn)\b"),
+    # Bare weekday/weekend names, optionally prefixed ("on thursday", "next
+    # monday") — a when-word is not a fact object outside the schedule
+    # relations exempted above (2026-09-05: `rowan | texted | on thursday`,
+    # `user | had_off_day_on | tuesday` were live graph edges).
+    re.compile(r"^(?:(?:on|this|next|last|every)\s+)?"
+               r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|weekday)s?$"),
+    # Demonstrative + generic noun ("this assistant", "that thing") is an
+    # unresolved referent, not an entity — the LLM path minted
+    # `works_on = this assistant` (2026-09-05) and the provenance join found
+    # the token "this" in an attachment paste.
+    re.compile(r"^(?:this|that|these|those)\s+"
+               r"(?:assistant|ai|bot|chatbot|system|app|tool|thing|things|one|stuff|"
+               r"project|model|program|class|course|place|guy|person)$"),
 ]
 
 # Negation fragments ("not good", "no idea") are junk for ordinary relations —
@@ -196,6 +209,15 @@ _FAMILY_HAS_RE = re.compile(
     r"^has_(?:mom|mother|dad|father|parents?|brother|sister|sibling|partner|girlfriend|"
     r"boyfriend|wife|husband|spouse|son|daughter|kid|friend|roommate|cousin|aunt|uncle|"
     r"grandma|grandpa|grandmother|grandfather)$"
+)
+# Care-team `has_<role>` names a PERSON/role, so a clause object ("Rowan is
+# cautious about drinking due to past accident" was stored as has_doctor on
+# 2026-09-05 — a friend's history mined into the doctor slot) is the wrong
+# relation. Only the clause arm applies: short status objects ("no portal")
+# stay allowed, and the negation exemption below is untouched.
+_CARE_TEAM_HAS_RE = re.compile(
+    r"^has_(?:doctor|therapist|psychiatrist|psychologist|physician|prescriber|pcp|"
+    r"nurse|dentist|counselor|counsellor|provider|gp)$"
 )
 _CLAUSE_OBJECT_RE = re.compile(
     r"\b(?:is|are|was|were|will|would|going|picking|providing|taking|coming|getting|"
@@ -224,6 +246,8 @@ def _is_junk_object(obj: str, rel: str) -> bool:
     if _FAMILY_HAS_RE.match(r) and (
         _CLAUSE_OBJECT_RE.search(o) or len(o.split()) >= 5
     ):
+        return True
+    if _CARE_TEAM_HAS_RE.match(r) and _CLAUSE_OBJECT_RE.search(o):
         return True
     if _NEGATION_JUNK_PATTERN.match(o) and not (
         r in _NEGATION_OK_RELATIONS or r.endswith(_NEGATION_OK_RELATION_SUFFIXES)

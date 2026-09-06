@@ -154,6 +154,10 @@ async def _background_store_interaction(
             tags=tags,
             session_id=session_id,
             provenance=provenance,
+            # The user's own typed text rides beside the merged blob so fact
+            # extraction / provenance / heavy-topic never read attachment
+            # content as the user's words (2026-09-05).
+            user_text=user_text,
         )
         logger.info(f"[HANDLE_SUBMIT] Background storage complete, ID: {memory_id}")
 

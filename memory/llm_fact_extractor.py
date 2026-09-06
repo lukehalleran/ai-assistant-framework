@@ -330,7 +330,10 @@ class LLMFactExtractor:
             ts_val = None
             if isinstance(m, dict):
                 # Assistant responses are generated text, not source evidence.
-                q = (m.get("query") or "").strip()
+                # `user_text` (2026-09-05) is the user's own typed text on an
+                # attachment turn — the merged `query` also carries the
+                # attachment content, which is not the user's words.
+                q = (m.get("user_text") or m.get("query") or "").strip()
                 if not q:
                     continue
                 entry = f"User: {q}"

@@ -70,10 +70,14 @@ class StoreBundle:
     """Live store handles passed to curators. Curators must treat these as
     READ-ONLY — only engine.apply() writes, through the adapters."""
 
-    def __init__(self, chroma_store=None, user_profile=None, corpus_manager=None):
+    def __init__(self, chroma_store=None, user_profile=None, corpus_manager=None,
+                 graph_memory=None):
         self.chroma_store = chroma_store
         self.user_profile = user_profile
         self.corpus_manager = corpus_manager
+        # Knowledge graph (2026-09-05): read by the temporal-node curator,
+        # written only through adapters.apply_change (node quarantine flag).
+        self.graph_memory = graph_memory
 
 
 def _cap_mode(mode: CuratorMode, ceiling: CuratorMode) -> CuratorMode:
@@ -278,6 +282,11 @@ class CurationEngine:
                     store_ref.split(":", 1)[1]
                 )
                 return coll.count() if coll is not None else None
+            if store_ref == "graph" and self.stores.graph_memory is not None:
+                return int(self.stores.graph_memory.node_count())
+            if store_ref == "profile" and self.stores.user_profile is not None:
+                cats = (getattr(self.stores.user_profile, "profile", None) or {}).get("categories", {})
+                return sum(len(v) for v in cats.values() if isinstance(v, list)) or None
         except Exception:
             return None
         return None
@@ -311,6 +320,7 @@ class CurationEngine:
                     item,
                     chroma_store=self.stores.chroma_store,
                     user_profile=self.stores.user_profile,
+                    graph_memory=self.stores.graph_memory,
                 )
                 applied.append(item)
         except Exception as e:
@@ -321,6 +331,7 @@ class CurationEngine:
                         item,
                         chroma_store=self.stores.chroma_store,
                         user_profile=self.stores.user_profile,
+                        graph_memory=self.stores.graph_memory,
                     )
                 except Exception as re:
                     logger.error(f"[Curation] rollback failed for {item.doc_id}: {re}")
@@ -374,6 +385,7 @@ class CurationEngine:
                 item,
                 chroma_store=self.stores.chroma_store,
                 user_profile=self.stores.user_profile,
+                graph_memory=self.stores.graph_memory,
             )
         p.status = ProposalStatus.UNDONE
         p.resolved_at = datetime.now().isoformat()

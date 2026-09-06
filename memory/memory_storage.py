@@ -791,12 +791,18 @@ class MemoryStorage:
         tags: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         provenance: Optional[Dict] = None,
+        user_text: Optional[str] = None,
     ) -> Optional[str]:
         """
         Persist a turn in both corpus & Chroma with computed metadata.
 
         Args:
-            query: User input
+            query: User input (merged user text + attachment content when
+                   files were attached)
+            user_text: The user's own typed text for an attachment turn
+                   (2026-09-05) — stored beside `query` so extraction and
+                   heavy-topic classification never read transcripts/CSV
+                   rows as the user's words
             response: Assistant response
             tags: Optional list of tags
             session_id: Optional session identifier for provenance tracking
@@ -837,9 +843,14 @@ class MemoryStorage:
                 logger.info("[MemoryStorage] Skipped storing API-error response to prevent false memories")
                 return None
 
-            # Detect heavy topic before anything else
+            # Detect heavy topic before anything else — on the user's OWN
+            # words when an attachment blob is present (2026-09-05: a scope-
+            # check turn carrying ~270K chars of lecture transcripts was
+            # stored is_heavy_topic=True, and the next session's opener
+            # inherited "This is a sensitive/heavy topic").
             from utils.query_checker import _is_heavy_topic_heuristic
-            is_heavy = _is_heavy_topic_heuristic(query)
+            _heavy_text = (user_text or "").strip() if isinstance(user_text, str) else ""
+            is_heavy = _is_heavy_topic_heuristic(_heavy_text or query)
 
             # Thread detection (if available)
             thread_info = {}
@@ -860,6 +871,7 @@ class MemoryStorage:
                 is_heavy_topic=is_heavy,
                 topic=self.current_topic,
                 response_mode=(provenance or {}).get("response_mode"),
+                user_text=user_text,
             )
 
             # Update conversation context
@@ -1533,10 +1545,19 @@ class MemoryStorage:
                 logger.debug("[MemoryStorage] No consolidator available for narrative synthesis")
                 return
 
+            # Recent user statements feed the streak ledger (2026-09-05);
+            # best-effort — an unavailable corpus just means no ledger.
+            user_statements = []
+            try:
+                user_statements = self.corpus_manager.get_recent_memories(60)
+            except Exception as e:
+                logger.debug(f"[MemoryStorage] No user statements for the streak ledger: {e}")
+
             # Generate narrative via consolidator
             narrative = await self.consolidator.generate_narrative_context(
                 recent_weeklies=recent_weeklies,
-                recent_monthlies=recent_monthlies
+                recent_monthlies=recent_monthlies,
+                user_statements=user_statements,
             )
 
             if narrative:

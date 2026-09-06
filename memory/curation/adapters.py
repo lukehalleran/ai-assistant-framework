@@ -47,7 +47,18 @@ def _get_chroma_doc(coll, doc_id: str) -> Dict[str, Any]:
     }
 
 
-def apply_change(change: ItemChange, *, chroma_store=None, user_profile=None) -> None:
+def _graph_node_attrs(graph_memory, entity_id: str):
+    """The live networkx attribute dict for a node (metadata lives at
+    attrs["metadata"]); None when the node does not exist."""
+    eid = (entity_id or "").lower().strip()
+    g = getattr(graph_memory, "graph", None)
+    if g is None or not g.has_node(eid):
+        return None
+    return g.nodes[eid]
+
+
+def apply_change(change: ItemChange, *, chroma_store=None, user_profile=None,
+                 graph_memory=None) -> None:
     """Apply one change, filling change.before with the pre-image first."""
     if change.store.startswith("chroma:"):
         if chroma_store is None:
@@ -94,10 +105,34 @@ def apply_change(change: ItemChange, *, chroma_store=None, user_profile=None) ->
         user_profile.save()
         return
 
+    if change.store == "graph":
+        # Node quarantine (2026-09-05): reversible metadata flag on a graph
+        # node; GraphMemory.edge_is_suppressed drops every edge touching a
+        # quarantined node at read time. The node and its edges stay on disk
+        # — deletion remains the owner's terminal-only hygiene step.
+        if graph_memory is None:
+            raise AdapterError("graph memory not provided")
+        if change.change_type != "quarantine_node":
+            raise AdapterError(f"unsupported graph change_type {change.change_type!r}")
+        attrs = _graph_node_attrs(graph_memory, change.doc_id)
+        if attrs is None:
+            raise AdapterError(f"graph node {change.doc_id!r} not found")
+        meta = attrs.get("metadata")
+        if not isinstance(meta, dict):
+            meta = {}
+            attrs["metadata"] = meta
+        updates = {QUARANTINE_KEY: True, **{k: v for k, v in change.after.items()}}
+        change.before = {k: meta.get(k) for k in updates}
+        meta.update(updates)
+        graph_memory._mark_dirty()
+        graph_memory.save()
+        return
+
     raise AdapterError(f"unknown store {change.store!r}")
 
 
-def revert_change(change: ItemChange, *, chroma_store=None, user_profile=None) -> None:
+def revert_change(change: ItemChange, *, chroma_store=None, user_profile=None,
+                  graph_memory=None) -> None:
     """Restore the pre-image captured at apply time."""
     if change.store.startswith("chroma:"):
         if chroma_store is None:
@@ -131,6 +166,25 @@ def revert_change(change: ItemChange, *, chroma_store=None, user_profile=None) -
         else:
             fact["curation_stale_reason"] = prev_reason
         user_profile.save()
+        return
+
+    if change.store == "graph":
+        if graph_memory is None:
+            raise AdapterError("graph memory not provided")
+        attrs = _graph_node_attrs(graph_memory, change.doc_id)
+        if attrs is None:
+            raise AdapterError(f"graph node {change.doc_id!r} not found")
+        meta = attrs.get("metadata")
+        if not isinstance(meta, dict):
+            meta = {}
+            attrs["metadata"] = meta
+        for k, v in change.before.items():
+            if v is None:
+                meta.pop(k, None)
+            else:
+                meta[k] = v
+        graph_memory._mark_dirty()
+        graph_memory.save()
         return
 
     raise AdapterError(f"unknown store {change.store!r}")

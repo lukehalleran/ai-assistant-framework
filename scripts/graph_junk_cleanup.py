@@ -231,7 +231,17 @@ def main():
         print("Review/edit it, then re-run with --apply to remove uncommented ids.")
         return
 
-    # --apply
+    # --apply — refuse while a live Daemon holds the graph in memory (its next
+    # save would re-write the removed nodes; 2026-09-05: this script had no
+    # guard while the other store-writing scripts did).
+    try:
+        from utils.daemon_guard import daemon_running
+        if daemon_running():
+            print("ERROR: a live Daemon (main.py) is running from this repo — shut it down "
+                  "before --apply, or the in-memory graph will re-save the removed nodes.")
+            sys.exit(2)
+    except ImportError:
+        pass
     if not os.path.exists(args.candidates):
         print(f"ERROR: candidate file not found: {args.candidates}\n"
               f"Run a dry-run first (no --apply) to generate it.")

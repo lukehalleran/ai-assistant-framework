@@ -74,7 +74,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
 from utils.query_checker import is_personal_doc_search
@@ -86,7 +86,68 @@ logger = get_logger("web_search_trigger")
 # Short-lived cache for LLM trigger results (prevents duplicate calls within same request)
 # Structure: {query_hash: (timestamp, WebSearchDecision)}
 _llm_trigger_cache: Dict[int, Tuple[float, "WebSearchDecision"]] = {}
-_LLM_TRIGGER_CACHE_TTL = 10.0  # 10 seconds - long enough for same request, short enough to not stale
+# 45 s (was 10 s until 2026-09-05): the agentic gate calls the trigger at
+# turn ingress and the prompt builder's web task calls it again once the
+# gather tasks are scheduled — on a cold first turn that is 10+ s later, past
+# the old TTL. The key already carries query + context digest + policy, so a
+# same-turn reuse cannot go stale within this window.
+_LLM_TRIGGER_CACHE_TTL = 45.0
+# In-flight LLM classifications keyed like the cache (2026-09-05): a second
+# caller for the same key awaits the first call instead of paying its own.
+_llm_trigger_inflight: Dict[int, "asyncio.Future"] = {}
+
+
+def _crisis_policy_key(crisis_level: Optional[str]) -> str:
+    """Cache-key component for tone policy. Only HIGH/MEDIUM change the
+    decision (search suppressed), so every other level maps to one bucket —
+    the gate passes None while the gatherer passes "CONVERSATIONAL", and the
+    old raw-string key made the SAME turn miss its own cache (two gpt-4o-mini
+    trigger calls per turn, ~2 s each, 2026-09-05 debug log)."""
+    lvl = (crisis_level or "").upper()
+    return "SUPPRESSED" if lvl in ("HIGH", "MEDIUM") else "OPEN"
+
+
+def _credits_bucket(remaining_credits: Any) -> str:
+    """Cache-key component for the credit plan: the trigger prompt only uses
+    the count to size num_searches, so coarse buckets keep the meaning while
+    letting the gate's default (100) and the gatherer's live count share a
+    result."""
+    try:
+        c = float(remaining_credits)
+    except (TypeError, ValueError):
+        return "unknown"
+    if c <= 0:
+        return "none"
+    if c < 5:
+        return "critical"
+    if c < 20:
+        return "low"
+    return "ok"
+
+
+async def _classify_with_llm_unified_shared(key: int, *args, **kwargs):
+    """Run `_classify_with_llm_unified` once per in-flight key; concurrent
+    callers with the same key await the same task (shielded so one caller's
+    cancellation does not kill the shared call)."""
+    fut = _llm_trigger_inflight.get(key)
+    if fut is not None and not fut.done():
+        logger.debug("[WebSearchTrigger] Joining in-flight LLM classification for the same query")
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(_classify_with_llm_unified(*args, **kwargs))
+    _llm_trigger_inflight[key] = task
+
+    def _forget(t, k=key):
+        if _llm_trigger_inflight.get(k) is t:
+            _llm_trigger_inflight.pop(k, None)
+
+    task.add_done_callback(_forget)
+    return await asyncio.shield(task)
 
 
 class WebSearchDepth(Enum):
@@ -1546,7 +1607,7 @@ async def analyze_for_web_search_llm(
     # context is part of the cache identity. A prior permitted lookup must not
     # bypass a later disabled/crisis policy, or reuse a different credit plan.
     cache_key = hash((query, conversation_context, web_search_enabled,
-                      (crisis_level or "").upper(), remaining_credits))
+                      _crisis_policy_key(crisis_level), _credits_bucket(remaining_credits)))
     now = time.time()
     if cache_key in _llm_trigger_cache:
         cached_time, cached_result = _llm_trigger_cache[cache_key]
@@ -1684,8 +1745,10 @@ async def analyze_for_web_search_llm(
         _llm_trigger_cache[cache_key] = (now, heuristic_result)
         return heuristic_result
 
-    # Try LLM classification
-    llm_response = await _classify_with_llm_unified(
+    # Try LLM classification — shared with any concurrent same-key caller
+    # (the agentic gate and the prompt builder's web task run in parallel).
+    llm_response = await _classify_with_llm_unified_shared(
+        cache_key,
         query,
         model_manager,
         remaining_credits,

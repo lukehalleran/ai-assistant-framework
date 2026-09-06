@@ -150,6 +150,7 @@ class CorpusManager:
         is_heavy_topic: Optional[bool] = None,
         topic: Optional[str] = None,
         response_mode: Optional[str] = None,
+        user_text: Optional[str] = None,
     ):
         """
         Add a new interaction to corpus with optional thread metadata.
@@ -179,6 +180,14 @@ class CorpusManager:
             "timestamp": timestamp or datetime.now(),
             "tags": tags or []
         }
+        # `user_text` (2026-09-05): the user's OWN typed text when `query` is
+        # the merged user-text + attachment blob. Stored only when it differs;
+        # the fact extractors and the provenance join read it so attachment
+        # content (transcripts, CSV rows) is never user-authored evidence.
+        # Retrieval and prompt rendering keep using `query`.
+        ut = (user_text or "").strip() if isinstance(user_text, str) else ""
+        if ut and ut != q:
+            entry["user_text"] = ut
 
         # Add thread metadata if provided
         if thread_id:

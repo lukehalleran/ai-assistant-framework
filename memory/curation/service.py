@@ -20,7 +20,7 @@ _engine: Optional[CurationEngine] = None
 
 
 def init_engine(*, chroma_store=None, user_profile=None,
-                corpus_manager=None) -> Optional[CurationEngine]:
+                corpus_manager=None, graph_memory=None) -> Optional[CurationEngine]:
     """Build (or rebuild) the singleton engine from config + live stores.
     Returns None when curation is disabled."""
     global _engine
@@ -40,6 +40,7 @@ def init_engine(*, chroma_store=None, user_profile=None,
                 chroma_store=chroma_store,
                 user_profile=user_profile,
                 corpus_manager=corpus_manager,
+                graph_memory=graph_memory,
             ),
             max_mode=CURATION_MAX_MODE,
             curator_modes=CURATION_CURATOR_MODES,
@@ -50,7 +51,9 @@ def init_engine(*, chroma_store=None, user_profile=None,
         from config.app_config import CURATION_STALENESS_GRACE_HOURS
         from memory.curation.curators import (
             ErrorSentinelCurator,
+            GraphTemporalNodeCurator,
             JunkFactCurator,
+            ProfileJunkFactCurator,
             StreamArtifactCurator,
             TemporalStalenessCurator,
         )
@@ -59,6 +62,8 @@ def init_engine(*, chroma_store=None, user_profile=None,
             StreamArtifactCurator(),
             JunkFactCurator(),
             TemporalStalenessCurator(grace_hours=CURATION_STALENESS_GRACE_HOURS),
+            ProfileJunkFactCurator(),
+            GraphTemporalNodeCurator(),
         ):
             try:
                 engine.register(curator)

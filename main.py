@@ -667,6 +667,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
                     chroma_store=getattr(ms, "chroma_store", None),
                     user_profile=getattr(ms, "user_profile", None),
                     corpus_manager=getattr(ms, "corpus_manager", None),
+                    graph_memory=getattr(ms, "graph_memory", None),
                 )
             if engine is not None:
                 print(f"[Shutdown] 5/6 Curation scan (≤{CURATION_SCAN_TIMEOUT_S:.0f}s)…")

@@ -245,15 +245,38 @@ def _detect_session_boundary(
     return False
 
 
-def _format_session_header(ts: datetime) -> str:
+def _session_time_span(span: Optional[tuple]) -> str:
+    """", 11:16–13:45" / ", 16:06" suffix for a session header, or ""."""
+    if not span:
+        return ""
+    try:
+        a, b = span
+        if a is None or b is None:
+            return ""
+        lo, hi = (a, b) if a <= b else (b, a)
+        if lo.strftime("%H:%M") == hi.strftime("%H:%M"):
+            return f", {lo.strftime('%H:%M')}"
+        return f", {lo.strftime('%H:%M')}–{hi.strftime('%H:%M')}"
+    except (AttributeError, TypeError):
+        return ""
+
+
+def _format_session_header(ts: datetime, span: Optional[tuple] = None) -> str:
     """
     Format a session boundary header with relative day label.
 
+    ``span`` = (oldest_ts, newest_ts) of the entries in that session; when
+    given, the header carries the time range so two sessions on the SAME
+    day stay distinguishable (2026-09-05: a 16:06 turn and the 11:16–13:45
+    block both rendered "--- Session: Today (Sat, Sep 5) ---").
+
     Examples:
         --- Session: Today (Sat, May 17) ---
+        --- Session: Today (Sat, May 17), 11:16–13:45 ---
         --- Session: Yesterday (Fri, May 16) ---
         --- Session: 3 days ago (Wed, May 14) ---
     """
+    suffix = _session_time_span(span)
     try:
         from utils.time_manager import format_relative_timestamp
         rel = format_relative_timestamp(ts)
@@ -261,18 +284,39 @@ def _format_session_header(ts: datetime) -> str:
         # and the date for the header
         day_name = ts.strftime("%a, %b %-d")
         if "(today)" in rel.lower():
-            return f"--- Session: Today ({day_name}) ---"
+            return f"--- Session: Today ({day_name}){suffix} ---"
         elif "(yesterday)" in rel.lower():
-            return f"--- Session: Yesterday ({day_name}) ---"
+            return f"--- Session: Yesterday ({day_name}){suffix} ---"
         else:
             # Extract "N days ago" from the relative label
             import re
             m = re.search(r'\((\d+\s+days?\s+ago)\)', rel, re.IGNORECASE)
             if m:
-                return f"--- Session: {m.group(1).capitalize()} ({day_name}) ---"
-            return f"--- Session: {day_name} ---"
+                return f"--- Session: {m.group(1).capitalize()} ({day_name}){suffix} ---"
+            return f"--- Session: {day_name}{suffix} ---"
     except Exception:
         return f"--- Session: {ts.strftime('%Y-%m-%d') if ts else 'Unknown'} ---"
+
+
+def _session_spans(recent: list) -> dict:
+    """Map each session-boundary entry index (1-based, iteration order) to the
+    (oldest_ts, newest_ts) span of the entries that follow it up to the next
+    boundary — the same boundary rule the render loop applies."""
+    spans: dict = {}
+    prev_ts: Optional[datetime] = None
+    current_key: Optional[int] = None
+    for i, mem in enumerate(recent, start=1):
+        entry_ts = _parse_entry_timestamp(mem)
+        if _detect_session_boundary(prev_ts, entry_ts):
+            current_key = i if entry_ts else None
+            if current_key is not None:
+                spans[current_key] = [entry_ts, entry_ts]
+        elif current_key is not None and entry_ts:
+            lo, hi = spans[current_key]
+            spans[current_key] = [min(lo, entry_ts), max(hi, entry_ts)]
+        if entry_ts:
+            prev_ts = entry_ts
+    return {k: (v[0], v[1]) for k, v in spans.items()}
 
 
 def _parse_entry_timestamp(mem: dict) -> Optional[datetime]:
@@ -895,6 +939,10 @@ class PromptFormatter:
         logger.debug(f"[DEBUG RECENT] _assemble_prompt: Got {len(recent)} items in recent_conversations")
         recent_lines: list[str] = []
         prev_ts: Optional[datetime] = None
+        try:
+            _spans = _session_spans(recent)
+        except Exception:
+            _spans = {}
         for i, mem in enumerate(recent, start=1):
             content, ts_str = mem_parts(mem)
             if i <= 3 or i > len(recent) - 3:
@@ -904,7 +952,7 @@ class PromptFormatter:
             entry_ts = _parse_entry_timestamp(mem)
             if _detect_session_boundary(prev_ts, entry_ts):
                 if entry_ts:
-                    recent_lines.append(_format_session_header(entry_ts))
+                    recent_lines.append(_format_session_header(entry_ts, span=_spans.get(i)))
             if entry_ts:
                 prev_ts = entry_ts
 

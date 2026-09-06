@@ -666,6 +666,11 @@ class ShutdownProcessor:
             r = (e.get('response') or '').strip()
             if q:
                 pair = {"query": q, "response": r}
+                # Raw user text for attachment turns (2026-09-05) — the
+                # extractor and provenance join prefer it over the merged blob.
+                ut = e.get('user_text')
+                if isinstance(ut, str) and ut.strip():
+                    pair["user_text"] = ut.strip()
                 ts = e.get('timestamp')
                 if ts:
                     pair["turn_id"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)

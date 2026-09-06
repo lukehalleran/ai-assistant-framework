@@ -78,6 +78,33 @@ _JUNK_ENTITIES = frozenset({
 _TEMPORAL_RE = re.compile(
     r"^\d+(\.\d+)?\s*(years?|months?|weeks?|days?|hours?)", re.IGNORECASE
 )
+# Bare temporal deictics / calendar names (2026-09-05). "today" and "tomorrow"
+# in a casual plans update resolved to live graph nodes `today` (11 in-edges:
+# `user|dad|today`, `user|project|today`, `user|feels_better|today` …) and
+# `tomorrow`, and [KNOWLEDGE GRAPH] rendered nine junk lines; the memory
+# ranker's graph boost pulled 29 "related names" through the same nodes.
+# A deictic is never an entity: not a seed, not a subject, not an object.
+# Full weekday/month names only (abbreviations like "sun"/"mar"/"may" collide
+# with real words); an optional on/this/next/last/every prefix is absorbed so
+# the normalized node id `on_thursday` is caught too.
+_TEMPORAL_DEICTIC_RE = re.compile(
+    r"^(?:(?:on|this|next|last|every|by|until|till|since)\s+)?"
+    r"(?:today|tomorrow|tmrw|yesterday|tonight|now|later|soon|earlier|recently|lately|"
+    r"morning|afternoon|evening|night|noon|midnight|weekend|weekends|weekday|weekdays|"
+    r"monday|tuesday|tues|wednesday|thursday|thurs|friday|saturday|sunday|"
+    r"january|february|march|april|june|july|august|september|sept|october|november|december|"
+    r"(?:this|next|last|the|past|coming)\s+(?:week|month|year|weekend|semester|term|day)|"
+    r"(?:a\s+)?(?:few|couple(?:\s+of)?)\s+(?:days|weeks|months|years)(?:\s+ago)?)$",
+    re.IGNORECASE,
+)
+
+
+def is_temporal_deictic(name: str) -> bool:
+    """True for a bare when-word ("today", "on thursday", "next week") — a
+    graph node id may carry underscores ("on_thursday"); both forms match."""
+    n = (name or "").strip().lower().replace("_", " ")
+    n = re.sub(r"\s+", " ", n)
+    return bool(n) and bool(_TEMPORAL_DEICTIC_RE.match(n))
 _FREQUENCY_RE = re.compile(
     r"^(once|twice|three\s+times)\s+a\s+", re.IGNORECASE
 )
@@ -114,6 +141,8 @@ def is_junk_entity(name: str) -> bool:
     if n[0].isdigit():
         return True
     if _TEMPORAL_RE.match(n) or _FREQUENCY_RE.match(n) or _MEASUREMENT_RE.match(n):
+        return True
+    if is_temporal_deictic(n):
         return True
     first_word = n.split()[0]
     if first_word in _VERB_STEMS:

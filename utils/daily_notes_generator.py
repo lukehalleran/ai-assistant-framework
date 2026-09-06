@@ -118,8 +118,11 @@ def build_temporal_claim_audit(convos: List[Dict[str, Any]]) -> str:
     """
     claims = []
     seen = set()
+    streak_lines = []
     for conv in convos:
-        query = str(conv.get("query") or "")
+        # The user's own typed text when the turn carried attachments
+        # (2026-09-05) — transcripts/CSV rows are not the user's claims.
+        query = str(conv.get("user_text") or conv.get("query") or "")
         if not query:
             continue
         # Redact before locating sentence boundaries: a period inside an email
@@ -154,16 +157,36 @@ def build_temporal_claim_audit(convos: List[Dict[str, Any]]) -> str:
             else:
                 status = "direct-user-statement"
             claims.append(f'- [{time_str}] [{status}] "{snippet}"')
+        # Streak / day counts (2026-09-05): the user's own count for THIS
+        # date. Listed separately so the note writes "day N (his count)"
+        # instead of copying an assistant reply's number ("six solid days"
+        # was copied into the Sep 3 note a day after the user said day 6).
+        try:
+            from utils.streak_claims import extract_streak_claims
+            for sc in extract_streak_claims(audit_text, ts if ts else None):
+                key = ("streak", sc.count, sc.snippet.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                streak_lines.append(
+                    f'- [{time_str}] [streak-count] "{sc.snippet}" → the user\'s own count on this date: day {sc.count}'
+                )
+        except Exception:
+            pass
 
-    if not claims:
+    if not claims and not streak_lines:
         return "(No mechanically detected status-duration claims.)"
+    body = "\n".join(claims[:12] + streak_lines[:6])
     return (
         "Mechanically detected user-text claims (not independently verified):\n"
-        + "\n".join(claims[:12])
+        + body
         + "\nPreserve the exact status predicate and duration for each item. "
         "Draft/pasted or conditional text is not an established user fact. "
         "If direct statements appear inconsistent, report the discrepancy; "
-        "do not silently choose or average one."
+        "do not silently choose or average one. "
+        "A [streak-count] line is the user's own count ON THIS DATE — write it as "
+        "\"day N (his count)\" and never substitute a number from an assistant reply "
+        "or an earlier day."
     )
 
 
@@ -937,8 +960,15 @@ generated: {datetime.now().isoformat()}
             from memory.memory_consolidator import MemoryConsolidator
             consolidator = MemoryConsolidator(self.model_manager)
 
+            # Recent user statements feed the streak ledger (2026-09-05).
+            user_statements = []
+            try:
+                user_statements = self.corpus_manager.get_recent_memories(60)
+            except Exception as e:
+                logger.debug(f"[DailyNotes] No user statements for the streak ledger: {e}")
+
             # Generate narrative from Obsidian notes (no corpus fallback needed for fresh trigger)
-            narrative = await consolidator.generate_narrative_context()
+            narrative = await consolidator.generate_narrative_context(user_statements=user_statements)
 
             if narrative:
                 self.corpus_manager.save_narrative_context(narrative)
