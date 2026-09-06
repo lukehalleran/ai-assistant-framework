@@ -40,6 +40,8 @@ If you only have 10 minutes:
 4. [`docs/SYNTHESIS_VALIDATION.md`](docs/SYNTHESIS_VALIDATION.md) + [`knowledge/doc_cooccurrence.py`](knowledge/doc_cooccurrence.py) — the literature-backed synthesis validation.
 5. `python -m pytest tests/benchmarks/ -m benchmark -v` — see retrieval evaluation run on real embeddings.
 
+How the project is developed — three agent prongs (frontier Claude, Codex, Daemon itself), the owner relay protocol, credit discipline, and the audit → fix → verify → ship loop — is in [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md).
+
 If you only want the single most distinctive subsystem, start with synthesis validation:
 [`docs/SYNTHESIS_VALIDATION.md`](docs/SYNTHESIS_VALIDATION.md) → [`knowledge/doc_cooccurrence.py`](knowledge/doc_cooccurrence.py) → `scripts/synthesis_*`.
 
