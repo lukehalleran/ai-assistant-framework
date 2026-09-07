@@ -1515,7 +1515,7 @@ _REQUEST_SHAPED_RE = re.compile(
     r"^(?:(?:ok(?:ay)?|alright|all\s+right|cool|yeah|yes|sure|right|so|and|now|then|also|well|hey)[,\s]+){0,3}"
     r"(?:(?:please\s+)?(?:check|look|pull|show|run|search|find|read|open|list|"
     r"verify|fetch|grab|review|summarize|summarise|scan|test|compare)\b(?!,)"
-    r"|(?:please\s+)?(?:can|could|would|will)\s+you\b)",
+    r"|(?:please\s+)?(?:can|could|would|will)\s+(?:you|we)\b)",
     re.IGNORECASE,
 )
 

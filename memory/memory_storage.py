@@ -123,7 +123,10 @@ def fact_extraction_skip_reason(query: str) -> str:
 def fact_extraction_source_text(query: str) -> str:
     """The text the regex extractor may mine: pasted email blocks removed
     (2026-09-03 — a quoted Aug-27 email re-asserted an enrollment the user
-    had since dropped). Framing lines around the paste are kept."""
+    had since dropped), and [test]...[/test] blocks removed the same way
+    (2026-09-06, B3) — an operator-marked synthetic/replay turn yields no
+    facts from inside the block, while genuine commentary outside it still
+    does. Framing lines around either kind of block are kept."""
     try:
         from memory.fact_source import strip_quoted_correspondence
         return strip_quoted_correspondence(query or "")
@@ -852,6 +855,20 @@ class MemoryStorage:
             _heavy_text = (user_text or "").strip() if isinstance(user_text, str) else ""
             is_heavy = _is_heavy_topic_heuristic(_heavy_text or query)
 
+            # B3 (2026-09-06): an operator-marked [test]...[/test] block in
+            # the user's own text tags this turn's provenance as synthetic —
+            # detected structurally by the bracket markers only, never
+            # inferred from wording/repetition/a medication name.
+            from memory.fact_source import contains_test_block
+            is_test_origin = contains_test_block(_heavy_text or query)
+            # A fresh, mutable copy: the corpus's "tags" field is the SAME
+            # list object passed to add_entry when non-empty, so this must
+            # never be the caller's own list (avoids retroactively mutating
+            # a caller-held tags list via the later topic-tag append below).
+            tags = list(tags) if tags else []
+            if is_test_origin and "origin:test" not in tags:
+                tags.append("origin:test")
+
             # Thread detection (if available)
             thread_info = {}
             if self._thread_detect_fn:
@@ -863,7 +880,7 @@ class MemoryStorage:
 
             # Add to corpus (JSON) with stable timestamp and thread metadata
             self.corpus_manager.add_entry(
-                query, response, tags or [], timestamp=self._now(),
+                query, response, tags, timestamp=self._now(),
                 thread_id=thread_info.get("thread_id"),
                 thread_depth=thread_info.get("depth"),
                 thread_started=thread_info.get("started"),
@@ -890,8 +907,8 @@ class MemoryStorage:
                 elif hasattr(self.topic_manager, "detect_topic"):
                     primary_topic = self.topic_manager.detect_topic(f"{query} {response}") or "general"
 
-            # Ensure tags list exists and includes the topic
-            tags = tags or []
+            # Ensure tags list includes the topic (tags itself was already
+            # initialized above, ahead of the corpus add_entry call).
             if f"topic:{primary_topic}" not in tags:
                 tags.append(f"topic:{primary_topic}")
 
@@ -915,6 +932,11 @@ class MemoryStorage:
                 # Preserve the authored/attachment boundary for semantic
                 # evidence retrieval, including attachment-only turns.
                 raw_metadata["user_text"] = user_text.strip()
+
+            # B3 (2026-09-06): a [test]...[/test]-marked turn carries its
+            # provenance forward — new key only when present.
+            if is_test_origin:
+                raw_metadata["origin"] = "test"
 
             # Forward thread metadata to ChromaDB for expand_memory window slicing
             if thread_info.get("thread_id"):
@@ -1169,7 +1191,8 @@ class MemoryStorage:
                 }
                 source_dict.update(stance_md)
                 for key in ("fact_scope", "entity_type", "user_connection", "source_excerpt",
-                            "source_support", "source_role", "source_turn_id", "source_anchor"):
+                            "source_support", "source_role", "source_turn_id", "source_anchor",
+                            "claim_kind", "event_date", "observed_at"):
                     val = md.get(key)
                     if val:
                         source_dict[key] = val[:200] if key == "source_excerpt" else val

@@ -29,6 +29,13 @@ Module Contract
     ago" is a timeline marker, not a symptom duration; similar older episodes are PREVIOUS
     episodes (pairs with the episode-boundary block in tone_instructions session headers).
   - temporal_facts: normalized facts about user's current state, with collapse-toward-fewer-events disambiguation rule applied.
+  - Disambiguation rule 8 / clock anchor [2026-09-07, B3]: the prompt carries no clock of its
+    own — a "Current time" line (authoritative) is now rendered directly above the current
+    user query, and temporal_facts must never restate a clock time/date/elapsed-time figure
+    copied from an earlier ASSISTANT reply (a live turn copied Daemon's own "approximately
+    1:31 AM" from its prior reply into temporal_facts, and the planner repeated it as if the
+    user had said it). analyze(now=...) accepts an optional clock override (default
+    datetime.now()); every existing caller is unaffected.
 - Key pieces:
   - analyze(): Main async method that calls LLM to analyze context
   - _format_memories(): Converts memory dicts to readable conversation text with relative day labels
@@ -315,6 +322,7 @@ class STMAnalyzer:
         user_query: str,
         last_assistant_response: Optional[str] = None,
         graph_memory=None,
+        now: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Analyze short-term conversation context.
@@ -327,6 +335,10 @@ class STMAnalyzer:
                 name allow-gate of the novelty override (a known pet/person
                 named at sentence start counts as a novel referent when
                 absent from the window)
+            now: Optional clock override for the prompt's authoritative
+                "Current time" line (2026-09-07, B3). Defaults to
+                datetime.now() — pass the pipeline's own clock when one is
+                already in scope; every existing caller is unaffected.
 
         Returns:
             Dict with fields:
@@ -339,6 +351,16 @@ class STMAnalyzer:
         """
         conversation_text = self._format_memories(recent_memories)
         daily_notes_text = self._get_recent_daily_notes_text()
+
+        # B3 (2026-09-07): clock anchor. The prompt previously carried no
+        # notion of "now" at all — a live turn (08:31) copied Daemon's own
+        # prior reply ("Current time is approximately 1:31 AM") into
+        # temporal_facts, and the planner repeated the stale time as fact.
+        _now = now or datetime.now()
+        _now_line = (
+            f"Current time: {_now.strftime('%A, %Y-%m-%d %H:%M')} "
+            "(authoritative — the ONLY source for the present time)"
+        )
 
         immediate_section = ""
         if last_assistant_response:
@@ -368,6 +390,7 @@ Recent conversation:
 {conversation_text}
 {immediate_section}
 {notes_section}
+{_now_line}
 Current user query: {user_query}
 
 Return ONLY valid JSON with these fields:
@@ -394,6 +417,7 @@ CRITICAL DISAMBIGUATION RULES:
 5. If the current message opens with a bare pronoun ("It was...", "That's...") or corrects your reading ("No I mean...", "I wasn't talking about X"), resolve the pronoun from the IMMEDIATELY PRECEDING exchange — the topic CONTINUES that exchange's topic. Do not re-derive the topic from surface keywords: "It was 3 years of twice a week" mid-illness-conversation is about the illness, not exercise. A correction re-scopes the user's own previous message; it is NOT a new event or a new topic.
 6. Name substances, medications, and proper nouns EXACTLY as the user did in the CURRENT message. Never substitute a different drug/entity from earlier context: if the user says "900 mg of lorvatin" but earlier turns discussed kavarin, the fact is about Lorvatin. When the current message names no substance and the referent is ambiguous, write "the medication" rather than guessing a name.
 7. If the current message is a SHORT FRAGMENT (a few words, no verb, no question mark), do NOT invent a "user_question" or reframe it as an information request — it is almost always a riff or continuation of the immediately preceding exchange. Describe it as a continuation (e.g. "User is continuing the joke about X") and set reference_type to "recall" or "clarification", not "new_event".
+8. temporal_facts must never restate a clock time, date, or elapsed-time figure taken from an earlier ASSISTANT reply; a time-of-day fact comes only from the user's CURRENT message or the Current time line above. Older exchanges carry [relative] prefixes — treat them as past.
 
 Example (new event):
 {{

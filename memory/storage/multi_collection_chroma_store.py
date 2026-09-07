@@ -640,7 +640,7 @@ class MultiCollectionChromaStore:
         return self._embedding_cache[text]
 
     def query_collection(self, collection_name: str, query_text: str,
-                     n_results: int = 5, query_embedding=None, **kwargs) -> List[Dict]:
+                     n_results: int = 5, query_embedding=None, where=None, **kwargs) -> List[Dict]:
         # Accept alias kwargs defensively
         if "n" in kwargs and isinstance(kwargs["n"], int):
             n_results = kwargs["n"]
@@ -659,6 +659,9 @@ class MultiCollectionChromaStore:
             query_args["query_embeddings"] = [self._embedding_cache[query_text]]
         else:
             query_args["query_texts"] = [query_text]
+
+        if where is not None:
+            query_args["where"] = where
 
         results = self._get_collection(collection_name).query(
             **query_args,

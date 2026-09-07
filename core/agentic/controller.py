@@ -512,6 +512,12 @@ class AgenticSearchController:
                 # Continue without sandbox - will fall back gracefully
 
         try:
+            # Tracks whether round 1 itself ran a web search (as opposed to a
+            # URL fetch or a skip-to-loop branch) — used by the A3 pre-
+            # gathered-web seeding below, which must not double-seed when the
+            # loop's own round 1 already searched the web for this turn.
+            _round1_was_web_search = False
+
             # === ROUND 1: URL fetch or automatic search with trigger terms ===
             if initial_urls:
                 # User message contains URLs — fetch them directly instead of searching
@@ -624,6 +630,7 @@ class AgenticSearchController:
                     metadata={"skip_search": True}
                 )
             else:
+                _round1_was_web_search = True
                 session.state = AgentState.SEARCHING
 
                 yield ProgressEvent(
@@ -692,6 +699,53 @@ class AgenticSearchController:
                         f"[AgenticSearch] Round 1 low quality ({issue}), "
                         f"relaxation count: {session.low_quality_search_count}"
                     )
+
+            # A3 (2026-09-06): seed this turn's pre-gathered base web
+            # evidence into the loop when round 1 did NOT itself run a web
+            # search (memory/tool routing, or a URL fetch). Without this,
+            # initial_context["web_search_results"] — the prompt builder's
+            # own base retrieval for this turn — never reaches
+            # accumulated_context, the decision prompt, or the final prompt;
+            # decision-answer reuse then answers from counts + a short digest
+            # alone, having never actually seen the evidence.
+            if not _round1_was_web_search:
+                _base_web = (initial_context or {}).get("web_search_results")
+                if getattr(_base_web, "has_results", False):
+                    _merge_web_ids = getattr(self._tool_executor, "_merge_web_ids", None)
+                    if _merge_web_ids is None:
+                        logger.debug(
+                            "[AgenticSearch] Pre-gathered web_search_results present "
+                            "but tool executor lacks _merge_web_ids — skipping seed"
+                        )
+                    else:
+                        try:
+                            # _merge_web_ids assigns ids FIRST (continuing the
+                            # session-wide map) — render_prenumbered_web_sources
+                            # formats that already-numbered list without ever
+                            # calling assign_web_ids a second time (which would
+                            # mint a second, colliding set of ids for the same
+                            # pages; see knowledge/web_search_manager.py).
+                            _numbered = _merge_web_ids(_base_web.pages)
+                            from knowledge.web_search_manager import render_prenumbered_web_sources  # lazy import: matches tools.py's existing lazy web_search_manager imports
+                            _seed_lines, _ = render_prenumbered_web_sources(
+                                _numbered, max_sources=8, max_chars_per_source=2000,
+                            )
+                            if _seed_lines:
+                                self._append_accumulated(
+                                    session,
+                                    "[Pre-gathered web results — base retrieval for this turn]\n"
+                                    + "\n\n".join(_seed_lines)
+                                )
+                                session.seeded_base_web = True
+                                logger.info(
+                                    f"[AgenticSearch] Seeded {len(_seed_lines)} "
+                                    f"pre-gathered base web source(s) into the loop"
+                                )
+                        except Exception as e:
+                            logger.debug(
+                                f"[AgenticSearch] Pre-gathered web seeding failed "
+                                f"(non-fatal): {e}"
+                            )
 
             # Compute context inventory once for the session
             session.context_inventory = self._compute_context_inventory(initial_context)
@@ -817,6 +871,14 @@ class AgenticSearchController:
                             f"narrate or answer in prose; markers only."
                         )
                     _force_propose_pending = False  # force on this round only
+
+                # Receipt (2026-09-06, A5): hash of the LAST iteration prompt
+                # actually sent to _get_model_decision. Overwritten every
+                # round so it ends up naming the round that produced whatever
+                # answer (reused or not) the loop exits with.
+                session.decision_prompt_hash = hashlib.sha256(
+                    _round_prompt.encode("utf-8", "ignore")
+                ).hexdigest()[:16]
 
                 # Generate with protocol-appropriate method and record the
                 # decision latency even when the model returns no tools.
@@ -1226,14 +1288,57 @@ class AgenticSearchController:
             # decision call whose answer text was discarded, followed by a 24s
             # re-generation of essentially the same answer).
             from config.app_config import AGENTIC_REUSE_DECISION_ANSWER
-            _reused_answer = (
+            _candidate_reused_answer = (
                 self._usable_decision_answer(_decision_answer_text)
                 if (AGENTIC_REUSE_DECISION_ANSWER and _decision_answer_text)
                 else None
             )
+            # A4/B1 (2026-09-06/07): reuse is permitted only when the decision
+            # round that produced this text actually saw admitted evidence —
+            # never when initial_context carried memories/uploads/web results/
+            # ... (a _RETRIEVAL_EVIDENCE_KEYS entry) the decision prompt never
+            # rendered (only a bounded digest + counts). Background-only
+            # context (profile/summaries/reflections) does not block reuse.
+            _reused_answer = None
+            if _candidate_reused_answer:
+                if self._decision_saw_admitted_evidence(session, initial_context):
+                    _reused_answer = _candidate_reused_answer
+                else:
+                    _missing_key = self._first_unmet_retrieval_key(initial_context, session)
+                    session.reuse_skipped_reason = (
+                        f"decision prompt lacked admitted evidence: {_missing_key}"
+                        if _missing_key
+                        else "decision prompt lacked admitted evidence"
+                    )
+                    logger.info(
+                        "[AgenticSearch] Decision answer would have been reused, "
+                        "but initial_context carries admitted evidence the "
+                        "decision round never saw — falling back to full synthesis"
+                    )
+
             if _reused_answer:
                 session.decision_answer_reuse_fired = True
-                session.final_prompt_hash = "decision-answer-reuse"
+                session.answer_call = "decision_reuse"
+                # Real hash of the actual prompt the answering call saw — the
+                # old sentinel string "decision-answer-reuse" recorded nothing
+                # about which call produced the answer (2026-09-06, A5).
+                session.final_prompt_hash = session.decision_prompt_hash
+                _reuse_sections: List[str] = []
+                if session.recent_conversation_digest:
+                    _reuse_sections.append("[RECENT CONVERSATION — EARLIER TURNS]")
+                if session.accumulated_context and session.accumulated_context.strip():
+                    _reuse_sections.append("Search Results So Far")
+                if session.context_inventory:
+                    _reuse_sections.append("Context inventory")
+                session.visible_sources = self._compute_visible_sources(_reuse_sections)
+                # web_search_results counts as "rendered" for the reuse path
+                # only when A3 actually seeded it into accumulated_context —
+                # otherwise it is exactly the evidence the digest/inventory
+                # summarized but never showed in full.
+                _reuse_rendered_keys = {"web_search_results"} if session.seeded_base_web else set()
+                session.omitted_sections = self._omitted_admitted_sections(
+                    initial_context, _reuse_rendered_keys
+                )
                 logger.info(
                     f"[AgenticSearch] Reusing decision-round answer "
                     f"({len(_reused_answer)} chars) — final synthesis call skipped"
@@ -1241,6 +1346,7 @@ class AgenticSearchController:
                 yield _reused_answer
             else:
                 # Generate final response
+                session.answer_call = "final_synthesis"
                 async for chunk in self._generate_final_response(
                     query=query,
                     system_prompt=system_prompt,  # Use original system prompt for final
@@ -1284,6 +1390,7 @@ class AgenticSearchController:
                     round_number=len(session.rounds)
                 )
 
+                session.answer_call = "error_fallback"
                 async for chunk in self._generate_final_response(
                     query=query,
                     system_prompt=system_prompt,
@@ -1610,12 +1717,187 @@ class AgenticSearchController:
     # round of results missed the mark…") — commentary on the search process,
     # not an answer to the user. Head-anchored: real answers can mention
     # "results" later in the body, but round-postmortems open with it.
+    # Numbered ("1." / "2)") or bulleted ("-", "*", "•") line opener — used by
+    # the B2 enumerated-question-list guard in _usable_decision_answer.
+    _ENUMERATED_LINE_RE = re.compile(r"^(?:\d{1,2}[.)]|[-*•])\s+")
+
     _LOOP_META_RE = re.compile(
         r"\b(?:first|second|third|next|another|last|that|this)\s+round\s+of\b"
         r"|\bmissed\s+the\s+mark\b"
         r"|\bresults?\s+(?:missed|didn'?t\s+(?:return|match|help)|came\s+back\s+empty)\b",
         re.IGNORECASE,
     )
+
+    # Context keys carrying admitted evidence the prompt builder already
+    # gathered (2026-09-06, A4/A5). Decision-answer reuse must not stand in
+    # for a real synthesis call when one of these was non-empty but never
+    # reached the decision prompt (only a bounded digest + counts did).
+    #
+    # B1 (2026-09-07): split into background vs. retrieval evidence. Tool
+    # results alone never prove the BASE retrieval evidence was seen — a
+    # turn-6 incident had the loop list repo files with file_list/file_grep,
+    # which counted as "evidence seen" via session.accumulated_context while
+    # the base retrieval's memories/notes/uploads never reached the decision
+    # prompt, and the reused answer narrated instead of using them. Only a
+    # non-empty RETRIEVAL key may now block reuse; background context
+    # (profile/summary/reflection digest lines already visible to the
+    # decision prompt via context_inventory) never does.
+    _BACKGROUND_EVIDENCE_KEYS: Tuple[str, ...] = (
+        "user_profile", "recent_summaries", "recent_reflections",
+    )
+    # "user_uploads" joins this tuple (2026-09-07, B1): the [USER UPLOADED
+    # ITEMS] section (core/prompt/formatter.py, context key "user_uploads"
+    # per core/prompt/builder.py / token_manager.py) carries real retrieved
+    # content exactly like memories/reference_docs and was simply missing
+    # from evidence tracking — a decision round that never saw the user's
+    # uploaded homework could still be "reused" as the final answer.
+    _RETRIEVAL_EVIDENCE_KEYS: Tuple[str, ...] = (
+        "memories", "personal_notes", "semantic_summaries", "reference_docs",
+        "web_search_results", "graph_context", "relevant_emails",
+        "google_calendar", "user_uploads",
+    )
+    # Unchanged total (background + retrieval) so the A5 omitted_sections
+    # receipt keeps reporting every admitted-evidence key, not just the
+    # ones that can block reuse.
+    _ADMITTED_EVIDENCE_KEYS: Tuple[str, ...] = (
+        _BACKGROUND_EVIDENCE_KEYS + _RETRIEVAL_EVIDENCE_KEYS
+    )
+
+    # Keys _build_final_prompt renders directly (when non-empty) into the
+    # final synthesis prompt, independent of session.accumulated_context.
+    # "web_search_results" is handled separately (rendered only via
+    # accumulated_context — see _omitted_admitted_sections).
+    _FINAL_PROMPT_DIRECT_RENDERED_KEYS = frozenset({
+        "memories", "user_profile", "recent_summaries", "semantic_summaries",
+        "reference_docs", "recent_reflections", "personal_notes", "user_uploads",
+    })
+
+    _UPLOAD_CHUNK_MAX_CHARS = 1500
+
+    @staticmethod
+    def _is_upload_roster_marker(item: Any) -> bool:
+        return isinstance(item, dict) and (item.get('metadata') or {}).get('type') == 'upload_roster'
+
+    @classmethod
+    def _upload_roster_line(cls, user_uploads: Any) -> str:
+        """'Homework1-2.pdf (2026-09-05), …' from the gatherer's roster marker
+        (core/prompt/gatherer_knowledge.get_user_uploads), or ''."""
+        for item in user_uploads or []:
+            if cls._is_upload_roster_marker(item):
+                roster = (item.get('metadata') or {}).get('roster') or []
+                return ", ".join(
+                    f"{r.get('title', '')} ({r.get('date', '')})" for r in roster if r.get('title')
+                )
+        return ""
+
+    @classmethod
+    def _format_user_uploads(cls, user_uploads: Any) -> str:
+        """Numbered admitted upload chunks (title + capped content; image
+        stubs by name only) followed by the roster line."""
+        lines: List[str] = []
+        n = 0
+        for item in user_uploads or []:
+            if cls._is_upload_roster_marker(item) or not isinstance(item, dict):
+                continue
+            meta = item.get('metadata') or {}
+            title = str(meta.get('title', '') or '')
+            if title.startswith('upload:'):
+                title = title[len('upload:'):]
+            content = str(item.get('content', '') or '').strip()
+            n += 1
+            if meta.get('is_image') or content.startswith('User uploaded image:'):
+                lines.append(f"{n}) **{title}** (image upload)")
+                continue
+            if len(content) > cls._UPLOAD_CHUNK_MAX_CHARS:
+                content = content[:cls._UPLOAD_CHUNK_MAX_CHARS] + "…"
+            lines.append(f"{n}) **{title}**\n{content}" if title else f"{n}) {content}")
+        roster = cls._upload_roster_line(user_uploads)
+        if roster:
+            lines.append(
+                "Recently uploaded files (full text retrievable by title with "
+                f"get_full_document): {roster}"
+            )
+        return "\n\n".join(lines)
+
+    @staticmethod
+    def _context_value_nonempty(value: Any) -> bool:
+        """True when an initial_context section value carries anything —
+        handles list/dict/str sections and dataclass-shaped results
+        (WebSearchResult's own has_results, since a WebSearchResult is
+        neither falsy-by-default nor list/dict/str)."""
+        if value is None:
+            return False
+        if hasattr(value, "has_results"):
+            try:
+                return bool(value.has_results)
+            except Exception:
+                return bool(value)
+        return bool(value)
+
+    def _decision_saw_admitted_evidence(
+        self,
+        session: "AgenticSearchSession",
+        initial_context: Optional[Dict[str, Any]],
+    ) -> bool:
+        """B1 (2026-09-07, supersedes A4): tool results alone never prove the
+        BASE retrieval evidence was seen — a turn where the loop only listed
+        repo files still counted session.accumulated_context as "evidence
+        seen" while the base retrieval's memories/notes/uploads never
+        reached the decision prompt. True (reuse permitted) iff NO
+        _RETRIEVAL_EVIDENCE_KEYS entry is non-empty in initial_context —
+        background-only context (profile/summary/reflection digest lines,
+        already visible to the decision prompt via context_inventory) may
+        still be reused, same as before. Any non-empty retrieval key blocks
+        reuse regardless of accumulated_context, since that key is real
+        retrieved content the decision prompt's bounded digest never
+        rendered.
+        """
+        return self._first_unmet_retrieval_key(initial_context, session) is None
+
+    def _first_unmet_retrieval_key(
+        self,
+        initial_context: Optional[Dict[str, Any]],
+        session: Optional["AgenticSearchSession"] = None,
+    ) -> Optional[str]:
+        """B1 (2026-09-07): the first _RETRIEVAL_EVIDENCE_KEYS entry that is
+        non-empty in initial_context AND was never rendered into the decision
+        prompt — names the evidence the decision round never saw, for
+        session.reuse_skipped_reason. The one retrieval key the decision
+        round CAN see is the pre-gathered base web result: A3 seeding
+        (session.seeded_base_web) renders it verbatim into
+        accumulated_context before round 2, so it is exempt (Fable referee,
+        2026-09-07 — blocking on it would undo A3's purpose). Every other
+        retrieval key reaches the decision prompt only as a bounded digest
+        + counts, so any non-empty one blocks reuse."""
+        if not initial_context:
+            return None
+        seeded_web = bool(session is not None and getattr(session, "seeded_base_web", False))
+        for key in self._RETRIEVAL_EVIDENCE_KEYS:
+            if key == "web_search_results" and seeded_web:
+                continue
+            if self._context_value_nonempty(initial_context.get(key)):
+                return key
+        return None
+
+    def _compute_visible_sources(self, sections: List[str]) -> Dict[str, Any]:
+        """A5 receipt: {"web_ids": ..., "sections": ...} at answer time."""
+        source_map = getattr(self._tool_executor, "_current_web_source_map", None) or {}
+        return {"web_ids": sorted(source_map.keys()), "sections": list(sections)}
+
+    def _omitted_admitted_sections(
+        self,
+        initial_context: Optional[Dict[str, Any]],
+        rendered_keys: Any,
+    ) -> List[str]:
+        """A5 receipt: _ADMITTED_EVIDENCE_KEYS entries that were non-empty in
+        initial_context but not among rendered_keys (the sections the
+        answering call actually rendered)."""
+        if not initial_context:
+            return []
+        return [
+            key for key in self._ADMITTED_EVIDENCE_KEYS
+            if self._context_value_nonempty(initial_context.get(key)) and key not in rendered_keys
+        ]
 
     @staticmethod
     def _build_xml_action_force_prompt(query: str, forced_action, spec) -> str:
@@ -1810,6 +2092,9 @@ class AgenticSearchController:
           so a mid-sentence ending is treated as capped output
         - narration: promissory openers ("Let me check…") are plans the
           model failed to execute, never final answers
+        - question-dominated (2026-09-07, B2): ≥2 lines ending in "?" with
+          fewer than 2 non-question lines is a clarification list, not an
+          answer
         """
         from core.response_parser import ResponseParser
         candidate = (text or "").strip()
@@ -1835,6 +2120,31 @@ class AgenticSearchController:
             logger.info(
                 "[AgenticSearch] Decision answer opens with loop-meta "
                 "narration about prior rounds — falling back to synthesis call"
+            )
+            return None
+        # B2 (2026-09-07): a decision round can produce a well-punctuated,
+        # non-promissory CLARIFICATION LIST instead of an answer — a turn-6
+        # incident ("I checked the uploads directory ... Can you tell me:
+        # 1. ... 2. ... 3. ...") passed every guard above (ends in "?", no
+        # promissory verb, no loop-meta opener) and was reused as the final
+        # response. ≥2 lines ending in "?" with fewer than 2 non-question
+        # lines means the reply is mostly a list of questions, not an
+        # answer, when admitted evidence exists to answer from.
+        # Fable referee (2026-09-07): the live turn-6 reply also carried a
+        # "possibilities" bullet list and an intro paragraph (six non-question
+        # lines), so the line-ratio test alone would have let it through. An
+        # ENUMERATED question list (two or more numbered/bulleted lines that
+        # end in "?") is a clarification request by shape regardless of how
+        # much prose surrounds it.
+        _lines = [ln.strip() for ln in sanitized.splitlines() if ln.strip()]
+        _q_lines = [ln for ln in _lines if ln.endswith("?")]
+        _non_q_lines = [ln for ln in _lines if not ln.endswith("?")]
+        _enum_q_lines = [ln for ln in _q_lines if self._ENUMERATED_LINE_RE.match(ln)]
+        if len(_enum_q_lines) >= 2 or (len(_q_lines) >= 2 and len(_non_q_lines) < 2):
+            logger.info(
+                "[AgenticSearch] Decision answer is question-dominated "
+                "(clarification list, not an answer) — falling back to "
+                "synthesis call"
             )
             return None
         return sanitized
@@ -1869,6 +2179,20 @@ class AgenticSearchController:
 
         # Hash prompt for provenance
         session.final_prompt_hash = hashlib.sha256(final_prompt.encode()).hexdigest()[:16]
+
+        # Receipts (2026-09-06, A5): what the answering call actually saw.
+        # answer_call itself is set by the caller (decision_reuse never
+        # reaches this method; final_synthesis vs error_fallback both call it,
+        # so the caller's pre-set value must not be overwritten here).
+        session.visible_sources = self._compute_visible_sources(
+            getattr(session, "_final_prompt_section_headers", [])
+        )
+        _final_rendered_keys = set(self._FINAL_PROMPT_DIRECT_RENDERED_KEYS)
+        if session.accumulated_context and session.accumulated_context.strip():
+            _final_rendered_keys.add("web_search_results")
+        session.omitted_sections = self._omitted_admitted_sections(
+            initial_context, _final_rendered_keys
+        )
 
         # Stash for regenerate_final_answer (narration-shaped final recovery)
         self._last_final_prompt = final_prompt
@@ -2067,6 +2391,23 @@ class AgenticSearchController:
         reference_docs = initial_context.get('reference_docs', [])
         if reference_docs:
             lines.append(f"- [DAEMON DOCUMENTATION]: {len(reference_docs)} reference docs")
+
+        # User uploads (2026-09-07): the inventory used to omit this section
+        # entirely, so the loop never learned which uploaded files EXIST and
+        # searched reference_docs semantically for "the first assignment"
+        # four times without finding Homework1-2.pdf. The roster titles are
+        # rendered verbatim — a title is the argument get_full_document needs.
+        user_uploads = initial_context.get('user_uploads', [])
+        if user_uploads:
+            _real = [u for u in user_uploads if not self._is_upload_roster_marker(u)]
+            _roster = self._upload_roster_line(user_uploads)
+            _line = f"- [USER UPLOADED ITEMS]: {len(_real)} admitted upload chunks"
+            if _roster:
+                _line += (
+                    "; uploaded files retrievable IN FULL with "
+                    f"get_full_document(title): {_roster}"
+                )
+            lines.append(_line)
 
         dreams = initial_context.get('dreams', [])
         if dreams:
@@ -2416,6 +2757,16 @@ What would you like to do?""")
                 if doc_lines:
                     parts.append(f"[DAEMON DOCUMENTATION]\n" + "\n\n".join(doc_lines))
 
+            # User uploads (2026-09-07): never rendered here before — the
+            # final synthesis answered "I don't have the actual HW1
+            # instructions" with the roster naming Homework1-2.pdf sitting in
+            # the base prompt it never saw.
+            user_uploads = initial_context.get('user_uploads', [])
+            if user_uploads:
+                uu_text = self._format_user_uploads(user_uploads)
+                if uu_text:
+                    parts.append(f"[USER UPLOADED ITEMS]\n{uu_text}")
+
             # Reflections
             # Builder provides: reflections (flat list), recent_reflections, semantic_reflections
             recent_reflections = initial_context.get('recent_reflections', [])
@@ -2434,9 +2785,20 @@ What would you like to do?""")
         _now = datetime.now()
         parts.append(f"[TIME CONTEXT]\nCurrent time: {_now.strftime('%A, %Y-%m-%d %H:%M:%S')}")
 
-        # Add search results
+        # Add search results. Header is source-kind-neutral (2026-09-06):
+        # accumulated_context can hold memory/file/computation/fetched-page
+        # results with no web search at all (or pre-gathered base web results
+        # seeded by A3 with no agentic web round) — the old
+        # "[WEB SEARCH RESULTS - N rounds]" label plus the unconditional
+        # "every claim MUST cite [WEB_N]" instruction below misdescribed a
+        # memory-only loop's own tool results as web search.
         if session.accumulated_context:
-            parts.append(f"[WEB SEARCH RESULTS - {len(session.rounds)} rounds]\n{session.accumulated_context}")
+            parts.append(
+                f"[TOOL RESULTS - {len(session.rounds)} rounds] (each block is "
+                f"labeled by its source kind: web search, memory, file, "
+                f"computation, fetched page, pre-gathered web)\n"
+                f"{session.accumulated_context}"
+            )
 
         # Add the query
         parts.append(f"[CURRENT USER QUERY — RESPOND TO THIS]\n{query}")
@@ -2458,8 +2820,11 @@ What would you like to do?""")
         except Exception:
             pass
 
-        # Instructions
-        has_web = bool(session.accumulated_context)
+        # Instructions. has_web is keyed off actual WEB sources having been
+        # numbered (2026-09-06) — accumulated_context alone no longer implies
+        # web evidence (a memory/file/computation-only loop was getting the
+        # "every claim MUST cite [WEB_N]" instruction it had nothing to cite).
+        has_web = bool(getattr(self._tool_executor, "_current_web_source_map", None))
         has_wiki = bool(getattr(self._tool_executor, "_current_wiki_source_map", None))
         citation_line = (
             "- Cite web sources using [WEB_N] markers (e.g., 'According to Reuters [WEB_1]...'). "
@@ -2528,6 +2893,20 @@ What would you like to do?""")
                     f"[AgenticSearch] Final prompt still over ceiling after trimming: "
                     f"{total_tokens}/{prompt_ceiling} tokens"
                 )
+
+        # Provenance receipt (2026-09-06): record the top-level bracketed
+        # section headers that actually made it into the assembled prompt
+        # (post-trim), for session.visible_sources["sections"]. Only the
+        # FIRST LINE of each top-level block is checked — nested content
+        # (e.g. inline [WEB_N] citation lines inside the tool-results block)
+        # must never be mistaken for a top-level section header.
+        _section_headers: List[str] = []
+        for _part in parts:
+            _first_line = _part.split("\n", 1)[0]
+            _hm = re.match(r"^\[[^\]]+\]", _first_line)
+            if _hm:
+                _section_headers.append(_hm.group(0))
+        session._final_prompt_section_headers = _section_headers
 
         return "\n\n".join(parts)
 

@@ -51,9 +51,15 @@ asserts formatter↔PRIORITY_ORDER parity so a new rendered section can't go unm
 """
 
 import os
-from typing import Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils.logging_utils import get_logger
 from utils.text_budget import fit_text_to_tokens
+
+# Module-level import verified cycle-free (2026-09-06): knowledge.web_search_manager
+# does not import core.prompt.* (or anything that does) at module level, so this
+# is a plain dependency, not one of the four documented lazy-import cases in
+# CLAUDE.md "Import doctrine".
+from knowledge.web_search_manager import render_numbered_web_sources, trim_web_search_result
 
 logger = get_logger("prompt_token_manager")
 
@@ -146,6 +152,67 @@ USER_PROFILE_MAX_TOKENS = 3000
 # middle-out keeps the user's words and the end of the paste) and metering
 # counts the rendered pair exactly as the formatter emits it.
 CONVERSATION_QUERY_MAX_TOKENS = int(os.getenv("CONVERSATION_QUERY_MAX_TOKENS", "600"))
+
+# Structured-section adapters (2026-09-06 evidence-transport fix).
+#
+# Verified defect: the non-list branch of _manage_token_budget used to do
+# `item_text = str(val)` for ANY non-list section, and — once it exceeded
+# SEMANTIC_ITEM_MAX_TOKENS (800) — wrote that middle-out'd STRING back into
+# `trimmed[name]`. A WebSearchResult dataclass repr for more than about a
+# page of content always exceeds 800 tokens, so `web_search_results` silently
+# became a `str`, and the formatter's inline web-search block
+# (`hasattr(web_search, 'has_results')`) then rendered NOTHING — the base
+# prompt's web evidence vanished with no error. The generic string
+# write-back itself dates to 2025-11-28 (d7e0f7b); `web_search_results` was
+# only added to PRIORITY_ORDER on 2026-03-26 (e0f08e0), which is when this
+# became live-reachable.
+#
+# STRUCTURED_SECTION_ADAPTERS lets a registered section be METERED against
+# what will actually be rendered (never a str(dataclass) repr) and, if that
+# exceeds WEB_SEARCH_SECTION_MAX_TOKENS, SHRUNK via a bounded ladder instead
+# of ever being coerced to a string. Each entry is
+# (meter_fn(val, count_tokens) -> int, shrink_fn(val, step) -> val|None).
+WEB_SEARCH_SECTION_MAX_TOKENS = int(os.getenv("WEB_SEARCH_SECTION_MAX_TOKENS", "3200"))
+
+# Fixed (max_sources, max_chars_per_source) ladder the web_search_results
+# adapter shrinks down when the rendered section is still too large. Step 0
+# matches render_numbered_web_sources' own default bound (8, 2000), so the
+# very first application does not change the metered size by itself — it
+# only locks the same bound into the stored value; real reduction begins at
+# step 1. Past the last entry the section is dropped (None), never stringified.
+_WEB_SEARCH_SHRINK_LADDER: List[Tuple[int, int]] = [
+    (8, 2000), (6, 1500), (4, 1000), (2, 800), (1, 600),
+]
+
+
+def _meter_web_search_results(val: Any, count_tokens: Callable[[str], int]) -> int:
+    """meter_fn for STRUCTURED_SECTION_ADAPTERS['web_search_results']: token
+    count of the EXACT text render_numbered_web_sources would produce for
+    this value (the same call the formatter's inline web-search block makes),
+    never a str(dataclass) repr. Empty/errored results (has_results False)
+    count 0 so the section passes through untouched."""
+    if not getattr(val, "has_results", False):
+        return 0
+    pages = getattr(val, "pages", None) or []
+    lines, _ = render_numbered_web_sources(pages, max_sources=8, max_chars_per_source=2000)
+    if not lines:
+        return 0
+    return count_tokens("\n\n".join(lines))
+
+
+def _shrink_web_search_results(val: Any, step: int) -> Optional[Any]:
+    """shrink_fn for STRUCTURED_SECTION_ADAPTERS['web_search_results']: apply
+    the next rung of _WEB_SEARCH_SHRINK_LADDER; past the end returns None —
+    the section is dropped, never coerced to a string."""
+    if step < 0 or step >= len(_WEB_SEARCH_SHRINK_LADDER):
+        return None
+    max_sources, max_chars = _WEB_SEARCH_SHRINK_LADDER[step]
+    return trim_web_search_result(val, max_sources=max_sources, max_chars_per_source=max_chars)
+
+
+STRUCTURED_SECTION_ADAPTERS: Dict[str, Tuple[Callable[[Any, Callable[[str], int]], int], Callable[[Any, int], Optional[Any]]]] = {
+    "web_search_results": (_meter_web_search_results, _shrink_web_search_results),
+}
 
 
 class TokenManager:
@@ -272,6 +339,12 @@ class TokenManager:
         model_name = self.model_manager.get_active_model_name()
         trimmed = dict(context)
         current_tokens = 0
+        # Per-section ladder position for STRUCTURED_SECTION_ADAPTERS entries,
+        # shared between the first pass (which may walk several rungs in one
+        # go to satisfy WEB_SEARCH_SECTION_MAX_TOKENS) and the second pass
+        # (which advances exactly one rung per pass) so they never repeat or
+        # skip a step.
+        _adapter_shrink_steps: Dict[str, int] = {}
 
         # Helper to count tokens for any item
         def _item_tokens(item: Any) -> int:
@@ -350,16 +423,74 @@ class TokenManager:
                 if name == "memories":
                     logger.debug(f"[TOKEN BUDGET] Kept {len(kept)}/{len(val)} memories, budget={self.token_budget}, used={current_tokens}")
                 trimmed[name] = kept
-            else:
-                # For string sections (like wiki content), apply middle-out if too large
+            elif isinstance(val, dict):
+                # Dict-shaped sections (e.g. a raw {"pages": [...]} web
+                # result, or codebase_changes) are metered but NEVER
+                # coerced/written back — unchanged from prior behavior. This
+                # is explicitly NOT an adapter case even for
+                # "web_search_results": only the dataclass shape is adapted.
                 item_text = str(val)
                 t = self.get_token_count(item_text, model_name)
-                section_cap = USER_PROFILE_MAX_TOKENS if name == "user_profile" else SEMANTIC_ITEM_MAX_TOKENS
-                if t > section_cap and ENABLE_MIDDLE_OUT and not isinstance(val, dict):
-                    item_text = self._middle_out(item_text, section_cap, force=True)
-                    t = self.get_token_count(item_text, model_name)
-                    trimmed[name] = item_text
-                    logger.debug(f"[MIDDLE-OUT] Compressed {name} section: {self.get_token_count(str(val), model_name)} → {t} tokens")
+                if current_tokens + t <= self.token_budget:
+                    current_tokens += t
+                else:
+                    # We'll consider dropping this later in the second pass.
+                    pass
+            elif name in STRUCTURED_SECTION_ADAPTERS:
+                # Registered structured section (2026-09-06 evidence-transport
+                # fix): meter what will ACTUALLY be rendered and shrink down a
+                # fixed ladder if it's still too large — never str()-and-
+                # write-back (see STRUCTURED_SECTION_ADAPTERS doc above).
+                meter_fn, shrink_fn = STRUCTURED_SECTION_ADAPTERS[name]
+
+                def _count_fn(text: str, _mn: str = model_name) -> int:
+                    return self.get_token_count(text, _mn)
+
+                t = meter_fn(val, _count_fn)
+                step = _adapter_shrink_steps.get(name, 0)
+                while t > WEB_SEARCH_SECTION_MAX_TOKENS:
+                    shrunk = shrink_fn(val, step)
+                    step += 1
+                    if shrunk is None:
+                        val = None
+                        t = 0
+                        break
+                    val = shrunk
+                    t = meter_fn(val, _count_fn)
+                _adapter_shrink_steps[name] = step
+                trimmed[name] = val
+                if val is not None:
+                    logger.debug(
+                        f"[TOKEN BUDGET] Structured section '{name}' metered "
+                        f"at {t} tokens (adapter step={step})"
+                    )
+                if val is not None and current_tokens + t <= self.token_budget:
+                    current_tokens += t
+                else:
+                    # Over budget (or dropped by the ladder already) — the
+                    # second pass continues shrinking/dropping if needed.
+                    pass
+            else:
+                # Plain string sections (like wiki content): apply middle-out
+                # if too large. Any OTHER unregistered structured object type
+                # is metered by str() length but NEVER written back — an
+                # unmeterable section must not be silently stringified into
+                # the prompt either.
+                item_text = str(val)
+                t = self.get_token_count(item_text, model_name)
+                if isinstance(val, str):
+                    section_cap = USER_PROFILE_MAX_TOKENS if name == "user_profile" else SEMANTIC_ITEM_MAX_TOKENS
+                    if t > section_cap and ENABLE_MIDDLE_OUT:
+                        item_text = self._middle_out(item_text, section_cap, force=True)
+                        t = self.get_token_count(item_text, model_name)
+                        trimmed[name] = item_text
+                        logger.debug(f"[MIDDLE-OUT] Compressed {name} section: {self.get_token_count(str(val), model_name)} → {t} tokens")
+                else:
+                    logger.debug(
+                        f"[TOKEN BUDGET] Unregistered structured section "
+                        f"'{name}' (type={type(val).__name__}) — metering by "
+                        f"str() length, never writing back a stringified value"
+                    )
 
                 if current_tokens + t <= self.token_budget:
                     current_tokens += t
@@ -380,6 +511,9 @@ class TokenManager:
                 if isinstance(v, list):
                     for it in v:
                         total += _item_tokens(it)
+                elif name in STRUCTURED_SECTION_ADAPTERS and not isinstance(v, (str, dict)):
+                    meter_fn, _shrink_fn = STRUCTURED_SECTION_ADAPTERS[name]
+                    total += meter_fn(v, lambda text, _mn=model_name: self.get_token_count(text, _mn))
                 else:
                     total += self.get_token_count(str(v), model_name)
             return total
@@ -401,6 +535,14 @@ class TokenManager:
                         # Drop a conservative slice from the tail
                         drop_n = max(1, int(len(v) * 0.25))
                         trimmed[name] = v[:-drop_n]
+                    elif name in STRUCTURED_SECTION_ADAPTERS and not isinstance(v, (str, dict)):
+                        # Adapter section: advance exactly ONE ladder step per
+                        # pass (never blanked/stringified whole); past the
+                        # ladder's end the shrink_fn drops it to None.
+                        _, shrink_fn = STRUCTURED_SECTION_ADAPTERS[name]
+                        step = _adapter_shrink_steps.get(name, 0)
+                        trimmed[name] = shrink_fn(v, step)
+                        _adapter_shrink_steps[name] = step + 1
                     elif isinstance(v, (str, dict)) and v:
                         # Structured sections (e.g. codebase_changes) must
                         # retain their schema; drop them whole if necessary.

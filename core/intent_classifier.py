@@ -411,8 +411,17 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
          IntentType.PROJECT_WORK, 0.60)
 
     # --- CREATIVE_EXPLORATION ---------------------------------------------
+    # bare "idea(s)?" matched an information REQUEST for an existing thing
+    # ("give me an idea of what we're working with" → creative_exploration
+    # 0.75 → CREATIVE style block on a document-lookup request, 2026-09-07
+    # R5) and negated/hedged non-ideas ("no idea what to do", "any idea
+    # why"). Guarded: not preceded by "no "/"any ", and not followed by a
+    # question-word/preposition that turns it into "give me info about X"
+    # rather than a genuine idea/brainstorm noun.
     _add(
-        r"\b(brainstorm|idea(s)?|what if|imagine|possibilities"
+        r"\b(brainstorm|(?<!no )(?<!any )\bideas?\b"
+        r"(?!\s+(?:of|what|how|why|whether|if|about|where|when)\b)"
+        r"|what if|imagine|possibilities"
         r"|help me think|let'?s think|explore|hypothetical"
         r"|creative|invent|design|dream up|could we|what about)\b",
         IntentType.CREATIVE_EXPLORATION, 0.75,

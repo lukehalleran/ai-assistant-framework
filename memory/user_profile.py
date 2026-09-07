@@ -41,7 +41,7 @@ import os
 import uuid
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import threading
@@ -202,7 +202,9 @@ class UserProfile:
                  source_excerpt: str = "",
                  category: ProfileCategory = None,
                  timestamp: datetime = None,
-                 stance: str = "") -> bool:
+                 stance: str = "",
+                 claim_kind: str = "",
+                 event_date: str = "") -> bool:
         """
         Add a fact to the profile using append-only storage.
 
@@ -221,6 +223,14 @@ class UserProfile:
                 An EXPLICIT "appraisal" ("I'm a failure") is stored with its
                 tag but never promoted into the always-rendered quick profile —
                 a value judgment is the user's take at the time, not identity.
+            claim_kind: Optional temporal-claim kind from the extractor's
+                provenance join (2026-09-06, memory.fact_source.classify_claim_time)
+                — "event"/"state"/"habit"/"plan"/"unknown". Only stored when
+                non-empty (legacy facts carry no key at all, same as stance).
+            event_date: Optional ISO date the claim's evidence describes, when
+                claim_kind == "event" and a date was resolvable. get_category
+                uses this to stop projecting a one-time past event as current
+                state forever, regardless of what the fact VALUE says.
 
         Returns True if fact was added/updated, False if rejected.
         """
@@ -306,6 +316,12 @@ class UserProfile:
             fact_dict = fact.to_dict()
             if stance and stance != "objective":
                 fact_dict["stance"] = stance
+            # B2 (2026-09-06): claim temporal kind + event date, only when the
+            # caller provided one (legacy/plain facts carry no new key).
+            if claim_kind:
+                fact_dict["claim_kind"] = claim_kind
+            if event_date:
+                fact_dict["event_date"] = event_date
 
             if exact_match_idx is not None:
                 # Case 1: Same (relation, value) — confirmation: boost confidence + truth
@@ -463,9 +479,12 @@ class UserProfile:
             source = fact.get("source_excerpt", "")
             timestamp = fact.get("timestamp")  # Preserve original timestamp if provided
             stance = fact.get("stance", "")  # extractor stance tag (2026-08-23)
+            claim_kind = fact.get("claim_kind", "")  # temporal claim kind (2026-09-06)
+            event_date = fact.get("event_date", "")
 
             if self.add_fact(relation, value, confidence, source,
-                             timestamp=timestamp, stance=stance):
+                             timestamp=timestamp, stance=stance,
+                             claim_kind=claim_kind, event_date=event_date):
                 added += 1
 
         if added > 0:
@@ -518,6 +537,21 @@ class UserProfile:
                         continue
                 except (ValueError, TypeError):
                     pass
+            # B2 (2026-09-06): a fact whose evidence classified as a discrete
+            # PAST EVENT (memory.fact_source.classify_claim_time) with a
+            # resolved date before today is not current state, regardless of
+            # what the durable-looking relation name or object VALUE says (a
+            # one-time "took an extra dose yesterday" must not project into
+            # today). Habits/states/unknown are untouched; a fact with no
+            # claim_kind key at all (legacy) behaves exactly as before.
+            if f.get("claim_kind") == "event":
+                event_date_str = f.get("event_date", "")
+                if event_date_str:
+                    try:
+                        if date.fromisoformat(event_date_str) < now.date():
+                            continue
+                    except (ValueError, TypeError):
+                        pass
             result.append(f)
         return result
 

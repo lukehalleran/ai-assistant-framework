@@ -33,7 +33,14 @@ def run_catchup() -> int:
     import asyncio
 
     from utils.logging_utils import configure_logging
-    configure_logging()
+    # Own log file (2026-09-07): configure_logging() rotates whatever file it
+    # is pointed at by mtime before opening it. With the default path this
+    # 02:00 timer run renamed the LIVE daemon's daemon_debug.log out from
+    # under it (the daemon kept writing to the renamed inode, so nothing was
+    # lost, but daemon_debug.log then held only this script's 15 lines and
+    # the real log sat under an archive name). The catch-up job logs to its
+    # own file so the daemon's log name stays truthful.
+    configure_logging(file_path=os.path.join(_REPO_ROOT, "logs", "daily_note_catchup.log"))
     try:
         from utils.python_fs_guard import activate as _activate_fs_guard
         _activate_fs_guard()

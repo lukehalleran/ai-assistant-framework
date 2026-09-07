@@ -510,13 +510,22 @@ class ReferenceDocsManager:
         )
         return summary
 
-    async def get_documents(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_documents(
+        self, query: str, limit: int = 10, *, doc_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Retrieve relevant document chunks using hybrid search: 1/3 keyword + 2/3 semantic.
 
         Args:
             query: Search query
             limit: Maximum chunks to return
+            doc_type: when given, BOTH legs are restricted to chunks whose
+                stored metadata `type` equals this value (e.g. "user_upload").
+                Default None is byte-identical to the pre-2026-09-07 behavior
+                for every existing caller (2026-09-07 upload-roster contract A2
+                — the pool this feeds used to draw from the WHOLE
+                reference_docs collection with no type filter, so a fresh
+                upload could lose to 1,000+ unrelated doc chunks).
 
         Returns:
             List of chunk dicts with content, metadata, and relevance_score
@@ -527,13 +536,14 @@ class ReferenceDocsManager:
             semantic_limit = limit - keyword_limit
 
             # 1. KEYWORD SEARCH
-            keyword_results = self._keyword_search(query, keyword_limit * 3)
+            keyword_results = self._keyword_search(query, keyword_limit * 3, doc_type=doc_type)
 
             # 2. SEMANTIC SEARCH
             semantic_results = self.chroma_store.query_collection(
                 'reference_docs',
                 query,
-                n_results=semantic_limit * 2
+                n_results=semantic_limit * 2,
+                where={"type": doc_type} if doc_type else None,
             )
 
             # Format semantic results
@@ -611,8 +621,16 @@ class ReferenceDocsManager:
             return False
         return len(keyword_tokens(contained)) >= 2
 
-    def _keyword_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search documents by keyword matching on title, section, content."""
+    def _keyword_search(
+        self, query: str, limit: int = 10, *, doc_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Search documents by keyword matching on title, section, content.
+
+        `doc_type` (2026-09-07 upload-roster contract A2), when given,
+        restricts matches to chunks whose stored metadata `type` equals it —
+        the keyword-leg counterpart to `get_documents`' semantic `where`
+        filter. Default None keeps every existing caller byte-identical.
+        """
         try:
             collection = self._collection()
             if not collection:
@@ -628,6 +646,8 @@ class ReferenceDocsManager:
             scored = []
             for doc, meta in zip(documents, metadatas):
                 if not meta:
+                    continue
+                if doc_type is not None and meta.get('type') != doc_type:
                     continue
 
                 title = str(meta.get('title', '')).lower()

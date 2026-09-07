@@ -60,7 +60,8 @@ turn dump / telemetry  →  root cause (read the code that ran, not a re-derivat
   →  targeted suites green + ruff clean
   →  probe the deployed function live (read-only script, or a relayed Daemon turn)
   →  CLAUDE.md one-liner + CLAUDE_CHANGELOG.md narrative + memory note
-  →  owner: git add -A · commit -F commit_message.txt · push · restart Daemon
+  →  owner: git add -A · commit -F commit_message.txt · push  (BEFORE the restart)
+  →  restart Daemon
   →  live probe after the restart (the fix is not real until this passes)
 ```
 
@@ -77,10 +78,48 @@ ones agents break):
   live Daemon holds the store (`utils/daemon_guard.py`). Look at a target
   before overwriting it, even under `data/`.
 - **Never load large datasets fully.** 16 GB machine; batch the test suite
-  (a single full-suite process gets cgroup-killed).
+  (a single full-suite process gets cgroup-killed). The non-unit batch
+  (everything outside `tests/unit`) is NEVER run beside the live Daemon —
+  on 2026-09-07 it ran during a daemon shutdown (LLM extraction + summaries
+  in flight) and the box swap-thrashed to a hard reset with no OOM kill in
+  the journal. Run it with the daemon down, under
+  `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=512M` so the
+  kernel kills pytest instead of the machine, and write the output somewhere
+  that survives a reboot (`~/daemon_checkpoints/`, not `/tmp`).
 - **Prefer neutralization over deletion.** Read-time suppression, then
   reversible metadata, then additive changes; deletion is a human click or
   a terminal step, never automatic (`docs/AUTONOMOUS_CURATION_DESIGN.md`).
+
+## 3a. Commit discipline (added 2026-09-07)
+
+The Daemon runs from the working tree: every restart deploys whatever is on
+disk, committed or not. So a commit is not "saving work", it is the record of
+what production ran. On 2026-09-06/07 two batches (~1,600 lines) sat
+uncommitted across two days of restarts; by the time the tree was reviewed the
+batches shared hunks in the controller, the types module, the formatter and
+one test file, and the "one commit per root cause" the doc asks for was no
+longer possible without hand-editing hunks. A bisect over that window would
+have been blind, and a revert all-or-nothing.
+
+Principles:
+
+1. **Commit at every verified batch boundary, before the restart that deploys
+   it.** "Verified" = referee pass done, touched suites and the four repo-wide
+   guards green, ruff clean. Two or three commits a day at the current pace is
+   normal; each one must be revertable on its own.
+2. **Keep the message shaped, not long.** One subject line, one paragraph of
+   root cause and fix, one line naming the tests. The narrative belongs in
+   `CLAUDE_CHANGELOG.md` and the handoff doc, both of which are written at the
+   same boundary. A 50-line body is a sign the commit is too big.
+3. **A retest that proves a fix wrong gets a follow-up commit, never an
+   amend.** The record of what the retest taught is worth more than a tidy
+   history (2026-09-07 needed two retest rounds after the first "green" batch).
+4. **No hunk surgery.** If two batches have already merged in the tree, one
+   combined commit is the honest history; write it and move on. The fix is
+   principle 1, not `git add -p`.
+5. **Docs and code move together.** The changelog entry, the CLAUDE.md
+   one-liner, the handoff doc's results section and the memory note are part of
+   the batch, written before the commit, so the commit's `Docs:` line is true.
 
 ## 4. Credit discipline
 
@@ -215,3 +254,7 @@ batch size, not in the loop.
   arithmetic.
 - Deleting or overwriting a target without looking at it first, including
   candidate files under `data/`.
+- Batches merging in the working tree before they merge in history
+  (2026-09-06/07): two days of restarts deployed ~1,600 uncommitted lines,
+  and shared hunks then made per-root-cause commits impossible. Commit at
+  the batch boundary, before the restart (§3a).

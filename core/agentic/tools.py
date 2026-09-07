@@ -1776,14 +1776,64 @@ Provide a focused summary with the most important information."""
                         return f"[No results found in {collection} for: {query}]"
                     return faiss_warning + self.formatter.format_memory_results(results, collection)
 
-            if not results:
-                return f"[No results found in {collection} for: {query}]"
+            # reference_docs also holds the user's uploads (2026-09-07): a
+            # semantic search for "MGT 6203 first assignment" returns syllabus
+            # chunks, never the homework PDF, so every reference_docs result
+            # carries the exact stored upload titles the model can hand to
+            # get_full_document — the title is the only reliable key.
+            _titles_note = self._upload_title_listing() if collection == "reference_docs" else ""
 
-            return self.formatter.format_memory_results(results, collection)
+            if not results:
+                _empty = f"[No results found in {collection} for: {query}]"
+                return _empty + ("\n\n" + _titles_note if _titles_note else "")
+
+            formatted = self.formatter.format_memory_results(results, collection)
+            return formatted + ("\n\n" + _titles_note if _titles_note else "")
 
         except Exception as e:
             logger.warning(f"[AgenticSearch] Memory search failed: {e}")
             return f"[Memory search error: {e}]"
+
+    _UPLOAD_LISTING_MAX = 12
+    _UPLOAD_LISTING_TTL_S = 60.0
+
+    def _upload_title_listing(self) -> str:
+        """Metadata-only listing of the newest distinct non-image upload
+        titles in reference_docs, formatted for the model as exact
+        get_full_document keys. Cached per executor for a minute; never
+        loads document content; fails soft to ''."""
+        _cached = getattr(self, "_upload_listing_cache", None)
+        if _cached and (time.time() - _cached[0]) < self._UPLOAD_LISTING_TTL_S:
+            return _cached[1]
+        text = ""
+        try:
+            coll = self.chroma_store._get_collection('reference_docs')
+            got = coll.get(where={"type": "user_upload"}, include=["metadatas"])
+            by_title: dict[str, str] = {}
+            for meta in (got or {}).get("metadatas", []) or []:
+                if not meta or meta.get('is_image'):
+                    continue
+                title = str(meta.get('title', '') or '').strip()
+                if not title:
+                    continue
+                ts = str(meta.get('timestamp', '') or '')
+                if ts > by_title.get(title, ''):
+                    by_title[title] = ts
+            ordered = sorted(by_title.items(), key=lambda kv: kv[1], reverse=True)
+            if ordered:
+                entries = ", ".join(
+                    f'"{t}" ({ts[:10]})' if ts else f'"{t}"'
+                    for t, ts in ordered[: self._UPLOAD_LISTING_MAX]
+                )
+                text = (
+                    "[Uploaded files in reference_docs — retrieve any of them IN FULL "
+                    f"with get_full_document(title=<exact title>): {entries}]"
+                )
+        except Exception as e:
+            logger.debug(f"[AgenticSearch] upload title listing unavailable: {e}")
+            text = ""
+        self._upload_listing_cache = (time.time(), text)
+        return text
 
     def _search_wiki_faiss(self, query: str, k: int = 8) -> list[dict]:
         """Search the FAISS Wikipedia index (41M vectors) as fallback for wiki_knowledge."""

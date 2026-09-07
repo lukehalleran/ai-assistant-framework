@@ -1016,20 +1016,20 @@ class PromptFormatter:
             try:
                 # Handle WebSearchResult object
                 if hasattr(web_search, 'has_results') and web_search.has_results:
-                    from knowledge.web_search_manager import assign_web_ids
+                    from knowledge.web_search_manager import render_numbered_web_sources
                     pages = web_search.pages
                     from_cache = web_search.from_cache
-                    # Assign stable WEB_N IDs after dedupe
-                    numbered_sources, web_source_map = assign_web_ids(pages)
-                    # Store map for citation validation downstream
+                    # Shared renderer (2026-09-06): assigns stable WEB_N ids via
+                    # assign_web_ids, then formats each kept source EXACTLY as
+                    # this block used to inline — the base prompt path, the
+                    # token-budget shrink ladder, and the agentic pre-gathered-
+                    # web path now all go through the one function.
+                    ws_lines, web_source_map = render_numbered_web_sources(
+                        pages, max_sources=8, max_chars_per_source=2000,
+                    )
+                    # Store map for citation validation downstream (ids only
+                    # for sources actually rendered into ws_lines)
                     context["_web_source_map"] = web_source_map
-                    ws_lines: list[str] = []
-                    for src in numbered_sources[:8]:  # Limit to 8 results
-                        content = src.content
-                        if content:
-                            if len(content) > 2000:
-                                content = content[:2000] + "..."
-                            ws_lines.append(f"[{src.source_id}] **{src.title}** ({src.url})\n{content}")
                     if ws_lines:
                         cache_note = " (cached)" if from_cache else ""
                         citation_instruction = (
@@ -1158,10 +1158,27 @@ class PromptFormatter:
         user_uploads = context.get("user_uploads", []) or []
         uu_lines: list[str] = []
         upload_images: list[dict] = []  # Collect images for multimodal models
+        roster_line = ""  # 2026-09-07 upload-retrieval contract A4
 
-        for i, upload in enumerate(user_uploads, start=1):
+        i = 0  # numbering counter — the roster marker is never numbered
+        for upload in user_uploads:
             if isinstance(upload, dict):
                 meta = upload.get("metadata", {})
+                # Fresh-upload roster marker (2026-09-07, contract A4): a
+                # title/date listing attached by
+                # ContextGatherer.get_user_uploads regardless of whether the
+                # semantic/keyword legs admitted anything — render it as a
+                # single trailing line, never as a numbered item.
+                if meta.get("type") == "upload_roster":
+                    roster = meta.get("roster") or []
+                    if roster:
+                        entries = ", ".join(f"{r.get('title', '')} ({r.get('date', '')})" for r in roster)
+                        roster_line = (
+                            "Recently uploaded files (full text retrievable by "
+                            f"title with get_full_document): {entries}"
+                        )
+                    continue
+                i += 1
                 title = meta.get("title", "")
                 is_image = meta.get("is_image", False)
                 media_type = meta.get("media_type", "")
@@ -1171,6 +1188,7 @@ class PromptFormatter:
                 relevance = upload.get("relevance_score", 0.0)
                 match_type = upload.get("match_type", "")
             else:
+                i += 1
                 title, is_image, media_type, image_path, content = "", False, "", "", str(upload)
                 relevance, match_type = 0.0, ""
 
@@ -1205,8 +1223,11 @@ class PromptFormatter:
                 header = " ".join(header_parts) if header_parts else ""
                 uu_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
 
-        if uu_lines:
-            sections.append(f"[USER UPLOADED ITEMS] n={len(uu_lines)}\n" + "\n\n".join(uu_lines))
+        if uu_lines or roster_line:
+            body = "\n\n".join(uu_lines)
+            if roster_line:
+                body = f"{body}\n\n{roster_line}" if body else roster_line
+            sections.append(f"[USER UPLOADED ITEMS] n={len(uu_lines)}\n" + body)
 
         # Merge upload images into note_images for multimodal API calls
         if upload_images:

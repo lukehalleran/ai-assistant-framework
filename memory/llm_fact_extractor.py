@@ -683,5 +683,13 @@ JSON:"""
             triple["source_anchor"] = evidence.anchor
             if evidence.turn_id:
                 triple["source_turn_id"] = evidence.turn_id
+            # B2 (2026-09-06): claim kind + resolved event date/observation
+            # time from the SAME provenance join — no new key when absent.
+            if evidence.claim_kind:
+                triple["claim_kind"] = evidence.claim_kind
+            if evidence.event_date:
+                triple["event_date"] = evidence.event_date
+            if evidence.observed_at:
+                triple["observed_at"] = evidence.observed_at
             kept.append(triple)
         triples[:] = kept

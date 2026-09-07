@@ -93,6 +93,31 @@ PERSONAL_NOTES_MIN_CHARS = int(os.getenv("PERSONAL_NOTES_MIN_CHARS", "60"))
 USER_UPLOADS_MAX_AGE_DAYS = int(os.getenv("USER_UPLOADS_MAX_AGE_DAYS", "3"))
 USER_UPLOADS_MIN_RELEVANCE = float(os.getenv("USER_UPLOADS_MIN_RELEVANCE", "0.62"))
 
+# Document-context cue (2026-09-07 upload-retrieval contract A4): the SAME
+# regex `_upload_is_live`'s freshness/document-cue leg has always used,
+# hoisted to a module-level constant so the upload-roster trigger below can
+# reuse it without duplicating the pattern.
+_DOCUMENT_CONTEXT_RE = re.compile(
+    r"\b(?:attachments?|uploads?|documents?|pdf|docx|csv|spreadsheet|"
+    r"dataset|homework|assignment|syllabus|lecture|transcript|"
+    r"(?:question|task|part|page)\s+\d+)\b",
+    re.IGNORECASE,
+)
+
+# Filename-shaped token ("Homework1-2.pdf", "UsedCars2.csv") — a second,
+# vocabulary-free cue for the upload roster: "pull up the first assignment"
+# has no filename, but "what's in Homework1-2.pdf" does.
+_UPLOAD_FILENAME_TOKEN_RE = re.compile(
+    r"\w+\.(?:pdf|docx?|csv|xlsx?|txt|md|json|png|jpe?g)\b", re.IGNORECASE
+)
+
+# [USER UPLOADED ITEMS] roster cap (2026-09-07, upload-retrieval contract
+# A4): a title/date listing of recently uploaded files surfaced whenever the
+# query carries a document cue, independent of whether the semantic/keyword
+# legs admitted anything — closes the "the model never sees upload titles"
+# gap (R1/R2 of docs/HANDOFF_20260907_upload_reuse_contracts.md).
+USER_UPLOADS_ROSTER_MAX = int(os.getenv("USER_UPLOADS_ROSTER_MAX", "8"))
+
 
 _NON_CONTACT_ENTITY_TYPES = frozenset({"animal", "pet"})
 
@@ -203,20 +228,26 @@ def _upload_is_live(
     # semantic relevance evidence and must not admit a doc on its own; only
     # a semantic hit (or the freshness/document-cue leg below) can.
     relevance = doc.get('relevance_score', 0.0)
-    if doc.get('match_type') == 'keyword':
+    keyword_hit = doc.get('match_type') == 'keyword'
+    if keyword_hit:
         relevance = 0.0
     if relevance >= USER_UPLOADS_MIN_RELEVANCE:
         return True
     # Preserve low-score continuation of freshly uploaded material without
     # admitting homework on an unrelated medication/energy/time correction.
-    document_context = not query or bool(re.search(
-        r"\b(?:attachments?|uploads?|documents?|pdf|docx|csv|spreadsheet|"
-        r"dataset|homework|assignment|syllabus|lecture|transcript|"
-        r"(?:question|task|part|page)\s+\d+)\b",
-        query, re.IGNORECASE,
-    ))
+    document_context = not query or bool(_DOCUMENT_CONTEXT_RE.search(query))
     filename = _upload_title_filename(doc)
     named = bool(filename and filename in query.lower())
+    # Fable referee (2026-09-07): once the pool is upload-only (contract A3)
+    # the keyword leg returns uploads whose only "match" is a content-word
+    # overlap (score 0.2–0.4: "the", "assignment"…). Such a hit carries no
+    # relevance evidence at all, so the freshness+cue leg must not admit it
+    # (a live replay admitted three lecture transcripts at 0.35 on "pull up
+    # the first assignment"); a title/section keyword match (≥ 0.6) or the
+    # query naming the file still qualifies. The roster line now tells the
+    # model what fresh files exist, so nothing is lost by declining these.
+    if keyword_hit and not named and float(doc.get('relevance_score', 0.0) or 0.0) < 0.6:
+        return False
     return _upload_is_fresh(doc, now) and (document_context or named)
 
 
@@ -384,9 +415,16 @@ def _query_wants_visual(query: str, intent_type: Optional[str]) -> bool:
             return True
         if _long_message_visual_request(query):
             return True
+    # A weak verb ("look", "see", "show") in a short message carries visual
+    # intent only when the message is not about DOCUMENTS: "can we look
+    # there for it?" / "show me the syllabus" ask for files, not imagery
+    # (2026-09-07: "…the user uploads, can we look there for it?" admitted
+    # five old image stubs). A visual NOUN still wins above — "look at this
+    # photo" never reaches this arm.
     if (
         words & _VISUAL_WEAK_VERBS
         and n <= _VISUAL_WEAK_VERB_MAX_WORDS
+        and not _DOCUMENT_CONTEXT_RE.search(query)
         and _non_negated_pattern_hit(query, _VISUAL_WEAK_VERB_RE)
     ):
         return True
@@ -709,6 +747,57 @@ class KnowledgeRetrievalMixin:
     _uploads_exist_checked_at: float = 0.0
     _UPLOADS_NEGATIVE_TTL_S = 60.0
 
+    # Fresh-upload roster (2026-09-07, upload-retrieval contract A4): the
+    # title/date listing computed by the most recent get_user_uploads() call,
+    # for callers/tests that want it directly rather than parsing the
+    # embedded roster marker in the returned list.
+    _last_upload_roster: Optional[List[Dict[str, str]]] = None
+
+    def _fetch_upload_roster(self) -> List[Dict[str, str]]:
+        """Metadata-only, distinct-title roster of fresh user uploads.
+
+        Never loads document content (`include=["metadatas"]` only). Image
+        uploads are excluded (`metadata.is_image`), as are stale ones
+        (`_upload_is_fresh`). One entry per title (newest timestamp wins),
+        newest-first, capped at USER_UPLOADS_ROSTER_MAX.
+        """
+        manager = self.reference_docs_manager
+        if not manager:
+            return []
+        try:
+            coll = manager.chroma_store._get_collection('reference_docs')
+            got = coll.get(where={"type": "user_upload"}, include=["metadatas"])
+        except Exception as e:
+            logger.debug(f"[ContextGatherer] upload roster metadata fetch failed: {e}")
+            return []
+
+        metas = (got or {}).get("metadatas", []) or []
+        by_title: Dict[str, Dict[str, Any]] = {}
+        for meta in metas:
+            if not meta or meta.get('is_image'):
+                continue
+            title = str(meta.get('title', '') or '').strip()
+            if not title:
+                continue
+            if not _upload_is_fresh({"metadata": meta}):
+                continue
+            ts_raw = str(meta.get('timestamp', ''))
+            try:
+                ts = datetime.fromisoformat(ts_raw)
+            except (ValueError, TypeError):
+                continue
+            existing = by_title.get(title)
+            if existing is None or ts > existing['_ts']:
+                by_title[title] = {'_ts': ts, 'title': title}
+
+        ordered = sorted(by_title.values(), key=lambda e: e['_ts'], reverse=True)
+        roster: List[Dict[str, str]] = []
+        for entry in ordered[:USER_UPLOADS_ROSTER_MAX]:
+            title = entry['title']
+            display = title[len('upload:'):] if title.startswith('upload:') else title
+            roster.append({"title": display, "date": entry['_ts'].strftime('%Y-%m-%d')})
+        return roster
+
     def _any_user_uploads_exist(self) -> bool:
         """Cheap existence probe for type='user_upload' docs; fails open."""
         if self._uploads_exist_cache is True:
@@ -750,10 +839,16 @@ class KnowledgeRetrievalMixin:
             return []
 
         try:
-            # Fetch extra to allow filtering to user_upload type
-            docs = await manager.get_documents(query, limit=limit * 2)
+            # 2026-09-07 upload-retrieval contract A3: restrict BOTH hybrid
+            # legs to user_upload chunks (via A2's doc_type filter) instead
+            # of pooling over the whole reference_docs collection (1,644
+            # chunks, 242 uploads) and hoping an upload survives the top-N —
+            # a fresh upload used to lose outright to unrelated doc chunks.
+            docs = await manager.get_documents(query, limit=limit * 2, doc_type="user_upload")
 
-            # Filter to only user uploads
+            # Filter to only user uploads (belt-and-suspenders no-op now that
+            # doc_type already restricts both legs; kept in case a caller's
+            # manager doesn't honor doc_type).
             uploads = [d for d in docs if d.get('metadata', {}).get('type') == 'user_upload']
 
             # Same-turn upload dedupe (2026-09-04, homework-attachment turn
@@ -818,6 +913,29 @@ class KnowledgeRetrievalMixin:
                     }
 
                 logger.debug(f"[ContextGatherer] Retrieved {len(uploads)} user uploads for query")
+
+            # Fresh-upload roster (2026-09-07 contract A4): on a document-cue
+            # or filename-shaped query, surface the titles of recently
+            # uploaded files even when neither hybrid leg admitted anything
+            # relevant — closes the "the model never sees upload titles" gap
+            # (R1/R2 of docs/HANDOFF_20260907_upload_reuse_contracts.md).
+            # Attached AFTER citation tracking so the roster marker never
+            # gets a UPLOAD_N citation id, and INSERTED FIRST so the token
+            # budget's list trim (which breaks at the first item that does
+            # not fit — token_manager) can never drop the roster behind an
+            # oversized chunk (Fable referee, 2026-09-07).
+            wants_roster = bool(
+                _DOCUMENT_CONTEXT_RE.search(query) or _UPLOAD_FILENAME_TOKEN_RE.search(query)
+            ) if query else False
+            roster: List[Dict[str, str]] = self._fetch_upload_roster() if wants_roster else []
+            self._last_upload_roster = roster
+            if roster:
+                uploads.insert(0, {
+                    "content": "",
+                    "metadata": {"type": "upload_roster", "roster": roster},
+                    "relevance_score": 0.0,
+                    "match_type": "roster",
+                })
 
             return uploads or []
 

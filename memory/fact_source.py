@@ -24,14 +24,18 @@ residence, employment, preference, relationship) — a matching verb/noun cue.
 Entity facts need the named subject and the object in one span.  There is
 intentionally NO "last message" fallback.
 
-Leaf module: imports nothing from the rest of the package.
+Leaf module: imports only stdlib and ``utils.temporal_resolver`` (a shared,
+dependency-free date helper) — never from the rest of the package.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 import re
 from typing import Any, Iterable, Iterator, Mapping
+
+from utils.temporal_resolver import resolve_date_expression
 
 
 _NON_USER_ROLE_RE = re.compile(
@@ -325,6 +329,177 @@ def _clause_is_negated(clause: str, object_val: str, object_tokens: set[str]) ->
     return any(m.start() < pos for m in _NEGATION_RE.finditer(clause))
 
 
+# ---------------------------------------------------------------------------
+# B2 (2026-09-06): claim temporal kind + event date.
+#
+# A stored fact's object text can claim a tense the source span doesn't
+# support (an object phrase carrying "today" can still only be grounded by a
+# span that actually describes YESTERDAY — see find_supporting_user_span's
+# docstring).  This classifies what KIND of claim a span makes — a durable
+# state, a recurring habit, a forward-looking plan, or a discrete PAST EVENT
+# — and, for a past event, the calendar date it happened on when that is
+# resolvable.  Read-side consumers (user_profile.get_category) use this to
+# stop projecting a one-time past event into "current state" forever,
+# regardless of what the object's own wording says.
+#
+# Grammar-level cues ONLY — closed word classes, never wording tied to one
+# incident.  Deliberately under-fires: an unrecognized shape is "unknown",
+# never misclassified into a stronger kind.
+# ---------------------------------------------------------------------------
+
+_HABIT_CUE_RE = re.compile(
+    r"\bevery\b|\beach\s+(?:day|night|morning|evening|week|month|year|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|"
+    r"\b(?:daily|nightly|weekly|monthly|yearly|biweekly|usually|always|"
+    r"typically|routinely|regularly)\b|"
+    r"\bmost\s+(?:days?|nights?|mornings?|evenings?|weeks?)\b",
+    re.IGNORECASE,
+)
+# "I <verb> ... a day/week" — simple-present habitual framing without one of
+# the adverbial cues above ("I take it twice a day").
+_SIMPLE_PRESENT_FREQ_RE = re.compile(
+    r"\bi\s+[a-z]+\b[^.!?\n]{0,40}\b(?:a\s+day|a\s+night|a\s+week|per\s+day|"
+    r"per\s+week|once\s+a\b|twice\s+a\b|three\s+times\s+a\b)\b",
+    re.IGNORECASE,
+)
+
+# A closed set of common past-tense verbs — deliberately NOT a blanket
+# "-ed" suffix match (that would misfire on "prescribed", "interested",
+# "based", none of which report a discrete completed event).
+_PAST_TENSE_CUE_RE = re.compile(
+    r"\b(?:took|had|did|went|was|were|got|skipped|missed|forgot|finished|"
+    r"started|stopped|felt|saw|ate|drank|slept|called|texted|emailed|"
+    r"visited|attended|completed|paid|cancelled|canceled|scheduled|showed|"
+    r"arrived|left|woke|came)\b",
+    re.IGNORECASE,
+)
+
+_PLAN_KIND_CUE_RE = re.compile(
+    r"\bwill\b|\bgoing\s+to\b|\bplan(?:s|ning)?\s+to\b|\btomorrow\b|"
+    r"\bnext\s+(?:week|month|year|monday|tuesday|wednesday|thursday|friday|"
+    r"saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
+_STATE_CUE_RE = re.compile(
+    r"\bi'?m\b|\bi’m\b|\bi\s+am\b|\bi'?ve\s+been\b|\bi’ve\s+been\b|"
+    r"\bi\s+have\s+been\b|\bi\s+feel\b",
+    re.IGNORECASE,
+)
+
+_WEEKDAY_INDEX = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+_WEEKDAY_ALT = "|".join(_WEEKDAY_INDEX)
+
+_EVENT_ANCHOR_RE = re.compile(
+    rf"\byesterday\b|\blast\s+night\b|\blast\s+week\b|\blast\s+month\b|"
+    rf"\blast\s+year\b|\blast\s+(?:{_WEEKDAY_ALT})\b|\bthis\s+morning\b|"
+    rf"\b\d+\s+days?\s+ago\b|\bon\s+(?:{_WEEKDAY_ALT})\b",
+    re.IGNORECASE,
+)
+_DAYS_AGO_RE = re.compile(r"\b(\d+)\s+days?\s+ago\b", re.IGNORECASE)
+_LAST_WEEKDAY_RE = re.compile(rf"\blast\s+({_WEEKDAY_ALT})\b", re.IGNORECASE)
+_ON_WEEKDAY_RE = re.compile(rf"\bon\s+({_WEEKDAY_ALT})\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ClaimTime:
+    """What kind of claim a span makes, and — for a past event — the date."""
+
+    kind: str = "unknown"  # "event" | "state" | "habit" | "plan" | "unknown"
+    event_date: date | None = None
+    event_date_source: str = "none"  # "explicit" | "relative" | "none"
+
+
+def _resolve_relative_event_anchor(text: str, observed: datetime) -> date | None:
+    """Deterministic day-arithmetic for the RELATIVE anchors in
+    ``_EVENT_ANCHOR_RE`` that ``utils.temporal_resolver.resolve_date_expression``
+    does not parse (it resolves explicit month+day expressions only, e.g.
+    "April 15th"). Ambiguous anchors ("last week", "last month", "last
+    year") deliberately resolve to ``None`` — a single day cannot represent
+    them; the caller still reports ``kind="event"`` per spec."""
+    low = text.lower()
+    today = observed.date()
+    if re.search(r"\byesterday\b|\blast\s+night\b", low):
+        return today - timedelta(days=1)
+    if re.search(r"\bthis\s+morning\b", low):
+        return today
+    m = _DAYS_AGO_RE.search(low)
+    if m:
+        try:
+            n = int(m.group(1))
+        except ValueError:
+            return None
+        return today - timedelta(days=n)
+    m = _LAST_WEEKDAY_RE.search(low)
+    if m:
+        target = _WEEKDAY_INDEX[m.group(1)]
+        delta = (today.weekday() - target) % 7
+        delta = delta or 7  # "last Monday" on a Monday means a week ago
+        return today - timedelta(days=delta)
+    m = _ON_WEEKDAY_RE.search(low)
+    if m:
+        target = _WEEKDAY_INDEX[m.group(1)]
+        delta = (today.weekday() - target) % 7  # 0 == today itself
+        return today - timedelta(days=delta)
+    return None
+
+
+def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> ClaimTime:
+    """Classify what kind of claim ``span`` makes, relative to ``observed_at``
+    (defaults to now when the caller has no turn timestamp).
+
+    Order: habit > event (past-tense + temporal anchor) > plan > state >
+    unknown. A past-tense cue with NO temporal anchor is under-classified as
+    "unknown" rather than guessed as an event — an anchor is required by
+    spec. An explicit calendar date (e.g. "September 5th") resolves via
+    ``utils.temporal_resolver.resolve_date_expression``; every other
+    anchor (yesterday, last night/week/weekday, this morning, N days ago,
+    on <weekday>) resolves via direct day-arithmetic relative to
+    ``observed_at`` (that function does not parse relative expressions).
+    """
+    text = span or ""
+    observed = observed_at or datetime.now()
+
+    if _HABIT_CUE_RE.search(text) or _SIMPLE_PRESENT_FREQ_RE.search(text):
+        return ClaimTime(kind="habit")
+
+    if _PAST_TENSE_CUE_RE.search(text):
+        iso, _basis, _conf = resolve_date_expression(text, reference_date=observed)
+        if iso:
+            try:
+                ev_date = datetime.strptime(iso, "%Y-%m-%d").date()
+            except ValueError:
+                ev_date = None
+            if ev_date is not None:
+                # The shared resolver is FUTURE-biased by design (it serves
+                # scheduling callers): a month+day already passed this year
+                # rolls to next year. A PAST-TENSE claim cannot describe a
+                # future date, so roll back one year when the resolved date
+                # lies after the observation (referee fix, 2026-09-06).
+                if ev_date > observed.date():
+                    try:
+                        ev_date = ev_date.replace(year=ev_date.year - 1)
+                    except ValueError:  # Feb 29 → Feb 28
+                        ev_date = ev_date.replace(year=ev_date.year - 1, day=28)
+                return ClaimTime(kind="event", event_date=ev_date, event_date_source="explicit")
+        rel_date = _resolve_relative_event_anchor(text, observed)
+        if rel_date is not None:
+            return ClaimTime(kind="event", event_date=rel_date, event_date_source="relative")
+        if _EVENT_ANCHOR_RE.search(text):
+            return ClaimTime(kind="event", event_date=None, event_date_source="none")
+
+    if _PLAN_KIND_CUE_RE.search(text):
+        return ClaimTime(kind="plan")
+
+    if _STATE_CUE_RE.search(text):
+        return ClaimTime(kind="state")
+
+    return ClaimTime(kind="unknown")
+
+
 @dataclass(frozen=True)
 class EvidenceSpan:
     """A user-authored span supporting one proposed triple."""
@@ -335,6 +510,17 @@ class EvidenceSpan:
     support: str = "object_match"
     turn_id: str = ""
     anchor: str = ""
+    # B2 (2026-09-06): the claim's temporal kind + resolved event date/
+    # observation time, forwarded by both extractors as claim_kind/event_date
+    # (ISO or "")/observed_at (ISO) — new keys only, existing ones unchanged.
+    # compare=False: an out-of-scope test (tests/unit/test_fact_source.py)
+    # does exact EvidenceSpan(...) equality against a literal that predates
+    # these fields; they carry real data via attribute access but are
+    # deliberately excluded from dataclass equality so that pre-existing
+    # comparison keeps working untouched.
+    claim_kind: str = field(default="", compare=False)
+    event_date: str = field(default="", compare=False)
+    observed_at: str = field(default="", compare=False)
 
 
 def _message_text_and_id(message: Any) -> tuple[str, str] | None:
@@ -396,23 +582,38 @@ _EMAIL_CLOSING_RE = re.compile(
 )
 _SIGNATURE_MAX_LINES = 8
 
+# [test]...[/test] convention (2026-09-06, B3): an operator-marked
+# synthetic/replay turn — same treatment as [relay:...]...[/relay]. Detected
+# structurally by the bracket markers only; nothing infers "test" from
+# wording, repetition, or a medication name.
+_TEST_BLOCK_OPEN_RE = re.compile(r"^\s*\[test\]\s*$", re.IGNORECASE)
+_TEST_BLOCK_CLOSE_RE = re.compile(r"^\s*\[/test\]\s*$", re.IGNORECASE)
+
 
 def quoted_correspondence_lines(text: str) -> set[int]:
     """Indexes of lines that sit inside a pasted email block (greeting →
-    closing → signature run).  Empty set when no complete block exists."""
+    closing → signature run), a [relay:...]...[/relay] block, or a
+    [test]...[/test] block.  Empty set when no complete block exists."""
     lines = (text or "").splitlines()
     inside: set[int] = set()
     # Workflow relay convention: agent output is quoted evidence even when
     # its first-person sentences have no Markdown blockquote markers.
     # A closing marker lets the user resume speaking after a relayed block.
     in_relay = False
+    # [test] convention: an operator-marked synthetic/replay turn — the
+    # content inside is neither claim evidence nor prose commentary.
+    in_test = False
     for index, line in enumerate(lines):
         if re.match(r"^\s*\[relay:\s*[^\]]+\]", line, re.IGNORECASE):
             in_relay = True
-        if in_relay:
+        if _TEST_BLOCK_OPEN_RE.match(line):
+            in_test = True
+        if in_relay or in_test:
             inside.add(index)
         if re.match(r"^\s*\[/relay\]\s*$", line, re.IGNORECASE):
             in_relay = False
+        if _TEST_BLOCK_CLOSE_RE.match(line):
+            in_test = False
     i = 0
     while i < len(lines):
         if not _EMAIL_GREETING_RE.match(lines[i]):
@@ -449,6 +650,23 @@ def strip_quoted_correspondence(text: str) -> str:
         return text or ""
     kept = [ln for idx, ln in enumerate((text or "").splitlines()) if idx not in skip]
     return "\n".join(kept)
+
+
+def contains_test_block(text: str) -> bool:
+    """True when ``text`` contains a COMPLETE ``[test]...[/test]`` block
+    (2026-09-06, B3) — an operator-marked synthetic/replay turn. Storage
+    tags provenance from this (``origin="test"``); extraction ignores the
+    block's content entirely (it is stripped like quoted correspondence, so
+    genuine commentary outside the block still yields facts). Detected
+    structurally by the bracket markers only — nothing infers "test" from
+    wording, repetition, or a medication name."""
+    opened = False
+    for line in (text or "").splitlines():
+        if _TEST_BLOCK_OPEN_RE.match(line):
+            opened = True
+        elif opened and _TEST_BLOCK_CLOSE_RE.match(line):
+            return True
+    return False
 
 
 # A period after a title/common abbreviation is not a sentence boundary
@@ -628,6 +846,21 @@ def supporting_excerpt(text: str, object_val: str, limit: int = 200) -> str:
     return _cropped_excerpt(best, object_val, limit)
 
 
+def _parse_observed_at(turn_id: str) -> datetime:
+    """Best-effort turn timestamp for claim-time classification. Many corpus
+    shapes use an ISO ``timestamp`` string as the turn_id fallback (see
+    ``_message_text_and_id``); when that isn't parseable there is no other
+    signal available, so "now" is the only honest default (relative anchors
+    like "yesterday" then resolve relative to classification time, not the
+    turn's real time — an accepted approximation, under-fire by design)."""
+    if turn_id:
+        try:
+            return datetime.fromisoformat(turn_id)
+        except (ValueError, TypeError):
+            pass
+    return datetime.now()
+
+
 def find_supporting_user_span(
     triple: Mapping[str, Any],
     messages: Iterable[Any],
@@ -730,11 +963,17 @@ def find_supporting_user_span(
     if best is None:
         return None
     _, turn_index, span, turn_id, support, anchor = best
+    excerpt_text = _cropped_excerpt(span, object_val, excerpt_limit)
+    observed_dt = _parse_observed_at(turn_id)
+    claim_time = classify_claim_time(excerpt_text, observed_at=observed_dt)
     return EvidenceSpan(
-        text=_cropped_excerpt(span, object_val, excerpt_limit),
+        text=excerpt_text,
         turn_index=turn_index,
         role="user",
         support=support,
         turn_id=turn_id,
         anchor=anchor,
+        claim_kind=claim_time.kind,
+        event_date=claim_time.event_date.isoformat() if claim_time.event_date else "",
+        observed_at=observed_dt.isoformat(),
     )

@@ -290,6 +290,31 @@ class AgenticSearchSession:
     # Provenance
     final_prompt_hash: str = ""
 
+    # Evidence-transport receipts (2026-09-06). Which call actually produced
+    # the answer, what it was built from, and what got left out — so a
+    # decision-answer reuse can no longer claim the sentinel "hash"
+    # final_prompt_hash="decision-answer-reuse" while leaving no record of
+    # what evidence the answering call actually saw.
+    answer_call: str = ""  # "decision_reuse" | "final_synthesis" | "error_fallback"
+    # sha256[:16] of the LAST iteration prompt passed to _get_model_decision.
+    decision_prompt_hash: str = ""
+    # {"web_ids": [...], "sections": [...]} — ids from the tool executor's
+    # session-wide web source map, and the bracketed/named sections actually
+    # rendered into the answering prompt (reuse: digest/search-results-so-far/
+    # inventory labels; final synthesis: the [...] headers _build_final_prompt
+    # appended), both captured at answer time.
+    visible_sources: Dict[str, Any] = field(default_factory=dict)
+    # Keys from the A4 admitted-evidence list that were non-empty in
+    # initial_context but never reached the answering call.
+    omitted_sections: List[str] = field(default_factory=list)
+    # Set when decision-answer reuse was otherwise eligible but skipped
+    # because initial_context carried admitted evidence the decision round
+    # never saw (see _decision_saw_admitted_evidence).
+    reuse_skipped_reason: str = ""
+    # True once A3 has seeded this turn's pre-gathered base web_search_results
+    # into accumulated_context (round 1 was NOT itself a web search).
+    seeded_base_web: bool = False
+
     # Metadata
     start_time: datetime = field(default_factory=datetime.now)
     end_time: Optional[datetime] = None
@@ -366,6 +391,12 @@ class AgenticSearchSession:
             "expand_count": self.expand_count,
             "final_prompt_hash": self.final_prompt_hash,
             "total_duration_ms": self.total_duration_ms,
+            "answer_call": self.answer_call,
+            "decision_prompt_hash": self.decision_prompt_hash,
+            "visible_sources": dict(self.visible_sources) if self.visible_sources else {},
+            "omitted_sections": list(self.omitted_sections) if self.omitted_sections else [],
+            "reuse_skipped_reason": self.reuse_skipped_reason,
+            "seeded_base_web": self.seeded_base_web,
         }
 
     @staticmethod
@@ -547,7 +578,10 @@ MEMORY_SEARCH_TOOL_DEFINITION = {
             "- conversations: Raw past conversation turns — best for 'did we discuss', temporal recall, specific exchanges\n"
             "- facts: Individual extracted triples (e.g. name=Alex, age=34) — best for specific single facts\n"
             "- reflections: End-of-session reflections and insights\n"
-            "- reference_docs: Your own architecture/documentation\n"
+            "- reference_docs: Your own architecture/documentation AND the user's uploaded "
+            "files (homework, syllabi, datasets, PDFs; stored titles look like "
+            "\"upload:<filename>\") — search here for anything the user attached or "
+            "uploaded, then call get_full_document with the title to read it whole.\n"
             "- obsidian_notes: User's personal Obsidian vault notes\n"
             "- wiki_knowledge: Pre-embedded Wikipedia articles — best for factual/encyclopedic questions about real-world topics\n"
             "- procedural: Git commit history and how-to knowledge\n"

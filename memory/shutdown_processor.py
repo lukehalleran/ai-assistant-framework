@@ -553,7 +553,10 @@ class ShutdownProcessor:
                 # Skip API error responses
                 if r.startswith("[API Error]"):
                     r = ""
-                facts = await self.fact_extractor.extract_facts(q, r)
+                _observed = self._ts(conv)
+                facts = await self.fact_extractor.extract_facts(
+                    q, r, observed_at=_observed if _observed != datetime.min else None,
+                )
             except (AttributeError, RuntimeError, ValueError) as e:
                 logger.debug(f"[Shutdown] Fact extraction failed: {e}")
                 facts = []
@@ -598,6 +601,11 @@ class ShutdownProcessor:
                     src_exc = fact_md.get("source_excerpt", "")
                     if src_exc:
                         src_dict["source_excerpt"] = src_exc[:200]
+                    # Claim temporal kind (2026-09-06): forward to the facts
+                    # collection like the per-turn path does — new keys only.
+                    for _k in ("claim_kind", "event_date", "observed_at"):
+                        if fact_md.get(_k):
+                            src_dict[_k] = fact_md[_k]
                     result = self.chroma_store.add_fact(
                         fact=fact_content,
                         source=src_dict,

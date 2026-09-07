@@ -438,6 +438,15 @@ def _attach_agentic_provenance(provenance, orchestrator):
             ap = last.get_provenance_summary()
             provenance["agentic_rounds"] = ap.get("agentic_rounds", [])
             provenance["final_prompt_hash"] = ap.get("final_prompt_hash", "")
+            # Evidence-transport receipts (2026-09-06, A5): which call
+            # produced the answer, what it was built from, and what got
+            # left out.
+            provenance["answer_call"] = ap.get("answer_call", "")
+            provenance["decision_prompt_hash"] = ap.get("decision_prompt_hash", "")
+            provenance["visible_sources"] = ap.get("visible_sources", {})
+            provenance["omitted_sections"] = ap.get("omitted_sections", [])
+            provenance["reuse_skipped_reason"] = ap.get("reuse_skipped_reason", "")
+            provenance["seeded_base_web"] = ap.get("seeded_base_web", False)
     except Exception as e:
         logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
 
@@ -512,6 +521,11 @@ def _build_debug_record(
         'prompt_tokens': prompt_tokens,
         'system_tokens': system_tokens,
         'total_tokens': total_tokens,
+        # 2026-09-06: _safe_count_tokens is a LOCAL estimate (tokenizer_manager
+        # counting this process's own prompt/system_prompt text) — never a
+        # provider-reported usage figure. Label it so a debug-record reader
+        # never mistakes it for billed/metered token usage.
+        'token_count_kind': 'local_input_estimate',
         'citations': citations,
         'citations_enabled': getattr(orchestrator, 'enable_citations', False),
         'provenance': provenance,
@@ -3399,6 +3413,11 @@ async def _run_agentic_search(ctx):
             )
             ctx.telemetry["agentic_fastpath"] = bool(
                 getattr(_agentic_session, "fetch_fastpath_fired", False)
+            )
+            # 2026-09-06, A5: which call actually produced the answer
+            # ("decision_reuse" | "final_synthesis" | "error_fallback").
+            ctx.telemetry["agentic_answer_call"] = str(
+                getattr(_agentic_session, "answer_call", "") or ""
             )
         _write_turn_telemetry(
             ctx, 'agentic-search', _agentic_session_id,

@@ -67,7 +67,7 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
-from memory.fact_source import supporting_excerpt
+from memory.fact_source import classify_claim_time, supporting_excerpt
 from memory.memory_interface import MemoryNode, MemoryType
 from utils.logging_utils import get_logger, log_and_time
 
@@ -954,8 +954,13 @@ class FactExtractor:
         self,
         query: str,
         response: str,
-        conversation_context: Optional[List[Dict]] = None
+        conversation_context: Optional[List[Dict]] = None,
+        observed_at: Optional[datetime] = None,
     ) -> List[MemoryNode]:
+        # observed_at (2026-09-06): the TURN's own timestamp, so a relative
+        # anchor ("yesterday") in a turn replayed at shutdown resolves against
+        # the day it was said, not the day it was extracted. None → now.
+        self._observed_at = observed_at
         q_preview = (query or "")[:120].replace("\n", " ")
         logger.debug(
             f"[FactExtractor] Received query-only (q_len={len(query or '')}; response_ignored=True) "
@@ -1928,6 +1933,14 @@ class FactExtractor:
         if method and method not in tags:
             tags.append(method)
 
+        _now = getattr(self, "_observed_at", None) or datetime.now()
+        excerpt = supporting_excerpt(source_text, object, 400)
+        # Claim temporal kind (2026-09-06, B2): the regex path has no per-turn
+        # timestamp threaded this deep, so "now" is the observation anchor —
+        # an accepted approximation (under-fire by design; see
+        # fact_source._parse_observed_at for the same tradeoff on the LLM
+        # path, which DOES have a turn timestamp when the corpus provides one).
+        _claim_time = classify_claim_time(excerpt, observed_at=_now)
         metadata = {
             "subject": subject,
             "relation": relation,
@@ -1936,8 +1949,14 @@ class FactExtractor:
             "method": method,
             # Claim-bearing sentence, not the head of the turn (2026-09-02:
             # lived_in=Atlanta cited 200 chars of song lyrics from a long turn).
-            "source_excerpt": supporting_excerpt(source_text, object, 400),
+            "source_excerpt": excerpt,
             "source_support": "regex_span",
+            # B2 (2026-09-06): claim kind + resolved event date/observation
+            # time — read-side consumers use these to stop projecting a
+            # one-time past event into "current state" forever.
+            "claim_kind": _claim_time.kind,
+            "event_date": _claim_time.event_date.isoformat() if _claim_time.event_date else "",
+            "observed_at": _now.isoformat(),
         }
         # Merge entity metadata (fact_scope, entity_type, user_connection)
         if extra_metadata:

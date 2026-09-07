@@ -456,6 +456,114 @@ def assign_web_ids(
     return numbered, source_map
 
 
+def render_prenumbered_web_sources(
+    numbered_sources: List[NumberedWebSource],
+    *,
+    max_sources: int = 8,
+    max_chars_per_source: int = 2000,
+) -> Tuple[List[str], Dict[str, Dict[str, str]]]:
+    """
+    Format ALREADY-numbered sources (ids already assigned by a prior
+    ``assign_web_ids``/``_merge_web_ids`` call) — factored out of
+    ``render_numbered_web_sources`` so a caller that must assign ids itself
+    first (e.g. the agentic controller's ``ToolExecutor._merge_web_ids``,
+    which threads the session-wide id map so numbering stays unique across
+    rounds) can reuse the exact same per-source formatting without calling
+    ``assign_web_ids`` a second time — that would mint a SECOND, colliding
+    set of ids for the same pages.
+
+    Formats each kept source as
+    ``f"[{sid}] **{title}** ({url})\\n{content}"`` with content clipped to
+    max_chars_per_source ("..." suffix when clipped). Pages with empty
+    content are skipped entirely. Returns (lines, source_map) where
+    source_map contains ONLY the ids that were actually rendered — a source
+    cut off by max_sources, or skipped for empty content, never gets an id
+    in the map (a clipped-away source can't be cited as though it were shown).
+    """
+    lines: List[str] = []
+    source_map: Dict[str, Dict[str, str]] = {}
+    for src in numbered_sources[:max_sources]:
+        content = src.content
+        if not content:
+            continue
+        if len(content) > max_chars_per_source:
+            content = content[:max_chars_per_source] + "..."
+        lines.append(f"[{src.source_id}] **{src.title}** ({src.url})\n{content}")
+        source_map[src.source_id] = {
+            "title": src.title,
+            "url": src.url,
+            "domain": src.domain,
+        }
+    return lines, source_map
+
+
+def render_numbered_web_sources(
+    pages: List[WebPage],
+    *,
+    max_sources: int = 8,
+    max_chars_per_source: int = 2000,
+    existing_url_to_id: Optional[Dict[str, str]] = None,
+    start_index: int = 0,
+) -> Tuple[List[str], Dict[str, Dict[str, str]]]:
+    """
+    Render numbered [WEB_N] source blocks EXACTLY as the formatter's inline
+    web-search block does (2026-09-06 evidence-transport fix) — the single
+    shared renderer so the base prompt path, the token-budget shrink ladder,
+    and the agentic pre-gathered-web path can never drift from each other.
+
+    Calls assign_web_ids for ranking/dedupe/numbering (pass-through
+    existing_url_to_id/start_index for continuous numbering across rounds),
+    then delegates the per-source formatting to
+    render_prenumbered_web_sources.
+    """
+    numbered_sources, _ = assign_web_ids(
+        pages, existing_url_to_id=existing_url_to_id, start_index=start_index
+    )
+    return render_prenumbered_web_sources(
+        numbered_sources, max_sources=max_sources, max_chars_per_source=max_chars_per_source
+    )
+
+
+def trim_web_search_result(
+    result: "WebSearchResult",
+    *,
+    max_sources: int,
+    max_chars_per_source: int,
+) -> "WebSearchResult":
+    """
+    Return a NEW WebSearchResult (dataclasses.replace) whose pages are the
+    top max_sources after assign_web_ids ranking (dedupe by canonical URL,
+    score descending), each page a new WebPage with content clipped to
+    max_chars_per_source. Never mutates the input — cached WebSearchResult
+    objects are shared across turns/callers. query/from_cache/timestamp/
+    error/search_depth/total_credits_used are preserved unchanged.
+    """
+    numbered_sources, _ = assign_web_ids(result.pages)
+    original_by_canonical: Dict[str, WebPage] = {}
+    for page in result.pages:
+        canonical = _canonical_url(page.url)
+        if (
+            canonical not in original_by_canonical
+            or page.score > original_by_canonical[canonical].score
+        ):
+            original_by_canonical[canonical] = page
+
+    trimmed_pages: List[WebPage] = []
+    for src in numbered_sources[:max_sources]:
+        base = original_by_canonical.get(_canonical_url(src.url))
+        if base is None:
+            # Defensive only — every numbered source is derived from
+            # result.pages, so this should be unreachable. Never fabricate
+            # a page silently if it somehow is.
+            base = WebPage(url=src.url, title=src.title, content=src.content, score=src.score)
+        content = base.content or ""
+        if content and len(content) > max_chars_per_source:
+            content = content[:max_chars_per_source] + "..."
+        trimmed_pages.append(replace(base, content=content))
+
+    return replace(result, pages=trimmed_pages)
+
+
 def format_web_sources_with_ids(
     numbered_sources: List[NumberedWebSource],
     max_chars: int = 10000,
