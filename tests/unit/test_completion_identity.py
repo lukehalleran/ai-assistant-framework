@@ -5,11 +5,11 @@ content tokens with the WHOLE plan sentence) with identity (the plan's
 object HEAD noun) + status (a distinct non-completed status, or a negation/
 hedge, never counts). Every scenario below has an adversarial control.
 
-FAILED-before evidence: `old_completed_plan_claims.py` below is HEAD's
-verbatim `utils/completed_plan_claims.py` (via `git show HEAD:...`, never
-checked out into the working tree) loaded as a standalone module and run
-against the SAME plan/statement pairs used in the tests below. Six scenarios
-show HEAD giving the WRONG answer where the new identity+status matching
+FAILED-before evidence (recorded 2026-09-06 against the pre-change module,
+loaded via `git show HEAD:` at the time; the comparison is documented here
+and NOT re-run — tests must never read git state, see
+`tests/unit/test_no_git_state_in_tests.py`). Six scenarios showed the old
+token-overlap code giving the WRONG answer where identity+status matching
 gives the right one:
   - "He needs to book the appointment." / "Booked the appointment this
     morning." -> HEAD: no match (false negative -- only 1 shared content
@@ -34,19 +34,13 @@ gives the right one:
     statement itself never names "taxes" at all -- HEAD has no lookback
     mechanism). New: match, via the immediately-previous same-day statement
     naming the head.
-This file intentionally reproduces that comparison inline (see
-`test_head_vs_old_defects_reproduced`) using the exact plan/statement pairs
-also exercised as held-out scenarios below, so the evidence is pinned to the
-same file the graders read rather than a one-off scratch script.
+`TestDefectScenariosNewBehavior` below pins the NEW answers for those exact
+pairs; the old answers are the historical record above.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import subprocess
-import sys
 from datetime import date
-from pathlib import Path
 
 import pytest
 
@@ -64,29 +58,6 @@ def _stmt(text: str, ts: str) -> dict:
 
 
 AS_OF = date(2026, 9, 1)
-
-
-# ---------------------------------------------------------------------------
-# Load HEAD's own (pre-B6/B7) module for the before/after comparison, without
-# ever checking out the working tree (git show is read-only).
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def old_module(tmp_path_factory):
-    old_src = subprocess.run(
-        ["git", "show", "HEAD:utils/completed_plan_claims.py"],
-        cwd=str(Path(__file__).resolve().parents[2]),
-        capture_output=True, text=True, check=True,
-    ).stdout
-    out_dir = tmp_path_factory.mktemp("old_cpc")
-    out_path = out_dir / "old_completed_plan_claims.py"
-    out_path.write_text(old_src)
-    spec = importlib.util.spec_from_file_location("old_completed_plan_claims_b6b7", str(out_path))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
-    yield mod
-    del sys.modules[spec.name]
 
 
 # ---------------------------------------------------------------------------
@@ -364,49 +335,42 @@ class TestClauseMatchesHead:
 
 
 # ---------------------------------------------------------------------------
-# FAILED-before / PASSED-after: same pairs, run against HEAD's own module.
+# The six documented defect scenarios, pinned to the deployed function.
 # ---------------------------------------------------------------------------
 
-class TestHeadVsNewDefectComparison:
-    """Confirms, against HEAD's OWN code (not a re-derivation), that the six
-    scenarios above genuinely change behavior — never a re-derivation of the
-    fix, an actual run of the deployed pre-change function."""
+class TestDefectScenariosNewBehavior:
+    """The exact plan/statement pairs from the module docstring, asserted
+    against the deployed ``completed_by_user`` only (the pre-change answers
+    are the docstring's historical record — never re-derived from git)."""
 
     CASES = [
         ("He needs to book the appointment.",
          [("Booked the appointment this morning.", "2026-09-05T09:00:00")],
-         False, True),  # old_expected, new_expected
+         True),
         ("He needs to get the car fixed.",
          [("Haven't gotten the car fixed yet.", "2026-09-05T09:00:00")],
-         True, False),
+         False),
         ("He needs to pay the electric bill this week.",
          [("Got the water bill done this week.", "2026-09-05T09:00:00")],
-         True, False),
+         False),
         ("He needs to pay the electric bill.",
          [("Paid that bill this morning.", "2026-09-05T09:00:00")],
-         False, True),
+         True),
         ("He needs to book the appointment.",
          [("That appointment is done.", "2026-09-05T09:00:00")],
-         False, True),
+         True),
     ]
 
-    def test_head_vs_old_defects_reproduced(self, old_module):
-        for plan, stmt_specs, old_expected, new_expected in self.CASES:
+    def test_documented_scenarios(self):
+        for plan, stmt_specs, expected in self.CASES:
             statements = [_stmt(t, ts) for t, ts in stmt_specs]
-            old_result = old_module.completed_by_user(plan, statements, as_of=AS_OF)
-            new_result = completed_by_user(plan, statements, as_of=AS_OF)
-            assert (old_result is not None) == old_expected, (
-                f"HEAD behavior changed for {plan!r} -- re-verify the comparison"
-            )
-            assert (new_result is not None) == new_expected, (
-                f"new behavior wrong for {plan!r}"
-            )
+            result = completed_by_user(plan, statements, as_of=AS_OF)
+            assert (result is not None) == expected, f"wrong answer for {plan!r}"
 
-    def test_bare_it_lookback_is_entirely_new_capability(self, old_module):
+    def test_bare_it_lookback(self):
         plan = "He needs to finish the taxes."
         statements = [
             _stmt("Thinking about the taxes today.", "2026-09-05T09:00:00"),
             _stmt("Got it done, feeling accomplished.", "2026-09-05T15:00:00"),
         ]
-        assert old_module.completed_by_user(plan, statements, as_of=AS_OF) is None
         assert completed_by_user(plan, statements, as_of=AS_OF) is not None

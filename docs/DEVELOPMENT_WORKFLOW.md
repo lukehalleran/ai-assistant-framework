@@ -120,6 +120,21 @@ Principles:
 5. **Docs and code move together.** The changelog entry, the CLAUDE.md
    one-liner, the handoff doc's results section and the memory note are part of
    the batch, written before the commit, so the commit's `Docs:` line is true.
+6. **The pushed commit is the tested tree, and tests never read git state.**
+   The first push after adopting these principles (05fd300) went red: four
+   tests proved their "failed-before" evidence with `git show HEAD:<file>`, so
+   they were green only while the change was uncommitted and failed the moment
+   it was committed — and the full local suite had run on the dirty tree before
+   the commit. Two structural closures: `tests/unit/test_no_git_state_in_tests.py`
+   fails on any test that reads a blob from a project ref or runs git against
+   the repo root (git against a `tmp_path` repo stays allowed), and
+   `hooks/pre-push` (installed as `.git/hooks/pre-push`) refuses a push from a
+   dirty tracked tree or with untracked `.py` files, then mirrors the CI privacy
+   guard and ruff and runs the changed test files + the five repo-wide guards.
+   Failed-before evidence is a recorded result in the handoff doc, never an
+   assertion. The only way to make a red push literally impossible is GitHub
+   branch protection with the Tests check required on `master` (direct pushes
+   are then rejected; work lands via a branch and PR) — owner's call.
 
 ## 4. Credit discipline
 
@@ -200,10 +215,10 @@ batch size, not in the loop.
    line numbers, and unrelated hunks higher in two files shifted them
    (the allowlist is now anchored on function + source line, so pure
    drift no longer goes red; a real edit to a slice still does).
-   Repo-wide guard tests (`test_ordered_slice_guard`,
+   Repo-wide guard tests (`test_no_git_state_in_tests`, `test_ordered_slice_guard`,
    `test_budget_meters_rendered_sections`, `test_tool_wiring_parity`,
    `test_model_capability_wiring`) are never in a module-scoped local
-   selection, so run them before every push until the nightly run exists.
+   selection; `hooks/pre-push` runs them on every push (§3a.6).
 2. **One commit per root cause, restart immediately, then probe.** Three
    agents' work landed on one dirty tree on 2026-09-05 and the running
    Daemon predated every fix for hours. Commit as soon as a fix is green

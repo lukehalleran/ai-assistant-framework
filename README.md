@@ -255,9 +255,10 @@ To guard against accidentally committing sensitive terms, install the privacy ch
 
 ```bash
 ln -s ../../hooks/pre-commit-privacy .git/hooks/pre-commit
+ln -s ../../hooks/pre-push .git/hooks/pre-push
 ```
 
-This runs `gitleaks protect --staged` if installed and greps staged files against the privacy term list.
+The pre-commit hook runs `gitleaks protect --staged` if installed and greps staged files against the privacy term list. The pre-push hook refuses to push what CI would reject: it requires a clean tracked tree (the pushed commit IS the tested tree), mirrors the CI privacy guard and `ruff check .`, and runs every test file changed in the push range plus the repo-wide guard tests (`PREPUSH_FULL=1` adds the whole `tests/unit` CI selection; `SKIP_PREPUSH=1` bypasses).
 
 ---
 

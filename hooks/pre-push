@@ -1,0 +1,124 @@
+#!/bin/bash
+# pre-push — refuse to push what CI would reject (added 2026-09-07 after
+# commit 05fd300 went red on four tests that read `git show HEAD:` and were
+# green only while the change was uncommitted).
+#
+# Install:
+#   ln -s ../../hooks/pre-push .git/hooks/pre-push
+#
+# Checks, in order (each mirrors a step of .github/workflows/tests.yml):
+#   0. the pushed commit IS the tree being tested: no modified tracked files,
+#      no untracked *.py (a test file you forgot to `git add` passes here and
+#      is missing on the runner)
+#   1. the CI privacy guard (tracked real-memory fixtures, fixture size,
+#      dosage-shaped text outside the reviewed allowlist)
+#   2. ruff check .
+#   3. pytest: every test file changed in the push range + the repo-wide
+#      guard tests (never in a module-scoped local selection)
+#   PREPUSH_FULL=1 additionally runs the whole CI fast selection (tests/unit
+#      only when a Daemon is running — the non-unit remainder needs the
+#      daemon down and a memory cap, see docs/DEVELOPMENT_WORKFLOW.md §3).
+# Bypass (leave a note in the commit or handoff when you do):
+#   SKIP_PREPUSH=1 git push
+
+set -euo pipefail
+
+if [ "${SKIP_PREPUSH:-}" = "1" ]; then
+  echo "pre-push: SKIP_PREPUSH=1 — checks bypassed"
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+export DAEMON_TEST_MODE=1
+export CHROMA_DEVICE="${CHROMA_DEVICE:-cpu}"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-test-placeholder}"
+
+ZERO=0000000000000000000000000000000000000000
+fail() { echo "pre-push: BLOCKED — $*" >&2; exit 1; }
+
+pyver=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo none)
+[ "$pyver" = "3.11" ] || fail "python resolves to $pyver, CI runs 3.11 (run from the repo root so pyenv picks 3.11.8)"
+
+# ---- 0. committed tree == tested tree -----------------------------------
+dirty=$(git status --porcelain --untracked-files=all | grep -vE '^\?\?' || true)
+if [ -n "$dirty" ]; then
+  echo "$dirty" >&2
+  fail "modified tracked files — the tests would run on a tree that is not the pushed commit. Commit (or stash) first."
+fi
+untracked_py=$(git status --porcelain --untracked-files=all | grep -E '^\?\? .*\.py$' || true)
+if [ -n "$untracked_py" ]; then
+  echo "$untracked_py" >&2
+  fail "untracked .py files — they exist here and not on the runner. git add them or move them out of the tree."
+fi
+
+# ---- push range → changed test files -----------------------------------
+changed_tests=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$ZERO" ] && continue            # branch deletion
+  if [ "$remote_sha" = "$ZERO" ]; then
+    base=$(git merge-base "$local_sha" origin/master 2>/dev/null || true)
+    range="${base:+$base..}$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] && changed_tests+=("$f")
+  done < <(git diff --name-only --diff-filter=AMR "$range" -- 'tests/*.py' 'tests/**/*.py' 2>/dev/null || true)
+done
+
+# ---- 1. privacy guard (verbatim policy from tests.yml) -------------------
+tracked_real=$(git ls-files 'tests/fixtures/*_real*.yaml')
+[ -z "$tracked_real" ] || { echo "$tracked_real" >&2; fail "real-memory fixture paths are tracked"; }
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  [ "$(wc -l < "$f")" -le 2500 ] || fail "test fixture $f exceeds 2500 lines"
+done < <(git ls-files 'tests/fixtures/*.yaml')
+unexpected=()
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  case "$f" in
+    docs/ARCHITECTURE_GUIDE.md|docs/PROJECT_SKELETON.md|docs/QUICK_REFERENCE.md|tests/test_web_search_trigger.py|tests/unit/test_anaphoric_continuation.py|tests/unit/test_correction_gui_wiring.py|tests/unit/test_cross_section_dedup_role_labels.py|tests/unit/test_graph_integration.py) ;;
+    *) unexpected+=("$f") ;;
+  esac
+done < <(git grep -IlE '[0-9]{3,4}[[:space:]]*mg([^[:alnum:]_]|$)' -- tests docs || true)
+[ "${#unexpected[@]}" -eq 0 ] || { printf '  %s\n' "${unexpected[@]}" >&2; fail "dosage-shaped text in unreviewed tracked paths (CI privacy guard would fail)"; }
+
+# ---- 2. lint -------------------------------------------------------------
+python -m ruff check . || fail "ruff"
+
+# ---- 3. tests ------------------------------------------------------------
+guards=(
+  tests/unit/test_no_git_state_in_tests.py
+  tests/unit/test_ordered_slice_guard.py
+  tests/unit/test_budget_meters_rendered_sections.py
+  tests/unit/test_tool_wiring_parity.py
+  tests/unit/test_model_capability_wiring.py
+)
+selection=()
+for g in "${guards[@]}"; do [ -f "$g" ] && selection+=("$g"); done
+for f in "${changed_tests[@]:-}"; do
+  [ -z "$f" ] && continue
+  case " ${guards[*]} " in *" $f "*) ;; *) selection+=("$f") ;; esac
+done
+
+runner=()
+if command -v systemd-run >/dev/null 2>&1; then
+  runner=(systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=512M)
+fi
+echo "pre-push: pytest on ${#selection[@]} files (${#changed_tests[@]} changed in the push range + guards)"
+"${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
+  -m "not slow and not benchmark and not semantic" "${selection[@]}" \
+  || fail "tests"
+
+if [ "${PREPUSH_FULL:-}" = "1" ]; then
+  echo "pre-push: PREPUSH_FULL=1 — running the CI fast selection on tests/unit"
+  "${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
+    -m "not slow and not benchmark and not semantic" tests/unit \
+    --ignore=tests/unit/test_memory_coordinator_methods.py \
+    --ignore=tests/unit/test_visual_memory_pipeline.py \
+    --ignore=tests/unit/test_context_pipeline.py \
+    --ignore=tests/unit/test_cross_deduplicator.py \
+    || fail "tests/unit"
+fi
+
+echo "pre-push: OK"

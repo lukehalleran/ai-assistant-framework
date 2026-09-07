@@ -9,46 +9,22 @@ test_extraction_replay_provenance.py) -- read-side consumers now use the
 EVIDENCE's own temporal kind/date to decide what is "current", regardless of
 what the object text says.
 
-FAILED-before evidence: `classify_claim_time`/`ClaimTime` do not exist at
-HEAD (`git show HEAD:memory/fact_source.py` has no occurrence of either
-name -- an import of them raises ImportError) and HEAD's
-`UserProfile.add_fact`/`add_facts_batch` take no `claim_kind`/`event_date`
-keyword at all (a call with them raises TypeError) -- both verified directly
-against HEAD's own module below, not asserted from memory.
+FAILED-before evidence (recorded in docs/HANDOFF_20260906_context_integrity_phaseAB.md,
+NOT asserted here): before 2026-09-06 `classify_claim_time`/`ClaimTime` did not
+exist and `UserProfile.add_fact` took no `claim_kind`/`event_date` kwarg. Tests
+must never read git state (`git show HEAD:` was green only while the change was
+uncommitted and went red the moment it was committed — CI run 34146393709);
+`tests/unit/test_no_git_state_in_tests.py` guards the class.
 """
 
 from __future__ import annotations
 
-import subprocess
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 import pytest
 
 from memory.fact_source import ClaimTime, classify_claim_time, find_supporting_user_span
 from memory.llm_fact_extractor import LLMFactExtractor, _normalize_triple
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _head_source(path: str) -> str:
-    return subprocess.run(
-        ["git", "show", f"HEAD:{path}"], cwd=str(REPO_ROOT),
-        capture_output=True, text=True, check=True,
-    ).stdout
-
-
-class TestFailedBeforeHead:
-    def test_classify_claim_time_did_not_exist_at_head(self):
-        src = _head_source("memory/fact_source.py")
-        assert "classify_claim_time" not in src
-        assert "class ClaimTime" not in src
-
-    def test_user_profile_add_fact_had_no_claim_kind_kwarg_at_head(self):
-        src = _head_source("memory/user_profile.py")
-        assert "claim_kind" not in src
-        assert "event_date" not in src
 
 
 # ---------------------------------------------------------------------------
