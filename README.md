@@ -229,6 +229,8 @@ export OPENAI_API_KEY=sk-your-key-here
 ### Launch
 ```bash
 python main.py        # GUI (recommended) -> http://localhost:7860
+                      # remote launches: run inside tmux/screen or a systemd unit — a dropped SSH
+                      # session sends SIGHUP, which now triggers the normal clean shutdown
 python main.py cli    # CLI mode
 python main.py wizard # First-run onboarding wizard
 ```

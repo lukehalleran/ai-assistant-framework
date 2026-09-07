@@ -525,6 +525,15 @@ def _gather_session_state(orchestrator):
     return session_convos, session_summaries
 
 
+# Set when a shutdown-task run (idle monitor, signal handler or lifespan) has
+# FINISHED. A second entrant that finds `_shutdown_requested` already True waits
+# on this instead of returning immediately: on 2026-09-07 the idle monitor's
+# shutdown was one second in when the terminal hung up, and an exit at that
+# point would have (and did, pre-handler) killed the run mid-fact-extraction.
+_shutdown_done = threading.Event()
+_SHUTDOWN_INFLIGHT_WAIT_S = 600.0  # > reflection cap (60s) + dreaming cap (240s) + backup
+
+
 def _run_shutdown_tasks(orchestrator):
     """Run reflection and summary tasks - callable from signal handler or idle thread."""
     global _shutdown_requested
@@ -544,6 +553,8 @@ def _run_shutdown_tasks(orchestrator):
 
     except Exception as e:
         logger.error(f"[Shutdown] Task execution failed: {e}")
+    finally:
+        _shutdown_done.set()
 
 
 async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
@@ -713,6 +724,14 @@ async def run_shutdown_tasks_async(orchestrator):
     """
     global _shutdown_requested
     if _shutdown_requested:
+        if not _shutdown_done.is_set():
+            # The idle monitor (its own thread) is mid-run: let it finish
+            # before the process exits, never cut it off.
+            logger.info("[Shutdown] Shutdown tasks already in flight — waiting for them to finish")
+            loop = asyncio.get_running_loop()
+            finished = await loop.run_in_executor(None, _shutdown_done.wait, _SHUTDOWN_INFLIGHT_WAIT_S)
+            if not finished:
+                logger.warning("[Shutdown] In-flight shutdown tasks did not finish within %ss", _SHUTDOWN_INFLIGHT_WAIT_S)
         return
     _shutdown_requested = True
     logger.info("[Shutdown] Running reflection and summary tasks (lifespan)...")
@@ -724,6 +743,8 @@ async def run_shutdown_tasks_async(orchestrator):
         await _do_shutdown_async(orchestrator, session_convos, session_summaries)
     except Exception as e:
         logger.error(f"[Shutdown] Task execution failed: {e}")
+    finally:
+        _shutdown_done.set()
 
 
 def _signal_handler(signum, frame):
@@ -773,6 +794,7 @@ if __name__ == "__main__":
     # makes every `import main` resolve to this running instance.
     import sys as _sys_alias
     _sys_alias.modules["main"] = _sys_alias.modules[__name__]
+    from utils.process_signals import install_hangup_handler
     # ==========================================================================
     # NOTE: Bootstrap already ran at module level (for frozen mode)
     # ==========================================================================
@@ -1591,7 +1613,8 @@ if __name__ == "__main__":
                 # standalone Gradio app, so it also routes through here.
                 signal.signal(signal.SIGTERM, _signal_handler)
                 signal.signal(signal.SIGINT, _signal_handler)
-                logger.info("[Startup] Registered signal handlers for SIGTERM and SIGINT")
+                install_hangup_handler(logger=logger)  # SIGHUP (terminal gone) → same clean shutdown
+                logger.info("[Startup] Registered signal handlers for SIGTERM, SIGINT and SIGHUP")
 
                 idle_thread = threading.Thread(target=_idle_monitor_thread, daemon=True, name="IdleMonitor")
                 idle_thread.start()
@@ -1612,6 +1635,10 @@ if __name__ == "__main__":
                 app = mount_admin_and_frontend(app, orchestrator)
 
                 import uvicorn
+                # A dropped SSH session (SIGHUP) becomes SIGINT → uvicorn's
+                # graceful exit → lifespan shutdown, instead of a hard kill
+                # (2026-09-07: the phone connection reset mid-idle-shutdown).
+                install_hangup_handler(logger=logger)
                 print(f"[GUI] Web UI:   http://{API_HOST}:{API_PORT}/")
                 print(f"[GUI] Admin UI: http://{API_HOST}:{API_PORT}/admin")
                 print(f"[GUI] Health:   http://{API_HOST}:{API_PORT}/health")
