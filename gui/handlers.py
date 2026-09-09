@@ -104,6 +104,7 @@ Module Contract
   - Writes to conversation logger; stores to memory_system (with provenance metadata); updates debug_state for Debug Trace tab.
 """
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -112,6 +113,16 @@ from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult
 from utils.attachment_audit import audit_attachments, deadline_timezone_note
+from utils.query_checker import is_task_navigation
+from core.active_document import (
+    ActiveDocumentRegistry,
+    ActivePassage,
+    Ambiguous,
+    Exhausted,
+    format_active_passage,
+    format_ambiguity_note,
+    format_exhausted_note,
+)
 import json
 from config.app_config import load_system_prompt
 import re as _re_draft
@@ -266,6 +277,92 @@ def _strip_leaked_xml_blocks(text: str) -> str:
     cleaned = _LEAKED_XML_SELF_CLOSING_RE.sub('', cleaned)
     cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned.strip()
+
+
+# ── Bare tool-name line stripping (2026-09-08, B1) ───────────────────────
+# Replaces a word-count heuristic ("< 4 words and no closing punctuation =
+# tool call") that deleted 47 valid lines across 13 live replies — including
+# the ```r/``` fences themselves (32 of the 47), `print(y_hat - resid)`,
+# `coef(model)`, a lone `)`. Storage used the raw stream, so stored history
+# stayed intact while the user/debug record got broken code. The replacement
+# only removes a line when it IS a bare agentic tool name (a closed set
+# derived from the actual tool schemas + dispatch table, never a word count).
+_AGENTIC_TOOL_NAME_FALLBACK = frozenset({
+    "web_search", "done_searching", "wolfram_alpha", "execute_python",
+    "search_memory", "expand_memory", "file_read", "file_grep", "file_list",
+    "get_full_document", "git_stats", "recall_image", "fetch_url",
+    "search_stackexchange", "search_arxiv", "search_pubmed", "pattern_scan",
+    "search_hackernews", "github", "generate_document", "create_daemon_note",
+    "propose_action", "lookup_contact", "email_search",
+})
+
+
+def _build_agentic_tool_name_set() -> frozenset:
+    """Closed set of agentic tool names, built once at import from the actual
+    tool schemas (core/agentic/types.py `*_TOOL_DEFINITION` dicts) plus the
+    DISPATCH_TABLE handler names (core/agentic/tools.py) with the
+    `_dispatch_` prefix removed. Falls back to a small hardcoded set if the
+    import fails (e.g. during partial/mocked test imports)."""
+    names = set()
+    try:
+        from core.agentic import types as _agentic_types
+        for _attr_name in dir(_agentic_types):
+            if not _attr_name.endswith("_TOOL_DEFINITION"):
+                continue
+            _tool_def = getattr(_agentic_types, _attr_name, None)
+            if not isinstance(_tool_def, dict):
+                continue
+            _fn = _tool_def.get("function")
+            if isinstance(_fn, dict) and isinstance(_fn.get("name"), str):
+                names.add(_fn["name"])
+        from core.agentic.tools import DISPATCH_TABLE
+        for _entry in DISPATCH_TABLE:
+            _handler_name = _entry[1] if len(_entry) > 1 else None
+            if isinstance(_handler_name, str) and _handler_name.startswith("_dispatch_"):
+                names.add(_handler_name[len("_dispatch_"):])
+    except Exception as _tool_set_err:
+        logger.debug(
+            f"[Handle Submit] Falling back to hardcoded agentic tool name set: {_tool_set_err}"
+        )
+        return frozenset(_AGENTIC_TOOL_NAME_FALLBACK)
+    if not names:
+        return frozenset(_AGENTIC_TOOL_NAME_FALLBACK)
+    return frozenset(names)
+
+
+_AGENTIC_TOOL_NAMES = _build_agentic_tool_name_set()
+_BARE_TOOL_LINE_RE = _re.compile(
+    r'^(?:' + '|'.join(_re.escape(n) for n in sorted(_AGENTIC_TOOL_NAMES, key=len, reverse=True))
+    + r')(?:\s*\(.*\)|\s*:\s*.*)?$'
+) if _AGENTIC_TOOL_NAMES else None
+
+
+def _strip_bare_tool_name_lines(text: str) -> str:
+    """Remove a line ONLY when, outside a fenced code block, the whole
+    stripped line is a bare agentic tool name, `tool_name(...)`, or
+    `tool_name: ...` — never a word count, never punctuation. Fenced code
+    blocks (``` ... ```) are tracked and never touched, even when a tool name
+    happens to appear alone inside one."""
+    if not text or _BARE_TOOL_LINE_RE is None:
+        return text
+    in_fence = False
+    cleaned_lines = []
+    removed_any = False
+    for line in text.split('\n'):
+        stripped_line = line.strip()
+        if stripped_line.startswith('```'):
+            in_fence = not in_fence
+            cleaned_lines.append(line)
+            continue
+        if not in_fence and _BARE_TOOL_LINE_RE.match(stripped_line):
+            logger.debug(f"[Handle Submit] Stripped bare tool-call line: {stripped_line!r}")
+            removed_any = True
+            continue
+        cleaned_lines.append(line)
+    if not removed_any:
+        return text
+    cleaned = '\n'.join(cleaned_lines)
+    return _re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
 
 async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
@@ -451,6 +548,50 @@ def _attach_agentic_provenance(provenance, orchestrator):
         logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
 
 
+def _build_agentic_answer_call_extra(orchestrator, model_name) -> dict:
+    """F7 (2026-09-08): the exported debug `prompt`/`system_prompt` are the
+    BASE retrieval prompt, but the agentic answer is actually generated by
+    `controller._build_final_prompt` (record 40 in the 2026-09-08 dump: the
+    base prompt rendered [GOOGLE CALENDAR] + [KNOWLEDGE GRAPH] while the
+    answering call's own receipt said both were omitted). The controller
+    keeps the answering call's exact prompt on `_last_final_prompt` /
+    `_last_final_system_prompt`, and the session's `answer_call` names which
+    call produced the text (decision_reuse / final_synthesis /
+    error_fallback). Surface those alongside — never in place of — the base
+    fields so a reader can tell the two apart. Returns {} when no agentic
+    controller/session is available (non-agentic modes never call this)."""
+    try:
+        ac = (
+            getattr(orchestrator, 'agentic_controller', None)
+            or getattr(orchestrator, '_agentic_controller', None)
+        )
+        if ac is None:
+            return {}
+        session = getattr(ac, '_last_session', None)
+        _raw_answer_call = getattr(session, 'answer_call', '') if session is not None else ''
+        answer_call = _raw_answer_call if isinstance(_raw_answer_call, str) else ''
+        answer_prompt = getattr(ac, '_last_final_prompt', None)
+        if not isinstance(answer_prompt, str) or not answer_prompt:
+            return {'answer_call': answer_call} if answer_call else {}
+        answer_system_prompt = getattr(ac, '_last_final_system_prompt', None)
+        if not isinstance(answer_system_prompt, str):
+            answer_system_prompt = ''
+        _, _, answer_prompt_tokens = _safe_count_tokens(
+            answer_prompt, answer_system_prompt, model_name, orchestrator,
+        )
+        answer_prompt_hash = hashlib.sha256(answer_prompt.encode()).hexdigest()[:16]
+        return {
+            'answer_call': answer_call,
+            'answer_prompt': answer_prompt,
+            'answer_system_prompt': answer_system_prompt,
+            'answer_prompt_tokens': answer_prompt_tokens,
+            'answer_prompt_hash': answer_prompt_hash,
+        }
+    except Exception as e:
+        logger.debug(f"[Handlers] Could not build agentic answer-call extra: {e}")
+        return {}
+
+
 def _gate_debug_summary(gate_decision) -> str:
     """One-line 'why this turn routed as it did' for the debug record — the
     gate's trigger modes / veto reason + veto-exempt/deferred flags. Added
@@ -485,9 +626,16 @@ def _build_debug_record(
     prompt_tokens, system_tokens, total_tokens,
     citations, orchestrator, provenance=None,
     phase_timings=None, task_timings=None, gather_elapsed=0.0,
-    gate_reason=None,
+    gate_reason=None, extra=None,
 ):
-    """Build a debug record dict for the Debug Trace tab."""
+    """Build a debug record dict for the Debug Trace tab.
+
+    `extra` (2026-09-08, F7/B4): an optional dict of additional fields merged
+    into the record after all the base fields are set — e.g. the agentic
+    answer-call receipt (answer_call/answer_prompt/answer_system_prompt/
+    answer_prompt_tokens/answer_prompt_hash), which describes the prompt the
+    answering call actually saw, distinct from the base retrieval `prompt`.
+    """
     # A leading EMPTY reasoning shell ("<thinking></thinking>Answer…") is a
     # stream artifact with zero diagnostic value — display and storage
     # already strip it; keep the record aligned with what the user actually
@@ -511,7 +659,7 @@ def _build_debug_record(
                 provenance["response_plan"] = plan_audit
     except Exception as e:
         logger.debug(f"[Handlers] Could not attach response-plan audit: {e}")
-    return {
+    record = {
         'mode': mode,
         'query': user_text,
         'prompt': prompt,
@@ -538,6 +686,9 @@ def _build_debug_record(
         'gate_reason': gate_reason or '',
         'response_plan': plan_audit,
     }
+    if extra:
+        record.update(extra)
+    return record
 
 
 def _find_email_draft(chat_history: list, fallback: str) -> str:
@@ -914,6 +1065,10 @@ def _format_action_proposal_card(proposal) -> str:
             params.get("all_day", "")
         ).lower() in {"true", "1", "yes"}
         suffix = " [all day]" if all_day else ""
+        _rec = params.get("recurrence")
+        if _rec:
+            _rec_txt = " ".join(_rec) if isinstance(_rec, (list, tuple)) else str(_rec)
+            suffix += f" · repeats: {_rec_txt[:80]}"
         return f"\n\n---\n**calendar_create_event** — **{title}** — {start}{suffix}\n"
 
     if action_name in ("calendar_update_event", "calendar_delete_event"):
@@ -2548,6 +2703,43 @@ def _apply_web_citations(text, web_map, wiki_map=None):
     return out
 
 
+# ── Display/storage parity check (2026-09-08, B1) ────────────────────────
+# Log-only integrity check: never mutates either text. Catches the F1 class
+# where a display-side cleanup pass silently diverged from what got
+# persisted (storage kept the raw, intact answer while the user/debug record
+# saw a mangled one).
+_CITATION_LINK_DECORATION_RE = _re.compile(r'\[+((?:WEB|WIKI)_\d+)\]\([^)]*\)\]*')
+_SOURCES_FOOTER_TRAILER_RE = _re.compile(
+    r'\n+-{3,}\s*\n\*{0,2}Sources:?\*{0,2}\s*\n.*\Z', _re.DOTALL,
+)
+
+
+def _strip_display_only_decorations(display_text: str) -> str:
+    """Undo display-only citation linkification (`_apply_web_citations`) and
+    the trailing Sources footer, so the result is directly comparable to the
+    bare-marker text that storage persists."""
+    text = _CITATION_LINK_DECORATION_RE.sub(r'[\1]', display_text or '')
+    text = _SOURCES_FOOTER_TRAILER_RE.sub('', text)
+    return text
+
+
+def _answer_bodies_agree(display: str, stored: str) -> bool:
+    """True when every fenced code block and every non-empty line of
+    `display` (after stripping display-only decorations) appears verbatim in
+    `stored`. Pure — used both by tests and as a production log-only guard."""
+    if not display or not display.strip():
+        return True
+    cleaned = _strip_display_only_decorations(display)
+    stored_text = stored or ''
+    for line in cleaned.split('\n'):
+        stripped_line = line.strip()
+        if not stripped_line:
+            continue
+        if stripped_line not in stored_text:
+            return False
+    return True
+
+
 # Map the action system's ActionType (user-intent classifier) to the guard's
 # coarser ActionKind, so we can tell when the USER actually asked Daemon to
 # perform an external action this turn.
@@ -2580,13 +2772,38 @@ def _user_requested_external_kinds(user_text):
 
 
 def _pending_proposal_kinds(orchestrator):
-    """ActionKinds with a prior-turn offer still pending ("Want me to email X?")."""
+    """ActionKinds with a prior-turn offer still pending ("Want me to email X?").
+
+    Two sources: the NOTE-only PendingProposalStore, and (2026-09-07) the
+    EXTERNAL offer in the previous stored reply — "Want me to create the
+    recurring event?" followed by "Confirmed — creating the recurring event
+    now" with nothing executed is exactly the confabulation this guard exists
+    for, and the external kinds were never in the expected-to-act set.
+    """
+    kinds = set()
     try:
         store = _get_pending_proposal_store(orchestrator)
         p = store.peek() if store is not None else None
-        return {p.kind} if p is not None else set()
+        if p is not None:
+            kinds.add(p.kind)
     except Exception:
-        return set()
+        pass
+    try:
+        from core.actions.registry import action_kind_of, offer_action_type
+        _cm = getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None)
+        _recent = _cm.get_recent_memories(1) if _cm is not None else []
+        if _recent:
+            _offer = offer_action_type(_recent[0].get('response', '') or '')
+            _kind = action_kind_of(_offer) if _offer is not None else None
+            if _kind is not None:
+                kinds.add(_kind)
+    except Exception:
+        pass
+    return kinds
+
+
+class _NoClaims(Exception):
+    """Control-flow: no completion claims — skip to the kind-independent backstop."""
 
 
 async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_kinds, self_repair):
@@ -2598,6 +2815,7 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     executed nor proposed. Never auto-executes external actions.
     """
     _capture_proposal(ctx.orchestrator, response_text)
+    from core.action_claim_guard import NO_CARD_NOTICE, claims_pending_card
 
     suffix = ""
     try:
@@ -2610,7 +2828,7 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
         )
         claims = detect_completion_claims(response_text)
         if not claims:
-            return suffix
+            raise _NoClaims()
         rec = verify_claims(claims, executed_kinds=set(executed_kinds), proposed_kinds=set(proposed_kinds))
         if not rec.has_issue:
             return suffix
@@ -2635,8 +2853,22 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
             and (a.kind in actionable or is_first_person_claim(a.matched_text))
         ]
         suffix += build_correction_notice(external)
+    except _NoClaims:
+        pass
     except Exception as e:
         logger.warning(f"[ActionGuard] Claim guard failed (non-fatal): {e}")
+    # Kind-independent backstop (2026-09-07): the reply points at an approval
+    # card ("Approve it and it should land this time") but no proposal was
+    # created or executed this turn — the card does not exist.
+    try:
+        from config.app_config import ACTION_CLAIM_GUARD_ENABLED as _guard_on
+        if (_guard_on and response_text and not proposed_kinds and not executed_kinds
+                and NO_CARD_NOTICE not in suffix and claims_pending_card(response_text)):
+            logger.warning("[ActionGuard] Reply directs the user to approve a card, "
+                           "but no proposal exists this turn — appending notice")
+            suffix += NO_CARD_NOTICE
+    except Exception as e:
+        logger.warning(f"[ActionGuard] No-card backstop failed (non-fatal): {e}")
     return suffix
 
 
@@ -2834,6 +3066,92 @@ async def _run_pending_proposal(ctx, proposal):
         # Fall through to normal flow (ctx.handled stays False)
 
 
+def _failed_action_to_retry(user_text):
+    """The recently FAILED external proposal a retry request refers to, or None.
+
+    Conditions (all deterministic): internet actions enabled; the message is a
+    retry request (registry.is_action_retry_request); no proposal is currently
+    pending (a pending card is what the user should approve — never mint a
+    second); the store holds a failed proposal proposed within the last 30 min.
+    """
+    try:
+        from config.app_config import INTERNET_ACTIONS_ENABLED
+        if not INTERNET_ACTIONS_ENABLED:
+            return None
+        from core.actions.registry import is_action_retry_request
+        if not is_action_retry_request(user_text or ""):
+            return None
+        from core.agentic.tools import ToolExecutor
+        store = ToolExecutor._get_pending_actions_store()
+        if store.get_pending() is not None:
+            return None
+        return store.most_recent_failed()
+    except Exception as e:
+        logger.debug(f"[Actions] Retry lookup failed (non-fatal): {e}")
+        return None
+
+
+async def _run_action_retry(ctx, failed):
+    """Re-queue a FAILED external proposal with its exact params as a NEW pending
+    card (2026-09-07). Approval is still the human's — nothing executes here.
+
+    Yields the final chunk (with pending_action_id) and sets ctx.handled; on
+    any failure logs and leaves ctx.handled False so the normal flow runs.
+    """
+    orchestrator = ctx.orchestrator
+    try:
+        import copy
+        from core.actions.types import ActionProposal
+        from core.agentic.tools import ToolExecutor
+        store = ToolExecutor._get_pending_actions_store()
+        new = ActionProposal(
+            action_type=failed.action_type,
+            params=copy.deepcopy(failed.params or {}),
+            summary=failed.summary or "",
+            reasoning=(f"Retry of {failed.action_id[:8]} after failure: "
+                       f"{(failed.error or 'unknown error')[:200]}"),
+            reversible=failed.reversible,
+        )
+        if not store.propose(new):
+            logger.warning("[Actions] Retry re-queue refused (store at capacity)")
+            return
+        logger.warning(
+            f"[Actions] Retry request → re-queued {failed.action_type.value} "
+            f"{failed.action_id[:8]} as {new.action_id[:8]} (prior error: {failed.error!r})"
+        )
+        _why = (failed.error or "").strip()
+        _why_line = (f" The previous attempt failed with: {_why[:160]}" if _why and _why != "expired"
+                     else " The previous card expired before it was approved." if _why == "expired"
+                     else "")
+        _resp = (
+            f"Re-queued the same {failed.action_type.value.replace('_', ' ')} for approval — "
+            f"identical details, nothing changed.{_why_line} Approve the card and it runs again."
+            + _format_action_proposal_card(new)
+        )
+        if orchestrator.memory_system:
+            try:
+                await orchestrator.memory_system.store_interaction(
+                    query=ctx.user_text, response=_resp, tags=["action_retry"],
+                )
+            except Exception:
+                pass
+        _model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
+        debug_record = _build_debug_record(
+            mode='action-retry', user_text=ctx.user_text, prompt="",
+            system_prompt=None, response=_resp, model=_model,
+            prompt_tokens=0, system_tokens=0, total_tokens=0,
+            citations=[], orchestrator=orchestrator,
+            gate_reason=f"retry of failed {failed.action_type.value} ({failed.action_id[:8]})",
+        )
+        yield {"role": "assistant", "content": _resp, "debug": debug_record,
+               "pending_action_id": new.action_id}
+        _write_turn_telemetry(ctx, 'action-retry', _get_session_id(orchestrator), _model, len(_resp))
+        ctx.handled = True
+    except Exception as e:
+        logger.error(f"[Actions] Retry re-queue failed: {e}")
+        # Fall through to normal flow (ctx.handled stays False)
+
+
 def _retry_fetch_urls_from_context(user_text, chat_history) -> list[str]:
     """Recover a URL only for an explicit retry after the assistant failed to fetch."""
     from utils.query_checker import is_retry_continuation
@@ -2940,7 +3258,8 @@ async def _run_agentic_search(ctx):
         from config.app_config import AGENTIC_FETCH_FASTPATH
         _remainder_words = len(_TOPIC_URL_RE.sub("", user_text).split())
         _gate_modes = getattr(_gate_decision, "modes", []) or []
-        _forced_action = detect_action_intent(user_text)
+        _gate_forced_action = getattr(_gate_decision, "forced_action", None)
+        _forced_action = detect_action_intent(user_text) or _gate_forced_action
         _fastpath_ok = (
             AGENTIC_FETCH_FASTPATH
             and ((bool(_url_in_current_msg) and _remainder_words <= 12)
@@ -2970,6 +3289,7 @@ async def _run_agentic_search(ctx):
             initial_urls=_extracted_urls if _extracted_urls else None,
             fetch_fastpath=_fastpath_ok,
             gate_modes=_gate_modes,
+            forced_action=_gate_forced_action,
         )
 
         async def _agentic_next():
@@ -3152,33 +3472,15 @@ async def _run_agentic_search(ctx):
         )
         if (not _had_real_rounds and display_output
                 and not ctx.telemetry.get("agentic_narration_recovered")):
-            # Response is just narration — strip lines that look like
-            # bare tool queries (short lines without sentence structure)
-            # But preserve [propose_action] blocks for text parsing
-            # (a narration-recovered answer skips this: it's a vetted full
-            # reply, and its markdown table rows must not be line-stripped)
-            _cleaned_lines = []
-            _in_action_block = False
-            for _line in display_output.split('\n'):
-                _stripped_line = _line.strip()
-                # Track action JSON blocks — don't strip them
-                if _stripped_line.startswith('[propose_action'):
-                    _in_action_block = True
-                if _in_action_block:
-                    _cleaned_lines.append(_line)
-                    if _stripped_line == '}':
-                        _in_action_block = False
-                    continue
-                # Keep empty lines and lines with sentence structure
-                if (not _stripped_line
-                        or len(_stripped_line.split()) >= 4
-                        or _stripped_line.endswith(('.', '!', '?', ':', ';', ','))
-                        or _stripped_line.startswith(('#', '-', '*', '>', '{', '"', '|'))):
-                    _cleaned_lines.append(_line)
-                else:
-                    logger.debug(f"[Handle Submit] Stripped bare tool-call line: {_stripped_line!r}")
-            display_output = '\n'.join(_cleaned_lines).strip()
-            display_output = _re.sub(r'\n{3,}', '\n\n', display_output)
+            # Response is just narration (no tool rounds ran) — strip lines
+            # that ARE a bare agentic tool name/call that leaked as plain
+            # text (e.g. a lone "github" or `web_search("x")` line). This
+            # replaces a word-count heuristic (2026-09-08, F1) that deleted
+            # 47 valid lines across 13 live replies, including code fences
+            # and real code (`coef(model)`, `print(y_hat - resid)`). Propose
+            # action JSON blocks are untouched by construction: their lines
+            # never equal a bare tool name.
+            display_output = _strip_bare_tool_name_lines(display_output)
 
         # Make [WEB_N] citations clickable + append a Sources footer (display only).
         # The accumulated web-source map lives on the controller's ToolExecutor
@@ -3284,6 +3586,7 @@ async def _run_agentic_search(ctx):
             task_timings=_agentic_tasks,
             gather_elapsed=_agentic_gather,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            extra=_build_agentic_answer_call_extra(orchestrator, model_name),
         )
         # Yield final response with debug record (response was already streamed
         # chunk-by-chunk during the loop, so only one yield needed here)
@@ -3397,6 +3700,15 @@ async def _run_agentic_search(ctx):
 
         if len(final_output_sanitized.strip()) < 20 and display_output.strip():
             final_output_sanitized = display_output
+
+        # Display/storage parity check (2026-09-08, B1) — log-only, never
+        # mutates either text. Catches the F1 class where a display-side
+        # cleanup pass silently diverges from what actually gets persisted.
+        if not _answer_bodies_agree(display_output, final_output_sanitized):
+            logger.warning(
+                "[Handle Submit] Agentic display/storage body mismatch — "
+                "the text the user saw and the text being stored diverge."
+            )
 
         _dispatch_storage(
             orchestrator, merged_input, final_output_sanitized, user_text,
@@ -3703,6 +4015,45 @@ async def _run_enhanced(ctx):
             elif not final_answer_stream:
                 logger.warning("[Handle Submit] Post-stream: entire response was thinking — suppressing")
                 final_output = ""
+                # N3 (2026-09-08, B6): before giving up, ONE recovery call via
+                # generate_once(disable_reasoning=True) — the same contract as
+                # ResponseGenerator._recover_reasoning_only(), which the
+                # raw-empty-stream case already has (line ~298 above); this
+                # content-channel thinking-only case (the model streamed a
+                # non-empty <thinking>...</thinking> block and nothing after
+                # it) had none, and used to just tell the user to retry.
+                _recovered_thinking_only = ""
+                try:
+                    _recovered_thinking_only = await orchestrator.model_manager.generate_once(
+                        prompt=full_prompt,
+                        model_name=orchestrator.model_manager.get_active_model_name(),
+                        system_prompt=_stream_system_prompt,
+                        max_tokens=1024,
+                        disable_reasoning=True,
+                    )
+                except Exception as _recover_err:
+                    logger.warning(
+                        f"[Handle Submit] Thinking-only recovery failed (non-fatal): {_recover_err}"
+                    )
+                _recovered_thinking_only = (_recovered_thinking_only or "").strip()
+                if _recovered_thinking_only:
+                    _recovered_thinking_only = ResponseParser.strip_thinking_tag_leaks(_recovered_thinking_only)
+                    _recovered_thinking_only = _strip_leaked_xml_blocks(_recovered_thinking_only).strip()
+                if _recovered_thinking_only:
+                    logger.info("[Handle Submit] Recovered content-channel thinking-only stream")
+                    final_output = _recovered_thinking_only
+                else:
+                    _empty_notice = _API_ERROR_DISPLAY["[Error: Model returned empty response"]
+                    _empty_debug = _build_debug_record(
+                        mode="enhanced", user_text=user_text, prompt=full_prompt,
+                        system_prompt=_stream_system_prompt, response="",
+                        model=model_name, prompt_tokens=0, system_tokens=0, total_tokens=0,
+                        citations=[], orchestrator=orchestrator,
+                        provenance={"response_mode": "enhanced", "thinking_block": thinking_part_stream},
+                        extra={"answer_call": "empty"},
+                    )
+                    yield {"role": "assistant", "content": _empty_notice, "debug": _empty_debug}
+                    return
             # Sync display_output so final yield doesn't show stale thinking-polluted content
             display_output = final_output
 
@@ -4329,16 +4680,32 @@ async def _handle_submit_inner(
     files_result = await file_processor.process_files_structured(user_text, files or [])
     merged_input = files_result.text_content
 
+    # Bounded active-document continuity (2026-09-08, B5/F2/F8): the session's
+    # registry of attached documents, attached to the orchestrator by
+    # api/state.AppState. Created lazily here for the legacy Gradio launch
+    # path, which never goes through AppState.
+    active_doc_registry = getattr(orchestrator, 'active_documents', None)
+    if active_doc_registry is None:
+        active_doc_registry = ActiveDocumentRegistry()
+        try:
+            setattr(orchestrator, 'active_documents', active_doc_registry)
+        except Exception as e:
+            logger.debug(f"[ActiveDocument] Could not attach registry to orchestrator: {e}")
+
     # Deterministic attachment audit + deadline-timezone notes (2026-09-04,
     # homework-attachment turn audit items 8-9). No LLM calls; silent when
     # nothing to flag. Appended once to the analysis/merge text so both the
     # rendered [CURRENT QUERY] (via merged_input / ContextPipeline Stage 3)
     # and enhanced-mode classification (via analysis_text) see it.
     _attachment_note = ""
+    _active_doc_telemetry: dict = {}
     if files_result.documents:
         try:
             _notes = []
-            _audit_note = audit_attachments(user_text, files, files_result.documents)
+            _audit_note = audit_attachments(
+                user_text, files, files_result.documents,
+                available_documents=active_doc_registry.names(),
+            )
             if _audit_note:
                 _notes.append(_audit_note)
             _deadline_source = user_text + "\n" + "\n".join(
@@ -4351,10 +4718,90 @@ async def _handle_submit_inner(
         except Exception as e:
             logger.debug(f"[Handle Submit] attachment/deadline audit failed: {e}")
 
+        # Register every text attachment from THIS turn in the session's
+        # active-document registry (2026-09-08, B5) — same (name, sha256)
+        # refreshes rather than duplicating. This is what lets "ok next q
+        # please" several turns later, with no re-attachment, still reach
+        # the original document after [RECENT CONVERSATION] has trimmed it
+        # out (the live incident: a homework PDF's question body was
+        # middle-out'd out of history by turn 8).
+        _registered_this_turn: list = []
+        for _doc in files_result.documents:
+            if getattr(_doc, 'error', '') or not getattr(_doc, 'content_text', ''):
+                continue
+            try:
+                _reg_turn = active_doc_registry.next_turn()
+                _registered = active_doc_registry.register(
+                    _doc.filename, _doc.content_text,
+                    (_doc.extension or ''), _reg_turn,
+                )
+                _registered_this_turn.append(_registered.display_name)
+                logger.info(
+                    f"[ActiveDocument] Registered '{_registered.display_name}' "
+                    f"({len(_registered.items)} numbered items, turn={_reg_turn})"
+                )
+            except Exception as e:
+                logger.debug(f"[ActiveDocument] Registration failed for an attachment: {e}")
+        if _registered_this_turn:
+            _active_doc_telemetry["registered"] = _registered_this_turn
+
+    # Active-document task navigation ("please show me first question", "ok
+    # next q please", "question 3", "the last one"). Attempted every turn —
+    # NOT gated on "no files this turn": the doc just registered a few lines
+    # above is already a candidate, so "show me the first question" in the
+    # SAME message as the upload resolves too, not just a later re-ask with
+    # no attachment. Guarded by is_task_navigation()/a registered-filename
+    # mention so it's a no-op on an ordinary turn. Appended to BOTH
+    # merged_input and analysis_text: the long passage text is what bypasses
+    # the light path and the self-report trim (is_casual_acknowledgment/
+    # is_self_report both fail on long text), without touching the builder.
+    _active_doc_note = ""
+    try:
+        _registered_names = active_doc_registry.names()
+        _mentions_registered_doc = any(
+            name and name.lower() in user_text.lower() for name in _registered_names
+        )
+        if is_task_navigation(user_text) or _mentions_registered_doc:
+            _nav_turn = active_doc_registry.next_turn()
+            _nav = active_doc_registry.resolve_navigation(user_text, _nav_turn)
+            if isinstance(_nav, ActivePassage):
+                _active_doc_note = format_active_passage(_nav)
+                _active_doc_telemetry.update({
+                    "action": "resolved",
+                    "document": _nav.document.display_name,
+                    "item": _nav.item.label,
+                    "position": list(_nav.position),
+                })
+                logger.info(
+                    f"[ActiveDocument] Resolved '{_nav.document.display_name}' "
+                    f"{_nav.item.label} ({_nav.position[0]} of {_nav.position[1]})"
+                )
+            elif isinstance(_nav, Ambiguous):
+                _active_doc_note = format_ambiguity_note(_nav)
+                _active_doc_telemetry.update({"action": "ambiguous", "candidates": _nav.names})
+                logger.info(f"[ActiveDocument] Ambiguous navigation candidates: {_nav.names}")
+            elif isinstance(_nav, Exhausted):
+                _active_doc_note = format_exhausted_note(_nav)
+                _active_doc_telemetry.update({
+                    "action": "exhausted",
+                    "document": _nav.document.display_name,
+                    "requested": _nav.requested,
+                    "count": _nav.count,
+                })
+                logger.info(
+                    f"[ActiveDocument] Navigation exhausted: "
+                    f"{_nav.document.display_name} item {_nav.requested}/{_nav.count}"
+                )
+    except Exception as e:
+        logger.debug(f"[ActiveDocument] Navigation resolution failed: {e}")
+
     analysis_text = user_text
     if _attachment_note:
         merged_input += "\n\n" + _attachment_note
         analysis_text = user_text + "\n\n" + _attachment_note
+    if _active_doc_note:
+        merged_input += "\n\n" + _active_doc_note
+        analysis_text = analysis_text + "\n\n" + _active_doc_note
 
     # Persist uploads to ChromaDB in background (fire-and-forget)
     if files_result.documents or files_result.images:
@@ -4377,6 +4824,8 @@ async def _handle_submit_inner(
         files_result=files_result,
         analysis_text=analysis_text,
     )
+    if _active_doc_telemetry:
+        ctx.telemetry["active_document"] = _active_doc_telemetry
 
     # RAW MODE: go straight through orchestrator (personality hook is handled inside process_user_query)
     if use_raw_gpt:
@@ -4400,6 +4849,20 @@ async def _handle_submit_inner(
                 yield _c
             if ctx.handled:
                 return
+
+    # ── Retry of a FAILED external action (2026-09-07) ──────────────────────
+    # "Ah didn't work. Can we try that again?" / "had to reauthorize, good now,
+    # please try again" after an approved action failed at the executor: the
+    # failed proposal still holds the exact params the user approved. Re-queue
+    # it deterministically as a new card — BEFORE the gate's casual/short skip
+    # can drop the turn into a tool-less mode where the reply narrates a card
+    # that does not exist. Approval is still the human's.
+    _retry_target = _failed_action_to_retry(user_text)
+    if _retry_target is not None:
+        async for _c in _run_action_retry(ctx, _retry_target):
+            yield _c
+        if ctx.handled:
+            return
             # else execution failed — fall through to the normal flow
 
     # Check if agentic search might be used (need to know before calling prepare_prompt)

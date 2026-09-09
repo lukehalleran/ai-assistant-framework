@@ -1181,11 +1181,21 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                         "YYYY-MM-DD dates and end_time is the next day (exclusive)."
                     )
                 },
+                "recurrence": {
+                    "type": "string",
+                    "description": (
+                        "RFC 5545 rule for a REPEATING event (calendar_create_event only), "
+                        "e.g. 'RRULE:FREQ=WEEKLY;UNTIL=20261204' or 'RRULE:FREQ=WEEKLY;COUNT=14'. "
+                        "start_time/end_time are then the FIRST occurrence. Use this for "
+                        "weekly office hours or a standing meeting instead of N copies."
+                    )
+                },
                 "events": {
                     "type": "array",
                     "description": (
-                        "Several calendar events in one confirmation proposal. Use only for "
-                        "calendar_create_event; each item needs summary, start_time, end_time."
+                        "Several DIFFERENT calendar events in one confirmation proposal. Use only for "
+                        "calendar_create_event; each item needs summary, start_time, end_time. "
+                        "A repeating event is ONE event with recurrence, not an events[] batch."
                     ),
                     "items": {
                         "type": "object",
@@ -1197,7 +1207,8 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                             "time_zone": {"type": "string"},
                             "calendar_id": {"type": "string"},
                             "location": {"type": "string"},
-                            "all_day": {"type": "boolean"}
+                            "all_day": {"type": "boolean"},
+                            "recurrence": {"type": "string"}
                         },
                         "required": ["summary", "start_time", "end_time"]
                     }

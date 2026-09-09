@@ -119,10 +119,11 @@ from core.agentic.protocols import (
     BaseProtocolHandler,
 )
 from core.agentic.formatters import AgenticFormatter
-from core.agentic.tools import ToolExecutor
+from core.agentic.tools import LazySandboxSession, ToolExecutor
 from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 from utils.ordered_slice import oldest_first as _ordered_oldest_first
+from utils.text_budget import fit_text_to_tokens
 
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
@@ -149,6 +150,18 @@ _ERROR_PATTERN = re.compile(r'error|exception|traceback|bug|issue', re.IGNORECAS
 
 # Stop words for relevance check
 _STOP_WORDS = frozenset({'the', 'a', 'an', 'is', 'are', 'was', 'were', 'to', 'of', 'for', 'in', 'on', 'with', 'and', 'or'})
+
+# F8 (2026-09-08 homework-session audit): the section-trim ladder in
+# _build_final_prompt is section-level (dreams/reflections/docs/summaries)
+# and can be fully exhausted while a single oversized [CURRENT USER QUERY]
+# part — a large attachment merged straight into the query text — is what's
+# still pushing the assembled prompt over the ceiling (records 10/14 logged
+# "40559/40000 tokens after trimming" and shipped the over-budget prompt
+# anyway). `_squeeze_query_part_for_ceiling` below middle-outs ONLY that
+# part's body as a last resort.
+_CURRENT_QUERY_HEADER = "[CURRENT USER QUERY — RESPOND TO THIS]"
+_MIDDLE_OUT_SNIP_RE = re.compile(r"\n… \[middle-out snipped (\d+) chars\] …\n")
+_UPLOAD_TITLE_IN_TEXT_RE = re.compile(r'upload:([^"\)\s]+)')
 
 
 # Forced write-action detection + deterministic param backfill now live in the action registry
@@ -385,6 +398,7 @@ class AgenticSearchController:
         initial_urls: Optional[List[str]] = None,
         fetch_fastpath: bool = False,
         gate_modes: Optional[List[str]] = None,
+        forced_action: Optional[str] = None,
     ) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Execute the agentic search loop.
@@ -403,6 +417,10 @@ class AgenticSearchController:
             initial_urls: Optional list of URLs extracted from the user message to fetch directly
             fetch_fastpath: Skip model decision rounds after a substantive direct fetch.
             gate_modes: List of trigger modes ("web_search", "memory", "computation", etc.)
+            forced_action: ActionType.value to force on the first decision round when
+                the QUERY itself carries no action pattern — the gate's prior-turn
+                offer affirmation (2026-09-07: "please create" after "Want me to
+                create the recurring event?"). A same-turn detect_action_intent hit wins.
 
         Yields:
             ProgressEvent: Status updates for UI
@@ -500,16 +518,18 @@ class AgenticSearchController:
         except ImportError:
             pass
 
-        # Get persistent sandbox session (survives across agentic runs in the conversation)
-        sandbox_session = None
-        if sandbox_available:
-            try:
-                sandbox_session = await self._get_sandbox_session()
-                if sandbox_session:
-                    logger.info("[AgenticSearch] Using persistent sandbox session")
-            except Exception as e:
-                logger.warning(f"[AgenticSearch] Failed to create sandbox session: {e}")
-                # Continue without sandbox - will fall back gracefully
+        # Lazy sandbox acquisition (2026-09-08, F5): sandbox_available (=
+        # sandbox_manager.is_available()) is a cheap local flag, but actually
+        # acquiring a session is a remote E2B create-session call. Acquiring
+        # it here unconditionally — before round 1, for every agentic turn
+        # where the flag was true — created a sandbox even on turns that
+        # never executed code (live: 26 created, 13 closed with zero
+        # executions). LazySandboxSession defers the real call to
+        # ToolExecutor._dispatch_sandbox, the only site that ever needs it;
+        # _get_sandbox_session's recycling/age/liveness handling and
+        # close_sandbox() are unchanged, and the "Using persistent sandbox
+        # session" log now fires on first successful acquisition there.
+        sandbox_session = LazySandboxSession(self._get_sandbox_session) if sandbox_available else None
 
         try:
             # Tracks whether round 1 itself ran a web search (as opposed to a
@@ -766,6 +786,17 @@ class AgenticSearchController:
             # propose_action on the first decision round (native-tools protocol only) so
             # research-eager models don't spend every round reading code and never act.
             _forced_action = detect_action_intent(query)  # ActionType or None (from the registry)
+            if _forced_action is None and forced_action:
+                try:
+                    from core.actions.types import ActionType as _AT
+                    _forced_action = _AT(forced_action)
+                    logger.info(
+                        f"[AgenticSearch] Forcing {forced_action} from the gate's "
+                        "prior-turn offer affirmation"
+                    )
+                except ValueError:
+                    logger.warning(
+                        f"[AgenticSearch] Unknown forced_action {forced_action!r} ignored")
             _force_propose_pending = _forced_action is not None
             if _forced_action:
                 # Forced action rounds need more than the tiny general-purpose
@@ -2657,6 +2688,92 @@ What would you like to do?""")
 
         return "\n\n".join(parts)
 
+    def _squeeze_query_part_for_ceiling(
+        self, parts: List[str], prompt_ceiling: int
+    ) -> Tuple[List[str], int]:
+        """F8 last resort: middle-out ONLY the `[CURRENT USER QUERY]` part's
+        body to bring the assembled prompt under `prompt_ceiling` once the
+        section-level trim ladder above has run out of sections to drop.
+
+        Uses `self.token_manager._middle_out` (model-aware tokenizer) when a
+        token manager is attached; otherwise falls back to the same
+        character-based head/tail fit (`utils.text_budget.fit_text_to_tokens`)
+        using `self._estimate_tokens` as the counter. The user's own head
+        words and the tail of the attachment survive; every other part is
+        untouched, and the `* 5` ceiling multiplier is never changed here.
+
+        Returns `(parts, total_tokens)` — the original list/count, unchanged,
+        when there is no query part or squeezing it wouldn't help.
+        """
+        assembled_tokens = self._estimate_tokens("\n\n".join(parts))
+        idx = next(
+            (i for i, p in enumerate(parts) if p.startswith(_CURRENT_QUERY_HEADER)), None
+        )
+        if idx is None:
+            return parts, assembled_tokens
+
+        header_prefix = f"{_CURRENT_QUERY_HEADER}\n"
+        body = parts[idx][len(header_prefix):]
+        other_tokens = self._estimate_tokens(
+            "\n\n".join(parts[:idx] + parts[idx + 1:])
+        )
+
+        name_match = _UPLOAD_TITLE_IN_TEXT_RE.search(body)
+        doc_name = name_match.group(1) if name_match else "the attachment"
+
+        def _marker(cut_chars: int) -> str:
+            return (
+                f"\n[… {cut_chars} characters of attached material omitted from this "
+                f'call; full text retrievable via get_full_document(title="upload:{doc_name}") …]\n'
+            )
+
+        # fit_text_to_tokens/_middle_out size head+tail so head+GENERIC
+        # marker+tail fits the budget handed to them; OUR marker (below) is
+        # longer than their built-in "middle-out snipped N chars" one, so
+        # swapping it in afterward can push the result back over budget
+        # (observed: 40006/40000). Reserve this marker's own token cost
+        # up front — using a worst-case (7-digit cut count) template so the
+        # reservation doesn't itself depend on the exact cut size — so the
+        # post-swap total still fits.
+        _marker_budget_estimate = self._estimate_tokens(_marker(9_999_999))
+        # Headroom for the header line + join separators; never below a
+        # floor that would erase the query outright.
+        target_body_tokens = max(
+            prompt_ceiling - other_tokens - _marker_budget_estimate - 8, 256
+        )
+
+        try:
+            if self.token_manager is not None and hasattr(self.token_manager, "_middle_out"):
+                shrunk = self.token_manager._middle_out(body, target_body_tokens, force=True)
+            else:
+                shrunk = fit_text_to_tokens(body, target_body_tokens, self._estimate_tokens)
+        except Exception as e:
+            logger.warning(f"[AgenticSearch] Query-part squeeze failed, leaving prompt as-is: {e}")
+            return parts, assembled_tokens
+
+        if shrunk == body:
+            return parts, assembled_tokens  # nothing to gain
+
+        cut_chars = max(len(body) - len(shrunk), 0)
+        marker = _marker(cut_chars)
+        # Replace the generic middle-out marker (if the fit produced one)
+        # with the get_full_document-aware one so the model knows how to
+        # retrieve the omitted material; append it when no marker fit at all.
+        if _MIDDLE_OUT_SNIP_RE.search(shrunk):
+            shrunk = _MIDDLE_OUT_SNIP_RE.sub(marker, shrunk, count=1)
+        else:
+            shrunk = shrunk + marker
+
+        new_parts = list(parts)
+        new_parts[idx] = header_prefix + shrunk
+        new_tokens = self._estimate_tokens("\n\n".join(new_parts))
+        logger.warning(
+            f"[AgenticSearch] Squeezed [CURRENT USER QUERY] to fit ceiling: "
+            f"{assembled_tokens} -> {new_tokens} tokens ({prompt_ceiling} ceiling), "
+            f"{cut_chars} characters cut from the query body"
+        )
+        return new_parts, new_tokens
+
     def _build_final_prompt(
         self,
         query: str,
@@ -2888,6 +3005,14 @@ What would you like to do?""")
                 total_tokens = self._estimate_tokens(assembled)
                 if total_tokens <= prompt_ceiling:
                     break
+
+            # F8: the section ladder is exhausted but a single oversized
+            # [CURRENT USER QUERY] part (a large attachment) can still be
+            # over ceiling on its own — squeeze that part's body as a last
+            # resort before giving up.
+            if total_tokens > prompt_ceiling:
+                parts, total_tokens = self._squeeze_query_part_for_ceiling(parts, prompt_ceiling)
+
             if total_tokens > prompt_ceiling:
                 logger.warning(
                     f"[AgenticSearch] Final prompt still over ceiling after trimming: "

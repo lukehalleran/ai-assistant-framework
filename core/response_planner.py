@@ -177,8 +177,16 @@ class ResponsePlanner:
 
     # Retrieval-ranked sections that materially affect what the response says.
     # Each gets a fair bounded excerpt so one large conversation cannot crowd
-    # every other evidence class out of the planner view.
+    # every other evidence class out of the planner view. "user_uploads" is
+    # FIRST and rendered with its own reserved allowance BEFORE this
+    # sequential fill (see build_context_digest) — F3 (2026-09-08
+    # homework-session audit): the planner had NO evidence channel for the
+    # attachment the answer is supposed to be using at all (direct
+    # invocation with only a user_uploads context yielded an EMPTY digest),
+    # so a large STM/history/profile digest exhausting the shared budget
+    # ahead of it must never crowd out the current attachment either.
     _CONTEXT_DIGEST_KEYS = (
+        "user_uploads",
         "stm_summary",
         "recent_conversations",
         "memories",
@@ -195,6 +203,10 @@ class ResponsePlanner:
         "upcoming_schedule",
         "google_calendar",
     )
+
+    # Reserved allowance for the user_uploads digest chunk, rendered before
+    # the fair sequential loop below (2026-09-08, F3).
+    _USER_UPLOADS_DIGEST_MAX_CHARS = 1500
 
     # Sections that are Daemon-synthesized (graph edges, narrative, summaries):
     # labelled in the digest so the planner weighs them below user-authored
@@ -223,7 +235,53 @@ class ResponsePlanner:
         chunks: List[str] = []
         included: List[str] = []
         remaining = max_chars
+
+        # user_uploads gets a reserved allowance rendered BEFORE the fair
+        # sequential loop (2026-09-08, F3) — a large STM/history/profile
+        # digest must never be able to exhaust the shared budget ahead of
+        # the current attachment the answer is supposed to be using.
+        # Roster-only marker items (metadata type "upload_roster" with no
+        # content) carry no evidence for the planner and are dropped.
+        uploads_value = prompt_context.get("user_uploads")
+        if uploads_value not in (None, "", [], {}, ()):
+            upload_items = uploads_value
+            if isinstance(uploads_value, (list, tuple)):
+                upload_items = [
+                    item for item in uploads_value
+                    if not (
+                        isinstance(item, dict)
+                        and item.get("metadata", {}).get("type") == "upload_roster"
+                        and not item.get("content")
+                    )
+                ]
+            if upload_items:
+                compact_uploads = (
+                    upload_items[:3] if isinstance(upload_items, (list, tuple)) else upload_items
+                )
+                try:
+                    rendered_uploads = json.dumps(
+                        compact_uploads,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                        separators=(",", ":"),
+                    )
+                except (TypeError, ValueError):
+                    rendered_uploads = str(compact_uploads)
+                rendered_uploads = rendered_uploads[:ResponsePlanner._USER_UPLOADS_DIGEST_MAX_CHARS]
+                upload_chunk = f"[user_uploads — current attachments]\n{rendered_uploads}"
+                if len(upload_chunk) > remaining:
+                    upload_chunk = upload_chunk[:remaining] if remaining > 0 else ""
+                if upload_chunk:
+                    chunks.append(upload_chunk)
+                    included.append("user_uploads")
+                    remaining -= len(upload_chunk) + 2
+
         for key in ResponsePlanner._CONTEXT_DIGEST_KEYS:
+            if key == "user_uploads":
+                continue  # rendered above with its own reserved allowance
+            if remaining <= 0:
+                break
             value = prompt_context.get(key)
             if value in (None, "", [], {}, ()):
                 continue

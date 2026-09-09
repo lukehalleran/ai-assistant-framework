@@ -43,6 +43,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
+from utils.trigger_match import is_negated as _trigger_is_negated
+from memory.fact_source import strip_quoted_correspondence
 import re
 from datetime import datetime
 
@@ -189,6 +191,38 @@ _REQUEST_MARKERS: tuple = (
 )
 
 
+# Task navigation (2026-09-08, live shape R8: "ok next q please") — moving
+# between numbered items in an attached worksheet/document. Word-bounded so
+# 'q' can't match inside another word; negation-guarded so "don't show the
+# next question" doesn't route as navigation.
+_TASK_NAV_PATTERNS: tuple = (
+    re.compile(
+        r"\b(?:next|first|previous|prev|last|following|second|third)\s+"
+        r"(?:q|question|task|part|problem|step|section|page|one)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bq\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\b(?:question|task|part|problem)\s+\d+\b", re.IGNORECASE),
+)
+
+
+def is_task_navigation(text: str) -> bool:
+    """True when the message asks to move between numbered items in an
+    attached document/worksheet ("next question", "Q3", "part 2"). Such a
+    message can open with an ack word ("ok next q please") without being a
+    casual acknowledgment — it needs the active document/passage, not the
+    light path. Negation-guarded: "don't show the next question" is False."""
+    q = (text or "").strip()
+    if not q:
+        return False
+    ql = q.lower()
+    for pat in _TASK_NAV_PATTERNS:
+        for m in pat.finditer(ql):
+            if not _trigger_is_negated(ql, m.start()):
+                return True
+    return False
+
+
 def is_casual_acknowledgment(q: str, max_words: int = 8) -> bool:
     """
     True for terse acknowledgment/status turns that don't need heavy
@@ -214,6 +248,12 @@ def is_casual_acknowledgment(q: str, max_words: int = 8) -> bool:
     if any(w in QUESTION_LEADS for w in words):
         return False
     if any(m in ql for m in _REQUEST_MARKERS):
+        return False
+    # Task navigation ("ok next q please") is a request for the next item in
+    # an attached document, not an acknowledgment, even though it can open
+    # with an ack word (2026-09-08, live shape R8). A bare "please" anywhere
+    # is the same signal in weaker form.
+    if is_task_navigation(ql) or re.search(r"\bplease\b", ql):
         return False
     first = words[0].strip(".,!…:;'\"")
     if first not in ACK_STARTERS:
@@ -477,6 +517,60 @@ def is_request_shaped(q: str) -> bool:
     return bool(_IMPERATIVE_REQUEST_RE.match(ql))
 
 
+# Fenced code blocks (```...```, DOTALL so a multi-line block collapses to one
+# token). Applied before the line-level code-shape strip below.
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+# Line-shaped prefixes that mark pasted code/console output rather than the
+# user's own prose: '#' comments, '>' blockquote/paste markers, '$ ' shell
+# prompts, '>>>' REPL prompts. Checked against the STRIPPED line.
+_CODE_LINE_PREFIXES = ("#", ">", "$ ", ">>>")
+
+
+def strip_code_shaped_lines(text: str) -> str:
+    """Remove fenced code blocks and lines that read as pasted code/console
+    output (comments, blockquote/shell/REPL prompts, `<-` assignment lines —
+    the R assignment operator) from `text`. Pure; blank lines are preserved
+    so downstream clause/paragraph splitting is unaffected.
+
+    2026-09-08: a pasted R homework comment ("#read csv data file into data
+    frame") and a `used_car_data <- read.csv(...)` assignment line both read
+    as file-retrieval REQUESTS to the raw keyword/pattern matchers even
+    though they are the user's own script, not something addressed to
+    Daemon — this strip runs ahead of those matchers.
+    """
+    raw = text or ""
+    raw = _CODE_FENCE_RE.sub(" ", raw)
+    kept: List[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        if stripped.startswith(_CODE_LINE_PREFIXES):
+            continue
+        if "<-" in stripped:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+_CLAUSE_SPLIT_RE = re.compile(r"[.!?;\n]+")
+
+
+def request_clauses(text: str) -> List[str]:
+    """Split `text` into non-empty clauses after removing pasted
+    correspondence (memory.fact_source.strip_quoted_correspondence) and
+    code-shaped lines (strip_code_shaped_lines). is_self_report checks EVERY
+    clause for a request shape, not just the message's overall head/shape —
+    "wait. lol i have it... please show me the first question..." is not a
+    self-report just because its FIRST clause is an aside; a later clause
+    still asks for something (2026-09-08)."""
+    cleaned = strip_quoted_correspondence(text or "")
+    cleaned = strip_code_shaped_lines(cleaned)
+    return [c.strip() for c in _CLAUSE_SPLIT_RE.split(cleaned) if c.strip()]
+
+
 def is_self_report(q: str, max_words: int = 40) -> bool:
     """A short first-person statement about the user's own state or action —
     "I took my stimulant at 10 AM today and I'm just resting" — that requests
@@ -505,6 +599,18 @@ def is_self_report(q: str, max_words: int = 40) -> bool:
         return False
     if _ADDRESSING_ASSISTANT_RE.search(ql) or is_request_shaped(ql):
         return False
+    # Clause-level request detection (2026-09-08, live shape R2): a request
+    # can arrive after an opening aside ("wait. lol i have it... please show
+    # me the first question...") — the whole-message checks above only look
+    # at the overall shape/head, so a request buried in a LATER clause slid
+    # through as a "self-report".
+    for clause in request_clauses(raw):
+        cl = clause.lower()
+        if (is_request_shaped(clause)
+                or _ADDRESSING_ASSISTANT_RE.search(cl)
+                or _IMPERATIVE_REQUEST_RE.match(cl)
+                or cl.startswith("please")):
+            return False
     stripped = _SELF_REPORT_ACK_PREFIX_RE.sub("", ql, count=1).strip()
     if not stripped:
         return False
@@ -1389,8 +1495,19 @@ _MONTH_DAY_RE = re.compile(
 )
 _ORDINAL_DAY_RE = re.compile(r"\bday\s+\d+\b", re.IGNORECASE)
 # Any number+unit-suffix shape — no named units (closed grammatical shape,
-# not a topic vocabulary): "5 mg", "3 miles", "20%".
-_NUMBER_UNIT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*[a-z%]{1,6}\b", re.IGNORECASE)
+# not a topic vocabulary): "5 mg", "3 miles", "20%". The suffix must not be
+# a function word (2026-09-08: "alarm got me at 930 and I got out of bed"
+# produced the tokens "930and", "3or", "330but" — a clock shorthand glued to
+# the conjunction after it — which the STM prompt then reported as novel
+# details). The closed grammatical stoplist is not a topic vocabulary.
+_UNIT_STOPWORDS = (
+    "and|or|but|of|to|in|at|on|for|the|a|an|is|was|so|if|my|i|it|by|as|then|than|that|"
+    "this|when|with|from|not|be|do|did|am|are|were|had|has|have|got|get|which|who|what|"
+    "how|its|his|her|our|your|their|me|we|you|he|she|they|up|out|off|about|after|before|"
+    "til|till|until|ish|maybe|like|just|also|only|even|still|yet"
+)
+_NUMBER_UNIT_RE = re.compile(
+    rf"\b\d+(?:\.\d+)?\s*(?!(?:{_UNIT_STOPWORDS})\b)[a-z%]{{1,6}}\b", re.IGNORECASE)
 
 _DATA_TOKEN_RE = re.compile(
     "|".join([

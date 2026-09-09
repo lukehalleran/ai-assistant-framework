@@ -52,6 +52,12 @@ _AFFIRMATIONS: tuple[str, ...] = (
     "please", "alright", "all right", "fine", "let's do it", "lets do it",
 )
 
+# Public alias for callers that need the EXACT-phrase sense only
+# (core.actions.registry.is_offer_affirmation — the forced-action route must
+# not inherit is_affirmation's starts-with leniency: "yeah the Zoom link
+# works" starts with "yeah" but accepts nothing).
+AFFIRMATION_PHRASES = _AFFIRMATIONS
+
 # Negations / declines — veto an otherwise-affirmative-looking message.
 _NEGATION = re.compile(
     r"\b(no|nope|nah|don'?t|do not|never mind|nevermind|nvm|not now|"
@@ -63,6 +69,15 @@ _NEGATION = re.compile(
 _LEADING_FILLER = re.compile(r"^(?:well|so|um|uh|hmm|okay|ok|yeah|oh)[\s,]+", re.IGNORECASE)
 
 _MAX_AFFIRMATION_WORDS = 8
+
+
+def is_decline(text: str) -> bool:
+    """True if ``text`` carries a decline/negation cue ("no", "hold off", "not yet").
+
+    Public wrapper over the affirmation veto so other affirmation shapes
+    (core.actions.registry.is_offer_affirmation) apply the SAME veto list.
+    """
+    return bool(text) and bool(_NEGATION.search(text))
 
 
 def is_affirmation(text: str) -> bool:

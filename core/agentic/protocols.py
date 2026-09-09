@@ -764,7 +764,8 @@ class NativeToolsHandler(BaseProtocolHandler):
                     # Forward calendar-specific params
                     if is_calendar:
                         for key in ("summary", "description", "start_time", "end_time",
-                                    "time_zone", "calendar_id", "location", "all_day", "events"):
+                                    "time_zone", "calendar_id", "location", "all_day",
+                                    "recurrence", "events"):
                             val = params.get(key)
                             if val:
                                 action_params[key] = val

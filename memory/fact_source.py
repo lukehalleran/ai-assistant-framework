@@ -184,7 +184,36 @@ _PROJECT_WORK_CUES = (
     r"maintaining|refactor|refactoring|fix|fixes|fixed|fixing|ship|shipped|commit|commits|"
     r"committed|repo|repository|feature|features|implement|implemented|implementing"
 )
+# Fitness-schedule relations name the ACTIVITY in the relation itself
+# (2026-09-08: the shutdown LLM extractor turned "add the mgt office hours
+# sessions to my google calander, fridays 8 to 9 pm central … weekly through
+# the end of the semester" into gym_schedule="Fridays 8 to 9 PM Central …",
+# joined on the fragment "weekly through the end of the semester" with no
+# gym word anywhere). The span must name exercise.
+_FITNESS_CUES = (
+    r"gym|workout|workouts|work\s+out|working\s+out|worked\s+out|lift|lifts|lifting|lifted|"
+    r"exercise|exercising|exercised|training|train|run|runs|running|ran|jog|jogging|swim|"
+    r"swimming|swam|cardio|weights|bench|squat|squats|deadlift|planet\s+fitness|fitness|"
+    r"yoga|stretch|stretching|walk\s+to\s+the\s+gym|leg\s+day|chest\s+day|back\s+day"
+)
 _RELATION_CUE_RES = {
+    "gym_schedule": _FITNESS_CUES,
+    "workout_schedule": _FITNESS_CUES,
+    "exercise_schedule": _FITNESS_CUES,
+    "training_schedule": _FITNESS_CUES,
+    "gym_days": _FITNESS_CUES,
+    "workout_days": _FITNESS_CUES,
+    "gym_time": _FITNESS_CUES,
+    "workout_time": _FITNESS_CUES,
+    "gym_habit": _FITNESS_CUES,
+    "workout_habit": _FITNESS_CUES,
+    "exercise_habit": _FITNESS_CUES,
+    "exercise_routine": _FITNESS_CUES,
+    "workout_routine": _FITNESS_CUES,
+    "gym_routine": _FITNESS_CUES,
+    "works_out": _FITNESS_CUES,
+    "workout_plan": _FITNESS_CUES,
+    "workout_intention": _FITNESS_CUES,
     "enrolled_in": _ENROLLMENT_CUES,
     "enrolled": _ENROLLMENT_CUES,
     "registered_for": _ENROLLMENT_CUES,
@@ -374,12 +403,55 @@ _PAST_TENSE_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Prospective framing (2026-09-08): "So ready to take melatonin … but I
+# think it is early for that" minted took=melatonin — readiness, wanting,
+# needing, being about to, are claims about the FUTURE, not a completed act.
+# Closed grammatical set (infinitive/modal frames), not a topic vocabulary.
+_PROSPECTIVE_RE = re.compile(
+    r"\b(?:ready|about|want|wants|wanna|need|needs|going|gonna|hoping|hope|planning|"
+    r"plan|plans|trying|tempted|supposed|mean|meaning|intend|intending|thinking|"
+    r"looking\s+forward|due|scheduled|set)\s+to\b|\bgonna\b|\bwanna\b|"
+    r"\bthinking\s+(?:about|of)\b|\bconsidering\b|\bmight\b|\bmay\b|"
+    r"\bshould\b|\bcould\b|\bwould\b|\bwill\b|\b(?:i'?ll|we'?ll)\b",
+    re.IGNORECASE,
+)
+
 _PLAN_KIND_CUE_RE = re.compile(
     r"\bwill\b|\bgoing\s+to\b|\bplan(?:s|ning)?\s+to\b|\btomorrow\b|"
     r"\bnext\s+(?:week|month|year|monday|tuesday|wednesday|thursday|friday|"
-    r"saturday|sunday)\b",
+    r"saturday|sunday)\b|"
+    r"\b(?:ready|about|want|wants|wanna|need|needs|gonna|hoping|hope|trying|tempted|"
+    r"supposed|intend|intending|thinking)\s+to\b|\bgonna\b|\bwanna\b|"
+    r"\bthinking\s+(?:about|of)\b|\bconsidering\b",
     re.IGNORECASE,
 )
+
+# Relations whose NAME asserts a completed act. A span that only frames the
+# act prospectively ("ready to take", "about to send", "want to go") and
+# carries no past-tense cue cannot support them; the correct relation for
+# that span is a plan/intention, which the extractors name separately.
+COMPLETION_RELATIONS = frozenset({
+    "took", "take", "taken", "ate", "eaten", "drank", "did", "done", "sent", "emailed",
+    "texted", "called", "messaged", "finished", "completed", "submitted", "turned_in",
+    "went", "went_to", "attended", "visited", "paid", "bought", "purchased", "ordered",
+    "watched", "read", "slept", "showered", "worked_out", "exercised", "lifted", "ran",
+    "walked", "cooked", "cleaned", "posted", "pushed", "committed", "shipped", "deployed",
+    "cancelled", "canceled", "scheduled", "booked", "started", "stopped", "quit",
+    "medication_taken", "dose_taken", "took_medication", "took_dose",
+})
+
+
+def completion_claim_prospective(relation: str, clause: str) -> bool:
+    """True when ``relation`` asserts a completed act but ``clause`` only
+    frames it prospectively — a prospective cue with NO past-tense cue.
+    Never fires for relations outside COMPLETION_RELATIONS."""
+    rel = (relation or "").strip().lower()
+    if rel not in COMPLETION_RELATIONS:
+        return False
+    text = clause or ""
+    if _PAST_TENSE_CUE_RE.search(text):
+        return False
+    return bool(_PROSPECTIVE_RE.search(text))
 
 _STATE_CUE_RE = re.compile(
     r"\bi'?m\b|\bi’m\b|\bi\s+am\b|\bi'?ve\s+been\b|\bi’ve\s+been\b|"
@@ -683,9 +755,18 @@ def _split_sentences(line: str) -> list[str]:
     return [s.replace(_ABBREV_SENTINEL, ".") for s in re.split(r"(?<=[.!?])\s+|\s*[;]\s*", protected)]
 
 
+# A soft-wrapped paste carries the SPA/terminal continuation bar at the head
+# of every wrapped line ("add the … to my google\n  ▎ calander, fridays 8 to
+# 9 pm …" — 2026-09-07 live). Those lines are ONE sentence; splitting them
+# yields fragments whose token overlap can anchor the wrong relation. The
+# bar is not a blockquote marker (">" still excludes).
+_CONTINUATION_BAR_RE = re.compile(r"\n[ \t]*[▎▏▍▌▋▊▉│┃]+[ \t]*")
+
+
 def _claim_spans(text: str) -> Iterator[str]:
     """Yield prose spans, excluding code fences, blockquotes and role dumps."""
     in_fence = False
+    text = _CONTINUATION_BAR_RE.sub(" ", text or "")
     quoted = quoted_correspondence_lines(text)
     for line_idx, raw_line in enumerate((text or "").splitlines() or [text]):
         if line_idx in quoted:
@@ -928,6 +1009,10 @@ def find_supporting_user_span(
             clauses = _split_clauses(span)
             object_clause = _object_bearing_clause(clauses, object_val, object_tokens) or span
             if _clause_is_negated(object_clause, object_val, object_tokens):
+                continue
+            # A completion relation cannot ride on a prospective clause
+            # (2026-09-08: took=melatonin from "So ready to take melatonin").
+            if completion_claim_prospective(relation, object_clause):
                 continue
 
             if is_user:

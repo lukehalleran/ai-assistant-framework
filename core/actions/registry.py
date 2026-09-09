@@ -66,6 +66,28 @@ def _github_issue_backfill(query: str) -> Dict[str, str]:
     return out
 
 
+# Calendar noun spelled tolerant of the two common transpositions
+# ("calander", "calender", "calandar"). 2026-09-07 live: "add the mgt office
+# hours sessions to my google calander in one batch" was an explicit calendar
+# request that no calendar pattern saw; the gate ran the turn as a WEB search,
+# the model answered with an OFFER, and the affirmation turns that followed
+# had no tool route — the reply then narrated "creating the recurring event
+# now" with nothing created. Word boundary + optional plural preserved.
+_CALENDAR_WORD = r"cal[ae]nd[ae]rs?"
+
+
+def _calendar_batch_within_cap(params: Dict[str, Any]) -> bool:
+    items = params.get("events")
+    if not isinstance(items, list):
+        return True
+    try:
+        from config.app_config import GOOGLE_CALENDAR_MAX_EVENTS  # lazy import: live-config read
+        cap = int(GOOGLE_CALENDAR_MAX_EVENTS)
+    except Exception:
+        cap = 10
+    return len(items) <= cap
+
+
 # ---------------------------------------------------------------------------
 # Spec
 # ---------------------------------------------------------------------------
@@ -99,11 +121,14 @@ class ActionSpec:
         if not self.batch_param:
             return False
         items = params.get(self.batch_param)
-        return bool(items) and isinstance(items, list) and all(
+        ok = bool(items) and isinstance(items, list) and all(
             isinstance(item, dict)
             and all(item.get(field) not in (None, "") for field in self.required)
             for item in items
         )
+        if ok and self.accepts_check:
+            return self.accepts_check(params)
+        return ok
 
     def resolve_executor(self) -> Callable:
         """Import + return the executor function (lazy; re-resolved each call so patches apply)."""
@@ -181,24 +206,33 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
         action_type=ActionType.CALENDAR_CREATE_EVENT,
         executor_ref="core.actions.google_calendar_create:create_calendar_event",
         required=("summary", "start_time", "end_time"),
-        optional=("description", "time_zone", "calendar_id", "location", "all_day"),
+        optional=("description", "time_zone", "calendar_id", "location", "all_day",
+                  "recurrence"),
         batch_param="events",
         intent_patterns=(
-            r'\b(create|add|schedule|make|set up|put)\b[^.?!]{0,40}\b(calendar events?|events?|meetings?|appointments?)\b',
+            r'\b(create|add|schedule|make|set up|put)\b[^.?!]{0,40}\b(' + _CALENDAR_WORD + r'\s+events?|events?|meetings?|appointments?|sessions?)\b',
             # "place each in the appropriate time slot on my Google calendar"
             # (live 2026-08-29): verb "place" + bare object "calendar" missed
             # the pattern above, and the verb→object span ran 44 chars — the
             # explicit calendar request produced an offer instead of a
             # proposal. Bare "calendar" only counts as the object of a
             # placement verb (this pattern), never of "make"/"schedule" alone.
-            r'\b(add|put|place|drop|slot)\b[^.?!]{0,60}\b(?:google\s+)?calendar\b',
+            # 2026-09-07: the noun is spelled through _CALENDAR_WORD — the
+            # live "add the mgt office hours sessions to my google calander"
+            # missed on the typo alone and the turn ran as a web search.
+            r'\b(add|put|place|drop|slot)\b[^.?!]{0,60}\b(?:google\s+)?' + _CALENDAR_WORD + r'\b',
         ),
         health="calendar_create_event (one event or an events[] batch; requires confirmation)",
         field_hint=(
             "calendar_create_event: summary, start_time, end_time; for several "
-            "events use one batch proposal containing events[]. Honor any source "
-            "timezone. For all-day events set all_day=true and use YYYY-MM-DD "
-            "start/end dates (Google end date is exclusive)."
+            "DIFFERENT events use one batch proposal containing events[]. A "
+            "REPEATING event (weekly office hours, a standing meeting) is ONE "
+            "event whose start/end are the first occurrence plus recurrence "
+            "(an RRULE string, e.g. 'RRULE:FREQ=WEEKLY;UNTIL=20261204') — never "
+            "N copies; if the source states no end date, use COUNT or say so "
+            "and ask, never invent a semester end. Honor any source timezone. "
+            "For all-day events set all_day=true and use YYYY-MM-DD start/end "
+            "dates (Google end date is exclusive)."
         ),
         enabled_flag="GOOGLE_CALENDAR_ENABLED",
         summary=lambda p: (
@@ -206,6 +240,11 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
             if p.get("events") else
             f"calendar_create_event: {p.get('summary','')}"
         ),
+        # An oversize batch (a semester of weekly sessions as 14 copies) used to
+        # pass parse and die at APPROVAL ("maximum is 10"); reject at parse so
+        # the forced-action retry re-asks — the field hint says: one event +
+        # recurrence.
+        accepts_check=_calendar_batch_within_cap,
     ),
     # Update/delete (2026-09-01): both require an EXPLICIT calendar anchor
     # ("event(s)" or "calendar") as the object — bare "reschedule my
@@ -220,9 +259,9 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
                   "new_description", "new_location", "time_zone", "all_day",
                   "calendar_id"),
         intent_patterns=(
-            r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\bcalendar\s+events?\b',
+            r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\b' + _CALENDAR_WORD + r'\s+events?\b',
             r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\bevents?\b',
-            r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\b(?:on|in|from)\s+(?:my\s+|the\s+)?(?:google\s+)?calendar\b',
+            r'\b(move|reschedule|shift|change|update|edit)\b[^.?!]{0,60}\b(?:on|in|from)\s+(?:my\s+|the\s+)?(?:google\s+)?' + _CALENDAR_WORD + r'\b',
         ),
         health="calendar_update_event (edit an existing event — summary + date identify it; exactly one match required)",
         field_hint=(
@@ -249,9 +288,9 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
         required=("summary", "date"),
         optional=("event_id", "calendar_id"),
         intent_patterns=(
-            r'\b(delete|remove|cancel|clear|drop)\b[^.?!]{0,60}\bcalendar\s+events?\b',
+            r'\b(delete|remove|cancel|clear|drop)\b[^.?!]{0,60}\b' + _CALENDAR_WORD + r'\s+events?\b',
             r'\b(delete|remove|cancel|clear)\b[^.?!]{0,60}\bevents?\b',
-            r'\b(delete|remove|cancel|clear|take)\b[^.?!]{0,60}\b(?:off|from)\s+(?:my\s+|the\s+)?(?:google\s+)?calendar\b',
+            r'\b(delete|remove|cancel|clear|take)\b[^.?!]{0,60}\b(?:off|from)\s+(?:my\s+|the\s+)?(?:google\s+)?' + _CALENDAR_WORD + r'\b',
         ),
         health="calendar_delete_event (remove an existing event — summary + date identify it; exactly one match required, irreversible)",
         field_hint=(
@@ -301,6 +340,21 @@ def get_runtime_action_health() -> str:
         lines = [
             f"propose_action: AVAILABLE ({action_list} — requires user confirmation)"
         ]
+
+        # Contacts (2026-09-08, B6): a bare "HTTP 403" told the owner
+        # nothing about whether the People API is simply not enabled for
+        # the project vs. the OAuth token lacking a contacts scope. Shown
+        # only when a call has actually failed this process — silent
+        # otherwise, since "never called" is not evidence of a problem.
+        # Checked independently of Calendar's enabled state below (a
+        # separate Google surface).
+        try:
+            from core.actions.google_contacts import get_last_error as _contacts_last_error
+            _contacts_err = _contacts_last_error()
+            if _contacts_err:
+                lines.append(f"lookup_contact backend: DEGRADED ({_contacts_err})")
+        except Exception:
+            pass
 
         if not getattr(cfg, "GOOGLE_CALENDAR_ENABLED", False):
             lines.append("calendar_create_event backend: DISABLED by config")
@@ -414,3 +468,218 @@ def backfill_params(action_type: ActionType, query: str) -> Dict[str, str]:
     if spec and spec.backfill:
         return spec.backfill(query) or {}
     return {}
+
+
+# ---------------------------------------------------------------------------
+# Prior-turn action OFFERS (2026-09-07)
+# ---------------------------------------------------------------------------
+# When a chat-mode reply OFFERS an external action ("Want me to go ahead and
+# create the recurring event?") and the user says yes on the next turn, the
+# affirmation has to reach the tool loop with the offered action FORCED — the
+# NOTE-only PendingProposalStore never carried external kinds, and the gate's
+# casual/short skip dropped "please create" into a tool-less turn (live
+# 2026-09-07 15:39–15:42: four consecutive turns, no proposal, a confabulated
+# "Confirmed — creating the recurring event now"). One mapping here feeds the
+# gate arm, the controller force, and the claim guard's expected-to-act set.
+
+_OFFER_UPDATE_VERB_RE = re.compile(
+    r"\b(move|reschedule|shift|change|update|edit)\b", re.IGNORECASE)
+_OFFER_DELETE_VERB_RE = re.compile(
+    r"\b(delete|remove|cancel|clear|take\s+(?:it|that|them)\s+off)\b", re.IGNORECASE)
+_OFFER_ISSUE_RE = re.compile(r"\bissue\b", re.IGNORECASE)
+_OFFER_PR_RE = re.compile(r"\b(pr|pull\s+request)\b", re.IGNORECASE)
+_OFFER_DISCORD_RE = re.compile(r"\bdiscord\b", re.IGNORECASE)
+
+
+def action_kind_of(action_type: ActionType):
+    """The coarse claim-guard ActionKind for an ActionType (None for self-repairable/unknown)."""
+    from core.action_claim_guard import ActionKind  # leaf module, no cycle
+    mapping = {
+        ActionType.SEND_EMAIL: ActionKind.EMAIL,
+        ActionType.CALENDAR_CREATE_EVENT: ActionKind.CALENDAR,
+        ActionType.CALENDAR_UPDATE_EVENT: ActionKind.CALENDAR,
+        ActionType.CALENDAR_DELETE_EVENT: ActionKind.CALENDAR,
+        ActionType.SEND_TELEGRAM: ActionKind.MESSAGE,
+        ActionType.SEND_DISCORD: ActionKind.MESSAGE,
+        ActionType.GITHUB_CREATE_ISSUE: ActionKind.GITHUB,
+        ActionType.GITHUB_COMMENT_PR: ActionKind.GITHUB,
+    }
+    return mapping.get(action_type)
+
+
+def offer_action_type(response_text: str) -> Optional[ActionType]:
+    """The EXTERNAL ActionType a reply offered to perform, or None.
+
+    Uses the deployed claim-guard proposal detector (offer marker / question +
+    action verb, quoted and drafted blocks stripped). Only external kinds
+    return — note/document offers stay with the PendingProposalStore path.
+    The newest offer wins when a reply makes several. The kind→type mapping
+    reads the offer clause's own verb (an offer to "move" an event is an
+    update, to "cancel" it a delete; a bare calendar offer is a create).
+    """
+    if not response_text:
+        return None
+    try:
+        from core.action_claim_guard import (
+            ActionKind, detect_kind, detect_offer_clauses, detect_proposals,
+            has_offer_marker,
+        )
+    except Exception:
+        return None
+    # Offer FRAMING is required ("want me to…", "I can…", "confirm and I'll…").
+    # detect_proposals also admits a bare question + action verb, which is
+    # fine for the claim guard but here would turn "Did you add it to your
+    # calendar?" + "yes" into a forced calendar create.
+    proposals = [p for p in detect_proposals(response_text)
+                 if has_offer_marker(p.matched_text or "")]
+    candidates = [(p.kind, p.matched_text or "") for p in reversed(proposals)]
+    if not candidates:
+        # Anaphoric follow-up offer ("Want me to create just the professor
+        # one now?", "Confirm and I'll create it"): the offer clause carries
+        # no kind word, the reply as a whole does. Live 2026-09-07 turns 4-5.
+        _clauses = [c for c in detect_offer_clauses(response_text) if has_offer_marker(c)]
+        _kind = detect_kind(response_text) if _clauses else None
+        if _kind is not None:
+            candidates = [(_kind, _clauses[-1])]
+    for kind, clause in candidates:
+        if kind == ActionKind.CALENDAR:
+            if _OFFER_DELETE_VERB_RE.search(clause):
+                return ActionType.CALENDAR_DELETE_EVENT
+            if _OFFER_UPDATE_VERB_RE.search(clause):
+                return ActionType.CALENDAR_UPDATE_EVENT
+            return ActionType.CALENDAR_CREATE_EVENT
+        if kind == ActionKind.EMAIL:
+            return ActionType.SEND_EMAIL
+        if kind == ActionKind.MESSAGE:
+            return (ActionType.SEND_DISCORD if _OFFER_DISCORD_RE.search(clause)
+                    else ActionType.SEND_TELEGRAM)
+        if kind == ActionKind.GITHUB:
+            if _OFFER_PR_RE.search(clause) and not _OFFER_ISSUE_RE.search(clause):
+                return ActionType.GITHUB_COMMENT_PR
+            return ActionType.GITHUB_CREATE_ISSUE
+    return None
+
+
+# Terse go-ahead directive: head-anchored action verb ("please create",
+# "create it", "go ahead and add them", "lets just do the first one now").
+# Ack/filler openers are allowed; anything longer than the word cap is a
+# substantive message that routes through the normal tiers.
+OFFER_DIRECTIVE_MAX_WORDS = 14
+_OFFER_DIRECTIVE_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|alright|all\s+right|cool|yeah|yes|yep|sure|right|so|and|now|then|well|hey|great|perfect)[,\s]+){0,3}"
+    r"(?:please\s+|just\s+|go\s+ahead\s+(?:and\s+)?|let'?s\s+(?:just\s+)?)*"
+    r"(?:create|add|make|schedule|book|put|send|post|open|file|do|fire|queue|"
+    r"proceed|confirm|approve|proceed)\b(?!,)",
+    re.IGNORECASE,
+)
+
+
+_HEAD_FILLER_RE = re.compile(
+    r"^(?:(?:well|so|um|uh|hmm|oh|okay|ok|yeah|yes|yep|yup|sure|alright|all\s+right|"
+    r"cool|great|perfect|right)[\s,]+)+",
+    re.IGNORECASE,
+)
+
+
+def is_offer_affirmation(user_text: str) -> bool:
+    """True when ``user_text`` accepts a prior-turn action offer.
+
+    Judged on the message HEAD only (the first clause), so an affirmation
+    that goes on to supply the data the offer asked for ("yeah lets do that,
+    here are the two links: https://…") still counts. Two shapes:
+      1. the head IS an affirmation phrase — exactly, or after stripping
+         leading ack fillers ("yes", "sure", "ok please do", "yeah lets do it");
+      2. a terse go-ahead directive ("please create", "add them",
+         "lets just do the first one now", "okay create both").
+    Deliberately NOT the starts-with leniency of pending_proposal.is_affirmation:
+    "yeah the Zoom link works" starts with "yeah" but accepts nothing, and a
+    forced write action is the wrong thing to hang on an ack word. A
+    decline/negation in the head vetoes ("no don't create it", "hold off");
+    a question is never an affirmation.
+    """
+    if not user_text:
+        return False
+    text = user_text.strip()
+    clauses = [c.strip() for c in re.split(r"[,;:\n]|(?<=[.!?])\s", text) if c.strip()]
+    if not clauses:
+        return False
+    if _clause_affirms(clauses[0]):
+        return True
+    # The go-ahead often CLOSES a short message ("ok that link is right, go
+    # ahead and create it"). Judge the tail clause too, but only for a
+    # message short enough to be a reply, never a paste.
+    if len(clauses) > 1 and len(text.split()) <= OFFER_AFFIRMATION_MAX_WORDS:
+        return _clause_affirms(clauses[-1])
+    return False
+
+
+OFFER_AFFIRMATION_MAX_WORDS = 40
+
+
+def _clause_affirms(clause: str) -> bool:
+    from core.pending_proposal import AFFIRMATION_PHRASES, is_decline  # leaf-ish, no cycle
+    head = clause.strip()
+    if not head or head.endswith("?"):
+        return False
+    if is_decline(head):
+        return False
+    norm = re.sub(r"\s+", " ", head.lower()).strip(" .!")
+    if norm in AFFIRMATION_PHRASES:
+        return True
+    core = _HEAD_FILLER_RE.sub("", norm).strip(" .!")
+    if not core or core in AFFIRMATION_PHRASES:
+        return True
+    if len(head.split()) <= OFFER_DIRECTIVE_MAX_WORDS and _OFFER_DIRECTIVE_RE.search(head):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Retry of a FAILED action (2026-09-07)
+# ---------------------------------------------------------------------------
+# "Ah didn't work. Can we try that again?" / "had to reauthorize, good now,
+# please try again" after an approved action failed at the executor. The
+# request is to run the SAME action again; the failed proposal still holds the
+# exact params. Cue detection reuses the deployed retry-continuation phrases
+# plus "<verb> it again" / "re-run" shapes; a negation scoping the cue vetoes.
+_RETRY_EXTRA_RE = re.compile(
+    r"\b(?:fire|run|send|create|queue|do|submit|push|kick)\s+(?:it|that|this|them|the\s+\w+)\s+again\b"
+    r"|\bre-?(?:run|queue|fire|send|submit|try)\b(?!\s+(?:later|tomorrow))"
+    r"|\btry\s+(?:it|that|this|them)\s+(?:again|now|once more)\b"
+    r"|\bgive\s+it\s+another\s+(?:go|shot|try)\b",
+    re.IGNORECASE,
+)
+ACTION_RETRY_MAX_WORDS = 25
+# A deferral ("try again tomorrow") or the USER retrying something themself
+# ("I'll try again later myself") is not a request to re-run Daemon's action now.
+_RETRY_DEFER_RE = re.compile(
+    r"\b(?:later|tomorrow|tonight|next\s+\w+|in\s+a\s+(?:bit|while|sec|second|minute|few)|"
+    r"some\s+other\s+time|another\s+day|not\s+(?:now|yet))\b", re.IGNORECASE)
+_RETRY_SELF_RE = re.compile(
+    r"\b(?:i'?ll|i\s+will|let\s+me|i\s+can|i'?m\s+gonna|i'?m\s+going\s+to|i\s+should|i\s+might)\s+"
+    r"(?:just\s+)?(?:try|retry|re-?run|do\s+it|give\s+it)\b|\bmyself\b|\bby\s+hand\b",
+    re.IGNORECASE)
+
+
+def is_action_retry_request(user_text: str) -> bool:
+    """True when a short message asks to run the previously failed action again."""
+    if not user_text:
+        return False
+    text = user_text.strip()
+    if len(text.split()) > ACTION_RETRY_MAX_WORDS:
+        return False
+    if _RETRY_DEFER_RE.search(text) or _RETRY_SELF_RE.search(text):
+        return False
+    from utils.query_checker import is_retry_continuation  # leaf, no cycle
+    m = _RETRY_EXTRA_RE.search(text)
+    if m is not None and not _is_trigger_negated(text, m.start()):
+        return True
+    if is_retry_continuation(text, max_words=ACTION_RETRY_MAX_WORDS):
+        # Locate the cue for the negation lookback ("don't try again" / "no
+        # need to retry"); fall back to the head when the phrase is fuzzy.
+        cue = re.search(r"\b(?:try (?:that |it )?again|one more time|retry|fixed it|"
+                        r"should work now|try it now|restarted you)\b", text, re.IGNORECASE)
+        pos = cue.start() if cue else 0
+        return not _is_trigger_negated(text, pos)
+    return False
+

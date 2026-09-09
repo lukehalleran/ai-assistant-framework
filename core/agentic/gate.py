@@ -153,6 +153,12 @@ class AgenticDecision:
     # one-shot consent offer. Handlers route to _run_insight_mode; always
     # veto_exempt (explicit requests work even mid-distress).
     insight_intent: Optional[Dict[str, Any]] = None
+    # Prior-turn action-offer continuation (2026-09-07): the ActionType.value
+    # the PREVIOUS reply offered ("Want me to create the recurring event?")
+    # when THIS message is an affirmation / go-ahead directive. Handlers pass
+    # it to the controller, which forces propose_action on the first decision
+    # round exactly as it does for a same-turn detect_action_intent hit.
+    forced_action: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +394,22 @@ def _pattern_hit_non_negated(text: str, patterns) -> bool:
         if m and not _trigger_is_negated(text, m.start()):
             return True
     return False
+
+
+# Long-message incidental-hit discipline (2026-09-08, N2), mirroring
+# core.insight.detector._trigger_is_incidental: a genuine retrieval
+# continuation is terse ("pull up the veto logic"); once a message exceeds
+# REQUEST_CONTINUATION_MAX_WORDS words, a keyword/pattern hit buried mid-body
+# is incidental (pasted code/narration) rather than an actual request — only
+# a hit at the head or tail of the message counts.
+_INCIDENTAL_HIT_EDGE_CHARS = 200
+
+
+def _hit_within_scope(text: str, start: int) -> bool:
+    if len(text.split()) <= REQUEST_CONTINUATION_MAX_WORDS:
+        return True
+    tail_start = max(0, len(text) - _INCIDENTAL_HIT_EDGE_CHARS)
+    return start < _INCIDENTAL_HIT_EDGE_CHARS or start >= tail_start
 
 
 _COMPUTATION_HIT = _compile_keyword_matcher(COMPUTATION_KEYWORDS)
@@ -748,6 +770,33 @@ async def evaluate_agentic_gate(
                 },
             )
 
+    # ── Prior-turn action-offer affirmation (2026-09-07) ─────────────
+    # A chat-mode reply that OFFERED an external action ("Want me to go ahead
+    # and create the recurring event?") followed by a user go-ahead ("yeah
+    # lets do that, here are the links…", "lets just do the first one now",
+    # "please create") routes to the tool loop with that action FORCED.
+    # Ground truth is the stored previous turn (same source the continuation
+    # override reads). Stands down when a proposal card of that type is
+    # already awaiting approval — the card UI owns that approval, and a chat
+    # "yes" must not mint a duplicate. Checked BEFORE the tiers: the live
+    # "yeah lets do that" carried two Zoom URLs, and the URL arm had turned
+    # the affirmation into a web search of the meeting links.
+    _offer_action = _prior_turn_offer_action(user_text, corpus_manager)
+    if _offer_action is not None:
+        logger.info(
+            f"[Agentic Gate] Affirmation of prior-turn action offer "
+            f"({_offer_action}) — routing to tools with the action forced"
+        )
+        return AgenticDecision(
+            should_trigger=True,
+            modes=["tools"],
+            search_terms=[],
+            skip_initial_search=True,
+            veto_exempt=True,
+            forced_action=_offer_action,
+            reason=f"affirmation of prior-turn action offer ({_offer_action})",
+        )
+
     modes: List[str] = []
     search_terms: List[str] = []
     matched_entities: Set[str] = set()
@@ -872,10 +921,33 @@ async def evaluate_agentic_gate(
     # file_list / get_full_document are offered. Literal fast-path + robust
     # regex. Negation-aware (2026-09-04): "don't pull up that file" must not
     # route to file tools.
+    # 2026-09-08 (N2, live shapes R16/R30): code-shaped lines are stripped
+    # before this test — a pasted R comment "#read csv data file into data
+    # frame" or a `used_car_data <- read.csv(...)` assignment line matched
+    # the raw keyword/pattern hit even though it's the user's own script, not
+    # a request to Daemon. And on a long paste a hit buried mid-body is
+    # incidental (mirrors core.insight.detector._trigger_is_incidental): a
+    # genuine retrieval continuation is terse, so once the message exceeds
+    # REQUEST_CONTINUATION_MAX_WORDS a hit only counts at the head or tail.
+    # lazy import: cycle (query_checker's request-shape helpers import gate
+    # at call time; this avoids the reverse loop)
+    from utils.query_checker import strip_code_shaped_lines
+    _file_scan_text = strip_code_shaped_lines(user_text).lower()
+    _file_keyword_hit = any(
+        _hit_within_scope(_file_scan_text, h.start)
+        for h in _find_trigger_hits(_file_scan_text, _FILE_ACCESS_KEYWORD_HIT)
+    )
+    _file_pattern_hit = False
+    if "pattern tool" not in _lower_normalized:
+        for _fp in FILE_ACCESS_PATTERNS:
+            _fm = _fp.search(_file_scan_text)
+            if (_fm and not _trigger_is_negated(_file_scan_text, _fm.start())
+                    and _hit_within_scope(_file_scan_text, _fm.start())):
+                _file_pattern_hit = True
+                break
     needs_files = (
-        _hit_non_negated(_lower, _FILE_ACCESS_KEYWORD_HIT)
-        or ("pattern tool" not in _lower_normalized
-            and _pattern_hit_non_negated(_lower, FILE_ACCESS_PATTERNS))
+        _file_keyword_hit
+        or _file_pattern_hit
         or _personal_doc_search
     )
     if needs_files:
@@ -1229,20 +1301,44 @@ async def evaluate_agentic_gate(
                     search_terms = []
 
                 if getattr(trigger_decision, 'needs_memory_search', False):
-                    # Deterministic backstop (2026-09-06): a bare first-person
-                    # self-report with no recall cue ("I took my stimulant at
-                    # 10 AM today and I'm just resting...") is the user
-                    # narrating, not asking — the enhanced path already
-                    # retrieves memories for it; a 4-round memory loop adds
-                    # latency and nothing else (live 15:10 retest: the LLM
-                    # trigger flipped to memory on the identical text that got
-                    # "no trigger" that morning).
+                    # Deterministic backstop (2026-09-06, generalized 2026-09-08
+                    # F6): a bare first-person self-report with no recall cue
+                    # ("I took my stimulant at 10 AM today and I'm just
+                    # resting...") is the user narrating, not asking — the
+                    # enhanced path already retrieves memories for it; a
+                    # 4-round memory loop adds latency and nothing else (live
+                    # 15:10 retest: the LLM trigger flipped to memory on the
+                    # identical text that got "no trigger" that morning).
+                    # 2026-09-08: the same false-positive class fires on
+                    # statement-shaped turns with NO first-person self-report
+                    # marker at all (records 23/40: an R-error status update,
+                    # a plans-for-tonight narration) — the LLM verdict is
+                    # honored only when an independent recall/info-seeking/
+                    # request signal corroborates it.
                     # lazy import: patch point (tests monkeypatch query_checker predicates)
                     from utils.query_checker import is_self_report
-                    if is_self_report(user_text) and not _recall_signal_hit(_lower):
-                        logger.info(
-                            "[Agentic Gate] LLM memory-search suppressed — bare "
-                            "first-person self-report, no recall cue")
+                    from utils.query_checker import is_request_shaped as _qc_request_shaped
+                    # Corroboration = any independent request signal: a recall
+                    # cue, the gate's info-seeking/retrieval-verb shapes, OR the
+                    # broader query_checker request shape (imperative family —
+                    # "remind me about…", "describe my…", "give me a rundown of
+                    # my…" carry no "?" and no retrieval verb; Fable referee
+                    # 2026-09-08 caught the narrower test suppressing them).
+                    _memory_verdict_corroborated = (
+                        _recall_signal_hit(_lower)
+                        or _is_info_seeking(user_text)
+                        or _is_request_shaped(user_text)
+                        or _qc_request_shaped(user_text)
+                    )
+                    if not _memory_verdict_corroborated:
+                        if is_self_report(user_text):
+                            logger.info(
+                                "[Agentic Gate] LLM memory-search suppressed — bare "
+                                "first-person self-report, no recall cue")
+                        else:
+                            logger.info(
+                                "[Agentic Gate] LLM memory-search suppressed — "
+                                "statement-shaped, no recall/request cue")
                     else:
                         logger.debug("[Agentic Gate] LLM detected memory search intent")
                         should_trigger = True
@@ -1511,10 +1607,15 @@ def strip_epistemic_markers(text: str) -> str:
 # email's RECIPIENT, not to Daemon) counted as request-shaped and routed a
 # status-update turn into a 106s agentic loop. A request to Daemon leads the
 # message; "can you" buried mid-paste is quoted content.
+# 2026-09-08 (N1, live shape R6): "read" is also an R-language function name
+# ("read not a function had been using read.delim...") — the retrieval verb
+# needs an OBJECT-shaped continuation, not a following negation/copula/
+# assignment/paren/period that marks it as a noun-phrase subject instead.
 _REQUEST_SHAPED_RE = re.compile(
     r"^(?:(?:ok(?:ay)?|alright|all\s+right|cool|yeah|yes|sure|right|so|and|now|then|also|well|hey)[,\s]+){0,3}"
     r"(?:(?:please\s+)?(?:check|look|pull|show|run|search|find|read|open|list|"
     r"verify|fetch|grab|review|summarize|summarise|scan|test|compare)\b(?!,)"
+    r"(?!\s*(?:not|is|isn'?t|was|wasn'?t|does|doesn'?t|did|didn'?t|=|<-|\(|\.))"
     r"|(?:please\s+)?(?:can|could|would|will)\s+(?:you|we)\b)",
     re.IGNORECASE,
 )
@@ -1528,6 +1629,46 @@ REQUEST_CONTINUATION_MAX_WORDS = 30
 
 def _is_request_shaped(text: str) -> bool:
     return bool(_REQUEST_SHAPED_RE.search((text or "").strip()))
+
+
+def _prior_turn_offer_action(user_text: str, corpus_manager) -> Optional[str]:
+    """ActionType.value the previous stored reply offered, when ``user_text``
+    accepts it and no proposal card of that type is already pending.
+
+    Returns None on any doubt (no corpus, no prior turn, no external offer,
+    not an affirmation, card pending, any exception) — the normal tiers then
+    run unchanged.
+    """
+    if not user_text or corpus_manager is None:
+        return None
+    try:
+        # lazy import: cycle (registry ↔ claim guard ↔ pending proposal are
+        # leaves; gate stays call-time on all internal imports)
+        from core.actions.registry import is_offer_affirmation, offer_action_type
+        if not is_offer_affirmation(user_text):
+            return None
+        _recent = corpus_manager.get_recent_memories(1)
+        if not _recent:
+            return None
+        _prev_response = (_recent[0].get("response", "") or "")
+        _offer = offer_action_type(_prev_response)
+        if _offer is None:
+            return None
+        try:
+            from core.agentic.tools import ToolExecutor
+            _store = ToolExecutor._get_pending_actions_store()
+            for _p in _store.get_all_pending():
+                if str(getattr(_p, "action_type", "")) == str(_offer.value):
+                    logger.debug(
+                        "[Agentic Gate] Offer affirmation ignored — a "
+                        f"{_offer.value} proposal card is already pending")
+                    return None
+        except Exception as e:
+            logger.debug(f"[Agentic Gate] Pending-card check failed (non-fatal): {e}")
+        return _offer.value
+    except Exception as e:
+        logger.debug(f"[Agentic Gate] Offer-continuation check failed (non-fatal): {e}")
+        return None
 
 
 # One-shot cross-turn slot for a tone-deferred request. Armed by

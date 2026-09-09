@@ -123,3 +123,7 @@ coverage*.json
 tests/fixtures/*_real*.yaml
 data/benchmarks_private/
 CLAUDE_CHANGELOG.md
+
+# Private career documents (local only)
+/docs/resume.pdf
+/docs/resume_review_private.md

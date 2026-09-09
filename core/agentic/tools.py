@@ -95,6 +95,45 @@ DISPATCH_TABLE = [
 ]
 
 
+class LazySandboxSession:
+    """Defers sandbox acquisition until a tool round actually needs it
+    (2026-09-08, F5). `AgenticSearchController.run()` used to call
+    `_get_sandbox_session()` (a remote E2B create-session call) before round
+    1 whenever `sandbox_manager.is_available()` was true — a cheap flag,
+    unlike session creation itself. A live session created 26 remote
+    sandboxes and closed 13 of them with zero executions.
+
+    Wraps the controller's `acquire` callable (its existing
+    `_get_sandbox_session`, which owns recycling/age/liveness checks) behind
+    a one-shot cache. Only `ToolExecutor._dispatch_sandbox` ever calls
+    `.get()` — every other DISPATCH_TABLE handler ignores the sandbox_session
+    argument entirely, so nothing else needs to know this is lazy.
+    """
+
+    __slots__ = ("_acquire", "_session", "_acquired")
+
+    def __init__(self, acquire):
+        self._acquire = acquire
+        self._session = None
+        self._acquired = False
+
+    async def get(self):
+        """Acquire (once) and return the underlying sandbox session."""
+        if not self._acquired:
+            self._session = await self._acquire()
+            self._acquired = True
+            if self._session is not None:
+                logger.info("[AgenticSearch] Using persistent sandbox session")
+        return self._session
+
+    @property
+    def is_closed(self) -> bool:
+        """True before acquisition, or when the acquired session is closed."""
+        if not self._acquired or self._session is None:
+            return True
+        return self._session.is_closed
+
+
 def reroute_url_search(decision: "SearchDecision") -> "SearchDecision":
     """If a web_search query is actually a URL, reroute it to fetch_url.
 
@@ -464,6 +503,11 @@ class ToolExecutor:
         self, decision: SearchDecision, round_number: int,
         sandbox_session: Optional[Any],
     ) -> _ToolResult:
+        # Resolve lazy acquisition (2026-09-08, F5) — this is the ONLY site
+        # that ever calls .get(); every other DISPATCH_TABLE handler ignores
+        # the sandbox_session argument, so they never force the E2B call.
+        if isinstance(sandbox_session, LazySandboxSession):
+            sandbox_session = await sandbox_session.get()
         purpose = decision.sandbox_purpose or "executing code"
         start_events = [ProgressEvent(
             event_type="executing_code",

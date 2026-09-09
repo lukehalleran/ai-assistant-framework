@@ -12,6 +12,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
+from core.active_document import ActiveDocumentRegistry
 from utils.logging_utils import get_logger
 
 logger = get_logger("api_state")
@@ -33,6 +34,12 @@ class ChatSession:
         self.history = []
         self.debug_records = []
         self.pending_action_id = None
+        # Active-document registry (2026-09-08, B5) lives on AppState (the
+        # session is single-user) and is attached here for convenience; a
+        # session reset must clear this session's attachments too.
+        registry = getattr(self, "active_documents", None)
+        if registry is not None:
+            registry.clear()
 
 
 class AppState:
@@ -40,6 +47,17 @@ class AppState:
         self.orchestrator = orchestrator
         self.session = ChatSession()
         self._uploads: Dict[str, dict] = {}
+        # Bounded active-document continuity (2026-09-08, B5): an in-memory
+        # registry of this session's attached documents + numbered-item
+        # navigation state, NOT persisted across a restart. Referenced from
+        # the session for convenience (ChatSession.clear() above) and
+        # attached to the orchestrator so gui/handlers.py and the agentic
+        # controller can reach it without threading a new parameter through
+        # every call site.
+        self.active_documents = ActiveDocumentRegistry()
+        self.session.active_documents = self.active_documents
+        if orchestrator is not None:
+            setattr(orchestrator, "active_documents", self.active_documents)
 
     # ---- upload registry -------------------------------------------------
     def register_upload(self, path: str, name: str, size: int) -> str:

@@ -86,6 +86,52 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
 
 
+_RRULE_LINE_RE = None
+
+
+def normalize_recurrence(value: Any) -> Tuple[Optional[List[str]], str]:
+    """Normalize a recurrence param into Google's list of RFC 5545 lines.
+
+    Accepts a string ("RRULE:FREQ=WEEKLY;UNTIL=20261204", a bare
+    "FREQ=WEEKLY;COUNT=14" which gains the RRULE: prefix, or several lines
+    joined by newlines) or a list of such strings. Returns (lines, "") or
+    (None, error). An empty/None value returns (None, "") — no recurrence.
+    Only RRULE/RDATE/EXDATE/EXRULE lines are accepted, and an RRULE must
+    carry FREQ=.
+    """
+    global _RRULE_LINE_RE
+    import re as _re
+    if _RRULE_LINE_RE is None:
+        _RRULE_LINE_RE = _re.compile(r"^(RRULE|RDATE|EXDATE|EXRULE)(;[^:]*)?:", _re.IGNORECASE)
+    if value in (None, "", [], ()):
+        return None, ""
+    raw_lines: List[str]
+    if isinstance(value, str):
+        raw_lines = [ln for ln in value.replace("\r", "").split("\n")]
+    elif isinstance(value, (list, tuple)):
+        raw_lines = [str(v) for v in value]
+    else:
+        return None, "recurrence must be an RRULE string or a list of RRULE lines."
+    out: List[str] = []
+    for ln in raw_lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        if not _RRULE_LINE_RE.match(ln):
+            if _re.match(r"^FREQ=", ln, _re.IGNORECASE):
+                ln = "RRULE:" + ln
+            else:
+                return None, f"recurrence line is not an RRULE/RDATE/EXDATE: {ln[:60]!r}"
+        head, _, body = ln.partition(":")
+        head_u = head.upper()
+        if head_u.startswith("RRULE") and "FREQ=" not in body.upper():
+            return None, f"RRULE lacks FREQ=: {ln[:60]!r}"
+        out.append(head_u + ":" + body)
+    if not out:
+        return None, ""
+    return out, ""
+
+
 def _event_items(params: Dict[str, Any], max_events: int) -> Tuple[List[Dict[str, Any]], str]:
     """Normalize one event or an events[] batch and validate everything first."""
     raw_items = params.get("events")
@@ -103,6 +149,7 @@ def _event_items(params: Dict[str, Any], max_events: int) -> Tuple[List[Dict[str
         key: params.get(key)
         for key in (
             "calendar_id", "time_zone", "all_day", "description", "location",
+            "recurrence",
         )
         if key in params and params.get(key) not in (None, "")
     }
@@ -145,6 +192,19 @@ def _event_items(params: Dict[str, Any], max_events: int) -> Tuple[List[Dict[str
         except (ValueError, TypeError):
             return [], f"Calendar event {index} has an invalid ISO 8601 start/end time."
 
+        # Recurrence (2026-09-07): a repeating event is ONE event + RRULE,
+        # never N copies (the batch cap is 10 — a semester of weekly office
+        # hours cannot be expressed as copies at all). Validate before
+        # creating anything, like every other field.
+        if "recurrence" in event:
+            _lines, _rec_err = normalize_recurrence(event.get("recurrence"))
+            if _rec_err:
+                return [], f"Calendar event {index}: {_rec_err}"
+            if _lines:
+                event["recurrence"] = _lines
+            else:
+                event.pop("recurrence", None)
+
         items.append(event)
     return items, ""
 
@@ -160,6 +220,8 @@ def _event_body(event: Dict[str, Any]) -> Dict[str, Any]:
             body["description"] = event["description"]
         if event.get("location"):
             body["location"] = event["location"]
+        if event.get("recurrence"):
+            body["recurrence"] = list(event["recurrence"])
         return body
 
     from utils.timezone_resolver import get_user_timezone  # lazy import: live-config read
@@ -173,6 +235,8 @@ def _event_body(event: Dict[str, Any]) -> Dict[str, Any]:
         body["description"] = event["description"]
     if event.get("location"):
         body["location"] = event["location"]
+    if event.get("recurrence"):
+        body["recurrence"] = list(event["recurrence"])
     return body
 
 
@@ -191,6 +255,9 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
           every item has the same required/optional fields above.
         - all_day (bool, optional): Use Google date fields; start_time and
           end_time are YYYY-MM-DD and end_time is exclusive (normally next day).
+        - recurrence (str | list[str], optional): RFC 5545 lines
+          ("RRULE:FREQ=WEEKLY;UNTIL=20261204"); start/end are the FIRST
+          occurrence. One recurring event, never N copies.
     """
     from config.app_config import GOOGLE_CALENDAR_ENABLED
 

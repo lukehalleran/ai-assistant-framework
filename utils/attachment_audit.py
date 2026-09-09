@@ -202,7 +202,8 @@ def _detect_multipart_title(content_text: str) -> Optional[str]:
 
 
 def audit_attachments(user_text: str, files: Optional[Iterable[Any]],
-                      documents: Optional[Iterable[Any]]) -> str:
+                      documents: Optional[Iterable[Any]],
+                      available_documents: Optional[Iterable[str]] = None) -> str:
     """Referenced-but-missing attachment audit (item 8).
 
     Args:
@@ -212,6 +213,11 @@ def audit_attachments(user_text: str, files: Optional[Iterable[Any]],
         documents: `ProcessedFilesResult.documents` for this turn — objects
             exposing `.filename` and `.content_text` (utils/file_processor.py
             ProcessedFile). Text documents only (images excluded upstream).
+        available_documents: Display names this SESSION has previously
+            attached (`core.active_document.ActiveDocumentRegistry.names()`,
+            2026-09-08, B5) — a referenced-but-missing name that matches one
+            of these (case-insensitive, basename) is reported as available
+            on request instead of lumped in with genuinely never-seen files.
 
     Returns:
         A single "[ATTACHMENT NOTE] ..." line, or "" when nothing to flag.
@@ -233,10 +239,22 @@ def audit_attachments(user_text: str, files: Optional[Iterable[Any]],
             fn = getattr(doc, "filename", "") or ""
             if fn:
                 attached.add(os.path.basename(str(fn)).lower())
+
+        available_basenames = {
+            os.path.basename(str(name)).lower()
+            for name in (available_documents or [])
+            if name
+        }
+
         missing = sorted(
             {name for name in referenced if name.lower() not in attached},
             key=str.lower,
         )
+        previously_attached = sorted(
+            (name for name in missing if name.lower() in available_basenames),
+            key=str.lower,
+        )
+        missing = [name for name in missing if name.lower() not in available_basenames]
 
         part_notes = []
         for doc in documents:
@@ -245,13 +263,18 @@ def audit_attachments(user_text: str, files: Optional[Iterable[Any]],
                 label = _doc_label(getattr(doc, "filename", ""))
                 part_notes.append((label, title))
 
-        if not missing and not part_notes:
+        if not missing and not previously_attached and not part_notes:
             return ""
 
         segments = []
         if missing:
             segments.append(
                 f"Pasted material references files not attached: {', '.join(missing)}."
+            )
+        if previously_attached:
+            segments.append(
+                "Previously attached this session (available on request): "
+                f"{', '.join(previously_attached)}."
             )
         for label, title in part_notes:
             segments.append(

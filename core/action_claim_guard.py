@@ -139,7 +139,11 @@ _KIND_PATTERNS: list[tuple[ActionKind, re.Pattern]] = [
 _PROPOSAL_MARKER = re.compile(
     r"\b(want me to|do you want me to|would you like me to|should i|shall i|"
     r"i can|i could|i'?d be happy to|let me know if you(?:'d| would)? like|"
-    r"happy to .* if you)\b",
+    r"happy to .* if you|"
+    # 2026-09-07: "Confirm and I'll create it" / "say the word and I'll add
+    # them" are offers awaiting a go-ahead, not promises made this turn.
+    r"confirm and i'?ll|once you confirm|if you confirm|say the word|"
+    r"give me the (?:go-?ahead|green light)|ready to (?:create|send|add|schedule|fire|queue))\b",
     re.IGNORECASE,
 )
 
@@ -157,7 +161,13 @@ _ACTION_VERB = re.compile(
 # proposal/question framing) marks the clause as a completion claim.
 _COMPLETION_PATTERNS: list[re.Pattern] = [
     # "Done — saving the 2-week plan as a note"  /  "done, saved ..."
-    re.compile(r"\b(?:done|all set|all done)\b[\s,.:;—–-]+\s*(?:saving|saved|creating|created|writing|wrote|adding|added|sending|sent|scheduling|scheduled|storing|stored|jotting|jotted|noting|noted|dropping|dropped)\b", re.IGNORECASE),
+    # 2026-09-07: "Confirmed — creating the recurring event now" shipped with
+    # no proposal; the go-ahead acknowledgers join the done-words.
+    re.compile(r"\b(?:done|all set|all done|confirmed|on it|got it|sure thing|you got it)\b[\s,.:;—–-]+\s*(?:saving|saved|creating|created|writing|wrote|adding|added|sending|sent|scheduling|scheduled|storing|stored|jotting|jotted|noting|noted|dropping|dropped|queuing|queueing|booking|booked)\b", re.IGNORECASE),
+    # "creating the recurring event now" / "adding it to your calendar now" —
+    # a present-progressive action verb closed by "now" asserts an action in
+    # flight this turn (an offer would carry a question or offer marker).
+    re.compile(r"\b(?:saving|creating|making|adding|storing|recording|sending|scheduling|dropping|putting|booking|queuing|queueing)\b[\w\s,'’:\-–—]{0,60}\bnow\b", re.IGNORECASE),
     # "I've saved" / "I have created" / "I just added" / "I made a note"
     re.compile(r"\b(?:i'?ve|i have|i)\s+(?:just\s+|already\s+)?(?:saved|stored|created|made|wrote|written|added|recorded|logged|sent|emailed|scheduled|jotted|noted|dropped|put|queued|re-?queued)\b", re.IGNORECASE),
     # "Re-queuing the event with the corrected date" — a queue/proposal claim
@@ -348,6 +358,38 @@ def detect_proposals(text: str) -> list[DetectedAction]:
     return out
 
 
+def detect_offer_clauses(text: str) -> list[str]:
+    """Offer-shaped clauses REGARDLESS of kind word.
+
+    detect_proposals needs a kind word in the same clause; a follow-up offer
+    often refers back anaphorically ("Want me to create just the professor
+    one now?", "Confirm and I'll create it") and carries the kind only
+    elsewhere in the reply. Callers pair this with detect_kind(text) over the
+    whole response to resolve the kind (core.actions.registry.offer_action_type).
+    """
+    out: list[str] = []
+    for sent in _split_sentences(_strip_quoted_and_drafts(text)):
+        is_question = sent.rstrip().endswith("?")
+        has_marker = bool(_PROPOSAL_MARKER.search(sent))
+        if (has_marker or is_question) and _ACTION_VERB.search(sent):
+            out.append(sent)
+    return out
+
+
+def has_offer_marker(text: str) -> bool:
+    """True when ``text`` carries an assistant-offer framing ("want me to",
+    "I can", "confirm and I'll"). A bare question with an action verb ("Did
+    you add it to your calendar?") asks about the USER's action and must not
+    be taken as an offer the user can accept — the forced-action route
+    requires this marker."""
+    return bool(_PROPOSAL_MARKER.search(text or ""))
+
+
+def detect_kind(text: str) -> ActionKind | None:
+    """Public kind detector over arbitrary text (priority order as _KIND_PATTERNS)."""
+    return _detect_kind(_strip_quoted_and_drafts(text or ""))
+
+
 def detect_completion_claims(text: str) -> list[DetectedAction]:
     """Find clauses where the assistant CLAIMS to have completed an action.
 
@@ -421,6 +463,40 @@ _KIND_LABEL = {
     ActionKind.GITHUB: "make that GitHub change",
     ActionKind.GENERIC: "do that",
 }
+
+
+# "Approve it and it'll land on your calendar" / "hit approve" — the reply
+# directs the user at an approval card. With no proposal created this turn
+# that card does not exist (2026-09-07 live: an enhanced-path reply said
+# "Firing it again: … Approve it and it should land this time" after a retry
+# request that had no tool route). Kind-independent: the bullets under such a
+# line often carry no kind word at all ("Zoom link + Piazza-first note").
+_APPROVAL_PROMPT_RE = re.compile(
+    r"\b(?:approve\s+(?:it|that|this|the\s+(?:card|proposal|event|action|request))|"
+    r"(?:hit|tap|click|press)\s+approve|the\s+approve\s+button|"
+    r"(?:card|proposal)\s+(?:below|above)|queued\s+up\s+and\s+ready)\b",
+    re.IGNORECASE,
+)
+
+
+def claims_pending_card(text: str) -> bool:
+    """True when the reply directs the user to approve a proposal card.
+
+    Offer-framed or question clauses are skipped ("want me to queue it so you
+    can approve it?"); quoted/drafted blocks are stripped first.
+    """
+    for sent in _split_sentences(_strip_quoted_and_drafts(text or "")):
+        if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
+            continue
+        if _APPROVAL_PROMPT_RE.search(sent):
+            return True
+    return False
+
+
+NO_CARD_NOTICE = (
+    "\n\n> ⚠️ Heads up — there's no card to approve: nothing was actually queued "
+    "this turn. Ask me again (or say \"try again\") and I'll queue it for real."
+)
 
 
 def build_correction_notice(external_unbacked: list[DetectedAction]) -> str:

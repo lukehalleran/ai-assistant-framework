@@ -33,6 +33,24 @@ _CACHE_TTL_SECONDS = 300  # 5 minutes
 # Warmup flag — People API recommends an initial empty-query request
 _warmed_up: bool = False
 
+# Last observed API error (2026-09-08, B6 operational fix): a bare
+# "HTTP 403" told the owner nothing about WHY (API not enabled for the
+# project vs. insufficient OAuth scope vs. quota). Set on any non-200
+# response; read by get_runtime_action_health() so the distinction is
+# visible without reading logs. Diagnostic only — never gates behavior,
+# and no auth/retry logic changes with it.
+_last_error: Optional[str] = None
+
+# Google error message bodies can be long HTML-flavored prose; keep the
+# warning/health line readable.
+_ERROR_MESSAGE_MAX_CHARS = 160
+
+
+def get_last_error() -> Optional[str]:
+    """The most recent Google Contacts API error string (endpoint + Google's
+    own status/message), or None if no call has failed yet this process."""
+    return _last_error
+
 
 async def search_contacts(
     query: str,
@@ -147,10 +165,11 @@ async def resolve_contact(
 
 def clear_cache() -> None:
     """Clear the contacts cache."""
-    global _cache, _cache_ts, _warmed_up
+    global _cache, _cache_ts, _warmed_up, _last_error
     _cache.clear()
     _cache_ts.clear()
     _warmed_up = False
+    _last_error = None
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +263,10 @@ async def _search_api(
             )
 
         if resp.status_code != 200:
-            logger.warning(f"[GoogleContacts] API error: HTTP {resp.status_code} ({endpoint})")
+            global _last_error
+            detail = _describe_api_error(resp)
+            _last_error = f"HTTP {resp.status_code} ({endpoint}) — {detail}"
+            logger.warning(f"[GoogleContacts] API error: HTTP {resp.status_code} ({endpoint}) — {detail}")
             return []
 
         data = resp.json()
@@ -253,6 +275,7 @@ async def _search_api(
         # Cache results
         _cache[cache_key] = results
         _cache_ts[cache_key] = time.time()
+        _last_error = None
 
         logger.info(f"[GoogleContacts] Found {len(results)} results for '{query}' ({endpoint})")
         return results[:max_results]
@@ -260,6 +283,26 @@ async def _search_api(
     except Exception as e:
         logger.warning(f"[GoogleContacts] Search failed ({endpoint}): {e}")
         return []
+
+
+def _describe_api_error(resp) -> str:
+    """Defensively parse a non-200 People API response body's
+    ``{"error": {"status": ..., "message": ...}}`` shape into a short
+    "STATUS: message" string (message truncated). Never raises — an
+    unparseable/empty body degrades to a generic description rather than
+    losing the HTTP status the caller already has."""
+    try:
+        body = resp.json()
+    except Exception:
+        return "no parseable error body"
+    error = body.get("error", {}) if isinstance(body, dict) else {}
+    if not isinstance(error, dict):
+        return "no parseable error body"
+    status = str(error.get("status") or "").strip()
+    message = str(error.get("message") or "").strip()[:_ERROR_MESSAGE_MAX_CHARS]
+    if status and message:
+        return f"{status}: {message}"
+    return status or message or "no error details in response body"
 
 
 def _parse_contacts_response(data: dict, source_label: str) -> List[Dict]:

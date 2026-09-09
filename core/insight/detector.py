@@ -247,14 +247,26 @@ _NON_INSIGHT_LOOKUP_RE = re.compile(
     r"have\s+i\s+told\s+you\s+about\b)",
     re.IGNORECASE,
 )
+# 2026-09-08 (F4, live shape R28): `.{0,N}` with DOTALL let the span cross a
+# "?" and land in the NEXT sentence — "am i just finding the 5% perentile
+# here ...? probably doing a bit more" matched via the bare "more" in the
+# first alternation. Every `.{0,N}` here is now `[^.?!\n]{0,N}` (no sentence
+# crossing in this regex), and bare "more"/"less" are no longer enough on
+# their own — they need their own longitudinal qualifier ("more than
+# before/usual/normal/I used to", "more lately/recently/these days/over
+# time"), still anchored to the same has/have/did/does/is/are/am + my/our/
+# i/we head as the first arm.
 _IMPLICIT_PERSONAL_COMPARISON_RE = re.compile(
-    r"\b(?:has|have|did|does|is|are|am)\s+(?:my|our|i|we)\b.{0,100}"
-    r"\b(?:changed?|different|better|worse|more|less|since|after|before|"
+    r"\b(?:has|have|did|does|is|are|am)\s+(?:my|our|i|we)\b[^.?!\n]{0,100}"
+    r"\b(?:changed?|different|better|worse|since|after|before|"
     r"track(?:s|ed|ing)?|correlat\w*|covar\w*)\b|"
-    r"\bcompare\b.{0,80}\b(?:i|me|my|we|our)\b.{0,100}"
+    r"\b(?:has|have|did|does|is|are|am)\s+(?:my|our|i|we)\b[^.?!\n]{0,100}"
+    r"\b(?:more|less)\s+(?:than\s+(?:before|usual|normal|i\s+used\s+to)|"
+    r"lately|recently|these\s+days|over\s+time)\b|"
+    r"\bcompare\b[^.?!\n]{0,80}\b(?:i|me|my|we|our)\b[^.?!\n]{0,100}"
     r"\b(?:before|after|between|since)\b|"
     r"\bwhat\s+tends?\s+to\s+happen\s+when\s+i\b",
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
 _PERSONAL_PLUS_EXTERNAL_RE = re.compile(
     r"\b(?:history|record|notes?|data|everything\s+i(?:'ve|\s+have)\s+said)\b"

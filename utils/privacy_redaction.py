@@ -34,6 +34,20 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"(?i)\b(?:date\s+of\s+birth|dob)\s*[:=]\s*[^\r\n,;]+"),
         "date of birth: [REDACTED DOB]",
     ),
+    # Structured profile-field rules (2026-09-08, F11): a rendered profile
+    # fact like `birthday=1990-01-02` or `lives_in: Springfield` is not
+    # covered by the labelled "date of birth"/"address" rules above.
+    (
+        re.compile(r"(?i)\b(birthday|birth\s*date|born)\s*[:=]\s*[^\r\n,;]+"),
+        r"\1: [REDACTED DOB]",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(lives?_in|lives\s+in|location|home\s*town|hometown)"
+            r"\s*[:=]\s*[^\r\n,;]+"
+        ),
+        r"\1: [REDACTED LOCATION]",
+    ),
     (
         re.compile(r"(?i)\b(gtid|student\s*id)(\s*[:#=-]?\s*)\d{5,12}\b"),
         r"\1\2[REDACTED ID]",
@@ -68,8 +82,15 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     # GTIDs are nine digits and are frequently pasted without a label.  In a
     # shareable export it is safer to redact any standalone nine-digit ID.
+    # Boundary is alphanumeric, not just digit (2026-09-08, F11): the old
+    # `(?<!\d)...(?!\d)` form only excluded adjacent DIGITS, so a nine-digit
+    # run embedded in a hex string (a plan_sha256 hash, a git SHA) still
+    # matched — `redact_text('abc123456789def')` became
+    # `abc[REDACTED ID]def`, corrupting reproducible planner receipts. A
+    # bare ID is a STANDALONE TOKEN — bounding on `[0-9A-Za-z]` is a format
+    # constraint on the ID itself, not a hash exemption.
     (
-        re.compile(r"(?<!\d)\d{9}(?!\d)"),
+        re.compile(r"(?<![0-9A-Za-z])\d{9}(?![0-9A-Za-z])"),
         "[REDACTED ID]",
     ),
 )
@@ -103,7 +124,17 @@ def redact_data(value: Any) -> Any:
 
 
 def build_redacted_prompt_export(record: dict[str, Any], *, include_system: bool) -> str:
-    """Build the privacy-safe text used by both prompt-download surfaces."""
+    """Build the privacy-safe text used by both prompt-download surfaces.
+
+    F7 (2026-09-08): an agentic record may carry `answer_prompt` — the exact
+    prompt the ANSWERING call saw (`controller._build_final_prompt`), which
+    can differ from the base retrieval `prompt` this export otherwise shows
+    (record 40, 2026-09-08 dump: the base prompt rendered sections the
+    answering call's own receipt said were omitted). When present, it is
+    rendered FIRST under an "ANSWERING CALL" heading, then the existing
+    fields follow under "BASE RETRIEVAL PROMPT". A legacy record without the
+    field exports exactly as before.
+    """
 
     lines = [
         "=" * 80,
@@ -114,6 +145,24 @@ def build_redacted_prompt_export(record: dict[str, Any], *, include_system: bool
         "=" * 80,
         "",
     ]
+    answer_prompt = record.get("answer_prompt")
+    if answer_prompt:
+        answer_call = record.get("answer_call") or "unknown"
+        lines += [f"[ANSWERING CALL ({answer_call})]", "-" * 80]
+        answer_system_prompt = record.get("answer_system_prompt", "")
+        if answer_system_prompt and include_system:
+            lines += [
+                "[ANSWERING CALL SYSTEM PROMPT]", "-" * 80,
+                redact_text(answer_system_prompt),
+                "", "-" * 80, "",
+            ]
+        lines += [
+            redact_text(answer_prompt),
+            "", "=" * 80, "",
+            "[BASE RETRIEVAL PROMPT]",
+            "-" * 80,
+            "",
+        ]
     system_prompt = record.get("system_prompt", "")
     if system_prompt and include_system:
         lines += [

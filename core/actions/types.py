@@ -230,6 +230,27 @@ class PendingActionsStore:
             proposal.error = error
             self._save()
 
+    def most_recent_failed(self, max_age_seconds: int = 1800) -> Optional["ActionProposal"]:
+        """The newest FAILED proposal (executor error or expired unseen) proposed
+        within ``max_age_seconds``, or None.
+
+        2026-09-07: "good now, please try again" after a token-refresh failure
+        had no route — the failed proposal, with the exact params the user had
+        already approved once, was sitting here. The retry path re-queues it
+        deterministically (new card, human approval again) instead of asking
+        the model to re-derive the event.
+        """
+        self._prune_expired()
+        now = datetime.now(timezone.utc)
+        candidates = [
+            p for p in self._store.values()
+            if p.status == "failed"
+            and (now - p.proposed_at).total_seconds() <= max_age_seconds
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.proposed_at)
+
     def pending_count(self) -> int:
         """Number of currently pending (non-expired) proposals."""
         self._prune_expired()
