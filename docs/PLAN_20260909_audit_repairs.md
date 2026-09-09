@@ -487,3 +487,279 @@ the owner commits/pushes and performs the already-planned B2 live probe.
 ### Follow-ups from the probe (OWNER-FLAGGED, address in B4/B5 or a curation UX batch)
 - **Undo discoverability (owner: "the undos are extremely hard to find").** Undo for an APPLIED card lives only in the Activity list at the bottom of the Curation page; the queue card disappears on apply with no in-place "Applied — Undo" affordance. Fix: keep the applied card visible in place for the session (or a dedicated "Recently applied" strip above the queue) with a prominent Undo button; Activity remains the long-tail surface. `web/src/components/curation/CurationPage.tsx` lines ~166–249.
 - **Scan-time dedupe across pending cards.** Last night's shutdown scan (00:56) proposed a 5-doc stream-artifact card that contains the SAME four docs as the 08-28 card the owner applied (overlap 4/5). The scanner must skip doc ids already targeted by a PENDING/INTERRUPTED proposal of the same curator, and a pending card whose targets already match `after` at apply time should report "already repaired" per item instead of rewriting. Engine `run_scan` + curator batch assembly.
+
+### B5 — test trust (2026-09-09, Codex partial → Claude subagent)
+
+**Inherited from Codex (uncommitted, working tree, not modified further here
+except where noted):** `tests/unit/test_sep09_backup_recovery.py` (new, T13 —
+6 tests over a complete synthetic data root: JSON/graph/profile writers,
+real SQLite chroma stub, backup→restore→reopen, dry-run-is-read-only, missing-
+post-July-store recreation, interrupted-restore-preserves-aside, Daemon-lock
+refusal); `scripts/restore_backup.py` + `utils/backup_manager.py` (product
+fix required to make T13's acceptance criteria true: `backup_targets(existing_only=False)`
+so restore knows every configured destination even when the live file is
+currently missing, and `cmd_restore` now REFUSES — returns 1, touches nothing
+— when a manifest member has no on-disk backup copy, instead of silently
+skipping it); `tests/unit/test_prompt_timeout.py` (rewritten to drive the
+deployed `UnifiedPromptBuilder.build_prompt` with event-controlled gatherers
+per T02, replacing the old version's from-scratch reimplementation of the
+gather/timeout loop); `tests/test_response_generator_comprehensive.py` +
+`tests/test_actual_caching.py` (T01: the `except Exception: assert True`
+bodies replaced with deterministic provider fixtures). Codex's run of the
+four files together showed 4 failed / 66 passed at handoff (the actual
+number on this tree at pickup was 4 failed / 46 passed — 50 collected, not
+70; the discrepancy is almost certainly Codex quoting an earlier in-progress
+count and is immaterial, since the same 4 named tests were the failures
+either way).
+
+**1. The four failures — diagnosis and fix (all test-side; no product code
+touched in `core/response_generator.py` or `core/prompt/builder.py`, per
+this batch's STOP condition):**
+
+- **`test_generate_streaming_response_basic` / `test_generate_streaming_response_with_system`**
+  (test-side bug, not a product defect). Both failed with
+  `TypeError: object async_generator can't be used in 'await' expression`.
+  Root cause: `stream_provider()`'s helper set
+  `model_manager.generate_async = MagicMock(side_effect=stream)` where
+  `stream` was itself declared `async def stream(...): yield ...` — an
+  **async-generator function**. Calling it returns an async-generator
+  object directly (not a coroutine), so `MagicMock`'s synchronous
+  side-effect dispatch handed that object straight back from the mock call
+  — but the deployed `ResponseGenerator.generate_streaming_response` does
+  `response_generator = await self.model_manager.generate_async(...)` (see
+  `core/response_generator.py:129` and the real contract at
+  `models/model_manager.py:1368`, `async def generate_async(...)` which,
+  once awaited, RETURNS an object supporting `__aiter__`, e.g. an OpenAI
+  SDK stream object — not itself an async generator when called). Awaiting
+  an async-generator object is a `TypeError`, which the generator's own
+  outer exception handler (`core/response_generator.py`, the final
+  `except Exception as e: yield f"[Streaming Error] {e}"`) turned into
+  visible stream content — so the test failed on content mismatch, not a
+  crash. Fixed by making `stream_provider` install an `AsyncMock` whose
+  side_effect is a **plain synchronous factory** that *returns* the async-
+  generator object (`_stream_chunks()`); `AsyncMock._execute_mock_call`
+  calls a non-async side_effect synchronously and hands its return value
+  straight back as the await result — exactly the real `generate_async`
+  shape. A second, independent test-side defect surfaced once the mock was
+  fixed: both tests asserted `"".join(chunks) == "Synthetic complete
+  answer."`, but the deployed generator's word-splitting
+  (`buffer.split(" ")`) yields one word per chunk with the delimiting space
+  STRIPPED — no deployed caller ever does a bare `"".join()` on these
+  chunks (`gui/handlers.py:smart_join` inserts a space unless the next
+  chunk starts with punctuation/whitespace; `core/orchestrator.py`'s
+  standard streaming path does `full_response += (chunk + " ")` then
+  `.strip()`, which for plain word chunks is equivalent to `" ".join()`).
+  Changed both assertions to `" ".join(chunks) == ...` — this reflects how
+  a real caller reconstructs the answer, not a new invented convention.
+- **`test_streaming_provider_failure_surfaces_and_closes`**: same root
+  cause as above (the async-generator-function-as-side_effect bug); once
+  `stream_provider` was fixed this test passed with no further changes —
+  it never needed the join-convention fix since it only asserts substring
+  containment and `state.closed`.
+- **`TestPromptTimeoutPartialContext::test_cancelled_request_drains_gatherers_before_reset`**
+  (test-side bug, not a product defect). Failed with
+  `assert [[]] == [['synthetic.txt']]` — the captured
+  `_current_turn_upload_filenames` was empty at drain time instead of
+  `["synthetic.txt"]`. Root cause: the test called
+  `builder.build_prompt(..., current_turn_upload_filenames=["synthetic.txt"])`,
+  but `build_prompt` has no such parameter — it lands in `**kwargs` and is
+  never read. The real kwarg, per `core/prompt/builder.py:1153-1154` (which
+  sets `self.context_gatherer._current_turn_upload_filenames =
+  kwargs.get('_uploaded_filenames') or []`) and its production call site at
+  `core/prompt/builder.py:2182` (`build_prompt_from_context` passing
+  `_uploaded_filenames=getattr(context, 'uploaded_filenames', None)`), is
+  `_uploaded_filenames`. Fixed the test to pass the correct kwarg name.
+  Once fixed, the test's own premise was confirmed CORRECT against the
+  deployed builder — no `xfail` needed: `build_prompt`'s `finally` block
+  (`core/prompt/builder.py`, "asyncio.wait does not cancel its children when
+  this request is cancelled. Drain them before clearing request-specific
+  scorer/gatherer state...") really does cancel and `await
+  asyncio.gather(*tasks.values(), return_exceptions=True)` on the pending
+  gatherers BEFORE resetting `_current_turn_upload_filenames = []`, matching
+  `test_independent_prompt_audit.py::test_cancelled_builder_drains_retrieval_before_resetting_shared_state`'s
+  established pattern for this same builder. No B5 finding recorded — the
+  deployed builder's cancellation-drain contract holds.
+
+All four fixes are test-only (`tests/test_response_generator_comprehensive.py`,
+`tests/unit/test_prompt_timeout.py`); `core/response_generator.py` and
+`core/prompt/builder.py` are untouched (`git diff --stat` confirms zero
+lines changed in either). Combined re-run of the four B5 files: **50 passed,
+0 failed** (up from 4 failed / 46 passed).
+
+**2. T01 sensitivity receipt.** A throwaway script (not committed —
+`/tmp/claude-1000/-home-lukeh-Daemon-v1/898c5d70-8de4-42c9-a0b5-5a5bbcd94250/scratchpad/sep09_b5_sensitivity_probe.py`,
+gone with the session) re-ran the handoff's own assertion-sensitivity idea
+against the 11 repaired `tests/test_response_generator_comprehensive.py`
+success-path bodies the audit named for T01 (`test_generate_full_basic`
+through the two streaming tests). Each was called directly (not via pytest
+collection) with three deliberately corrupted provider behaviors:
+`wrong_type` (the mock's actual call result is replaced with a non-string
+value at the true call boundary, via an `AsyncMock` subclass overriding
+`_execute_mock_call` so the corruption survives whatever `.side_effect`/
+`.return_value` the test body itself configures afterward — best_of/duel/
+ensemble tests do reassign these), `raises` (`RuntimeError` at the same
+boundary), and `empty` (empty string / a genuinely empty async generator for
+the two streaming tests, via a corrupted `stream_provider` swapped in for
+just those two). Result:
+
+```
+Undetected (test PASSED despite a broken provider): 0 / 33
+Detected (test FAILED as required): 33 / 33
+```
+
+All 11 × 3 = 33 cases now correctly FAIL the repaired test, versus the
+original handoff's reproduction of the pre-fix bodies (all eleven silently
+absorbed a wrong type and a raised exception; the two streaming tests also
+absorbed an empty stream — the handoff's "27 undetected cases across 13
+test bodies" figure, which additionally counted 2 unrelated files' cases not
+reprobed here). `tests/test_actual_caching.py`'s 3 bodies were reviewed
+structurally rather than run through the same numeric probe (a model-
+loading-cache contract, not a provider-response contract, so the wrong-
+type/raises/empty-stream framing doesn't map onto it 1:1); they already
+satisfy T01's acceptance criteria as written — no `except Exception:
+assert True` or boolean-return pattern remains, and
+`test_model_load_failure_returns_and_caches_neutral_fallback` already
+exercises a raising loader directly with a hard assertion on the fallback's
+`.predict()` output.
+
+**3. T14 selection ledger.** Written to `docs/TEST_LANES.md`: every
+`--ignore` in `.github/workflows/tests.yml` (17) and `pytest.ini` (4), each
+with reason/owning subsystem/fast-replacement/bounded-command, plus a
+`slow`/`benchmark`/`semantic` marker table and a "Lanes" section (fast CI
+lane, the five repo-wide guards, the new B2/B3/T13 real-driver tests'
+collection verification, the non-unit remainder's memory-capped command).
+Headline finding: **all 17 CI-only ignores are now stale.** Re-run together
+today under the exact CI marker filter: **439 passed, 3 skipped (each with
+a named, non-vacuous reason — an unimplemented method, a signature drift, an
+environment guard), 0 failed, 200.09s.** They were excluded in commit
+`47122c0` (2026-05-11, "ci: exclude stale test files referencing removed
+methods") and never revisited once whatever they referenced was fixed
+forward. By contrast, 3 of `pytest.ini`'s 4 ignores are still genuinely
+broken today and must NOT be silently removed: `tests/memory_test.py` is a
+legacy top-level smoke script (module-level `asyncio.run()`, not real
+`test_*` functions) that fails collection because
+`core/orchestrator.py::_SimplePromptBuilder`'s fallback no longer has an
+`_assemble_prompt` method (a live, real product-shape drift — flagged as a
+scoped gap, not fixed here since it touches `core/orchestrator.py`, out of
+this batch's remit); `tests/test_double_filtering_performance.py` and
+`tests/test_gating_consistency.py` both fail collection on the same
+`ModuleNotFoundError: tests.integration.gate_system_helpers` (the module was
+never migrated/restored). The 4th, `tests/test_double_filtering_regression.py`,
+does not exist in the tree at all — its ignore line is dead and safe to
+delete as pure cleanup.
+
+**CI hunk for Fable to merge** (NOT applied — `.github/workflows/tests.yml`
+is B4's file this batch; this is the exact change B5 recommends once B4's
+concurrent edit lands — likely non-overlapping, since B4's work is expected
+to touch a frontend/graph step rather than this Python job's ignore list,
+but rebase onto whatever B4 commits before applying):
+
+```diff
+       - name: Run fast test suite
+         run: |
+-          python -m pytest -q -m "not slow and not benchmark and not semantic" --tb=short \
+-            --ignore=tests/test_memory_coordinator_advanced.py \
+-            --ignore=tests/test_memory_deep_integration.py \
+-            --ignore=tests/test_memory_internal_methods.py \
+-            --ignore=tests/test_edge_cases_comprehensive.py \
+-            --ignore=tests/test_prompt_deep_paths.py \
+-            --ignore=tests/test_thread_tracking.py \
+-            --ignore=tests/test_multi_collection_chroma_store.py \
+-            --ignore=tests/unit/test_memory_coordinator_methods.py \
+-            --ignore=tests/unit/test_visual_memory_pipeline.py \
+-            --ignore=tests/unit/test_context_pipeline.py \
+-            --ignore=tests/test_active_day_decay.py \
+-            --ignore=tests/test_fix_verification.py \
+-            --ignore=tests/test_temporal_retrieval.py \
+-            --ignore=tests/test_thread_surfacing.py \
+-            --ignore=tests/test_user_profile_schema_preferences.py \
+-            --ignore=tests/test_wizard.py \
+-            --ignore=tests/unit/test_cross_deduplicator.py
++          python -m pytest -q -m "not slow and not benchmark and not semantic" --tb=short
+         env:
+           OPENAI_API_KEY: "sk-test-placeholder"
+           CHROMA_DEVICE: "cpu"
+```
+
+This adds ~200s to the CI job (measured locally) for 439 additional passing
+tests + 3 documented skips; no ignore covering a genuinely-broken collection
+(the pytest.ini 3) is touched by this hunk. `pytest.ini`'s dead
+`tests/test_double_filtering_regression.py` line is a one-line deletion
+Fable can make independently of `.github/workflows/tests.yml` (different
+file, not B4's).
+
+**4. `hooks/pre-push` source→test mapping.** Added a ~16-line block (within
+the existing single stdin-reading loop, so a second top-level `while read`
+was NOT introduced — that would read EOF, since git pipes the ref-update
+lines to the hook's stdin exactly once): for each ref being pushed, the
+existing loop now also collects `changed_sources` (every changed `*.py`
+outside `tests/`, via `git diff -- '*.py' ':!tests/*.py' ':!tests/**/*.py'`
+— pathspec exclusion verified empirically to work at any depth, not just
+top-level, against this repo's own history). After the loop, each changed
+source file's basename is checked against `tests/unit/test_<base>.py` and
+`tests/test_<base>.py`; existing matches are folded into `changed_tests`
+(dedup via a `case` membership check, matching the existing guard-dedup
+idiom already used lower in the file). This is a bounded, existence-checked
+net — no globbing, no dependency graph — documented in `docs/TEST_LANES.md`
+as "cheap, not full dependency analysis." Verified with `bash -n
+hooks/pre-push` (syntax OK) and a standalone function-level dry run
+(extracted the mapping loop into a throwaway shell snippet with a synthetic
+`changed_sources` array covering: a source with a `tests/test_*.py` match,
+one with a `tests/unit/test_*.py` match, and one with neither) — output
+confirmed exactly the expected 2 additions and no false hit for the
+no-match case. The hook's existing behavior (dirty-tree refusal, untracked
+`.py` refusal, privacy guard, ruff, guard-test inclusion, `PREPUSH_FULL=1`)
+is otherwise unchanged.
+
+**5. Verification runs.** The four B5 files:
+```
+tests/unit/test_sep09_backup_recovery.py tests/unit/test_prompt_timeout.py
+tests/test_response_generator_comprehensive.py tests/test_actual_caching.py
+```
+→ **50 passed, 0 failed** (3 warnings, all pre-existing SWIG/spaCy
+deprecations, unrelated to this batch). Combined with the requested
+regression set:
+```
+tests/unit/test_backup_manager.py tests/unit/test_independent_prompt_audit.py
+tests/unit/test_request_path_parity.py tests/test_corpus_manager.py
+tests/unit/test_corpus_manager.py
+```
+plus the five repo-wide guards
+(`test_no_git_state_in_tests`, `test_ordered_slice_guard`,
+`test_budget_meters_rendered_sections`, `test_tool_wiring_parity`,
+`test_model_capability_wiring`) → **250 passed, 0 failed**, 12.06s.
+`ruff check . --output-format concise` → **All checks passed!** No test
+touched by this batch reads git state (`test_no_git_state_in_tests.py`
+passed in the same run); `hooks/pre-push` is a shell script, not a pytest
+test, so the guard doesn't apply to it directly, but its new block was
+dry-run-verified as described above rather than exercised through a real
+`git push`.
+
+**Deviations from the brief:** none of substance. `memory/corpus_manager.py`
+(Fable's CI hotfix) was left byte-for-byte untouched — confirmed via `git
+diff --stat` showing it as a pre-existing modification not re-touched by
+this batch's edits. No file under `api/`, `core/agentic/`,
+`core/action_claim_guard.py`, or `web/` was read for editing purposes (only
+`gui/handlers.py` and `core/orchestrator.py` were READ, never edited, to
+establish the real `smart_join`/`chunk + " "` reconstruction conventions
+cited in the streaming-test fix above — both are outside the forbidden
+list). `.github/workflows/tests.yml` was read only, never edited, per the
+STOP condition; the recommended change is recorded as a hunk above instead.
+
+**Pass counts (final):** 50 passed / 0 failed (the four B5 files) + 250
+passed / 0 failed (B5 files + named regression set + five guards, superset
+of the 50) + 439 passed / 3 skipped / 0 failed of 442 collected (the 17
+now-passing CI-ignored files, run standalone under the CI marker filter) +
+33 detected / 33 (T01 sensitivity receipt, throwaway, not part of any
+committed count). Ruff clean throughout.
+
+**Owner:** review `docs/TEST_LANES.md` and the CI hunk above once B4 lands
+its `.github/workflows/tests.yml` edit, then apply the hunk (or ask Fable/
+Codex to). `pytest.ini`'s `tests/memory_test.py` /
+`tests/test_double_filtering_performance.py` / `tests/test_gating_consistency.py`
+gaps are scoped findings, not fixed here — deleting or repairing
+`tests/memory_test.py` touches `core/orchestrator.py`; restoring
+`tests/integration/gate_system_helpers.py` is a standalone follow-up either
+frontier can size. Commit draft: `commit_message_18.txt`.
+
+**Fable referee (B5):** PASS. Independent run 250 passed (four B5 files + backup_manager/independent_prompt_audit/request_path_parity/corpus suites + five guards), ruff clean; `hooks/pre-push` parses and is a symlink into `.git/hooks` so the mapping is live; the restore change refuses incomplete backups before any target write (stricter, correct). Commit message reshaped per §3a. The 17-ignore CI hunk is merged in the B4 commit (shared file). Deviation accepted: CLAUDE.md/changelog lines written by Fable.

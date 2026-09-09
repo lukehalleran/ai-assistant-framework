@@ -53,6 +53,7 @@ fi
 
 # ---- push range → changed test files -----------------------------------
 changed_tests=()
+changed_sources=()
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue            # branch deletion
   if [ "$remote_sha" = "$ZERO" ]; then
@@ -64,6 +65,25 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$f" ] && changed_tests+=("$f")
   done < <(git diff --name-only --diff-filter=AMR "$range" -- 'tests/*.py' 'tests/**/*.py' 2>/dev/null || true)
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] && changed_sources+=("$f")
+  done < <(git diff --name-only --diff-filter=AMR "$range" -- '*.py' ':!tests/*.py' ':!tests/**/*.py' 2>/dev/null || true)
+done
+
+# ---- source→test mapping (T14) ------------------------------------------
+# A source-only change (no test file touched) selects nothing above, so its
+# subsystem's tests never ran pre-push. Map each changed source file's
+# basename to its conventional test filename(s) when one already exists —
+# bounded, existence-checked, no globbing — and fold any hit into
+# changed_tests. A source file with no same-named test still selects nothing
+# extra; this is a cheap net, not full dependency analysis.
+for src in "${changed_sources[@]:-}"; do
+  [ -z "$src" ] && continue
+  base=$(basename "$src" .py)
+  for candidate in "tests/unit/test_${base}.py" "tests/test_${base}.py"; do
+    [ -f "$candidate" ] || continue
+    case " ${changed_tests[*]:-} " in *" $candidate "*) ;; *) changed_tests+=("$candidate") ;; esac
+  done
 done
 
 # ---- 1. privacy guard (verbatim policy from tests.yml) -------------------

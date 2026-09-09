@@ -1,121 +1,42 @@
-#!/usr/bin/env python3
-"""
-test_actual_caching.py
+"""Real ModelManager cache, with only the model-loading boundary replaced."""
+from unittest.mock import patch
 
-Test actual cross-encoder caching behavior without mocking.
-"""
+import numpy as np
 
-import time
-import logging
+from models import model_manager as module
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 def test_model_manager_cross_encoder_caching():
-    """Test ModelManager cross-encoder caching behavior"""
-    logger.info("Testing ModelManager cross-encoder caching...")
+    # The cache is process-global, so verify reuse across manager instances too.
+    # Fresh test-owned dict prevents both warm-cache false passes and pollution.
+    encoder = object()
+    with patch.object(module, "_global_cross_encoders", {}), \
+         patch("sentence_transformers.CrossEncoder", return_value=encoder) as load:
+        first_manager = module.ModelManager.__new__(module.ModelManager)
+        second_manager = module.ModelManager.__new__(module.ModelManager)
+        first = first_manager.get_cross_encoder("synthetic-model")
+        second = first_manager.get_cross_encoder("synthetic-model")
+        third = second_manager.get_cross_encoder("synthetic-model")
+        assert first is second is third is encoder
+        load.assert_called_once_with("synthetic-model")
 
-    try:
-        from models.model_manager import ModelManager
 
-        # Create model manager
-        model_manager = ModelManager()
+def test_different_cross_encoder_models_have_separate_cache_entries():
+    first, second = object(), object()
+    with patch.object(module, "_global_cross_encoders", {}), \
+         patch("sentence_transformers.CrossEncoder", side_effect=[first, second]) as load:
+        manager = module.ModelManager.__new__(module.ModelManager)
+        assert manager.get_cross_encoder("synthetic-a") is first
+        assert manager.get_cross_encoder("synthetic-b") is second
+        assert manager.get_cross_encoder("synthetic-a") is first
+        assert load.call_count == 2
 
-        logger.info("Testing cross-encoder retrieval behavior...")
 
-        # Track load time
-        start_time = time.time()
-
-        # Test multiple calls to get_cross_encoder
-        encoder1 = model_manager.get_cross_encoder()
-        first_call_time = time.time() - start_time
-
-        # Second call should be instant (cached)
-        start_time = time.time()
-        encoder2 = model_manager.get_cross_encoder()
-        second_call_time = time.time() - start_time
-
-        # Third call should also be instant (cached)
-        start_time = time.time()
-        encoder3 = model_manager.get_cross_encoder()
-        third_call_time = time.time() - start_time
-
-        # Verify caching behavior
-        logger.info(f"First call time: {first_call_time:.2f}s")
-        logger.info(f"Second call time: {second_call_time:.4f}s")
-        logger.info(f"Third call time: {third_call_time:.4f}s")
-
-        # Verify they're the same instance
-        assert encoder1 is encoder2, "Second call should return cached instance"
-        assert encoder2 is encoder3, "Third call should return cached instance"
-
-        # Verify performance improvement
-        assert second_call_time < 0.01, "Cached call should be very fast"
-        assert third_call_time < 0.01, "Cached call should be very fast"
-
-        logger.info("✅ Cross-encoder caching test passed!")
-
-        # Calculate estimated time saved
-        # Based on typical cross-encoder load time of ~1-2 seconds
-        estimated_single_load_time = 1.5
-        estimated_time_saved = (2 * estimated_single_load_time)  # Saved on calls 2 and 3
-        logger.info(f"Estimated time saved by caching: {estimated_time_saved:.2f}s")
-
-        return True
-
-    except Exception as e:
-        logger.error(f"Cross-encoder caching test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_memory_manager_integration():
-    """Test integration with memory coordinator"""
-    logger.info("Testing MemoryManager integration...")
-
-    try:
-        from memory.memory_coordinator import MemoryCoordinator
-        from memory.corpus_manager import CorpusManager
-        from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
-
-        # This would require actual database connections, so we'll test the pattern instead
-        logger.info("✅ Integration pattern validated (requires actual DB for full test)")
-
-        return True
-
-    except Exception as e:
-        logger.warning(f"Integration test skipped (expected): {e}")
-        return True
-
-def main():
-    """Run actual caching tests"""
-    logger.info("🚀 Testing actual cross-encoder caching behavior...")
-
-    success = True
-
-    # Test 1: Cross-encoder caching
-    if not test_model_manager_cross_encoder_caching():
-        logger.error("❌ Cross-encoder caching test failed")
-        success = False
-
-    # Test 2: Integration validation
-    if not test_memory_manager_integration():
-        logger.info("⚠️ Integration test skipped (expected)")
-
-    if success:
-        logger.info("🎉 Key tests passed!")
-        logger.info("✅ Cross-encoder caching is working")
-        logger.info("✅ Significant time savings achieved")
-        logger.info("✅ Double filtering issue is largely resolved")
-        logger.info("\n📊 Expected impact:")
-        logger.info("   - Prompt building time: 20s → ~5s (75% improvement)")
-        logger.info("   - Cross-encoder loads: 3-5 → 1 (80% improvement)")
-        logger.info("   - User experience: Much faster responses")
-        return 0
-    else:
-        logger.error("❌ Critical tests failed")
-        return 1
-
-if __name__ == "__main__":
-    exit(main())
+def test_model_load_failure_returns_and_caches_neutral_fallback():
+    with patch.object(module, "_global_cross_encoders", {}), \
+         patch("sentence_transformers.CrossEncoder", side_effect=RuntimeError("synthetic load failure")) as load:
+        manager = module.ModelManager.__new__(module.ModelManager)
+        fallback = manager.get_cross_encoder("synthetic-failing")
+        assert fallback is manager.get_cross_encoder("synthetic-failing")
+        np.testing.assert_array_equal(fallback.predict([("q", "a"), ("q", "b")]), [0.5, 0.5])
+        load.assert_called_once()

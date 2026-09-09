@@ -78,27 +78,21 @@ def cmd_restore(name: str, apply: bool) -> int:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Map backup files → live destinations by basename.
-    dest_by_name = {os.path.basename(p): p for p in backup_targets()}
-    # Targets that don't exist live yet still restore to their configured path.
-    from config.app_config import (
-        CORPUS_FILE, KNOWLEDGE_GRAPH_ALIASES_PATH, KNOWLEDGE_GRAPH_PERSIST_PATH,
-        PROACTIVE_SURFACING_HISTORY_PATH, STALENESS_INDEX_PATH,
-    )
-    from memory.user_profile import UserProfile
-    for p in (KNOWLEDGE_GRAPH_PERSIST_PATH, KNOWLEDGE_GRAPH_ALIASES_PATH,
-              UserProfile.DEFAULT_PATH, CORPUS_FILE, STALENESS_INDEX_PATH,
-              PROACTIVE_SURFACING_HISTORY_PATH):
-        if p:
-            dest_by_name.setdefault(os.path.basename(p), p)
+    dest_by_name = {os.path.basename(p): p for p in backup_targets(existing_only=False)}
 
     plan = []
     for fname in manifest.get("files", []):
         src = os.path.join(src_dir, fname)
         dest = dest_by_name.get(fname)
-        if dest and os.path.isfile(src):
-            plan.append(("file", src, dest))
+        if not dest or not os.path.isfile(src):
+            print(f"REFUSED: backup member {fname!r} is missing or has no configured destination.")
+            return 1
+        plan.append(("file", src, dest))
     chroma_base = os.path.basename(chroma_path().rstrip("/"))
-    if manifest.get("includes_chroma") and os.path.isdir(os.path.join(src_dir, chroma_base)):
+    if manifest.get("includes_chroma"):
+        if not os.path.isdir(os.path.join(src_dir, chroma_base)):
+            print("REFUSED: backup is missing its Chroma directory.")
+            return 1
         plan.append(("tree", os.path.join(src_dir, chroma_base), chroma_path()))
 
     if not plan:

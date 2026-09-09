@@ -71,8 +71,8 @@ def _config():
     }
 
 
-def backup_targets() -> List[str]:
-    """The JSON stores worth backing up. Only existing files are returned."""
+def backup_targets(*, existing_only: bool = True) -> List[str]:
+    """Configured stores; restore also needs paths whose live files are missing."""
     from config.app_config import (
         CORPUS_FILE, KNOWLEDGE_GRAPH_ALIASES_PATH, KNOWLEDGE_GRAPH_PERSIST_PATH,
         PROACTIVE_SURFACING_HISTORY_PATH, STALENESS_INDEX_PATH,
@@ -99,7 +99,7 @@ def backup_targets() -> List[str]:
         os.path.join("data", "curation_queue.json"),  # memory.curation.engine._DEFAULT_QUEUE_PATH
         narrative_stale_path,  # utils.narrative_staleness._DEFAULT_FLAG_PATH
     ]
-    return [p for p in candidates if p and os.path.isfile(p)]
+    return [p for p in candidates if p and (not existing_only or os.path.isfile(p))]
 
 
 def chroma_path() -> str:

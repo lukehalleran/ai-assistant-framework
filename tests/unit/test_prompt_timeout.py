@@ -1,228 +1,103 @@
-"""
-Tests for prompt context retrieval timeout behaviour.
+"""Timeout/cancellation assertions through UnifiedPromptBuilder.build_prompt.
 
-Verifies that a global gather timeout preserves completed task results
-instead of wiping all context.
+Gatherers are event-controlled I/O boundaries. Only the wait deadline is
+shortened; production creates/drains the tasks and retains their results.
 """
-
 import asyncio
-import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_builder():
-    """Return a minimal UnifiedPromptBuilder with mocked dependencies."""
-    from core.prompt.builder import UnifiedPromptBuilder
-
-    mm = MagicMock()
-    mm.active_model_name = "test-model"
-    mc = MagicMock()
-    mc.graph_memory = None
-    mc.entity_resolver = None
-
-    builder = UnifiedPromptBuilder(
-        model_manager=mm,
-        memory_coordinator=mc,
-        tokenizer_manager=MagicMock(),
-    )
-    return builder
+from tests.unit.test_independent_prompt_audit import full_builder, retrieval_limits
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+RECENT = [{"query": "Synthetic question", "response": "Synthetic retained answer."}]
+
+
+def _make_builder(monkeypatch):
+    return full_builder(monkeypatch, RECENT, budget=10000)
 
 
 class TestPromptTimeoutPartialContext:
-    """Completed tasks must survive a global gather timeout."""
-
     @pytest.mark.asyncio
-    async def test_partial_timeout_preserves_completed_results(self):
-        """Fast task result must be kept when a slow task causes timeout."""
-        # Build a minimal task dict that mimics builder internals
-        fast_result = [{"content": "fast data", "query": "q", "response": "r"}]
+    async def test_partial_timeout_preserves_completed_results(self, monkeypatch, caplog):
+        builder = _make_builder(monkeypatch)
+        fast_done, slow_entered, slow_closed = (asyncio.Event() for _ in range(3))
 
-        async def _fast():
-            return fast_result
+        async def recent(*args):
+            fast_done.set()
+            return RECENT
 
-        async def _slow():
-            await asyncio.sleep(10)  # will be cancelled
-            return [{"content": "slow data"}]
-
-        async def _failing():
-            raise ValueError("deliberate failure")
-
-        tasks = {
-            "fast": asyncio.create_task(_fast()),
-            "slow": asyncio.create_task(_slow()),
-            "failing": asyncio.create_task(_failing()),
-        }
-
-        done, pending = await asyncio.wait(
-            list(tasks.values()),
-            timeout=0.2,
-            return_when=asyncio.ALL_COMPLETED,
-        )
-
-        gathered = {}
-        timed_out_names = []
-        for name, task in tasks.items():
-            if task in done:
-                try:
-                    gathered[name] = task.result() or []
-                except Exception:
-                    gathered[name] = []
-            else:
-                task.cancel()
-                gathered[name] = []
-                timed_out_names.append(name)
-
-        # Fast task result is preserved
-        assert gathered["fast"] == fast_result
-        # Failed task gets empty default
-        assert gathered["failing"] == []
-        # Slow (timed-out) task gets empty default
-        assert gathered["slow"] == []
-        assert "slow" in timed_out_names
-
-        # Clean up pending tasks
-        for t in pending:
-            t.cancel()
+        async def profile(*args, **kwargs):
+            slow_entered.set()
             try:
-                await t
-            except (asyncio.CancelledError, Exception):
-                pass
+                await asyncio.Future()
+            finally:
+                slow_closed.set()
+
+        builder.context_gatherer._get_recent_conversations = recent
+        builder.context_gatherer.get_user_profile_context = profile
+        real_wait = asyncio.wait
+
+        async def expired_deadline(tasks, *, timeout, return_when):
+            assert timeout == 30.0  # exercise the deployed global gather wait
+            await asyncio.wait_for(asyncio.gather(fast_done.wait(), slow_entered.wait()), 2)
+            return await real_wait(tasks, timeout=0, return_when=return_when)
+
+        monkeypatch.setattr("core.prompt.builder.asyncio.wait", expired_deadline)
+        result = await builder.build_prompt("Synthetic question", retrieval_overrides=retrieval_limits())
+        assert result.get("recent_conversations") == RECENT
+        assert not result.get("user_profile") and "_build_time" in result
+        assert slow_closed.is_set(), "timed-out gatherer survived its request"
+        assert "partial context used" in caplog.text
+        assert builder.context_gatherer._distress_active is False
 
     @pytest.mark.asyncio
-    async def test_all_success_all_results_preserved(self):
-        """When all tasks finish in time, every result is kept."""
-        async def _make(name, value):
-            return [{"name": name, "value": value}]
-
-        tasks = {
-            "a": asyncio.create_task(_make("a", 1)),
-            "b": asyncio.create_task(_make("b", 2)),
-            "c": asyncio.create_task(_make("c", 3)),
-        }
-
-        done, pending = await asyncio.wait(
-            list(tasks.values()),
-            timeout=5.0,
-            return_when=asyncio.ALL_COMPLETED,
-        )
-
-        assert not pending
-
-        gathered = {}
-        for name, task in tasks.items():
-            gathered[name] = task.result() or []
-
-        assert gathered["a"] == [{"name": "a", "value": 1}]
-        assert gathered["b"] == [{"name": "b", "value": 2}]
-        assert gathered["c"] == [{"name": "c", "value": 3}]
+    async def test_all_success_all_results_preserved(self, monkeypatch):
+        builder = _make_builder(monkeypatch)
+        builder.context_gatherer.get_user_profile_context = AsyncMock(return_value="Synthetic profile.")
+        result = await builder.build_prompt("Synthetic question", retrieval_overrides=retrieval_limits())
+        assert result.get("recent_conversations") == RECENT
+        assert result.get("user_profile") == "Synthetic profile."
+        assert "_build_time" in result
 
     @pytest.mark.asyncio
-    async def test_single_task_failure_isolates_to_one_section(self):
-        """A single failing task must not zero out other tasks' results."""
-        good_result = [{"content": "good"}]
-
-        async def _good():
-            return good_result
-
-        async def _bad():
-            raise RuntimeError("section broken")
-
-        tasks = {
-            "good1": asyncio.create_task(_good()),
-            "bad": asyncio.create_task(_bad()),
-            "good2": asyncio.create_task(_good()),
-        }
-
-        done, pending = await asyncio.wait(
-            list(tasks.values()),
-            timeout=5.0,
-            return_when=asyncio.ALL_COMPLETED,
-        )
-
-        assert not pending
-
-        gathered = {}
-        timed_out_names = []
-        for name, task in tasks.items():
-            if task in done:
-                try:
-                    gathered[name] = task.result() or []
-                except Exception:
-                    gathered[name] = []
-            else:
-                task.cancel()
-                gathered[name] = []
-                timed_out_names.append(name)
-
-        # Good tasks are intact
-        assert gathered["good1"] == good_result
-        assert gathered["good2"] == good_result
-        # Failing task gets default
-        assert gathered["bad"] == []
-        # No timeout involved
-        assert timed_out_names == []
+    async def test_one_section_exception_preserves_other_sections(self, monkeypatch, caplog):
+        builder = _make_builder(monkeypatch)
+        builder.context_gatherer.get_user_profile_context = AsyncMock(side_effect=ValueError("synthetic section failure"))
+        result = await builder.build_prompt("Synthetic question", retrieval_overrides=retrieval_limits())
+        assert result.get("recent_conversations") == RECENT
+        assert not result.get("user_profile") and "_build_time" in result
+        assert "synthetic section failure" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_builder_gather_preserves_partial_results(self, caplog):
-        """
-        Integration check: builder._gather logic (via asyncio.wait) preserves
-        completed sections even when the overall gather exceeds the timeout.
+    async def test_cancelled_request_drains_gatherers_before_reset(self, monkeypatch):
+        builder = _make_builder(monkeypatch)
+        entered, closed = asyncio.Event(), asyncio.Event()
+        state_at_close = []
 
-        This test mocks the task dict directly on the builder and calls the
-        actual gather path by reproducing the loop from builder.py.
-        """
-        fast_data = [{"content": "kept", "query": "q", "response": "r"}]
-
-        async def _fast():
-            return fast_data
-
-        async def _slow():
-            await asyncio.sleep(10)
-            return [{"content": "dropped"}]
-
-        tasks = {
-            "recent": asyncio.create_task(_fast()),
-            "memories": asyncio.create_task(_slow()),
-        }
-
-        with caplog.at_level(logging.WARNING):
-            done, pending = await asyncio.wait(
-                list(tasks.values()),
-                timeout=0.1,
-                return_when=asyncio.ALL_COMPLETED,
-            )
-
-        gathered = {}
-        timed_out_names = []
-        for name, task in tasks.items():
-            if task in done:
-                try:
-                    gathered[name] = task.result() or []
-                except Exception:
-                    gathered[name] = []
-            else:
-                task.cancel()
-                gathered[name] = []
-                timed_out_names.append(name)
-
-        assert gathered["recent"] == fast_data, "fast task result must be preserved"
-        assert gathered["memories"] == [], "slow task falls back to empty"
-        assert "memories" in timed_out_names
-
-        for t in pending:
-            t.cancel()
+        async def slow_recent(*args):
+            entered.set()
             try:
-                await t
-            except (asyncio.CancelledError, Exception):
-                pass
+                await asyncio.Future()
+            finally:
+                state_at_close.append(builder.context_gatherer._current_turn_upload_filenames[:])
+                closed.set()
+
+        builder.context_gatherer._get_recent_conversations = slow_recent
+        # build_prompt's real kwarg for this is `_uploaded_filenames` (see
+        # core/prompt/builder.py:1153-1154 and its use at :2182 from
+        # build_prompt_from_context) -- NOT `current_turn_upload_filenames`,
+        # which build_prompt's **kwargs silently absorbs and never reads.
+        task = asyncio.create_task(builder.build_prompt(
+            "Synthetic question", retrieval_overrides=retrieval_limits(),
+            _uploaded_filenames=["synthetic.txt"]))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert closed.is_set(), "retrieval outlived its cancelled request"
+        assert state_at_close == [["synthetic.txt"]]
+        assert builder.context_gatherer._current_turn_upload_filenames == []

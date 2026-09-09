@@ -1,14 +1,18 @@
-"""Comprehensive tests for ResponseGenerator to boost coverage."""
+"""Deterministic contracts for the deployed ResponseGenerator; no providers load."""
 import pytest
 from core.response_generator import ResponseGenerator
-from models.model_manager import ModelManager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from utils.time_manager import TimeManager
 
 
 @pytest.fixture
 def model_manager():
-    """Provide ModelManager."""
-    return ModelManager()
+    """Only the model/provider boundary is replaced."""
+    manager = MagicMock()
+    manager.get_active_model_name.return_value = "synthetic-model"
+    manager.generate_once = AsyncMock(return_value="  Synthetic answer.  ")
+    return manager
 
 
 @pytest.fixture
@@ -186,187 +190,188 @@ def test_minmax_normalize_empty():
     assert len(normalized) == 0
 
 
+GOOD = "Python is a programming language with readable syntax, functions and dynamic typing."
+OTHER = "An unrelated statement about clouds."
+
+
 @pytest.mark.asyncio
 async def test_generate_full_basic(response_generator):
-    """Test generate_full method."""
-    try:
-        result = await response_generator.generate_full(
-            prompt="What is 2+2?",
-            model_name="gpt-4"
-        )
-        assert isinstance(result, str)
-    except Exception:
-        # May need API key
-        assert True
+    result = await response_generator.generate_full("What is 2+2?", "synthetic-model")
+    assert result == "Synthetic answer."
+    response_generator.model_manager.generate_once.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_generate_full_with_system_prompt(response_generator):
-    """Test generate_full with system prompt."""
-    try:
-        result = await response_generator.generate_full(
-            prompt="Hello",
-            model_name="gpt-4",
-            system_prompt="You are a helpful assistant"
-        )
-        assert isinstance(result, str)
-    except Exception:
-        assert True
+    result = await response_generator.generate_full("Hello", "synthetic-model", system_prompt="Be precise")
+    assert result == "Synthetic answer."
+    assert response_generator.model_manager.generate_once.await_args.kwargs["system_prompt"] == "Be precise"
 
 
 @pytest.mark.asyncio
 async def test_generate_full_with_temperature(response_generator):
-    """Test generate_full with custom temperature."""
-    try:
-        result = await response_generator.generate_full(
-            prompt="Write a haiku",
-            model_name="gpt-4",
-            temperature=0.9
-        )
-        assert isinstance(result, str)
-    except Exception:
-        assert True
+    result = await response_generator.generate_full("Write a haiku", "synthetic-model", temperature=0.9)
+    assert result == "Synthetic answer."
+    assert response_generator.model_manager.generate_once.await_args.kwargs["temperature"] == 0.9
 
 
 @pytest.mark.asyncio
 async def test_generate_best_of_basic(response_generator):
-    """Test generate_best_of method."""
-    try:
-        result = await response_generator.generate_best_of(
-            prompt="What is Python?",
-            question="What is Python?",
-            model_name="gpt-4",
-            n=2
-        )
-        assert isinstance(result, dict)
-    except Exception:
-        # May need API key or specific setup
-        assert True
+    response_generator.model_manager.generate_once.side_effect = [OTHER, GOOD]
+    result = await response_generator.generate_best_of(
+        "What is Python?", "synthetic-model", "Be precise", "What is Python?", n=2)
+    assert result == GOOD
+    assert response_generator.model_manager.generate_once.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_generate_best_of_with_context(response_generator):
-    """Test generate_best_of with context."""
-    try:
-        result = await response_generator.generate_best_of(
-            prompt="Explain algorithms",
-            question="What are algorithms?",
-            model_name="gpt-4",
-            n=3,
-            context_hint="computer science"
-        )
-        assert isinstance(result, dict)
-    except Exception:
-        assert True
+    response_generator.model_manager.generate_once.side_effect = [OTHER, GOOD, "No."]
+    result = await response_generator.generate_best_of(
+        "Explain Python", "synthetic-model", "Be precise", "What is Python?",
+        context_hint="Python programming language", n=3, temps=(0.2, 0.5, 0.8))
+    assert result == GOOD
+    assert response_generator.model_manager.generate_once.await_count == 3
 
 
 @pytest.mark.asyncio
 async def test_llm_judge_score(response_generator):
-    """Test _llm_judge_score method."""
-    try:
-        score = await response_generator._llm_judge_score(
-            answer="Python is a programming language",
-            question="What is Python?",
-            context_hint=""
-        )
-        assert isinstance(score, float)
-    except Exception:
-        # May need API key
-        assert True
+    response_generator.model_manager.generate_once.return_value = '{"score": 8.5}'
+    score = await response_generator._llm_judge_score("synthetic-judge", "What is Python?", GOOD)
+    assert score == 8.5
+    sent = response_generator.model_manager.generate_once.await_args.kwargs
+    assert GOOD in sent["prompt"] and sent["model_name"] == "synthetic-judge"
 
 
 @pytest.mark.asyncio
 async def test_llm_judge_compare(response_generator):
-    """Test _llm_judge_compare method."""
-    try:
-        result = await response_generator._llm_judge_compare(
-            answer_a="Python is versatile",
-            answer_b="Python is easy to learn",
-            question="What is Python?",
-            context_hint=""
-        )
-        assert result in ["A", "B", "tie"]
-    except Exception:
-        assert True
+    response_generator.model_manager.generate_once.return_value = (
+        '{"winner":"B","score_A":2,"score_B":9,"reason":"B answers the question"}')
+    result = await response_generator._llm_judge_compare(
+        "synthetic-judge", "What is Python?", OTHER, GOOD)
+    assert result == {"winner": "B", "score_A": 2.0, "score_B": 9.0, "reason": "B answers the question"}
 
 
 @pytest.mark.asyncio
 async def test_generate_duel_and_judge(response_generator):
-    """Test generate_duel_and_judge method."""
-    try:
-        result = await response_generator.generate_duel_and_judge(
-            prompt="What is Python?",
-            question="What is Python?",
-            model_name="gpt-4"
-        )
-        assert isinstance(result, dict)
-    except Exception:
-        assert True
+    response_generator.model_manager.generate_once.side_effect = [
+        "<thinking>First reasoning.</thinking>" + OTHER,
+        "<thinking>Second reasoning.</thinking>" + GOOD,
+        '{"winner":"B","score_A":2,"score_B":9,"reason":"B is relevant"}',
+    ]
+    result = await response_generator.generate_duel_and_judge(
+        "What is Python?", "synthetic-a", "synthetic-b", "synthetic-judge",
+        "Be precise", "What is Python?")
+    assert isinstance(result, dict)
+    assert result["answer"] == GOOD and result["winner"] == "B"
+    assert result["thinking_a"] == "First reasoning." and result["thinking_b"] == "Second reasoning."
+    assert result["scores"] == {"A": 2.0, "B": 9.0}
+    judged = response_generator.model_manager.generate_once.await_args.kwargs["prompt"]
+    assert GOOD in judged and OTHER in judged and "thinking>" not in judged
 
 
 @pytest.mark.asyncio
 async def test_generate_best_of_ensemble(response_generator):
-    """Test generate_best_of_ensemble method."""
-    try:
-        result = await response_generator.generate_best_of_ensemble(
-            prompt="Explain AI",
-            question="What is AI?",
-            models=["gpt-4", "gpt-3.5-turbo"],
-            n_per_model=2
-        )
-        assert isinstance(result, dict)
-    except Exception:
-        assert True
+    response_generator.model_manager.generate_once.side_effect = [OTHER, GOOD, '{"score":1}', '{"score":9}']
+    result = await response_generator.generate_best_of_ensemble(
+        "What is Python?", ["synthetic-a", "synthetic-b"], "Be precise", "What is Python?",
+        n_total=2, selector_models=["synthetic-judge"], weight_heuristic=0, weight_llm=1)
+    assert result == GOOD
+    assert response_generator.model_manager.generate_once.await_count == 4
 
 
-def test_response_generator_initialization():
-    """Test ResponseGenerator initializes properly."""
-    model_manager = ModelManager()
-    rg = ResponseGenerator(model_manager=model_manager)
-    assert rg is not None
-    assert hasattr(rg, 'model_manager')
+def test_response_generator_initialization(model_manager):
+    generator = ResponseGenerator(model_manager=model_manager)
+    assert generator.model_manager is model_manager
 
 
-def test_response_generator_with_time_manager():
-    """Test ResponseGenerator with time_manager."""
-    model_manager = ModelManager()
-    time_manager = TimeManager()
-    rg = ResponseGenerator(
-        model_manager=model_manager,
-        time_manager=time_manager
-    )
-    assert rg is not None
-    assert hasattr(rg, 'time_manager')
+def test_response_generator_with_time_manager(model_manager, time_manager):
+    generator = ResponseGenerator(model_manager=model_manager, time_manager=time_manager)
+    assert generator.time_manager is time_manager
+
+
+def stream_provider(response_generator, chunks, error=None):
+    """Mimic the deployed `generate_async` contract: an ``async def`` method
+    that, once awaited, returns an object supporting ``__aiter__`` (see
+    ``ModelManager.generate_async`` -> ``response_generator = await
+    self.model_manager.generate_async(...)`` then ``hasattr(response_generator,
+    "__aiter__")`` in core/response_generator.py). An async-generator *function*
+    used directly as an AsyncMock side_effect is itself an async generator
+    when called -- not awaitable -- which raised
+    ``TypeError: object async_generator can't be used in 'await' expression``
+    and was silently swallowed by the outer except-yield-error path. The fix
+    is a plain (synchronous) factory that RETURNS the async-generator object;
+    AsyncMock then awaits its own call and hands back that object untouched.
+    """
+    state = SimpleNamespace(closed=False)
+
+    async def _stream_chunks():
+        try:
+            for chunk in chunks:
+                yield chunk
+            if error:
+                raise error
+        finally:
+            state.closed = True
+
+    def make_stream(*args, **kwargs):
+        return _stream_chunks()
+
+    response_generator.model_manager.generate_async = AsyncMock(side_effect=make_stream)
+    return state
 
 
 @pytest.mark.asyncio
 async def test_generate_streaming_response_basic(response_generator):
-    """Test generate_streaming_response method."""
-    try:
-        async for chunk in response_generator.generate_streaming_response(
-            prompt="Hello",
-            model_name="gpt-4"
-        ):
-            assert isinstance(chunk, str)
-            break  # Just test first chunk
-    except Exception:
-        # May need API key
-        assert True
+    state = stream_provider(response_generator, ["Synthetic ", "complete ", "answer."])
+    chunks = [chunk async for chunk in response_generator.generate_streaming_response("Hello", "synthetic-model")]
+    assert chunks and all(isinstance(chunk, str) for chunk in chunks)
+    # The deployed generator yields one word per chunk with the delimiting
+    # space stripped out by its internal `buffer.split(" ")` logic (see
+    # core/response_generator.py) -- real callers reassemble the answer with
+    # their own join convention (core/orchestrator.py's standard streaming
+    # path does `full_response += (chunk + " ")` then `.strip()`, which for
+    # plain word chunks is equivalent to a single space join). A bare
+    # `"".join(chunks)` does not reflect how any deployed caller actually
+    # reconstructs the text and previously masked a real defect (calling the
+    # async-generator-function side_effect directly, which is not awaitable)
+    # by comparing against the wrong joiner.
+    assert " ".join(chunks) == "Synthetic complete answer."
+    assert state.closed
 
 
 @pytest.mark.asyncio
 async def test_generate_streaming_response_with_system(response_generator):
-    """Test generate_streaming_response with system prompt."""
-    try:
-        count = 0
-        async for chunk in response_generator.generate_streaming_response(
-            prompt="Hi",
-            model_name="gpt-4",
-            system_prompt="Be brief"
-        ):
-            assert isinstance(chunk, str)
-            count += 1
-            if count >= 3:
-                break
-    except Exception:
-        assert True
+    state = stream_provider(response_generator, ["One. ", "Two. ", "Three. ", "Four."])
+    chunks = [chunk async for chunk in response_generator.generate_streaming_response(
+        "Hi", "synthetic-model", system_prompt="Be brief")]
+    assert " ".join(chunks) == "One. Two. Three. Four." and state.closed
+    assert response_generator.model_manager.generate_async.call_args.kwargs["system_prompt"] == "Be brief"
+
+
+@pytest.mark.asyncio
+async def test_generate_full_provider_failure_is_explicit(response_generator):
+    response_generator.model_manager.generate_once.side_effect = RuntimeError("synthetic provider failure")
+    result = await response_generator.generate_full("Hello", "synthetic-model")
+    assert result == "[Generation error] synthetic provider failure"
+
+
+@pytest.mark.asyncio
+async def test_best_of_preserves_successful_candidate_when_peer_fails(response_generator):
+    response_generator.model_manager.generate_once.side_effect = [RuntimeError("synthetic provider failure"), GOOD]
+    result = await response_generator.generate_best_of("Python", "synthetic-model", "Be precise", "Python", n=2)
+    assert result == GOOD
+
+
+@pytest.mark.asyncio
+async def test_judge_provider_failure_uses_documented_zero_score(response_generator):
+    response_generator.model_manager.generate_once.side_effect = RuntimeError("synthetic provider failure")
+    assert await response_generator._llm_judge_score("synthetic-judge", "Python?", GOOD) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_streaming_provider_failure_surfaces_and_closes(response_generator):
+    state = stream_provider(response_generator, [], RuntimeError("synthetic provider failure"))
+    chunks = [chunk async for chunk in response_generator.generate_streaming_response("Hello", "synthetic-model")]
+    assert state.closed and chunks
+    assert "synthetic provider failure" in "".join(chunks)
