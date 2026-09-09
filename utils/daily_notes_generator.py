@@ -49,6 +49,7 @@ Module Contract:
 import os
 import logging
 from pathlib import Path
+from utils.safe_json import atomic_write_text
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
@@ -730,19 +731,9 @@ generated: {datetime.now().isoformat()}
         # Ensure parent directory exists
         note_path.parent.mkdir(parents=True, exist_ok=True)
 
-        temp_path = note_path.with_suffix(".md.tmp")
-
-        try:
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            os.replace(temp_path, note_path)
-            logger.info(f"[DailyNotes] Written: {note_path}")
-            return note_path
-        except Exception as e:
-            # Clean up temp file if it exists
-            if temp_path.exists():
-                temp_path.unlink()
-            raise
+        atomic_write_text(note_path, content)
+        logger.info(f"[DailyNotes] Written: {note_path}")
+        return note_path
 
     async def generate_for_date(self, target_date: date, force: bool = False) -> GenerationResult:
         """

@@ -47,6 +47,7 @@ class ProposalStatus(str, Enum):
     DISMISSED = "dismissed"
     FAILED = "failed"
     UNDONE = "undone"
+    INTERRUPTED = "interrupted"  # durable pre-image exists; explicit undo required
 
 
 class ItemChange(BaseModel):
@@ -59,6 +60,7 @@ class ItemChange(BaseModel):
     doc_id: str
     change_type: str                 # "set_metadata" | "replace_content" | "quarantine" | "supersede_profile_fact"
     before: Dict[str, Any] = Field(default_factory=dict)
+    missing_before: Optional[List[str]] = None  # None: legacy None-means-absent encoding
     after: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -74,6 +76,7 @@ class CurationProposal(BaseModel):
     batch: bool = False              # True → one card for the whole item list
     status: ProposalStatus = ProposalStatus.PENDING
     status_detail: str = ""          # dismissal reason / failure message
+    revision: int = 0                # recovery ordering across queue and journal
     resolved_at: Optional[str] = None
 
 

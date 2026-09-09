@@ -160,7 +160,7 @@ export interface CurationProposal {
   evidence: string
   items: CurationItemChange[]
   batch: boolean
-  status: 'pending' | 'applied' | 'dismissed' | 'failed' | 'undone'
+  status: 'pending' | 'applied' | 'dismissed' | 'failed' | 'undone' | 'interrupted'
   status_detail: string
   resolved_at: string | null
 }

@@ -357,3 +357,127 @@ guards (`test_no_git_state_in_tests`, `test_ordered_slice_guard`,
   4 core files but necessary for the suite to stay both green and honest
   about the new (correct) contract.
 - Everything else matches the brief as written; no stop condition was hit.
+
+### B2 — curation integrity (2026-09-09, Codex) — Fable referee PASS 16:20; owner commit pending
+
+Base: `d18dd15` (B1 and B3 already pushed). Scope: F01/F11/F03 and their
+acceptance tests. Both B3 `notify_chroma_mutation` calls and its module-level
+import survive; the B3 storage and expander suites pass with the rewritten
+adapter. F12 remains with its assigned executor.
+
+**Failed-before evidence.** Before any source edits, the two resumed test files
+(`test_sep09_atomic_writers.py`, `test_sep09_curation_integrity.py`) ran on
+unchanged `d18dd15`: **12 failed, 3 passed, 4 warnings, 2.14 s**. Eleven failures
+exercise deployed defects; the twelfth is the expected missing new
+`atomic_write_text` API, not an independent behavioral reproduction. The three
+passing controls were prior-False/prior-True restoration and preserving the old
+file when publication fails. Further acceptance cases were added after this
+baseline; the count does not claim every later-added test was run failed-before.
+Receipt: `/tmp/daemon_b2_before_tests.txt`, also copied into the B2 snapshot.
+
+**F01 — reversible adapters.** `prepare_change` validates and captures every
+item before the first target write. Chroma absent flag/reason restore to
+`False` / `""`; existing values restore exactly. An absent arbitrary metadata
+key without a neutral policy is rejected before mutation. JSON stores record
+missing keys separately from explicit nulls. Undo only patches touched fields,
+preserves unrelated metadata, refuses later conflicting edits, and supports
+retry after partial restoration. No delete/reinsert operation was introduced.
+Profile/graph curation saves request `raise_on_error=True`; ordinary callers
+retain their prior error-handling behavior. The fake Chroma collection now
+merges metadata and rejects None, checked against installed Chroma 1.0.7.
+
+**F11 — durable preparation and recovery.** Full proposal snapshots include
+pre-images and monotonically increasing proposal revisions. The queue and
+`apply_started` record must both sync before target writes. The append-only
+journal propagates write/fsync errors and separates a previous torn append
+from later complete records. Startup streams journal snapshots to reconcile a
+missing, corrupt or stale derived queue; startup does not write target stores.
+
+| Boundary | Result / recovery |
+|---|---|
+| Preflight, initial queue or prepare-journal failure | Apply raises; no target mutation starts. |
+| Crash after preparation, during apply or during undo | Proposal reopens as `interrupted`; it appears in the queue and accepts Undo. |
+| Target raises, including after writing | Roll back every attempted item, including the failing item; record per-item outcomes. Complete rollback is `failed`; incomplete rollback stays `interrupted`. |
+| Applied-journal record fails | Apply raises and attempts rollback; failure evidence is written to both recovery copies independently. |
+| Final queue refresh fails after a committed journal record | Operation raises; the committed journal still supplies the applied/undone state and undo pre-images after restart. |
+| Undo conflicts with a later edit | Raise and retain the interrupted proposal; do not overwrite that edit. |
+
+Unresolved interrupted proposals block further applies. Auto-apply propagates
+persistence failures through `run_scan` too. Legacy activity-only journal rows
+cannot reconstruct a lost pre-B2 queue; a surviving legacy queue remains
+readable. The operation lock is per engine, not a transaction across other
+writers/processes or hardware failure of both recovery copies.
+
+**F03 — writer isolation and operation serialization.** The shared JSON/text
+writer uses same-directory `mkstemp`, file and directory fsync, `os.replace`,
+and cleanup of only its own temporary path. Existing permissions are retained;
+new files default to 0600, and both OAuth writers explicitly request 0600 before
+replacement. A directory-fsync error after replace is reported even though
+the new contents may already be visible. Unique temporary names prevent
+publication collisions; they do not serialize arbitrary read/modify/write
+transactions outside the curation engine.
+
+All 15 handwritten writer sites were migrated: profile, graph, corpus and
+narrative context, category cache, narrative-staleness marker, daily/weekly/
+monthly notes, visual metadata, Google/Outlook tokens, visual-entity backfill,
+FAISS checkpoint, and duration-repair script. Maintenance scripts were edited,
+not executed. `test_atomic_writer_guard.py` scans production Python for `.tmp`
+literal, concatenation, f-string and suffix forms; its justified allowlist is
+currently empty and stale entries fail.
+
+One nonblocking reentrant engine lock serializes scan/apply/dismiss/undo and
+queue snapshots. API operations execute with real `asyncio.to_thread` workers;
+overlap returns 409 busy, scan wait timeout returns 504 "still running", and
+the worker retains the lock until completion. Auto-apply can reacquire it.
+There is no cancellation. The SPA recognizes the already-planned `interrupted`
+status, offers Undo, disables Dismiss for it, refreshes after failed mutations,
+and exposes queue-load errors plus a Refresh button. Existing endpoint URLs
+and successful response shapes are retained with additive recovery fields.
+
+**Validation.** **487 passed, 121 warnings, 10.77 s** in one bounded unit run
+using pyenv Python 3.11.8, two-thread CPU caps, offline flags and
+`DAEMON_TEST_MODE=1`. The run contains the three new B2 files; existing
+`test_curation_engine`, `test_api_curation`, `test_safe_json`,
+`test_sep05_curation_wave2`, `test_sep09_storage_repairs`, `test_memory_expander`,
+`test_user_profile`, `test_user_profile_schema`, `test_corpus_manager`,
+`test_google_auth`, `test_email_providers`, `test_graph_integration`,
+`test_narrative_staleness`, `test_daily_notes_auto_update`,
+`test_visual_memory_store`; and all five guards (`test_no_git_state_in_tests`,
+`test_ordered_slice_guard`, `test_budget_meters_rendered_sections`,
+`test_tool_wiring_parity`, `test_model_capability_wiring`). Warnings are Chroma
+legacy embedding configuration, SWIG, and an existing source escape sequence
+encountered by the AST guard. Ruff and the SPA TypeScript/production build
+also pass; Vite reports a circular `katex → vendor → katex` chunk warning.
+
+Tests include real ephemeral Chroma with supplied tiny embeddings, profile and
+graph reopening from temporary files, torn journal/corrupt queue recovery,
+write/rollback failures, all-target preflight, conflicting edits, overlapping
+publishers, reentrant auto-apply, busy operations, and actual ASGI requests
+through scan timeout and interrupted Undo. Old test fixture changes are
+limited to Chroma's real merge/None contract, semantic False undo assertions,
+and the new strict-save keyword on profile doubles. No model download or live
+store mutation was needed. The sandbox blocks local socketpair notifications;
+the complete run required approved execution outside it so worker completion
+could wake the event loop. An earlier sandbox regression run was interrupted;
+its partial results are not counted as a passing run.
+
+**Scope / workflow notes.** The original approximate 500-line guideline is
+exceeded by the coupled write-ahead recovery, 15-site migration and failure
+tests; this remains the agreed single B2 batch. Minimal curation UI changes
+make the planned recovery state usable and handle the planned 409 response.
+Snapshot receipt: `.agent_snapshots/b2_20260909_154343` contains pre-edit source
+archive/hashes, original local CLAUDE notes, and test/build logs. A bounded
+source snapshot was used instead of repeating the session-start script's
+105+ GiB store hashing/rotation. No claim is made that concurrently live data
+files remained byte-identical. The historical handoff points here; local
+CLAUDE notes are updated; commit draft is `commit_message_b2.txt`.
+
+**Resume / memory note for Fable.** B2 is implemented on `d18dd15`, uncommitted,
+and ready for referee review. Review recovery revision ordering, rollback of
+the item that raises after mutation, API worker lock lifetime, and the two
+preserved B3 invalidation calls. B5 still needs to wire the new B2 guard and
+real-driver tests into permanent CI lanes. No commit, push, Daemon restart or
+live quarantine/undo probe has been performed by Codex. After referee PASS,
+the owner commits/pushes and performs the already-planned B2 live probe.
+
+**Fable referee (B2):** diff read end-to-end (adapters preflight/`prepare_change` + conflict-aware undo with `missing_before`, engine RLock + `CurationBusyError` + `apply_started` write-ahead + `interrupted` recovery from the journal, worker-owned API operations returning 409/504, `mkstemp` writer with directory fsync and mode preservation, 15-site migration, content-anchored guard). Independent run: 517 passed (three new B2 files + curation/storage/expander/profile/graph/corpus/notes/auth/visual suites + five guards), ruff clean, `tsc --noEmit` clean. Both B3 `notify_chroma_mutation` calls verified present. Non-blocking note: `pending()` is `@_serialized` under the non-blocking lock, so `GET /api/curation/queue` returns 409 while a scan runs (SPA shows an error + Refresh) — a later batch could serve a snapshot from a separate short lock. Scope exceeded the ~500-line guideline as Codex documented; accepted as one batch because F03/F11 share the engine.

@@ -6,6 +6,7 @@ terminal candidate-file + --apply workflow). The engine itself enforces the
 safety rules (reversible instruments, pre-images, journal).
 """
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -41,11 +42,29 @@ class DismissBody(BaseModel):
     reason: str = ""
 
 
+async def _run_operation(method, *args, timeout=None, **kwargs):
+    """The worker owns the lock; cancelling its HTTP wait cannot release it."""
+    try:
+        worker = asyncio.to_thread(method, *args, **kwargs)
+        if timeout is None:
+            return await worker
+        return await asyncio.wait_for(worker, timeout=timeout)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Scan wait timed out; scan is still running")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown proposal")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"[Curation API] operation failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/queue")
 async def queue(request: Request):
     engine = _engine(request)
     return {
-        "proposals": [p.model_dump(mode="json") for p in engine.pending()],
+        "proposals": [p.model_dump(mode="json") for p in await _run_operation(engine.pending)],
         "max_mode": engine.max_mode.value,
     }
 
@@ -53,59 +72,31 @@ async def queue(request: Request):
 @router.post("/scan")
 async def scan_now(request: Request):
     """On-demand scan (same code path as the shutdown phase)."""
-    import asyncio
-
     from config.app_config import CURATION_SCAN_TIMEOUT_S
 
     engine = _engine(request)
-    try:
-        report = await asyncio.wait_for(
-            asyncio.to_thread(engine.run_scan), timeout=CURATION_SCAN_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="scan timed out")
+    report = await _run_operation(engine.run_scan, timeout=CURATION_SCAN_TIMEOUT_S)
     return report.model_dump(mode="json")
 
 
 @router.post("/{proposal_id}/apply")
 async def apply(proposal_id: str, request: Request):
     engine = _engine(request)
-    try:
-        p = engine.apply(proposal_id, actor="human")
-    except KeyError:
-        raise HTTPException(status_code=404, detail="unknown proposal")
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        logger.error(f"[Curation API] apply failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    p = await _run_operation(engine.apply, proposal_id, actor="human")
     return p.model_dump(mode="json")
 
 
 @router.post("/{proposal_id}/dismiss")
 async def dismiss(proposal_id: str, request: Request, body: Optional[DismissBody] = None):
     engine = _engine(request)
-    try:
-        p = engine.dismiss(proposal_id, reason=(body.reason if body else ""))
-    except KeyError:
-        raise HTTPException(status_code=404, detail="unknown proposal")
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    p = await _run_operation(engine.dismiss, proposal_id, reason=(body.reason if body else ""))
     return p.model_dump(mode="json")
 
 
 @router.post("/{proposal_id}/undo")
 async def undo(proposal_id: str, request: Request):
     engine = _engine(request)
-    try:
-        p = engine.undo(proposal_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="unknown proposal")
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        logger.error(f"[Curation API] undo failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    p = await _run_operation(engine.undo, proposal_id)
     return p.model_dump(mode="json")
 
 
@@ -114,4 +105,4 @@ async def activity(request: Request, limit: int = 100):
     engine = _engine(request)
     # A count is never meaningful when negative; normalize it before passing
     # it to journal implementations, whose negative slicing semantics differ.
-    return {"events": engine.journal.tail(limit=min(max(limit, 0), 500))}
+    return {"events": await _run_operation(engine.journal.tail, limit=min(max(limit, 0), 500))}

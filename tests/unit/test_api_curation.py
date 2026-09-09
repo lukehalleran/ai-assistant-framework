@@ -78,8 +78,8 @@ class TestCurationRoutes:
                 "curation_quarantined"]
             resp = await client.post(f"/api/curation/{pid}/undo")
             assert resp.status_code == 200
-            assert "curation_quarantined" not in \
-                store.collections["conversations"].docs["d1"]["metadata"]
+            assert store.collections["conversations"].docs["d1"]["metadata"][
+                "curation_quarantined"] is False
 
     @pytest.mark.asyncio
     async def test_dismiss_and_conflict_states(self, tmp_path, monkeypatch):

@@ -36,6 +36,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
 
+# Standalone invocation also needs the repository's shared atomic writer.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 # ── Paths ──────────────────────────────────────────────────────────
 _DATA_ROOT       = os.environ.get("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
 _WIKI_OUT        = os.path.join(_DATA_ROOT, "wiki_data")
@@ -111,11 +114,10 @@ def load_checkpoint():
 
 
 def save_checkpoint(file_count, idx_offset, part_num):
-    tmp = CHECKPOINT_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump({"file_count": file_count, "idx_offset": idx_offset,
-                    "part_num": part_num}, f)
-    os.replace(tmp, CHECKPOINT_FILE)
+    from utils.safe_json import atomic_write_json
+    atomic_write_json(CHECKPOINT_FILE, {
+        "file_count": file_count, "idx_offset": idx_offset, "part_num": part_num,
+    })
 
 
 def flush_meta(batch, part_num):

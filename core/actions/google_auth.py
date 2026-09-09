@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json
 
 logger = get_logger("google_auth")
 
@@ -225,19 +226,7 @@ class GoogleAuthManager:
 
         # Bearer + refresh tokens and client secret: owner-only (0600), and
         # atomic so a crash mid-write can't truncate an existing token file.
-        tmp_path = str(self._token_path) + ".tmp"
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(token_data, indent=2))
-            os.replace(tmp_path, self._token_path)
-        except Exception:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-            raise
+        atomic_write_json(self._token_path, token_data, ensure_ascii=True, mode=0o600)
         logger.debug(f"[GoogleAuth] Token saved to {self._token_path}")
 
     def _load_token(self):

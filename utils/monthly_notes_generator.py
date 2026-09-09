@@ -38,6 +38,7 @@ import logging
 import shutil
 import calendar
 from pathlib import Path
+from utils.safe_json import atomic_write_text
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
@@ -631,11 +632,7 @@ generated: {datetime.now().isoformat()}
 
             summary_filename = f"{month_folder_name} Summary.md"
             summary_path = month_folder / summary_filename
-            temp_path = summary_path.with_suffix(".md.tmp")
-
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(full_content)
-            os.replace(temp_path, summary_path)
+            atomic_write_text(summary_path, full_content)
 
             result.output_path = summary_path
             result.success = True

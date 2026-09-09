@@ -22,6 +22,7 @@ from config.app_config import VISUAL_MEMORY_META_PATH
 from memory.entity_resolver import EntityResolver
 from memory.graph_utils import extract_graph_entities
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json
 
 logger = get_logger("backfill_visual_entities")
 
@@ -166,10 +167,7 @@ async def main_async(args):
 
     if args.execute and updated > 0:
         # Write metadata
-        tmp_path = meta_path + ".tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(metadata, f, indent=2)
-        os.replace(tmp_path, meta_path)
+        atomic_write_json(meta_path, metadata, ensure_ascii=True)
         print(f"Written to {meta_path}")
 
         # Update ChromaDB

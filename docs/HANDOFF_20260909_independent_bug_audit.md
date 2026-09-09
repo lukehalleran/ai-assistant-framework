@@ -1,5 +1,9 @@
 # Independent broad bug audit — 2026-09-09
 
+**Repair tracking:** this document preserves the original audit evidence.
+The [agreed repair plan](PLAN_20260909_audit_repairs.md#results) records subsequent
+implementation and verification, including B2 (F01/F11/F03), awaiting Fable review.
+
 **Status: investigation complete; no fixes applied.** Eleven findings were
 reproduced against the current working tree: five P1 and six P2. Existing
 targeted tests pass despite these defects. This is a handoff for a later repair

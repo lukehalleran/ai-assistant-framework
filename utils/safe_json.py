@@ -26,6 +26,9 @@ Key decisions:
 
 import json
 import os
+import stat
+import tempfile
+from contextlib import contextmanager
 import shutil
 from datetime import datetime
 from typing import Any, Optional
@@ -104,32 +107,61 @@ def check_schema_version(payload: Any, *, current: int, path: str,
     return found
 
 
-def atomic_write_json(path: str, data: Any, *, indent: int = 2,
-                      ensure_ascii: bool = False, default=None,
-                      fsync: bool = True) -> None:
-    """Write JSON via temp file + os.replace so a crash can't truncate `path`.
+@contextmanager
+def _atomic_text_file(path, *, fsync: bool, mode=None):
+    """Each invocation owns a unique, same-directory temporary file.
 
-    Raises OSError on failure (after cleaning up the temp file); the
-    existing file at `path` is untouched in that case.
+    A failure before replacement leaves the destination untouched. A failure
+    syncing the directory after replacement is reported, although the new
+    contents may already be visible. Atomic publication does not serialize
+    a caller's read/modify/write transaction.
     """
+    path = os.fspath(path)
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    tmp_path = path + ".tmp"
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            mode = 0o600
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.",
+                                    suffix=".tmp", dir=directory)
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii,
-                      default=default)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = None  # the file object owns the descriptor now
+            os.fchmod(f.fileno(), mode)
+            yield f
             if fsync:
                 f.flush()
                 os.fsync(f.fileno())
         os.replace(tmp_path, path)
-    except Exception:
-        if os.path.exists(tmp_path):
+        if fsync:
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
             try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-        raise
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def atomic_write_json(path: str, data: Any, *, indent: int = 2,
+                      ensure_ascii: bool = False, default=None,
+                      fsync: bool = True, mode=None) -> None:
+    """Publish complete JSON; propagate write/durability failures to the caller."""
+    with _atomic_text_file(path, fsync=fsync, mode=mode) as f:
+        json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii, default=default)
+
+
+def atomic_write_text(path, text: str, *, fsync: bool = True, mode=None) -> None:
+    """Publish UTF-8 text using the same writer isolation and durability rules."""
+    with _atomic_text_file(path, fsync=fsync, mode=mode) as f:
+        f.write(text)
 
 
 def load_critical_json(path: str, label: str) -> Optional[Any]:

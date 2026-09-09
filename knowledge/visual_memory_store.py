@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json
 
 logger = get_logger("knowledge.visual_memory_store")
 
@@ -128,15 +129,10 @@ class VisualMemoryStore:
                 logger.warning(f"[VisualStore] Failed to save FAISS index: {e}")
 
         # Save metadata (atomic write)
-        tmp_path = self._meta_path + ".tmp"
         try:
-            with open(tmp_path, "w") as f:
-                json.dump(self._metadata, f, indent=2)
-            os.replace(tmp_path, self._meta_path)
+            atomic_write_json(self._meta_path, self._metadata, ensure_ascii=True)
         except Exception as e:
             logger.warning(f"[VisualStore] Failed to save metadata: {e}")
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
 
     def add_image(
         self,

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, Dict
 
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json
 
 logger = get_logger("outlook_auth")
 
@@ -221,19 +222,7 @@ class OutlookAuthManager:
         """Persist token to disk atomically with 0600 perms."""
         self._token_path.parent.mkdir(parents=True, exist_ok=True)
 
-        tmp_path = str(self._token_path) + ".tmp"
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(token, f, indent=2)
-            os.replace(tmp_path, self._token_path)
-        except Exception:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-            raise
+        atomic_write_json(self._token_path, token, ensure_ascii=True, mode=0o600)
         logger.debug(f"[OutlookAuth] Token saved to {self._token_path}")
 
     def _load_token(self) -> Optional[Dict]:

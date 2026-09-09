@@ -614,18 +614,14 @@ class _CategoryCache:
     def save(self):
         if not self._dirty or not self._path:
             return
-        temp_path = f"{self._path}.tmp"
+        from utils.safe_json import atomic_write_json
         try:
-            with open(temp_path, "w") as f:
-                _json.dump({
-                    "version": "1.0",
-                    "relation_categories": self._cache,
-                }, f, indent=2)
-            _os.replace(temp_path, self._path)
+            atomic_write_json(self._path, {
+                "version": "1.0", "relation_categories": self._cache,
+            }, ensure_ascii=True)
             self._dirty = False
         except Exception:
-            if _os.path.exists(temp_path):
-                _os.remove(temp_path)
+            pass  # derived cache remains dirty and can be retried
 
 
 # Module-level singleton

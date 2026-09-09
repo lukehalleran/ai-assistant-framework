@@ -11,20 +11,22 @@ Disposition rules (docs/AUTONOMOUS_CURATION_DESIGN.md):
   one run are never auto-applied — mass action is when a rule is most
   likely wrong.
 - Rate cap: at most AUTO_RATE_CAP auto-applies per run; overflow queues.
-- Every apply captures pre-images (adapters) and journals an undo record.
+- Every apply syncs all pre-images before mutation and journals its outcome.
 
 The queue is DERIVED state (tone_state doctrine): persisted via atomic
-write, loaded leniently — a corrupt queue file cold-starts empty and the
-next scan regenerates it. Pre-images for APPLIED proposals also live in the
-journal, which is append-only.
+write, loaded leniently, then reconciled with append-only journal snapshots.
+An unfinished apply or undo is exposed as interrupted for explicit recovery.
+Legacy activity-only journal entries still require a surviving queue.
 """
 
 import os
+import threading
 import uuid
 from datetime import datetime
+from functools import wraps
 from typing import Any, Dict, List, Optional, Protocol
 
-from memory.curation.adapters import apply_change, revert_change
+from memory.curation.adapters import apply_change, prepare_change, revert_change
 from memory.curation.journal import CurationJournal
 from memory.curation.types import (
     Confidence,
@@ -56,6 +58,22 @@ def resolve_queue_path(queue_path: str = "") -> str:
 QUEUE_SCHEMA_VERSION = 1
 
 _MODE_ORDER = [CuratorMode.OFF, CuratorMode.SHADOW, CuratorMode.QUEUE, CuratorMode.AUTO]
+
+
+class CurationBusyError(ValueError):
+    """An existing worker owns the engine, including after an HTTP timeout."""
+
+
+def _serialized(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        if not self._operation_lock.acquire(blocking=False):
+            raise CurationBusyError("Curation is busy; the current operation is still running")
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._operation_lock.release()
+    return locked
 
 
 class Curator(Protocol):
@@ -109,7 +127,9 @@ class CurationEngine:
         self._curators: List[Curator] = []
         self._proposals: Dict[str, CurationProposal] = {}
         self._auto_applied_this_run = 0
+        self._operation_lock = threading.RLock()
         self._load_queue()
+        self._recover_from_journal()
 
     # ------------------------------------------------------------------
     # Registration / persistence
@@ -140,10 +160,45 @@ class CurationEngine:
             "schema_version": QUEUE_SCHEMA_VERSION,
             "proposals": [p.model_dump(mode="json") for p in self._proposals.values()],
         }
-        try:
-            atomic_write_json(self.queue_path, payload)
-        except Exception as e:
-            logger.warning(f"[Curation] queue save failed (non-fatal): {e}")
+        atomic_write_json(self.queue_path, payload)
+
+    def _recover_from_journal(self) -> None:
+        # Full snapshots are new in B2. Older activity-only records are not
+        # sufficient to reconstruct a proposal; a surviving queue still works.
+        for record in self.journal.records():
+            raw = record.get("proposal")
+            if not isinstance(raw, dict):
+                continue
+            recovered = CurationProposal(**raw)
+            existing = self._proposals.get(recovered.proposal_id)
+            if existing is None or recovered.revision >= existing.revision:
+                self._proposals[recovered.proposal_id] = recovered
+
+    def _store_kwargs(self):
+        return dict(chroma_store=self.stores.chroma_store,
+                    user_profile=self.stores.user_profile,
+                    graph_memory=self.stores.graph_memory)
+
+    @staticmethod
+    def _transition(p, status, detail=""):
+        p.revision += 1
+        p.status = status
+        p.status_detail = detail
+        p.resolved_at = datetime.now().isoformat()
+
+    def _record_state(self, event, p, **detail):
+        self.journal.record(event, proposal_id=p.proposal_id, curator=p.curator,
+                            title=p.title, proposal=p.model_dump(mode="json"),
+                            items=[i.model_dump(mode="json") for i in p.items], **detail)
+
+    def _record_failure(self, event, p, **detail):
+        # Called while already propagating an operation error. Try both
+        # independent recovery copies; never turn a persistence failure green.
+        for save in (lambda: self._record_state(event, p, **detail), self._save_queue):
+            try:
+                save()
+            except Exception:
+                logger.exception("[Curation] Failed to persist recovery status")
 
     # ------------------------------------------------------------------
     # Scan
@@ -154,6 +209,7 @@ class CurationEngine:
             self.curator_modes.get(curator_name, CuratorMode.QUEUE), self.max_mode
         )
 
+    @_serialized
     def run_scan(self) -> ScanReport:
         report = ScanReport(started_at=datetime.now().isoformat())
         self._auto_applied_this_run = 0
@@ -227,7 +283,8 @@ class CurationEngine:
     def _is_duplicate(self, p: CurationProposal) -> bool:
         sig = (p.curator, tuple(sorted(i.doc_id for i in p.items)))
         for existing in self._proposals.values():
-            if existing.status not in (ProposalStatus.PENDING, ProposalStatus.APPLIED):
+            if existing.status not in (ProposalStatus.PENDING, ProposalStatus.APPLIED,
+                                       ProposalStatus.INTERRUPTED):
                 continue
             if (existing.curator, tuple(sorted(i.doc_id for i in existing.items))) == sig:
                 return True
@@ -246,6 +303,7 @@ class CurationEngine:
             "proposal_queued", curator=p.curator, proposal_id=p.proposal_id,
             title=p.title, items=len(p.items), instrument=p.instrument.value,
             confidence=p.confidence.value,
+            proposal=p.model_dump(mode="json"),
         )
         # AUTO disposition (built, currently locked off by max_mode="queue"):
         # only reversible instruments, only deterministic-or-better evidence,
@@ -257,11 +315,10 @@ class CurationEngine:
             and not self._anomalous(p)
             and self._auto_applied_this_run < self.auto_rate_cap
         ):
-            try:
-                self.apply(p.proposal_id, actor="auto")
-                self._auto_applied_this_run += 1
-            except Exception as e:
-                logger.warning(f"[Curation] auto-apply failed, left queued: {e}")
+            # A failed durable write must also fail an auto-apply scan, not
+            # return a successful report after apply() has raised.
+            self.apply(p.proposal_id, actor="auto")
+            self._auto_applied_this_run += 1
         return "queue"
 
     def _anomalous(self, p: CurationProposal) -> bool:
@@ -295,15 +352,18 @@ class CurationEngine:
     # Queue operations (called from the API / UI)
     # ------------------------------------------------------------------
 
+    @_serialized
     def pending(self) -> List[CurationProposal]:
         return sorted(
-            (p for p in self._proposals.values() if p.status == ProposalStatus.PENDING),
+            (p.model_copy(deep=True) for p in self._proposals.values()
+             if p.status in (ProposalStatus.PENDING, ProposalStatus.INTERRUPTED)),
             key=lambda p: p.created_at,
         )
 
     def get(self, proposal_id: str) -> Optional[CurationProposal]:
         return self._proposals.get(proposal_id)
 
+    @_serialized
     def apply(self, proposal_id: str, actor: str = "human") -> CurationProposal:
         p = self._proposals.get(proposal_id)
         if p is None:
@@ -312,87 +372,95 @@ class CurationEngine:
             raise ValueError(f"proposal is {p.status.value}, not pending")
         if p.instrument == Instrument.DELETE and actor != "human":
             raise ValueError("DELETE proposals require a human")
+        if any(q.status == ProposalStatus.INTERRUPTED for q in self._proposals.values()):
+            raise ValueError("Undo interrupted curation before applying another proposal")
 
-        applied = []
+        # Capture the whole batch before the first write. Repeated targets
+        # would need sequential pre-images, so reject ambiguous batches.
         try:
+            targets = [(i.store, i.doc_id) for i in p.items]
+            if not targets or len(set(targets)) != len(targets):
+                raise ValueError("A curation batch must contain distinct, nonempty targets")
             for item in p.items:
-                apply_change(
-                    item,
-                    chroma_store=self.stores.chroma_store,
-                    user_profile=self.stores.user_profile,
-                    graph_memory=self.stores.graph_memory,
-                )
-                applied.append(item)
+                prepare_change(item, **self._store_kwargs())
         except Exception as e:
-            # Roll back what landed — an apply is all-or-nothing.
-            for item in reversed(applied):
-                try:
-                    revert_change(
-                        item,
-                        chroma_store=self.stores.chroma_store,
-                        user_profile=self.stores.user_profile,
-                        graph_memory=self.stores.graph_memory,
-                    )
-                except Exception as re:
-                    logger.error(f"[Curation] rollback failed for {item.doc_id}: {re}")
-            p.status = ProposalStatus.FAILED
-            p.status_detail = str(e)
-            p.resolved_at = datetime.now().isoformat()
-            self._save_queue()
-            self.journal.record(
-                "apply_failed", proposal_id=p.proposal_id, curator=p.curator,
-                error=str(e), actor=actor,
-            )
+            self._transition(p, ProposalStatus.FAILED, str(e))
+            self._record_failure("apply_failed", p, error=str(e), rollback=[], actor=actor)
             raise
 
-        p.status = ProposalStatus.APPLIED
-        p.resolved_at = datetime.now().isoformat()
+        self._transition(p, ProposalStatus.INTERRUPTED,
+                         "Apply interrupted or unfinished; review and undo to restore the pre-image")
+        try:
+            self._save_queue()
+            self._record_state("apply_started", p, actor=actor)
+        except Exception as e:
+            self._transition(p, ProposalStatus.FAILED, f"Apply not started: {e}")
+            self._record_failure("apply_failed", p, error=str(e), rollback=[], actor=actor)
+            raise
+
+        attempted = []
+        try:
+            for item in p.items:
+                attempted.append(item)  # include the item that may write then raise
+                apply_change(item, prepared=True, **self._store_kwargs())
+            self._transition(p, ProposalStatus.APPLIED)
+            self._record_state("applied", p, actor=actor)
+        except Exception as e:
+            outcomes = []
+            for item in reversed(attempted):
+                outcome = dict(store=item.store, doc_id=item.doc_id, restored=False)
+                try:
+                    revert_change(item, **self._store_kwargs())
+                    outcome["restored"] = True
+                except Exception as rollback_error:
+                    outcome["error"] = str(rollback_error)
+                outcomes.append(outcome)
+            status = (ProposalStatus.FAILED if all(x["restored"] for x in outcomes)
+                      else ProposalStatus.INTERRUPTED)
+            self._transition(p, status, str(e))
+            self._record_failure("apply_failed", p, error=str(e), rollback=outcomes, actor=actor)
+            raise
+
+        # The journal's committed snapshot is authoritative if this final
+        # queue refresh fails. Propagate the error; restart can still undo.
         self._save_queue()
-        # Journal carries the full pre-images — the durable undo record.
-        self.journal.record(
-            "applied", proposal_id=p.proposal_id, curator=p.curator,
-            title=p.title, actor=actor,
-            items=[i.model_dump(mode="json") for i in p.items],
-        )
         return p
 
+    @_serialized
     def dismiss(self, proposal_id: str, reason: str = "") -> CurationProposal:
         p = self._proposals.get(proposal_id)
         if p is None:
             raise KeyError(proposal_id)
         if p.status != ProposalStatus.PENDING:
             raise ValueError(f"proposal is {p.status.value}, not pending")
-        p.status = ProposalStatus.DISMISSED
-        p.status_detail = reason
-        p.resolved_at = datetime.now().isoformat()
+        self._transition(p, ProposalStatus.DISMISSED, reason)
+        self._record_state("dismissed", p, reason=reason, confidence=p.confidence.value)
         self._save_queue()
         # Dismissals are the trust-ladder signal: a dismissed DETERMINISTIC
         # proposal means the rule is wrong — that curator must not graduate.
-        self.journal.record(
-            "dismissed", proposal_id=p.proposal_id, curator=p.curator,
-            title=p.title, reason=reason, confidence=p.confidence.value,
-        )
         return p
 
+    @_serialized
     def undo(self, proposal_id: str) -> CurationProposal:
         p = self._proposals.get(proposal_id)
         if p is None:
             raise KeyError(proposal_id)
-        if p.status != ProposalStatus.APPLIED:
+        if p.status not in (ProposalStatus.APPLIED, ProposalStatus.INTERRUPTED):
             raise ValueError(f"proposal is {p.status.value}, not applied")
-        for item in reversed(p.items):
-            revert_change(
-                item,
-                chroma_store=self.stores.chroma_store,
-                user_profile=self.stores.user_profile,
-                graph_memory=self.stores.graph_memory,
-            )
-        p.status = ProposalStatus.UNDONE
-        p.resolved_at = datetime.now().isoformat()
+        self._transition(p, ProposalStatus.INTERRUPTED,
+                         "Undo interrupted or unfinished; retry undo to finish recovery")
         self._save_queue()
-        self.journal.record(
-            "undone", proposal_id=p.proposal_id, curator=p.curator, title=p.title
-        )
+        self._record_state("undo_started", p)
+        try:
+            for item in reversed(p.items):
+                revert_change(item, **self._store_kwargs())
+            self._transition(p, ProposalStatus.UNDONE)
+            self._record_state("undone", p)
+        except Exception as e:
+            self._transition(p, ProposalStatus.INTERRUPTED, f"Undo incomplete: {e}")
+            self._record_failure("undo_failed", p, error=str(e))
+            raise
+        self._save_queue()
         return p
 
 

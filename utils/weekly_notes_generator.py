@@ -45,6 +45,7 @@ import re
 import logging
 import shutil
 from pathlib import Path
+from utils.safe_json import atomic_write_text
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
@@ -459,18 +460,9 @@ generated: {datetime.now().isoformat()}
         folder.mkdir(parents=True, exist_ok=True)
 
         summary_path = folder / filename
-        temp_path = summary_path.with_suffix(".md.tmp")
-
-        try:
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            os.replace(temp_path, summary_path)
-            logger.info(f"[WeeklyNotes] Written: {summary_path}")
-            return summary_path
-        except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise
+        atomic_write_text(summary_path, content)
+        logger.info(f"[WeeklyNotes] Written: {summary_path}")
+        return summary_path
 
     async def generate_for_week(self, target_date: date, force: bool = False) -> WeeklyGenerationResult:
         """

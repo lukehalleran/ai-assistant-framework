@@ -32,7 +32,7 @@ class FakeProfile:
         self.profile = {"categories": {"health": list(facts)}}
         self.saves = 0
 
-    def save(self):
+    def save(self, *, raise_on_error=False):
         self.saves += 1
 
 

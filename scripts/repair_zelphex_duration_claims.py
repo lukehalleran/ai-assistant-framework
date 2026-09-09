@@ -106,9 +106,8 @@ def daemon_is_running() -> bool:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    from utils.safe_json import atomic_write_text
+    atomic_write_text(path, text)
 
 
 def repair_corpus(corpus_path: Path, apply: bool) -> int:

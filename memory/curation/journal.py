@@ -7,6 +7,8 @@ appended. The Activity view in the Curation Center reads the tail.
 
 import json
 import os
+import threading
+from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -37,37 +39,55 @@ class CurationJournal:
     def __init__(self, path: str = ""):
         # Late-bound default so the test sandbox can repoint the module attr.
         self.path = resolve_journal_path(path)
+        self._lock = threading.RLock()
 
     def record(self, event: str, **detail: Any) -> None:
-        """Append one event line. Best-effort: journaling must never break
-        the engine (a failed audit line is logged, not raised)."""
+        """Append and sync a recovery record. Failure MUST reach the engine.
+
+        The leading newline separates a prior torn append from this record;
+        readers ignore blank/torn records. A target mutation is never started
+        unless its prepare record and queue pre-image both synced successfully.
+        """
         line = {"ts": datetime.now().isoformat(), "event": event, **detail}
-        try:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        encoded = json.dumps(line, ensure_ascii=False, default=str)
+        with self._lock:
+            directory = os.path.dirname(self.path) or "."
+            os.makedirs(directory, exist_ok=True)
             with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
-        except Exception as e:
-            logger.warning(f"[CurationJournal] append failed (non-fatal): {e}")
+                f.write("\n" + encoded + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    def records(self):
+        """Stream complete records without loading the whole journal."""
+        with self._lock:
+            try:
+                f = open(self.path, "r", encoding="utf-8")
+            except FileNotFoundError:
+                return
+            with f:
+                for raw in f:
+                    if not raw.strip():
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except ValueError:
+                        logger.warning("[CurationJournal] Ignoring torn record")
+                        continue
+                    if isinstance(row, dict):
+                        yield row
 
     def tail(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Most-recent-first tail for the Activity view."""
-        if not os.path.exists(self.path):
+        if limit <= 0:
             return []
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+            return list(reversed(deque(self.records(), maxlen=limit)))
         except OSError as e:
             logger.warning(f"[CurationJournal] read failed: {e}")
             return []
-        out: List[Dict[str, Any]] = []
-        for raw in reversed(lines[-limit * 2:]):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                out.append(json.loads(raw))
-            except ValueError:
-                continue  # lenient: a torn tail line never breaks the view
-            if len(out) >= limit:
-                break
-        return out

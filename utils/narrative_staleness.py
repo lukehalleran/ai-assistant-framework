@@ -29,6 +29,7 @@ import os
 import time
 
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json
 
 logger = get_logger("narrative_staleness")
 
@@ -73,10 +74,7 @@ def mark_stale(reason: str) -> bool:
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.replace(tmp, path)
+        atomic_write_json(path, payload)
         logger.info(f"[NarrativeStaleness] Marked stale: {payload['reason'][:80]!r}")
         return True
     except Exception as e:

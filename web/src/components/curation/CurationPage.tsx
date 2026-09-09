@@ -41,13 +41,15 @@ function ProposalCard({
         notifications.show({ color: 'teal', title: verb, message: p.title })
         onResolve()
       })
-      .catch((err) =>
+      .catch((err) => {
         notifications.show({
           color: 'red',
           title: `${verb} failed`,
           message: err instanceof Error ? err.message : String(err),
-        }),
-      )
+        })
+        // A failed save can leave an interrupted operation requiring Undo.
+        onResolve()
+      })
       .finally(() => setBusy(false))
   }
 
@@ -74,6 +76,11 @@ function ProposalCard({
       <Accordion.Panel>
         <Stack gap="xs">
           <Text size="xs">{p.evidence}</Text>
+          {p.status === 'interrupted' && (
+            <Text size="sm" c="orange">
+              {p.status_detail || 'This operation was interrupted. Undo to restore its previous values.'}
+            </Text>
+          )}
           {!p.batch && p.items[0] && (
             <Code block>
               {p.items[0].store} · {p.items[0].doc_id} ·{' '}
@@ -87,15 +94,18 @@ function ProposalCard({
               size="xs"
               color="teal"
               loading={busy}
-              onClick={() => act(() => api.applyCurationProposal(p.proposal_id), 'Applied')}
+              onClick={() => p.status === 'interrupted'
+                ? act(() => api.undoCurationProposal(p.proposal_id), 'Undone')
+                : act(() => api.applyCurationProposal(p.proposal_id), 'Applied')}
             >
-              Apply
+              {p.status === 'interrupted' ? 'Undo interrupted operation' : 'Apply'}
             </Button>
             <Button
               size="xs"
               variant="outline"
               color="gray"
               loading={busy}
+              disabled={p.status === 'interrupted'}
               onClick={() =>
                 act(() => api.dismissCurationProposal(p.proposal_id), 'Dismissed')
               }
@@ -113,12 +123,16 @@ export default function CurationPage() {
   const [proposals, setProposals] = useState<CurationProposal[]>([])
   const [activity, setActivity] = useState<Record<string, unknown>[]>([])
   const [scanning, setScanning] = useState(false)
+  const [queueError, setQueueError] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
     api
       .getCurationQueue()
-      .then((q) => setProposals(q.proposals))
-      .catch(() => setProposals([]))
+      .then((q) => {
+        setProposals(q.proposals)
+        setQueueError(null)
+      })
+      .catch((err) => setQueueError(err instanceof Error ? err.message : String(err)))
     api
       .getCurationActivity(50)
       .then((a) => setActivity(a.events))
@@ -155,17 +169,21 @@ export default function CurationPage() {
     <Stack p="md" flex={1} style={{ minWidth: 0 }}>
       <Group justify="space-between">
         <Text fw={600}>🧹 Curation</Text>
-        <Button size="xs" variant="outline" loading={scanning} onClick={scan}>
-          Scan now
-        </Button>
+        <Group gap="xs">
+          <Button size="xs" variant="subtle" onClick={refresh}>Refresh</Button>
+          <Button size="xs" variant="outline" loading={scanning} onClick={scan}>
+            Scan now
+          </Button>
+        </Group>
       </Group>
       <Text size="xs" c="dimmed">
         Proposed data-hygiene actions. Everything here is reversible — applied
         items keep their pre-image and can be undone from Activity. Nothing is
         ever deleted.
       </Text>
+      {queueError && <Text size="sm" c="orange">Queue unavailable: {queueError}</Text>}
       {proposals.length === 0 ? (
-        <Text size="sm" c="dimmed">
+        !queueError && <Text size="sm" c="dimmed">
           Queue is empty — nothing needs attention.
         </Text>
       ) : (

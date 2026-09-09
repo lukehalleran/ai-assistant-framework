@@ -47,7 +47,7 @@ from pathlib import Path
 import threading
 
 from utils.logging_utils import get_logger
-from utils.safe_json import corrupt_store, load_critical_json
+from utils.safe_json import atomic_write_json, corrupt_store, load_critical_json
 from memory.user_profile_schema import (
     ProfileCategory, ProfileFact, categorize_relation,
     ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
@@ -170,7 +170,7 @@ class UserProfile:
             "raw_log": []
         }
 
-    def save(self) -> None:
+    def save(self, *, raise_on_error: bool = False) -> None:
         """Persist profile to disk (atomic write)."""
         with self._lock:
             self.profile["updated_at"] = datetime.now().isoformat()
@@ -183,17 +183,14 @@ class UserProfile:
             # Ensure directory exists
             Path(self.profile_path).parent.mkdir(parents=True, exist_ok=True)
 
-            # Atomic write via temp file
-            temp_path = f"{self.profile_path}.tmp"
             try:
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    json.dump(self.profile, f, indent=2, default=str)
-                os.replace(temp_path, self.profile_path)
+                atomic_write_json(self.profile_path, self.profile, default=str,
+                                  ensure_ascii=True)
                 logger.debug(f"[UserProfile] Saved to {self.profile_path}")
             except Exception as e:
                 logger.error(f"[UserProfile] Save failed: {e}")
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                if raise_on_error:
+                    raise
 
     def add_fact(self,
                  relation: str,

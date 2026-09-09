@@ -63,7 +63,11 @@ class FakeCollection:
             if documents is not None:
                 self.docs[doc_id]["document"] = documents[idx]
             if metadatas is not None:
-                self.docs[doc_id]["metadata"] = dict(metadatas[idx])
+                updates = metadatas[idx]
+                if not updates or any(not isinstance(v, (str, int, float, bool))
+                                      for v in updates.values()):
+                    raise ValueError("metadata must contain supported scalar values")
+                self.docs[doc_id]["metadata"].update(updates)
 
     def count(self):
         return len(self.docs)
@@ -82,7 +86,7 @@ class FakeProfile:
         self.profile = {"categories": {"career": list(facts)}}
         self.saves = 0
 
-    def save(self):
+    def save(self, *, raise_on_error=False):
         self.saves += 1
 
 
@@ -262,7 +266,7 @@ class TestApplyUndo:
         assert meta["topic"] == "x"  # untouched keys preserved
         eng.undo(p.proposal_id)
         meta = store.collections["conversations"].docs["d1"]["metadata"]
-        assert QUARANTINE_KEY not in meta
+        assert meta[QUARANTINE_KEY] is False
         assert eng.get(p.proposal_id).status == ProposalStatus.UNDONE
 
     def test_content_repair_undo_restores_document(self, tmp_path):

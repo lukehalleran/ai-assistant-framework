@@ -59,21 +59,17 @@ try:
     def _json_load(f):
         return orjson.loads(f.read())
 
-    def _json_dump(payload, f):
-        f.write(orjson.dumps(payload, option=orjson.OPT_INDENT_2).decode("utf-8"))
 except ImportError:
     import json
 
     def _json_load(f):
         return json.load(f)
 
-    def _json_dump(payload, f):
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-
 import networkx as nx
 
 from memory.graph_models import GraphEdge, GraphNode
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json
 from memory.graph_utils import (
     _DEFAULT_HUB_DEGREE,
     _DEFAULT_MIN_MENTIONS,
@@ -727,7 +723,7 @@ class GraphMemory:
     # Persistence
     # ------------------------------------------------------------------
 
-    def save(self) -> None:
+    def save(self, *, raise_on_error: bool = False) -> None:
         """Save graph to JSON.  Only writes if dirty."""
         if not self._dirty:
             return
@@ -753,19 +749,14 @@ class GraphMemory:
         payload = {"schema_version": GRAPH_SCHEMA_VERSION, "nodes": nodes, "edges": edges}
 
         try:
-            # Atomic write: write to temp file, then rename.
-            # Prevents data loss if the process is killed mid-write.
-            tmp_path = self.persist_path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                _json_dump(payload, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.persist_path)
+            atomic_write_json(self.persist_path, payload)
             self._dirty = False
             self._modification_count = 0
             logger.info(f"[GraphMemory] Saved {len(nodes)} nodes, {len(edges)} edges to {self.persist_path}")
         except Exception as e:
             logger.error(f"[GraphMemory] Save failed: {e}")
+            if raise_on_error:
+                raise
 
     def load(self) -> None:
         """Load graph from JSON file.  No-op if file doesn't exist.

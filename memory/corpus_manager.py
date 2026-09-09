@@ -40,7 +40,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from utils.logging_utils import get_logger, log_and_time
-from utils.safe_json import load_critical_json
+from utils.safe_json import atomic_write_json, atomic_write_text, load_critical_json
 from config.app_config import CORPUS_MAX_ENTRIES
 from datetime import timedelta
 import re as _re
@@ -121,18 +121,15 @@ class CorpusManager:
     @log_and_time("Save Corpus")
     def save_corpus(self):
         """Save corpus to disk atomically"""
-        tmp_file = self.corpus_file + ".tmp"
         try:
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                # Convert datetime to string for JSON
-                data_to_save = []
-                for entry in self.corpus:
-                    entry_copy = entry.copy()
-                    if isinstance(entry_copy.get("timestamp"), datetime):
-                        entry_copy["timestamp"] = entry_copy["timestamp"].isoformat()
-                    data_to_save.append(entry_copy)
-                json.dump(self.clean_for_json(data_to_save), f, indent=2)
-            os.replace(tmp_file, self.corpus_file)
+            data_to_save = []
+            for entry in self.corpus:
+                entry_copy = entry.copy()
+                if isinstance(entry_copy.get("timestamp"), datetime):
+                    entry_copy["timestamp"] = entry_copy["timestamp"].isoformat()
+                data_to_save.append(entry_copy)
+            atomic_write_json(self.corpus_file, self.clean_for_json(data_to_save),
+                              ensure_ascii=True)
             logger.debug(f"Saved {len(self.corpus)} entries to corpus")
         except Exception as e:
             logger.error(f"Error saving corpus: {e}")
@@ -577,17 +574,7 @@ class CorpusManager:
 
         try:
             narrative_path = NARRATIVE_CONTEXT_PATH
-            tmp_path = narrative_path + ".tmp"
-
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(narrative_path), exist_ok=True)
-
-            # Write to temp file first
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                f.write(text)
-
-            # Atomic swap
-            os.replace(tmp_path, narrative_path)
+            atomic_write_text(narrative_path, text)
 
             # A fresh narrative supersedes any correction-staleness flag
             # (regeneration saw the corrected conversation).
