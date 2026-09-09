@@ -120,7 +120,18 @@ class CorpusManager:
 
     @log_and_time("Save Corpus")
     def save_corpus(self):
-        """Save corpus to disk atomically"""
+        """Save corpus to disk atomically.
+
+        Contract kept from the hand-written writer (tests/test_corpus_manager.py
+        ``test_save_requires_existing_directory``): a MISSING parent directory
+        is refused, not created — the shared atomic writer would otherwise
+        silently materialise a corpus under a misconfigured path (2026-09-09,
+        B2 migration follow-up; CI caught the contract change).
+        """
+        parent = os.path.dirname(self.corpus_file) or "."
+        if not os.path.isdir(parent):
+            logger.error(f"Error saving corpus: directory does not exist: {parent}")
+            return
         try:
             data_to_save = []
             for entry in self.corpus:
