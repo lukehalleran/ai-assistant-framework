@@ -127,3 +127,6 @@ CLAUDE_CHANGELOG.md
 # Private career documents (local only)
 /docs/resume.pdf
 /docs/resume_review_private.md
+
+# Claude Code agent worktrees (full repo copies; never commit)
+.claude/worktrees/

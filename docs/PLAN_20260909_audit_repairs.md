@@ -184,7 +184,7 @@ two that may run concurrently (disjoint files).
 
 ## Results
 
-### B1 — live controls (2026-09-09, Fable) — revised after Codex referee round 1; awaiting round 2 + owner commit
+### B1 — live controls (2026-09-09, Fable) — Codex PASS (round 2), COMMITTED e651582, live-probed 14:57–15:02
 - Files: `core/prompt/gatherer_web.py`, `core/prompt/context_gatherer.py`, `knowledge/web_search_manager.py`, `core/agentic/tools.py`, `gui/settings_core.py`, `core/actions/google_calendar_modify.py`, `core/actions/google_calendar_create.py`, `tests/unit/test_web_fallback_general_intent.py` (patch target), new `tests/unit/test_sep09_live_controls.py`. 121 insertions / 15 deletions in source.
 - Referee round 1 (Codex): (1) P1 `search()`/`multi_search()` bypassed the flag — three provider-adapter calls with Settings off; FIXED: both entry points return `DISABLED_ERROR` before the cache check, test through the public entry points. (2) P2 the helper sat inside the `except ImportError` block, orphaning four fallback constants; FIXED: helper moved below the block, import-time check confirms the fallbacks bind. (3) the F10 test re-derived the predicate; REPLACED with a deployed `build()` enabled → disabled → enabled case on one pipeline (stages stubbed on the instance). Private-attr traversal and calendar changes accepted.
 - Failed-before evidence (recorded result, no git reads in tests): the revised file run against a detached worktree at HEAD `df61f4f` with the pyenv 3.11.8 interpreter → **16 failed, 4 passed**; the 4 passes are the negative controls (failed delete keeps cache, failure-only create keeps cache, orchestrator without a pipeline, full create already cleared). On the fixed tree → 20 passed.
@@ -192,3 +192,168 @@ two that may run concurrently (disjoint files).
 - Design notes: the setter reaches managers through `_web_search_manager` / `_agentic_controller` (private) because both public properties lazily construct instances — a settings write must never build a controller. `is_available()` reports the disabled state and `search()`/`multi_search()` enforce it themselves (`DISABLED_ERROR`, before the cache); instrument callers (`search(localize=False)`) are blocked too, which is what "disabled" means.
 - Lead carried (not fixed): the calendar read cache is keyed on nothing — `max_events`/`lookahead_days` are not part of the key; 250-event un-paginated fetches (handoff "remaining leads").
 - Live probe after the restart: Settings → web search OFF → fresh-news question → debug record shows no provider call and the tool-health block reads DISABLED; set the credit limit to 3 → a deep search is refused; delete a calendar event via card → the next turn's [UPCOMING SCHEDULE] omits it without waiting out the cache.
+- Live probes (daemon restarted 14:49 from e651582; read from `daemon_debug.log`, not relayed): **P1 PASS** — Settings OFF → "Web search disabled in config", no Tavily call, reply said search is disabled. **P2 PASS** — cap set to 10 (UI minimum) → the live limiter logged `total today: 8.0/10` on the very next search; the old 100 is gone. **P3 half-PASS** — create → card → executed → `[GoogleCalendar] Fetched 5 upcoming events` on the next turn (cache cleared); the DELETE turn never produced a card, see F12.
+
+### F12 — NEW (found by P3, 2026-09-09 15:02): forced action round proposes the wrong action type, then narrates a card that does not exist
+Gate: `Tier 1: explicit write action detected (calendar_delete_event)` → controller: `Explicit action intent (calendar_delete_event) — forcing propose_action on first decision round` → protocol: `propose_action rejected: action_type='calendar_create_event' is unknown or missing required fields` → `Forced action round produced no action marker — retrying once` → `Model ready to answer (implicit)` → final reply "Queued the deletion: … Confirm and it's off" with NO pending card and no `NO_CARD_NOTICE`. Three defects: (a) the force prompt does not pin the DETECTED action type, so the model may emit a sibling type; a proposal whose type ≠ the detected type should be rejected with a retry prompt naming the required type (or coerced when params fit the detected spec); (b) the no-marker retry is one generic round — it should carry the rejection reason; (c) `claims_pending_card` missed "Queued the deletion … Confirm" (queue/confirm shapes). Owner: B4 or a B1-followup commit; regression = replay this exact turn shape through `controller` with a scripted model that answers create-then-nothing.
+- Side observation: `gui/settings_core.save_settings` rewrites `config/config.yaml` WITHOUT comments (53 comment lines dropped by the P1/P2 toggles; `git diff config/config.yaml`). Pre-existing; owner should not commit that diff — restore the file from HEAD and re-set the credit limit, or accept the loss. Lead for B5/T07: comment-preserving YAML writer (ruamel) or a separate settings overlay file.
+
+### B3 — storage (2026-09-09, subagent)
+
+Files touched: `knowledge/reference_docs_manager.py`,
+`memory/storage/multi_collection_chroma_store.py`, `memory/memory_expander.py`,
+`memory/curation/adapters.py`, `tests/unit/test_memory_expander.py` (fixture
+updates — see below), new `tests/unit/test_sep09_storage_repairs.py` (22
+tests).
+
+**F02 — staged replacement.** `upload_document`/`upload_text` now snapshot
+the existing same-title chunks BEFORE inserting anything, stamp every new
+chunk with a fresh `upload_batch` uuid4, insert the new version first, and
+only on a successful insert delete the old chunks whose batch id differs
+AND whose `type` metadata matches the type being written (when that field
+is present on the old chunk) — a same-title doc of a different type/source
+is never cross-deleted. A failed `add_batch_to_collection` call leaves the
+prior version completely untouched (`add_batch_to_collection` only returns
+ids on success, so there is nothing to clean up on the exception path) and
+`result.success=False`. `delete_document(title)` (the explicit whole-doc
+delete path) is unchanged in behavior, refactored onto a new
+`_delete_chunk_ids()` helper shared with the replacement path. A delete
+failure after a successful insert is logged at WARNING and does NOT turn
+the upload into a failure (the new version is already durably stored).
+
+**F05 — timestamp_epoch + real range query.** New
+`multi_collection_chroma_store.timestamp_to_epoch()` parses ISO strings
+(naive → interpreted as LOCAL time, matching this module's
+`datetime.now().isoformat()` writing convention; offset-aware → converted
+respecting its own offset; malformed → `None`). A new `_derive_epoch()`
+helper adds `timestamp_epoch` (float) beside `timestamp` in
+`add_conversation_memory`, `add_to_collection`, and
+`add_batch_to_collection` whenever a `timestamp` string is present and no
+epoch yet exists. `get_ids_by_timestamp_range()` now runs a numeric
+`$gte`/`$lte` query over `timestamp_epoch` UNIONed with a legacy scan
+(`coll.get(include=["metadatas"], limit=500, offset=N)`, paged, never the
+whole collection or documents/embeddings in one call) over rows that lack
+the field — malformed legacy rows are skipped and counted in a DEBUG log
+line, malformed bounds return `[]` with a WARNING. `memory_expander.
+_fetch_conversations_in_range` now calls `get_ids_by_timestamp_range()` +
+per-id `get_by_id()` instead of `list_all()` (which pulled the entire
+conversations collection into memory on every summary→source-conversation
+expansion via the temporal-anchor strategy).
+
+**F08 — expander anchor hygiene + fingerprinted/TTL cache.** `_do_expand()`
+now applies the same `is_quarantined`/junk/supersession hygiene check to
+the ANCHOR (via a new `_hygiene_block_reason()` that `_passes_hygiene()`
+now delegates to) that was previously applied only to neighbors — covering
+the plain temporal-window path, the non-expandable-collection fallback, and
+the summary-anchor path (checked once, centrally, before dispatch, so
+`_expand_summary` never sees a bad anchor). A blocked anchor returns
+`{"turns": [], "anchor_id": ..., "error": "anchor suppressed: <reason>",
+...}` in the same dict shape every caller (`core/agentic/tools.py`,
+`core/agentic/formatters.format_expanded_results`) already handles via its
+`error`/`turns` keys — no caller changes were needed. The cache is now
+keyed the same `(memory_id, window, collection)` tuple but stores
+`(anchor_fingerprint, result, cached_at)`; every cache hit re-fetches the
+anchor's current doc+metadata (one `get_by_id`, no window fetch) and
+recomputes a sha1 fingerprint over content+sorted-metadata, invalidating on
+a mismatch, and separately bounds entries by `EXPANSION_CACHE_TTL_S=300`.
+Because the anchor-only fingerprint check cannot see a mutation to a
+*neighbor* document, `memory/curation/adapters.py` now calls a new
+`memory.memory_expander.notify_chroma_mutation(doc_id)` after every
+successful chroma `apply_change`/`revert_change` (a weakref registry;
+`MemoryExpander.__init__` self-registers) — this clears every live
+expander's whole cache, which a dedicated test (
+`test_curation_mutation_on_a_neighbor_invalidates_the_whole_cache`) exists
+specifically to prove is load-bearing (it fails if the notify wiring is
+removed even though the anchor-only tests still pass). No import cycle:
+verified both directions import cleanly (`memory.curation.adapters` →
+`memory.memory_expander` has no path back).
+
+**Test-fixture deviation (noted per the brief's "pick the conservative
+reading" clause):** F08's anchor-hygiene fix is a genuine, audited behavior
+change — a junk/quarantined/superseded anchor used to be served anyway.
+Six pre-existing assertions in `tests/unit/test_memory_expander.py` encoded
+the OLD (buggy) behavior or used deliberately-short placeholder content
+that only survived because summary/reflection anchors were hygiene-exempt:
+`test_junk_doc_excluded_from_window` (renamed
+`test_junk_anchor_is_suppressed`, assertion inverted to match the fix,
+plus a new `test_junk_neighbor_excluded_from_window` added to keep the
+neighbor-exclusion behavior covered), and seven summary-anchor fixtures
+whose placeholder text (`"Summary text"`, `"Summary"`, `"Orphan summary"`,
+`"found it"`) was under `SUMMARY_MIN_CHARS=40` and would now be suppressed
+as junk — lengthened to realistic sentences with no change to what each
+test actually verifies (source_doc_ids/temporal-anchor/priority logic).
+
+**Failed-before / passed-after (recorded by reverting the 4 touched source
+files to their HEAD content via `git show HEAD:<path>` into a scratch
+location + a plain filesystem `cp` over the worktree copies — no
+`checkout`/`reset`/`stash` used; restored byte-for-byte from an md5-verified
+backup afterward; `tests/unit/test_sep09_storage_repairs.py` was not
+touched by the revert):**
+
+| Class | Tests | Failed before | Passed after |
+|---|---|---|---|
+| `TestReplacementPreservesOriginal` (F02) | 5 | 3 | 5 |
+| `TestTimestampToEpochHelper` (F05) | 4 | 4 | 4 |
+| `TestTimestampRange` (F05) | 6 | 5 | 6 |
+| `TestShutdownSummarySourceDocIds` (F05) | 1 | 1 | 1 |
+| `TestExpansionHygieneAndCache` (F08) | 6 | 6 | 6 |
+| **Total** | **22** | **19** | **22** |
+
+Of the 3 F02/F05 tests that passed even before the fix: two F02 tests
+(`test_success_replaces_old_version`, `test_retry_after_failure_with_
+changed_content_succeeds`) only assert END state, which the old
+delete-then-insert code also reaches on a clean run (the bug only shows up
+when an insert FAILS mid-replacement, which those two tests don't do); one
+F05 test (`test_malformed_bound_returns_empty`) passes on both trees
+because the old code's broad `except` already turned a driver
+`ValueError` on garbage bounds into `[]` — same outward result as the new
+explicit malformed-bound check, for a different reason. All three genuinely
+discriminating scenarios (mid-replacement failure preserving the old
+version, cross-type non-deletion, every real range/legacy/offset/anchor-
+hygiene/cache case) fail before and pass after.
+
+**Legacy-scan timing** (ad hoc measurement script, not part of the
+committed suite — a permanent 5,000-row insert would slow every CI run for
+no ongoing benefit): a synthetic ALL-legacy (no `timestamp_epoch` on any
+row) 5,000-row `conversations`-shaped ephemeral collection, queried through
+the deployed `get_ids_by_timestamp_range()`:
+- Full-range query (returns all 5,000 ids): **0.066 s**
+- Narrow 10-minute window (returns 11 ids, same paging cost): **0.062 s**
+
+Both are far under the ~2 s contingency threshold — per the plan's
+contingency table, the numeric path ships as-is with no backfill card. (Insert
+of the 5,000 rows themselves took 0.501 s, irrelevant to the read-path cost
+being measured.) Real production timing may differ somewhat from this
+ephemeral/fixed-embedding harness, but the cost is dominated by
+metadata-only paging, not embedding computation, so it should be
+representative.
+
+**Guards + full sweep:** `ruff check .` — all checks passed. Five repo-wide
+guards (`test_no_git_state_in_tests`, `test_ordered_slice_guard`,
+`test_budget_meters_rendered_sections`, `test_tool_wiring_parity`,
+`test_model_capability_wiring`) — 85 passed. Touched-suite sweep
+(`test_sep09_storage_repairs`, `test_memory_expander`,
+`test_refdocs_lazy_collection`, `test_upload_retrieval_pool`,
+`test_upload_keyword_score_leak`, `test_curation_engine`,
+`test_api_curation`, `test_multi_collection_chroma_store`,
+`test_recent_summaries_fix`) — 175 passed.
+
+**Deviations from the brief:**
+- The "pick the conservative reading" clause was exercised once: `upload_
+  document` has no per-call `metadata_overrides` parameter (unlike
+  `upload_text`), so its written `type` is always the hardcoded
+  `'reference_doc'` literal — the cross-type guard is exercised by
+  `upload_text`'s `metadata_overrides={'type': ...}` path in the tests.
+- `scripts/dedup_reference_docs.py` was NOT modified — it already groups
+  replacement batches by the shared per-call `timestamp` value (one value
+  per upload call), which the new `upload_batch` field doesn't replace or
+  conflict with; confirmed by reading the script, no code change needed.
+- No historical backfill script was written for `timestamp_epoch` (not
+  requested — new rows get it going forward; the legacy scan serves old
+  rows, and its cost is negligible per the timing above).
+- `memory/memory_expander.py`'s module docstring and
+  `test_memory_expander.py` fixture text were updated to document/reflect
+  the F08 behavior change (see the deviation note above) — outside the
+  4 core files but necessary for the suite to stay both green and honest
+  about the new (correct) contract.
+- Everything else matches the brief as written; no stop condition was hit.

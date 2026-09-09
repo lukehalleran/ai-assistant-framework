@@ -89,6 +89,61 @@ def _flatten_for_chroma(md: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 flat[k] = str(v)
     return flat
 
+def timestamp_to_epoch(value: Any) -> Optional[float]:
+    """Parse an ISO-8601 timestamp string into a UTC epoch float (F05,
+    2026-09-09).
+
+    A NAIVE timestamp (no UTC offset) is interpreted as LOCAL time — that
+    is this module's writing convention everywhere a `timestamp` field is
+    stamped (`datetime.now().isoformat()`). An offset-aware timestamp is
+    converted respecting its own offset. Returns None for anything that
+    does not parse (not a string, empty, or malformed) rather than raising
+    — callers treat None as "skip this row"/"bad bound".
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        # Defensive: a trailing 'Z' offset that slipped past producers on
+        # older stdlib builds where fromisoformat rejected it outright.
+        if text.endswith(("Z", "z")):
+            try:
+                dt = datetime.fromisoformat(text[:-1] + "+00:00")
+            except ValueError:
+                return None
+        else:
+            return None
+    try:
+        # datetime.timestamp() treats a naive instance as LOCAL time and an
+        # aware instance per its own tzinfo — exactly the convention above.
+        return dt.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _derive_epoch(md: Dict[str, Any]) -> None:
+    """In-place: when *md* carries a string `timestamp` and no
+    `timestamp_epoch` yet, add the derived numeric field (F05, 2026-09-09).
+
+    Chroma's `$gte`/`$lte` comparison operators require int/float
+    operands — passing the raw ISO string (the pre-fix behavior) made the
+    driver raise on every call, which the broad exception handler in
+    `get_ids_by_timestamp_range` swallowed into an empty result. Called
+    from every conversation write path so newly written rows carry both
+    fields; historical rows lacking it are served by the legacy scan in
+    `get_ids_by_timestamp_range` instead of a backfill migration.
+    """
+    if "timestamp_epoch" in md:
+        return
+    epoch = timestamp_to_epoch(md.get("timestamp"))
+    if epoch is not None:
+        md["timestamp_epoch"] = epoch
+
+
 def _resolve_embed_device() -> str:
     """
     Device for the store's SentenceTransformer embedder.
@@ -236,27 +291,110 @@ class MultiCollectionChromaStore:
         for name in self.collections:
             self._get_collection(name)
 
+    # Page size for the legacy (no timestamp_epoch) scan in
+    # get_ids_by_timestamp_range — metadata-only, never the whole
+    # collection in one call.
+    _TIMESTAMP_RANGE_PAGE_SIZE = 500
+
     def get_ids_by_timestamp_range(
         self, collection_name: str, start_iso: str, end_iso: str
     ) -> List[str]:
-        """Get document IDs where timestamp metadata falls within [start, end]."""
+        """Get document IDs whose timestamp falls within [start, end] (inclusive).
+
+        F05 (2026-09-09): Chroma's `$gte`/`$lte` require int/float
+        operands, so the old direct-ISO-string query raised on every call
+        and the broad except below turned that into a silent `[]` —
+        shutdown summary creation never got its `source_doc_ids`.
+
+        Two passes, unioned:
+          1. A numeric query over `timestamp_epoch` (written by every
+             conversation write path since this fix — see `_derive_epoch`).
+          2. A LEGACY scan over rows that do not carry `timestamp_epoch`
+             (written before this fix), paged via `coll.get(limit=,
+             offset=)` — metadata only, never documents/embeddings, never
+             the whole collection in one call — parsing each row's
+             `timestamp` string in Python. This pass always runs, even
+             when the numeric query already returned rows, because a real
+             collection holds a mix of both.
+        """
         if collection_name not in self.collections:
             return []
         coll = self._get_collection(collection_name)
+
+        start_epoch = timestamp_to_epoch(start_iso)
+        end_epoch = timestamp_to_epoch(end_iso)
+        if start_epoch is None or end_epoch is None:
+            logger.warning(
+                "[ChromaStore] get_ids_by_timestamp_range: malformed bound(s) "
+                "start=%r end=%r", start_iso, end_iso,
+            )
+            return []
+
+        numeric_ids: set = set()
         try:
-            results = coll.get(
+            numeric_results = coll.get(
                 where={
                     "$and": [
-                        {"timestamp": {"$gte": start_iso}},
-                        {"timestamp": {"$lte": end_iso}},
+                        {"timestamp_epoch": {"$gte": start_epoch}},
+                        {"timestamp_epoch": {"$lte": end_epoch}},
                     ]
                 },
                 include=[],  # only need IDs
             )
-            return results.get("ids", []) or []
+            numeric_ids = set(numeric_results.get("ids", []) or [])
         except Exception as e:
-            logger.warning(f"[ChromaStore] get_ids_by_timestamp_range failed: {e}")
-            return []
+            logger.warning(f"[ChromaStore] get_ids_by_timestamp_range numeric query failed: {e}")
+
+        legacy_ids: set = set()
+        malformed_skipped = 0
+        pages = 0
+        offset = 0
+        try:
+            total = coll.count()
+        except Exception:
+            total = None
+
+        while True:
+            try:
+                page = coll.get(
+                    include=["metadatas"],
+                    limit=self._TIMESTAMP_RANGE_PAGE_SIZE,
+                    offset=offset,
+                )
+            except Exception as e:
+                logger.warning(f"[ChromaStore] get_ids_by_timestamp_range legacy page failed: {e}")
+                break
+            pages += 1
+            page_ids = page.get("ids", []) or []
+            page_metas = page.get("metadatas", []) or []
+            if not page_ids:
+                break
+            for doc_id, meta in zip(page_ids, page_metas):
+                meta = meta or {}
+                if "timestamp_epoch" in meta:
+                    # Already covered by the numeric pass above.
+                    continue
+                epoch = timestamp_to_epoch(meta.get("timestamp"))
+                if epoch is None:
+                    if meta.get("timestamp"):
+                        malformed_skipped += 1
+                    continue
+                if start_epoch <= epoch <= end_epoch:
+                    legacy_ids.add(doc_id)
+            if len(page_ids) < self._TIMESTAMP_RANGE_PAGE_SIZE:
+                break
+            offset += self._TIMESTAMP_RANGE_PAGE_SIZE
+            if total is not None and offset >= total:
+                break
+
+        all_ids = sorted(numeric_ids | legacy_ids)
+        logger.debug(
+            "[ChromaStore] get_ids_by_timestamp_range(%s): numeric=%d legacy=%d "
+            "malformed_skipped=%d pages=%d total=%d",
+            collection_name, len(numeric_ids), len(legacy_ids),
+            malformed_skipped, pages, len(all_ids),
+        )
+        return all_ids
 
 
 
@@ -305,6 +443,7 @@ class MultiCollectionChromaStore:
         # ChromaDB requires non-empty metadata - add timestamp if empty
         if not clean_md:
             clean_md["timestamp"] = datetime.now().isoformat()
+        _derive_epoch(clean_md)
         doc_id = str(uuid.uuid4())
         coll.add(ids=[doc_id], documents=[text or ""], metadatas=[clean_md])
         return doc_id
@@ -324,6 +463,7 @@ class MultiCollectionChromaStore:
             cleaned = _flatten_for_chroma(dict(md or {}))
             if not cleaned:
                 cleaned["timestamp"] = datetime.now().isoformat()
+            _derive_epoch(cleaned)
             clean_mds.append(cleaned)
         coll.add(ids=doc_ids, documents=[t or "" for t in texts], metadatas=clean_mds)
         return doc_ids
@@ -399,6 +539,7 @@ class MultiCollectionChromaStore:
             # ChromaDB requires non-empty metadata - add timestamp if empty
             if not metadata:
                 metadata["timestamp"] = datetime.now().isoformat()
+            _derive_epoch(metadata)
 
             # Create the document ID
             doc_id = str(uuid.uuid4())

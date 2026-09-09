@@ -15,6 +15,7 @@ Stores addressed:
 from typing import Any, Dict
 
 from memory.curation.types import ItemChange
+from memory.memory_expander import notify_chroma_mutation
 from utils.logging_utils import get_logger
 
 logger = get_logger("curation_adapters")
@@ -85,6 +86,11 @@ def apply_change(change: ItemChange, *, chroma_store=None, user_profile=None,
             coll.update(ids=[change.doc_id], documents=[new_doc])
         else:
             raise AdapterError(f"unsupported chroma change_type {change.change_type!r}")
+        # F08 (2026-09-09): a MemoryExpander may have this exact doc cached
+        # from before this mutation — invalidate every registered expander
+        # rather than leave them serving pre-mutation text/quarantine state
+        # until their TTL lapses.
+        notify_chroma_mutation(change.doc_id)
         return
 
     if change.store == "profile":
@@ -151,6 +157,7 @@ def revert_change(change: ItemChange, *, chroma_store=None, user_profile=None,
             old_doc = change.before.get("document")
             if isinstance(old_doc, str) and old_doc:
                 coll.update(ids=[change.doc_id], documents=[old_doc])
+        notify_chroma_mutation(change.doc_id)
         return
 
     if change.store == "profile":

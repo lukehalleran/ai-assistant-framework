@@ -41,6 +41,25 @@ class FakeChromaStore:
     def list_all(self, collection_name: str):
         return [dict(d) for d in self._data.get(collection_name, [])]
 
+    def get_ids_by_timestamp_range(self, collection_name: str, start_iso: str, end_iso: str):
+        """Minimal stand-in for the real store's indexed range query (F05) —
+        _fetch_conversations_in_range no longer calls list_all()."""
+        try:
+            start = datetime.fromisoformat(start_iso)
+            end = datetime.fromisoformat(end_iso)
+        except (ValueError, TypeError):
+            return []
+        ids = []
+        for doc in self._data.get(collection_name, []):
+            ts_str = (doc.get("metadata") or {}).get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                continue
+            if start <= ts <= end:
+                ids.append(doc["id"])
+        return ids
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -214,7 +233,7 @@ class TestErrorCases:
 
     def test_unknown_collection_tries_all(self):
         """No collection given → scans all expandable collections."""
-        docs = [_make_doc("target", _ts(0), "found it")]
+        docs = [_make_doc("target", _ts(0), "found it in the reflections collection, not conversations")]
         expander = self._make_expander({"reflections": docs})
 
         result = expander.expand("target", window=1, collection=None)
@@ -312,7 +331,8 @@ class TestSummaryExpansion:
         convos = [_make_doc(f"c{i}", _ts(i * 10), f"User: q{i}\nAssistant: a{i}") for i in range(5)]
         # Summary covering the first 3 conversations (0–20 min)
         summary = _make_doc(
-            "s1", _ts(50), "Summary of early conversations",
+            "s1", _ts(50),
+            "Summary of early conversations covering the topics discussed in the first block of messages.",
             type="summary",
             temporal_anchor_start=_ts(0),
             temporal_anchor_end=_ts(20),
@@ -339,7 +359,8 @@ class TestSummaryExpansion:
         """Summary with explicit source_doc_ids fetches those docs directly."""
         convos = [_make_doc(f"c{i}", _ts(i * 10), f"convo {i}") for i in range(5)]
         summary = _make_doc(
-            "s1", _ts(50), "Summary text",
+            "s1", _ts(50),
+            "Summary text describing the conversation condensed into this consolidated entry.",
             type="summary",
             source_doc_ids="c1,c3",
         )
@@ -357,7 +378,8 @@ class TestSummaryExpansion:
         """source_doc_ids is checked before temporal anchors."""
         convos = [_make_doc(f"c{i}", _ts(i * 10), f"convo {i}") for i in range(5)]
         summary = _make_doc(
-            "s1", _ts(50), "Summary text",
+            "s1", _ts(50),
+            "Summary text that has both explicit source ids and a temporal anchor range set.",
             type="summary",
             source_doc_ids="c4",
             temporal_anchor_start=_ts(0),
@@ -374,7 +396,11 @@ class TestSummaryExpansion:
 
     def test_summary_no_linkage_metadata(self):
         """Summary without source_doc_ids or temporal anchors returns error."""
-        summary = _make_doc("s1", _ts(0), "Orphan summary", type="summary")
+        summary = _make_doc(
+            "s1", _ts(0),
+            "Orphan summary with no linkage metadata attached to it at all.",
+            type="summary",
+        )
         expander = self._make_expander({"summaries": [summary]})
 
         result = expander.expand("s1", collection="summaries")
@@ -389,7 +415,8 @@ class TestSummaryExpansion:
         """Summary with temporal anchors but no conversations in range."""
         convos = [_make_doc(f"c{i}", _ts(100 + i * 10), f"convo {i}") for i in range(3)]
         summary = _make_doc(
-            "s1", _ts(50), "Summary text",
+            "s1", _ts(50),
+            "Summary text with a temporal anchor range that has no matching conversations.",
             type="summary",
             temporal_anchor_start=_ts(0),
             temporal_anchor_end=_ts(20),
@@ -411,7 +438,8 @@ class TestSummaryExpansion:
             _make_doc("c2", _ts(20), "second"),
         ]
         summary = _make_doc(
-            "s1", _ts(50), "Summary",
+            "s1", _ts(50),
+            "Summary of the conversations that happened across this whole time window.",
             type="summary",
             temporal_anchor_start=_ts(0),
             temporal_anchor_end=_ts(40),
@@ -428,7 +456,8 @@ class TestSummaryExpansion:
         """total_in_collection reports number of source conversations found."""
         convos = [_make_doc(f"c{i}", _ts(i * 10), f"convo {i}") for i in range(4)]
         summary = _make_doc(
-            "s1", _ts(50), "Summary",
+            "s1", _ts(50),
+            "Summary of every conversation contained in this particular time range.",
             type="summary",
             temporal_anchor_start=_ts(0),
             temporal_anchor_end=_ts(30),
@@ -452,8 +481,14 @@ class TestHygieneFilters:
         from memory.memory_expander import MemoryExpander
         return MemoryExpander(store)
 
-    def test_junk_doc_excluded_from_window(self):
-        """Junk conversation docs should be skipped during window expansion."""
+    def test_junk_anchor_is_suppressed(self):
+        """F08 (2026-09-09): a junk anchor is suppressed, not served.
+
+        Pre-fix, hygiene applied only to NEIGHBORS — an explicitly
+        requested junk (or quarantined/superseded) anchor was returned
+        anyway. `expand()` on a junk anchor now returns no turns and a
+        `"anchor suppressed: ..."` error instead.
+        """
         docs = [
             _make_doc("d0", _ts(0), "good content"),
             _make_doc("d1", _ts(10), "[API Error] 502 Bad Gateway"),  # junk
@@ -463,11 +498,26 @@ class TestHygieneFilters:
 
         result = expander.expand("d1", window=1, collection="conversations")
 
-        # Window should include d0 and d2, but d1 is the anchor and must be in results
-        # However, neighbors d0/d2 pass hygiene, so they should be included
+        assert result["turns"] == []
+        assert result["error"] is not None
+        assert "anchor suppressed" in result["error"].lower()
+
+    def test_junk_neighbor_excluded_from_window(self):
+        """A junk NON-anchor doc inside the window is still excluded, same
+        as before F08 — only the anchor's own hygiene treatment changed."""
+        docs = [
+            _make_doc("d0", _ts(0), "good content"),
+            _make_doc("d1", _ts(10), "[API Error] 502 Bad Gateway"),  # junk
+            _make_doc("d2", _ts(20), "more good content"),
+        ]
+        expander = self._make_expander({"conversations": docs})
+
+        result = expander.expand("d0", window=2, collection="conversations")
+
         ids = [t["id"] for t in result["turns"]]
-        # The anchor d1 is junk but still included (never filtered), but neighbors should pass
-        assert "d1" in ids  # anchor is kept even if junk
+        assert "d0" in ids
+        assert "d2" in ids
+        assert "d1" not in ids  # junk neighbor excluded
 
     def test_quarantined_doc_excluded_from_window(self):
         """Quarantined docs should be excluded from window expansion."""

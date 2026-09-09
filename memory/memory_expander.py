@@ -10,19 +10,33 @@ Contract:
       or source_doc_ids metadata).
     - Returns a dict with turns (each marked ``is_anchor``), collection,
       expansion method, and error info.
-    - Caches results per ``(memory_id, window, collection)`` tuple.
     - Only expands collections that store timestamped turns/entries.
+    - Hygiene (quarantine/junk/supersession) is enforced on the ANCHOR too
+      (F08, 2026-09-09) — not just neighbors — across every expansion path
+      including the non-expandable-collection fallback and the summary
+      anchor.
+    - Caches results per ``(memory_id, window, collection)`` tuple, keyed
+      additionally to a content+metadata fingerprint of the anchor and
+      bounded by ``EXPANSION_CACHE_TTL_S``; a chroma mutation made via the
+      curation engine notifies every live expander through
+      ``notify_chroma_mutation()`` so no manual ``clear_cache()`` call is
+      needed at the call site.
 
 Public Interface:
     - MemoryExpander.expand(memory_id, window, collection) -> dict
     - MemoryExpander.clear_cache()
+    - register_expander(expander) / notify_chroma_mutation(doc_id)
 
 Dependencies:
     - memory.storage.multi_collection_chroma_store.MultiCollectionChromaStore
     - config.app_config (EXPAND_* constants)
 """
 
+import hashlib
 import logging
+import threading
+import time
+import weakref
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -36,13 +50,57 @@ EXPANDABLE_COLLECTIONS = frozenset({
     "conversations", "summaries", "reflections", "facts", "obsidian_notes",
 })
 
+# Second bound on cached expansions, beside fingerprint invalidation (F08,
+# 2026-09-09): an expansion older than this is recomputed unconditionally,
+# even if re-fetching the anchor to check its fingerprint were to fail.
+EXPANSION_CACHE_TTL_S = 300
+
+# ---------------------------------------------------------------------------
+# Cross-mutation cache invalidation (F08): the curation engine mutates chroma
+# documents directly (quarantine flips, content repairs) outside any
+# MemoryExpander instance's knowledge. Registered expanders drop their whole
+# cache when notified — simple and always correct, since a stale cache is
+# the only failure mode being defended against here.
+# ---------------------------------------------------------------------------
+_REGISTERED_EXPANDERS: "weakref.WeakSet" = weakref.WeakSet()
+_REGISTRY_LOCK = threading.Lock()
+
+
+def register_expander(expander: "MemoryExpander") -> None:
+    """Register an expander instance for cross-mutation cache invalidation.
+    Weak reference only — no lifecycle coupling with the registry."""
+    with _REGISTRY_LOCK:
+        _REGISTERED_EXPANDERS.add(expander)
+
+
+def notify_chroma_mutation(doc_id: str) -> None:
+    """Invalidate every registered expander's cache after a chroma document
+    mutation made outside the normal expand() path (2026-09-09, F08) — the
+    curation engine's apply_change()/revert_change() flip quarantine flags
+    and replace content directly on the collection, and an expander's cache
+    has no other way to learn about it before its TTL lapses. *doc_id* is
+    accepted for a future doc-scoped invalidation; today it clears the
+    whole cache, which is simple and always correct.
+    """
+    with _REGISTRY_LOCK:
+        expanders = list(_REGISTERED_EXPANDERS)
+    for expander in expanders:
+        try:
+            expander.clear_cache()
+        except Exception:
+            logger.debug(
+                "[MemoryExpander] notify_chroma_mutation: clear_cache failed", exc_info=True
+            )
+
 
 class MemoryExpander:
     """Expand a single memory hit into its surrounding temporal window."""
 
     def __init__(self, chroma_store):
         self._store = chroma_store
-        self._cache: Dict[Tuple[str, int, Optional[str]], dict] = {}
+        # cache_key -> (anchor_fingerprint, result, cached_at_monotonic)
+        self._cache: Dict[Tuple[str, int, Optional[str]], Tuple[Optional[str], dict, float]] = {}
+        register_expander(self)
 
     # ------------------------------------------------------------------
     # Public API
@@ -74,12 +132,23 @@ class MemoryExpander:
         window = max(1, min(window, cfg.EXPAND_MAX_WINDOW))
 
         cache_key = (memory_id, window, collection)
-        if cache_key in self._cache:
-            logger.debug("[MemoryExpander] Cache hit for %s", memory_id[:8])
-            return self._cache[cache_key]
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            cached_fingerprint, cached_result, cached_at = cached
+            fresh_enough = (time.time() - cached_at) < EXPANSION_CACHE_TTL_S
+            current_fingerprint = self._anchor_fingerprint(
+                memory_id, cached_result.get("collection") or collection
+            )
+            if fresh_enough and current_fingerprint == cached_fingerprint:
+                logger.debug("[MemoryExpander] Cache hit for %s", memory_id[:8])
+                return cached_result
+            # Stale by TTL or the anchor changed underneath us — drop and
+            # recompute rather than serve a possibly-wrong cached result.
+            self._cache.pop(cache_key, None)
 
         result = self._do_expand(memory_id, window, collection)
-        self._cache[cache_key] = result
+        fingerprint = self._anchor_fingerprint(memory_id, result.get("collection") or collection)
+        self._cache[cache_key] = (fingerprint, result, time.time())
         return result
 
     def clear_cache(self) -> None:
@@ -90,6 +159,59 @@ class MemoryExpander:
     # Internal
     # ------------------------------------------------------------------
 
+    def _anchor_fingerprint(self, memory_id: str, collection: Optional[str]) -> Optional[str]:
+        """Cheap content+metadata hash of the anchor doc, used to detect a
+        chroma mutation between an expand() call and a later cache hit
+        (F08). One `get_by_id` — no window fetch. Returns None when the
+        collection is unknown or the doc can no longer be found (a None
+        never equals a real hash, so it forces a recompute)."""
+        if not collection:
+            return None
+        try:
+            doc = self._store.get_by_id(collection, memory_id)
+        except Exception:
+            doc = None
+        if not doc:
+            return None
+        content = doc.get("content", "") or ""
+        metadata = doc.get("metadata") or {}
+        try:
+            meta_items = sorted((str(k), str(v)) for k, v in metadata.items())
+        except Exception:
+            meta_items = []
+        payload = f"{content}|{meta_items!r}"
+        return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
+
+    @staticmethod
+    def _hygiene_block_reason(content: str, metadata: dict, collection: str = "") -> Optional[str]:
+        """Return a short reason string when *content*/*metadata* should
+        never surface at retrieval, else None.
+
+        Blocks on:
+        - The document is quarantined by the curation engine
+        - The document is junk (based on content and collection type)
+        - The document is superseded (facts only)
+        """
+        if not content:
+            return "empty content"
+
+        metadata = metadata or {}
+
+        if is_quarantined(metadata):
+            return "quarantined"
+
+        if collection == "conversations":
+            if is_junk_conversation_doc(content=content):
+                return "junk"
+        elif collection in ("summaries", "reflections"):
+            if is_junk_summary(content):
+                return "junk"
+        elif collection == "facts":
+            if metadata.get("is_current") is False or metadata.get("superseded_by"):
+                return "superseded"
+
+        return None
+
     @staticmethod
     def _passes_hygiene(content: str, metadata: dict, collection: str = "") -> bool:
         """Check if a document passes basic hygiene filters.
@@ -99,28 +221,7 @@ class MemoryExpander:
         - The document is junk (based on content and collection type)
         - The document is superseded (facts only)
         """
-        if not content:
-            return False
-
-        metadata = metadata or {}
-
-        # Skip quarantined docs
-        if is_quarantined(metadata):
-            return False
-
-        # Collection-specific junk filters
-        if collection == "conversations":
-            if is_junk_conversation_doc(content=content):
-                return False
-        elif collection in ("summaries", "reflections"):
-            if is_junk_summary(content):
-                return False
-        elif collection == "facts":
-            # Skip superseded facts
-            if metadata.get("is_current") is False or metadata.get("superseded_by"):
-                return False
-
-        return True
+        return MemoryExpander._hygiene_block_reason(content, metadata, collection) is None
 
     def _do_expand(
         self, memory_id: str, window: int, collection: Optional[str]
@@ -144,6 +245,21 @@ class MemoryExpander:
             if not anchor_doc:
                 return {**error_template, "error": f"Document {memory_id[:8]} not found in any expandable collection"}
             error_template["collection"] = collection
+
+        # --- anchor hygiene (F08, 2026-09-09): a quarantined/superseded/
+        # junk anchor must never be returned, regardless of collection —
+        # this used to apply only to NEIGHBORS, so an explicitly requested
+        # quarantined/superseded doc was served anyway. ---
+        anchor_content = anchor_doc.get("content", "")
+        anchor_meta = anchor_doc.get("metadata") or {}
+        block_reason = self._hygiene_block_reason(anchor_content, anchor_meta, collection)
+        if block_reason:
+            return {
+                **error_template,
+                "collection": collection,
+                "turns": [],
+                "error": f"anchor suppressed: {block_reason}",
+            }
 
         # --- check expandable ---
         if collection not in EXPANDABLE_COLLECTIONS:
@@ -232,30 +348,35 @@ class MemoryExpander:
     def _fetch_conversations_in_range(
         self, ts_start: str, ts_end: str, anchor_id: str
     ) -> List[dict]:
-        """Fetch all conversations whose timestamp falls within [start, end]."""
+        """Fetch all conversations whose timestamp falls within [start, end].
+
+        F05 (2026-09-09): uses the store's indexed
+        `get_ids_by_timestamp_range()` + per-id fetch instead of
+        `list_all()` — the prior implementation pulled the ENTIRE
+        conversations collection into memory on every summary expansion
+        that fell back to the temporal-anchor strategy.
+        """
         try:
-            range_start = datetime.fromisoformat(ts_start)
-            range_end = datetime.fromisoformat(ts_end)
-        except (ValueError, TypeError):
+            doc_ids = self._store.get_ids_by_timestamp_range(
+                "conversations", ts_start, ts_end
+            )
+        except Exception as e:
+            logger.warning("[MemoryExpander] get_ids_by_timestamp_range failed: %s", e)
+            return []
+        if not doc_ids:
             return []
 
-        all_convos = self._store.list_all("conversations")
         matched = []
-        for doc in all_convos:
+        for doc_id in doc_ids:
+            doc = self._store.get_by_id("conversations", doc_id)
+            if not doc:
+                continue
             doc_meta = doc.get("metadata") or {}
-            doc_ts_str = doc_meta.get("timestamp", "")
-            if not doc_ts_str:
+            content = doc.get("content", "")
+            # Skip docs that fail hygiene checks
+            if not self._passes_hygiene(content, doc_meta, "conversations"):
                 continue
-            try:
-                doc_ts = datetime.fromisoformat(doc_ts_str)
-            except (ValueError, TypeError):
-                continue
-            if range_start <= doc_ts <= range_end:
-                # Skip docs that fail hygiene checks
-                content = doc.get("content", "")
-                if not self._passes_hygiene(content, doc_meta, "conversations"):
-                    continue
-                matched.append(doc)
+            matched.append(doc)
 
         matched.sort(key=lambda d: self._sort_key(d))
         return [self._doc_to_turn(d, is_anchor=False, collection="conversations") for d in matched]

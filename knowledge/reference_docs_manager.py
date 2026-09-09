@@ -46,6 +46,7 @@ import os
 import re
 import logging
 import hashlib
+import uuid
 from pathlib import Path
 
 from utils.text_chunking import chunk_by_headers
@@ -227,12 +228,13 @@ class ReferenceDocsManager:
             result.duration_seconds = time.time() - start_time
             return result
 
-        # Check if document with same title already exists
+        # Staged replacement (2026-09-09, F02): snapshot the PRIOR version's
+        # chunk ids/metadata BEFORE inserting anything new. The old version
+        # is only deleted after the new insert succeeds — a mid-upload
+        # failure (chunking/embedding/insertion) must never leave the title
+        # with nothing retrievable. `delete_document(title)` is no longer
+        # called here.
         existing = self._get_document_chunks(result.title)
-        if existing:
-            # Delete existing to replace
-            self.delete_document(result.title)
-            logger.info(f"[RefDocs] Replacing existing document: {result.title}")
 
         # Extract section headers for metadata
         sections = self._extract_sections(content)
@@ -244,6 +246,15 @@ class ReferenceDocsManager:
         file_mtime = os.path.getmtime(str(path))
         content_hash = self._compute_file_hash(str(path))
 
+        # Fresh id identifying this upload's chunks as one unit — lets the
+        # post-insert cleanup find exactly the OLD version (a same-title
+        # chunk from a different call) without ever matching what was just
+        # written. `scripts/dedup_reference_docs.py` groups by `timestamp`
+        # instead (already one value per upload call); this is an
+        # additional, more explicit key and does not replace it.
+        new_batch_id = uuid.uuid4().hex
+        target_type = 'reference_doc'
+
         # Batch add all chunks to ChromaDB (single embedding pass + disk write)
         now = datetime.now().isoformat()
         texts = []
@@ -251,7 +262,7 @@ class ReferenceDocsManager:
         for chunk in chunks:
             texts.append(chunk['text'])
             metas.append({
-                'type': 'reference_doc',
+                'type': target_type,
                 'title': result.title,
                 'file_path': str(path),
                 'file_type': result.file_type,
@@ -263,17 +274,31 @@ class ReferenceDocsManager:
                 'truth_score': 0.85,  # High confidence for uploaded docs
                 'file_mtime': file_mtime,
                 'content_hash': content_hash,
+                'upload_batch': new_batch_id,
             })
 
         try:
             self.chroma_store.add_batch_to_collection('reference_docs', texts, metas)
             result.total_chunks = len(chunks)
         except Exception as e:
+            # add_batch_to_collection only returns ids on success (see
+            # MultiCollectionChromaStore.add_batch_to_collection) — on this
+            # exception nothing new was durably written, so there is
+            # nothing to clean up here and the prior version (if any) was
+            # never touched.
             error_msg = f"Batch add failed: {str(e)}"
             result.errors.append(error_msg)
             logger.warning(f"[RefDocs] {error_msg}")
+            result.success = False
+            result.duration_seconds = time.time() - start_time
+            logger.error(f"[RefDocs] Upload failed for '{result.title}': {result.errors}")
+            return result
 
         result.success = result.total_chunks > 0
+
+        if result.success and existing:
+            self._replace_old_chunks(result.title, existing, new_batch_id, target_type)
+
         result.duration_seconds = time.time() - start_time
 
         if result.success:
@@ -308,17 +333,23 @@ class ReferenceDocsManager:
             result.duration_seconds = time.time() - start_time
             return result
 
-        # Check if document with same title already exists
+        # Staged replacement (2026-09-09, F02): snapshot the PRIOR version's
+        # chunks BEFORE inserting the new ones — see upload_document() for
+        # the full rationale. `delete_document(title)` is no longer called
+        # here.
         existing = self._get_document_chunks(title)
-        if existing:
-            self.delete_document(title)
-            logger.info(f"[RefDocs] Replacing existing document: {title}")
 
         # Extract section headers for metadata
         sections = self._extract_sections(content)
 
         # Chunk the content
         chunks = self._chunk_by_headers(content, title)
+
+        new_batch_id = uuid.uuid4().hex
+        # metadata_overrides can change 'type' (e.g. 'user_upload'); the
+        # actual type being written this call is what the old-chunk cleanup
+        # must match against, not the 'reference_doc' default.
+        target_type = (metadata_overrides or {}).get('type', 'reference_doc')
 
         # Batch add all chunks to ChromaDB (single embedding pass + disk write)
         now = datetime.now().isoformat()
@@ -336,6 +367,7 @@ class ReferenceDocsManager:
                 'total_chunks': chunk['total_chunks'],
                 'timestamp': now,
                 'truth_score': 0.85,
+                'upload_batch': new_batch_id,
             }
             if metadata_overrides:
                 md.update(metadata_overrides)
@@ -346,11 +378,21 @@ class ReferenceDocsManager:
             self.chroma_store.add_batch_to_collection('reference_docs', texts, metas)
             result.total_chunks = len(chunks)
         except Exception as e:
+            # No ids are returned on failure (see add_batch_to_collection) —
+            # nothing new was written, so the prior version (if any) is
+            # left exactly as it was.
             error_msg = f"Batch add failed: {str(e)}"
             result.errors.append(error_msg)
             logger.warning(f"[RefDocs] {error_msg}")
+            result.success = False
+            result.duration_seconds = time.time() - start_time
+            return result
 
         result.success = result.total_chunks > 0
+
+        if result.success and existing:
+            self._replace_old_chunks(title, existing, new_batch_id, target_type)
+
         result.duration_seconds = time.time() - start_time
 
         if result.success:
@@ -360,6 +402,84 @@ class ReferenceDocsManager:
             )
 
         return result
+
+    @staticmethod
+    def _old_chunk_ids_for_replacement(
+        existing_chunks: List[Dict[str, Any]], new_batch_id: str, target_type: str
+    ) -> List[str]:
+        """Chunk ids from a PRE-insert snapshot to remove once the new
+        version's insert has already succeeded.
+
+        A chunk qualifies when: it does not carry the new batch id (so a
+        legacy chunk with no ``upload_batch`` field at all also qualifies —
+        it can never equal a freshly generated uuid4), AND, when its
+        metadata carries a ``type`` field, that type equals the type being
+        written this call. A same-title document of a DIFFERENT type/source
+        (e.g. a self-seeded 'reference_doc' vs. a 'user_upload') must never
+        be cross-deleted by this path (F02 acceptance).
+        """
+        old_ids = []
+        for c in existing_chunks:
+            meta = c.get('metadata') or {}
+            if meta.get('upload_batch') == new_batch_id:
+                continue
+            old_type = meta.get('type')
+            if old_type is not None and old_type != target_type:
+                continue
+            cid = c.get('id')
+            if cid:
+                old_ids.append(cid)
+        return old_ids
+
+    def _delete_chunk_ids(self, ids: List[str]) -> bool:
+        """Delete specific chunk ids from reference_docs.
+
+        Used for staged replacement (F02): only ids computed from a
+        pre-insert snapshot are ever passed here — never "by title", which
+        would delete a same-title document of an unrelated type.
+        """
+        if not ids:
+            return True
+        try:
+            collection = self._collection()
+            if not collection:
+                return False
+            collection.delete(ids=ids)
+            return True
+        except Exception as e:
+            logger.error(f"[RefDocs] Failed to delete {len(ids)} chunk id(s): {e}")
+            return False
+
+    def _replace_old_chunks(
+        self,
+        title: str,
+        existing_chunks: List[Dict[str, Any]],
+        new_batch_id: str,
+        target_type: str,
+    ) -> None:
+        """Delete the prior version's chunks AFTER the new version's insert
+        has already succeeded (F02 staged replacement).
+
+        A failure here is logged but never turned into an upload failure —
+        the new version is already durably stored; at worst a stale old
+        version lingers until the next successful replacement or an
+        explicit delete_document() call. Never auto-deletes anything beyond
+        the exact ids computed before the new insert.
+        """
+        old_ids = self._old_chunk_ids_for_replacement(existing_chunks, new_batch_id, target_type)
+        if not old_ids:
+            return
+        if self._delete_chunk_ids(old_ids):
+            logger.info(
+                f"[RefDocs] Replaced existing document: {title} "
+                f"({len(old_ids)} old chunk(s) removed)"
+            )
+        else:
+            logger.warning(
+                f"[RefDocs] New version of '{title}' stored (batch {new_batch_id}) but "
+                f"failed to remove {len(old_ids)} old chunk(s); a stale version may remain "
+                f"retrievable until the next successful replacement or an explicit delete."
+            )
 
     def _get_document_chunks(self, title: str) -> List[Dict[str, Any]]:
         """Get all chunks for a specific document by title."""
@@ -745,22 +865,19 @@ class ReferenceDocsManager:
             True if successful, False otherwise
         """
         try:
-            collection = self._collection()
-            if not collection:
-                return False
-
-            # Find all chunks with this title
+            # Find all chunks with this title (explicit whole-document
+            # delete — unlike the replacement path, this intentionally
+            # removes every type/source sharing the title).
             chunks = self._get_document_chunks(title)
             if not chunks:
                 logger.warning(f"[RefDocs] No document found with title: {title}")
                 return False
 
-            # Delete each chunk by ID
             ids_to_delete = [c['id'] for c in chunks]
-            collection.delete(ids=ids_to_delete)
-
-            logger.info(f"[RefDocs] Deleted document '{title}' ({len(ids_to_delete)} chunks)")
-            return True
+            ok = self._delete_chunk_ids(ids_to_delete)
+            if ok:
+                logger.info(f"[RefDocs] Deleted document '{title}' ({len(ids_to_delete)} chunks)")
+            return ok
 
         except Exception as e:
             logger.error(f"[RefDocs] Failed to delete document '{title}': {e}")
