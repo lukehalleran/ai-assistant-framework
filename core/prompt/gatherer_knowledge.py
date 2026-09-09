@@ -51,6 +51,7 @@ self.model_manager (set by ContextGatherer.__init__).
 import os
 import re
 import asyncio
+import hashlib
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -262,6 +263,44 @@ def _upload_title_filename(doc: Dict[str, Any]) -> str:
     if title.startswith('upload:'):
         return title[len('upload:'):].strip().lower()
     return ''
+
+
+def _upload_content_fingerprint(doc: Dict[str, Any]) -> str:
+    """Whitespace-collapsed sha1 of an upload's first 2000 content chars."""
+    content = str(doc.get('content', '') or '')
+    normalized = " ".join(content.split())[:2000]
+    return hashlib.sha1(normalized.encode('utf-8', errors='ignore')).hexdigest()
+
+
+def _dedupe_upload_content(uploads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop uploads whose content fingerprint repeats an earlier
+    (higher-ranked) upload's, preserving order.
+
+    2026-09-08: three IDENTICAL chunks of one lecture transcript had been
+    persisted under three different temp-file titles (tmps4dvg5t1.txt etc.,
+    pre-2026-09-04 rows predating `attachment_display_name()`) — same
+    content, different metadata title, so neither the same-turn-filename
+    dedupe above nor a title-based dedupe could catch it. Empty content
+    never dedupes against another empty one (e.g. the roster placeholder,
+    inserted after this runs, or a genuinely content-less stub).
+    """
+    seen: set = set()
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for doc in uploads:
+        content = str(doc.get('content', '') or '')
+        if not content.strip():
+            kept.append(doc)
+            continue
+        fp = _upload_content_fingerprint(doc)
+        if fp in seen:
+            dropped += 1
+            continue
+        seen.add(fp)
+        kept.append(doc)
+    if dropped:
+        logger.debug(f"[ContextGatherer] Dropped {dropped} duplicate-content user upload(s)")
+    return kept
 
 
 def _note_text_substance(content) -> int:
@@ -885,6 +924,10 @@ class KnowledgeRetrievalMixin:
                     f"user uploads (>{USER_UPLOADS_MAX_AGE_DAYS}d old and "
                     f"relevance < {USER_UPLOADS_MIN_RELEVANCE})"
                 )
+
+            # Content dedupe (2026-09-08) — see _dedupe_upload_content.
+            uploads = _dedupe_upload_content(uploads)
+
             uploads = uploads[:limit]
 
             if uploads:

@@ -68,6 +68,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
 from utils.logging_utils import get_logger
+from utils.trigger_match import compile_keyword_matcher
 
 logger = get_logger("tone_detector")
 
@@ -198,7 +199,13 @@ MEDIUM_CRISIS_KEYWORDS = {
     # Substance abuse crisis
     "relapsed", "using again", "drinking again",
     "can't stay sober", "want to drink", "need a drink",
-    "want to use", "need to use", "craving badly",
+    "craving badly",
+    # "want to use" / "need to use" moved to _SUBSTANCE_USE_RE (2026-09-08):
+    # bare substring matched "…id just need to use CDF to find vals…" in a
+    # homework message, scoring MEDIUM-keyword CONCERN via harm score. The
+    # regex requires clause-final placement or an "again"/"so bad(ly)" tail
+    # so "need to use the pt() function" no longer scores while "I really
+    # need to use again" still does.
 
     # Severe anxiety states
     "heart racing", "chest tight", "hyperventilating",
@@ -332,6 +339,29 @@ EVENT_DISTRESS_KEYWORDS = {
     "where we're headed", "where this is going",
     "can't live in a country", "leaving this country", "leaving the country",
 }
+
+# Matchers compiled once: word-boundary for bare single words, substring for
+# multi-word phrases (utils/trigger_match.compile_keyword_matcher — same
+# infra as query_checker.HEAVY_KEYWORDS). Replaces the four bare `keyword in
+# message_lower` scans in _calculate_harm_score; iter_hits() still yields at
+# most one hit per keyword, so score/matched/category bookkeeping is
+# unchanged (2026-09-08: closes the same substring class HEAVY_KEYWORDS had —
+# no live HIGH/MEDIUM/CONCERN/EVENT miss was found, this is a preventive fix).
+_HIGH_MATCHER = compile_keyword_matcher(sorted(HIGH_CRISIS_KEYWORDS))
+_MEDIUM_MATCHER = compile_keyword_matcher(sorted(MEDIUM_CRISIS_KEYWORDS))
+_CONCERN_MATCHER = compile_keyword_matcher(sorted(CONCERN_KEYWORDS))
+_EVENT_MATCHER = compile_keyword_matcher(sorted(EVENT_DISTRESS_KEYWORDS))
+
+# "I need to use CDF to find vals" (a homework message) scored a MEDIUM hit
+# via bare substring on "need to use" — the substance-abuse-crisis phrase is
+# only real distress evidence when it stands alone at clause end, or is
+# followed by an intensifier ("again"/"tonight"/"right now"/"so bad(ly)").
+# "need to use the pt() function", "need to use CDF" no longer match.
+_SUBSTANCE_USE_RE = re.compile(
+    r"\b(?:want|need)\s+to\s+use\b(?:\s+(?:again|tonight|right\s+now|so\s+bad(?:ly)?))?\s*[.!?…]*\s*$"
+    r"|\b(?:want|need)\s+to\s+use\s+(?:again|so\s+bad(?:ly)?)\b",
+    re.IGNORECASE,
+)
 
 # World event/observational phrases (should NOT trigger crisis mode)
 # These indicate the user is discussing external events, not personal distress
@@ -724,22 +754,60 @@ _HISTORY_FIRST_PERSON_RE = re.compile(
 )
 
 
-def _heavy_row_is_first_person(turn: dict) -> bool:
-    """Whether a heavy-flagged history row carries the user's own first-person
-    material, vs. being purely about the outside world (a news question, a
-    third party's situation).
+def _heavy_row_is_distress_evidence(turn: dict) -> bool:
+    """Whether a heavy-flagged history row is still distress evidence once
+    re-checked at read time, vs. being purely about the outside world (a
+    news question, a third party's situation) — or a false positive from
+    the pre-2026-09-08 bare-substring HEAVY_KEYWORDS bug.
 
     Text is read from ``query``, falling back to ``user``, then ``content``
     (first truthy value wins), coerced to str. A row with NONE of those
     fields present is counted as distress evidence exactly as before
-    (fail-closed for legacy rows that predate this field). A row WITH text
-    but no first-person marker is not distress evidence.
+    (fail-closed for legacy rows that predate this field).
+
+    2026-09-08: a pasted R homework script (`model <- lm(Price ~ ., data =
+    used_car_data)`) matched "ice" inside "Price" under the old bare-
+    substring HEAVY_KEYWORDS scan and was stored `is_heavy_topic=True`; the
+    row's own first-person text ("yeah its not working") then satisfied the
+    2026-09-05 first-person-only check below and floored 11 homework turns
+    to CONCERN. R1 (query_checker.heavy_keyword_hits) already fixes this at
+    STORAGE time going forward; this read-time recheck neutralizes rows
+    ALREADY stored heavy under the old bug, without a store rewrite —
+    scoped to the actual poisoned shape (a heavy hit that lived inside a
+    pasted code/script line) rather than blanket-requiring a literal
+    keyword on every heavy row: when the text contains code-shaped lines
+    (`query_checker.strip_code_shaped_lines` actually removes something),
+    heaviness is RE-DERIVED from the stripped prose via the corrected
+    word-bounded `heavy_keyword_hits`, in addition to the first-person
+    check, both against the SAME stripped text — an empty re-check means
+    the only "heavy" signal was inside the stripped code, so the row is not
+    distress evidence. Ordinary prose (no code-shaped lines) keeps the
+    original 2026-09-05 first-person-only check: `is_heavy_topic=True` set
+    by any other path (the LLM classifier, a genuine but non-listed
+    distress phrase) is not blanket-distrusted just because this exact
+    string doesn't happen to contain one of the ~90 HEAVY_KEYWORDS.
     """
     text = turn.get("query") or turn.get("user") or turn.get("content")
     if not text:
         return True  # fail-closed: no text field to inspect
+    # lazy import: call-time patch point — tests monkeypatch
+    # utils.query_checker.heavy_keyword_hits/strip_code_shaped_lines
+    from utils.query_checker import heavy_keyword_hits, strip_code_shaped_lines
+
     text = str(text)
-    if _HISTORY_FIRST_PERSON_RE.search(text.lower()):
+    stripped = strip_code_shaped_lines(text)
+    if stripped != text:
+        # Code-shaped content was present — the specific false-positive
+        # shape the substring bug produced. Re-verify heaviness on the
+        # prose-only remainder before trusting the stored flag at all.
+        if not heavy_keyword_hits(stripped):
+            logger.debug(
+                "[ToneDetector] heavy history row's only heavy-keyword "
+                "signal lived inside a stripped code/script line — not "
+                "distress evidence"
+            )
+            return False
+    if _HISTORY_FIRST_PERSON_RE.search(stripped.lower()):
         return True
     logger.debug(
         "[ToneDetector] heavy history turn has no first-person marker "
@@ -766,6 +834,13 @@ def _recent_distress_from_history(conversation_history: Optional[List[dict]]) ->
     fresh heavy row now counts toward session distress only when its text
     carries a first-person marker (or the row has no text field at all, in
     which case it counts as before).
+
+    2026-09-08: `_heavy_row_is_distress_evidence` additionally neutralizes a
+    heavy-flagged row whose text contains code-shaped (pasted script) lines
+    and has no remaining word-bounded heavy-keyword hit once those lines
+    are stripped — the shape the pre-2026-09-08 bare-substring HEAVY_KEYWORDS
+    bug actually produced (see that function's docstring). Ordinary prose
+    rows are unaffected — they keep the original first-person-only check.
     """
     if not conversation_history:
         return False
@@ -796,7 +871,7 @@ def _recent_distress_from_history(conversation_history: Optional[List[dict]]) ->
                 isinstance(turn, dict)
                 and turn.get("is_heavy_topic", False)
                 and _fresh(turn)
-                and _heavy_row_is_first_person(turn)
+                and _heavy_row_is_distress_evidence(turn)
             ):
                 return True
     except Exception as e:  # pragma: no cover - defensive
@@ -885,37 +960,43 @@ def _calculate_harm_score(message: str) -> Tuple[float, List[str], Dict[str, int
     matched = []
     category_counts = {"high": 0, "medium": 0, "concern": 0, "event": 0}
 
-    # Scan for HIGH keywords (10 points each)
-    for keyword in HIGH_CRISIS_KEYWORDS:
-        if keyword in message_lower:
-            score += 10
-            matched.append(f"HIGH: {keyword}")
-            category_counts["high"] += 1
-            logger.debug(f"[HarmScore] HIGH keyword: '{keyword}' (+10)")
+    # Scan for HIGH keywords (10 points each) — word-bounded for bare words,
+    # substring for phrases (see _HIGH_MATCHER above).
+    for hit in _HIGH_MATCHER.iter_hits(message_lower):
+        score += 10
+        matched.append(f"HIGH: {hit.keyword}")
+        category_counts["high"] += 1
+        logger.debug(f"[HarmScore] HIGH keyword: '{hit.keyword}' (+10)")
 
     # Scan for MEDIUM keywords (5 points each)
-    for keyword in MEDIUM_CRISIS_KEYWORDS:
-        if keyword in message_lower:
-            score += 5
-            matched.append(f"MEDIUM: {keyword}")
-            category_counts["medium"] += 1
-            logger.debug(f"[HarmScore] MEDIUM keyword: '{keyword}' (+5)")
+    for hit in _MEDIUM_MATCHER.iter_hits(message_lower):
+        score += 5
+        matched.append(f"MEDIUM: {hit.keyword}")
+        category_counts["medium"] += 1
+        logger.debug(f"[HarmScore] MEDIUM keyword: '{hit.keyword}' (+5)")
+
+    # "want/need to use" — clause-context substance-use check moved off the
+    # MEDIUM keyword list and onto _SUBSTANCE_USE_RE (2026-09-08): see the
+    # regex's own comment for the false-positive it fixes.
+    if _SUBSTANCE_USE_RE.search(message_lower):
+        score += 5
+        matched.append("MEDIUM: need/want to use")
+        category_counts["medium"] += 1
+        logger.debug("[HarmScore] MEDIUM keyword: 'need/want to use' (+5)")
 
     # Scan for CONCERN keywords (2 points each)
-    for keyword in CONCERN_KEYWORDS:
-        if keyword in message_lower:
-            score += 2
-            matched.append(f"CONCERN: {keyword}")
-            category_counts["concern"] += 1
-            logger.debug(f"[HarmScore] CONCERN keyword: '{keyword}' (+2)")
+    for hit in _CONCERN_MATCHER.iter_hits(message_lower):
+        score += 2
+        matched.append(f"CONCERN: {hit.keyword}")
+        category_counts["concern"] += 1
+        logger.debug(f"[HarmScore] CONCERN keyword: '{hit.keyword}' (+2)")
 
     # Scan for EVENT_DISTRESS (2 points each)
-    for keyword in EVENT_DISTRESS_KEYWORDS:
-        if keyword in message_lower:
-            score += 2
-            matched.append(f"EVENT: {keyword}")
-            category_counts["event"] += 1
-            logger.debug(f"[HarmScore] EVENT_DISTRESS: '{keyword}' (+2)")
+    for hit in _EVENT_MATCHER.iter_hits(message_lower):
+        score += 2
+        matched.append(f"EVENT: {hit.keyword}")
+        category_counts["event"] += 1
+        logger.debug(f"[HarmScore] EVENT_DISTRESS: '{hit.keyword}' (+2)")
 
     # Handle "overwhelmed" specially
     if "overwhelmed" in message_lower:

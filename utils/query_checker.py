@@ -26,6 +26,8 @@ Module Contract
     (memory_retriever) and the obsidian keyword proper-noun floor, 2026-08-26;
     sentence-initial tokens excluded, days/months/common capitals stoplisted,
     adjacent names merge ("Jordan Vale"), UNDER-fires by design]
+  - heavy_keyword_hits(text) -> List[str]  [word-bounded/substring HEAVY_KEYWORDS hits,
+    2026-09-08 — see _HEAVY_MATCHER]
   - _is_heavy_topic_heuristic(q) -> bool  [keyword-based heavy topic detection]
   - _classify_heavy_topic_llm(q, model_manager) -> bool  [async LLM-based heavy topic check]
   - extract_thread_keywords(text) -> Set[str]  [salient keywords for thread matching]
@@ -43,7 +45,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
-from utils.trigger_match import is_negated as _trigger_is_negated
+from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher
 from memory.fact_source import strip_quoted_correspondence
 import re
 from datetime import datetime
@@ -1016,6 +1018,27 @@ HEAVY_KEYWORDS = {
     "domestic violence", "abusive", "abuser",
 }
 
+# Word-boundary (bare single words) / substring (phrases) matcher over
+# HEAVY_KEYWORDS — see utils/trigger_match.py. 2026-09-08: bare substring
+# matching let "ice" fire inside "Price"/"office"/"notice"/"nice"/"device";
+# a pasted R homework script whose response variable was `Price` (`model <-
+# lm(Price ~ ., data = used_car_data)`) was stored `is_heavy_topic=True` on
+# that alone, which then fed the tone sticky-floor's history scan (see
+# tone_detector._recent_distress_from_history) into an unwarranted CONCERN
+# floor on 11 homework turns. Phrases (containing a space, e.g. "tear gas")
+# keep substring semantics; a stem like "discriminat" still matches
+# "discrimination" (left boundary only).
+_HEAVY_MATCHER = compile_keyword_matcher(sorted(HEAVY_KEYWORDS))
+
+
+def heavy_keyword_hits(text: str) -> List[str]:
+    """Word-bounded (single words) / substring (phrases) HEAVY_KEYWORDS hits
+    in `text`. Under-fires by design relative to the old bare-substring scan
+    — see the 2026-09-08 note on `_HEAVY_MATCHER` above."""
+    if not text or not isinstance(text, str):
+        return []
+    return [h.keyword for h in _HEAVY_MATCHER.iter_hits(text.lower())]
+
 
 def _is_heavy_topic_heuristic(q: str) -> bool:
     """
@@ -1034,13 +1057,10 @@ def _is_heavy_topic_heuristic(q: str) -> bool:
     # Length check
     if len(q) > HEAVY_TOPIC_CHAR_THRESHOLD:
         return True
-    
-    # Keyword matching (case-insensitive)
-    q_lower = q.lower()
-    
-    # Count keyword hits
-    hits = sum(1 for keyword in HEAVY_KEYWORDS if keyword in q_lower)
-    
+
+    # Keyword matching (word-bounded for bare words, substring for phrases)
+    hits = len(heavy_keyword_hits(q))
+
     # If multiple heavy keywords appear, likely a heavy topic
     if hits >= 2:
         return True

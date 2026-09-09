@@ -490,6 +490,41 @@ def _combine_scores(
         )
 
 
+_NEED_TEACH_SKIP_MARKERS = ("[ACTIVE DOCUMENT", "[ATTACHMENT NOTE", "[DEADLINE NOTE")
+_NEED_TEACH_MAX_WORDS = 60
+
+
+def _skip_need_teaching(message: str) -> bool:
+    """Whether `message` is paste/technical-shaped and should not teach a
+    need exemplar even on a high-confidence keyword fast-path hit.
+
+    Classification itself is unaffected — only the teaching side-effect
+    below is skipped.
+
+    2026-09-08: a homework session's own first-person keyword hits (perspective
+    -shaped R/statistics questions) taught 13 "perspective" exemplars from
+    pasted script/technical text over one afternoon, one of them carrying an
+    injected `[ACTIVE DOCUMENT — ...]` context passage verbatim into the
+    learned store.
+    """
+    if not message:
+        return False
+    # lazy import: call-time patch point — tests monkeypatch
+    # utils.query_checker.strip_code_shaped_lines; also keeps
+    # memory.fact_source (query_checker's own import) off need_detector's
+    # module-load path for callers that never reach the fast-path teach
+    # branch.
+    from utils.query_checker import strip_code_shaped_lines
+
+    if strip_code_shaped_lines(message) != message:
+        return True
+    if any(marker in message for marker in _NEED_TEACH_SKIP_MARKERS):
+        return True
+    if len(message.split()) > _NEED_TEACH_MAX_WORDS:
+        return True
+    return False
+
+
 def detect_need_type(message: str, model_manager=None) -> NeedAnalysis:
     """
     Main entry point: hybrid need-type detection.
@@ -513,6 +548,7 @@ def detect_need_type(message: str, model_manager=None) -> NeedAnalysis:
         if (
             keyword_result.need_type != NeedType.NEUTRAL
             and NEED_CONFIG.get("exemplar_learning", True)
+            and not _skip_need_teaching(message)
         ):
             try:
                 from utils.adaptive_exemplars import get_store

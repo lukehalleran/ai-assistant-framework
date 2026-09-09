@@ -93,7 +93,12 @@ class ResponseParser:
     # one exception — "i.e"-shaped single-letter abbreviations, which the guard
     # below preserves.
     _TRAILING_STREAM_ARTIFACT_RE = re.compile(r"[.!?…]['\"”’)\]]*e$")
-    _SINGLE_LETTER_ABBREV_RE = re.compile(r"(?:^|[\s(\[])[A-Za-z]\.e$")
+    # 2026-09-08: the old pattern exempted ANY single letter before ".e"
+    # (`(?:^|[\s(\[])[A-Za-z]\.e$`), so "it's all base R.e" (a stream
+    # artifact after "base R", the statistics language) was preserved as if
+    # it were an abbreviation. Only "i.e" is a real single-letter
+    # abbreviation ending in "e" — narrow the exemption to exactly that.
+    _SINGLE_LETTER_ABBREV_RE = re.compile(r"\bi\.e$", re.IGNORECASE)
 
     # ResponseGenerator's streaming catch-all appends its sentinel to whatever
     # already streamed, in two shapes: "[Streaming Error: <msg>]" (bracketed,

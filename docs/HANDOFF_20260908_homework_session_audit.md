@@ -227,6 +227,25 @@ Results are recorded below as they happen; a proposed check is not a passing res
 - Combined run: 353 targeted new+regression tests green (per-batch), 1446 passed / 1 pre-existing skip across a 63-file broad-net regression sweep touching every module in this wave's import graph, ruff clean on all 11 touched files, all five repo-wide guards green, `scripts/agent_session_audit.sh` clean (HEAD unchanged, no data/ writes, no suspicious large files).
 - Deviation from the plan text: the B5 wiring prose said navigation resolution runs "ONLY when this turn attached no documents," but the B5 TEST SPEC (turn 1: attach + "please show me first question" → the marker must appear in that SAME turn's prompt) requires the opposite — the freshly-registered document must be a navigable candidate immediately. Implemented as: register first, then ALWAYS attempt navigation (still gated by `is_task_navigation`/a filename mention, so it's a no-op on an ordinary attach-only turn); the test suite encodes this as the source of truth. Not committed, not restarted, per instruction — see OWNER below.
 
+### Live probes after the 19:29 restart (commit 21a914e; owner-run, debug records reviewed by Fable)
+
+| Probe | Outcome |
+|---|---|
+| 1 fenced R code | PASS — enhanced route, fence + every code line intact in the bubble and stored history. |
+| 2 active document | PASS — attach + "please show me the first question…" injected `[ACTIVE DOCUMENT — Homework1-1.pdf, Task 1 (1 of 4)]` and quoted Q1/Q2; two interleaved code questions; "ok next q please" ran the FULL path (no light path, no re-upload request), injected Task 2 and quoted Q3–Q6 verbatim. |
+| 3 record-28 sentence | PASS on the fix (no insight-assembly, no PubMed). Still ran agentic `knowledge` with zero rounds, 33.7 s — the deferred F6 class, unchanged. |
+| 4 pasted script | PASS — enhanced, "no trigger". |
+| 5 sandbox | PASS — one E2B session created (two log lines, one event), output 45. |
+| N1 "read not a function" | PASS — enhanced, "no trigger". |
+
+**New findings from the same records — B7 SHIPPED (`tests/unit/test_sep08_homework_tone_misfires.py`, 41; 759 + guards green; `commit_message_11.txt`):**
+- **Homework was a "heavy topic" all day.** `HEAVY_KEYWORDS` holds `"ice"` and `_is_heavy_topic_heuristic` matches bare substrings, so every message containing "Price" stored `is_heavy_topic=True`; `_recent_distress_from_history` then armed the distress-sticky floor for 30 min after each pasted script. Telemetry: `distress_sticky_floor` on 9 afternoon turns (16:07–16:57) and on probe turns 7–8 — LIGHT SUPPORT ("don't offer advice") on debugging questions, valence-capped retrieval, PERSPECTIVE MODE injections. Neither the Codex audit nor the Fable review caught it: the debug records carry no tone field; `logs/turn_records.jsonl` does. Substring class, 6th occurrence.
+- The MEDIUM crisis keyword `need to use` matched "need to use CDF" at 16:25 → CONCERN via harm score → learned as a tone/concern exemplar; the need-detector keyword teacher learned 13 "perspective" exemplars from homework text today, one containing the injected `[ACTIVE DOCUMENT]` passage. Purge candidates: `data/exemplar_purge_candidates_20260908.txt` (owner, Daemon down).
+- "base R.e": `_SINGLE_LETTER_ABBREV_RE` exempted any single capital letter, not just "i.e".
+- Three identical temp-titled lecture chunks (pre-09-04 rows) admitted as uploads — content-hash dedupe at retrieval.
+
+**Follow-ups noted, not fixed:** (a) navigation granularity — the registry chose the `Task N` family (4 items) over the twelve numbered questions; "next q" should prefer the finer family when the user says q/question and the finer family exists; (b) `[RELEVANT EMAILS]` admitted two marketing emails on a stats question (passive email leg bar 0.35); (c) F6 agentic `knowledge` on plain R questions (measurement first).
+
 ## CONTINGENCY
 
 | Condition | Response |
