@@ -157,6 +157,18 @@ def apply_streaming(orchestrator, *, disable_best_of: bool, disable_query_rewrit
                 setattr(pb, "force_llm_summaries", not disable_llm_summaries)
         except (AttributeError, TypeError):
             pass
+        # 2026-09-09 (audit F10): ContextPipeline copied enable_query_rewrite
+        # into a private field at init and reads THAT — the config-dict write
+        # above never reached the running pipeline.
+        try:
+            cp = getattr(orchestrator, "context_pipeline", None)
+            if cp is not None and hasattr(cp, "_enable_query_rewrite"):
+                cp._enable_query_rewrite = not bool(disable_query_rewrite)
+                cp_cfg = getattr(cp, "config", None)
+                if isinstance(cp_cfg, dict):
+                    cp_cfg["enable_query_rewrite"] = not bool(disable_query_rewrite)
+        except (AttributeError, TypeError):
+            pass
         ok, err = save(lambda d: d.setdefault("features", {}).update({
             "enable_best_of": not bool(disable_best_of),
             "enable_query_rewrite": not bool(disable_query_rewrite),
@@ -168,6 +180,30 @@ def apply_streaming(orchestrator, *, disable_best_of: bool, disable_query_rewrit
         return _result(True, True, "Streaming settings updated (persisted).")
     except Exception as e:
         return _result(False, False, f"Failed to apply: {e}")
+
+
+def _live_web_search_managers(orchestrator) -> list:
+    """Already-created WebSearchManager instances reachable from the
+    orchestrator. Never triggers lazy creation (the gatherer's property would
+    build one) — a manager created later reads the live config itself."""
+    seen: list = []
+    try:
+        gatherer = getattr(getattr(orchestrator, "prompt_builder", None),
+                           "context_gatherer", None)
+        mgr = getattr(gatherer, "_web_search_manager", None)
+        if mgr is None and gatherer is not None and not hasattr(gatherer, "_web_search_manager"):
+            # Test doubles expose the manager directly (no lazy property).
+            mgr = getattr(gatherer, "web_search_manager", None)
+        if mgr is not None:
+            seen.append(mgr)
+        # Private attr: the public property lazily BUILDS a controller.
+        ctrl = getattr(orchestrator, "_agentic_controller", None)
+        cmgr = getattr(ctrl, "web_search_manager", None)
+        if cmgr is not None and all(cmgr is not m for m in seen):
+            seen.append(cmgr)
+    except Exception:  # defensive: a settings write must never raise here
+        pass
+    return seen
 
 
 def apply_web_search(orchestrator, *, enabled: bool, daily_credit_limit: int,
@@ -184,6 +220,14 @@ def apply_web_search(orchestrator, *, enabled: bool, daily_credit_limit: int,
             app_cfg.WEB_SEARCH_DAILY_CREDIT_LIMIT = int(daily_credit_limit)
         except (ImportError, AttributeError):
             pass
+        # 2026-09-09 (audit F04): the already-instantiated rate limiter kept
+        # its construction-time daily_limit — the setter reported success while
+        # the live consumer enforced the OLD cap. Update every live manager
+        # (the agentic controller reuses the gatherer's instance).
+        for _mgr in _live_web_search_managers(orchestrator):
+            _lim = getattr(_mgr, "rate_limiter", None)
+            if _lim is not None and hasattr(_lim, "daily_limit"):
+                _lim.daily_limit = int(daily_credit_limit)
         ok, err = save(lambda d: d.setdefault("web_search", {}).update({
             "enabled": bool(enabled),
             "daily_credit_limit": int(daily_credit_limit),

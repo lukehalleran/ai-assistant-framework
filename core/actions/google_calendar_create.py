@@ -396,13 +396,16 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
                         f"[CalendarCreate] Failed to create {summary}: {event_error}"
                     )
 
+        # 2026-09-09 (audit F06): ANY created event stales the read cache,
+        # including a partially successful batch (was all-success only).
+        if created:
+            try:
+                from core.actions.google_calendar import clear_cache
+                clear_cache()
+            except Exception as exc:
+                logger.debug(f"[CalendarCreate] Could not clear calendar cache: {exc}")
+
         if not failures:
-            if created:
-                try:
-                    from core.actions.google_calendar import clear_cache
-                    clear_cache()
-                except Exception as exc:
-                    logger.debug(f"[CalendarCreate] Could not clear calendar cache: {exc}")
             if len(created) == 1:
                 summary, event_link = created[0]
                 msg = f"Calendar event created: {summary}{unavailable_note}"

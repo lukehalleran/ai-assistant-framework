@@ -85,7 +85,9 @@ async def test_disabled_or_crisis_paths_do_not_call_model_or_network(
     mocked_gatherer, monkeypatch, enabled, crisis_level
 ):
     gatherer, manager, trigger = mocked_gatherer
-    monkeypatch.setattr(gatherer_web, "WEB_SEARCH_ENABLED", enabled)
+    # 2026-09-09: the gatherer reads the LIVE app_config value (audit F04);
+    # the module binding is no longer the patch point.
+    monkeypatch.setattr("config.app_config.WEB_SEARCH_ENABLED", enabled)
     gatherer.web_search_trigger_llm = AsyncMock(side_effect=AssertionError("model called"))
     gatherer.web_search_trigger = MagicMock(side_effect=AssertionError("trigger called"))
 

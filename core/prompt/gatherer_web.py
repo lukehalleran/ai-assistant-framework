@@ -38,6 +38,21 @@ except ImportError:
     WEB_SEARCH_DAILY_CREDIT_LIMIT = 100
 
 
+def _web_search_enabled() -> bool:
+    """Live value of the web-search toggle (2026-09-09, audit F04).
+
+    The Settings page flips ``config.app_config.WEB_SEARCH_ENABLED`` at
+    runtime; a module-level ``from`` import froze the value at import time,
+    so the already-running gatherer kept searching after the owner disabled
+    it. Import-doctrine case 3: read the live attribute at call time.
+    """
+    try:
+        import config.app_config as _cfg  # lazy import: live-config read
+        return bool(getattr(_cfg, "WEB_SEARCH_ENABLED", WEB_SEARCH_ENABLED))
+    except ImportError:
+        return bool(WEB_SEARCH_ENABLED)
+
+
 class WebSearchMixin:
     """Mixin providing web search retrieval methods."""
 
@@ -69,8 +84,8 @@ class WebSearchMixin:
         Returns:
             WebSearchResult if search was triggered and successful, None otherwise
         """
-        # Check if web search is enabled
-        if not WEB_SEARCH_ENABLED:
+        # Check if web search is enabled (live value — Settings can flip it)
+        if not _web_search_enabled():
             logger.debug("[ContextGatherer] Web search disabled in config")
             return None
 
@@ -111,7 +126,7 @@ class WebSearchMixin:
                     query=query,
                     model_manager=self.model_manager,
                     crisis_level=crisis_level,
-                    web_search_enabled=WEB_SEARCH_ENABLED,
+                    web_search_enabled=_web_search_enabled(),
                     remaining_credits=remaining_credits,
                     conversation_context=conversation_context,
                 )
@@ -213,7 +228,7 @@ class WebSearchMixin:
         Returns:
             True if web search should be triggered
         """
-        if not WEB_SEARCH_ENABLED:
+        if not _web_search_enabled():
             return False
 
         if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):

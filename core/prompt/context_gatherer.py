@@ -231,9 +231,17 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
             try:
                 from knowledge.web_search_manager import WebSearchManager, WebSearchRateLimiter
 
-                # Create rate limiter with config values
+                # Create rate limiter with config values. The daily limit is
+                # read LIVE (2026-09-09, audit F04): a Settings change made
+                # before the first search must reach a lazily-created limiter.
+                try:
+                    import config.app_config as _cfg  # lazy import: live-config read
+                    _daily_limit = int(getattr(_cfg, "WEB_SEARCH_DAILY_CREDIT_LIMIT",
+                                               WEB_SEARCH_DAILY_CREDIT_LIMIT))
+                except (ImportError, TypeError, ValueError):
+                    _daily_limit = WEB_SEARCH_DAILY_CREDIT_LIMIT
                 rate_limiter = WebSearchRateLimiter(
-                    daily_limit=WEB_SEARCH_DAILY_CREDIT_LIMIT,
+                    daily_limit=_daily_limit,
                     per_query_limit=WEB_SEARCH_PER_QUERY_LIMIT,
                 )
 

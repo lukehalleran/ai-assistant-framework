@@ -591,6 +591,9 @@ def format_web_sources_with_ids(
     return "\n\n".join(parts)
 
 
+DISABLED_ERROR = "Web search is disabled in Settings"
+
+
 class WebSearchRateLimiter:
     """
     Credit-aware rate limiter for Tavily API.
@@ -982,10 +985,27 @@ class WebSearchManager:
             return False
 
     def is_available(self) -> bool:
-        """Check if web search is available."""
+        """Check if web search is available.
+
+        Also honours the LIVE Settings toggle (2026-09-09, audit F04): the
+        gatherer, the agentic tool-health block and every direct caller
+        consult this one predicate, so a disabled search can't reach the
+        provider through a path that never read the config constant.
+        """
+        if not self.is_enabled():
+            return False
         if self._api_key_invalid:
             return False
         return bool(self.api_key) and self._ensure_tavily()
+
+    @staticmethod
+    def is_enabled() -> bool:
+        """Live value of ``config.app_config.WEB_SEARCH_ENABLED``."""
+        try:
+            import config.app_config as _cfg  # lazy import: live-config read
+            return bool(getattr(_cfg, "WEB_SEARCH_ENABLED", True))
+        except ImportError:
+            return True
 
     async def search(
         self,
@@ -1015,6 +1035,19 @@ class WebSearchManager:
         Returns:
             WebSearchResult with pages or error
         """
+        # Settings toggle (2026-09-09, audit F04): every public entry point
+        # honours the LIVE flag — the gatherer's own check is not enough,
+        # the agentic loop and instrument callers reach search() directly.
+        # Checked before the cache so a disabled search is never served
+        # from cache either; distinct from provider readiness below.
+        if not self.is_enabled():
+            log.debug("[WebSearch] Suppressed: web search disabled in Settings")
+            return WebSearchResult(
+                query=query,
+                search_depth=depth,
+                error=DISABLED_ERROR,
+            )
+
         # Crisis suppression
         if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
             log.debug(f"[WebSearch] Suppressed during {crisis_level} crisis level")
@@ -1968,6 +2001,15 @@ If not splitting, leave SUB_QUERIES empty."""
         Returns:
             MultiSearchResult with merged pages from all sub-queries
         """
+        # Settings toggle (2026-09-09, audit F04) — see search().
+        if not self.is_enabled():
+            log.debug("[WebSearch] Multi-search suppressed: disabled in Settings")
+            return MultiSearchResult(
+                original_query=query,
+                search_depth=depth,
+                error=DISABLED_ERROR,
+            )
+
         # Crisis suppression
         if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
             log.debug(f"[WebSearch] Multi-search suppressed during {crisis_level}")

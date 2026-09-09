@@ -211,8 +211,11 @@ class ToolExecutor:
         lines = []
 
         # Web search
-        if self.web_search_manager and self.web_search_manager.is_available():
+        _ws = self.web_search_manager
+        if _ws and _ws.is_available():
             lines.append("web_search: AVAILABLE")
+        elif _ws and hasattr(_ws, "is_enabled") and not _ws.is_enabled():
+            lines.append("web_search: DISABLED (turned off in Settings)")
         else:
             lines.append("web_search: UNAVAILABLE (no API key or Tavily client error)")
 

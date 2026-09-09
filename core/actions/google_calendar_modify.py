@@ -182,6 +182,7 @@ async def update_calendar_event(proposal: ActionProposal) -> ActionResult:
                     message=f"Calendar update failed (HTTP {resp.status_code}): "
                             f"{resp.text[:200]}")
             updated = resp.json() or {}
+            _invalidate_read_cache("update")
             return ActionResult(
                 action_id=proposal.action_id, success=True,
                 message=f"Updated event: {updated.get('summary', event.get('summary', '?'))} "
@@ -192,6 +193,17 @@ async def update_calendar_event(proposal: ActionProposal) -> ActionResult:
         return ActionResult(
             action_id=proposal.action_id, success=False,
             message=f"Calendar update failed: {exc}")
+
+
+def _invalidate_read_cache(op: str) -> None:
+    """Drop the 5-minute [UPCOMING SCHEDULE] cache after a successful
+    mutation (2026-09-09, audit F06): the next prompt used to carry the
+    pre-update schedule right after a truthful execution receipt."""
+    try:
+        from core.actions.google_calendar import clear_cache
+        clear_cache()
+    except Exception as exc:  # cache is best-effort; never fail the action
+        logger.debug(f"[CalendarModify] Could not clear calendar cache after {op}: {exc}")
 
 
 async def delete_calendar_event(proposal: ActionProposal) -> ActionResult:
@@ -219,11 +231,13 @@ async def delete_calendar_event(proposal: ActionProposal) -> ActionResult:
                 headers={"Authorization": f"Bearer {creds.token}"},
             )
             if resp.status_code in (200, 204):
+                _invalidate_read_cache("delete")
                 return ActionResult(
                     action_id=proposal.action_id, success=True,
                     message=f"Deleted event: {event.get('summary', '?')} "
                             f"({_start_repr(event)}) from {calendar_id}.")
             if resp.status_code == 410:
+                _invalidate_read_cache("delete-gone")
                 return ActionResult(
                     action_id=proposal.action_id, success=True,
                     message=f"Event {event.get('summary', '?')} was already deleted.")
