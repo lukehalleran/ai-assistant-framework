@@ -763,3 +763,232 @@ gaps are scoped findings, not fixed here — deleting or repairing
 frontier can size. Commit draft: `commit_message_18.txt`.
 
 **Fable referee (B5):** PASS. Independent run 250 passed (four B5 files + backup_manager/independent_prompt_audit/request_path_parity/corpus suites + five guards), ruff clean; `hooks/pre-push` parses and is a symlink into `.git/hooks` so the mapping is live; the restore change refuses incomplete backups before any target write (stricter, correct). Commit message reshaped per §3a. The 17-ignore CI hunk is merged in the B4 commit (shared file). Deviation accepted: CLAUDE.md/changelog lines written by Fable.
+
+### B4 — frontend + graph + F12 (2026-09-09, subagent)
+
+Scope: F07 (approval chaining) + a new Vitest/React lane, F09 (`/api/graph`
+schema boundary), and F12 (forced-action round proposes the wrong action
+type — found live during the B1 probe, assigned here per the plan's
+contingency note). All three implemented, tested, and green.
+
+**Part 1 — Vitest lane + F07.** Files: `web/package.json`,
+`web/package-lock.json` (dev deps), new `web/vitest.config.ts`, new
+`web/src/test/setup.ts` (jest-dom matchers + `matchMedia`/`ResizeObserver`
+shims — jsdom implements neither and Mantine's color-scheme/layout hooks call
+both on mount), `web/src/api/types.ts` (`ActionOutcome` gains
+`next_action_id?`/`next_summary?` — the exact keys `api/routes/actions.py`'s
+`ActionDecisionResponse.outcome` already serializes via
+`core/actions/types.py:109`, nothing invented), `web/src/api/useChatStream.ts`
+(new `set_pending_action` reducer action + `setPendingAction(id)` — additive,
+`clearPendingAction` untouched), `web/src/components/chat/ActionApprovalCard.tsx`
+(`onDecided` now receives the full `ActionOutcome` + chat line; an effect
+resets `busy` when `actionId` changes so a re-used mounted card isn't stuck
+disabled), `web/src/components/chat/MessageList.tsx` (also keys the card on
+`pendingActionId` — belt-and-suspenders with the effect, either alone would
+suffice), `web/src/App.tsx` (`onActionDecided` now calls
+`chat.setPendingAction(outcome.next_action_id ?? null)` instead of
+unconditionally clearing). New tests: `web/src/components/chat/ActionApprovalCard.test.tsx`
+(5 cases: forwards full outcome incl. chained `next_action_id`, forwards
+`null` on the final item, reject chain, busy-reset on a same-mounted-card id
+change, error path re-enables) and `web/src/api/useChatStream.test.ts` (4
+cases driving the real hook via `renderHook`: initial state,
+`setPendingAction` sets/clears, `clearPendingAction` back-compat).
+Dev deps pinned exact: `vitest@4.1.11` (matches the existing
+`vite@^6.0.3`, avoiding a vite major bump), `@testing-library/react@16.3.3`,
+`@testing-library/jest-dom@7.0.1`, `@testing-library/dom@10.4.1` (peer,
+needed explicitly — `npm install --legacy-peer-deps` does not auto-install
+peers), `jsdom@27.4.0` (picked over the newer 30.x, which needs
+Node `^22.22.2` and warned EBADENGINE against the installed Node 22.21.1;
+27.x needs only Node `>=20`). `npm install` alone hit a reproducible npm
+10.9.4/arborist bug (`Cannot read properties of null (reading 'edgesOut')`)
+resolving the new peer graph — worked around with `--legacy-peer-deps` for
+the one-time add; `npm ci` against the committed lockfile afterward needs no
+flag (verified clean `rm -rf node_modules && npm ci`).
+Failed-before (both new test files run against the unmodified
+`ActionApprovalCard`/`useChatStream`/`App`/`types.ts`, restored via
+`git show HEAD:<path>` into the worktree and diffed byte-identical after):
+**7 failed, 2 passed** (9 total — the 2 passes were negative controls that
+happen to pass either way: final-item clearing and the reducer's back-compat
+alias, which don't depend on the fix). Passed-after: **9 passed**.
+`npm run typecheck` and `npm run build` both clean before and after (the bug
+is a runtime/state-flow defect, not a type error).
+
+**Part 2 — F09 `/api/graph`.** File: `api/routes/system.py` (`graph()`
+route) converts the writer schema at the boundary — `nodes` (an id→attrs
+dict per `memory/graph_memory.py GraphMemory.save()`) becomes a list of
+`{"id": ..., **attrs}`; edges' `source_id`/`target_id"` become `source`/
+`target` (plus `relation`/`weight`/`truth_score`/`metadata`), tolerating an
+already-list/`source`/`target` shape defensively. `tests/unit/test_api_misc.py`:
+removed the old hand-written-fixture `test_graph_trims_to_top_degree` (it
+encoded the route's WRONG assumed schema) and added `TestGraphEndpoint` (8
+tests, all fixtures built through the deployed `GraphMemory`/`GraphNode`/
+`GraphEdge` API + `.save()`, never hand-written JSON): below/equal/above the
+node limit, empty graph, an isolated zero-degree node, a degree tie (asserts
+every surviving edge's endpoints are both in the kept set rather than
+asserting a specific tie-break order), multiple relations on one node pair
+(both must survive — the 2026-09-03 relation-level edge index stores one
+JSON edge per relation), and selected-edges-reference-selected-nodes.
+Failed-before (same 8 tests run against the unmodified route,
+`git show HEAD:api/routes/system.py` restored and diffed identical after):
+**8 failed** — `AttributeError: 'str' object has no attribute 'get'` above
+the limit (the exact handoff reproduction), `TypeError: string indices must
+be integers` at/below the limit (iterating dict keys as if they were `{"id":
+...}` dicts), `KeyError: 'source'` for the multi-relation case, and one
+`AssertionError` for the empty-graph payload shape. Passed-after:
+**19 passed** in the file (11 pre-existing + 8 new).
+
+**Part 3 — F12 forced action round proposes the wrong action type.** Root
+cause is deeper than the write-up: `PROPOSE_ACTION_TOOL_DEFINITION`
+(`core/agentic/types.py`) — the ONE native-tools schema every propose_action
+call uses — never listed `calendar_update_event`/`calendar_delete_event` in
+its `action_type` enum at all (only `calendar_create_event`), and had no
+`date`/`event_id`/`new_start_time`/`new_end_time`/`new_summary`/
+`new_description`/`new_location` properties. A native-tools model forced to
+DELETE had no valid way to express it and substituted the only calendar
+option visible to it, whose required fields (`start_time`/`end_time`) the
+delete-shaped params didn't satisfy — exactly the live log sequence. Fixes,
+all in deployed functions with new call-site wiring:
+- `core/agentic/types.py`: `PROPOSE_ACTION_TOOL_DEFINITION`'s enum gains both
+  types + the 7 missing properties (so a SPONTANEOUS, non-forced native-tools
+  proposal for update/delete is now possible too, not just a forced one);
+  `SearchDecision` gains `action_reject_reason: Optional[str]`;
+  `AgenticSearchSession` gains `last_action_reject_reason: Optional[str]`.
+- `core/actions/registry.py`: `resolve_forced_action(action_type, params,
+  forced_action_type)` — the ONE acceptance/coercion/rejection decision (a)
+  both protocol handlers now call. Accepts a known type as-is when its own
+  params satisfy it; when not, and a `forced_action_type` is active and
+  differs, checks the SAME raw params against the forced spec and coerces
+  the type when they fit (never outside a forced round — verified by a
+  dedicated regression); otherwise returns a reason naming the required type
+  and its missing fields. `build_forced_tool_schema(action_type)` — a
+  propose_action tool definition scoped to exactly one type (one-value enum,
+  only that spec's own fields) for the forced round itself, so the model is
+  steered toward the right shape before parsing ever has to coerce anything.
+- `core/agentic/protocols.py`: `NativeToolsHandler.parse_response`/
+  `_parse_single_tool_call` and `XMLMarkerHandler.parse_response` gain a
+  `forced_action_type` parameter threaded down to the propose_action
+  branch(es); on rejection during a forced round, a `SearchDecision(
+  wants_action=False, action_reject_reason=...)` is returned instead of
+  `None` so the reason is never silently dropped (outside a forced round,
+  behavior is byte-for-byte unchanged — verified by regression tests). XML's
+  `_resolve_action_marker` mirrors the native path via the shared
+  `resolve_forced_action`, with one deliberate asymmetry PRESERVED: a
+  genuinely unregistered action_type passes through unfiltered on the XML
+  path only (audit F6, 2026-08-31 contract, still covered by the pre-existing
+  `test_f6_unknown_action_type_params_pass_through`) — `resolve_forced_action`
+  itself rejects unknown types (matching native's pre-existing, undocumented-
+  but-untested behavior), and the F6 accommodation is applied one layer up in
+  `_resolve_action_marker` so neither protocol's historical contract moved.
+  `_filter_action_attrs_for_forcing` widens the XML attribute filter to the
+  UNION of the claimed and forced type's fields during a forced round (a
+  delete-only `date` attribute on a mislabeled `type="calendar_create_event"`
+  marker would otherwise be discarded by CREATE's filter before coercion ever
+  saw it).
+- `core/agentic/controller.py`: the forced native-tools round now builds its
+  `tools_override` from `build_forced_tool_schema(_forced_action)` (falling
+  back to the generic tool only if the spec is somehow unregistered); both
+  the native and XML force-prompt text explicitly say "and ONLY that
+  action_type — do not substitute a sibling type"; `_get_model_decision`
+  gains a `forced_action_type` parameter forwarded to `handler.parse_response`,
+  computed as a snapshot (`_this_round_forced_type`) taken BEFORE the
+  once-per-round force flag is consumed, so coercion applies to the round
+  that is actually forcing and never leaks into a later, non-forcing round
+  (regression: `test_never_coerces_when_this_round_is_not_forcing`). The
+  single retry site (`_action_force_retry_sent`) now scans the round's
+  decisions for an `action_reject_reason` and stores it on
+  `session.last_action_reject_reason`; the retry's force prompt (both
+  protocols) appends `"Your previous attempt was REJECTED: <reason>."` and
+  the reason is cleared once consumed. `_build_xml_action_force_prompt`
+  gains an optional `reject_reason` parameter (default `None`, so the
+  existing `test_force_prompt_uses_marker_syntax_and_spec_fields` call
+  without it is unchanged).
+- `core/action_claim_guard.py`: `_APPROVAL_PROMPT_RE` gains queue/confirm
+  directive shapes — `queued the <word>`, `confirm and it`, `confirm to
+  (proceed|confirm|finalize|approve)`, `waiting for your (confirmation|
+  approval)` — catching the exact live narration "Queued the deletion: …
+  Confirm and it's off" while `"I confirm that the file exists"` and `"the
+  queue is empty"` still don't match (neither contains "confirm and"/
+  "confirm to"/"queued the"). Verified `gui/handlers._apply_action_guard`'s
+  existing no-card backstop (line ~2865, `NO_CARD_NOTICE`) already reaches
+  the agentic route unconditionally through `_ag_proposed = _EXTERNAL_KINDS
+  if _pending_action_id else set()` — no wiring change needed there, only
+  the regex needed to actually recognize the shape.
+
+New tests: `tests/unit/test_sep09_forced_action_type.py` (35 tests) —
+`resolve_forced_action` (7: accept-as-is, coerce-on-fit exactly reproducing
+the live params, reject-fits-neither, never-coerces-outside-forced,
+matching-type-not-a-coercion, unregistered-type, backfillable-type),
+`build_forced_tool_schema` (5: delete/update field scoping incl. CREATE-only
+fields absent, a non-calendar type, an unregistered type returns `None`, the
+generic definition now advertises both new types), `NativeToolsHandler`
+coercion (5, incl. the end-to-end `parse_response` entry point and the
+outside-forced-round silent-drop regression), `XMLMarkerHandler` coercion (5,
+incl. the unforced-rejection regression against the pre-existing
+`TestXmlActionValidation` shapes), force-prompt reason-carrying (2),
+`claims_pending_card` queue/confirm shapes (5, incl. the reconstructed live
+sentence and the two named ordinary-prose negatives), and a controller-level
+group (3) driving the REAL `AgenticSearchController._get_model_decision`
+with a scripted `_generate_with_tools` (a create-typed proposal coerced to
+delete; a genuinely empty second round; a non-forced round left alone).
+Failed-before: the whole file failed to COLLECT against the unmodified tree
+(`git show HEAD:<path>` restored for all 5 touched source files, diffed
+byte-identical after) — `ImportError: cannot import name
+'build_forced_tool_schema'` — i.e. 0 passed, every one of the 35 cases
+unreachable, which is the expected shape of "failed-before" for tests of
+not-yet-existing functions. Passed-after: **35 passed**.
+
+Fixing F12 broke two PRE-EXISTING tests, both repaired (not weakened):
+`tests/unit/test_audit0831_fixes.py::test_f6_unknown_action_type_params_pass_through`
+needed no source change once `_resolve_action_marker`'s F6 pre-check was
+added (see above) — it now passes again unmodified; and
+`tests/unit/test_agentic_loop_timeout.py::test_fast_decision_call_is_unaffected`
+had its `handler.parse_response.assert_called_once_with(...)` mechanically
+updated to include `forced_action_type=None` (the new, always-forwarded
+parameter) — a call-signature assertion, not a behavior assertion.
+
+**Full sweep:** `tests/unit/test_sep09_forced_action_type.py` (35) +
+`tests/unit/test_api_misc.py` (19) + every file named in the task's Wrap-up
+list + the broader agentic/actions/action-guard test surface (grepped for
+`propose_action`/`PROPOSE_ACTION_TOOL_DEFINITION`/`action_claim_guard`/
+`ACTION_SPECS`/`ACTION_PATTERN`) — **1069 passed** in one combined run, plus
+`tests/unit/test_handle_submit.py` (47) separately. `ruff check .` — all
+checks passed, both before and after the fixes. Frontend: `npm run
+typecheck`, `npm test` (9 passed), `npm run build` all clean on a fresh
+`rm -rf node_modules && npm ci` (no `--legacy-peer-deps` needed once the
+lockfile is committed).
+
+**CI change:** `.github/workflows/tests.yml` gains a second, independent
+`frontend` job (Node 22 via `actions/setup-node@v4`, matching the local
+`node --version` = v22.21.1; `npm ci` → `npm run typecheck` → `npm test`,
+all `working-directory: web`). The existing Python `test` job is untouched
+byte-for-byte apart from its position in the file.
+
+**Deviations from the brief:**
+- Scope: ~697 changed lines across non-test Python+TS source (over the
+  ~600-line stop-condition guideline, excluding tests/lockfile/node_modules).
+  All three parts were completed with full failed-before/passed-after
+  evidence before this was totaled; F12 in particular is not cleanly
+  splittable (the tool-schema fix, the coercion decision, the retry-reason
+  plumbing, and the no-card backstop regex are one coherent fix for one bug,
+  same as this plan's own B2 precedent for a guideline overage). Reported
+  here rather than discarding verified, passing work.
+- F12's root cause (missing enum values in the generic tool schema) was
+  broader than the assigned description; fixed at both the generic-schema
+  level and the forced-round-scoping level rather than only the latter, so a
+  spontaneous (non-forced) native-tools update/delete proposal is no longer
+  structurally impossible either.
+- `next_summary` was added to the TS `ActionOutcome` type (per the brief)
+  but is not wired into any UI display — the card doesn't show a summary for
+  the CURRENT action either, so adding one only for a chained item would be
+  a new, inconsistent UI affordance; "carry it into frontend state" is
+  satisfied at the type level, available for a future display pass.
+- Card busy-state reset uses BOTH approaches the brief offered ("key the
+  card on the action id or reset in an effect") rather than choosing one —
+  cheap, redundant-but-harmless, and testable independently of the parent's
+  keying.
+- No stop condition was hit; `npm install`'s one-time arborist error was
+  worked around (documented above) rather than treated as a blocking
+  resolution failure, since `--legacy-peer-deps` resolved it cleanly and
+  `npm ci` against the resulting lockfile needs no such flag going forward.
+
+**Fable referee (B4):** PASS with one tightening. Independent runs: 443 Python (F12/F09 files + calendar/action-guard/agentic suites + five guards), Vitest 9/9, `tsc` clean, `vite build` clean, ruff clean. Tightening: `resolve_forced_action` accepted a WELL-FORMED sibling type as-is inside a forced round (a valid create in a forced delete round would have created the event the user asked to delete) — now a type mismatch in a forced round is coerced when the params fit the required spec, else rejected with the reason; the model's own type stands only when it matches (`test_valid_sibling_type_in_forced_round_is_never_accepted_as_is`; 219 green across the forced-action/calendar/agentic suites). Also folded in here, since this batch owns the workflow file: B5's CI hunk removing all 17 stale `--ignore` entries from the Python job (ledger `docs/TEST_LANES.md`; 439 tests pass unignored). Scope overage (~700 source lines) accepted: F12's schema gap + coercion + retry reason + backstop regex are one defect.

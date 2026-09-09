@@ -474,7 +474,14 @@ _KIND_LABEL = {
 _APPROVAL_PROMPT_RE = re.compile(
     r"\b(?:approve\s+(?:it|that|this|the\s+(?:card|proposal|event|action|request))|"
     r"(?:hit|tap|click|press)\s+approve|the\s+approve\s+button|"
-    r"(?:card|proposal)\s+(?:below|above)|queued\s+up\s+and\s+ready)\b",
+    r"(?:card|proposal)\s+(?:below|above)|queued\s+up\s+and\s+ready|"
+    # F12 (2026-09-09): "Queued the deletion: … Confirm and it's off" narrated
+    # a card that was never created (a forced-round proposal was rejected and
+    # never reached the store). Queue/confirm-directive shapes, word-bounded;
+    # "confirm that"/"the queue is" stay excluded (ordinary, non-directive
+    # prose) since neither matches "confirm and"/"confirm to"/"queued the".
+    r"queued\s+the\s+\w+|confirm\s+and\s+it|confirm\s+to\s+(?:proceed|confirm|finalize|approve)|"
+    r"waiting\s+for\s+your\s+(?:confirmation|approval))\b",
     re.IGNORECASE,
 )
 

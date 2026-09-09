@@ -81,6 +81,16 @@ async def graph(request: Request, limit: int = 300):
     """Read-only knowledge-graph payload for the (stretch) graph view.
 
     Trims to the top-`limit` nodes by degree so the client render stays fast.
+
+    F09 (2026-09-09, docs/HANDOFF_20260909_independent_bug_audit.md): the
+    on-disk schema written by GraphMemory.save() (memory/graph_memory.py) is
+    `nodes` as an id -> attributes DICT and edges carrying `source_id`/
+    `target_id` (the relation-level edge index — a node pair can have more
+    than one edge, one per relation). This route promises its consumers a
+    node LIST of `{"id": ..., ...}` dicts and edges with `source`/`target`
+    keys; convert at this boundary instead of assuming the writer's shape,
+    which used to crash (`'str' object has no attribute 'get'`) or silently
+    return the wrong shape once the node count exceeded `limit`.
     """
     from config.app_config import KNOWLEDGE_GRAPH_PERSIST_PATH
 
@@ -91,16 +101,41 @@ async def graph(request: Request, limit: int = 300):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    nodes = data.get("nodes", [])
-    edges = data.get("edges", [])
+    raw_nodes = data.get("nodes", {})
+    raw_edges = data.get("edges", [])
+
+    # GraphMemory.save() always writes an id -> attrs dict; tolerate an
+    # already-list shape defensively (e.g. a hand-built fixture) rather than
+    # assuming one or the other.
+    if isinstance(raw_nodes, dict):
+        nodes = [{"id": node_id, **(attrs or {})} for node_id, attrs in raw_nodes.items()]
+    else:
+        nodes = [n for n in raw_nodes if isinstance(n, dict) and n.get("id") is not None]
+
+    edges = []
+    for e in raw_edges:
+        if not isinstance(e, dict):
+            continue
+        src = e.get("source_id", e.get("source"))
+        tgt = e.get("target_id", e.get("target"))
+        if src is None or tgt is None:
+            continue
+        edges.append({
+            "source": src,
+            "target": tgt,
+            "relation": e.get("relation"),
+            "weight": e.get("weight", 1.0),
+            "truth_score": e.get("truth_score"),
+            "metadata": e.get("metadata", {}),
+        })
 
     if limit and len(nodes) > limit:
-        degree = {}
+        degree: dict[str, int] = {}
         for e in edges:
-            degree[e.get("source")] = degree.get(e.get("source"), 0) + 1
-            degree[e.get("target")] = degree.get(e.get("target"), 0) + 1
+            degree[e["source"]] = degree.get(e["source"], 0) + 1
+            degree[e["target"]] = degree.get(e["target"], 0) + 1
         nodes = sorted(nodes, key=lambda n: degree.get(n.get("id"), 0), reverse=True)[:limit]
         keep = {n.get("id") for n in nodes}
-        edges = [e for e in edges if e.get("source") in keep and e.get("target") in keep]
+        edges = [e for e in edges if e["source"] in keep and e["target"] in keep]
 
     return {"nodes": nodes, "edges": edges}

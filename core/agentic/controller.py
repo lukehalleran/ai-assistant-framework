@@ -863,13 +863,31 @@ class AgenticSearchController:
                 _round_tools_override: Optional[List[Dict]] = None
                 _round_system_prompt = augmented_system_prompt
                 _round_prompt = iteration_prompt
+                # Snapshot BEFORE the block below consumes it — this is what
+                # gets passed to _get_model_decision so parsing can pin/coerce
+                # the action_type ONLY on a round that is actually forcing
+                # (F12, 2026-09-09: never outside a forced round).
+                _this_round_forced_type: Optional[str] = (
+                    _forced_action.value if (_force_propose_pending and _forced_action) else None
+                )
                 if _force_propose_pending:
-                    from core.actions.registry import ACTION_SPECS
+                    from core.actions.registry import ACTION_SPECS, build_forced_tool_schema
                     _spec = ACTION_SPECS.get(_forced_action)
                     _hint = (_spec.field_hint if _spec and _spec.field_hint else "the required fields")
+                    _prior_reject_reason = session.last_action_reject_reason
+                    _reject_note = (
+                        f" Your previous attempt was REJECTED: {_prior_reject_reason}."
+                        if _prior_reject_reason else ""
+                    )
+                    session.last_action_reject_reason = None  # consumed
                     _round_tool_choice = {"type": "function", "function": {"name": "propose_action"}}
-                    _ptool = getattr(handler, "propose_action_tool", None)
-                    if _ptool is not None:
+                    # Forced-round schema (F12): scoped to exactly the required
+                    # type/fields so the model cannot silently substitute a
+                    # sibling action_type (the generic tool's enum previously
+                    # had no calendar_update/delete_event entries at all).
+                    _ptool = build_forced_tool_schema(_forced_action) or getattr(
+                        handler, "propose_action_tool", None)
+                    if getattr(handler, "propose_action_tool", None) is not None:
                         _round_tools_override = [_ptool]
                         # Use the user's actual request as the prompt (not the generic "what tool
                         # next?" iteration prompt) so the model fills the content fields from it.
@@ -882,9 +900,12 @@ class AgenticSearchController:
                         )
                         _round_system_prompt = augmented_system_prompt + (
                             f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a write "
-                            f"action ({_forced_action.value}). Call propose_action NOW and FILL IN the "
-                            f"content fields from the user's request — for this action: {_hint}. "
-                            f"Do NOT leave required fields empty, and do NOT specify a repo (auto-detected)."
+                            f"action ({_forced_action.value}) and ONLY that action_type — do not "
+                            f"substitute a sibling type. Call propose_action NOW with "
+                            f"action_type=\"{_forced_action.value}\" and FILL IN the content fields "
+                            f"from the user's request — for this action: {_hint}. Do NOT leave "
+                            f"required fields empty, and do NOT specify a repo (auto-detected)."
+                            f"{_reject_note}"
                         )
                     else:
                         # XML-markers protocol (2026-08-29): tool_choice/tools_override are
@@ -894,12 +915,12 @@ class AgenticSearchController:
                         # actual marker syntax with the spec's required fields as
                         # attributes, one marker per item.
                         _round_prompt = iteration_prompt + "\n\n" + self._build_xml_action_force_prompt(
-                            query, _forced_action, _spec)
+                            query, _forced_action, _spec, reject_reason=_prior_reject_reason)
                         _round_system_prompt = augmented_system_prompt + (
                             f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a "
                             f"write action ({_forced_action.value}). Emit the <action> marker(s) "
                             f"NOW exactly as instructed — for this action: {_hint}. Do NOT "
-                            f"narrate or answer in prose; markers only."
+                            f"narrate or answer in prose; markers only.{_reject_note}"
                         )
                     _force_propose_pending = False  # force on this round only
 
@@ -922,6 +943,7 @@ class AgenticSearchController:
                     session=session,
                     tool_choice=_round_tool_choice,
                     tools_override=_round_tools_override,
+                    forced_action_type=_this_round_forced_type,
                 )
                 decision_ms = (time.monotonic() - decision_started) * 1000
                 decision_timed_out = any(
@@ -1209,9 +1231,23 @@ class AgenticSearchController:
                             and not getattr(session, '_action_force_retry_sent', False)):
                         session._action_force_retry_sent = True
                         _force_propose_pending = True
+                        # F12 (2026-09-09): carry WHY the proposal was
+                        # rejected into the retry — a wrong-type propose_action
+                        # (e.g. calendar_create_event proposed while
+                        # calendar_delete_event was required) used to be
+                        # silently dropped and the retry was a blind re-ask.
+                        _reject_d = next(
+                            (d for d in decisions if getattr(d, "action_reject_reason", None)),
+                            None,
+                        )
+                        session.last_action_reject_reason = (
+                            _reject_d.action_reject_reason if _reject_d else None
+                        )
                         logger.info(
                             "[AgenticSearch] Forced action round produced no "
                             "action marker — retrying once"
+                            + (f" (rejected: {session.last_action_reject_reason})"
+                               if session.last_action_reject_reason else "")
                         )
                         continue
 
@@ -1577,6 +1613,7 @@ class AgenticSearchController:
         session: AgenticSearchSession,
         tool_choice: Any = "auto",
         tools_override: Optional[List[Dict]] = None,
+        forced_action_type: Optional[str] = None,
     ) -> List[SearchDecision]:
         """
         Get the model's decision(s) on what to do next.
@@ -1590,6 +1627,11 @@ class AgenticSearchController:
             model_name: Model to use
             handler: Protocol handler for parsing
             session: Current session state
+            forced_action_type: ActionType.value this round is forcing (F12,
+                2026-09-09), or None. Passed to the protocol handler so a
+                propose_action call naming a DIFFERENT type gets coerced
+                (when its params fit the required spec) or rejected with a
+                reason — never outside a forced round.
 
         Returns:
             List of SearchDecision(s) indicating model's choice(s)
@@ -1628,7 +1670,7 @@ class AgenticSearchController:
                     timeout=AGENTIC_ROUND_TIMEOUT_S,
                 )
 
-            return handler.parse_response(response)
+            return handler.parse_response(response, forced_action_type=forced_action_type)
 
         except asyncio.TimeoutError:
             logger.warning(
@@ -1931,11 +1973,15 @@ class AgenticSearchController:
         ]
 
     @staticmethod
-    def _build_xml_action_force_prompt(query: str, forced_action, spec) -> str:
+    def _build_xml_action_force_prompt(
+        query: str, forced_action, spec, reject_reason: Optional[str] = None
+    ) -> str:
         """Forced-round prompt for the XML-markers protocol: a concrete
         <action> example whose attributes are the spec's required/optional
         fields, one marker per item (a calendar request can carry several
-        events — each is its own marker)."""
+        events — each is its own marker). `reject_reason` (F12, 2026-09-09):
+        when the immediately-prior forced attempt was rejected, name why so
+        the single retry is not a blind re-ask."""
         _fields = list(getattr(spec, "required", ()) or ())
         _attr_example = " ".join(f'{f}="<{f}>"' for f in _fields) or 'recipient="<who>"'
         _type = forced_action.value
@@ -1974,6 +2020,7 @@ class AgenticSearchController:
                 "syllabus stating ET = America/New_York) set time_zone to that IANA "
                 "zone; never silently reinterpret a stated zone as local."
             )
+        _reject_note = f" Your previous attempt was REJECTED: {reject_reason}." if reject_reason else ""
         return (
             f"The user asked: {query}\n\n"
             f"Perform exactly this request by emitting one or more <action> "
@@ -1984,7 +2031,9 @@ class AgenticSearchController:
             f"WITHOUT a UTC offset (e.g. 2026-09-13T23:59:00) unless the source "
             f"names a zone.{_calendar_hint} If the request "
             f"covers multiple items (several events, several messages), emit one "
-            f"<action> marker per item, each with ALL fields filled."
+            f"<action> marker per item, each with ALL fields filled. Use "
+            f'type="{_type}" exactly — do not substitute a different '
+            f"action_type.{_reject_note}"
         )
 
     @staticmethod

@@ -228,6 +228,13 @@ class SearchDecision:
     action_params: Optional[Dict[str, Any]] = None
     action_summary: Optional[str] = None
     action_reason: Optional[str] = None
+    # Set instead of silently dropping a rejected propose_action DURING A
+    # FORCED ROUND (2026-09-09, F12) — the model proposed an action_type that
+    # didn't match what was required and its params didn't fit the required
+    # spec either. wants_action stays False (nothing to dispatch); the
+    # controller reads this to build a retry prompt that names the reason
+    # instead of blindly re-asking. Never set outside a forced round.
+    action_reject_reason: Optional[str] = None
     # Completion
     is_done: bool = False
     done_reason: Optional[str] = None
@@ -279,6 +286,10 @@ class AgenticSearchSession:
     # Richer bounded digest only populated for explicit write-action turns;
     # preserves exact dates/drafts and the prior assistant's closing question.
     action_context_digest: str = ""
+    # F12 (2026-09-09): the rejection reason from the most recent forced-round
+    # propose_action attempt, so the single retry can name what was wrong
+    # instead of re-asking blind. Cleared once consumed by the retry prompt.
+    last_action_reject_reason: Optional[str] = None
 
     # Per-round operational telemetry.  Kept separate from SearchRound so the
     # audit record can describe decision latency even for tool-less rounds.
@@ -1116,7 +1127,12 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
             "and message (the issue BODY); github_comment_pr needs pr_number and message (the comment); "
             "send_email/send_telegram/send_discord need recipient and message; calendar_create_event "
             "needs summary, start_time, end_time, OR an events[] array whose items contain "
-            "those fields. Do NOT specify a repo — it is auto-detected."
+            "those fields; calendar_update_event and calendar_delete_event need summary and date "
+            "(YYYY-MM-DD) to IDENTIFY the existing event (event_id may replace them) — "
+            "calendar_update_event ALSO needs at least one new_* field (new_start_time, "
+            "new_end_time, new_summary, new_description, new_location) describing the change; "
+            "calendar_delete_event needs nothing else (ambiguous matches refuse). "
+            "Do NOT specify a repo — it is auto-detected."
         ),
         "parameters": {
             "type": "object",
@@ -1126,7 +1142,8 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                     "enum": [
                         "send_telegram", "send_discord", "send_email",
                         "github_create_issue", "github_comment_pr",
-                        "calendar_create_event"
+                        "calendar_create_event", "calendar_update_event",
+                        "calendar_delete_event",
                     ],
                     "description": "Type of action to propose."
                 },
@@ -1148,7 +1165,11 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 },
                 "summary": {
                     "type": "string",
-                    "description": "Event title (calendar_create_event only)."
+                    "description": (
+                        "Event title. For calendar_create_event, the new event's title. "
+                        "For calendar_update_event/calendar_delete_event, the EXISTING "
+                        "event's title (used with date to find it)."
+                    )
                 },
                 "description": {
                     "type": "string",
@@ -1161,6 +1182,40 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 "end_time": {
                     "type": "string",
                     "description": "ISO 8601 datetime for event end (calendar_create_event only)."
+                },
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "YYYY-MM-DD date of the EXISTING event, used with summary to "
+                        "identify it (calendar_update_event/calendar_delete_event only)."
+                    )
+                },
+                "event_id": {
+                    "type": "string",
+                    "description": (
+                        "Google Calendar event ID, may replace summary+date to identify "
+                        "the existing event (calendar_update_event/calendar_delete_event)."
+                    )
+                },
+                "new_summary": {
+                    "type": "string",
+                    "description": "New event title (calendar_update_event only)."
+                },
+                "new_start_time": {
+                    "type": "string",
+                    "description": "New ISO 8601 start datetime (calendar_update_event only)."
+                },
+                "new_end_time": {
+                    "type": "string",
+                    "description": "New ISO 8601 end datetime (calendar_update_event only)."
+                },
+                "new_description": {
+                    "type": "string",
+                    "description": "New event description (calendar_update_event only)."
+                },
+                "new_location": {
+                    "type": "string",
+                    "description": "New event location (calendar_update_event only)."
                 },
                 "time_zone": {
                     "type": "string",

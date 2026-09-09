@@ -48,6 +48,7 @@ type Action =
   | { type: 'stream_ended' }
   | { type: 'append_assistant'; content: string }
   | { type: 'clear_pending_action' }
+  | { type: 'set_pending_action'; id: string | null }
   | { type: 'clear_failed'; message: string }
   | { type: 'cleared' }
 
@@ -137,6 +138,11 @@ function reducer(state: StreamState, action: Action): StreamState {
       }
     case 'clear_pending_action':
       return { ...state, pendingActionId: null }
+    case 'set_pending_action':
+      // Approval chaining (2026-09-09, F07): a decided action can hand off
+      // to the next still-pending proposal from the same turn instead of
+      // always clearing (id === null still clears, on the final item).
+      return { ...state, pendingActionId: action.id }
     case 'clear_failed':
       return { ...state, error: action.message }
     case 'cleared':
@@ -233,6 +239,10 @@ export function useChatStream() {
     dispatch({ type: 'clear_pending_action' })
   }, [])
 
+  const setPendingAction = useCallback((id: string | null) => {
+    dispatch({ type: 'set_pending_action', id })
+  }, [])
+
   const clearAll = useCallback(async () => {
     try {
       const response = await fetch('/api/session', { method: 'DELETE' })
@@ -257,5 +267,5 @@ export function useChatStream() {
     }
   }, [])
 
-  return { ...state, send, abort, appendAssistant, clearPendingAction, clearAll }
+  return { ...state, send, abort, appendAssistant, clearPendingAction, setPendingAction, clearAll }
 }

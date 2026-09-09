@@ -471,6 +471,156 @@ def backfill_params(action_type: ActionType, query: str) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Forced-round type pinning (2026-09-09, F12)
+# ---------------------------------------------------------------------------
+# Live incident: the gate detected an explicit calendar_delete_event request
+# and the controller forced propose_action on round 1, but the generic
+# native-tools schema's action_type enum never included calendar_delete_event
+# (or calendar_update_event) at all — the model had no valid way to express
+# the requested type and substituted the only calendar option it could see
+# (calendar_create_event), whose required fields the delete-shaped params did
+# not satisfy. The round was rejected, the retry was a blind re-ask, and the
+# final reply narrated "Queued the deletion… Confirm and it's off" with no
+# card ever created. Two complementary fixes: build_forced_tool_schema below
+# gives a forced round a tool definition that can only name the ONE required
+# type; resolve_forced_action is the single acceptance/coercion/rejection
+# decision both protocol handlers call so a model that still names the wrong
+# type is corrected (when its params happen to fit the required spec anyway)
+# or rejected with a reason the retry prompt can show, instead of the
+# rejection being silently dropped.
+
+# Field shapes that are not a bare string, for building a per-action-type
+# native tool-calling JSON schema (build_forced_tool_schema). Anything not
+# listed here defaults to {"type": "string"} — true of nearly every action
+# param across the registry (dates/times are ISO strings, not native types).
+_FORCED_TOOL_FIELD_TYPES: Dict[str, Dict[str, Any]] = {
+    "all_day": {"type": "boolean"},
+    "pr_number": {"type": "integer"},
+    "events": {
+        "type": "array",
+        "description": "Several DIFFERENT calendar events in one batch proposal.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "description": {"type": "string"},
+                "start_time": {"type": "string"},
+                "end_time": {"type": "string"},
+                "time_zone": {"type": "string"},
+                "calendar_id": {"type": "string"},
+                "location": {"type": "string"},
+                "all_day": {"type": "boolean"},
+                "recurrence": {"type": "string"},
+            },
+            "required": ["summary", "start_time", "end_time"],
+        },
+    },
+}
+
+
+def build_forced_tool_schema(action_type: ActionType) -> Optional[Dict[str, Any]]:
+    """A propose_action tool definition scoped to exactly ONE action type.
+
+    Used only for a forced decision round (core.agentic.controller) so the
+    model cannot silently substitute a sibling action_type the generic,
+    all-types tool schema happens to expose — `action_type` is a one-value
+    enum and only this spec's own fields are offered. Returns None for an
+    unregistered action type (callers fall back to the generic tool).
+    """
+    spec = ACTION_SPECS.get(action_type)
+    if spec is None:
+        return None
+    properties: Dict[str, Any] = {
+        "action_type": {"type": "string", "enum": [action_type.value]},
+        "reason": {
+            "type": "string",
+            "description": "Why you are proposing this action (shown to the user).",
+        },
+    }
+    for field_name in spec.forward_params:
+        properties[field_name] = _FORCED_TOOL_FIELD_TYPES.get(field_name, {"type": "string"})
+    return {
+        "type": "function",
+        "function": {
+            "name": "propose_action",
+            "description": (
+                f"Propose the write action {action_type.value}. {spec.field_hint} "
+                "The user will see a confirmation prompt and can approve or reject."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                # Only action_type/reason are schema-required (matching the
+                # generic tool definition) — required CONTENT fields are
+                # enforced by resolve_forced_action's acceptance check, not
+                # the provider's own schema validation, so a partially-filled
+                # call still reaches parsing (and a useful rejection reason)
+                # instead of being refused by the API before it is ever sent.
+                "required": ["action_type", "reason"],
+            },
+        },
+    }
+
+
+def resolve_forced_action(
+    action_type: str,
+    params: Dict[str, Any],
+    forced_action_type: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+    """Validate — and, only in a forced round, possibly coerce — one proposed
+    action. Returns (resolved_type, resolved_params, reject_reason); exactly
+    one of (resolved_type, reject_reason) is non-None.
+
+    `forced_action_type` is the ActionType.value the controller is currently
+    forcing (None outside a forced round — coercion NEVER happens outside a
+    forced round, per the audit acceptance criteria). When the model's own
+    action_type is accepted as-is, it is returned unchanged (no coercion
+    needed). When it is NOT accepted and differs from `forced_action_type`,
+    the same raw params are checked against the forced spec; if THEY satisfy
+    it (or its backfill), the type is coerced to the forced one. Otherwise a
+    human-readable rejection reason is returned naming the required type and
+    its fields, for the retry prompt.
+    """
+    try:
+        spec = ACTION_SPECS.get(ActionType(action_type)) if action_type else None
+    except ValueError:
+        spec = None
+
+    # Referee tightening (Fable, 2026-09-09): inside a forced round a
+    # DIFFERENT action_type is never accepted as-is, even when its own spec
+    # is satisfied — a well-formed calendar_create_event in a forced
+    # calendar_delete_event round would otherwise CREATE what the user asked
+    # to delete. Coerce when the params fit the required spec, else reject
+    # with the reason; the model's own type stands only when it matches.
+    _type_mismatch = bool(forced_action_type) and action_type != forced_action_type
+    if spec is not None and not _type_mismatch and (
+        spec.accepts_params(params) or spec.backfill is not None
+    ):
+        return action_type, params, None
+
+    if forced_action_type and action_type != forced_action_type:
+        try:
+            forced_spec = ACTION_SPECS.get(ActionType(forced_action_type))
+        except ValueError:
+            forced_spec = None
+        if forced_spec is not None:
+            if forced_spec.accepts_params(params) or forced_spec.backfill is not None:
+                return forced_action_type, params, None
+            return None, None, (
+                f"proposed action_type={action_type!r} does not match the required "
+                f"{forced_action_type!r}, and the given params do not satisfy "
+                f"{forced_action_type!r} either (needs: {', '.join(forced_spec.required)})"
+            )
+
+    if spec is None:
+        return None, None, f"action_type={action_type!r} is not a recognized action"
+    return None, None, (
+        f"action_type={action_type!r} is missing required fields "
+        f"(needs: {', '.join(spec.required)})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Prior-turn action OFFERS (2026-09-07)
 # ---------------------------------------------------------------------------
 # When a chat-mode reply OFFERS an external action ("Want me to go ahead and

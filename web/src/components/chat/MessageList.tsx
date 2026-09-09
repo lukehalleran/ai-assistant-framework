@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { ScrollArea, Stack, Text } from '@mantine/core'
-import type { ChatMessage, DuelThinking } from '../../api/types'
+import type { ActionOutcome, ChatMessage, DuelThinking } from '../../api/types'
 import MessageBubble from './MessageBubble'
 import ActionApprovalCard from './ActionApprovalCard'
 import ThinkingBlock from './ThinkingBlock'
@@ -9,7 +9,7 @@ interface Props {
   messages: ChatMessage[]
   pendingActionId: string | null
   duelThinking: DuelThinking | null
-  onActionDecided: (chatLine: string) => void
+  onActionDecided: (outcome: ActionOutcome, chatLine: string) => void
 }
 
 export default function MessageList({ messages, pendingActionId, duelThinking, onActionDecided }: Props) {
@@ -36,7 +36,7 @@ export default function MessageList({ messages, pendingActionId, duelThinking, o
         ))}
         {duelThinking && <ThinkingBlock duel={duelThinking} />}
         {pendingActionId && (
-          <ActionApprovalCard actionId={pendingActionId} onDecided={onActionDecided} />
+          <ActionApprovalCard key={pendingActionId} actionId={pendingActionId} onDecided={onActionDecided} />
         )}
       </Stack>
     </ScrollArea>

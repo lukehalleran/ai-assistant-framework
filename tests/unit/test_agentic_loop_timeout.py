@@ -166,7 +166,10 @@ class TestRoundTimeout:
         )
 
         assert decisions is parsed
-        handler.parse_response.assert_called_once_with("<raw response>")
+        # F12 (2026-09-09): _get_model_decision now always forwards
+        # forced_action_type (None outside a forced round) to parse_response
+        # so the handler can pin/coerce the propose_action type.
+        handler.parse_response.assert_called_once_with("<raw response>", forced_action_type=None)
 
 
 # ===========================================================================

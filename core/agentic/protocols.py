@@ -51,7 +51,7 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.agentic.types import SearchDecision, SearchProtocol
 
@@ -140,7 +140,9 @@ class BaseProtocolHandler(ABC):
     """Abstract base class for protocol handlers."""
 
     @abstractmethod
-    def parse_response(self, response: Any) -> List[SearchDecision]:
+    def parse_response(
+        self, response: Any, forced_action_type: Optional[str] = None
+    ) -> List[SearchDecision]:
         """
         Parse LLM response to extract search decisions.
 
@@ -150,6 +152,11 @@ class BaseProtocolHandler(ABC):
 
         Args:
             response: Raw response from LLM (format depends on protocol)
+            forced_action_type: ActionType.value the controller is forcing on
+                THIS round (F12, 2026-09-09), or None outside a forced round.
+                Lets a propose_action call be coerced onto this type when its
+                own params satisfy it (never outside a forced round), and lets
+                a rejection carry a reason instead of being silently dropped.
 
         Returns:
             List of SearchDecision(s) — one per tool call requested
@@ -247,7 +254,9 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.actions_available = actions_available
         self.email_search_available = email_search_available
 
-    def parse_response(self, response: Any) -> List[SearchDecision]:
+    def parse_response(
+        self, response: Any, forced_action_type: Optional[str] = None
+    ) -> List[SearchDecision]:
         """
         Parse native tool call response.
 
@@ -257,6 +266,7 @@ class NativeToolsHandler(BaseProtocolHandler):
 
         Args:
             response: LLM response object with potential tool_calls
+            forced_action_type: see BaseProtocolHandler.parse_response.
 
         Returns:
             List of SearchDecision(s) based on tool calls
@@ -293,7 +303,9 @@ class NativeToolsHandler(BaseProtocolHandler):
         # Parse ALL tool calls
         decisions = []
         for tool_call in tool_calls:
-            decision = self._parse_single_tool_call(tool_call)
+            decision = self._parse_single_tool_call(
+                tool_call, forced_action_type=forced_action_type
+            )
             if decision is not None:
                 decisions.append(decision)
 
@@ -302,12 +314,16 @@ class NativeToolsHandler(BaseProtocolHandler):
 
         return decisions
 
-    def _parse_single_tool_call(self, tool_call: Any) -> Optional[SearchDecision]:
+    def _parse_single_tool_call(
+        self, tool_call: Any, forced_action_type: Optional[str] = None
+    ) -> Optional[SearchDecision]:
         """
         Parse a single tool call into a SearchDecision.
 
         Args:
             tool_call: A single tool call object (OpenAI or dict format)
+            forced_action_type: see BaseProtocolHandler.parse_response —
+                only meaningful for the propose_action tool.
 
         Returns:
             SearchDecision or None if the tool call is malformed
@@ -639,31 +655,40 @@ class NativeToolsHandler(BaseProtocolHandler):
                 return None
 
         elif func_name == "propose_action":
-            # Registry-driven: acceptance, param-forwarding, and summary all come from the
-            # action's spec (core/actions/registry.py) — no per-action-type hardcoding here.
-            from core.actions.registry import ACTION_SPECS
+            # Registry-driven: acceptance, param-forwarding, coercion, and
+            # summary all come from the action's spec (core/actions/registry.py)
+            # via resolve_forced_action — no per-action-type hardcoding here.
+            from core.actions.registry import ACTION_SPECS, resolve_forced_action
             from core.actions.types import ActionType as _ActionType
             action_type = args.get("action_type", "")
             reason = args.get("reason", "")
-            try:
-                spec = ACTION_SPECS.get(_ActionType(action_type))
-            except ValueError:
-                spec = None
-
-            # Accept when all required fields are present, OR a backfill can fill them later
-            # (e.g. the controller backfills a GitHub issue's title/body from the user's request,
-            # since models leave those blank unreliably). Forward only the spec's known params —
-            # never trust a model-supplied repo, etc. (it's not in forward_params, so it's dropped).
-            accepted = bool(spec) and (
-                spec.accepts_params(args) or spec.backfill is not None
+            resolved_type, resolved_params, reject_reason = resolve_forced_action(
+                action_type, args, forced_action_type=forced_action_type,
             )
-            if accepted:
-                params = {k: args[k] for k in spec.forward_params if args.get(k) not in (None, "")}
-                summary_text = spec.summary(params) if spec.summary else f"{action_type}: {str(params)[:60]}"
-                logger.info(f"[AgenticProtocol] Native tool propose_action: {summary_text}")
+            if resolved_type:
+                try:
+                    spec = ACTION_SPECS.get(_ActionType(resolved_type))
+                except ValueError:
+                    spec = None
+                params = {
+                    k: resolved_params[k] for k in (spec.forward_params if spec else ())
+                    if resolved_params.get(k) not in (None, "")
+                }
+                summary_text = (
+                    spec.summary(params) if spec and spec.summary
+                    else f"{resolved_type}: {str(params)[:60]}"
+                )
+                if resolved_type != action_type:
+                    logger.info(
+                        f"[AgenticProtocol] Forced round: coerced propose_action "
+                        f"action_type {action_type!r} -> {resolved_type!r} (its params "
+                        f"satisfied the required spec)"
+                    )
+                else:
+                    logger.info(f"[AgenticProtocol] Native tool propose_action: {summary_text}")
                 return SearchDecision(
                     wants_action=True,
-                    action_type=action_type,
+                    action_type=resolved_type,
                     action_params=params,
                     action_summary=summary_text,
                     action_reason=reason,
@@ -671,8 +696,20 @@ class NativeToolsHandler(BaseProtocolHandler):
             else:
                 logger.warning(
                     f"[AgenticProtocol] propose_action rejected: action_type={action_type!r} "
-                    "is unknown or missing required fields"
+                    f"is unknown or missing required fields"
+                    + (f" ({reject_reason})" if reject_reason else "")
                 )
+                # Outside a forced round, preserve the original behavior
+                # exactly (drop silently — a spontaneous malformed proposal
+                # is not worth a retry round). During a forced round, surface
+                # the reason instead of discarding it so the single retry can
+                # tell the model what was wrong (F12).
+                if forced_action_type:
+                    return SearchDecision(
+                        wants_answer=True,
+                        action_type=action_type or None,
+                        action_reject_reason=reject_reason,
+                    )
                 return None
 
         elif func_name in ("lookup_contact", "search_contacts", "find_contact",
@@ -1263,7 +1300,80 @@ class XMLMarkerHandler(BaseProtocolHandler):
             return True
         return spec.accepts_params(params) or spec.backfill is not None
 
-    def parse_response(self, response: Any) -> List[SearchDecision]:
+    @staticmethod
+    def _filter_action_attrs_for_forcing(
+        action_type: str, attrs: Dict[str, str], forced_action_type: Optional[str]
+    ) -> Dict[str, str]:
+        """Like `_filter_action_params`, but when a round is forcing a
+        specific type, widens the allowed set to the UNION of the claimed
+        type's and the required type's forward_params (F12, 2026-09-09) —
+        filtering by the claimed type ALONE would silently drop a field the
+        eventual coerced type needs (e.g. a model mislabeling a delete
+        marker type="calendar_create_event" but still writing date="...", a
+        delete-only field CREATE's filter would otherwise discard before
+        coercion ever sees it)."""
+        filter_types = {action_type}
+        if forced_action_type:
+            filter_types.add(forced_action_type)
+        allowed: set = set()
+        for t in filter_types:
+            spec = XMLMarkerHandler._action_spec(t)
+            if spec is not None:
+                allowed.update(spec.forward_params)
+        if not allowed:
+            return dict(attrs)
+        return {k: v for k, v in attrs.items() if k in allowed}
+
+    @staticmethod
+    def _resolve_action_marker(
+        action_type: str,
+        filtered_attrs: Dict[str, str],
+        message: str,
+        forced_action_type: Optional[str],
+    ) -> Tuple[Optional[str], Optional[Dict[str, str]], Optional[str]]:
+        """XML-marker counterpart of the native propose_action acceptance
+        path: validate/coerce/reject via the same
+        core.actions.registry.resolve_forced_action a mismatched native-tools
+        call goes through. `filtered_attrs` must already be filtered via
+        `_filter_action_attrs_for_forcing`. `message` (the marker body text)
+        merges in UNCONDITIONALLY, matching the pre-existing behavior where
+        it bypasses the forward_params filter entirely (it's the marker's
+        content channel, not a model-supplied attribute).
+
+        A genuinely UNREGISTERED action_type (no spec at all) passes through
+        unchanged, unfiltered (audit F6, 2026-08-31: "unknown action types
+        pass through unchanged; the executor registry rejects them
+        downstream") — resolve_forced_action itself rejects an unknown type
+        (matching the native-tools path's pre-existing contract), so that
+        historical XML accommodation is applied here, one level up, and never
+        attempts coercion for made-up types even in a forced round.
+        """
+        params = dict(filtered_attrs)
+        if message:
+            params["message"] = message
+        if action_type and XMLMarkerHandler._action_spec(action_type) is None:
+            return action_type, params, None
+        from core.actions.registry import resolve_forced_action
+        resolved_type, resolved_params, reject_reason = resolve_forced_action(
+            action_type, params, forced_action_type=forced_action_type,
+        )
+        if resolved_type is None:
+            return None, None, reject_reason
+        if resolved_type != action_type:
+            # A coercion happened — keep only the fields the NEW type
+            # actually forwards (never carry a sibling type's stray attrs
+            # downstream); "message" always survives, as it always has.
+            final_spec = XMLMarkerHandler._action_spec(resolved_type)
+            if final_spec is not None:
+                resolved_params = {
+                    k: v for k, v in resolved_params.items()
+                    if k in final_spec.forward_params or k == "message"
+                }
+        return resolved_type, resolved_params, None
+
+    def parse_response(
+        self, response: Any, forced_action_type: Optional[str] = None
+    ) -> List[SearchDecision]:
         """
         Parse XML markers from text response.
 
@@ -1273,6 +1383,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
 
         Args:
             response: Text response from LLM
+            forced_action_type: see BaseProtocolHandler.parse_response.
 
         Returns:
             List of SearchDecision(s) based on markers found
@@ -1616,31 +1727,45 @@ class XMLMarkerHandler(BaseProtocolHandler):
             action_type = (attrs.pop("type", "") or "").strip()
             reason = attrs.pop("reason", "") or ""
             message = action_match.group(2).strip()
-            params = self._filter_action_params(
-                action_type, {k: v for k, v in attrs.items() if v})
-            if message:
-                params["message"] = message
-            if action_type and params and not self._action_params_complete(action_type, params):
-                logger.warning(
-                    f"[AgenticProtocol] XML action marker for {action_type} is "
-                    f"missing required fields (got {sorted(params)}) — dropped "
-                    "so the forced-action retry can re-ask with field hints"
-                )
+            filtered_attrs = self._filter_action_attrs_for_forcing(
+                action_type, {k: v for k, v in attrs.items() if v}, forced_action_type)
+            resolved_type, resolved_params, reject_reason = self._resolve_action_marker(
+                action_type, filtered_attrs, message, forced_action_type)
+            if resolved_type is None:
+                if action_type:
+                    logger.warning(
+                        f"[AgenticProtocol] XML action marker for {action_type} is "
+                        f"missing required fields — dropped so the forced-action "
+                        "retry can re-ask with field hints"
+                        + (f" ({reject_reason})" if reject_reason else "")
+                    )
+                    if forced_action_type:
+                        decisions.append(SearchDecision(
+                            wants_answer=True,
+                            action_type=action_type,
+                            action_reject_reason=reject_reason,
+                        ))
                 continue
-            if action_type and params:
-                recipient = params.get("recipient", "")
-                _label = params.get("summary") or message or next(iter(params.values()), "")
-                summary = f"{action_type}: {_label[:80]}"
-                if recipient:
-                    summary = f"{action_type} to {recipient}: {_label[:60]}"
-                logger.info(f"[AgenticProtocol] XML action marker found: {summary}")
-                decisions.append(SearchDecision(
-                    wants_action=True,
-                    action_type=action_type,
-                    action_params=params,
-                    action_summary=summary,
-                    action_reason=reason,
-                ))
+            if resolved_type != action_type:
+                logger.info(
+                    f"[AgenticProtocol] Forced round: coerced XML action marker "
+                    f"type {action_type!r} -> {resolved_type!r} (its params satisfied "
+                    "the required spec)"
+                )
+            action_type, params = resolved_type, resolved_params
+            recipient = params.get("recipient", "")
+            _label = params.get("summary") or message or next(iter(params.values()), "")
+            summary = f"{action_type}: {_label[:80]}"
+            if recipient:
+                summary = f"{action_type} to {recipient}: {_label[:60]}"
+            logger.info(f"[AgenticProtocol] XML action marker found: {summary}")
+            decisions.append(SearchDecision(
+                wants_action=True,
+                action_type=action_type,
+                action_params=params,
+                action_summary=summary,
+                action_reason=reason,
+            ))
 
         # Check for <propose_action> markers (generic attrs, same as <action>)
         for pa_match in self.PROPOSE_ACTION_PATTERN.finditer(text):
@@ -1648,29 +1773,44 @@ class XMLMarkerHandler(BaseProtocolHandler):
             action_type = (attrs.pop("type", "") or "").strip()
             reason = attrs.pop("reason", "") or ""
             message = pa_match.group(2).strip()
-            if action_type:
-                params = self._filter_action_params(
-                    action_type, {k: v for k, v in attrs.items() if v})
-                if message:
-                    params["message"] = message
-                if not self._action_params_complete(action_type, params):
-                    logger.warning(
-                        f"[AgenticProtocol] XML propose_action for {action_type} is "
-                        f"missing required fields (got {sorted(params)}) — dropped"
-                    )
-                    continue
-                recipient = params.get("recipient", "")
-                _label = params.get("summary") or message or next(iter(params.values()), "")
-                summary = (f"{action_type} to {recipient}: {_label[:60]}"
-                           if recipient else f"{action_type}: {_label[:80]}")
-                logger.info(f"[AgenticProtocol] XML propose_action marker found: {summary}")
-                decisions.append(SearchDecision(
-                    wants_action=True,
-                    action_type=action_type,
-                    action_params=params,
-                    action_summary=summary,
-                    action_reason=reason or "User requested",
-                ))
+            if not action_type:
+                continue
+            filtered_attrs = self._filter_action_attrs_for_forcing(
+                action_type, {k: v for k, v in attrs.items() if v}, forced_action_type)
+            resolved_type, resolved_params, reject_reason = self._resolve_action_marker(
+                action_type, filtered_attrs, message, forced_action_type)
+            if resolved_type is None:
+                logger.warning(
+                    f"[AgenticProtocol] XML propose_action for {action_type} is "
+                    "missing required fields — dropped"
+                    + (f" ({reject_reason})" if reject_reason else "")
+                )
+                if forced_action_type:
+                    decisions.append(SearchDecision(
+                        wants_answer=True,
+                        action_type=action_type,
+                        action_reject_reason=reject_reason,
+                    ))
+                continue
+            if resolved_type != action_type:
+                logger.info(
+                    f"[AgenticProtocol] Forced round: coerced XML propose_action "
+                    f"type {action_type!r} -> {resolved_type!r} (its params satisfied "
+                    "the required spec)"
+                )
+            action_type, params = resolved_type, resolved_params
+            recipient = params.get("recipient", "")
+            _label = params.get("summary") or message or next(iter(params.values()), "")
+            summary = (f"{action_type} to {recipient}: {_label[:60]}"
+                       if recipient else f"{action_type}: {_label[:80]}")
+            logger.info(f"[AgenticProtocol] XML propose_action marker found: {summary}")
+            decisions.append(SearchDecision(
+                wants_action=True,
+                action_type=action_type,
+                action_params=params,
+                action_summary=summary,
+                action_reason=reason or "User requested",
+            ))
 
         # Check for <lookup_contact> markers
         for lc_match in self.LOOKUP_CONTACT_PATTERN.finditer(text):

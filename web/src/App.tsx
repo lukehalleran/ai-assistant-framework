@@ -236,9 +236,12 @@ export default function App() {
             messages={chat.messages}
             pendingActionId={chat.pendingActionId}
             duelThinking={chat.duelThinking}
-            onActionDecided={(line) => {
+            onActionDecided={(outcome, line) => {
               chat.appendAssistant(line)
-              chat.clearPendingAction()
+              // Approval chaining (F07): hand the card to the next proposal
+              // from the same turn when the server returned one; otherwise
+              // clear it like before.
+              chat.setPendingAction(outcome.next_action_id ?? null)
             }}
           />
           <ActivityLog log={chat.progressLog} streaming={chat.streaming} />

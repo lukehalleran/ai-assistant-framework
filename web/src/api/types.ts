@@ -133,6 +133,11 @@ export interface ActionOutcome {
   message: string
   action_type: string | null
   summary: string | null
+  // Approval chaining (2026-09-01 backend / 2026-09-09 frontend, F07): when
+  // another proposal from the same turn is still pending, the server hands
+  // its id/summary here instead of leaving it to expire unseen.
+  next_action_id?: string | null
+  next_summary?: string | null
 }
 
 export interface ActionDecisionResponse {
