@@ -337,6 +337,7 @@ class PostResponseHookContext:
     response_len: int = 0
     telemetry: Dict[str, Any] = field(default_factory=dict)
     t_prepare_elapsed: float = 0.0
+    telemetry_task: Any = None
 
 
 def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
@@ -352,7 +353,23 @@ def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
         "response_len": int(ctx.response_len or 0),
         "prepare_elapsed_s": round(ctx.t_prepare_elapsed or 0.0, 3),
     })
-    record_turn(rec)
+    if ctx.telemetry_task is None:
+        record_turn(rec)
+        return
+
+    # Snapshot routing/outcome fields BEFORE another turn changes the shared
+    # orchestrator. Only this turn's grounding fields arrive asynchronously.
+    rec.setdefault("ts", datetime.now().astimezone().isoformat(timespec="seconds"))
+
+    def write_completed(_task):
+        try:
+            rec.update({k: v for k, v in ctx.telemetry.items()
+                        if k.startswith("grounding_")})
+            record_turn(rec)
+        except Exception as exc:
+            logger.debug(f"[TurnTelemetry] deferred write skipped: {exc}")
+
+    ctx.telemetry_task.add_done_callback(write_completed)
 
 
 def _hook_search_worthy_teach(ctx: PostResponseHookContext) -> None:

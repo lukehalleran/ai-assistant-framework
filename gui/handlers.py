@@ -128,13 +128,14 @@ from config.app_config import load_system_prompt
 import re as _re_draft
 import time as _time_mod
 import time as _time
+import threading
 DEFAULT_SYSTEM_PROMPT = load_system_prompt()
 logger = logging.getLogger("gradio_gui")
 
 # Initialize FileProcessor for secure file handling
 file_processor = FileProcessor()
 
-# Track pending background storage tasks (for graceful shutdown)
+# Track background storage and grounding receipts (for graceful shutdown).
 _pending_storage_tasks: set = set()
 
 
@@ -380,13 +381,14 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
         if hasattr(orchestrator, 'prompt_builder') and hasattr(orchestrator.prompt_builder, 'context_gatherer'):
             ref_manager = orchestrator.prompt_builder.context_gatherer.reference_docs_manager
         if not ref_manager:
-            ref_manager = ReferenceDocsManager()
+            ref_manager = await asyncio.to_thread(ReferenceDocsManager)
 
         # Persist text documents
         for doc in files_result.documents:
             if doc.content_text and not doc.error:
                 try:
-                    ref_manager.upload_text(
+                    await asyncio.to_thread(
+                        ref_manager.upload_text,
                         content=doc.content_text,
                         title=f"upload:{doc.filename}",
                         metadata_overrides={'type': 'user_upload'}
@@ -407,7 +409,8 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
                     }
                     if img.file_path:
                         overrides['image_path'] = img.file_path
-                    ref_manager.upload_text(
+                    await asyncio.to_thread(
+                        ref_manager.upload_text,
                         content=description,
                         title=f"upload:{img.filename}",
                         metadata_overrides=overrides
@@ -894,6 +897,7 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
     """
     try:
         from core.orchestrator import PostResponseHookContext, run_post_response_hooks
+        _start_background_grounding(ctx)
         # getattr-defensive: some callers (e.g. _run_pending_proposal's
         # lightweight SimpleNamespace ctx) don't carry every SubmitContext
         # field. The pre-registry code wrapped each ctx.* read in its own
@@ -909,6 +913,7 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
             response_len=response_len,
             telemetry=getattr(ctx, "telemetry", None) or {},
             t_prepare_elapsed=getattr(ctx, "t_prepare_elapsed", 0.0) or 0.0,
+            telemetry_task=getattr(ctx, "grounding_task", None),
         )
         run_post_response_hooks(hook_ctx)
     except Exception as e:
@@ -1218,6 +1223,10 @@ class SubmitContext:
     # _run_enhanced; merged with orchestrator._last_turn_signals and written
     # by _write_turn_telemetry() at each storage-dispatch site.
     telemetry: dict = field(default_factory=dict)
+    t_ingress: float = 0.0
+    grounding_pending: Any = None
+    grounding_task: Any = None
+    debug_record: Any = None
 
 
 async def _prepare_submit_context(ctx):
@@ -1270,6 +1279,8 @@ async def _prepare_submit_context(ctx):
     from utils import turn_progress
 
     ctx.t_prepare_start = _time_mod.perf_counter()
+    if getattr(ctx, "t_ingress", 0.0):
+        ctx.telemetry["pre_prepare_elapsed_s"] = round(ctx.t_prepare_start - ctx.t_ingress, 3)
 
     # Install the per-turn progress bus BEFORE prepare_prompt starts so the
     # prompt builder's live events (per-source retrieval completions, gating/
@@ -2872,7 +2883,71 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     return suffix
 
 
-async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
+def _capture_delivery(ctx, debug_record):
+    """Freeze timing at final delivery, before background checks or next turn."""
+    ctx.debug_record = debug_record
+    if getattr(ctx, "t_ingress", 0.0):
+        ctx.telemetry["wall_elapsed_s"] = round(_time_mod.perf_counter() - ctx.t_ingress, 3)
+    for key in ("phase_timings", "task_timings"):
+        if debug_record.get(key):
+            ctx.telemetry[key] = dict(debug_record[key])
+    debug_record.update({k: v for k, v in ctx.telemetry.items()
+                         if k.startswith("grounding_") or k in {"wall_elapsed_s", "pre_prepare_elapsed_s"}})
+
+
+async def _apply_grounding_check_for_delivery(ctx, response_text, source_material=""):
+    from config.app_config import GROUNDING_MODE, GROUNDING_CHECK_ENABLED
+    if not GROUNDING_CHECK_ENABLED:
+        return None, ""
+    if GROUNDING_MODE == "log_only":
+        ctx.grounding_pending = (response_text, source_material)
+        ctx.telemetry.update(grounding_status="pending", grounding_mode="log_only")
+        return None, ""
+    return await _apply_grounding_check(ctx, response_text, source_material, mode=GROUNDING_MODE)
+
+
+def _start_background_grounding(ctx):
+    """Start after final delivery; retain/drain the task like storage work."""
+    pending = getattr(ctx, "grounding_pending", None)
+    if pending is None or getattr(ctx, "grounding_task", None) is not None:
+        return
+    response_text, source_material = pending
+
+    async def check():
+        from config.app_config import GROUNDING_TIMEOUT_S
+        try:
+            await asyncio.wait_for(
+                _apply_grounding_check(ctx, response_text, source_material, mode="log_only"),
+                timeout=max(0.1, GROUNDING_TIMEOUT_S) + 1.0,
+            )
+            # The verifier reports failures before its fail-open return.
+            if ctx.telemetry.get("grounding_status") == "pending":
+                ctx.telemetry["grounding_status"] = "complete"
+        except asyncio.TimeoutError:
+            ctx.telemetry["grounding_status"] = "timed_out"
+        except asyncio.CancelledError:
+            ctx.telemetry["grounding_status"] = "cancelled"
+            raise
+        except Exception as exc:
+            ctx.telemetry["grounding_status"] = "failed"
+            logger.debug(f"[GroundingCheck] background check failed: {exc}")
+
+    def finished(task):
+        # Cancellation can happen before the coroutine's first instruction.
+        if task.cancelled():
+            ctx.telemetry["grounding_status"] = "cancelled"
+        _pending_storage_tasks.discard(task)
+        record = getattr(ctx, "debug_record", None)
+        if record is not None:
+            record.update({k: v for k, v in ctx.telemetry.items()
+                           if k.startswith("grounding_")})
+
+    ctx.grounding_task = asyncio.create_task(check())
+    _pending_storage_tasks.add(ctx.grounding_task)
+    ctx.grounding_task.add_done_callback(finished)
+
+
+async def _apply_grounding_check(ctx, response_text, source_material: str = "", *, mode=None):
     """Factual-grounding floor (2026-08-28): deterministic claim-shape
     pre-filter → LLM verifier → correction.
 
@@ -2913,6 +2988,9 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
             GROUNDING_INTEGRATE_ENABLED, GROUNDING_INTEGRATE_TIMEOUT_S,
             GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS,
         )
+        if mode is None:
+            from config.app_config import GROUNDING_MODE
+            mode = GROUNDING_MODE
         if (not GROUNDING_CHECK_ENABLED or not response_text
                 or len(response_text.strip()) < GROUNDING_MIN_RESPONSE_CHARS):
             return _no_action
@@ -2946,6 +3024,7 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
             max_tokens=GROUNDING_MAX_TOKENS,
             timeout_s=GROUNDING_TIMEOUT_S,
             source_material=_grounding_source,
+            telemetry=ctx.telemetry,
         )
         if verdict is None:
             return _no_action  # fail-open: timeout / call failure / unparseable
@@ -2965,17 +3044,15 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
                 )
             return _no_action
 
-        # Live-config doctrine: read at call time — GROUNDING_MODE is a
-        # module attr tests monkeypatch, and a module-level `from` import
-        # would freeze the pre-patch value.
-        from config.app_config import GROUNDING_MODE
+        # Mode is captured at invocation; a setting change while the verifier
+        # is in flight must not revise an already-delivered log-only answer.
         from utils.privacy_redaction import redact_text
 
-        ctx.telemetry["grounding_mode"] = GROUNDING_MODE
+        ctx.telemetry["grounding_mode"] = mode
         _redacted_verdict = redact_text(verdict.correction)[:300]
         ctx.telemetry["grounding_verdict"] = _redacted_verdict
 
-        if GROUNDING_MODE == "log_only":
+        if mode == "log_only":
             # 2026-09-04: same class as the 2026-08-28 review-gate LOG-ONLY
             # fix — telemetry over the window showed 42 verifier fires -> 27
             # flags -> 25 shipped corrections, >=9 documented false, 0
@@ -3014,6 +3091,7 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = ""):
             ctx.telemetry["grounding_corrected"] = True
         return (None, _suffix)
     except Exception as e:
+        ctx.telemetry.update(grounding_status="failed", grounding_failure_reason="check_error")
         logger.warning(f"[GroundingCheck] failed (non-fatal): {e}")
         return _no_action
 
@@ -3657,7 +3735,7 @@ async def _run_agentic_search(ctx):
                 if _gc_piece:
                     _ag_source_parts.append(str(_gc_piece)[:2000])
             _ag_source = "\n---\n".join(_ag_source_parts)[:6000]
-            _ag_gc_revised, _ag_gc_suffix = await _apply_grounding_check(
+            _ag_gc_revised, _ag_gc_suffix = await _apply_grounding_check_for_delivery(
                 ctx, display_output, source_material=_ag_source)
             if _ag_gc_revised:
                 display_output = _ag_gc_revised
@@ -3682,6 +3760,7 @@ async def _run_agentic_search(ctx):
         _final_chunk = {"role": "assistant", "content": display_output, "debug": debug_record}
         if _pending_action_id:
             _final_chunk["pending_action_id"] = _pending_action_id
+        _capture_delivery(ctx, debug_record)
         yield _final_chunk
         logger.debug("[Handle Submit] Agentic final response yielded")
 
@@ -4293,7 +4372,7 @@ async def _run_enhanced(ctx):
         # text — the final chunk below is a whole-bubble replacement yield, so
         # display and storage stay identical; suffix append is the fallback.
         try:
-            _gc_revised, _gc_suffix = await _apply_grounding_check(ctx, _resp_for_debug)
+            _gc_revised, _gc_suffix = await _apply_grounding_check_for_delivery(ctx, _resp_for_debug)
             if _gc_revised:
                 _resp_for_debug = _gc_revised
                 final_output = _gc_revised
@@ -4322,6 +4401,7 @@ async def _run_enhanced(ctx):
         _enh_final_chunk = {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
         if _enh_pending_action_id:
             _enh_final_chunk["pending_action_id"] = _enh_pending_action_id
+        _capture_delivery(ctx, debug_record)
         yield _enh_final_chunk
         debug_emitted = True
 
@@ -4463,6 +4543,25 @@ async def _run_enhanced(ctx):
 _INFLIGHT_SUBMITS: dict = {}
 _INFLIGHT_STALE_S = 600.0        # crashed turns never cleaned → expire
 _INFLIGHT_MIN_CHARS = 20         # short repeats ("ugh", "hello") are legit
+_active_turn_starts: dict = {}   # turn token -> perf_counter at ingress
+_next_turn_token = 0
+_turn_state_lock = threading.Lock()
+
+
+def has_inflight_turns(max_age_s: float | None = None) -> bool:
+    """Idle monitor view of all accepted requests, including short messages.
+
+    ``max_age_s`` bounds the guard: a turn older than that no longer counts
+    as activity, so a hung turn (stuck executor thread, dead provider
+    stream) cannot hold off the idle shutdown forever — the pre-B6
+    behaviour for a hang was an idle shutdown after the timeout, and this
+    keeps it. ``None`` = any accepted turn counts.
+    """
+    now = _time_mod.perf_counter()
+    with _turn_state_lock:
+        if max_age_s is None:
+            return bool(_active_turn_starts)
+        return any((now - started) < max_age_s for started in _active_turn_starts.values())
 
 # Completed-turn resend window (2026-08-31): a mobile client that loses the
 # SSE at the moment of completion resends the identical query minutes later
@@ -4575,6 +4674,7 @@ async def handle_submit(
     SAME message while the first is still being processed. Transparent
     otherwise — all callers keep this entry point."""
 
+    global _next_turn_token
     user_text = _strip_client_error_artifacts(user_text or "")
 
     _key = None
@@ -4619,17 +4719,27 @@ async def handle_submit(
         for k in [k for k, t in _INFLIGHT_SUBMITS.items() if (_now - t) >= _INFLIGHT_STALE_S]:
             _INFLIGHT_SUBMITS.pop(k, None)
 
-    try:
-        async for _chunk in _handle_submit_inner(
+    with _turn_state_lock:
+        _next_turn_token += 1
+        _turn_token = _next_turn_token
+        _active_turn_starts[_turn_token] = _time_mod.perf_counter()
+    inner = _handle_submit_inner(
             user_text, files, history, use_raw_gpt, orchestrator,
             system_prompt=system_prompt, force_summarize=force_summarize,
             include_summaries=include_summaries, personality=personality,
             fast_mode=fast_mode,
-        ):
+    )
+    try:
+        async for _chunk in inner:
             yield _chunk
     finally:
-        if _key is not None:
-            _INFLIGHT_SUBMITS.pop(_key, None)
+        try:
+            await inner.aclose()
+        finally:
+            with _turn_state_lock:
+                _active_turn_starts.pop(_turn_token, None)
+            if _key is not None:
+                _INFLIGHT_SUBMITS.pop(_key, None)
 
 
 async def _handle_submit_inner(
@@ -4644,6 +4754,7 @@ async def _handle_submit_inner(
     personality=None,
     fast_mode=False
 ):
+    t_ingress = _time_mod.perf_counter()
     logger.info(f"[Handle Submit] ENTRY - raw_mode={use_raw_gpt}, fast_mode={fast_mode}")
     logger.info(f"[Handle Submit] Query: {user_text[:100]}...")
 
@@ -4804,6 +4915,9 @@ async def _handle_submit_inner(
         analysis_text = analysis_text + "\n\n" + _active_doc_note
 
     # Persist uploads to ChromaDB in background (fire-and-forget)
+    if files_result.images:
+        count = len(files_result.images)
+        yield {"role": "assistant", "content": f"📷 Processing {count} image{'s' if count != 1 else ''}…", "is_progress": True}
     if files_result.documents or files_result.images:
         persist_task = asyncio.create_task(_persist_uploads(orchestrator, files_result))
         _pending_storage_tasks.add(persist_task)
@@ -4823,7 +4937,9 @@ async def _handle_submit_inner(
         merged_input=merged_input,
         files_result=files_result,
         analysis_text=analysis_text,
+        t_ingress=t_ingress,
     )
+    ctx.telemetry["has_images"] = bool(files_result.images)
     if _active_doc_telemetry:
         ctx.telemetry["active_document"] = _active_doc_telemetry
 

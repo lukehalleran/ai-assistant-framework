@@ -51,6 +51,7 @@ self.model_manager (set by ContextGatherer.__init__).
 import os
 import re
 import asyncio
+import contextvars
 import hashlib
 import logging
 import threading
@@ -531,6 +532,9 @@ except ImportError:
 
 # Wiki snippet caching (module-level)
 _wiki_cache = {}  # Simple in-memory cache for wiki snippets
+# S5 (2026-09-10): per-call wiki timing dict, bound by _get_wiki_content so the
+# snippet helper can flag a swallowed live-API timeout without a signature change.
+_WIKI_TIMINGS: contextvars.ContextVar = contextvars.ContextVar("wiki_timings")
 _WIKI_CACHE_MAX_SIZE = 100  # Maximum cache entries to prevent memory leaks
 
 
@@ -582,6 +586,13 @@ class KnowledgeRetrievalMixin:
                 return snippet
         except asyncio.TimeoutError:
             logger.warning(f"Wiki snippet timeout for: {query}")
+            # S5 (2026-09-10): the wiki task's timing line must show a live-API
+            # timeout even though this helper swallows it. The dict is bound
+            # by _get_wiki_content for the duration of ONE call (contextvar,
+            # task-local), so the helper's signature and existing fakes stay.
+            _timings = _WIKI_TIMINGS.get(None)
+            if _timings is not None:
+                _timings["timed_out"] = True
         except Exception as e:
             logger.warning(f"Wiki snippet error for {query}: {e}")
 
@@ -1658,6 +1669,17 @@ class KnowledgeRetrievalMixin:
         Wikipedia corpus) for fast, relevant semantic retrieval.  Falls back
         to live Wikipedia API if the collection is empty or unavailable.
         """
+        timings = {"chroma_ms": 0.0, "fallback_ms": 0.0, "timed_out": False}
+        token = _WIKI_TIMINGS.set(timings)
+        try:
+            return await KnowledgeRetrievalMixin._get_wiki_content_timed(self, query, limit, timings)
+        finally:
+            _WIKI_TIMINGS.reset(token)
+            # FAISS is a separate gather task; compression runs after gather.
+            logger.debug("[WikiTiming] task=wiki %s", timings)
+
+    async def _get_wiki_content_timed(self, query, limit, timings):
+        """Existing retrieval path with per-call timing state (no shared state)."""
         if not query:
             return []
 
@@ -1693,12 +1715,16 @@ class KnowledgeRetrievalMixin:
                         # while the thread is genuinely stuck.
                         _WIKI_CHROMA_INFLIGHT.release()
 
-                results = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        _WIKI_CHROMA_EXECUTOR, _query_wiki_chroma
-                    ),
-                    timeout=WIKI_CHROMA_TIMEOUT_S,
-                )
+                started = _t.perf_counter()
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            _WIKI_CHROMA_EXECUTOR, _query_wiki_chroma
+                        ),
+                        timeout=WIKI_CHROMA_TIMEOUT_S,
+                    )
+                finally:
+                    timings["chroma_ms"] = round((_t.perf_counter() - started) * 1000, 3)
                 if results:
                     # Drop disambiguation-page chunks — the embedded corpus
                     # contains them as plain text and they carry no content
@@ -1735,6 +1761,7 @@ class KnowledgeRetrievalMixin:
                         for r in results
                     ]
             except asyncio.TimeoutError:
+                timings["timed_out"] = True
                 # Audit F26 (2026-08-31): the log has always claimed "skipping
                 # wiki this turn" — honor it. Falling through to the live API
                 # stacked a network fetch on top of a turn that already burned
@@ -1748,6 +1775,7 @@ class KnowledgeRetrievalMixin:
                 logger.debug(f"[ContextGatherer] wiki_knowledge query failed, falling back to API: {e}")
 
         # --- Fallback: live Wikipedia API ---
+        started = _t.perf_counter()
         try:
             # Fix 1.6 (2026-09-06): this loop used to split the raw query on
             # whitespace with no stopword filter, so a verbose request like
@@ -1772,10 +1800,22 @@ class KnowledgeRetrievalMixin:
         except Exception as e:
             logger.warning(f"Error getting wiki content: {e}")
             return []
+        finally:
+            timings["fallback_ms"] = round((_t.perf_counter() - started) * 1000, 3)
 
     async def _get_semantic_chunks(self, query: str, k: int = SEM_K,
                                  max_results: int = PROMPT_MAX_SEMANTIC) -> List[Dict[str, Any]]:
         """Get semantic chunks using semantic search."""
+        timings = {"faiss_ms": 0.0, "timed_out": False}
+        try:
+            return await KnowledgeRetrievalMixin._get_semantic_chunks_timed(
+                self, query, k, max_results, timings,
+            )
+        finally:
+            logger.debug("[WikiTiming] task=semantic %s", timings)
+
+    async def _get_semantic_chunks_timed(self, query, k, max_results, timings):
+        """Measure the independent FAISS leg without changing its guards."""
         if not query:
             return []
 
@@ -1802,13 +1842,17 @@ class KnowledgeRetrievalMixin:
         try:
             # Use semantic search with neighbors (dedicated executor — see
             # _WIKI_SEM_EXECUTOR comment above)
-            results = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    _WIKI_SEM_EXECUTOR,
-                    _search_and_release,
-                ),
-                timeout=SEM_TIMEOUT_S
-            )
+            started = _t.perf_counter()
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        _WIKI_SEM_EXECUTOR,
+                        _search_and_release,
+                    ),
+                    timeout=SEM_TIMEOUT_S
+                )
+            finally:
+                timings["faiss_ms"] = round((_t.perf_counter() - started) * 1000, 3)
 
             if not results:
                 return []
@@ -1878,6 +1922,7 @@ class KnowledgeRetrievalMixin:
             return chunks[:max_results]
 
         except asyncio.TimeoutError:
+            timings["timed_out"] = True
             logger.warning(f"Semantic search timeout after {SEM_TIMEOUT_S}s")
         except Exception as e:
             logger.warning(f"Semantic search error: {e}")

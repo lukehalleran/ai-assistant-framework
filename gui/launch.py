@@ -26,6 +26,7 @@ Module Contract
     FastAPI lifespan. Warmup steps 6-7 [2026-08-02]: tone+need exemplar
     embeddings (previously computed INSIDE turn 1) and an end-to-end read-only
     get_memories pass (turn-1 memories task ran 8-17s cold vs 3-5s warm).
+    Step 8 warms CLIP and visual index file pages when visual memory is enabled.
   - _launch_wizard_ui(): First-run setup wizard interface
   - _run_daily_notes_catchup(): Background thread for daily notes catch-up on startup [NEW 2026-01-18]
     - Generates yesterday's daily note if missing
@@ -414,6 +415,17 @@ def _run_model_warmup(orchestrator):
                 _aio.run(mem_sys.get_memories("warm up retrieval path", limit=3))
         except Exception as e:
             print(f"[Warmup] retrieval chain skip: {e}")
+        # 8) CLIP cold load + read-only visual index touch. The temporary store
+        #    warms filesystem pages; upload/retrieval keep their own stores.
+        try:
+            from config.app_config import VISUAL_MEMORY_ENABLED
+            if VISUAL_MEMORY_ENABLED:
+                from knowledge.clip_manager import get_clip_manager
+                from knowledge.visual_memory_store import VisualMemoryStore
+                get_clip_manager().load()
+                VisualMemoryStore().load()
+        except Exception as e:
+            print(f"[Warmup] clip skip: {e}")
         print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
 
     threading.Thread(target=_warm_task, daemon=True).start()

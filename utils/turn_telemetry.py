@@ -25,12 +25,15 @@ Typical record fields (all optional — record what the turn produced):
   uncertainty_fired, uncertainty_accepted, review_fired, review_passed,
   review_retry_accepted, grounding_prefilter_fired, grounding_verifier_fired,
   grounding_flagged, grounding_confidence, grounding_corrected,
-  response_len, model, session_id, prepare_elapsed_s.
+  response_len, model, session_id, prepare_elapsed_s, wall_elapsed_s,
+  pre_prepare_elapsed_s, grounding_verifier_elapsed_s, grounding_status,
+  phase_timings, task_timings (seconds; finite, rounded, at most 20 keys), has_images.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime
 from typing import Any, Dict
@@ -46,6 +49,24 @@ _MAX_STR_LEN = 300
 # generic telemetry preview limit.  This exception applies only to the parsed
 # response_plan; raw planner output and context digest are never recorded.
 _MAX_PLAN_STR_LEN = 2000
+
+
+def _sanitize_timings(value: Any) -> Dict[str, float]:
+    """Keep only bounded, finite elapsed seconds from a timing dictionary."""
+    timings = {}
+    for key, elapsed in value.items():
+        if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+            continue
+        try:
+            if elapsed < 0 or not math.isfinite(elapsed):
+                continue
+            timings[str(key)[:_MAX_STR_LEN]] = round(float(elapsed), 3)
+        except (OverflowError, ValueError):
+            # An int too large for a float is not an elapsed time.
+            continue
+        if len(timings) >= 20:
+            break
+    return timings
 
 
 def _sanitize_value(
@@ -112,6 +133,10 @@ def record_turn(record: Dict[str, Any]) -> bool:
             payload["test_env"] = True
         for key, value in (record or {}).items():
             key_str = str(key)
+            if key_str in {"phase_timings", "task_timings"}:
+                if isinstance(value, dict):
+                    payload[key_str] = _sanitize_timings(value)
+                continue
             payload[key_str] = _sanitize_value(
                 value,
                 _max_str_len=(

@@ -10,6 +10,30 @@ user's first message).
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_warmup_models(monkeypatch):
+    """Guard tests must never cold-load models or open the owner's stores."""
+    import core.prompt.gatherer_knowledge as gatherer
+    import knowledge.clip_manager as clip
+    import knowledge.visual_memory_store as visual_store
+    import memory.memory_retriever as retriever
+    import utils.need_detector as needs
+    import utils.tone_detector as tone
+    import utils.web_search_trigger as trigger
+
+    monkeypatch.setattr(retriever.MemoryRetriever, "_cross_encoder", MagicMock())
+    monkeypatch.setattr(trigger, "_get_search_anchors", MagicMock())
+    monkeypatch.setattr(tone, "_get_exemplar_embeddings", MagicMock())
+    monkeypatch.setattr(needs, "_get_need_exemplar_embeddings", MagicMock())
+    semaphore = MagicMock()
+    semaphore.acquire.return_value = False
+    monkeypatch.setattr(gatherer, "_WIKI_SEM_INFLIGHT", semaphore)
+    monkeypatch.setattr(clip, "get_clip_manager", MagicMock())
+    monkeypatch.setattr(visual_store, "VisualMemoryStore", MagicMock())
+
 
 class _InlineThread:
     """Run the warmup body synchronously so the test observes any exception."""

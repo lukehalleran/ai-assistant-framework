@@ -1112,3 +1112,162 @@ independent debugging value the task did not ask to remove.
 **Stop condition:** not hit. No test required network, a model download, or
 live stores to become meaningful; findings stayed at 1 (well under 5); no
 product code or out-of-scope file was touched.
+
+### B6 phase 1 — speed (2026-09-10, Codex executor → Fable finish + referee)
+
+Brief: `docs/HANDOFF_20260909_speed_batch.md`. Codex ran out of credit after
+writing the code and tests for S1–S5 but before the verification, docs and
+commit-message steps; Fable picked the tree up the next morning, fixed the
+three tests Codex left red, added one tightening, and refereed the rest.
+
+**Failed-before / after** (Codex's own recorded runs, then Fable's):
+- `tests/unit/test_sep09_speed_batch.py` — 8 failed / 3 passed before the
+  handlers change (four log-only cases waited on the verifier, short turns
+  had no idle protection, image ingestion started without a progress line;
+  the ingress timestamp and correct-mode ordering already passed) → all
+  green after.
+- Fable's first run of Codex's four files: 43 passed / 3 failed —
+  `test_telemetry_bounds_and_rounds_valid_timings[phase_timings|task_timings]`
+  (`math.isfinite(10**1000)` raises `OverflowError`, which the sanitizer let
+  escape and `record_turn` then skipped the whole row) and
+  `test_wiki_records_swallowed_live_snippet_timeout` (test written, code not
+  yet done). After the fixes: 108 passed across the four B6 files plus
+  `test_audit0831_fixes`, `test_wiki_fallback_stub_filter`,
+  `test_turn_telemetry`.
+
+**Per item:**
+- **S1 (CLIP off the loop + warmup):** `VisualMemoryPipeline.ingest_image`
+  moves every blocking step to `asyncio.to_thread` — existence check, hash,
+  dedup lookup, CLIP encode, entity extraction, store write, and the caption
+  payload read (`_read_caption_image`); store loads/writes are serialised per
+  pipeline (`_store_lock`, `_call_store`) since two concurrent ingests now run
+  their workers together. `CLIPManager.load()` gained a load lock — warmup and
+  the first upload can overlap and constructed the model twice
+  (`test_clip_load_is_serialized_between_warmup_and_ingestion`). Warmup step 8
+  in `gui/launch._run_model_warmup` loads the CLIP singleton and touches the
+  visual FAISS index/metadata through a throwaway `VisualMemoryStore().load()`
+  (read-only; the upload path builds its own store on the shared chroma),
+  guarded by `VISUAL_MEMORY_ENABLED` and the `[Warmup] clip skip:` line.
+  `_persist_uploads` also runs `ReferenceDocsManager()` and `upload_text`
+  through `to_thread` — same class, chroma writes were on the loop too.
+- **S2 (grounding verifier off the critical path — design choice):** the
+  flag matrix is clean: `GROUNDING_MODE` is validated to exactly
+  `{log_only, correct}` (`app_config.py:1471-1476`); in `log_only` the
+  verdict can never touch the shown/stored text regardless of
+  `GROUNDING_INTEGRATE_ENABLED`, so that is the boundary. New
+  `_apply_grounding_check_for_delivery` parks the (text, source_material)
+  pair on `ctx.grounding_pending` in log-only and returns no-action; in
+  `correct` it awaits inline exactly as before (display == storage contract
+  kept, `test_correct_mode_waits_and_keeps_display_storage_equal` ×4).
+  `_start_background_grounding` starts the task from `_write_turn_telemetry`
+  — i.e. AFTER the final chunk is yielded — with the mode CAPTURED at
+  invocation (`_apply_grounding_check(..., mode=)`), so flipping the setting
+  to `correct` while a log-only check is in flight cannot revise an
+  already-delivered answer. The task lives in `_pending_storage_tasks` (the
+  shutdown drain), has a hard cap of `GROUNDING_TIMEOUT_S + 1`, and records
+  `grounding_status` ∈ {pending, complete, timed_out, failed, cancelled}
+  (cancel-before-first-instruction handled in the done callback). **Telemetry
+  choice: write from the task's completion callback, not an awaited cap.** The
+  turn record is snapshotted at delivery (`ts`, intent/tone/gate/timings —
+  all read off the SHARED orchestrator, which the next turn would overwrite)
+  and only the `grounding_*` fields are merged in when the task finishes
+  (`orchestrator._hook_turn_telemetry` + `PostResponseHookContext.telemetry_task`);
+  the debug record is the same dict object the SPA serves, so it flips from
+  `grounding_status=pending` to the verdict in place. An awaited cap would
+  have put part of the 5 s back on the critical path. Exactly ONE row per
+  turn in every outcome (`test_background_check_keeps_one_receipt_on_failure` ×3).
+- **S3 (in-flight ≠ idle):** activity timestamp poked at ingress before file
+  processing; `has_inflight_turns()` is a NEW token→ingress-time map under a
+  lock (the `_INFLIGHT_SUBMITS` dedupe set was not repurposed), decremented in
+  `handle_submit`'s `finally` after `inner.aclose()`; `_idle_monitor_thread`
+  skips its cycle while a turn is in flight; a `📷 Processing N image(s)…`
+  progress chunk is yielded before the background ingestion starts.
+  **Referee tightening:** the guard is age-bounded —
+  `has_inflight_turns(max_age_s=_idle_timeout_minutes*60)` — so a HUNG turn
+  (stuck executor thread, dead provider stream — both have happened here)
+  cannot hold off the idle shutdown forever; pre-B6 a hang idled out after
+  the timeout and it still does (`test_hung_turn_stops_blocking_idle_after_the_bound`).
+- **S4 (roll-up):** `utils/turn_telemetry` accepts `phase_timings` /
+  `task_timings` (finite, non-negative, rounded to ms, ≤20 keys; huge ints
+  and bools rejected) plus `wall_elapsed_s` (ingress → final chunk, frozen by
+  `_capture_delivery` before the background check) and `has_images`.
+  `scripts/latency_rollup.py --days N [--path]` is stdlib-only, read-only
+  (the test wraps `open` and fails on any write mode), per calendar day ×
+  mode × text/image: n, median/p90 wall and prepare, top-6 task poles by
+  median; `test_env` rows and malformed rows are ignored and counted.
+  Limitation: `wall_elapsed_s` is captured on the enhanced and agentic paths
+  only — duel/doc-gen/insight/raw rows show `wall_s n/a` until phase 2 adds
+  their delivery hooks.
+- **S5 (measure only, one deviation):** the brief asked for ONE line with
+  chroma/faiss/compress; the wiki chroma query (`_get_wiki_content`) and the
+  FAISS leg (`_get_semantic_chunks`) are SEPARATE gather tasks and
+  compression runs after gather, so a combined line would have been
+  misleading. Two lines instead: `[WikiTiming] task=wiki {chroma_ms,
+  fallback_ms, timed_out}` and `[WikiTiming] task=semantic {faiss_ms,
+  timed_out}`. Fable finished the swallowed-timeout case: the live-API
+  snippet helper catches its own 5 s timeout, so the wiki task's dict is
+  bound for the duration of one call via a `contextvars.ContextVar`
+  (`_WIKI_TIMINGS`) and the helper flags `timed_out` on it — no signature
+  change, existing `_get_wiki_snippet_cached` fakes untouched. First live
+  sub-timings: pending the owner's restart (grep `WikiTiming` in
+  `daemon_debug*.log`).
+
+**Verification (Fable, 2026-09-10 morning):** four B6 files + neighbours
+108 passed; handoff regression set (`test_grounding_wiring`,
+`test_grounding_check`, `test_handle_submit`, `test_sep04_attachment_turn`,
+`test_request_path_parity`, `test_sep08_agentic_answer_integrity`) + the five
+repo-wide guards + `test_no_vacuous_assertions` — 254 passed; every test
+file touching in-flight/idle/storage-drain/upload-persist/warmup code
+(`test_ingress_guard`, `test_main_module_alias`, `test_visual_memory_pipeline`,
+…) — 69 passed; `ruff check .` clean. Source delta ~290 lines → one commit.
+
+**Owner (after commit + push):** restart, send one image message and one
+calendar delete; expect the image turn's prompt build to start within ~2 s
+of ingress and the agentic turn to finish ~5 s sooner. Then
+`python scripts/latency_rollup.py --days 1` and grep `WikiTiming` for the
+phase-2 numbers.
+
+### B6 follow-up — failure receipts and live latency verification (2026-09-10, Codex)
+
+The independent review reproduced a receipt defect: `verify_grounding` catches
+provider failures and returns `None`, so the background wrapper marked real
+timeouts and provider errors `complete`. The earlier failure test replaced that
+wrapper and could not expose the swallowed errors. The verifier now accepts the
+turn's optional telemetry dictionary and records `timed_out`, `failed` (provider
+error or invalid verdict), or `complete` before returning. Valid verdicts that
+are deliberately demoted remain complete. Cancellation still propagates;
+delivery and correction behavior are unchanged. The background wrapper preserves
+the reported outcome, and unexpected check errors also record failure.
+
+For the requested live timing checks, receipts/debug records now expose
+`pre_prepare_elapsed_s` (ingress to prompt preparation) and
+`grounding_verifier_elapsed_s` (provider call duration). The read-only latency
+roll-up reports both independently of response wall time; background work must
+not be added to delivery time. Historical rows without these fields show n/a.
+
+Verification: the 20 new real-verifier request cases failed before the change;
+afterward, 354 selected tests passed, covering the B6 files, grounding suites,
+request/attachment/parity regressions, and six repository guards. Ruff and
+`git diff --check` passed. Threaded tests ran outside the sandbox because even a
+minimal `asyncio.to_thread` program could not reliably complete inside it.
+Live verification against the updated process (2026-09-10):
+
+| Probe | Observed result |
+|---|---|
+| First image after restart, following CLIP warmup | Red square and blue circle identified correctly. First progress at 0.047 s; ingress to prepare 0.161 s (the previous observed CLIP stall was 36 s); final delivery 27.721 s server / 27.757 s client. |
+| Read-only agentic fetch of the official Python downloads page | Confirmed `agentic-search` route. Final delivery 34.145 s server / 34.189 s client with grounding still pending; real verifier subsequently completed in 4.595 s and wrote its receipt. |
+
+These are single-turn smoke checks, not a matched before/after latency study.
+They verify removal of the image's pre-prepare stall and that actual verifier
+work runs after agentic delivery; they do not establish a median speedup.
+Context preparation remains the next bottleneck: 25.389 s image / 22.595 s
+agentic. The image's longest gather task was memories at 19.294 s (concurrent
+task times must not be summed). No further retrieval changes were made.
+
+The existing instance was bound to its private-network address, not localhost;
+its lock prevented a duplicate launch. It was then stopped gracefully and
+restarted with the tested working tree for these probes. No commits were made.
+Measurement artifacts: `/tmp/daemon_b6_review/live_timings.json`,
+`image_events.json`, and `agentic_events.json` in the same temporary directory;
+durable timing receipts are in `logs/turn_records.jsonl` at 12:52:12 and
+12:59:18 local time. The daemon remains running on the updated code.

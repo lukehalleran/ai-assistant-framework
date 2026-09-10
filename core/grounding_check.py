@@ -31,6 +31,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
+from time import perf_counter
 from typing import Optional
 
 from pydantic import BaseModel, Field, ValidationError
@@ -728,13 +729,20 @@ async def verify_grounding(
     max_tokens: int = 250,
     timeout_s: float = 5.0,
     source_material: str = "",
+    telemetry: Optional[dict] = None,
 ) -> Optional[GroundingVerdict]:
     """Run the LLM grounding verifier. None on ANY failure (fail-open:
     the caller takes no action — the shown response is never blocked).
 
     source_material: text the assistant retrieved while answering (agentic
     tool results, document chunks) — authoritative for document-specific
-    facts, exactly like user-pasted material."""
+    facts, exactly like user-pasted material.
+
+    telemetry: optional per-turn receipt. Preserve timeout/provider/parse
+    outcomes here, where fail-open failures still have a distinct cause.
+    A valid verdict that is later demoted remains a completed check.
+    """
+    started = perf_counter()
     try:
         raw = await asyncio.wait_for(
             model_manager.generate_once(
@@ -749,12 +757,27 @@ async def verify_grounding(
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
+        if telemetry is not None:
+            telemetry["grounding_status"] = "timed_out"
         logger.warning("[GroundingCheck] Verifier timed out — fail-open")
         return None
+    except asyncio.CancelledError:
+        if telemetry is not None:
+            telemetry["grounding_status"] = "cancelled"
+        raise
     except Exception as e:
+        if telemetry is not None:
+            telemetry.update(grounding_status="failed", grounding_failure_reason="provider_error")
         logger.warning(f"[GroundingCheck] Verifier call failed — fail-open: {e}")
         return None
+    finally:
+        if telemetry is not None:
+            telemetry["grounding_verifier_elapsed_s"] = round(perf_counter() - started, 3)
     verdict = _parse_verdict(raw)
+    if telemetry is not None:
+        telemetry["grounding_status"] = "complete" if verdict is not None else "failed"
+        if verdict is None:
+            telemetry["grounding_failure_reason"] = "invalid_verdict"
     if verdict is not None and verdict.false_claim_present:
         if _correction_restates_response(verdict.correction, response):
             logger.warning(

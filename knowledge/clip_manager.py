@@ -42,8 +42,8 @@ class CLIPManager:
     """
     Lazy-loaded OpenCLIP model for cross-modal image/text encoding.
 
-    Thread-safe via module-level lock for singleton creation.
-    Model loading is idempotent — safe to call load() multiple times.
+    Singleton creation and model loading are separately locked.
+    Model loading is idempotent, including overlapping warmup and ingestion.
     """
 
     EMBEDDING_DIM = 512
@@ -55,9 +55,17 @@ class CLIPManager:
         self._device = "cpu"
         self.loaded = False
         self._available = True  # False if open_clip not installed
+        self._load_lock = threading.Lock()
 
     def load(self) -> None:
         """Load the CLIP model. Idempotent — no-ops if already loaded."""
+        with self._load_lock:
+            if self.loaded or not self._available:
+                return
+            self._load_model()
+
+    def _load_model(self) -> None:
+        """Construct the model while the caller holds the load lock."""
         if self.loaded:
             return
 

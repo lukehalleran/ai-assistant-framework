@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import threading
 from typing import List, Optional
 
 from utils.logging_utils import get_logger
@@ -56,6 +57,8 @@ class VisualMemoryPipeline:
         self._store = visual_store
         self._model_manager = model_manager
         self._entity_resolver = entity_resolver
+        # Worker calls from concurrent ingests must not mutate this store together.
+        self._store_lock = threading.Lock()
 
     async def ingest_image(
         self,
@@ -76,18 +79,18 @@ class VisualMemoryPipeline:
 
         Returns doc_id on success, None on failure or duplicate.
         """
-        if not os.path.exists(image_path):
+        if not await asyncio.to_thread(os.path.exists, image_path):
             logger.warning(f"[VisualPipeline] Image not found: {image_path}")
             return None
 
         # 1. Compute hash for dedup
-        image_hash = self._compute_hash(image_path)
-        if self._store.has_hash(image_hash):
+        image_hash = await asyncio.to_thread(self._compute_hash, image_path)
+        if await asyncio.to_thread(self._call_store, self._store.has_hash, image_hash):
             logger.debug(f"[VisualPipeline] Duplicate image, skipping: {image_path}")
             return None
 
         # 2. CLIP encode
-        clip_embedding = self._clip.encode_image_from_path(image_path)
+        clip_embedding = await asyncio.to_thread(self._clip.encode_image_from_path, image_path)
         if clip_embedding is None:
             logger.warning(f"[VisualPipeline] CLIP encoding failed: {image_path}")
             return None
@@ -99,14 +102,16 @@ class VisualMemoryPipeline:
             caption = f"Image: {os.path.basename(image_path)}"
 
         # 4. Entity extraction from caption + context
-        entity_ids = self._extract_entities(caption, context_text)
+        entity_ids = await asyncio.to_thread(self._extract_entities, caption, context_text)
 
         # 5. Detect media type if not provided
         if not media_type:
             media_type = self._detect_media_type(image_path)
 
         # 6. Store
-        doc_id = self._store.add_image(
+        doc_id = await asyncio.to_thread(
+            self._call_store,
+            self._store.add_image,
             image_path=image_path,
             clip_embedding=clip_embedding,
             caption=caption,
@@ -122,6 +127,11 @@ class VisualMemoryPipeline:
                 f"(source={source}, entities={entity_ids})"
             )
         return doc_id
+
+    def _call_store(self, operation, *args, **kwargs):
+        """Serialize this pipeline's store loads and writes inside the worker."""
+        with self._store_lock:
+            return operation(*args, **kwargs)
 
     async def ingest_batch(
         self,
@@ -162,11 +172,7 @@ class VisualMemoryPipeline:
             timeout = 10.0
 
         try:
-            import base64
-
-            with open(image_path, "rb") as f:
-                img_bytes = f.read()
-            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            b64 = await asyncio.to_thread(self._read_caption_image, image_path)
 
             if not media_type:
                 media_type = self._detect_media_type(image_path)
@@ -200,6 +206,14 @@ class VisualMemoryPipeline:
         except Exception as e:
             logger.warning(f"[VisualPipeline] Caption generation failed: {e}")
             return ""
+
+    @staticmethod
+    def _read_caption_image(image_path: str) -> str:
+        """Read and encode the caption payload away from the event loop."""
+        import base64
+
+        with open(image_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
 
     def _extract_entities(self, caption: str, context_text: str = "") -> List[str]:
         """Extract entity IDs from caption and context text."""

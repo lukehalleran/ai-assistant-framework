@@ -765,6 +765,13 @@ def _idle_monitor_thread():
         if _shutdown_requested:
             break
 
+        # B6 S3 (2026-09-10): a long in-flight turn is activity, not idleness —
+        # but only up to the idle timeout itself, so a hung turn cannot block
+        # the idle shutdown forever (pre-B6 behaviour for a hang is kept).
+        from gui.handlers import has_inflight_turns
+        if has_inflight_turns(max_age_s=_idle_timeout_minutes * 60):
+            continue
+
         idle_seconds = time.time() - _last_activity_time
         idle_minutes = idle_seconds / 60
 
