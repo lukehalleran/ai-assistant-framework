@@ -130,3 +130,9 @@ CLAUDE_CHANGELOG.md
 
 # Claude Code agent worktrees (full repo copies; never commit)
 .claude/worktrees/
+
+# Handoffs are relay notes between agents about live turns (2026-09-10): they
+# quote the owner's own conversations. Local only — never commit.
+docs/HANDOFF_*.md
+docs/*HANDOFF*.md
+docs/**/*handoff*.md

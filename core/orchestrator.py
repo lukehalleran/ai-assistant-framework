@@ -1677,6 +1677,14 @@ class DaemonOrchestrator:
         # at storage-dispatch time; see utils/turn_telemetry.py).
         try:
             _intent_obj = context.intent
+            _web_decision = getattr(
+                getattr(self.prompt_builder, "context_gatherer", None),
+                "last_web_decision",
+                None,
+            )
+            if not isinstance(_web_decision, dict):
+                _web_decision = {}
+            _web_reason = _web_decision.get("reason")
             self._last_turn_signals = {
                 "intent": getattr(getattr(_intent_obj, "intent", None), "value", None),
                 "intent_confidence": getattr(_intent_obj, "confidence", None),
@@ -1692,6 +1700,14 @@ class DaemonOrchestrator:
                     getattr(context, "emotional_context", None), "tone_confidence", None
                 ),
                 "is_small_talk": bool(getattr(context, "is_small_talk", False)),
+                "web_trigger_should_search": _web_decision.get("triggered"),
+                "web_trigger_source": _web_decision.get("source"),
+                "web_trigger_reason": (
+                    str(_web_reason)[:120] if _web_reason is not None else None
+                ),
+                "web_trigger_confidence": _web_decision.get("confidence"),
+                "web_results_n": _web_decision.get("results"),
+                "web_error": _web_decision.get("error"),
                 "plan_points": len(_plan_result.key_points) if _plan_result else None,
                 "plan_tone": getattr(_plan_result, "tone", None) if _plan_result else None,
                 # Exact operative instructions (not the planner's raw response)

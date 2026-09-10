@@ -108,6 +108,7 @@ PRIORITY_ORDER = [
 # rendered ones.)
 UNRENDERED_CONTEXT_KEYS = frozenset({
     "summaries", "reflections", "stm_summary", "memory_id_map",
+    "web_search_decision",
 })
 
 # Max tokens for narrative_state section (temporal grounding)

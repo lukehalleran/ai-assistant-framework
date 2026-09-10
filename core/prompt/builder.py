@@ -1478,6 +1478,15 @@ class UnifiedPromptBuilder:
                         user_input, crisis_level, intent_type=intent_type,
                         conversation_context=_web_conv_ctx))
                 )
+            else:
+                # The gatherer is shared across turns. Reset its receipt when
+                # this path deliberately skips web retrieval so the feature
+                # inventory cannot reuse the previous turn's decision.
+                self.context_gatherer.last_web_decision = {
+                    "triggered": False, "source": "local_repo_audit",
+                    "reason": "local repo audit", "confidence": None,
+                    "results": None, "error": None,
+                }
 
             # Gather all results with timeout — use asyncio.wait so completed
             # tasks survive a timeout instead of wiping the entire context.
@@ -1695,6 +1704,7 @@ class UnifiedPromptBuilder:
                 "proactive_insights": gathered.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": gathered.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": gathered.get("web_search"),  # Real-time web search results
+                "web_search_decision": getattr(self.context_gatherer, "last_web_decision", None),
                 "daemon_self_notes": gathered.get("daemon_self_notes", []),
                 "codebase_changes": codebase_changes,  # Git changes since last session (first message only)
             }
@@ -2045,6 +2055,7 @@ class UnifiedPromptBuilder:
                 "proactive_insights": context.get("proactive_insights", []),  # Cross-domain insights
                 "visual_memories": context.get("visual_memories", {"text_results": [], "images": []}),  # CLIP visual memories
                 "web_search_results": context.get("web_search_results"),  # Real-time web search results
+                "web_search_decision": context.get("web_search_decision"),
                 "daemon_self_notes": context.get("daemon_self_notes", []),
                 "codebase_changes": context.get("codebase_changes", {}),
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
@@ -2093,6 +2104,7 @@ class UnifiedPromptBuilder:
                 "relevant_emails": [],
                 "proactive_insights": [],
                 "web_search_results": None,
+                "web_search_decision": getattr(self.context_gatherer, "last_web_decision", None),
                 "memory_id_map": {}
             }
             # Include stm_summary if it was provided
@@ -2272,6 +2284,11 @@ class UnifiedPromptBuilder:
                 "unresolved_threads": [],  # No threads for small-talk
                 "proactive_insights": [],  # No insights for small-talk
                 "web_search_results": None,  # No web search for small-talk
+                "web_search_decision": {
+                    "triggered": False, "source": "light_path",
+                    "reason": "light path", "confidence": None,
+                    "results": None, "error": None,
+                },
                 "codebase_changes": codebase_changes or {},  # Git changes since last session
             }
 
@@ -2331,6 +2348,11 @@ class UnifiedPromptBuilder:
                 "relevant_emails": [],
                 "proactive_insights": [],
                 "web_search_results": None,
+                "web_search_decision": {
+                    "triggered": False, "source": "light_path",
+                    "reason": "light path", "confidence": None,
+                    "results": None, "error": None,
+                },
                 "codebase_changes": codebase_changes or {},
             }
 

@@ -45,7 +45,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-02 | Negation-blind trigger matching | A | partial |
 | BC-03 | Proximity regex crosses a sentence boundary | A | partial |
 | BC-04 | Classifier missing an anchor or qualifier | A | partial |
-| BC-05 | Short-circuit skips the only component that could judge the shape | A | open |
+| BC-05 | Short-circuit skips the only component that could judge the shape | A | partial |
 | BC-06 | Agentic gate over-fire on non-requests | A | recurs |
 | BC-07 | Probabilistic verdict overrides a deterministic route | A | closed |
 | BC-08 | Continuity/topic misread on fragments and greetings | A | recurs |
@@ -55,13 +55,13 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-12 | Config key never reaches its runtime reader | B | partial |
 | BC-13 | Feature flag gates one path, not its siblings | B | partial |
 | BC-14 | Call-signature kwarg mismatch (dead call) | B | recurs |
-| BC-15 | Protocol/schema vocabulary drift (taught ≠ parsed; enum gap) | B | closed |
+| BC-15 | Protocol/schema vocabulary drift (taught ≠ parsed; enum gap) | B | partial |
 | BC-16 | Related constants drift / one constant, two purposes | B | partial |
 | BC-17 | Sentinel/prefix registered in one list, not all | B | partial |
 | BC-18 | Newest-first list consumed as oldest-first | C ordering/shape | closed |
 | BC-19 | List position treated as priority; parallel arrays assumed aligned | C | partial |
 | BC-20 | Writer/reader shape mismatch swallowed to an empty result | C | partial |
-| BC-21 | Compare or coerce on the serialized form | C | closed |
+| BC-21 | Compare or coerce on the serialized form | C | partial |
 | BC-22 | Budget write-back corrupts a typed or keyed section | C | partial |
 | BC-23 | Metered key ≠ rendered key | C | closed |
 | BC-24 | Floors and top-ups re-admit ungated or unbudgeted content | C | partial |
@@ -139,21 +139,21 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-04 Classifier missing an anchor or qualifier
 - Mechanism: a keyword/regex router lacks a required anchor (possessive, personal-record cue, request shape, TitleCase), so it over- or under-fires.
-- Incidents: 2026-08-27 unanchored "can you"/`document` rode file-continuation into a 106 s loop; 2026-08-31 `pattern_temporal` had no personal-record anchor (AUDIT 08-31 F3); 2026-09-05 `requires_fresh_public_evidence` under-fired on second-person wrappers and over-fired on pronoun-less private questions (FABLE_HANDOFF 09-05); 2026-09-08 `_REQUEST_SHAPED_RE` matched `read` the R function (HANDOFF_20260908 N1).
+- Incidents: 2026-08-27 unanchored "can you"/`document` rode file-continuation into a 106 s loop; 2026-08-31 `pattern_temporal` had no personal-record anchor (AUDIT 08-31 F3); 2026-09-05 `requires_fresh_public_evidence` under-fired on second-person wrappers and over-fired on pronoun-less private questions (FABLE_HANDOFF 09-05); 2026-09-08 `_REQUEST_SHAPED_RE` matched `read` the R function (HANDOFF_20260908 N1); 2026-09-10 calendar-create matched the user's narration "I only put professors hours in calendar" because the detector lacked a request/self-narration anchor (calendar forced-action handoff T9).
 - Find: DM-09 — adversarial probe set against the deployed function (`scripts/probe_tone_backstop.py` pattern), with the live texts as fixtures.
-- Closure: per-detector anchors (`_entity_mention_is_proper` TitleCase doctrine, head-anchored request shapes, `is_personal_doc_search`, private-sphere token sets).
+- Closure: per-detector anchors (`_entity_mention_is_proper` TitleCase doctrine, head-anchored request shapes, `is_personal_doc_search`, private-sphere token sets, `_match_is_self_narration`).
 - Status: partial — no standing adversarial-probe suite across detectors.
 
 ### BC-05 Short-circuit skips the only component that could judge the shape
 - Mechanism: a conservative deterministic rule plus a "confident no" short-circuit means a whole message shape is never judged by anything — the cheap stage says "nothing here" and the expensive judge is skipped on exactly that verdict.
 - Incidents: 2026-09-10 "The president says he will pay everyone 5000…" scored heuristic 0.0/no keywords → the LLM trigger was skipped, `requires_fresh_public_evidence` needs question+temporal cues a share lacks; 2026-09-09 "Uhm. Please investigate thank you" same skip, no context consult (HANDOFF_20260910_web_search_gap).
 - Find: for every `if conf <= 0 and not hits: return` style short-circuit, enumerate which shapes reach 0.0 (a probe set of statement-shaped inputs) and whether any later stage sees them.
-- Closure: planned — `consult_classifier` flag + `public_actor_statement` arm + `is_verification_request` (HANDOFF_20260910_web_search_gap PLANNED 2).
-- Status: open.
+- Closure: `consult_classifier` flag + `public_actor_statement` arm + contextual `is_verification_request`, pinned by `test_sep10_web_search_gap.py` (09-10).
+- Status: partial — the public-claim and verification shapes are closed; other zero-signal short-circuits still require shape enumeration.
 
 ### BC-06 Agentic gate over-fire on non-requests
 - Mechanism: a gate tier classifies conversation as tool-worthy and launches a multi-second to multi-minute loop for no informational need.
-- Incidents: 2026-07-15 60 s on a vibe remark (continuation override); 2026-08-18 49 s via `temporal_recall@0.85`; 2026-08-27 106 s paste, 369 s decision timeout with zero tools; 2026-08-29 151 s on lyrics; 2026-09-02 129 s on an emotional check-in, cause invisible until `gate_reason` was surfaced (RETRO §3.12).
+- Incidents: 2026-07-15 60 s on a vibe remark (continuation override); 2026-08-18 49 s via `temporal_recall@0.85`; 2026-08-27 106 s paste, 369 s decision timeout with zero tools; 2026-08-29 151 s on lyrics; 2026-09-02 129 s on an emotional check-in, cause invisible until `gate_reason` was surfaced (RETRO §3.12); 2026-09-10 course-document narration forced a calendar-create loop that invented a 17:00 event (calendar forced-action handoff T9).
 - Find: DM-10 — `jq -r 'select(.mode=="agentic-search") | .gate_reason' logs/turn_records.jsonl | sort | uniq -c` against `wall_elapsed_s` outliers; the 09-04 audit found `llm-fallback` launched 27 % of agentic turns.
 - Closure: per-arm (word caps, head anchors, vent-shape veto, action arm, decision-timeout one-shot); `gate_reason` in every record.
 - Status: recurs — no precision measurement of the Tier-4 LLM fallback.
@@ -218,10 +218,10 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-15 Protocol/schema vocabulary drift (taught ≠ parsed; enum gap)
 - Mechanism: the vocabulary the model is taught and the vocabulary the parser or schema accepts diverge; a forced round has no valid expression and substitutes a sibling type.
-- Incidents: 2026-08-29 fixed attribute groups couldn't express calendar fields; 2026-09-01 `ACTION_ATTR_RE` truncated at an apostrophe (F20); 2026-09-09 `PROPOSE_ACTION_TOOL_DEFINITION` enum lacked update/delete → a forced delete emitted a create (F12).
-- Find: diff `ACTION_SPECS`/`ActionType` against every tool-schema enum and every taught tag in `core/agentic/types.py` vs what `protocols.py` matches; DM-02 `test_tool_wiring_parity`.
-- Closure: registry-driven attribute parsing; `build_forced_tool_schema` one-value enum; `resolve_forced_action` coerce-or-reject; `tests/unit/test_sep09_forced_action_type.py`.
-- Status: closed for forced rounds; the parity test did not check the forced enum until 09-09.
+- Incidents: 2026-08-29 fixed attribute groups couldn't express calendar fields; 2026-09-01 `ACTION_ATTR_RE` truncated at an apostrophe (F20); 2026-09-09 `PROPOSE_ACTION_TOOL_DEFINITION` enum lacked update/delete → a forced delete emitted a create (F12); 2026-09-10 action detectors missed the system's own "queue it up" / "approval card pop up" wording and recurrence amendments, leaving affirmative and retry turns unrouteable.
+- Find: diff `ACTION_SPECS`/`ActionType` against every tool-schema enum and every taught tag in `core/agentic/types.py` vs what `protocols.py` matches; replay the assistant's own offer/completion phrasings through the detectors; DM-02 `test_tool_wiring_parity`.
+- Closure: registry-driven attribute parsing; `build_forced_tool_schema` one-value enum; `resolve_forced_action` coerce-or-reject; forced-type and assistant-self-phrasing parity tests in the 09-09/09-10 regression modules.
+- Status: partial — forced action types and current self-phrasing are guarded, but vocabulary families can still drift outside those registries.
 
 ### BC-16 Related constants drift / one constant, two purposes
 - Mechanism: two constants encode one relationship (collect 6000, truncate 3500) or one constant serves two features.
@@ -262,10 +262,10 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-21 Compare or coerce on the serialized form
 - Mechanism: ISO strings sorted as strings; an int epoch handed to a `str` Pydantic field.
-- Incidents: 2026-08-31 StackExchange `creation_date` int crashed deliberation after the budget was spent (F8); 2026-09-03 email sort on ISO strings with mixed offsets.
+- Incidents: 2026-08-31 StackExchange `creation_date` int crashed deliberation after the budget was spent (F8); 2026-09-03 email sort on ISO strings with mixed offsets; 2026-09-10 `str(ActionType.X)` was compared with `ActionType.X.value`, so real pending cards never matched while plain-string fixtures did.
 - Find: `sorted(..., key=lambda x: x["timestamp"])` on raw strings; Pydantic construction from raw API dicts without coercion.
-- Closure: coerce at parse; parse instants before sorting.
-- Status: closed for both.
+- Closure: coerce at parse; parse instants before sorting; compare enum `.value` through `_action_type_value`.
+- Status: partial — the cited sites are fixed, but there is no cross-type static guard against serialized-form comparisons.
 
 ### BC-22 Budget write-back corrupts a typed or keyed section
 - Mechanism: the compressor `str()`s a dataclass or writes a compressed value back under the wrong key.
@@ -327,9 +327,9 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-30 State scoped to the wrong lifetime
 - Mechanism: a flag or cache that should reset at a round/turn/session boundary persists past it.
-- Incidents: 2026-08-31 `_forced_action` never cleared across rounds (F13); expired token reported AVAILABLE (F15); `_conversation_depth` zeroed by restart so STM skipped the first 3 messages (08-05 round 3).
+- Incidents: 2026-08-31 `_forced_action` never cleared across rounds (F13); expired token reported AVAILABLE (F15); `_conversation_depth` zeroed by restart so STM skipped the first 3 messages (08-05 round 3); 2026-09-10 an older calendar card blocked a fresh amendment/retry because proposal ownership was not scoped to the turn that minted it.
 - Find: attributes assigned once and read across boundaries with no reset at boundary start.
-- Closure: per-site resets; `_has_recent_history`.
+- Closure: per-site resets; `_has_recent_history`; pending-card ownership uses `_card_created_by_turn` and explicit supersession.
 - Status: partial.
 
 ### BC-31 Read-through cache not invalidated by the mutation path
@@ -441,21 +441,21 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-46 Prompt instruction loses to a structural input or model prior
 - Mechanism: prose tells the model X; an attached image, an offset convention or a self-belief about tool access wins.
-- Incidents: vault screenshot narrated (07-14, again 08-27); `13:00:00-04:00` emitted three turns despite "ET = America/New_York" (09-01); "I don't have calendar access" with healthy OAuth (08-29); planner invented a birthday (09-03) (RETRO §3.5).
+- Incidents: vault screenshot narrated (07-14, again 08-27); `13:00:00-04:00` emitted three turns despite "ET = America/New_York" (09-01); "I don't have calendar access" with healthy OAuth (08-29); planner invented a birthday (09-03); a forced calendar proposal invented 17:00 despite its own reasoning saying the time needed confirmation (09-10) (RETRO §3.5; calendar forced-action handoff).
 - Find: DM-20 — every prohibitive prompt instruction (`never|don't|do not`) must have a deterministic sibling (gate, executor check, post-check).
-- Closure: CM-03 executor/backstop functions (`wall_clock_time`, `get_runtime_action_health`, `weekday_date_mismatches`, `unsupported_key_points`, visual-intent gate).
+- Closure: CM-03 executor/backstop functions (`wall_clock_time`, `get_runtime_action_health`, `weekday_date_mismatches`, `unsupported_key_points`, `calendar_times_ungrounded`, visual-intent gate).
 - Status: recurs — bespoke backstop per incident.
 
 ### BC-47 Failure or not-run collapsed into a valid empty result
 - Mechanism: timeout/unavailable/never-ran is encoded like a genuine negative — in code (same return shape) or in the prompt (`web_search=ON(0)` for both "0 results" and "never ran") — so downstream, including the model, cannot tell "nothing" from "couldn't check".
 - Incidents: 2026-09-05 classifier timeout reused the no-search verdict; 2026-09-06 failed plan = zero events; 2026-09-09 verifier timeouts recorded `complete` (B6 follow-up); 2026-09-09 the model narrated "my web search came back empty" from `ON(0)` when no search ran (HANDOFF_20260910_web_search_gap).
 - Find: any except/timeout branch returning the negative-verdict shape without a `source`/`reason` discriminator; feature labels built from result counts instead of decisions.
-- Closure: CM-05 tri-state outcomes (`source=fallback`, `grounding_status`, "unavailable not zero" doctrine); label from `web_search_decision` planned.
+- Closure: CM-05 tri-state outcomes (`source=fallback`, `grounding_status`, "unavailable not zero" doctrine); web labels now derive from `web_search_decision` and distinguish not-triggered, zero-result and error outcomes (09-10).
 - Status: partial.
 
 ### BC-48 Confabulated action-completion claim
 - Mechanism: the reply asserts it sent/created/queued when nothing executed.
-- Incidents: 2026-09-01 "Re-queuing… Approve that one" with nothing queued; 2026-09-07 "Confirmed — creating the recurring event now"; expired proposal re-served as "Queued".
+- Incidents: 2026-09-01 "Re-queuing… Approve that one" with nothing queued; 2026-09-07 "Confirmed — creating the recurring event now"; expired proposal re-served as "Queued"; 2026-09-10 "Queued up" / "Queuing it now … approval card pop up" shipped with no backing card.
 - Find: `claims_pending_card()`/`_COMPLETION_PATTERNS` match with empty `proposed_kinds` and `executed_kinds` for the turn.
 - Closure: `core/action_claim_guard.py`, `NO_CARD_NOTICE` backstop.
 - Status: recurs — each new phrasing found individually.
@@ -529,7 +529,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-58 Guard covers only the first-observed path
 - Mechanism: the fix lands where the incident was seen; structurally identical siblings (read sites, sibling generators, other collections, other display paths) stay unguarded. The project's meta-class.
-- Incidents: artifact strip covered storage + enhanced only (08-14); species guard ingestion-only until read sites (09-03); `backup_targets` missed every store since 07-14 (09-01); `weekly_notes_generator` missed when daily/monthly were fixed (09-01); privacy scrub covered git only, not the share surfaces (09-02); chroma junk curator never touched `user_profile.json` (09-05).
+- Incidents: artifact strip covered storage + enhanced only (08-14); species guard ingestion-only until read sites (09-03); `backup_targets` missed every store since 07-14 (09-01); `weekly_notes_generator` missed when daily/monthly were fixed (09-01); privacy scrub covered git only, not the share surfaces (09-02); chroma junk curator never touched `user_profile.json` (09-05); the pending-action filesystem guard allowed the canonical state file but blocked its atomic temp siblings (09-10); action-offer and completion guards omitted phrases emitted by the assistant itself (09-10).
 - Find: DM-15 — after fixing site A, enumerate every read AND write of the same primitive/store (`rg` the store method or the sibling naming pattern) before closing the batch.
 - Closure: none structural; situation-coverage sweeps (`docs/SITUATION_COVERAGE_AUDIT_20260901.md`).
 - Status: recurs.
@@ -573,9 +573,9 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-64 Fixture or fake contract drift
 - Mechanism: a fake replaces where the driver merges; a fixture is hand-typed to the consumer's assumption, not the producer's output.
-- Incidents: `FakeCollection.update` replaced metadata (T03, hid F01); `/api/graph` fixture matched the wrong schema (T06/F09).
+- Incidents: `FakeCollection.update` replaced metadata (T03, hid F01); `/api/graph` fixture matched the wrong schema (T06/F09); the 09-07 pending-card fixture used a plain `.value` string, hiding the real `ActionType` enum/string mismatch found 09-10.
 - Find: DM-07 build fixtures through the real writer (`GraphMemory.save()`), validate fakes against `chromadb.EphemeralClient`.
-- Closure: corrected fakes + real-driver contract tests.
+- Closure: corrected fakes + real-driver contract tests; 09-10 action sequence tests use real `ActionProposal` values through `PendingActionsStore`.
 - Status: partial.
 
 ### BC-65 Git-state-dependent tests
@@ -631,7 +631,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Mechanism: a routing/verification decision is made inside a function and dies there; nothing in `turn_records.jsonl` or the debug record says what was decided or why, so the defect is found only when the owner pastes a dump.
 - Incidents: gate reason invisible until 09-02; `tone_trigger` absent until 07-25 (the latch went unmeasured for weeks); grounding failures labeled `complete` (09-10); web-trigger decision has no field at all (09-10).
 - Find: for each decision function, does its verdict + source + reason reach `_last_turn_signals`/the debug record? DM-26 rollups exist only for fields that exist.
-- Closure: CM-12 receipts (`gate_reason`, `tone_trigger`, `grounding_status`, `answer_call`, timings); web fields planned.
+- Closure: CM-12 receipts (`gate_reason`, `tone_trigger`, `grounding_status`, `answer_call`, timings); `web_trigger_*`, result count and error fields added 09-10.
 - Status: partial.
 
 ## Detection methods (DM) — find instances without a full read
@@ -698,6 +698,30 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Failed-before/passed-after receipts from scratch-copied `git show HEAD:` content, never a checkout (B1–B6).
 - Live-turn probes after every deployed fix; retest rounds until the exact failing shape passes (every batch).
 - Doc-claim verification by parallel read-only auditors (09-10).
+
+## Coverage review (Codex, 2026-09-10)
+
+Cross-checked this catalog against the incident families and open findings in
+`BUG_RETROSPECTIVE_20260715_20260904.md`, both generalization audits, the
+09-05 independent/runtime audits, the 09-06 conversation audit, the 09-08 and
+09-09 independent audit handoffs, the 09-09 follow-up ledger, and both 09-10
+handoffs. The 72 classes cover every repeated mechanism named in those
+sources; the remaining one-off mechanisms are retained below rather than
+promoted without recurrence evidence.
+
+The calendar forced-action handoff added incidents, not a new mechanism. Its
+failures map to BC-04/06/15/21/30/46/48/58/64: missing request anchors, gate
+over-fire, producer/consumer vocabulary drift, enum serialization comparison,
+proposal lifetime, prompt-only grounding, unsupported completion claims,
+sibling-path omissions, and a fake that did not match the real enum contract.
+The web-search handoff maps to BC-05/47/72: the only competent classifier was
+short-circuited, not-run collapsed into zero results, and the decision had no
+receipt. This review updated those incident and closure lines.
+
+Completeness here means all mechanisms encountered in the cited repository
+audits through 2026-09-10 are either classified or listed as a singleton. It
+does not claim that unknown production defects have already been enumerated;
+new audits still apply the lenses and checklist below.
 
 ## Unclassified singletons (one incident, no mechanism family yet)
 

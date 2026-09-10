@@ -788,8 +788,24 @@ class PromptFormatter:
             know_parts.append(f"obsidian={_on_off(bool(notes))}{f'({len(notes)} notes)' if notes else ''}")
             ref_docs = context.get("reference_docs", []) or []
             know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{f'({len(ref_docs)})' if ref_docs else ''}")
-            web = context.get("web_search_results")
-            know_parts.append(f"web_search={_on_off(getattr(cfg, 'WEB_SEARCH_ENABLED', False))}{_count('web_search_results')}")
+            web_enabled = bool(getattr(cfg, "WEB_SEARCH_ENABLED", False))
+            web_label = _on_off(web_enabled)
+            if web_enabled:
+                decision = context.get("web_search_decision")
+                if isinstance(decision, dict):
+                    if decision.get("error"):
+                        web_label += "(error)"
+                    elif not decision.get("triggered"):
+                        web_label += "(not triggered)"
+                    else:
+                        results = decision.get("results")
+                        if isinstance(results, int):
+                            web_label += f"({results} results)"
+                        else:
+                            web_label += "(search triggered)"
+                else:
+                    web_label += "(no search this turn)"
+            know_parts.append(f"web_search={web_label}")
             lines.append("Knowledge: " + " | ".join(know_parts))
 
             # Proactive category

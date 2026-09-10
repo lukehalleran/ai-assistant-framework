@@ -84,8 +84,18 @@ class WebSearchMixin:
         Returns:
             WebSearchResult if search was triggered and successful, None otherwise
         """
+        self.last_web_decision = {
+            "triggered": False,
+            "source": None,
+            "reason": None,
+            "confidence": None,
+            "results": None,
+            "error": None,
+        }
+
         # Check if web search is enabled (live value — Settings can flip it)
         if not _web_search_enabled():
+            self.last_web_decision["reason"] = "web search disabled"
             logger.debug("[ContextGatherer] Web search disabled in config")
             return None
 
@@ -95,20 +105,24 @@ class WebSearchMixin:
         # land here, so the shared trigger must decide.
         _no_search_intents = {"casual_social", "meta_conversational", "emotional_support"}
         if intent_type and str(intent_type) in _no_search_intents:
+            self.last_web_decision["reason"] = f"intent veto: {intent_type}"
             logger.debug(f"[ContextGatherer] Web search skipped for intent={intent_type}")
             return None
 
         # Check crisis suppression (also done in trigger, but early exit saves time)
         if crisis_level and crisis_level.upper() in ("HIGH", "MEDIUM"):
+            self.last_web_decision["reason"] = f"crisis veto: {crisis_level.upper()}"
             logger.debug(f"[ContextGatherer] Web search suppressed during {crisis_level} crisis")
             return None
 
         # Check if web search manager is available
         manager = self.web_search_manager
         if not manager:
+            self.last_web_decision["reason"] = "manager missing"
             logger.warning("[ContextGatherer] Web search manager failed to initialize")
             return None
         if not manager.is_available():
+            self.last_web_decision["reason"] = "manager unavailable"
             logger.debug("[ContextGatherer] Web search not available (API key missing or invalid)")
             return None
 
@@ -135,9 +149,17 @@ class WebSearchMixin:
                 logger.warning("[WebSearch] LLM trigger not available, using heuristics...")
                 trigger = self.web_search_trigger
                 if not trigger:
+                    self.last_web_decision["reason"] = "trigger unavailable"
                     logger.warning("[ContextGatherer] Web search trigger not available")
                     return None
                 decision = trigger(query)
+
+            self.last_web_decision.update({
+                "triggered": bool(decision.should_search),
+                "source": getattr(decision, "source", None),
+                "reason": getattr(decision, "reason", None),
+                "confidence": getattr(decision, "confidence", None),
+            })
 
             if not decision.should_search:
                 logger.debug(
@@ -187,6 +209,9 @@ class WebSearchMixin:
                     auto_decompose=True  # Enable automatic query decomposition
                 )
 
+            pages = list(getattr(result, "pages", None) or [])
+            self.last_web_decision["results"] = len(pages)
+
             if result.has_results:
                 decomp_info = ""
                 if hasattr(result, 'decomposition_used') and result.decomposition_used:
@@ -208,10 +233,13 @@ class WebSearchMixin:
 
                 return result
             else:
+                if getattr(result, "error", None):
+                    self.last_web_decision["error"] = str(result.error)
                 logger.debug(f"[ContextGatherer] Web search returned no results: {result.error}")
                 return None
 
         except Exception as e:
+            self.last_web_decision["error"] = type(e).__name__
             logger.warning(f"[ContextGatherer] Web search failed: {e}")
             return None
 

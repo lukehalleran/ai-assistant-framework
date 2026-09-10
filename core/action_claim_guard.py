@@ -128,7 +128,11 @@ _KIND_PATTERNS: list[tuple[ActionKind, re.Pattern]] = [
     # the corrected date … Approve that one" carried no "calendar" word and
     # the confabulated re-queue claim went kind-less. The downstream
     # expected-to-act gate still suppresses no-context narration.
-    (ActionKind.CALENDAR, re.compile(r"\b(calendar(?:\s+event)?|events?|appointments?|reminders?|remind(?:ing)?\s+you)\b", re.IGNORECASE)),
+    # 2026-09-10: "Queuing it now: **MGT 6203 TA Session — Saturdays 11:00
+    # AM–12:00 PM CT, weekly through December 12**" was kind-less (no
+    # calendar/event word) so the narrated queue claim went unguarded —
+    # recurrence words and a named session/office-hours slot are calendar.
+    (ActionKind.CALENDAR, re.compile(r"\b(calendar(?:\s+event)?|events?|appointments?|reminders?|remind(?:ing)?\s+you|recurring|repeating|weekly|office\s+hours|sessions?)\b", re.IGNORECASE)),
     (ActionKind.MESSAGE, re.compile(r"\b(telegram|discord|dm\s+you|message\s+you|text\s+you)\b", re.IGNORECASE)),
     (ActionKind.GITHUB, re.compile(r"\b(github\s+(?:issue|comment|pr|pull\s+request)|(?:open|file|create)\s+an?\s+issue)\b", re.IGNORECASE)),
     (ActionKind.NOTE, re.compile(r"\b(daemon\s+note|self-?notes?|notes?|memos?|note\s+to\s+self|jot\s+(?:this|it|that)\s+down|write\s+(?:this|it|that)\s+down)\b", re.IGNORECASE)),
@@ -153,7 +157,11 @@ _PROPOSAL_MARKER = re.compile(
 _ACTION_VERB = re.compile(
     r"\b(save|saving|store|storing|create|creating|write|writing|add|adding|"
     r"send|sending|email|emailing|schedule|scheduling|drop|dropping|jot|"
-    r"jotting|put|make|making|record|recording|log|logging|set up|put together)\b",
+    r"jotting|put|make|making|record|recording|log|logging|set up|put together|"
+    # 2026-09-10: Daemon's own habitual offer verb ("Want me to queue it up
+    # with that end date?") was missing, so the offer never crossed the turn
+    # boundary and the user's "yes" had no route.
+    r"queue|queuing|queueing|re-?queue|book|booking|set|setting|fire|firing)\b",
     re.IGNORECASE,
 )
 
@@ -472,6 +480,10 @@ _KIND_LABEL = {
 # request that had no tool route). Kind-independent: the bullets under such a
 # line often carry no kind word at all ("Zoom link + Piazza-first note").
 _APPROVAL_PROMPT_RE = re.compile(
+    # 2026-09-10: "You should see the approval card pop up" pointed at a card
+    # that was never created; card-appearance phrasings join the list.
+    r"\b(?:approval\s+card|(?:the\s+)?card\s+(?:will|should|'?ll|to)\s+(?:pop\s+up|appear|show(?:\s+up)?)|"
+    r"see\s+(?:the|an?|your)\s+(?:approval\s+)?card|card\s+(?:is\s+)?(?:up|ready|waiting))\b|"
     r"\b(?:approve\s+(?:it|that|this|the\s+(?:card|proposal|event|action|request))|"
     r"(?:hit|tap|click|press)\s+approve|the\s+approve\s+button|"
     r"(?:card|proposal)\s+(?:below|above)|queued\s+up\s+and\s+ready|"

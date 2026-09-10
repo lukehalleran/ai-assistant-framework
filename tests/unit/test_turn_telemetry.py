@@ -84,6 +84,20 @@ class TestRecordTurn:
         rec = json.loads(open(telemetry_path).read())
         assert "ts" in rec
 
+    def test_web_search_decision_fields_round_trip(self, telemetry_path):
+        fields = {
+            "web_trigger_should_search": True,
+            "web_trigger_source": "llm",
+            "web_trigger_reason": "Public claim needs current verification",
+            "web_trigger_confidence": 0.91,
+            "web_results_n": 3,
+            "web_error": None,
+        }
+        assert record_turn(fields)
+        rec = json.loads(open(telemetry_path).read())
+        for key, value in fields.items():
+            assert rec[key] == value
+
 
 class TestSanitizeValue:
 

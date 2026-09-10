@@ -187,6 +187,7 @@ class WebSearchDecision:
     needs_knowledge_search: bool = False  # LLM detected encyclopedic/wiki knowledge intent
     needs_document_generation: bool = False  # LLM detected document generation intent
     needs_pattern_analysis: bool = False  # LLM detected cross-history pattern deliberation
+    consult_classifier: bool = False  # Ambiguous shape that must reach the LLM classifier
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
     document_source: str = ""  # "research" (external lookup) | "conversation" (summarize THIS conversation) | ""
@@ -439,7 +440,7 @@ _REQUEST_WRAPPER_RE = re.compile(
 _PUBLIC_EVENT_WEAK_RE = re.compile(r"\b(?:reports?|reported|announced|compan(?:y|ies))\b")
 _PUBLIC_EVENT_STRONG_RE = re.compile(
     r"\b(?:news|headlines?|elections?|government|"
-    r"ministers?|presidents?|parliament|courts?|police|crimes?|criminal|"
+    r"ministers?|presidents?|parliament|congress|courts?|police|crimes?|criminal|"
     r"illegal|corruption|arrested|charged|resigned|sanctions?|lawsuits?|"
     r"merger|bankruptcy|recalled|outbreak|regulations?)\b"
 )
@@ -473,6 +474,43 @@ def requires_fresh_public_evidence(query: str) -> bool:
         and not any(tok in _PRIVATE_SPHERE_GENERIC_TOKENS for tok in re.findall(r"[a-z]+", remainder))
     )
     return temporal and question and public_event
+
+
+_REPORTED_SPEECH_RE = re.compile(
+    r"\b(?:says|said|claims?|claimed|announce[sd]?|promise[sd]?|"
+    r"vow(?:s|ed)?|threaten(?:s|ed)?|declare[sd]?|will\s+pay|"
+    r"plans?\s+to|signed|ordered|tweeted|posted|passed|struck|arrested)\b"
+)
+
+
+def public_actor_statement(query: str) -> bool:
+    """Return True for a relayed public-actor claim worth classifying.
+
+    This is deliberately a consult signal, not a forced-search rule. It
+    covers statement-shaped public claims while excluding personal state,
+    private-corpus requests, and first/second-person subject matter.
+    """
+    text = (query or "").strip().lower()
+    if not text or is_personal_doc_search(query) or is_personal_state_statement(query):
+        return False
+    wrapper_match = _REQUEST_WRAPPER_RE.match(text)
+    remainder = text[wrapper_match.end():] if wrapper_match else text
+    # Four words admits the required compact incident shape
+    # "Police arrested the mayor" while the two independent regex gates keep
+    # short acknowledgments and generic statements out.
+    if len(re.findall(r"\b[\w']+\b", remainder)) < 4:
+        return False
+    if re.search(r"\b(?:i|me|my|mine|we|our|ours|you|your)\b", remainder):
+        return False
+    if any(
+        tok in _PRIVATE_SPHERE_GENERIC_TOKENS
+        for tok in re.findall(r"[a-z]+", remainder)
+    ):
+        return False
+    return bool(
+        _PUBLIC_EVENT_STRONG_RE.search(remainder)
+        and _REPORTED_SPEECH_RE.search(remainder)
+    )
 
 
 def _normalize(text: str) -> str:
@@ -699,6 +737,18 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
             reason=f"Suppressed: matches personal/conversational pattern",
             matched_keywords=[],
             matched_patterns=supp_matches
+        )
+
+    if public_actor_statement(query):
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.0,
+            reason="Public-actor statement — consult classifier",
+            matched_keywords=[],
+            matched_patterns=[],
+            consult_classifier=True,
+            source="heuristic",
         )
 
     # Personal-document search (2026-08-29): "search for documents related to
@@ -1143,6 +1193,35 @@ def query_depends_on_context(query: str) -> bool:
     return bool(_REFERENTIAL_TOKEN_RE.search(query.lower()))
 
 
+_VERIFICATION_REQUEST_RE = re.compile(
+    r"^(?:(?:uhm|um|ok|okay|hmm|so|please)\s*[.,:]?\s+)*"
+    r"(?:please\s+)?(?:investigate|verify|fact[- ]?check|"
+    r"look\s+into\s+(?:it|this|that)|check\s+(?:this|that|it)(?:\s+out)?|"
+    r"is\s+(?:this|that|it)\s+(?:true|real|legit))\b",
+    re.I,
+)
+_FIRST_PERSON_PLAN_RE = re.compile(
+    r"\b(?:i'?ll|i\s+will|i'?m\s+going\s+to|later)\b", re.I
+)
+
+
+def is_verification_request(query: str) -> bool:
+    """Return True for a short imperative that verifies prior context."""
+    text = (query or "").strip()
+    if not text or len(re.findall(r"\b[\w']+\b", text)) > 12:
+        return False
+    if is_personal_state_statement(text) or _FIRST_PERSON_PLAN_RE.search(text):
+        return False
+    if re.match(
+        r"^(?:(?:uhm|um|ok|okay|hmm|so|please)\s*[.,:]?\s+)*"
+        r"(?:please\s+)?investigate\s+(?:how|why|what|when|where|who)\b",
+        text,
+        re.I,
+    ):
+        return False
+    return bool(_VERIFICATION_REQUEST_RE.match(text))
+
+
 def _build_llm_trigger_prompt(
     query: str,
     current_date: str,
@@ -1224,6 +1303,7 @@ Current date: {current_date}
 {context_block}
 WEB SEARCH CRITERIA:
 - SEARCH if: current events, recent news, live data (stocks, weather, sports), time-sensitive health info the user is explicitly asking about (recalls, outbreaks, new guidance), or references dates/years needing verification
+- SEARCH to VERIFY a claim about a public figure, institution, or event that the user RELAYS or reacts to ("The president says he will...", "X announced Y", a pasted headline, or "investigate"/"verify" after such a paste), even when it is phrased as a statement or carries a reaction ("oh boy", "wtf"). The NEVER-SEARCH rule for opinions/feelings is about the user's OWN state, not a relayed public claim.
 - DON'T SEARCH if: historical facts, scientific concepts, how-to guides, personal/emotional topics, or can be answered with general knowledge
 - NEVER SEARCH for:
   * Casual acknowledgments (nice, thanks, cool, got it, okay)
@@ -1720,7 +1800,7 @@ async def analyze_for_web_search_llm(
         # referential query when we actually have context to resolve it against.
         _referential_followup = (
             bool(conversation_context and conversation_context.strip())
-            and query_depends_on_context(query)
+            and (query_depends_on_context(query) or is_verification_request(query))
         )
         if _referential_followup and is_personal_state_statement(query):
             # First-person state statement: the pronoun points at the user's
@@ -1734,11 +1814,16 @@ async def analyze_for_web_search_llm(
                 get_store().record("web_search", "no_search", query, "personal_state_statement")
             except Exception:
                 pass
-        if not _referential_followup and not pattern_candidate:
+        if heuristic_result.consult_classifier:
+            logger.debug(
+                "[WebSearchTrigger] conf=0.0 public-actor statement — consulting LLM"
+            )
+        elif not _referential_followup and not pattern_candidate:
             logger.debug("[WebSearchTrigger] Skipping LLM: heuristic confident no-search (conf=0.0, no keywords)")
             _llm_trigger_cache[cache_key] = (now, heuristic_result)
             return heuristic_result
-        logger.debug("[WebSearchTrigger] conf=0.0 referential follow-up with context — consulting LLM")
+        else:
+            logger.debug("[WebSearchTrigger] conf=0.0 referential follow-up with context — consulting LLM")
     if (heuristic_result.confidence >= 0.7 and heuristic_result.should_search
             and not pattern_candidate):
         logger.debug(f"[WebSearchTrigger] Skipping LLM: heuristic confident search (conf={heuristic_result.confidence:.2f})")

@@ -904,7 +904,9 @@ class AgenticSearchController:
                             f"substitute a sibling type. Call propose_action NOW with "
                             f"action_type=\"{_forced_action.value}\" and FILL IN the content fields "
                             f"from the user's request — for this action: {_hint}. Do NOT leave "
-                            f"required fields empty, and do NOT specify a repo (auto-detected)."
+                            f"required fields empty, and do NOT specify a repo (auto-detected). "
+                            f"Never INVENT a time, date, or recipient that is not stated in the "
+                            f"request or the context above — a guessed value is rejected."
                             f"{_reject_note}"
                         )
                     else:
@@ -1054,6 +1056,37 @@ class AgenticSearchController:
                     if d.wants_action and d.action_type
                 ]
                 _action_decisions = self._coalesce_action_decisions(_action_decisions)
+                # Forced-round time grounding (2026-09-10): a forced
+                # calendar proposal whose clock time appears nowhere in the
+                # request, the conversation/action digests, or the gathered
+                # tool output is a GUESS (live: "I only put professors hours
+                # in calander" → a TA session invented at 17:00 with the
+                # model's own reasoning saying "should be confirmed"). Drop
+                # it, record why, and never re-force this session — the
+                # loop continues unforced so the model can look the time up
+                # or ask; the no-card backstop keeps the reply honest.
+                if _action_decisions and _this_round_forced_type and session.action_context_digest:
+                    from core.actions.registry import calendar_times_ungrounded
+                    _pool = "\n".join(str(x or "") for x in (
+                        query, session.action_context_digest,
+                        session.recent_conversation_digest, session.accumulated_context))
+                    _kept = []
+                    for _ad in _action_decisions:
+                        _t = str(getattr(_ad.action_type, "value", _ad.action_type) or "")
+                        _bad = (calendar_times_ungrounded(_ad.action_params or {}, _pool)
+                                if _t == "calendar_create_event" else [])
+                        if _bad:
+                            _reason = (
+                                f"forced {_t} not proposed: {', '.join(_bad)} appears nowhere in "
+                                "the request or gathered context — a guessed time is worse than "
+                                "no card; ask the user for the time or look it up")
+                            _ad.action_reject_reason = _reason
+                            session._action_force_declined = True
+                            self._append_accumulated(session, f"[ACTION NOT PROPOSED] {_reason}")
+                            logger.warning(f"[AgenticSearch] {_reason}")
+                            continue
+                        _kept.append(_ad)
+                    _action_decisions = _kept
                 if _action_decisions:
                     for _ad in _action_decisions:
                         # Backfill blank fields from the user's request for any action whose spec
@@ -1228,6 +1261,7 @@ class AgenticSearchController:
                     # (now protocol-aware) and retry exactly once.
                     if (_forced_action is not None and not _action_decisions
                             and not getattr(session, '_action_dispatched', False)
+                            and not getattr(session, '_action_force_declined', False)
                             and not getattr(session, '_action_force_retry_sent', False)):
                         session._action_force_retry_sent = True
                         _force_propose_pending = True
@@ -2031,7 +2065,9 @@ class AgenticSearchController:
             f"WITHOUT a UTC offset (e.g. 2026-09-13T23:59:00) unless the source "
             f"names a zone.{_calendar_hint} If the request "
             f"covers multiple items (several events, several messages), emit one "
-            f"<action> marker per item, each with ALL fields filled. Use "
+            f"<action> marker per item, each with ALL fields filled. Never INVENT a "
+            f"time, date, or recipient that is not stated in the request or context — "
+            f"a guessed value is rejected. Use "
             f'type="{_type}" exactly — do not substitute a different '
             f"action_type.{_reject_note}"
         )

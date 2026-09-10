@@ -866,6 +866,12 @@ async def evaluate_agentic_gate(
         _explicit_action = None
     if _explicit_action is not None:
         needs_tools = True
+        try:
+            from core.actions.registry import is_amendment_cue
+            if is_amendment_cue(user_text):
+                supersede_pending_cards(_explicit_action.value, "explicit amendment of the pending proposal")
+        except Exception as e:
+            logger.debug(f"[Agentic Gate] Amendment supersede failed (non-fatal): {e}")
         logger.debug(
             f"[Agentic Gate] Tier 1: explicit write action detected "
             f"({_explicit_action.value})"
@@ -1488,8 +1494,8 @@ _INFO_SEEKING_CUES = (
     # that's the drop date" has no "?", no interrogative opener, and no lookup
     # verb — it read as vent-shaped and the tone-veto killed the agentic gate
     # on a deadline question (2026-08-27).
-    "confirm", "verify", "double-check", "double check", "check if",
-    "check whether",
+    "confirm", "verify", "investigate", "fact check", "fact-check",
+    "double-check", "double check", "check if", "check whether",
 )
 # Pronoun-split lookup commands: "look IT up", "pull THAT up". The contiguous
 # "look up" cue missed them — "Look it up it's pretty funny" was vetoed AND
@@ -1631,40 +1637,130 @@ def _is_request_shaped(text: str) -> bool:
     return bool(_REQUEST_SHAPED_RE.search((text or "").strip()))
 
 
+def _entry_timestamp(entry) -> Optional[object]:
+    """Aware datetime of a corpus entry's ``timestamp`` (naive = local), or None."""
+    from datetime import datetime
+    ts = entry.get("timestamp") if isinstance(entry, dict) else None
+    try:
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if not isinstance(ts, datetime):
+            return None
+        return ts if ts.tzinfo else ts.astimezone()
+    except Exception:
+        return None
+
+
+def _card_created_by_turn(card, turn_ts) -> bool:
+    """True when ``card`` was proposed at/after the prior turn began (i.e. the
+    prior reply is the one that minted it — a chat "yes" then means approve
+    THAT card, never a duplicate)."""
+    from datetime import timedelta
+    at = getattr(card, "proposed_at", None)
+    if at is None or turn_ts is None:
+        return True  # unknowable → keep the conservative stand-down
+    try:
+        if at.tzinfo is None:
+            at = at.astimezone()
+        return at >= (turn_ts - timedelta(seconds=120))
+    except Exception:
+        return True
+
+
+def _action_type_value(card) -> str:
+    """The card's action type as its enum VALUE string. ``str(ActionType.X)``
+    is "ActionType.X" for a real ActionProposal — the 09-07 comparison only
+    matched the test fixture's plain-string SimpleNamespace (BC-64)."""
+    t = getattr(card, "action_type", "")
+    return str(getattr(t, "value", t) or "")
+
+
+def supersede_pending_cards(action_type_value: str, reason: str) -> int:
+    """Reject every pending card of ``action_type_value`` as superseded
+    (2026-09-10). Used when the user AMENDS the proposal just offered/queued
+    ("make it repeating instead", "yes" to a revised offer): the stale card
+    would otherwise stand the forced route down forever while the user keeps
+    saying yes. Returns the number of cards superseded; never raises."""
+    n = 0
+    try:
+        from core.agentic.tools import ToolExecutor
+        _store = ToolExecutor._get_pending_actions_store()
+        for _p in list(_store.get_all_pending()):
+            if _action_type_value(_p) == str(action_type_value):
+                _store.reject(_p.action_id)
+                try:
+                    _p.error = f"superseded: {reason}"[:200]
+                except Exception:
+                    pass
+                n += 1
+        if n:
+            logger.info(f"[Agentic Gate] Superseded {n} pending {action_type_value} card(s): {reason}")
+    except Exception as e:
+        logger.debug(f"[Agentic Gate] Supersede failed (non-fatal): {e}")
+    return n
+
+
 def _prior_turn_offer_action(user_text: str, corpus_manager) -> Optional[str]:
-    """ActionType.value the previous stored reply offered, when ``user_text``
-    accepts it and no proposal card of that type is already pending.
+    """ActionType.value the previous stored reply offered — or NARRATED
+    without backing — when ``user_text`` accepts it.
 
     Returns None on any doubt (no corpus, no prior turn, no external offer,
-    not an affirmation, card pending, any exception) — the normal tiers then
-    run unchanged.
+    not an affirmation, any exception) — the normal tiers then run unchanged.
+
+    Pending cards (2026-09-10): a same-type card minted BY the prior turn
+    stands the arm down (the card UI owns that approval; a chat "yes" must
+    not mint a duplicate). An OLDER same-type card plus a fresh offer in the
+    prior reply is an amendment — the old card is superseded and the offer
+    fires (live: the single-event card blocked "make it recurring" → "yes").
+
+    Retry after a no-card reply (2026-09-10): "try again" / "yes" after a
+    reply that narrated "Queued up …" with nothing queued (NO_CARD_NOTICE
+    appended) routes the narrated action — the notice itself promised that.
     """
     if not user_text or corpus_manager is None:
         return None
     try:
         # lazy import: cycle (registry ↔ claim guard ↔ pending proposal are
         # leaves; gate stays call-time on all internal imports)
-        from core.actions.registry import is_offer_affirmation, offer_action_type
-        if not is_offer_affirmation(user_text):
+        from core.actions.registry import (
+            is_action_retry_request, is_offer_affirmation, narrated_unbacked_action_type,
+            offer_action_type,
+        )
+        _affirm = is_offer_affirmation(user_text)
+        _retry = is_action_retry_request(user_text)
+        if not (_affirm or _retry):
             return None
         _recent = corpus_manager.get_recent_memories(1)
         if not _recent:
             return None
-        _prev_response = (_recent[0].get("response", "") or "")
+        _prev = _recent[0]
+        _prev_response = (_prev.get("response", "") or "")
         _offer = offer_action_type(_prev_response)
+        _narrated = False
+        if _offer is None:
+            _offer = narrated_unbacked_action_type(_prev_response)
+            _narrated = _offer is not None
         if _offer is None:
             return None
         try:
             from core.agentic.tools import ToolExecutor
             _store = ToolExecutor._get_pending_actions_store()
-            for _p in _store.get_all_pending():
-                if str(getattr(_p, "action_type", "")) == str(_offer.value):
+            _turn_ts = _entry_timestamp(_prev)
+            for _p in list(_store.get_all_pending()):
+                if _action_type_value(_p) != str(_offer.value):
+                    continue
+                if _card_created_by_turn(_p, _turn_ts):
                     logger.debug(
                         "[Agentic Gate] Offer affirmation ignored — a "
                         f"{_offer.value} proposal card is already pending")
                     return None
+            supersede_pending_cards(_offer.value, "amended offer accepted in chat")
         except Exception as e:
             logger.debug(f"[Agentic Gate] Pending-card check failed (non-fatal): {e}")
+        if _narrated:
+            logger.info(
+                f"[Agentic Gate] Prior reply narrated an unbacked {_offer.value}; "
+                "routing the follow-up to the forced action route")
         return _offer.value
     except Exception as e:
         logger.debug(f"[Agentic Gate] Offer-continuation check failed (non-fatal): {e}")

@@ -49,6 +49,26 @@ _DAEMON_STATE_EXEMPT_PREFIXES = (
     "data/pending_actions.json",
 )
 
+
+
+def _is_daemon_state_path(resolved_rel: str) -> bool:
+    """True for an exempt daemon-owned state file OR its atomic-write temp
+    sibling. utils.safe_json writes ``.<basename>.<random>.tmp`` beside the
+    target (2026-09-09 isolated writer); the old prefix test only covered the
+    ``<basename>.tmp*`` shape, so every PendingActionsStore save during
+    agentic dispatch was BLOCKED from 2026-09-09 18:20 on — proposal cards
+    lived only in memory and five orphan temp files piled up under data/
+    (2026-09-10)."""
+    if resolved_rel.startswith(_DAEMON_STATE_EXEMPT_PREFIXES):
+        return True
+    rel_dir, rel_base = PurePosixPath(resolved_rel).parent.as_posix(), PurePosixPath(resolved_rel).name
+    for exempt in _DAEMON_STATE_EXEMPT_PREFIXES:
+        ex = PurePosixPath(exempt)
+        if rel_dir == ex.parent.as_posix() and rel_base.startswith(f".{ex.name}.") and rel_base.endswith(".tmp"):
+            return True
+    return False
+
+
 # ============================================================================
 # Module-level state
 # ============================================================================
@@ -327,7 +347,7 @@ def _check_and_maybe_block(operation: str, target: Any) -> None:
     # credits tracker's atomic save (temp + os.replace under data/) was
     # blocked on every agentic turn since 07-16, so credit counts silently
     # under-recorded. Exact-prefix allowlist — nothing else under data/ opens.
-    if resolved_rel.startswith(_DAEMON_STATE_EXEMPT_PREFIXES):
+    if _is_daemon_state_path(resolved_rel):
         return
 
     # 8. Explicit unlock in effect

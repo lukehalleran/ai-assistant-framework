@@ -59,6 +59,9 @@ class TestPriorityOrderCoversRenderedKeys:
         exceptions = {
             "note_images", "visual_memories", "stm_summary", "memory_id_map",
         }
+        # Structured metadata can affect a compact rendered label without
+        # itself being text content that belongs in the token budget.
+        exceptions.update(UNRENDERED_CONTEXT_KEYS)
         unmetered = rendered_keys - _PRIORITY_NAMES - exceptions
         assert not unmetered, (
             f"Formatter renders unmetered context keys: {sorted(unmetered)} — "

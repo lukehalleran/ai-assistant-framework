@@ -299,3 +299,49 @@ Regression fixtures — use these EXACT strings, they are the live texts:
 - Codex relay line: "Read docs/HANDOFF_20260910_web_search_gap.md, execute
   PLANNED 0–7 in order (tests first, record failing counts on HEAD), append
   Results, draft commit_message_25.txt, do not commit/push/restart."
+
+## Results (Codex)
+
+Executed PLANNED 0–7 in order on 2026-09-10. No provider calls, store writes,
+commit, push, or daemon restart were performed.
+
+- Step 0 coercion site: `core/prompt/builder.py`'s parallel gather loop stores
+  each completed task as `task.result() or []`. An untriggered web task returns
+  `None`, which therefore reaches the formatter as `[]` and renders `ON(0)`.
+  The earlier `''` hypothesis was too narrow; both empty shapes render the same
+  misleading label. No token-manager write-back is involved.
+- Tests-first HEAD receipt (HEAD was `8dafdf9` when the baseline ran):
+  `tests/unit/test_sep10_web_search_gap.py` = **34 failed, 3 passed**. Failures
+  covered the absent public-statement and verification predicates/consult flag,
+  skipped classifier, missing gate cue, dishonest labels, and missing gatherer
+  receipt. The three preserved skip cases passed.
+- Post-fix regression: `tests/unit/test_sep10_web_search_gap.py` = **37 passed**.
+  Combined calendar + web 09-10 regressions = **70 passed**.
+- Prescribed unit selection: the single-process command was run but stalled in
+  the pre-existing `test_gate_forced_quality_floor.py::test_near_misses_rescued_junk_refused`
+  after the first three tests in that file group. A faulthandler probe showed
+  the event loop waiting on `_encode_texts` while its executor worker was stuck
+  inside the fake embedder's NumPy call. Split receipts completed around it:
+  the web/public-news/cache/history/feature/telemetry/tone/adaptive group =
+  **149 passed, 1 skipped**; `test_agentic_gate.py` = **48 passed**; the six
+  repo guard files = **87 passed**. The hanging forced-quality test was not
+  changed because it is outside this handoff.
+- Non-unit privacy-allowlisted lane (run based on the handoff's daemon-DOWN
+  state; the sandbox could not inspect the tmux socket):
+  `tests/test_web_search_trigger.py` = **113 passed**.
+- Static checks: `ruff check .` passed; `git diff --check` passed.
+- Deviations required by internally inconsistent fixtures: the public-actor
+  word floor is four, because required fixture `Police arrested the mayor` has
+  four words despite the prose specifying at least five. `congress` was added
+  to the public-event actor vocabulary and `arrested` to the reportable-event
+  verbs because two required positive fixtures otherwise cannot satisfy the
+  stated two-regex rule. The exact negative `investigate how memory gating works
+  in this assistant architecture today` has nine words despite the prose saying
+  it is over twelve, so knowledge-interrogative continuations after
+  `investigate` are explicitly rejected.
+- Optional `scripts/web_trigger_rollup.py` was omitted under the handoff's
+  credit constraint. The required per-turn telemetry receipt was implemented.
+- During execution another process advanced HEAD to `a9432a1` and placed the
+  calendar forced-action handoff changes in the same dirty tree. Codex did not
+  commit. `commit_message_25.txt` describes the actual combined scope per the
+  no-hunk-surgery rule.

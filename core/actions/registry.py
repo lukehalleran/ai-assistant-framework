@@ -210,7 +210,10 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
                   "recurrence"),
         batch_param="events",
         intent_patterns=(
-            r'\b(create|add|schedule|make|set up|put)\b[^.?!]{0,40}\b(' + _CALENDAR_WORD + r'\s+events?|events?|meetings?|appointments?|sessions?)\b',
+            # 2026-09-10: "please make repeating through whole course at same
+            # time instead" (an amendment of the just-proposed single event)
+            # matched nothing — the object list had no recurrence noun.
+            r'\b(create|add|schedule|make|set up|put)\b[^.?!]{0,40}\b(' + _CALENDAR_WORD + r'\s+events?|events?|meetings?|appointments?|sessions?|recurring|repeating|repeat(?:s|ing)?\s+weekly)\b',
             # "place each in the appropriate time slot on my Google calendar"
             # (live 2026-08-29): verb "place" + bare object "calendar" missed
             # the pattern above, and the verb→object span ran 44 chars — the
@@ -440,6 +443,47 @@ def _action_request_is_plausible(query: str) -> bool:
     )
 
 
+# First-person narration frame (2026-09-10): "I only put professors hours in
+# calander but there are TA sessions too" matched the calendar-create pattern
+# (verb "put" + calendar noun) and FORCED a propose_action round on a message
+# whose only request was "can we check course docs" — the model then invented
+# a 5 PM TA session. A pattern verb whose immediate subject is the user
+# (I / I've / I'd / I'll / we …, optionally separated by an adverb) inside a
+# clause that carries no request cue is the user narrating their own action,
+# not asking Daemon to act. Clause = the span between sentence punctuation.
+_NARRATION_SUBJECT_RE = re.compile(
+    r"(?:^|[\s,(])"
+    r"(?:i|i'?ve|i'?d|i'?ll|i'?m\s+gonna|i'?m\s+going\s+to|i\s+have|i\s+had|i\s+will|"
+    r"i\s+would|i\s+could|i\s+can|i\s+did|i\s+just|we|we'?ve|we'?d|we'?ll|we\s+have|"
+    r"we\s+had|we\s+will|we\s+did)"
+    r"(?:\s+(?:only|just|already|also|then|even|actually|finally|recently|simply|"
+    r"literally|never|still))*\s*$",
+    re.IGNORECASE,
+)
+_REQUEST_CUE_RE = re.compile(
+    r"\?|\b(?:can|could|would|will|should|shall)\s+(?:you|we|u)\b|\bplease\b|"
+    r"\blet'?s\b|\b(?:want|need|like|ask|help)\s+(?:you|u)\b|\bhelp\s+me\b|"
+    r"\bgo\s+ahead\b|\byou\s+(?:to|can|could|should)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_BOUNDARY_RE = re.compile(r"[.?!;\n]")
+
+
+def _match_is_self_narration(query: str, verb_start: int) -> bool:
+    """True when the pattern verb at ``verb_start`` is the user's own narrated
+    action ("I only put …", "I'll add it later", "we put them in last week")
+    and the clause around it asks Daemon for nothing."""
+    starts = [m.end() for m in _CLAUSE_BOUNDARY_RE.finditer(query, 0, verb_start)]
+    clause_start = starts[-1] if starts else 0
+    end_m = _CLAUSE_BOUNDARY_RE.search(query, verb_start)
+    clause_end = end_m.end() if end_m else len(query)  # keep the "?" — it is a request cue
+    clause = query[clause_start:clause_end]
+    if _REQUEST_CUE_RE.search(clause):
+        return False
+    before = query[clause_start:verb_start]
+    return bool(_NARRATION_SUBJECT_RE.search(before))
+
+
 def detect_action_intent(query: str) -> Optional[ActionType]:
     """Return the ActionType for an explicit, plausibly user-authored request.
 
@@ -447,19 +491,46 @@ def detect_action_intent(query: str) -> Optional[ActionType]:
     return CALENDAR_CREATE_EVENT just because the pattern's verb+object
     co-occur — a negation/avoidance cue within 5 tokens before the match
     (utils.trigger_match.is_negated) disqualifies it.
+
+    Narration-aware (2026-09-10): a match whose verb is governed by a
+    first-person subject in a request-free clause ("I only put the hours in
+    my calendar") is skipped; later matches in the same message are still
+    considered ("I put A in already, can you add B?" fires on the second).
     """
     if not query:
         return None
     for at, spec in ACTION_SPECS.items():
         for pattern in spec.intent_patterns:
-            m = re.search(pattern, query, re.IGNORECASE)
-            if (
-                m
-                and _action_request_is_plausible(query)
-                and not _is_trigger_negated(query, m.start())
-            ):
+            for m in re.finditer(pattern, query, re.IGNORECASE):
+                if not _action_request_is_plausible(query):
+                    break
+                if _is_trigger_negated(query, m.start()):
+                    continue
+                verb_start = m.start(1) if m.lastindex else m.start()
+                if _match_is_self_narration(query, verb_start):
+                    continue
                 return at
     return None
+
+
+# Amendment cue (2026-09-10): "make it repeating instead", "actually change
+# it to 11", "rather than a single event" — the user is revising the proposal
+# just made, so a pending card of the same type is stale, not a duplicate.
+_AMENDMENT_CUE_RE = re.compile(
+    r"\b(?:instead|rather|actually|change\s+(?:it|that|the)|make\s+(?:it|that|them)|"
+    r"not\s+(?:a\s+)?single|different\s+(?:time|day|date|slot)|move\s+(?:it|that)|"
+    r"switch\s+(?:it|that)|redo|re-?do\s+(?:it|that)|scrap\s+(?:that|it)|"
+    r"replace\s+(?:it|that))\b",
+    re.IGNORECASE,
+)
+
+
+def is_amendment_cue(user_text: str) -> bool:
+    """True when a short message revises the proposal just offered/queued."""
+    text = (user_text or "").strip()
+    if not text or len(text.split()) > ACTION_RETRY_MAX_WORDS:
+        return False
+    return bool(_AMENDMENT_CUE_RE.search(text))
 
 
 def backfill_params(action_type: ActionType, query: str) -> Dict[str, str]:
@@ -657,6 +728,148 @@ def action_kind_of(action_type: ActionType):
     return mapping.get(action_type)
 
 
+# ---------------------------------------------------------------------------
+# Forced-round time grounding (2026-09-10)
+# ---------------------------------------------------------------------------
+# Live: a forced calendar_create_event round had NO stated time anywhere (the
+# user asked to CHECK the course docs for TA sessions) and the model filled
+# start_time=2026-09-11T17:00:00 — its own reasoning even said "exact time
+# should be confirmed". A proposal card with a guessed time is worse than no
+# card. A clock time is grounded when the same hour (:minute when given)
+# appears in the request or the gathered context in ANY common spelling:
+# "5 pm", "5:00", "17:00", "1700", "730A", "noon", "midnight". No ±1h zone
+# tolerance: the executor's timezone doctrine writes a source-stated zone's
+# time verbatim with time_zone set, so a grounded proposal matches exactly.
+_CLOCK_TOKEN_RE = re.compile(
+    r"\b(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>a\.?m\.?|p\.?m\.?|a|p)\b"
+    r"|\b(?P<h2>\d{1,2}):(?P<m2>\d{2})\b"
+    r"|\b(?P<mil>\d{3,4})\s*(?P<ap2>a|p|am|pm)?\b"
+    r"|\b(?P<word>noon|midday|midnight)\b",
+    re.IGNORECASE,
+)
+
+
+def _pool_hours(pool: str) -> set:
+    """Every (hour, minute) a text mentions, as 24h tuples; minutes=None when
+    the mention has no minutes ("5 pm")."""
+    hours = set()
+    for m in _CLOCK_TOKEN_RE.finditer(pool or ""):
+        if m.group("word"):
+            w = m.group("word").lower()
+            hours.add((0 if w == "midnight" else 12, None))
+            continue
+        if m.group("h") is not None:
+            h, mi, ap = int(m.group("h")), m.group("m"), m.group("ap").lower()[0]
+        elif m.group("h2") is not None:
+            h, mi, ap = int(m.group("h2")), m.group("m2"), None
+        else:
+            raw = m.group("mil")
+            ap = (m.group("ap2") or "").lower()[:1] or None
+            if len(raw) == 3:
+                h, mi = int(raw[0]), raw[1:]
+            else:
+                h, mi = int(raw[:2]), raw[2:]
+            if not ap and (h > 23 or int(mi) > 59):
+                continue  # "1264 rows" — not a clock
+            if not ap and len(raw) == 4 and (h < 1 or raw[:2] in ("19", "20")):
+                continue  # "2026-09-11" is a year, not 20:26
+        if h > 24:
+            continue
+        if ap == "p" and h < 12:
+            h += 12
+        if ap == "a" and h == 12:
+            h = 0
+        mi_i = None if mi is None else int(mi)
+        hours.add((h % 24, mi_i))
+        hours.add((h % 24, None))
+        if ap is None and 1 <= h <= 12:
+            # A 12-hour token with no meridiem ("9:00-10:00pm", "the 3:30")
+            # is ambiguous — it grounds both readings.
+            hours.add(((h + 12) % 24, mi_i))
+            hours.add(((h + 12) % 24, None))
+    return hours
+
+
+def _iso_clock(value: Any) -> Optional[Tuple[int, int]]:
+    m = re.search(r"T(\d{2}):(\d{2})", str(value or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def calendar_times_ungrounded(params: Dict[str, Any], pool_text: str) -> list:
+    """Return the proposed calendar start/end clock times (as ISO strings) that
+    appear nowhere in ``pool_text`` (request + conversation/action context +
+    gathered tool output). Empty list = every timed field is grounded. All-day
+    events and events with no ISO clock component are never flagged."""
+    items = params.get("events") if isinstance(params.get("events"), list) else [params]
+    hours = _pool_hours(pool_text)
+    bad: list = []
+    for ev in items:
+        if not isinstance(ev, dict) or ev.get("all_day") in (True, "true", "True"):
+            continue
+        for key in ("start_time", "end_time"):
+            clk = _iso_clock(ev.get(key))
+            if clk is None:
+                continue
+            h, mi = clk
+            if (h, mi) in hours or (h, None) in hours:
+                continue
+            bad.append(f"{key}={ev.get(key)}")
+    return bad
+
+
+def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
+    """The EXTERNAL ActionType a prior reply NARRATED without backing (it
+    carried the no-card notice or an unbacked-claim correction, or a
+    completion claim of an external kind) — or None.
+
+    2026-09-10 live: "Queued up: … Approve the proposal" shipped with no card,
+    the appended NO_CARD_NOTICE told the user to say "try again", and "try
+    again" had no route because the retry path only re-queues a FAILED card.
+    A narrated-but-unbacked external action IS an offer the user can accept.
+    """
+    text = response_text or ""
+    if not text:
+        return None
+    try:
+        from core.action_claim_guard import (
+            NO_CARD_NOTICE, ActionKind, detect_completion_claims, detect_kind,
+        )
+    except Exception:
+        return None
+    notice = NO_CARD_NOTICE.strip() in text or "I didn't actually" in text
+    claims = [c for c in detect_completion_claims(text)
+              if c.kind in (ActionKind.CALENDAR, ActionKind.EMAIL,
+                            ActionKind.MESSAGE, ActionKind.GITHUB)]
+    if not notice and not claims:
+        return None
+    kind = claims[-1].kind if claims else detect_kind(text)
+    clause = claims[-1].matched_text if claims else text
+    return _kind_to_action_type(kind, clause)
+
+
+def _kind_to_action_type(kind, clause: str) -> Optional[ActionType]:
+    try:
+        from core.action_claim_guard import ActionKind
+    except Exception:
+        return None
+    if kind == ActionKind.CALENDAR:
+        if _OFFER_DELETE_VERB_RE.search(clause):
+            return ActionType.CALENDAR_DELETE_EVENT
+        if _OFFER_UPDATE_VERB_RE.search(clause):
+            return ActionType.CALENDAR_UPDATE_EVENT
+        return ActionType.CALENDAR_CREATE_EVENT
+    if kind == ActionKind.EMAIL:
+        return ActionType.SEND_EMAIL
+    if kind == ActionKind.MESSAGE:
+        return (ActionType.SEND_DISCORD if _OFFER_DISCORD_RE.search(clause)
+                else ActionType.SEND_TELEGRAM)
+    if kind == ActionKind.GITHUB:
+        if _OFFER_PR_RE.search(clause) and not _OFFER_ISSUE_RE.search(clause):
+            return ActionType.GITHUB_COMMENT_PR
+        return ActionType.GITHUB_CREATE_ISSUE
+    return None
+
+
 def offer_action_type(response_text: str) -> Optional[ActionType]:
     """The EXTERNAL ActionType a reply offered to perform, or None.
 
@@ -692,21 +905,9 @@ def offer_action_type(response_text: str) -> Optional[ActionType]:
         if _kind is not None:
             candidates = [(_kind, _clauses[-1])]
     for kind, clause in candidates:
-        if kind == ActionKind.CALENDAR:
-            if _OFFER_DELETE_VERB_RE.search(clause):
-                return ActionType.CALENDAR_DELETE_EVENT
-            if _OFFER_UPDATE_VERB_RE.search(clause):
-                return ActionType.CALENDAR_UPDATE_EVENT
-            return ActionType.CALENDAR_CREATE_EVENT
-        if kind == ActionKind.EMAIL:
-            return ActionType.SEND_EMAIL
-        if kind == ActionKind.MESSAGE:
-            return (ActionType.SEND_DISCORD if _OFFER_DISCORD_RE.search(clause)
-                    else ActionType.SEND_TELEGRAM)
-        if kind == ActionKind.GITHUB:
-            if _OFFER_PR_RE.search(clause) and not _OFFER_ISSUE_RE.search(clause):
-                return ActionType.GITHUB_COMMENT_PR
-            return ActionType.GITHUB_CREATE_ISSUE
+        resolved = _kind_to_action_type(kind, clause)
+        if resolved is not None:
+            return resolved
     return None
 
 

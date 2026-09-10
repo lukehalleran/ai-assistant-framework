@@ -788,16 +788,23 @@ def extract_rare_proper_nouns(q: str, max_terms: int = 3) -> List[str]:
 _DOC_SEARCH_VERB_NOUN_RE = re.compile(
     r"\b(?:search|find|locate|look|pull|dig|check)\w*"
     r"(?:\W+\w+){0,6}?\W+"
-    r"(?:documents?|docs?|notes?|files?|uploads?|attachments?|syllab(?:us|i|uses))\b",
+    r"(?:documents?|docs?|notes?|files?|uploads?|attachments?|materials?|syllab(?:us|i|uses))\b",
     re.IGNORECASE,
 )
 # "uploads"/"attachments" are self-anchoring (2026-09-07): nobody searches
 # the web for "the uploads" — the noun itself names the user's own corpus
 # ("can we look in the user uploads for the homework" carried no my/our/I
 # anchor and stayed in tool-less chat).
+# Course-material nouns are self-anchoring too (2026-09-10): "can we check
+# course docs and see if there a weekend back up?" carried no my/our/I anchor
+# and stayed unrouted — a student's "course docs"/"the syllabus"/"lecture
+# notes" name their own uploaded corpus, never the web.
 _PERSONAL_ANCHOR_RE = re.compile(
     r"\b(?:my|our)\b|\bi(?:'m|\s+am)\b|\bi\s+(?:have|uploaded|saved|gave|sent|shared)\b"
-    r"|\b(?:enrolled|uploaded|saved)\b|\b(?:uploads?|attachments?)\b",
+    r"|\b(?:enrolled|uploaded|saved)\b|\b(?:uploads?|attachments?)\b"
+    r"|\b(?:course|class|lecture|homework|hw|assignment|semester)\s+"
+    r"(?:docs?|documents?|notes?|files?|materials?|pdfs?|syllab(?:us|i))\b"
+    r"|\bsyllab(?:us|i|uses)\b",
     re.IGNORECASE,
 )
 # "search the web/online for ..." is a real web request even if a doc noun
