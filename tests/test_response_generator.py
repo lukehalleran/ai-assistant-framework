@@ -295,25 +295,26 @@ async def test_llm_judge_methods_exist(response_generator):
 
 @pytest.mark.asyncio
 async def test_generate_streaming_error_handling(response_generator, mock_model_manager):
-    """Test streaming handles errors gracefully."""
-    # Mock an error
+    """A stream that raises mid-iteration never propagates to the caller —
+    generate_streaming_response's inner try/except catches it and yields a
+    single '[Streaming Error: ...]' sentinel chunk, then the generator ends
+    cleanly (core/response_generator.py's streaming-path except clause)."""
     async def mock_gen_error():
         raise Exception("Test error")
         yield "Never reached"
 
     mock_model_manager.generate_async.return_value = mock_gen_error()
 
-    # Should handle error and not crash
-    try:
-        result = []
-        async for chunk in response_generator.generate_streaming_response(
-            prompt="Test",
-            model_name="gpt-4"
-        ):
-            result.append(chunk)
-    except Exception:
-        # Expected to raise or handle
-        pass
+    result = []
+    async for chunk in response_generator.generate_streaming_response(
+        prompt="Test",
+        model_name="gpt-4"
+    ):
+        result.append(chunk)
+
+    assert len(result) == 1
+    assert "[Streaming Error" in result[0]
+    assert "Test error" in result[0]
 
 
 if __name__ == "__main__":

@@ -47,42 +47,50 @@ def prompt_builder(memory_coordinator, model_manager):
 # Memory Coordinator Edge Cases
 @pytest.mark.asyncio
 async def test_store_interaction_empty_strings(memory_coordinator):
-    """Test storing interaction with empty strings."""
-    await memory_coordinator.store_interaction(query="", response="")
-    # Should not crash
-    assert True
+    """An empty assistant response is skipped, not stored (documented
+    behavior in MemoryStorage.store_interaction: returns None and never
+    touches the corpus for an empty/whitespace-only response)."""
+    memory_id = await memory_coordinator.store_interaction(query="", response="")
+    assert memory_id is None
+    assert memory_coordinator.corpus_manager.corpus == []
 
 
 @pytest.mark.asyncio
 async def test_store_interaction_very_long_text(memory_coordinator):
-    """Test storing interaction with very long text."""
+    """A long but non-degenerate turn is persisted verbatim to both stores."""
     long_query = "Q" * 10000
     long_response = "A" * 10000
-    await memory_coordinator.store_interaction(
+    memory_id = await memory_coordinator.store_interaction(
         query=long_query,
         response=long_response
     )
-    assert True
+    assert isinstance(memory_id, str) and memory_id
+    assert memory_coordinator.corpus_manager.corpus[-1]["query"] == long_query
+    assert memory_coordinator.corpus_manager.corpus[-1]["response"] == long_response
 
 
 @pytest.mark.asyncio
 async def test_store_interaction_unicode_edge_cases(memory_coordinator):
-    """Test storing interaction with various unicode characters."""
-    await memory_coordinator.store_interaction(
-        query="Hello 世界 مرحبا שלום",
-        response="Testing émojis 🎉🔥💻"
-    )
-    assert True
+    """Unicode text round-trips through the corpus without mangling."""
+    query = "Hello 世界 مرحبا שלום"
+    response = "Testing émojis 🎉🔥💻"
+    memory_id = await memory_coordinator.store_interaction(query=query, response=response)
+    assert isinstance(memory_id, str) and memory_id
+    stored = memory_coordinator.corpus_manager.corpus[-1]
+    assert stored["query"] == query
+    assert stored["response"] == response
 
 
 @pytest.mark.asyncio
 async def test_store_interaction_special_chars(memory_coordinator):
-    """Test storing interaction with special characters."""
-    await memory_coordinator.store_interaction(
-        query="What about <xml> & 'quotes' and \"double\"?",
-        response="Handling \n newlines \t tabs \\ backslashes"
-    )
-    assert True
+    """XML-shaped/escaped and whitespace-control characters round-trip intact."""
+    query = "What about <xml> & 'quotes' and \"double\"?"
+    response = "Handling \n newlines \t tabs \\ backslashes"
+    memory_id = await memory_coordinator.store_interaction(query=query, response=response)
+    assert isinstance(memory_id, str) and memory_id
+    stored = memory_coordinator.corpus_manager.corpus[-1]
+    assert stored["query"] == query
+    assert stored["response"] == response
 
 
 @pytest.mark.asyncio
@@ -95,14 +103,17 @@ async def test_get_memories_zero_limit(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_get_memories_negative_limit(memory_coordinator):
-    """Test get_memories with negative limit."""
-    await memory_coordinator.store_interaction("Q", "A")
-    try:
-        memories = await memory_coordinator.get_memories("Q", limit=-1)
-        assert isinstance(memories, list)
-    except Exception:
-        # May raise ValueError
-        assert True
+    """A negative limit is never validated — get_memories applies it as a
+    plain Python list slice (`accepted[:limit]`), which drops exactly one
+    trailing item rather than raising."""
+    for i in range(3):
+        await memory_coordinator.store_interaction(f"Topic {i}", f"Content {i}")
+
+    full = await memory_coordinator.get_memories("Topic", limit=10)
+    negative = await memory_coordinator.get_memories("Topic", limit=-1)
+
+    assert isinstance(negative, list)
+    assert len(negative) == len(full) - 1
 
 
 @pytest.mark.asyncio
@@ -165,23 +176,27 @@ async def test_get_reflections_zero(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_process_shutdown_memory_empty(memory_coordinator):
-    """Test process_shutdown_memory with empty conversations."""
+    """With zero non-summary corpus entries (T=0), no due-summary block
+    exists, so no consolidator summary is appended to the corpus."""
     await memory_coordinator.process_shutdown_memory(session_conversations=[])
-    assert True
+    assert memory_coordinator.corpus_manager.corpus == []
 
 
 @pytest.mark.asyncio
 async def test_process_shutdown_memory_none(memory_coordinator):
-    """Test process_shutdown_memory with None."""
+    """None falls back to reading the real (here empty) corpus — same no-op
+    result as passing an explicit empty list."""
     await memory_coordinator.process_shutdown_memory(session_conversations=None)
-    assert True
+    assert memory_coordinator.corpus_manager.corpus == []
 
 
 @pytest.mark.asyncio
 async def test_run_shutdown_reflection_empty(memory_coordinator):
-    """Test run_shutdown_reflection with empty list."""
-    await memory_coordinator.run_shutdown_reflection(session_conversations=[])
-    assert True
+    """No model_manager wired (this fixture builds MemoryCoordinator without
+    one) means run_shutdown_reflection's own guard returns False rather than
+    attempting a reflection generation call."""
+    result = await memory_coordinator.run_shutdown_reflection(session_conversations=[])
+    assert result is False
 
 
 # Prompt Builder Edge Cases
@@ -297,47 +312,35 @@ def test_corpus_manager_multiple_entries(temp_dirs):
 
 # ChromaDB Store Edge Cases
 def test_chroma_store_add_empty_text(temp_dirs):
-    """Test adding empty text to collection."""
+    """Empty query/response text is accepted (the document is still the
+    non-empty "User: \\nAssistant: " template) and gets a real UUID id back."""
     store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
-    try:
-        doc_id = store.add_conversation_memory(
-            query="",
-            response=""
-        )
-        assert doc_id is not None
-    except Exception:
-        # May reject empty text
-        assert True
+    doc_id = store.add_conversation_memory(query="", response="", metadata={})
+    assert isinstance(doc_id, str) and doc_id
+    fetched = store._get_collection("conversations").get(ids=[doc_id])
+    assert fetched["ids"] == [doc_id]
 
 
 def test_chroma_store_add_very_long_text(temp_dirs):
-    """Test adding very long text."""
+    """A 50K-char turn is stored without truncation or rejection."""
     store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
     long_text = "A" * 50000
-    try:
-        doc_id = store.add_conversation_memory(
-            query=long_text,
-            response=long_text
-        )
-        assert doc_id is not None
-    except Exception:
-        # May have size limits
-        assert True
+    doc_id = store.add_conversation_memory(query=long_text, response=long_text, metadata={})
+    assert isinstance(doc_id, str) and doc_id
+    fetched = store._get_collection("conversations").get(ids=[doc_id])
+    assert fetched["documents"][0] == f"User: {long_text}\nAssistant: {long_text}"
 
 
 def test_chroma_store_query_nonexistent_collection(temp_dirs):
-    """Test querying nonexistent collection."""
+    """query_collection raises ValueError for a name that was never registered
+    in self.collections — it never returns an empty list silently."""
     store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
-    try:
-        results = store.query_collection(
-            name="nonexistent_collection",
+    with pytest.raises(ValueError, match="Unknown collection"):
+        store.query_collection(
+            collection_name="nonexistent_collection",
             query_text="test",
             n_results=5
         )
-        assert isinstance(results, list)
-    except Exception:
-        # May raise error
-        assert True
 
 
 def test_chroma_store_add_with_unicode_metadata(temp_dirs):
@@ -371,14 +374,16 @@ def test_model_manager_stub_response_long(model_manager):
 # Concurrent Operations
 @pytest.mark.asyncio
 async def test_concurrent_store_interactions(memory_coordinator):
-    """Test storing interactions concurrently."""
+    """10 concurrent store_interaction calls each get a distinct memory id
+    and each lands its own corpus entry — no lost updates, no id collisions."""
     tasks = [
         memory_coordinator.store_interaction(f"Q{i}", f"A{i}")
         for i in range(10)
     ]
-    await asyncio.gather(*tasks)
-    # Should complete without errors
-    assert True
+    memory_ids = await asyncio.gather(*tasks)
+    assert all(isinstance(mid, str) and mid for mid in memory_ids)
+    assert len(set(memory_ids)) == 10
+    assert len(memory_coordinator.corpus_manager.corpus) == 10
 
 
 @pytest.mark.asyncio

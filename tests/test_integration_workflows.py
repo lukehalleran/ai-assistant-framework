@@ -236,17 +236,18 @@ async def test_prompt_builder_with_empty_memories(prompt_builder):
 
 @pytest.mark.asyncio
 async def test_memory_consolidation_trigger(memory_coordinator):
-    """Test memory consolidation can be triggered."""
+    """With T=10 turns and the configured consolidation threshold of 20
+    (config.yaml memory.summary_interval), no summary block is due yet —
+    process_shutdown_memory leaves the corpus exactly as it was."""
     # Add multiple interactions
     for i in range(10):
         await memory_coordinator.store_interaction(f"Q{i}", f"A{i}")
 
     # Trigger shutdown processing
-    try:
-        await memory_coordinator.process_shutdown_memory()
-    except Exception:
-        # May fail without proper model setup, but exercises the code path
-        pass
+    await memory_coordinator.process_shutdown_memory()
+
+    assert len(memory_coordinator.corpus_manager.corpus) == 10
+    assert memory_coordinator.corpus_manager.get_summaries(10) == []
 
 
 @pytest.mark.asyncio

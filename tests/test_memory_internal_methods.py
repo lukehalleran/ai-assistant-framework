@@ -240,33 +240,31 @@ def test_detect_or_create_thread(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_consolidate_and_store_summary(memory_coordinator):
-    """Test _consolidate_and_store_summary internal method."""
-    # Add conversations
+    """A tiny (<=2-exchange) recent block consolidates extractively — no
+    model_manager required — and the result lands as a real corpus summary."""
     await memory_coordinator.store_interaction("Q1", "A1")
     await memory_coordinator.store_interaction("Q2", "A2")
 
-    # Try consolidation
-    try:
-        await memory_coordinator._consolidate_and_store_summary()
-        assert True  # No crash
-    except Exception:
-        # Method may require specific conditions
-        assert True
+    await memory_coordinator._consolidate_and_store_summary()
+
+    summaries = memory_coordinator.corpus_manager.get_summaries(5)
+    assert len(summaries) == 1
+    assert "Q1" in summaries[0]["content"]
+    assert "Q2" in summaries[0]["content"]
 
 
 @pytest.mark.asyncio
 async def test_extract_and_store_facts(memory_coordinator):
-    """Test _extract_and_store_facts internal method."""
-    try:
-        await memory_coordinator._extract_and_store_facts(
-            query="Who invented Python?",
-            response="Python was invented by Guido van Rossum.",
-            truth_score=0.9
-        )
-        assert True  # No crash
-    except Exception:
-        # May require fact extractor setup
-        assert True
+    """A first-person occupation/preference statement is regex-extracted and
+    persisted to the 'facts' collection."""
+    await memory_coordinator._extract_and_store_facts(
+        query="I really like pizza and I work as a data analyst",
+        response="That's great to know!",
+        truth_score=0.9,
+    )
+
+    facts_collection = memory_coordinator.chroma_store._get_collection("facts")
+    assert facts_collection.count() >= 1
 
 
 @pytest.mark.asyncio

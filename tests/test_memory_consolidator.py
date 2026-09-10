@@ -196,7 +196,9 @@ async def test_maybe_consolidate_empty_corpus(consolidator, temp_corpus):
 
 @pytest.mark.asyncio
 async def test_maybe_consolidate_model_error(temp_corpus, mock_model_manager):
-    """Test maybe_consolidate handles model errors."""
+    """maybe_consolidate wraps its whole body in try/except and returns False
+    on any error — a raising model must never propagate out of it, and no
+    summary node is written to the corpus."""
     # Make model raise error
     mock_model_manager.generate_once.side_effect = Exception("Model error")
 
@@ -209,13 +211,10 @@ async def test_maybe_consolidate_model_error(temp_corpus, mock_model_manager):
     for i in range(10):
         temp_corpus.add_entry(f"Q{i}", f"A{i}")
 
-    # Should handle error gracefully
-    try:
-        result = await consolidator.maybe_consolidate(temp_corpus)
-        assert isinstance(result, bool)
-    except Exception:
-        # Either handles gracefully or propagates
-        pass
+    result = await consolidator.maybe_consolidate(temp_corpus)
+
+    assert result is False
+    assert temp_corpus.get_summaries(10) == []
 
 
 def test_format_recent_mixed_timestamps():

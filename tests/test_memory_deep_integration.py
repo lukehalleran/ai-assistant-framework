@@ -106,33 +106,31 @@ async def test_get_memories_semantic_search(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_process_shutdown_memory(memory_coordinator):
-    """Test process_shutdown_memory consolidates session."""
-    # Add session conversations
+    """With T=10 turns and the configured consolidation threshold of 20
+    (config.yaml memory.summary_interval), no summary block is due yet —
+    process_shutdown_memory leaves the corpus exactly as it was."""
     for i in range(10):
         await memory_coordinator.store_interaction(f"Q{i}", f"A{i}")
 
-    # Process shutdown
     await memory_coordinator.process_shutdown_memory()
 
-    # Should have persisted
-    assert True  # No crash
+    assert len(memory_coordinator.corpus_manager.corpus) == 10
+    assert memory_coordinator.corpus_manager.get_summaries(10) == []
 
 
 @pytest.mark.asyncio
 async def test_run_shutdown_reflection(memory_coordinator):
-    """Test run_shutdown_reflection generates insights."""
-    # Add conversations
+    """No model_manager is wired on this fixture, so
+    run_shutdown_reflection's own guard (needs generate_once) short-circuits
+    to False rather than attempting a reflection."""
     convos = []
     for i in range(5):
         await memory_coordinator.store_interaction(f"Question {i}", f"Answer {i}")
         convos.append({"query": f"Question {i}", "response": f"Answer {i}"})
 
-    try:
-        await memory_coordinator.run_shutdown_reflection(session_conversations=convos)
-        assert True  # No crash
-    except Exception:
-        # May need model_manager
-        pass
+    result = await memory_coordinator.run_shutdown_reflection(session_conversations=convos)
+
+    assert result is False
 
 
 @pytest.mark.asyncio
@@ -324,20 +322,21 @@ async def test_memory_access_tracking(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_cross_collection_search(memory_coordinator):
-    """Test searching across multiple memory collections."""
-    # Add to different collections
-    await memory_coordinator.store_interaction("Q", "A")
-    await memory_coordinator.add_reflection("User pattern")
+    """search_by_type queries a real named chroma collection and finds a
+    matching document; an unrecognized type name (not a collection) returns
+    an empty list rather than raising or searching anything."""
+    await memory_coordinator.store_interaction("Unique searchable phrase", "A")
 
-    try:
-        results = await memory_coordinator.search_by_type(
-            type_name="episodic",
-            query="Q",
-            limit=5
-        )
-        assert isinstance(results, list)
-    except Exception:
-        pass
+    conv_results = await memory_coordinator.search_by_type(
+        type_name="conversations", query="Unique searchable phrase", limit=5
+    )
+    assert len(conv_results) >= 1
+    assert any("Unique searchable phrase" in r.get("content", "") for r in conv_results)
+
+    unknown_results = await memory_coordinator.search_by_type(
+        type_name="episodic", query="Q", limit=5
+    )
+    assert unknown_results == []
 
 
 @pytest.mark.asyncio

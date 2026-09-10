@@ -109,56 +109,29 @@ async def test_get_facts_basic(memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_extract_and_store_facts(memory_coordinator):
-    """Test fact extraction and storage (internal method)."""
-    # This tests the internal _extract_and_store_facts flow
-    query = "Python was created by Guido van Rossum in 1991"
-    response = "That's correct! Python is a high-level language."
+    """A first-person occupation/preference statement is regex-extracted and
+    persisted to the 'facts' collection by the internal method."""
+    query = "I really like pizza and I work as a data analyst"
+    response = "That's great to know!"
 
-    # Call the internal method
-    try:
-        await memory_coordinator._extract_and_store_facts(query, response, truth_score=0.9)
-        # Should not crash
-        assert True
-    except AttributeError:
-        # Method might be private or have different name
-        pytest.skip("_extract_and_store_facts not available")
+    await memory_coordinator._extract_and_store_facts(query, response, truth_score=0.9)
+
+    facts_collection = memory_coordinator.chroma_store._get_collection("facts")
+    assert facts_collection.count() >= 1
 
 
-@pytest.mark.asyncio
-async def test_consolidate_with_model(memory_coordinator):
-    """Test consolidate_and_refresh with model_manager."""
-    # Store some interactions
-    await memory_coordinator.store_interaction(
-        query="What is Python?",
-        response="Python is a language."
-    )
-
-    # Try consolidation (will skip without proper model_manager)
-    try:
-        await memory_coordinator.consolidate_and_refresh()
-    except Exception:
-        # Expected to fail without proper setup
-        pass
-
-
-@pytest.mark.asyncio
-async def test_update_memory_access(memory_coordinator):
-    """Test updating memory access time."""
-    await memory_coordinator.store_interaction(
-        query="Test query",
-        response="Test response"
-    )
-
-    # Get the memory ID
-    recent = memory_coordinator.corpus_manager.get_recent_memories(1)
-    if recent and "id" in recent[0]:
-        memory_id = recent[0]["id"]
-
-        # Update access
-        await memory_coordinator.update_memory_access(memory_id)
-
-        # Should not raise an error
-        assert True
+# NOTE: test_consolidate_with_model (called the nonexistent
+# `memory_coordinator.consolidate_and_refresh()`, wrapped in a swallowing
+# except) and test_update_memory_access (gated on `"id" in recent[0]`, which
+# corpus entries never carry, and would have called the nonexistent
+# `memory_coordinator.update_memory_access()` had the guard ever been true)
+# were deleted as fossils during the 2026-09-09 T01 vacuous-assertion
+# repair — neither method exists anywhere in the codebase. Consolidation is
+# covered by test_memory_coordinator_advanced.py::test_consolidate_and_store_summary
+# and test_memory_consolidator.py::test_maybe_consolidate_*; access-driven
+# truth-score updates are covered by
+# test_memory_coordinator_advanced.py::test_update_truth_scores_on_access
+# and ::test_update_truth_scores_empty_list.
 
 
 @pytest.mark.asyncio

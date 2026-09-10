@@ -392,31 +392,44 @@ def test_get_dreams(memory_coordinator):
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "FINDING: debug_memory_state (memory_coordinator.py) iterates "
+        "chroma_store.collections and calls collection.count() on every "
+        "value, but MultiCollectionChromaStore.collections holds raw None "
+        "placeholders for any of the 14 collections not yet lazily opened "
+        "via _get_collection() (multi_collection_chroma_store.py:188-201). "
+        "A single store_interaction() call only opens 'conversations', so "
+        "debug_memory_state() raises AttributeError: 'NoneType' object has "
+        "no attribute 'count' on the very next collection in the dict."
+    ),
+)
 async def test_debug_memory_state(memory_coordinator):
-    """Test debug_memory_state doesn't crash."""
-    try:
-        await memory_coordinator.debug_memory_state()
-        # Should not raise
-        assert True
-    except Exception as e:
-        # Some methods may not be fully implemented
-        pytest.skip(f"debug_memory_state not fully implemented: {e}")
+    """debug_memory_state should report a stats dict without crashing, even
+    when most of the 14 chroma collections haven't been lazily opened yet."""
+    await memory_coordinator.store_interaction("Q", "A")
+
+    stats = await memory_coordinator.debug_memory_state()
+
+    assert stats["corpus_entries"] == 1
+    assert isinstance(stats["chroma_collections"], dict)
 
 
 @pytest.mark.asyncio
 async def test_consolidate_and_store_summary(memory_coordinator):
-    """Test _consolidate_and_store_summary creates summary."""
-    # Add some interactions first
+    """A tiny (<=2-exchange) recent block consolidates extractively — no
+    model_manager required (memory_consolidator._summarize_excerpts skips
+    the LLM call for <=2 excerpts) — and lands as a real corpus summary."""
     await memory_coordinator.store_interaction("Q1", "A1")
     await memory_coordinator.store_interaction("Q2", "A2")
 
-    try:
-        await memory_coordinator._consolidate_and_store_summary()
-        # Should not crash
-        assert True
-    except Exception:
-        # May need model_manager
-        pass
+    await memory_coordinator._consolidate_and_store_summary()
+
+    summaries = memory_coordinator.corpus_manager.get_summaries(5)
+    assert len(summaries) == 1
+    assert "Q1" in summaries[0]["content"]
+    assert "Q2" in summaries[0]["content"]
 
 
 if __name__ == "__main__":

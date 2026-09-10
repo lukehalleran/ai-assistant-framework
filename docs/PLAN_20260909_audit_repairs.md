@@ -994,3 +994,121 @@ byte-for-byte apart from its position in the file.
 **Fable referee (B4):** PASS with one tightening. Independent runs: 443 Python (F12/F09 files + calendar/action-guard/agentic suites + five guards), Vitest 9/9, `tsc` clean, `vite build` clean, ruff clean. Tightening: `resolve_forced_action` accepted a WELL-FORMED sibling type as-is inside a forced round (a valid create in a forced delete round would have created the event the user asked to delete) — now a type mismatch in a forced round is coerced when the params fit the required spec, else rejected with the reason; the model's own type stands only when it matches (`test_valid_sibling_type_in_forced_round_is_never_accepted_as_is`; 219 green across the forced-action/calendar/agentic suites). Also folded in here, since this batch owns the workflow file: B5's CI hunk removing all 17 stale `--ignore` entries from the Python job (ledger `docs/TEST_LANES.md`; 439 tests pass unignored). Scope overage (~700 source lines) accepted: F12's schema gap + coercion + retry reason + backstop regex are one defect.
 
 **B4 live probe (2026-09-09 18:20–18:25, daemon restarted 18:18 on 52a7fbb, SPA rebuilt 18:17):** two-event create → ONE batched card → approved → both created (audit 23:20:54Z). `Delete the "B4 probe A" event tomorrow.` — the exact shape that failed at 15:02 — produced a real `calendar_delete_event` card (proposed 23:25:42Z, approved, executed 23:25:52Z: "Deleted event: B4 probe A"). Zero coercions/rejections logged: the forced-round one-value enum made the model emit the correct type on the first round. F12 PASS. (F07 card chaining not exercised — single-card turns.)
+
+### T01 backlog repair (2026-09-09, subagent)
+
+B5 closed T01 for `tests/test_response_generator_comprehensive.py` and
+`tests/test_actual_caching.py` and left the remaining 31 pre-existing
+vacuous bodies (12 files) as a dated ALLOWLIST in a new guard,
+`tests/unit/test_no_vacuous_assertions.py` (AST scan for bare `assert True`
+and broad `except`/swallow bodies in `test_*` functions; fails on any
+offender not in ALLOWLIST, and fails on any stale ALLOWLIST entry). This
+batch repaired, rewrote, or deleted all 31 and emptied the ALLOWLIST to
+`{}`. No product code was touched — every fix lives under `tests/`.
+
+**Disposition table** (function → outcome → one-line why):
+
+| File | Function | Outcome | Why |
+|---|---|---|---|
+| `tests/test_edge_cases_comprehensive.py` | `test_store_interaction_empty_strings` | repaired | empty response → `store_interaction` returns `None` and never touches the corpus (documented skip-empty-response path); asserted both |
+| " | `test_store_interaction_very_long_text` | repaired | asserts the returned memory id is a real string and the corpus entry preserves the 10K-char text verbatim |
+| " | `test_store_interaction_unicode_edge_cases` | repaired | asserts unicode text round-trips through the corpus unchanged |
+| " | `test_store_interaction_special_chars` | repaired | asserts XML/quote/whitespace-control text round-trips through the corpus unchanged |
+| " | `test_get_memories_negative_limit` | repaired | negative limit is unvalidated Python slicing (`accepted[:limit]`) — asserts `len(negative) == len(full) - 1`, not a raised exception |
+| " | `test_process_shutdown_memory_empty` | repaired | T=10 < consolidation threshold 20 (`config.yaml memory.summary_interval`) → asserts the corpus is untouched |
+| " | `test_process_shutdown_memory_none` | repaired | same threshold arithmetic via the corpus-fallback path — asserts the corpus is untouched |
+| " | `test_run_shutdown_reflection_empty` | repaired | no `model_manager` on this fixture → asserts the documented `False` short-circuit return |
+| " | `test_concurrent_store_interactions` | repaired | asserts all 10 concurrent memory ids are distinct strings and the corpus has exactly 10 entries — no lost updates |
+| " | `test_chroma_store_add_empty_text` | repaired | original call was missing the now-required `metadata` arg (masked by the swallow); fixed the call, asserts a real UUID id and a fetchable document |
+| " | `test_chroma_store_add_very_long_text` | repaired | same missing-arg fix; asserts the fetched document is the exact 50K-char text, untruncated |
+| " | `test_chroma_store_query_nonexistent_collection` | repaired | original call used a nonexistent `name=` kwarg (masked by the swallow, real kwarg is `collection_name`); fixed the call, asserts `pytest.raises(ValueError, match="Unknown collection")` |
+| `tests/test_integration_workflows.py` | `test_memory_consolidation_trigger` | repaired | same threshold arithmetic as above — asserts the corpus is untouched after shutdown processing |
+| `tests/test_memory_consolidator.py` | `test_maybe_consolidate_model_error` | rewritten as contract | `maybe_consolidate` wraps its whole body in try/except and always returns `False` on error — asserted the documented graceful-degradation return plus no summary written |
+| `tests/test_memory_coordinator_advanced.py` | `test_consolidate_and_store_summary` | repaired | 2-exchange block is `<=2` excerpts → consolidator's tiny-block path skips the LLM entirely; asserts a real corpus summary containing both exchanges |
+| " | `test_debug_memory_state` | **xfail (FINDING)** | see Findings below |
+| `tests/test_memory_coordinator_methods.py` | `test_extract_and_store_facts` | repaired | switched to a first-person fact-bearing query; asserts the `facts` collection actually gained a document |
+| " | `test_consolidate_with_model` | **deleted (fossil)** | called `memory_coordinator.consolidate_and_refresh()`, which does not exist anywhere in the codebase (grep-verified) — the swallow hid an `AttributeError` on every run; covered by `test_memory_coordinator_advanced.py::test_consolidate_and_store_summary` and `test_memory_consolidator.py::test_maybe_consolidate_*` |
+| " | `test_update_memory_access` | **deleted (fossil)** | gated on `"id" in recent[0]`, which corpus entries never carry (always `False`, so the body — which would have called the also-nonexistent `memory_coordinator.update_memory_access()` — never ran); covered by `test_memory_coordinator_advanced.py::test_update_truth_scores_on_access` / `::test_update_truth_scores_empty_list` |
+| `tests/test_memory_deep_integration.py` | `test_cross_collection_search` | repaired | queries the real `conversations` collection and asserts a real match is found; asserts an unregistered type name returns `[]` |
+| " | `test_process_shutdown_memory` | repaired | same threshold arithmetic — asserts the corpus is untouched |
+| " | `test_run_shutdown_reflection` | repaired | asserts the documented `False` short-circuit return with no `model_manager` |
+| `tests/test_memory_internal_methods.py` | `test_consolidate_and_store_summary` | repaired | same tiny-block contract as above |
+| " | `test_extract_and_store_facts` | repaired | same first-person-fact contract as above |
+| `tests/test_meta_query.py` | `test_meta_query` | **deleted (fossil, whole file)** | a print-only manual debug script with zero `assert` statements and a bare `except: pass`; the exact query shape ("do you recall ... yesterday?") and the underlying `is_meta_conversational`/`analyze_query` contracts are already covered with real `assert ... == True/False` checks in `tests/unit/test_query_checker.py` (`test_is_meta_conversational_do_you_recall`, `test_is_meta_conversational_do_you_remember`, `test_analyze_query_meta_conversational`) |
+| `tests/test_prompt_deep_paths.py` | `test_build_prompt_multiple_calls` | repaired | dropped the trailing bare `assert True`; asserts each of the 3 sequential results is a populated dict |
+| " | `test_build_prompt_with_facts` | repaired | original `await`ed `chroma_store.add_fact`, which is a **synchronous** method — every run raised `TypeError`, masked by the swallow; fixed the call, asserts a real fact id |
+| " | `test_build_prompt_with_reflections` | repaired | `add_reflection` is legitimately async and never raised here — the swallow was dead; asserts the documented `True` return |
+| `tests/test_real_mutations.py` | `test_snake_mutations` | **deleted (fossil, whole file)** | tested a hand-copied duplicate of `memory/llm_fact_extractor._snake` (comment: "copy from..."), never the deployed function, with no final assertion tied to the mutation-catch outcome; `tests/test_llm_fact_extractor_comprehensive.py` already imports and tests the real `_snake` against the identical 6 cases (`test_snake_normal`, `test_snake_special_chars`, `test_snake_multiple_spaces`, `test_snake_empty`, `test_snake_none`, `test_snake_strips_leading_trailing`) |
+| `tests/test_response_generator.py` | `test_generate_streaming_error_handling` | repaired | asserts the documented contract: a mid-stream exception yields exactly one `"[Streaming Error: ...]"` chunk and never propagates |
+| `tests/test_synthesis_calibration.py` | `test_filter_calibration_report` | rewritten as contract | module docstring says "always passes... diagnostic tool"; kept the diagnostic printout but gated the one stable, safety-critical invariant — zero false positives across the 52 should-reject-tier candidates (`assert len(fp) == 0`). Recall on `interesting_novel` is a real 0% today with this file's hand-rolled keyword-heuristic coherence-judge mock (a test-mock/fixture-wording staleness issue, not a `SynthesisFilter` defect — see Findings) and is reported, not gated |
+
+**Findings (1, well under the 5-finding stop threshold):**
+
+- `MemoryCoordinator.debug_memory_state()` (`memory/memory_coordinator.py:534-544`)
+  iterates `self.chroma_store.collections.items()` and calls
+  `collection.count()` on every value — but
+  `MultiCollectionChromaStore.collections` (`memory/storage/multi_collection_chroma_store.py:188-201`)
+  holds raw `None` placeholders for any of the 14 collections not yet
+  lazily opened via `_get_collection()`. A single `store_interaction()` call
+  only opens `'conversations'`; the next collection in the dict is still
+  `None`, so `debug_memory_state()` raises
+  `AttributeError: 'NoneType' object has no attribute 'count'` on the very
+  first realistic call — not an edge case, the common case. The original
+  test's `try/except Exception: pytest.skip(...)` silently converted this
+  crash into a skip on every run. Marked
+  `@pytest.mark.xfail(strict=True, reason="FINDING: ...")` in
+  `tests/test_memory_coordinator_advanced.py::test_debug_memory_state`
+  rather than weakened or fixed in product code, per this task's rule 3.
+
+**Five perturbation proofs** (edit → run → observe FAILED → revert → run →
+observe PASSED; all reverts confirmed byte-identical via a final full green
+run):
+
+1. `tests/test_edge_cases_comprehensive.py::test_chroma_store_query_nonexistent_collection` —
+   seeded `store.collections["nonexistent_collection"] = None` before the
+   call (the fake "already exists"); `pytest.raises` failed with
+   `Failed: DID NOT RAISE <class 'ValueError'>`.
+2. `tests/test_edge_cases_comprehensive.py::test_get_memories_negative_limit` —
+   changed the expected relationship to `len(negative) == len(full)`
+   (off by the one item the real slice actually drops); FAILED against the
+   real computed lengths from the deployed retrieval pipeline.
+3. `tests/test_memory_consolidator.py::test_maybe_consolidate_model_error` —
+   removed the mock's `side_effect = Exception(...)` (the fake no longer
+   raises); failed with `assert True is False` (consolidation actually
+   succeeded once nothing raised).
+4. `tests/test_memory_coordinator_advanced.py::test_consolidate_and_store_summary` —
+   removed the two `store_interaction` calls (no input data); failed with
+   `assert 0 == 1` (no summary was produced from an empty corpus).
+5. `tests/test_response_generator.py::test_generate_streaming_error_handling` —
+   changed the fake's raised message from `"Test error"` to
+   `"Different failure"`; failed with
+   `AssertionError: assert 'Test error' in '[Streaming Error: Different failure]'`.
+
+**Verification (final, all green):**
+- `tests/unit/test_no_vacuous_assertions.py` — 2 passed (ALLOWLIST is `{}`,
+  no stale entries, no new offenders anywhere under `tests/`).
+- All 11 touched test files (2 deleted) run together — 307 passed, 1 skipped
+  (pre-existing, unrelated: `test_memory_deep_integration.py:193`,
+  "Method signature different"), 1 xfailed (the FINDING above).
+- Same set + the five repo-wide guards
+  (`test_no_git_state_in_tests`, `test_ordered_slice_guard`,
+  `test_budget_meters_rendered_sections`, `test_tool_wiring_parity`,
+  `test_model_capability_wiring`) under
+  `-m "not slow and not benchmark and not semantic"` (the CI marker filter)
+  — same 307 passed / 1 skipped / 1 xfailed, confirming nothing here depends
+  on a marker this filter excludes.
+- `ruff check . --output-format concise` — All checks passed!
+
+**Deviations from the brief:** two fossil files were deleted outright
+(`tests/test_meta_query.py`, `tests/test_real_mutations.py`) rather than
+having their single named function repaired in place, since deleting the
+function would have left an empty/pointless file; both deletions are
+recorded above with the stronger test that now covers the behavior, per
+rule 1(c). One repaired-as-contract case (`test_filter_calibration_report`)
+keeps its diagnostic printout alongside the new gated assertion rather than
+replacing the report wholesale, since the per-tier/per-stage breakdown has
+independent debugging value the task did not ask to remove.
+
+**Stop condition:** not hit. No test required network, a model download, or
+live stores to become meaningful; findings stayed at 1 (well under 5); no
+product code or out-of-scope file was touched.

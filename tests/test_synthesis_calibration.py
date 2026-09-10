@@ -251,9 +251,17 @@ class TestSynthesisCalibration:
 
     @pytest.mark.asyncio
     async def test_filter_calibration_report(self, mock_faiss):
-        """Run all labeled candidates through filter and print diagnostic report.
+        """Run all labeled candidates through the real SynthesisFilter and
+        print a diagnostic confusion-matrix report.
 
-        This test always passes. The output is the diagnostic.
+        Recall on the `interesting_novel` tier is genuinely diagnostic here —
+        it depends on how well this file's hand-rolled coherence-judge mock
+        (keyword heuristics) happens to match today's fixture wording, not on
+        SynthesisFilter itself, so it is reported but not gated. The one
+        invariant that IS load-bearing and gated: SynthesisFilter must never
+        accept a candidate from a should-reject tier (sanity_fail, trivial,
+        noise, noise_borderline, interesting_known) — a false positive here
+        means real garbage would enter the synthesis_results audit queue.
         """
         candidates_data = _load_calibration_candidates()
         store = _build_mock_store()
@@ -433,7 +441,17 @@ class TestSynthesisCalibration:
                       f"template={r['template_sim']:.2f}")
 
         print("\n" + "=" * 80)
-        assert True  # diagnostic — always passes
+
+        # Load-bearing invariant: zero false positives. Every should-reject
+        # tier candidate (52 of them: sanity_fail/trivial/noise/
+        # noise_borderline/interesting_known) must come out REJECTED —
+        # accepting any of them would let known-bad connections reach the
+        # synthesis_results audit queue. Recall on interesting_novel is
+        # reported above but not asserted (see docstring).
+        assert len(fp) == 0, (
+            f"SynthesisFilter accepted {len(fp)} should-reject candidate(s): "
+            + ", ".join(f"{r['concept_a']} <-> {r['concept_b']} (tier={r['tier']})" for r in fp)
+        )
 
     @pytest.mark.asyncio
     async def test_fixture_structure_valid(self, mock_faiss):

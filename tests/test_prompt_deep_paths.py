@@ -139,17 +139,15 @@ async def test_build_prompt_with_wiki_retrieval(prompt_builder):
 
 @pytest.mark.asyncio
 async def test_build_prompt_with_facts(prompt_builder, memory_coordinator):
-    """Test build_prompt includes facts when available."""
-    # Try to add a fact through the chroma store
-    try:
-        await memory_coordinator.chroma_store.add_fact(
-            fact="Python was created by Guido van Rossum",
-            source="test",
-            confidence=0.9
-        )
-    except Exception:
-        # Fact storage may require specific setup
-        pass
+    """A fact stored directly in the chroma 'facts' collection is available
+    to build_prompt. add_fact is a synchronous method (not a coroutine) —
+    the original `await`ed call always raised TypeError and was masked."""
+    fact_id = memory_coordinator.chroma_store.add_fact(
+        fact="Python was created by Guido van Rossum",
+        source="test",
+        confidence=0.9
+    )
+    assert isinstance(fact_id, str) and fact_id
 
     result = await prompt_builder.build_prompt(
         user_input="Who created Python?",
@@ -162,14 +160,12 @@ async def test_build_prompt_with_facts(prompt_builder, memory_coordinator):
 
 @pytest.mark.asyncio
 async def test_build_prompt_with_reflections(prompt_builder, memory_coordinator):
-    """Test build_prompt includes reflections."""
-    # Add reflection
-    try:
-        await memory_coordinator.add_reflection(
-            text="User prefers concise technical explanations"
-        )
-    except Exception:
-        pass
+    """A stored reflection persists (add_reflection returns True) and
+    build_prompt still succeeds with it present."""
+    stored = await memory_coordinator.add_reflection(
+        text="User prefers concise technical explanations"
+    )
+    assert stored is True
 
     result = await prompt_builder.build_prompt(
         user_input="Explain recursion",
@@ -230,7 +226,9 @@ async def test_build_prompt_with_very_long_query(prompt_builder):
 
 @pytest.mark.asyncio
 async def test_build_prompt_multiple_calls(prompt_builder, memory_coordinator):
-    """Test multiple build_prompt calls in sequence."""
+    """Multiple sequential build_prompt calls each succeed and each produce a
+    populated context dict — internal builder state does not corrupt across
+    repeated calls."""
     # Add memory
     await memory_coordinator.store_interaction("Q1", "A1")
 
@@ -239,8 +237,9 @@ async def test_build_prompt_multiple_calls(prompt_builder, memory_coordinator):
     result2 = await prompt_builder.build_prompt(user_input="Query 2", model_name="gpt-4")
     result3 = await prompt_builder.build_prompt(user_input="Query 3", model_name="gpt-4")
 
-    assert all(isinstance(r, dict) for r in [result1, result2, result3])
-    assert True  # Results exist
+    for result in (result1, result2, result3):
+        assert isinstance(result, dict)
+        assert "recent_conversations" in result or "memories" in result
 
 
 @pytest.mark.asyncio
