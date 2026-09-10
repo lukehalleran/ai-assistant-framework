@@ -11,15 +11,16 @@ proposed hunk is recorded at the end of this doc's companion entry in
 `PLAN_20260909_audit_repairs.md` for Fable to merge.
 
 All commands below assume the repo root (so `python` resolves to the
-project's pyenv 3.11.8) and use the same env the CI job and this batch's
-verification runs used:
+project's pyenv 3.11.8) and use the env this batch's verification runs
+used (CI itself sets only `OPENAI_API_KEY` and `CHROMA_DEVICE`; the two
+`*_OFFLINE` vars are a local convenience that stops HF network lookups):
 
 ```bash
 DAEMON_TEST_MODE=1 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 \
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 ```
 
-## 1. `.github/workflows/tests.yml` — 17 `--ignore` entries
+## 1. `.github/workflows/tests.yml` — the former 17 `--ignore` entries (REMOVED in 52a7fbb, 2026-09-09)
 
 **Verification done today (2026-09-09):** all 17 files were run together,
 unignored, under the exact marker filter CI uses
@@ -45,7 +46,8 @@ methods") is itself now stale: whatever removed methods these referenced in
 May have since been fixed forward, and the CI ignore list was never pruned.
 None of the 17 needs product code changed by this finding — the fix is
 removing the ignore lines (see "CI hunk for Fable to merge" in the plan
-doc), which is exactly what B4 is mid-edit on, so it is not applied here.
+doc), which B4 applied in commit 52a7fbb (2026-09-09); CI has run green with
+zero `--ignore`s since.
 
 | # | File | Owning subsystem | Current status (2026-09-09) | Fast replacement if still excluded |
 |---|---|---|---|---|
@@ -67,7 +69,7 @@ doc), which is exactly what B4 is mid-edit on, so it is not applied here.
 | 16 | `tests/test_wizard.py` | `gui/wizard.py` first-run flow | PASS (37 tests) | none |
 | 17 | `tests/unit/test_cross_deduplicator.py` | `memory/cross_deduplicator.py` contradiction-arm safety | PASS (55 tests) | none full |
 
-**Recommendation:** remove all 17 lines (see the plan doc's CI hunk). None
+**Recommendation (DONE in 52a7fbb):** all 17 lines removed. None
 are a model-download, live-store, or genuinely-slow lane — they are unit-
 shaped tests over real-but-cheap fixtures (ephemeral Chroma, tmp paths,
 mocked providers) that happen to have been swept into a blanket exclusion
@@ -114,11 +116,11 @@ default collection without a marker exclusion.
 **Fast CI lane (what runs on every push):**
 `.github/workflows/tests.yml` → `python -m pytest -q -m "not slow and not
 benchmark and not semantic" --tb=short` over `testpaths = tests` (from
-`pytest.ini`) minus the 4 `pytest.ini` ignores and the 17 CI-only ignores
-above (§1's recommendation is to drop those 17). This lane also runs the
-privacy guard, `ruff check .`, and (separately) `web/`'s `npm run
-typecheck`/build — there is currently no frontend *behavior*-test step
-(T09's gap; B4's responsibility).
+`pytest.ini`) minus the 4 `pytest.ini` ignores (the 17 CI-only ignores are gone since
+52a7fbb). This lane also runs the privacy guard, `ruff check .`, and a
+separate `frontend` job: `npm run typecheck` then `npm test` (the Vitest
+behaviour lane B4 added for F07/T09); there is no `npm run build` step
+in CI.
 
 **The five repo-wide guards** (must be green before every push per
 `docs/DEVELOPMENT_WORKFLOW.md` §7.1, and are always included in
@@ -168,9 +170,31 @@ systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=512M \
   python -m pytest -q -m "not slow and not benchmark and not semantic" tests/ \
   --ignore=tests/unit
 ```
-(`hooks/pre-push`'s own `PREPUSH_FULL=1` path uses the same wrapper at
-`MemoryMax=6G` for its **unit-only** re-run — a tighter cap because it runs
-alongside an already-running push, not as the dedicated non-unit batch.)
+**`hooks/pre-push` and the cap (corrected 2026-09-10):** the hook runs
+BOTH its selections — the changed-files-in-the-push-range selection and the
+optional `PREPUSH_FULL=1` unit re-run — under the same `MemoryMax=6G`
+wrapper, in ONE pytest process. The changed-files selection is not unit-only:
+it is whatever test files the push range touched, plus the five guards, plus
+the same-named test of every changed source file (T14 mapping). When the
+push range touches non-unit test files, that selection IS a non-unit batch
+under a cap 2 GiB below the one this section documents, and it gets
+SIGKILLed with no test failure. Observed 2026-09-10 pushing the T01 repair
+(10 non-unit files + 5 guards + 9 unit files, 24 in all): killed at ~40%
+("Killed … pre-push: BLOCKED — tests"); the same 10 non-unit files + guards
+alone peak at 5.97 GB RSS under 6G (killed near test 215/307, inside
+`test_memory_coordinator_methods.py`/`test_memory_deep_integration.py`) and
+pass under the documented 8G cap (305 passed / 1 skipped / 1 xfailed, peak
+7.1 GB, 3 min — `~/daemon_checkpoints/prepush_nonunit_8G_20260910.txt`).
+The unit remainder of that selection (incl. the CLIP-loading
+`test_visual_memory_pipeline.py`/`test_clip_manager.py`, which the T14 mapping
+pulls in even though the hook's own `PREPUSH_FULL` path ignores the former)
+peaked at 1.3 GB — the non-unit files are the cost, not CLIP. Until the hook
+is changed (follow-up: raise its cap to 8G to match §3, and skip
+ignore-listed files in the mapping), a push range containing non-unit test
+files must be verified by hand — Daemon down, the hook's exact selection
+under the 8G wrapper above, output under `~/daemon_checkpoints/` — and then
+pushed with `SKIP_PREPUSH=1 git push`, citing that output file in the
+handoff/commit. Never bypass on a green-by-assertion.
 
-**Eval suite** (`tests/test_eval/`, 246 tests per `docs/METRICS_SNAPSHOT.md`)
+**Eval suite** (`tests/test_eval/`, 246 tests by collect-only on 2026-09-10; not broken out in `docs/METRICS_SNAPSHOT.md`)
 is unmarked and unignored — already part of the fast lane above.

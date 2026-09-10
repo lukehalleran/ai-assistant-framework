@@ -1,8 +1,9 @@
 """Destructive git command classifier for agent session safety.
 
 Purpose: Classify git argument lists as safe or destructive, and check
-whether an explicit unlock is in effect. Used by safe_git.sh logic and
-by tests.
+whether an explicit unlock is in effect. Used by utils/python_fs_guard.py
+(`unlock_allowed`) and by tests; scripts/safe_git.sh applies the same
+classification natively in bash rather than importing this module.
 
 Inputs:  Git argument list (after 'git'), optional env dict / repo root.
 Outputs: Classification dict, boolean destructive check, unlock status.

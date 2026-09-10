@@ -6,7 +6,7 @@
 # Install:
 #   ln -s ../../hooks/pre-push .git/hooks/pre-push
 #
-# Checks, in order (each mirrors a step of .github/workflows/tests.yml):
+# Checks, in order (1-3 mirror steps of .github/workflows/tests.yml; 0 is local-only):
 #   0. the pushed commit IS the tree being tested: no modified tracked files,
 #      no untracked *.py (a test file you forgot to `git add` passes here and
 #      is missing on the runner)
@@ -15,9 +15,12 @@
 #   2. ruff check .
 #   3. pytest: every test file changed in the push range + the repo-wide
 #      guard tests (never in a module-scoped local selection)
-#   PREPUSH_FULL=1 additionally runs the whole CI fast selection (tests/unit
-#      only when a Daemon is running — the non-unit remainder needs the
-#      daemon down and a memory cap, see docs/DEVELOPMENT_WORKFLOW.md §3).
+#   PREPUSH_FULL=1 additionally runs the CI marker filter over tests/unit ONLY
+#      (the non-unit remainder needs the daemon down and the 8G cap, see
+#      docs/DEVELOPMENT_WORKFLOW.md §3). Both pytest runs execute in ONE
+#      process under MemoryMax=6G; a push range that touches non-unit test
+#      files exceeds that (docs/TEST_LANES.md §4) — verify by hand, then
+#      SKIP_PREPUSH=1.
 # Bypass (leave a note in the commit or handoff when you do):
 #   SKIP_PREPUSH=1 git push
 
@@ -134,10 +137,6 @@ if [ "${PREPUSH_FULL:-}" = "1" ]; then
   echo "pre-push: PREPUSH_FULL=1 — running the CI fast selection on tests/unit"
   "${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
     -m "not slow and not benchmark and not semantic" tests/unit \
-    --ignore=tests/unit/test_memory_coordinator_methods.py \
-    --ignore=tests/unit/test_visual_memory_pipeline.py \
-    --ignore=tests/unit/test_context_pipeline.py \
-    --ignore=tests/unit/test_cross_deduplicator.py \
     || fail "tests/unit"
 fi
 

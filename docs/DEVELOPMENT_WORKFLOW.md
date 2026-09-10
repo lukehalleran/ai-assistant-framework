@@ -130,7 +130,14 @@ Principles:
    the repo root (git against a `tmp_path` repo stays allowed), and
    `hooks/pre-push` (installed as `.git/hooks/pre-push`) refuses a push from a
    dirty tracked tree or with untracked `.py` files, then mirrors the CI privacy
-   guard and ruff and runs the changed test files + the five repo-wide guards.
+   guard and ruff and runs the changed test files + the five repo-wide guards
+   — in one pytest process under `MemoryMax=6G`, 2 GiB below the §3 cap the
+   non-unit batch needs. A push range that touches non-unit test files
+   therefore gets SIGKILLed, not failed (2026-09-10: the T01 repair push, 24
+   files, killed at ~40%; the ten non-unit files alone peak at 5.97 GB under
+   6G and pass under 8G at 7.1 GB). For such a push: Daemon down, run the
+   hook's selection by hand under the 8G wrapper with durable output, then
+   `SKIP_PREPUSH=1 git push` citing that output (`docs/TEST_LANES.md` §4).
    Failed-before evidence is a recorded result in the handoff doc, never an
    assertion. The only way to make a red push literally impossible is GitHub
    branch protection with the Tests check required on `master` (direct pushes
@@ -205,8 +212,9 @@ OWNER        anything only the owner may do (commit, apply, restart, credentials
 The loop above works; the eight-day review found the gaps in cadence and
 batch size, not in the loop.
 
-1. **Nightly full test suite.** The last full run was 2026-08-03; every
-   batch since ran targeted suites, and the 2026-09-05 audit found two
+1. **Nightly full test suite.** Full runs are rare (2026-08-03, then
+   2026-09-07 — the `docs/METRICS_SNAPSHOT.md` date, 0 failures); the
+   batches between ran targeted suites, and the 2026-09-05 audit found two
    regressions introduced by the previous day. Add a scheduled run (systemd
    timer or a scheduled GitHub Actions job) in the memory-capped batches;
    a red result blocks the next batch. CI on push covers only what was

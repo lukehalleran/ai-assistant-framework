@@ -7,7 +7,7 @@
 [![Tests](https://img.shields.io/badge/tests-9%2C213-brightgreen.svg)](#testing)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
-> ~245K lines of Python (≈188K code) across 760 files | 14 ChromaDB collections | ~7,800 tests | 21 agentic tools | solo-built part-time over ~15 months
+> ~276K lines of Python (≈212K code) across 862 files | 14 ChromaDB collections | 9,213 tests | 23 agentic tool types (22 in-loop) | solo-built part-time over ~15 months
 
 Daemon is built around persistent memory, evaluated retrieval, knowledge-graph context, agentic tools, and experimental literature-backed synthesis. It stores your memory locally, retrieves context through a multi-stage RAG pipeline, tracks fact truth and staleness over time, and supports human-gated self-improvement through structured code proposals and isolated agent-branch experiments.
 
@@ -22,7 +22,7 @@ It is a stateful agent architecture, not a chatbot wrapper: every query passes t
 - **Persistent hierarchical memory** across **14 ChromaDB collections** (episodic, semantic, procedural, summary, meta, synthesis)
 - **Evaluated multi-stage RAG** — intent-parameterized scoring, **20+ parallel retrieval tasks**, multi-stage gating (~200ms), cross-encoder rerank; **retrieval benchmarks gate every scoring change** (versioned in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md); current numbers in [METRICS_SNAPSHOT.md](docs/METRICS_SNAPSHOT.md))
 - **Knowledge-graph reasoning** (NetworkX) with entity alias resolution, BFS query expansion, and graph-boosted scoring
-- **ReAct agentic tool loop** — **21 tools** (web, sandbox, memory, files, git/github, academic search, image recall, document generation, action proposals, contact lookup) with a context inventory that prevents redundant searches
+- **ReAct agentic tool loop** — **22 in-loop tools** (web, sandbox, memory, files, git/github, academic search, email search, pattern scan, self-notes, document generation, action proposals, contact lookup; image recall is a 23rd dispatch type kept out of the loop) with a context inventory that prevents redundant searches
 - **Literature-backed synthesis** — narrows a large conceptual space into evidence-backed *candidate* connections and validates them against independent corpora (candidates, not discoveries)
 - **Human-gated self-improvement** — structured code proposals + isolated agent-branch experiments; the machine may propose and evaluate, **only a human may merge**
 - **Prompt-section ablation eval system** — snapshot, replay, variant generation, blind pairwise judging, objective checks
@@ -63,14 +63,14 @@ The entire agent is [formally modeled](docs/FORMAL_MODEL.md) as a composition of
 
 ### Agentic tool system (ReAct loop)
 
-When a query needs more than stored memory, Daemon enters a multi-round ReAct loop with **21 tools**:
+When a query needs more than stored memory, Daemon enters a multi-round ReAct loop with **22 in-loop tools** (23 dispatch-table types; image recall is excluded from the loop to save API credits):
 
 | Group | Tools |
 |-------|-------|
 | **Knowledge** | Web search (Tavily), Wolfram Alpha, academic search (arXiv / PubMed / Hacker News / Stack Exchange), direct URL fetch |
-| **Memory** | Cross-collection memory search, memory expansion (chronological neighbors / summary drill-down), full-document reassembly, image recall (CLIP) |
+| **Memory** | Cross-collection memory search, memory expansion (chronological neighbors / summary drill-down), full-document reassembly, email search (Gmail / Outlook), pattern scan (deterministic aggregates), image recall (CLIP — dispatch type only, not offered in the loop) |
 | **Code & repo** | Python code sandbox (E2B microVMs), read-only git stats, read-only GitHub API, file read / grep / list (sandboxed) |
-| **Actions** | Research-and-save document generation, internet write-action *proposals* (human-approved), contact lookup (Google Contacts / Gmail) |
+| **Actions** | Research-and-save document generation, internet write-action *proposals* (human-approved), contact lookup (Google Contacts / Gmail), Daemon self-note creation |
 
 The agent receives a **context inventory** of what RAG already gathered, preventing redundant searches. A 4-tier agentic gate (keyword heuristic → knowledge-graph entity match → document/note intent → LLM fallback) decides when to enter the loop at all. Tool calls emitted as plain text or nested XML by proxied models are recovered rather than leaked into the answer.
 
@@ -176,7 +176,7 @@ User Query
     |                        (LLM summary + middle-out slicing); guaranteed recency floors
     |
     +- Agentic Tool Loop --- ReAct: Think -> Tool -> Observe -> Repeat (max 5 rounds)
-    |                        20 tools + context inventory to prevent redundant re-searches
+    |                        22 in-loop tools + context inventory to prevent redundant re-searches
     |
     +- Generation ---------- Standard streaming | Best-of-N | Duel (A vs B + judge) |
     |                        Multi-model ensemble with voter selection
@@ -228,7 +228,8 @@ export OPENAI_API_KEY=sk-your-key-here
 
 ### Launch
 ```bash
-python main.py        # GUI (recommended) -> http://localhost:7860
+python main.py        # Web UI (recommended) -> http://127.0.0.1:8000 (FastAPI + React SPA; Gradio dev tabs at /admin)
+python main.py --legacy-gui  # standalone Gradio -> http://localhost:7860
                       # remote launches: run inside tmux/screen or a systemd unit — a dropped SSH
                       # session sends SIGHUP, which now triggers the normal clean shutdown
 python main.py cli    # CLI mode
@@ -237,7 +238,9 @@ python main.py wizard # First-run onboarding wizard
 
 ### Docker
 ```bash
-docker-compose up -d   # -> http://localhost:7860
+docker-compose up -d   # OUT OF DATE: maps + healthchecks :7860 (legacy Gradio) while the default `gui`
+                       # command now serves FastAPI on 127.0.0.1:8000 inside the container —
+                       # docs/HANDOFF_20260909_audit_followups.md row 10
 ```
 
 ### Desktop executable
@@ -260,7 +263,7 @@ ln -s ../../hooks/pre-commit-privacy .git/hooks/pre-commit
 ln -s ../../hooks/pre-push .git/hooks/pre-push
 ```
 
-The pre-commit hook runs `gitleaks protect --staged` if installed and greps staged files against the privacy term list. The pre-push hook refuses to push what CI would reject: it requires a clean tracked tree (the pushed commit IS the tested tree), mirrors the CI privacy guard and `ruff check .`, and runs every test file changed in the push range plus the repo-wide guard tests (`PREPUSH_FULL=1` adds the whole `tests/unit` CI selection; `SKIP_PREPUSH=1` bypasses).
+The pre-commit hook runs `gitleaks git --pre-commit --redact --staged --verbose` if installed and greps staged files against the privacy term list. The pre-push hook refuses to push what CI would reject: it requires a clean tracked tree (the pushed commit IS the tested tree), mirrors the CI privacy guard and `ruff check .`, and runs every test file changed in the push range plus the repo-wide guard tests, in one pytest process under a 6 GiB memory cap (`PREPUSH_FULL=1` adds the whole `tests/unit` CI selection; `SKIP_PREPUSH=1` bypasses — required, with hand-run evidence, when the push range includes non-unit test files, which need the 8 GiB batch described in `docs/TEST_LANES.md` §4).
 
 ---
 
@@ -273,11 +276,11 @@ python -m pytest -m "not slow" -q            # Exclude slow tests
 python -m pytest --cov=. --cov-report=html   # With coverage
 ```
 
-> The default `pytest` run excludes integration tests and benchmarks via `pytest.ini`. Markers: `slow`, `semantic`, `benchmark`.
+> `pytest.ini` only `--ignore`s four broken-collection files and applies no marker filter, so a bare `pytest` also collects `tests/integration/` and `tests/benchmarks/`; use the CI filter `-m "not slow and not benchmark and not semantic"` to skip them. Markers: `slow`, `semantic`, `benchmark`.
 >
-> **CI runs a curated fast subset**, not the full suite: `.github/workflows/tests.yml` additionally `--ignore`s 17 heavyweight test files (model-loading / real-store integration tests) on top of the `pytest.ini` exclusions. The full suite runs locally in memory-capped batches (see `CLAUDE.md`); the badge above counts collected tests, not CI-executed tests.
+> **CI runs a curated fast subset**, not the full suite: `.github/workflows/tests.yml` runs that marker-filtered selection over the whole `tests/` tree with no extra `--ignore`s (the former 17-file CI ignore list was retired in 52a7fbb, 2026-09-09 — `docs/TEST_LANES.md` §1). The full suite runs locally in memory-capped batches (see `CLAUDE.md`); the badge above counts collected tests, not CI-executed tests.
 
-**7,444 tests across 344 test files** (exact live count in the badge above and `docs/METRICS_SNAPSHOT.md`; run `pytest --collect-only`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
+**9,213 tests across 434 test files** (exact live count in the badge above and `docs/METRICS_SNAPSHOT.md`; run `pytest --collect-only`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
 
 <!-- METRICS:BEGIN -->
 <!-- Generated by scripts/generate_doc_metrics.py — do not edit by hand. -->
@@ -387,7 +390,7 @@ core/                        # Request orchestration
 +-- context_pipeline.py      # Query analysis (tone, topic, intent, STM)
 +-- intent_classifier.py     # Regex-first intent classification (9 types)
 +-- escalation_tracker.py    # Crisis cooldown FSM (4 states)
-+-- agentic/                 # ReAct agentic tool loop (20 tools in-loop; 21-row dispatch table)
++-- agentic/                 # ReAct agentic tool loop (22 tools in-loop; 23-row dispatch table)
 +-- prompt/                  # Modular prompt system (builder + gatherer mixins + formatter)
 +-- actions/                 # Human-in-the-loop internet write actions
 
@@ -414,14 +417,14 @@ eval/                        # Prompt ablation & eval system
 
 agent_branch/                # Sandboxed, human-gated self-modification harness
 scripts/                     # Validation harnesses (synthesis_*, oracle, miner)
-tests/                       # 344 test files, ~7,400 tests
+tests/                       # 434 test files, 9,213 tests
 ```
 
 ---
 
 ## Prompt Architecture
 
-The prompt is assembled from **31 conditional sections**, ordered by transformer attention patterns (high-signal sections at the end). Default token budget **10,000** (floor 8K, ceiling 16K) with two-tier compression (LLM summary + middle-out slicing); the escalation FSM overrides the budget during crisis states. The stable personality/identity prefix is split at a cache breakpoint so per-turn churn doesn't invalidate prompt caching.
+The prompt is assembled from **31 conditional sections**, ordered by transformer attention patterns (high-signal sections at the end). Default token budget **10,000** (floor 8K, ceiling 16K) with two-tier compression (LLM summary + middle-out slicing); the escalation FSM overrides the model's *output* cap (`response_max_tokens`) during crisis states — the prompt-context budget itself has no escalation path. The stable personality/identity prefix is split at a cache breakpoint so per-turn churn doesn't invalidate prompt caching.
 
 ---
 
@@ -442,7 +445,7 @@ export WIKI_DATA_ROOT=~/daemon-wiki-data
 
 ## Configuration
 
-Central config: `config/config.yaml` (63 sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
+Central config: `config/config.yaml` (68 top-level sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
 
 ```yaml
 memory:
