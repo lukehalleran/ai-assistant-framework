@@ -57,6 +57,9 @@ capability row; it has no Daemon memory and no Codex context.
 ```
 turn dump / telemetry  →  root cause (read the code that ran, not a re-derivation)
   →  fix + regression test that calls THE deployed function
+  →  name the bug CLASS (docs/BUG_CLASSES.md); a new mechanism gets a new
+     entry with a Find method and a Closure, and its detector is run once
+     across the repo before the batch closes (sibling sites — BC-58)
   →  targeted suites green + ruff clean
   →  probe the deployed function live (read-only script, or a relayed Daemon turn)
   →  CLAUDE.md one-liner + CLAUDE_CHANGELOG.md narrative + memory note
@@ -143,6 +146,22 @@ Principles:
    branch protection with the Tests check required on `master` (direct pushes
    are then rejected; work lands via a branch and PR) — owner's call.
 
+7. **Two owner lines, always — a runner and a push.** The owner commits from
+   a phone. Every batch therefore ends with (a) a commit message file
+   `commit_message_<N>.txt` that the agent has re-read against the ACTUAL
+   staged scope (`git diff --stat` + the untracked list) right before handing
+   it over — never a message written earlier for a scope that has since
+   grown — and (b) ONE runner `~/daemon_checkpoints/commit_<batch>.sh` (or a
+   single `git add <exact files> && git commit -F commit_message_<N>.txt`
+   line) that: refuses to run unless HEAD is the expected short SHA; adds
+   exactly the batch's files by name (never `git add -A`, never gitignored
+   files — a runner that `git add`ed CLAUDE.md aborted mid-way on
+   2026-09-10); commits with `-F`; and ends with a clean-tree check. Line 1
+   is that runner. Line 2 is `git push` — separate, typed by the owner, never
+   chained into the runner (`SKIP_PREPUSH=1 git push` only when the handoff
+   cites the hand-run evidence, §3a.6). The agent's final message to the
+   owner shows exactly those two lines and nothing else to type.
+
 ## 4. Credit discipline
 
 The frontier tier is for judgment; the cheap tier is for execution. Default
@@ -185,6 +204,7 @@ or a block at the end of the session:
 
 ```
 STATE        what is on disk vs. what is committed vs. what the running Daemon has
+CLASS        the bug class(es) from docs/BUG_CLASSES.md (BC-nn), or "new: <mechanism>"
 ACTIONS      changes made, file:line, tests run and their counts
 PLANNED      numbered next steps with exact commands and acceptance checks
 CONTINGENCY  if step N fails → do this; stop and ask if …
@@ -260,6 +280,17 @@ batch size, not in the loop.
    pattern (every dispatch entry has a handler) should extend to cache
    keys, store adapters, and prompt-section metering: a second call site
    that drifts from the first must fail a test, not an audit.
+
+10. **Keep the bug-class catalog current and run its detectors.**
+   `docs/BUG_CLASSES.md` (started 2026-09-10 from the whole audit record: 72
+   classes, 26 detection methods, 14 closure methods) is the index every
+   audit starts from and every fix ends at: the commit body and changelog
+   line carry `class: BC-nn`; a fix with no matching mechanism adds a class;
+   an audit runs the detectors (DM-nn) for the families in scope BEFORE free
+   reading, so the same class is not rediscovered by dump. Status is
+   downgraded, never argued up. A periodic (weekly) detector sweep — the
+   grep/AST/telemetry methods, not a code read — is the cheap sensor that
+   finds a recurrence of a `partial`/`recurs` class before the owner does.
 
 ## 8. Anti-patterns observed (so they are recognisable)
 
