@@ -25,6 +25,7 @@ Module Contract
 import importlib
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.actions.types import ActionType
@@ -657,6 +658,25 @@ def resolve_forced_action(
     except ValueError:
         spec = None
 
+    # Calendar datetime SHAPE validation (2026-09-10, A2/BC-46): reject a
+    # bare-clock-time proposal ("15:00:00", no date component) BEFORE a
+    # card is minted — the executor's own ISO-8601 parse only fires
+    # post-approval, so a live forced round minted a card with
+    # start_time="15:00:00"/end_time="16:00:00" that failed only after the
+    # user clicked Approve ("Calendar event 1 has an invalid ISO 8601
+    # start/end time"). Runs regardless of forced/unforced and of which
+    # action_type claims the params — the check only inspects
+    # start_time/end_time/events keys, so a non-calendar payload is a no-op.
+    _shape_bad = calendar_datetime_shape_errors(params)
+    if _shape_bad:
+        return None, None, (
+            ", ".join(_shape_bad) + " must be a full ISO 8601 date+time "
+            "(YYYY-MM-DDTHH:MM:SS), not a bare clock time — resolve any "
+            "stated weekday/relative time (e.g. 'Tuesdays at 3') to the "
+            "next matching date from the [AUTHORITATIVE RUNTIME CLOCK] "
+            "before proposing."
+        )
+
     # Referee tightening (Fable, 2026-09-09): inside a forced round a
     # DIFFERENT action_type is never accepted as-is, even when its own spec
     # is satisfied — a well-formed calendar_create_event in a forced
@@ -823,7 +843,17 @@ def _pool_hours(pool: str) -> set:
 
 
 def _iso_clock(value: Any) -> Optional[Tuple[int, int]]:
-    m = re.search(r"T(\d{2}):(\d{2})", str(value or ""))
+    """Extract (hour, minute) from an ISO datetime OR a bare clock time.
+
+    2026-09-10 (A2/BC-46): a "T"-anchored match alone let a shape-invalid
+    bare "15:00:00" (no date component at all) silently SKIP the
+    content-grounding check below (``clk is None`` short-circuited it) —
+    the malformed proposal cleared grounding by accident and only failed
+    later at the executor. Dropping the "T" requirement still lands on the
+    same HH:MM digits for a full ISO string (dates use "-", never ":"), so
+    a real ISO value is unaffected.
+    """
+    m = re.search(r"(\d{2}):(\d{2})", str(value or ""))
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
@@ -847,6 +877,330 @@ def calendar_times_ungrounded(params: Dict[str, Any], pool_text: str) -> list:
                 continue
             bad.append(f"{key}={ev.get(key)}")
     return bad
+
+
+# ---------------------------------------------------------------------------
+# Calendar datetime SHAPE validation + weekday/time backfill (2026-09-10, A2)
+# ---------------------------------------------------------------------------
+# Live incident: a forced calendar_create_event round proposed
+# start_time="15:00:00"/end_time="16:00:00" (no date component at all) —
+# `_action_params_complete`/`accepts_params` only check that the required
+# fields are non-empty STRINGS, so the card was minted and only failed at
+# the executor ("Calendar event 1 has an invalid ISO 8601 start/end time"),
+# after the user had already clicked Approve. `calendar_datetime_shape_errors`
+# catches this at PROPOSAL time — wired into `resolve_forced_action` above,
+# the single acceptance chokepoint every propose_action call (forced or not)
+# passes through.
+_FULL_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def calendar_datetime_shape_errors(params: Dict[str, Any]) -> list:
+    """Return the proposed calendar start/end fields that are NOT a full ISO
+    8601 date+time ("YYYY-MM-DDTHH:MM[:SS]") — e.g. a bare clock time like
+    "15:00:00" with no date component. All-day events (date-only, no clock
+    expected) and non-calendar payloads (no start_time/end_time/events keys)
+    are exempt — this is a pure shape check, independent of whether the
+    clock time is grounded in the request (see calendar_times_ungrounded)."""
+    items = params.get("events") if isinstance(params.get("events"), list) else [params]
+    bad: list = []
+    for ev in items:
+        if not isinstance(ev, dict) or ev.get("all_day") in (True, "true", "True"):
+            continue
+        for key in ("start_time", "end_time"):
+            value = ev.get(key)
+            if value in (None, ""):
+                continue
+            if not _FULL_ISO_DATETIME_RE.match(str(value).strip()):
+                bad.append(f"{key}={value}")
+    return bad
+
+
+def _current_wall_clock() -> datetime:
+    """Now(), in the user's configured timezone — a dedicated function so
+    tests can pin the clock deterministically (monkeypatch THIS, never
+    datetime.now directly)."""
+    try:
+        from utils.timezone_resolver import get_user_timezone
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(get_user_timezone()))
+    except Exception:
+        return datetime.now()
+
+
+_WEEKDAY_NAMES: Dict[str, int] = {
+    "monday": 0, "mondays": 0, "mon": 0,
+    "tuesday": 1, "tuesdays": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wednesdays": 2, "wed": 2,
+    "thursday": 3, "thursdays": 3, "thu": 3, "thur": 3, "thurs": 3,
+    "friday": 4, "fridays": 4, "fri": 4,
+    "saturday": 5, "saturdays": 5, "sat": 5,
+    "sunday": 6, "sundays": 6, "sun": 6,
+}
+_WEEKDAY_TIME_RE = re.compile(
+    r"\b(?P<day>" + "|".join(_WEEKDAY_NAMES.keys()) + r")\b"
+    r"[^.?!]{0,20}?\bat\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?"
+    r"\s*(?P<ap>a\.?m\.?|p\.?m\.?)?",
+    re.IGNORECASE,
+)
+_THROUGH_DATE_RE = re.compile(
+    r"\b(?:through|until|till|thru)\s+(?P<date>[A-Za-z]+\.?\s+\d{1,2}(?:st|nd|rd|th)?)\b",
+    re.IGNORECASE,
+)
+
+
+def resolve_weekday_time(query: str) -> Dict[str, str]:
+    """Deterministic backfill for a calendar-create request naming a weekday
+    + clock time with no explicit date ("Tuesdays at 3") — resolves to the
+    NEXT occurrence of that weekday from the authoritative wall clock
+    (_current_wall_clock), a 1-hour default duration, and a weekly RRULE
+    when the request also says "through <date>" (UNTIL = the resolved
+    date). Returns {} when the query has no weekday+time match — callers
+    merge this into whatever fields the model already supplied without
+    overwriting a value it provided.
+
+    A bare small hour with no am/pm ("at 3") defaults to the afternoon,
+    matching the deployed grounding heuristic's own ambiguous-hour
+    convention (`_add_hour` grounds both readings when unstated) — "at 3"
+    in a scheduling request never means 03:00.
+    """
+    if not query:
+        return {}
+    m = _WEEKDAY_TIME_RE.search(query)
+    if not m:
+        return {}
+    weekday = _WEEKDAY_NAMES.get((m.group("day") or "").lower())
+    if weekday is None:
+        return {}
+    hour = int(m.group("hour"))
+    minute = int(m.group("minute") or 0)
+    ap = (m.group("ap") or "").lower().replace(".", "")
+    if ap == "pm" and hour < 12:
+        hour += 12
+    elif ap == "am" and hour == 12:
+        hour = 0
+    elif not ap and 1 <= hour <= 7:
+        hour += 12
+    if hour > 23 or minute > 59:
+        return {}
+
+    now = _current_wall_clock()
+    days_ahead = (weekday - now.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    start_date = (now + timedelta(days=days_ahead)).date()
+    start = datetime(start_date.year, start_date.month, start_date.day, hour, minute)
+    end = start + timedelta(hours=1)
+    out: Dict[str, str] = {
+        "start_time": start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "end_time": end.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+    tm = _THROUGH_DATE_RE.search(query)
+    if tm:
+        from utils.temporal_resolver import resolve_date_expression
+        iso_date, _basis, _conf = resolve_date_expression(
+            tm.group("date"), reference_date=now.replace(tzinfo=None)
+        )
+        if iso_date:
+            out["recurrence"] = f"RRULE:FREQ=WEEKLY;UNTIL={iso_date.replace('-', '')}"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Forced-round resolved-fields prompt note (2026-09-10, round 2, A5)
+# ---------------------------------------------------------------------------
+# Live: a forced calendar_create_event round for "put a recurring calendar
+# event ... Tuesdays at 3, through Dec 4" ASKED "how long does the study
+# group run?" and never proposed. `resolve_weekday_time`'s output was only
+# ever applied to the DECISION the model had already returned (a post-hoc
+# backfill) — the model itself never saw the resolved start/end/recurrence
+# and treated end_time (and even the date) as unstated. Rendering the
+# resolved fields directly in the forced-round prompt lets the model
+# propose immediately instead of asking for something the request already
+# determined.
+def resolved_fields_note(query: str) -> str:
+    """[RESOLVED FIELDS] block for a forced calendar_create_event round —
+    the deterministic weekday+clock-time backfill rendered as prompt text,
+    not just a post-decision backfill. Empty string when `query` has no
+    weekday+clock-time match (``resolve_weekday_time`` returns ``{}``);
+    callers append this only when it is non-empty."""
+    wd = resolve_weekday_time(query)
+    if not wd:
+        return ""
+    fields = [
+        f"start_time={wd['start_time']}",
+        f"end_time={wd['end_time']} (default 1 h — do NOT ask for duration)",
+    ]
+    if wd.get("recurrence"):
+        fields.append(f"recurrence={wd['recurrence']}")
+    return (
+        "[RESOLVED FIELDS] " + ", ".join(fields) + ". These are already "
+        "computed from the request — propose NOW; ask only if the "
+        "DATE/DAY is missing."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resolution-grounded calendar times (2026-09-11, round 6, A22)
+# ---------------------------------------------------------------------------
+# Live: a forced round for "put a recurring calendar event ... Tuesdays at
+# 3, through Dec 4" proposed start_time=2026-09-15T15:00:00
+# end_time=2026-09-15T16:00:00 — EXACTLY resolve_weekday_time's own output,
+# rendered to the model as [RESOLVED FIELDS] — and the pool-text grounding
+# check (calendar_times_ungrounded — nothing in the four most recent turns
+# by the time the model proposed literally said "4 pm"/"16:00") declined
+# end_time as an invented guess. The check doesn't recognize its OWN
+# resolution: the 16:00 default is the SYSTEM's arithmetic, not a model
+# guess, and a proposal that matches it exactly is never worse than no
+# card.
+def ground_calendar_params_by_resolution(
+    params: Dict[str, Any], query: str, pool_text: str
+) -> Tuple[Dict[str, Any], list, list]:
+    """Ground (or replace) a calendar_create_event proposal's start/end
+    clock times against the deterministic weekday+clock-time resolution of
+    ``query`` (``resolve_weekday_time``), BEFORE ``calendar_times_ungrounded``
+    (left unchanged — this function is the sole caller-side companion, not
+    a change to it) gets the final say against ``pool_text``.
+
+    Three-tier rule, checked per start_time/end_time (all-day events and
+    non-calendar payloads pass through untouched, same exemptions as
+    ``calendar_times_ungrounded``):
+
+    1. A value that EXACTLY equals ``resolve_weekday_time(query)``'s
+       corresponding field is grounded BY CONSTRUCTION — it is the
+       system's own arithmetic, not a guess, so it is never reported in
+       ``still_bad`` even when ``pool_text`` happens not to literally
+       restate it (round-6 probe 2's exact incident).
+    2. Otherwise, when ``calendar_times_ungrounded`` says the value is NOT
+       grounded in ``pool_text`` (the existing pool-text check — a value
+       that IS separately grounded there, e.g. an explicit different
+       duration mentioned elsewhere in the conversation, is left alone
+       untouched) AND the request resolves at all for that field, the
+       value is REPLACED with the resolved one (the same "replace a
+       model-supplied value that doesn't hold up" rule
+       ``_backfill_fill_keys`` already applies to a shape-invalid bare
+       clock time) — ``replaced_keys`` names each field replaced this way
+       as ``(label, old_value, new_value)`` so the caller can log exactly
+       what changed (``label`` is ``"start_time"``/``"end_time"``, or
+       ``"events.<i>.start_time"``/``"events.<i>.end_time"`` for a batch).
+    3. Otherwise (pool-ungrounded AND no resolution for that field at all
+       — ``resolve_weekday_time(query)`` returned ``{}``, or resolved a
+       different field only) the value is left untouched and reported in
+       ``still_bad`` in the exact ``calendar_times_ungrounded`` shape
+       (``"<key>=<value>"``) — the original guessed-17:00 narration
+       incident (no weekday+time anywhere in the request) still declines.
+
+    Returns ``(params, replaced_keys, still_bad)``. ``params`` is a NEW
+    dict — the input is never mutated in place, and a batch's per-event
+    dicts are copied too. ``still_bad`` is the authoritative reject list:
+    the caller declines the action iff it is non-empty; grounded-by-
+    construction and replaced fields are both excluded from it.
+    """
+    new_params: Dict[str, Any] = dict(params or {})
+    if isinstance(new_params.get("events"), list):
+        items = [dict(ev) if isinstance(ev, dict) else ev for ev in new_params["events"]]
+        new_params["events"] = items
+        batch = True
+    else:
+        items = [new_params]
+        batch = False
+
+    wd = resolve_weekday_time(query)
+    replaced_keys: list = []
+    still_bad: list = []
+    for idx, ev in enumerate(items):
+        if not isinstance(ev, dict) or ev.get("all_day") in (True, "true", "True"):
+            continue
+        for key in ("start_time", "end_time"):
+            value = ev.get(key)
+            if value in (None, ""):
+                continue
+            resolved = wd.get(key)
+            if resolved and str(value) == str(resolved):
+                continue  # grounded by construction (tier 1)
+            if not calendar_times_ungrounded({key: value}, pool_text):
+                continue  # grounded via the pool text itself, untouched
+            label = f"events.{idx}.{key}" if batch else key
+            if resolved:
+                ev[key] = resolved
+                replaced_keys.append((label, value, resolved))
+            else:
+                still_bad.append(f"{key}={value}")
+    return new_params, replaced_keys, still_bad
+
+
+# ---------------------------------------------------------------------------
+# Deterministic calendar-title extraction (2026-09-10, round 3, A11)
+# ---------------------------------------------------------------------------
+# Live: a forced calendar_create_event round AND its one retry both produced
+# no action marker for "put a recurring calendar event ... for the MGT study
+# group, Tuesdays at 3, through Dec 4" — the loop silently gave up and the
+# final synthesis narrated a queue that never happened. When the request's
+# own weekday+clock-time is resolvable (resolve_weekday_time) AND a title is
+# extractable, the controller mints the proposal itself rather than let a
+# model that has already declined twice keep declining. Word-bounded, capped
+# at 8 words; empty when nothing plausible is found (callers require BOTH
+# this and resolve_weekday_time before falling back).
+_CALENDAR_TITLE_FOR_RE = re.compile(
+    r"\bfor\s+(?:the\s+)?(?P<title>[A-Za-z0-9][\w&'/-]*(?:\s+[A-Za-z0-9][\w&'/-]*){0,7})",
+    re.IGNORECASE,
+)
+_CALENDAR_TITLE_TRAILING_STOP_RE = re.compile(
+    r"\b(?:at|every|through|until|till|starting|"
+    r"mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?)\b",
+    re.IGNORECASE,
+)
+_CALENDAR_TITLE_LEADING_STOP = frozenset({
+    "please", "put", "add", "create", "schedule", "queue", "book", "make",
+    "a", "an", "the", "recurring", "repeating", "calendar", "event", "events",
+    "my", "google", "for", "just", "on",
+})
+_CALENDAR_TITLE_ON_CALENDAR_RE = re.compile(
+    r"\bon\s+(?:my|your|the)\s+(?:google\s+)?calendar\b", re.IGNORECASE)
+_CALENDAR_TITLE_MAX_WORDS = 8
+
+
+def extract_calendar_title(query: str) -> str:
+    """Deterministic (title-)extraction: prefers the "for (the) X" clause
+    ("for the MGT study group" -> "MGT study group"); falls back to
+    stripping known leading verb/filler tokens from the request and taking
+    what remains ("the professor office hours" -> "professor office hours").
+    A trailing schedule clause (a comma, or a weekday/at/every/through/
+    until/till/starting cue) is cut off either way. Returns "" when no
+    plausible title remains.
+    """
+    text = (query or "").strip()
+    if not text:
+        return ""
+    m = _CALENDAR_TITLE_FOR_RE.search(text)
+    if m:
+        title = m.group("title")
+        title = re.split(r",", title, maxsplit=1)[0]
+        stop = _CALENDAR_TITLE_TRAILING_STOP_RE.search(title)
+        if stop:
+            title = title[:stop.start()]
+        title = title.strip()
+        if title:
+            return title
+    # "... on my/your/the (google) calendar" trailing tail (2026-09-10
+    # round 3 test fix): a bare noun-phrase request often ends by naming
+    # the calendar itself, not part of the event's own title.
+    head = _CALENDAR_TITLE_ON_CALENDAR_RE.split(text, maxsplit=1)[0]
+    head = re.split(r",", head, maxsplit=1)[0]
+    words = re.findall(r"[A-Za-z0-9][\w'&/-]*", head)
+    i = 0
+    while i < len(words) and words[i].lower() in _CALENDAR_TITLE_LEADING_STOP:
+        i += 1
+    title_words = words[i:i + _CALENDAR_TITLE_MAX_WORDS]
+    # Drop a trailing schedule word inside the remaining window too.
+    out: list[str] = []
+    for w in title_words:
+        if _CALENDAR_TITLE_TRAILING_STOP_RE.fullmatch(w):
+            break
+        out.append(w)
+    return " ".join(out).strip()
 
 
 def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
@@ -964,6 +1318,38 @@ _HEAD_FILLER_RE = re.compile(
 )
 
 
+# Self-contained-request guard (2026-09-10, A1): a clause longer than a
+# terse go-ahead that ALSO names something concrete ("a recurring calendar
+# event … for the MGT study group") is a fully-specified request in its own
+# right, not an accept of whatever the prior turn already offered — live:
+# "put a recurring calendar event on my google calendar for the MGT study
+# group, Tuesdays at 3, through Dec 4" matched the go-ahead directive shape
+# (head-anchored "put") and forced whatever action type the PRIOR reply's
+# narration implied, right only by coincidence. Words below length 4 and
+# this stoplist (pronoun/placeholder objects, ack fillers, function words,
+# and the directive verbs themselves — accepting isn't NEW content) never
+# count as "an object noun"; anything else does.
+_OFFER_FILLER_WORDS = frozenset({
+    "it", "that", "this", "them", "both", "all", "one", "ones", "other",
+    "others", "first", "second", "third", "last",
+    "please", "now", "then", "too", "also", "just", "go", "ahead", "okay",
+    "yeah", "sure", "right", "well",
+    "the", "and", "for", "me", "us", "of", "to", "on", "in", "at", "with",
+    "is", "are", "was", "be",
+    "create", "add", "make", "schedule", "book", "put", "send", "post",
+    "open", "file", "do", "fire", "queue", "proceed", "confirm", "approve",
+})
+_OFFER_AFFIRM_OBJECT_NOUN_MAX_WORDS = 8
+
+
+def _clause_has_object_noun(clause: str) -> bool:
+    """True when ``clause`` names something beyond a generic pronoun
+    placeholder or ack filler — signals a self-contained request rather
+    than a terse accept of whatever the prior turn already specified."""
+    words = re.findall(r"[a-z']+", clause.lower())
+    return any(len(w) >= 4 and w not in _OFFER_FILLER_WORDS for w in words)
+
+
 def is_offer_affirmation(user_text: str) -> bool:
     """True when ``user_text`` accepts a prior-turn action offer.
 
@@ -978,9 +1364,14 @@ def is_offer_affirmation(user_text: str) -> bool:
     "yeah the Zoom link works" starts with "yeah" but accepts nothing, and a
     forced write action is the wrong thing to hang on an ack word. A
     decline/negation in the head vetoes ("no don't create it", "hold off");
-    a question is never an affirmation.
+    a question is never an affirmation. NEVER an affirmation (2026-09-10, A1)
+    when the CURRENT text is itself an explicit, self-contained action
+    request — `detect_action_intent` hits, or the judged clause is longer
+    than a terse go-ahead (> 8 words) AND names a concrete object.
     """
     if not user_text:
+        return False
+    if detect_action_intent(user_text) is not None:
         return False
     text = user_text.strip()
     clauses = [c.strip() for c in re.split(r"[,;:\n]|(?<=[.!?])\s", text) if c.strip()]
@@ -1006,6 +1397,9 @@ def _clause_affirms(clause: str) -> bool:
         return False
     if is_decline(head):
         return False
+    if (len(head.split()) > _OFFER_AFFIRM_OBJECT_NOUN_MAX_WORDS
+            and _clause_has_object_noun(head)):
+        return False
     norm = re.sub(r"\s+", " ", head.lower()).strip(" .!")
     if norm in AFFIRMATION_PHRASES:
         return True
@@ -1015,6 +1409,55 @@ def _clause_affirms(clause: str) -> bool:
     if len(head.split()) <= OFFER_DIRECTIVE_MAX_WORDS and _OFFER_DIRECTIVE_RE.search(head):
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Clarification-answer continuation (2026-09-10, round 2, A6)
+# ---------------------------------------------------------------------------
+# Live: a forced calendar round asked "how long does the study group run?"
+# instead of proposing. The user's reply, "Yes 1 hour", is neither a bare
+# affirmation (`is_offer_affirmation` — extra tokens) nor a retry request; it
+# answers the question the prior reply asked. Treating it as an affirmation
+# of whatever action the PRIOR reply's question was clarifying lets the
+# forced round retry with the answer instead of dead-ending on another ask.
+_CLARIFICATION_FIELD_CUE_RE = re.compile(
+    r"\b(?:how\s+long|what\s+time|which\s+day|end\s+time|start\s+time|duration|title)\b",
+    re.IGNORECASE,
+)
+_CLARIFICATION_ANSWER_MAX_WORDS = 6
+_CLARIFICATION_ANSWER_RE = re.compile(
+    r"\d"                                                    # any digit ("1 hour", "3 to 4")
+    r"|\b(?:an?|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?:hours?|hrs?|minutes?|mins?|days?|weeks?)\b"
+    r"|\b(?:hours?|hrs?|minutes?|mins?)\b"
+    r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
+
+def is_clarification_answer(user_text: str, prev_reply: str) -> bool:
+    """True when ``user_text`` answers a clarifying question the PRIOR reply
+    asked about a field the forced action needs (duration/time/day/title).
+
+    Both conditions are required: the prior reply is a question carrying a
+    field cue ("how long does the study group run?"), and the current text
+    is short (≤ 6 words) and carries a number/time/duration/weekday
+    token ("Yes 1 hour", "1 hour", "an hour", "3 to 4", "Tuesday"). This is
+    deliberately loose on its own — callers only act on it when the prior
+    turn's own action type can independently be resolved (e.g. the ORIGINAL
+    request that prompted the clarifying question), so a short numeric
+    reply to an unrelated question never forces an action.
+    """
+    if not user_text or not prev_reply:
+        return False
+    text = user_text.strip()
+    if not text or len(text.split()) > _CLARIFICATION_ANSWER_MAX_WORDS:
+        return False
+    if "?" not in prev_reply:
+        return False
+    if not _CLARIFICATION_FIELD_CUE_RE.search(prev_reply):
+        return False
+    return bool(_CLARIFICATION_ANSWER_RE.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -1065,4 +1508,49 @@ def is_action_retry_request(user_text: str) -> bool:
         pos = cue.start() if cue else 0
         return not _is_trigger_negated(text, pos)
     return False
+
+
+# ---------------------------------------------------------------------------
+# Failure report (2026-09-10, round 3, A12)
+# ---------------------------------------------------------------------------
+# Live: "Yes it failed" answered a prior reply's "If it failed, say the word
+# and I'll queue it again" — neither an affirmation (extra tokens), a retry
+# request, nor a clarification answer, so `_prior_turn_offer_action` bailed
+# out even though `offer_action_type` on the prior reply resolves cleanly.
+# Categorized as (failure predicate) x (failure subject) so a new phrasing
+# is a new table cell, never a new hand-written regex (docs/BUG_CLASSES.md
+# CM-01/CM-09; docs/GENERALIZATION_AUDIT_20260901.md remedy pattern #5).
+_FAILURE_PREDICATE_RE = (
+    r"(?:failed|didn'?t\s+work|didn'?t\s+go\s+through|"
+    r"never\s+(?:appeared|showed\s+up|went\s+through|arrived))"
+)
+_FAILURE_SUBJECT_RE = r"(?:it|that|this|the\s+card|the\s+event|the\s+proposal|nothing)"
+FAILURE_REPORT_MAX_WORDS = 8
+_IS_FAILURE_REPORT_RE = re.compile(
+    rf"\b(?:yes[,\s]+)?(?:{_FAILURE_SUBJECT_RE}\s+)?{_FAILURE_PREDICATE_RE}\b"
+    rf"|\bno\s+card\b"
+    rf"|\bnothing\s+showed\s+up\b"
+    rf"|\bcard\s+never\s+appeared\b",
+    re.IGNORECASE,
+)
+
+
+def is_failure_report(user_text: str) -> bool:
+    """True for a short message reporting that a promised/narrated action
+    did NOT actually happen ("yes it failed", "it failed", "didn't work",
+    "didn't go through", "no card", "nothing showed up", "card never
+    appeared"). Joins the affirmation/retry family in
+    `_prior_turn_offer_action` — the SAME kind of corroboration those
+    already provide (an offer/claim in the PRIOR reply) also fires here.
+    Negation-guarded, ≤8 words.
+    """
+    if not user_text:
+        return False
+    text = user_text.strip()
+    if not text or len(text.split()) > FAILURE_REPORT_MAX_WORDS:
+        return False
+    m = _IS_FAILURE_REPORT_RE.search(text)
+    if not m:
+        return False
+    return not _is_trigger_negated(text, m.start())
 

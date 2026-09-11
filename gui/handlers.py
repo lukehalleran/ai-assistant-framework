@@ -114,6 +114,7 @@ from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult
 from utils.attachment_audit import audit_attachments, deadline_timezone_note
 from utils.query_checker import is_task_navigation
+from utils.trigger_match import normalize_ws
 from core.active_document import (
     ActiveDocumentRegistry,
     ActivePassage,
@@ -1195,6 +1196,16 @@ class SubmitContext:
     # ContextPipeline classification stages (topic/tone/intent/STM/query
     # rewrite) key off exactly this text before file content is merged in.
     analysis_text: str = ""
+    # Whitespace-normalized copy of user_text (2026-09-10, round 3, A10):
+    # collapses a client-side soft line-wrap ("...a new doc I\n  think will
+    # be helpful") to single spaces via utils.trigger_match.normalize_ws.
+    # Computed ONCE at ingress in _handle_submit_inner and threaded to the
+    # gate/registry/claim-guard shape predicates named in the round-3
+    # handoff — never user_text/analysis_text/merged_input themselves,
+    # which must keep their real structure for storage, display, and
+    # content-type detection (lyrics/code section breaks depend on real
+    # newlines).
+    user_text_ws: str = ""
     agentic_enabled: bool = False
     # Agentic gate evaluated CONCURRENTLY with prepare_prompt (intent veto
     # applied post-hoc in the dispatcher once the context pipeline's intent
@@ -2817,6 +2828,102 @@ class _NoClaims(Exception):
     """Control-flow: no completion claims — skip to the kind-independent backstop."""
 
 
+def _newest_upload_date(ctx):
+    """Newest upload date (YYYY-MM-DD) visible in this turn's gathered
+    [USER UPLOADED ITEMS] context (2026-09-10, B6) — read from the roster
+    metadata or an individual chunk's own timestamp. None when nothing is
+    dated (fail open: no correction notice without evidence)."""
+    try:
+        uploads = (getattr(ctx, "raw_context", None) or {}).get("user_uploads") or []
+    except Exception:
+        return None
+    dates = []
+    for item in uploads:
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("metadata") or {}
+        roster = meta.get("roster")
+        if isinstance(roster, list):
+            for entry in roster:
+                d = entry.get("date") if isinstance(entry, dict) else None
+                if isinstance(d, str) and d:
+                    dates.append(d)
+            continue
+        ts = meta.get("timestamp")
+        if isinstance(ts, str) and len(ts) >= 10:
+            dates.append(ts[:10])
+    return max(dates) if dates else None
+
+
+# Calendar STATE-claim backstop (2026-09-10, round 2, A8): "It's also
+# already on your calendar as a recurring weekly event" for a TA session
+# that was never created. Compared against this turn's own gathered
+# [GOOGLE CALENDAR] events (same `google_calendar` context key the
+# formatter renders — core/prompt/formatter.py) by title token overlap and
+# weekday, never by re-deriving the claim from scratch.
+#
+# BC-58 sibling (2026-09-11, round 6, A21 companion): once A21 lets a
+# claim sentence carry NO weekday at all ("Tomorrow at 11, Zoom link's on
+# the event." — the live [GOOGLE CALENDAR] office-hours entry is titled
+# "... (Dr. Xu — Zoom)"), the weekday-agreement gate below never engages
+# and the match falls through to title-token overlap alone; "zoom"/"link"
+# are generic video-conferencing/connectivity words that say nothing about
+# WHICH event a claim refers to (most calendar entries could plausibly be
+# "on Zoom"), so a shared hit on one of them alone produced a false
+# stand-down. Closed category — common conferencing platforms + generic
+# connectivity nouns — not a per-miss phrase list.
+_CAL_CLAIM_STOPWORDS = frozenset({
+    "already", "your", "you", "the", "that", "this", "also", "scheduled",
+    "event", "events", "recurring", "weekly", "calendar", "with", "have",
+    "got", "and", "for", "was", "were", "attached", "through",
+    "zoom", "teams", "webex", "meet", "skype", "link", "links", "url",
+})
+
+
+def _calendar_claim_tokens(text: str) -> set:
+    return {
+        w for w in _re.findall(r"[a-z]+", (text or "").lower())
+        if len(w) >= 3 and w not in _CAL_CLAIM_STOPWORDS
+    }
+
+
+_WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday",
+                  "saturday", "sunday")
+
+
+def _calendar_claim_matches_event(clause: str, event) -> bool:
+    """True when ``clause`` (a sentence claiming a calendar state) plausibly
+    refers to ``event`` (one of this turn's gathered `google_calendar`
+    dicts). Two agreement dimensions, BOTH required where the clause states
+    them (2026-09-11, round 4 referee): (1) weekday — a clause that names
+    a weekday only matches an event on that weekday (the live "recurring
+    Saturday ... calendar event ... is on there" had matched a Friday
+    office-hours event through a shared generic token, and a Saturday
+    event with an unrelated title through the weekday alone); (2) title —
+    at least one shared non-generic title token, unless the clause carries
+    no title-ish tokens at all ("it's on your calendar for Saturday").
+    Weekday names never count as title tokens. Fails open (False) on
+    anything unparseable; the caller only needs ONE match across ALL
+    gathered events to stand down."""
+    if not isinstance(event, dict):
+        return False
+    clause_l = (clause or "").lower()
+    stated_days = {d for d in _WEEKDAY_NAMES if _re.search(rf"\b{d}\b", clause_l)}
+    start = event.get("start") or ""
+    try:
+        from datetime import datetime as _dt
+        weekday_name = _dt.fromisoformat(str(start)).strftime("%A").lower()
+    except Exception:
+        weekday_name = ""
+    if stated_days and weekday_name not in stated_days:
+        return False
+    summary_tokens = _calendar_claim_tokens(str(event.get("summary") or "")) - set(_WEEKDAY_NAMES)
+    clause_tokens = _calendar_claim_tokens(clause) - set(_WEEKDAY_NAMES)
+    if not clause_tokens:
+        return bool(stated_days) and weekday_name in stated_days
+    return bool(summary_tokens & clause_tokens)
+
+
 async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_kinds, self_repair):
     """Reconcile completion claims in a response against what actually ran.
 
@@ -2857,7 +2964,11 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
         # first-person self-assertion ("I sent it"). A passive/ambiguous external
         # phrase with no such context ("the email's sent — you fixed the address")
         # is the user narrating their OWN action, not Daemon confabulating.
-        actionable = _user_requested_external_kinds(ctx.user_text) | _pending_proposal_kinds(ctx.orchestrator)
+        # getattr fallback: a caller/test fixture built its own lightweight
+        # ctx stand-in without the A10 user_text_ws field — fall back to the
+        # raw text (identical behavior for anything that isn't wrapped).
+        _actionable_text = getattr(ctx, "user_text_ws", None) or ctx.user_text
+        actionable = _user_requested_external_kinds(_actionable_text) | _pending_proposal_kinds(ctx.orchestrator)
         external = [
             a for a in rec.external_unbacked
             if a.kind not in set(proposed_kinds)
@@ -2880,6 +2991,69 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
             suffix += NO_CARD_NOTICE
     except Exception as e:
         logger.warning(f"[ActionGuard] No-card backstop failed (non-fatal): {e}")
+    # Fresh-upload claim backstop (2026-09-10, probe T4/B6): "Can you take a
+    # look?" resolved to a PDF uploaded five days earlier via the upload
+    # roster/reuse pool, and the reply asserted "You uploaded ... today" —
+    # nothing was actually attached this session. Fires only when the
+    # active-document registry (this session's real attachments) is empty
+    # AND this turn's own gathered upload context carries a dated entry
+    # that isn't today; fails open (no notice) when neither is knowable.
+    try:
+        from core.action_claim_guard import claims_fresh_upload
+        if response_text and claims_fresh_upload(response_text):
+            _registry = getattr(ctx.orchestrator, 'active_documents', None)
+            _has_active_docs = bool(_registry is not None and _registry.documents())
+            if not _has_active_docs:
+                from datetime import datetime as _fu_dt
+                _upload_date = _newest_upload_date(ctx)
+                _today = _fu_dt.now().strftime('%Y-%m-%d')
+                if _upload_date and _upload_date != _today:
+                    logger.warning(
+                        "[ActionGuard] Reply claims a fresh upload with no "
+                        f"active document this session — appending notice (found={_upload_date})"
+                    )
+                    suffix += (
+                        "\n\n> ⚠️ No file was uploaded this session; the document "
+                        f"I found was uploaded {_upload_date}."
+                    )
+    except Exception as e:
+        logger.warning(f"[ActionGuard] Fresh-upload claim check failed (non-fatal): {e}")
+    # Calendar STATE-claim backstop (2026-09-10, round 2, A8): "It's also
+    # already on your calendar as a recurring weekly event (through
+    # December 12, Zoom link attached)" for a TA session that was never
+    # created — a STATE claim (`claims_calendar_state`), not a completion
+    # claim, so the reconciliation above never sees it. Compared against
+    # this turn's own gathered `google_calendar` events (the same context
+    # key the formatter renders as [GOOGLE CALENDAR]); no calendar section
+    # at all means we cannot verify either way, so fail open.
+    try:
+        from core.action_claim_guard import claims_calendar_state
+        from core.action_claim_guard import ActionKind as _AK
+        # A calendar card proposed or executed THIS turn is the ground truth
+        # the reply is describing ("…is sitting there waiting on your
+        # approval") — never contradict it with a state-claim notice
+        # (2026-09-11, round 7 live over-fire under a real card).
+        _cal_acted = _AK.CALENDAR in (set(proposed_kinds) | set(executed_kinds))
+        _state_claims = (
+            claims_calendar_state(response_text) if (response_text and not _cal_acted) else []
+        )
+        if _state_claims:
+            _cal_events = (getattr(ctx, "raw_context", None) or {}).get("google_calendar") or []
+            if _cal_events and not any(
+                _calendar_claim_matches_event(clause, ev)
+                for clause in _state_claims for ev in _cal_events
+            ):
+                logger.warning(
+                    "[ActionGuard] Reply claims an existing calendar event "
+                    "that matches none of this turn's gathered events — "
+                    "appending notice"
+                )
+                suffix += (
+                    "\n\n> ⚠️ I don't see that on your calendar — nothing "
+                    "was created. Say \"add it\" and I'll queue a card."
+                )
+    except Exception as e:
+        logger.warning(f"[ActionGuard] Calendar state-claim check failed (non-fatal): {e}")
     return suffix
 
 
@@ -3293,6 +3467,7 @@ async def _run_agentic_search(ctx):
     skip_initial_search = ctx.skip_initial_search
     merged_input = ctx.merged_input
     user_text = ctx.user_text
+    user_text_ws = ctx.user_text_ws
     history = ctx.history
     personality = ctx.personality
     file_names = ctx.file_names
@@ -3337,7 +3512,7 @@ async def _run_agentic_search(ctx):
         _remainder_words = len(_TOPIC_URL_RE.sub("", user_text).split())
         _gate_modes = getattr(_gate_decision, "modes", []) or []
         _gate_forced_action = getattr(_gate_decision, "forced_action", None)
-        _forced_action = detect_action_intent(user_text) or _gate_forced_action
+        _forced_action = detect_action_intent(user_text_ws) or _gate_forced_action
         _fastpath_ok = (
             AGENTIC_FETCH_FASTPATH
             and ((bool(_url_in_current_msg) and _remainder_words <= 12)
@@ -3368,6 +3543,7 @@ async def _run_agentic_search(ctx):
             fetch_fastpath=_fastpath_ok,
             gate_modes=_gate_modes,
             forced_action=_gate_forced_action,
+            action_query_ws=user_text_ws,
         )
 
         async def _agentic_next():
@@ -4914,6 +5090,21 @@ async def _handle_submit_inner(
         merged_input += "\n\n" + _active_doc_note
         analysis_text = analysis_text + "\n\n" + _active_doc_note
 
+    # A10 ingress chokepoint (2026-09-10, round 3): ONE normalize_ws call
+    # here, threaded to every gate/registry/claim-guard shape predicate
+    # named in the round-3 handoff (never re-derived inside those
+    # predicates — "not 15 entry points"). `analysis_text` is ALSO
+    # normalized in place — it is prepare_prompt's `user_input` (classifier
+    # input only: topic/tone/intent/STM/query-rewrite), never the rendered
+    # [CURRENT QUERY]/stored transcript, so a client soft line-wrap can no
+    # longer defeat ResponsePlanner.should_plan's is_status_report check or
+    # the gate's is_note_save_request arm downstream of it either.
+    # `user_text`/`merged_input` keep their REAL whitespace — storage,
+    # display, and content-type/lyrics detection (which reads
+    # ctx.user_text, never analysis_text) depend on real line breaks.
+    user_text_ws = normalize_ws(user_text)
+    analysis_text = normalize_ws(analysis_text)
+
     # Persist uploads to ChromaDB in background (fire-and-forget)
     if files_result.images:
         count = len(files_result.images)
@@ -4937,6 +5128,7 @@ async def _handle_submit_inner(
         merged_input=merged_input,
         files_result=files_result,
         analysis_text=analysis_text,
+        user_text_ws=user_text_ws,
         t_ingress=t_ingress,
     )
     ctx.telemetry["has_images"] = bool(files_result.images)
@@ -4973,7 +5165,7 @@ async def _handle_submit_inner(
     # it deterministically as a new card — BEFORE the gate's casual/short skip
     # can drop the turn into a tool-less mode where the reply narrates a card
     # that does not exist. Approval is still the human's.
-    _retry_target = _failed_action_to_retry(user_text)
+    _retry_target = _failed_action_to_retry(user_text_ws)
     if _retry_target is not None:
         async for _c in _run_action_retry(ctx, _retry_target):
             yield _c
@@ -4997,7 +5189,7 @@ async def _handle_submit_inner(
     if agentic_enabled:
         from core.agentic.gate import evaluate_agentic_gate
         ctx.gate_task = asyncio.create_task(evaluate_agentic_gate(
-            user_text=user_text,
+            user_text=user_text_ws,
             entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
             model_manager=orchestrator.model_manager,
             corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
@@ -5049,7 +5241,7 @@ async def _handle_submit_inner(
             _gate_decision = await ctx.gate_task
         else:
             _gate_decision = await evaluate_agentic_gate(
-                user_text=user_text,
+                user_text=user_text_ws,
                 entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
                 model_manager=orchestrator.model_manager,
                 corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None),
@@ -5060,7 +5252,7 @@ async def _handle_submit_inner(
             _gate_decision,
             raw_context.get("intent") if raw_context else None,
             tone_level=raw_context.get("tone_level") if raw_context else None,
-            query=user_text,
+            query=user_text_ws,
         )
         # Explicit insight requests own the turn.  The gate runs concurrently
         # with context preparation, so a veto or stale classifier result must

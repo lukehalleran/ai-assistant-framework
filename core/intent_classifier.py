@@ -383,8 +383,27 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         r"\b(how (do|can|should|would) (i|you|we|one)"
         r"|fix(ing)?|debug(ging)?|error|bug|exception|traceback"
         r"|github issue|open(ed)? an issue|file[ds]? an issue"
-        r"|doesn'?t work|isn'?t working|not working|broken|crash(es|ing|ed)?"
+        r"|doesn'?t work|isn'?t working|not working"
         r"|help me (with|fix|debug|understand|figure))\b",
+        IntentType.TECHNICAL_HELP, 0.75,
+    )
+    # "crashed"/"broke(n)" alone is everyday English ("I crashed for a bit" =
+    # fell asleep/collapsed from exhaustion, not a software crash) —
+    # technical_help only when a tech noun anchors it nearby, either order.
+    # 2026-09-10 (probe dump T1): "Yeah I crashed a bit. So tired. Walking to
+    # store now" classified technical_help@0.75 on bare "crashed" and opened
+    # the self-docs allow-gate on a plain exhaustion update.
+    _TECH_NOUN_RE = (
+        r"(?:app(?:lication)?|code(?:base)?|script|server|laptop|computer|pc|"
+        r"desktop|phone|python|javascript|java|\br\b|build|test|daemon|"
+        r"program|software|website|site|\bapi\b|database|\bdb\b|"
+        r"repo(?:sitory)?|container|docker|\bvm\b|browser|terminal|shell|"
+        r"module|librar(?:y|ies)|package|function|component|service|system|"
+        r"device|driver|kernel)"
+    )
+    _add(
+        rf"\b(?:crash(?:es|ing|ed)?|broke(?:n)?)\b[\s\S]{{0,40}}\b{_TECH_NOUN_RE}\b"
+        rf"|\b{_TECH_NOUN_RE}\b[\s\S]{{0,40}}\b(?:crash(?:es|ing|ed)?|broke(?:n)?)\b",
         IntentType.TECHNICAL_HELP, 0.75,
     )
     _add(

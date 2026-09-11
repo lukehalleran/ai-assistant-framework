@@ -623,6 +623,72 @@ def is_self_report(q: str, max_words: int = 40) -> bool:
     return bool(_FIRST_PERSON_VERB_RE.search(window))
 
 
+# Completion-shaped verbs a status update opens with once its ACK opener is
+# stripped ("Cool. Managed to push today...", "Nice, finally sent it").
+# Deliberately a small closed set of PAST-COMPLETION verbs, not a general
+# first-person-verb scan (that's is_self_report's job for an explicit
+# pronoun subject) — the subject here is elided ("[I] managed to..."), which
+# is exactly the shape is_self_report's contract does not cover.
+_STATUS_REPORT_VERB_RE = re.compile(
+    r"^(?:managed|got|finished|wrapped(?:\s+up)?|pushed|sent|submitted|"
+    r"completed|updated|posted|uploaded|committed|shipped|fixed|solved|"
+    r"finally\s+(?:got|finished|sent|managed|pushed|wrapped(?:\s+up)?)|"
+    r"just\s+(?:finished|sent|pushed|submitted|wrapped(?:\s+up)?))\b",
+    re.IGNORECASE,
+)
+
+
+def is_status_report(q: str, max_words: int = 40) -> bool:
+    """A terse conversational ACK (``ACK_STARTERS`` — "Cool.", "Nice,")
+    directly followed by an implied-first-person, completion-shaped status
+    update — "Cool. Managed to push today and there is a new doc I think
+    will be helpful" — that requests nothing (2026-09-10 probe T5, round 2:
+    ``is_self_report`` returns False on this exact text because its subject
+    is elided after the ack rather than restated as a pronoun, so the
+    planner's self-report skip in ``ResponsePlanner.should_plan`` never
+    fired; it confidently planned three points about "a new doctor" from a
+    misread STM abbreviation expansion). Deliberately kept as a SEPARATE,
+    narrow predicate rather than widening ``is_self_report``'s contract —
+    that predicate's other consumers (the retrieval-trim gate, the
+    decision-support gate) are calibrated to its first-person-pronoun
+    shape specifically. Same disqualifiers as ``is_self_report``: paste
+    guard, any question/command/meta shape, a request/address-to-assistant
+    shape anywhere in the message (including a later clause). Under-fires
+    by design — only the small ``_STATUS_REPORT_VERB_RE`` verb set counts.
+    """
+    raw = (q or "").strip()
+    if not raw:
+        return False
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    paragraphs = [blk for blk in re.split(r"\n\s*\n", raw) if blk.strip()]
+    if len(paragraphs) >= 2:
+        return False
+    if len(lines) >= 3 and sum(1 for ln in lines if ln[-1] in ".!?:,;") >= 2:
+        return False
+    ql = _normalize(" ".join(raw.split()))
+    words = ql.split()
+    if not words or len(words) > max_words:
+        return False
+    if "?" in ql or is_question(ql) or is_command(ql) or is_meta_conversational(ql):
+        return False
+    if _ADDRESSING_ASSISTANT_RE.search(ql) or is_request_shaped(ql):
+        return False
+    for clause in request_clauses(raw):
+        cl = clause.lower()
+        if (is_request_shaped(clause)
+                or _ADDRESSING_ASSISTANT_RE.search(cl)
+                or _IMPERATIVE_REQUEST_RE.match(cl)
+                or cl.startswith("please")):
+            return False
+    first_word = words[0].strip(".,!?:;")
+    if first_word not in ACK_STARTERS:
+        return False
+    rest = ql[len(words[0]):].lstrip(" .,!?:;")
+    if not rest:
+        return False
+    return bool(_STATUS_REPORT_VERB_RE.match(rest))
+
+
 def extract_temporal_window(q: str) -> int:
     """
     Extract the temporal window (in days) from a query based on time markers.
@@ -847,6 +913,90 @@ def is_personal_doc_search(q: str) -> bool:
             if not prefix.endswith(("my", "our")):
                 return False
     return bool(_DOC_SEARCH_VERB_NOUN_RE.search(q) and _PERSONAL_ANCHOR_RE.search(q))
+
+
+# Note-save request (2026-09-10): "jot down a note for this session: TA
+# sessions are Saturdays at 11 CT," found no route to create_daemon_note —
+# the deployed detect_self_note_intent only recognizes Daemon's OWN
+# "note to yourself/for future" phrasing, not a user asking Daemon to save a
+# session/personal reminder. Head-anchored (an optional polite prefix is
+# allowed) so a mid-message mention ("I jotted a note earlier") never
+# matches, and deliberately excludes bare "note that X" (a common way to
+# just INFORM Daemon of a fact, not a request to persist a note).
+_NOTE_SAVE_NEGATION_RE = re.compile(
+    r"^(?:don'?t|do\s+not|never|no\s+need\s+to|please\s+don'?t)\b", re.IGNORECASE,
+)
+_NOTE_SAVE_VERB_RE = re.compile(
+    r"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)?"
+    r"(?:jot\s+(?:down|this)\s+(?:a\s+)?note|"
+    r"save\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?note|"
+    r"write\s+(?:this\s+)?(?:down\s+)?(?:as\s+)?(?:a\s+)?note|"
+    r"make\s+(?:a\s+)?note|"
+    r"remember\s+this(?:\s+for\s+(?:me|later|next\s+time))?|"
+    r"note\s+to\s+self)\b",
+    re.IGNORECASE,
+)
+
+
+def is_note_save_request(text: str) -> bool:
+    """True for a head-anchored request that Daemon persist a session/
+    personal note ("jot down a note for this session: …", "save this as a
+    note", "remember this", "note to self …"). Deliberately NOT "note that
+    the deadline moved" (informing Daemon of a fact — a distinct, common
+    usage with no "note" object-noun verb of its own) nor past-tense
+    narration ("I jotted a note earlier", which does not open the message).
+    Negation-guarded and quote-guarded.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped[0] in "\"'“‘":
+        return False
+    if _NOTE_SAVE_NEGATION_RE.match(stripped):
+        return False
+    return bool(_NOTE_SAVE_VERB_RE.match(stripped))
+
+
+def is_task_directive(q: str) -> bool:
+    """True when the user is DIRECTING Daemon to do something — a head-
+    clause imperative (``_IMPERATIVE_REQUEST_RE``), a note-save request
+    (``is_note_save_request``), or an explicit action-registry intent
+    (``core.actions.registry.detect_action_intent``) — rather than venting
+    or asking a question (2026-09-10, round 4, B10).
+
+    Live finding: `utils.tone_detector.detect_crisis_level`'s distress-
+    sticky floor AND borderline backstop both floored "jot down a note for
+    this session: TA sessions are Saturdays at 11 CT" to CONCERN off a
+    borderline semantic score even though the arbiter itself said
+    CONVERSATIONAL — the reply then carried LIGHT SUPPORT ("let them vent")
+    onto a plain task instruction. Both stages stand down when the message
+    is a task directive; the arbiter's/semantic verdict then stands.
+
+    QUESTIONS are NEVER task directives ("what's the point of anything"
+    keeps the backstop) even when a question happens to open with a
+    directive-shaped verb — this predicate is consulted by tone-safety
+    code, which must not lose a genuinely distress-shaped question to a
+    coincidental grammatical match.
+    """
+    text = (q or "").strip()
+    if not text:
+        return False
+    if "?" in text or is_question(text):
+        return False
+    clauses = request_clauses(text)
+    head = _normalize(clauses[0]) if clauses else _normalize(text)
+    if _IMPERATIVE_REQUEST_RE.match(head):
+        return True
+    if is_note_save_request(text):
+        return True
+    # lazy import: leaf parse-layer function (core.actions.registry has no
+    # module-level dependency on this module) — avoids a module-load-time
+    # cycle and stays a patch point for tests, matching the established
+    # call-time-import convention used by is_request_shaped above.
+    from core.actions.registry import detect_action_intent
+    return detect_action_intent(text) is not None
 
 
 @dataclass

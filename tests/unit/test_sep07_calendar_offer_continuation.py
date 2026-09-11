@@ -463,7 +463,10 @@ class TestRetryTurn:
         import inspect
         import gui.handlers as h
         src = inspect.getsource(h)
-        i_retry = src.index("_retry_target = _failed_action_to_retry(user_text)")
+        # 2026-09-10, round 3, A10: the call now takes the whitespace-
+        # normalized user_text_ws (a client soft line-wrap must not defeat
+        # is_action_retry_request) — same relative ordering, updated text.
+        i_retry = src.index("_retry_target = _failed_action_to_retry(user_text_ws)")
         i_gate = src.index("ctx.gate_task = asyncio.create_task(evaluate_agentic_gate(")
         assert i_retry < i_gate
 

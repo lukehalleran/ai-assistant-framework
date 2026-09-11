@@ -120,6 +120,7 @@ from core.agentic.protocols import (
 )
 from core.agentic.formatters import AgenticFormatter
 from core.agentic.tools import LazySandboxSession, ToolExecutor
+from core.action_claim_guard import UNVERIFIED_CLAIM_MARKER
 from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 from utils.ordered_slice import oldest_first as _ordered_oldest_first
@@ -163,6 +164,16 @@ _CURRENT_QUERY_HEADER = "[CURRENT USER QUERY — RESPOND TO THIS]"
 _MIDDLE_OUT_SNIP_RE = re.compile(r"\n… \[middle-out snipped (\d+) chars\] …\n")
 _UPLOAD_TITLE_IN_TEXT_RE = re.compile(r'upload:([^"\)\s]+)')
 
+# Git-cued document hint (2026-09-10, round 2, A9): "Cool. Managed to push
+# today and there is a new doc I think will be helpful" followed by "Can
+# you take a look?" resolved the unnamed document to a 5-day-old upload via
+# the reuse pool instead of the repository file the user had just pushed —
+# no cue reached the loop at all. When the current OR previous USER turn
+# carries a git cue AND a doc noun, the loop is hinted to check the repo
+# FIRST.
+_GIT_CUE_RE = re.compile(r"\b(?:push(?:ed|ing)?|commit(?:ted|ting)?|repo(?:sitory)?|pr|merged)\b", re.IGNORECASE)
+_DOC_NOUN_RE = re.compile(r"\b(?:docs?|documents?|files?|mds?|readme|handoffs?)\b", re.IGNORECASE)
+
 
 # Forced write-action detection + deterministic param backfill now live in the action registry
 # (core/actions/registry.py) — the single source of truth, so adding an action is one place.
@@ -170,9 +181,125 @@ _UPLOAD_TITLE_IN_TEXT_RE = re.compile(r'upload:([^"\)\s]+)')
 from core.actions.registry import (  # noqa: E402
     detect_action_intent,
     backfill_params,
+    calendar_datetime_shape_errors,
+    extract_calendar_title,
+    resolve_weekday_time,
+    resolved_fields_note,
     _extract_issue_fields_from_query,
 )
 
+
+def _pending_cards_note(action_verb: str = "call propose_action") -> str:
+    """[PENDING CARDS] line for a forced action-round prompt (2026-09-10,
+    round 3, A11): truthful about whether an approval card actually
+    exists, so the model cannot lean on a PRIOR turn's "queued"/"locked
+    in"/"re-queued" wording as if it minted a real proposal — none of the
+    round-3 live failures (T1/T2/T3) had an actual card behind that
+    narration. Lists real cards when they exist.
+
+    ``action_verb`` is protocol-appropriate: "call propose_action" for the
+    native-tools builder (the ONLY place "propose_action" — native-tools
+    vocabulary — may appear), "emit the <action> marker" for the XML
+    builder — the XML forced prompt must never leak native-tools wording.
+    """
+    try:
+        from core.agentic.tools import ToolExecutor
+        pending = ToolExecutor._get_pending_actions_store().get_all_pending()
+    except Exception:
+        pending = []
+    if not pending:
+        return (
+            "[PENDING CARDS] none — any earlier 'queued'/'locked in'/"
+            "'re-queued' wording in the conversation was NOT backed by a "
+            f"card; you must {action_verb} now."
+        )
+    lines = []
+    for p in pending:
+        _t = getattr(p.action_type, "value", p.action_type)
+        lines.append(f"- {_t}: {p.summary or p.action_id}")
+    return "[PENDING CARDS]\n" + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Note-body extraction (2026-09-10, round 3, A14)
+# ---------------------------------------------------------------------------
+# Live: "jot down a note for this session: TA sessions are Saturdays at 11
+# CT," routed correctly (A3) but create_daemon_note saved a hallucinated
+# calendar claim instead of the user's own words — the model was free to
+# write whatever it wanted into the note body. This is deliberately
+# query_checker-free (self-contained cue table, not a reach into
+# utils.query_checker's private regexes) — prefers the text after a
+# colon/dash separator following the note-save cue ("... for this session:
+# X" -> "X"); with no separator, strips the leading imperative + filler and
+# keeps what remains.
+_NOTE_BODY_CUE_RE = re.compile(
+    r"^\s*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)?"
+    r"(?:jot\s+(?:down|this)\s+(?:a\s+)?note|"
+    r"save\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?note|"
+    r"write\s+(?:this\s+)?(?:down\s+)?(?:as\s+)?(?:a\s+)?note|"
+    r"make\s+(?:a\s+)?note|"
+    r"remember\s+this(?:\s+for\s+(?:me|later|next\s+time))?|"
+    r"note\s+to\s+self)\b",
+    re.IGNORECASE,
+)
+# A colon anywhere, or a dash surrounded by SPACES (never a bare hyphen
+# inside a range like "9-11") — the clearest boundary between the
+# instruction and the content itself.
+_NOTE_BODY_SEPARATOR_RE = re.compile(r":\s*|\s[-–—]\s")
+_NOTE_BODY_LEADING_FILLER_RE = re.compile(
+    r"^\s*(?:for\s+(?:this\s+session|me|later|next\s+time)\s*)?(?:that\s+)?[,:\-–—\s]*",
+    re.IGNORECASE,
+)
+
+
+def extract_note_body(query: str) -> str:
+    """Deterministic note-body extraction for a gate-detected note-save
+    request — see module comment above for the exact rule. Empty input
+    yields an empty body (never a caller crash)."""
+    text = (query or "").strip()
+    if not text:
+        return ""
+    m = _NOTE_BODY_CUE_RE.match(text)
+    rest = text[m.end():] if m else text
+    sep = _NOTE_BODY_SEPARATOR_RE.search(rest)
+    if sep:
+        body = rest[sep.end():]
+    else:
+        body = _NOTE_BODY_LEADING_FILLER_RE.sub("", rest, count=1)
+    body = body.strip().rstrip(",.;").strip()
+    return body or text.rstrip(",.;").strip()
+
+
+def note_fallback_title(body: str) -> str:
+    """Truncate a note-fallback BODY to a title of at most 60 characters,
+    breaking at a word boundary rather than mid-word (2026-09-11, round 5,
+    A19 — mirrors the A11 calendar fallback's own resolvable-from-the-
+    request-alone approach: the body itself is the only text this
+    deterministic path has, so it also serves as the title, shortened)."""
+    text = (body or "").strip()
+    if len(text) <= 60:
+        return text
+    truncated = text[:60]
+    if " " in truncated:
+        truncated = truncated.rsplit(" ", 1)[0]
+    return truncated.strip()
+
+
+def _backfill_fill_keys(params: dict, bf: dict, wd_bf: dict) -> list:
+    """Keys the deterministic backfill may write (2026-09-10 referee fix):
+    blank fields as before, PLUS a calendar start/end the model supplied in
+    a shape-invalid form (a date-less "15:00:00") when the user's own words
+    resolved it (``wd_bf``) — otherwise the proposal is rejected at parse and
+    costs a retry round for a value the request already determined."""
+    out = []
+    for k, v in bf.items():
+        if not v:
+            continue
+        if not params.get(k):
+            out.append(k)
+        elif k in ("start_time", "end_time") and k in wd_bf and calendar_datetime_shape_errors({k: params.get(k)}):
+            out.append(k)
+    return out
 
 def _should_ground_calendar_times(session, this_round_forced_type: Optional[str]) -> bool:
     """Whether THIS round's calendar_create_event decisions must be checked
@@ -417,6 +544,7 @@ class AgenticSearchController:
         fetch_fastpath: bool = False,
         gate_modes: Optional[List[str]] = None,
         forced_action: Optional[str] = None,
+        action_query_ws: Optional[str] = None,
     ) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Execute the agentic search loop.
@@ -439,6 +567,14 @@ class AgenticSearchController:
                 the QUERY itself carries no action pattern — the gate's prior-turn
                 offer affirmation (2026-09-07: "please create" after "Want me to
                 create the recurring event?"). A same-turn detect_action_intent hit wins.
+            action_query_ws (2026-09-10, round 3, A10/A11/A14 sibling): the
+                caller's already whitespace-normalized user text (never the
+                merged/attachment-bearing `query`) — used ONLY for
+                action-detection/backfill (detect_action_intent,
+                resolve_weekday_time, extract_calendar_title, the note-body
+                extraction) so a client-side soft line-wrap or attached-file
+                content can never defeat those deterministic checks. Falls
+                back to `query` when not supplied (every pre-existing caller).
 
         Yields:
             ProgressEvent: Status updates for UI
@@ -451,12 +587,27 @@ class AgenticSearchController:
         self._last_final_prompt = None
         self._last_final_system_prompt = None
         self._last_final_model = None
+        self._action_query_ws = action_query_ws if action_query_ws is not None else query
         protocol = self.detect_protocol(model_name)
         session = AgenticSearchSession(
             query=query,
             max_rounds=self.max_rounds,
             protocol=protocol,
         )
+        # A14 (2026-09-10, round 3): a gate-detected note-save request's
+        # saved note body must be the USER'S stated content, never the
+        # model's own elaboration on the create_daemon_note call — live:
+        # "jot down a note for this session: TA sessions are Saturdays at
+        # 11 CT," ended up saving a hallucinated "calendar event already
+        # created" claim instead. Computed once per session; consumed at
+        # dispatch time in _dispatch_single_inner.
+        session.note_body_override = None
+        try:
+            from utils.query_checker import is_note_save_request
+            if is_note_save_request(self._action_query_ws):
+                session.note_body_override = extract_note_body(self._action_query_ws)
+        except Exception as e:
+            logger.debug(f"[AgenticSearch] Note-body extraction skipped: {e}")
 
         logger.info(
             f"[AgenticSearch] Starting session: query='{query[:50]}...', "
@@ -800,10 +951,29 @@ class AgenticSearchController:
                 initial_context
             )
 
+            # A9 (round 2): the previous USER turn's raw text — checked
+            # alongside the current query for a git-cued document hint
+            # (_detect_tool_hints), computed once since it does not change
+            # across rounds.
+            _prev_user_text_for_hints = self._previous_user_query(initial_context)
+
             # Detect explicit write-action intent. If present, force the model to call
             # propose_action on the first decision round (native-tools protocol only) so
             # research-eager models don't spend every round reading code and never act.
-            _forced_action = detect_action_intent(query)  # ActionType or None (from the registry)
+            # A10 (2026-09-10, round 3): action-detection reads the caller's
+            # already-normalized `self._action_query_ws` (falls back to
+            # `query` when the caller supplied none — every pre-existing
+            # test/call site) so a client-side soft line-wrap can never
+            # defeat this check the way it defeated the shape predicates.
+            _forced_action = detect_action_intent(self._action_query_ws)  # ActionType or None (from the registry)
+            # A6 (round 2): True when the CURRENT query text is not itself a
+            # self-contained action request — the force came from the gate's
+            # prior-turn offer/retry/clarification-answer arm, so `query`
+            # ("Yes 1 hour", "yes") is a short follow-up, not the request
+            # itself. The forced-round prompt then labels it [USER ANSWER]
+            # instead of "The user asked" (the actual request lives in the
+            # action-context digest computed below).
+            _forced_via_gate = _forced_action is None and bool(forced_action)
             if _forced_action is None and forced_action:
                 try:
                     from core.actions.types import ActionType as _AT
@@ -869,7 +1039,8 @@ class AgenticSearchController:
                     query=query,
                     search_context=session.accumulated_context,
                     round_number=session.current_round,
-                    session=session
+                    session=session,
+                    prev_user_text=_prev_user_text_for_hints,
                 )
 
                 # Force propose_action once when an explicit action was requested. Forced
@@ -909,13 +1080,15 @@ class AgenticSearchController:
                         _round_tools_override = [_ptool]
                         # Use the user's actual request as the prompt (not the generic "what tool
                         # next?" iteration prompt) so the model fills the content fields from it.
-                        _round_prompt = iteration_prompt + "\n\n" + (
-                            "[ACTION EXECUTION DIRECTIVE]\n"
-                            f"The user asked: {query}\n\n"
-                            f"Call propose_action now to do exactly this, filling in ALL content "
-                            f"fields from the request and conversation context above. For several "
-                            f"calendar events, use one events[] batch."
-                        )
+                        # A10 (round 3): `self._action_query_ws` (whitespace-
+                        # normalized bare user text, falls back to `query`)
+                        # rather than raw `query` — a client soft line-wrap
+                        # must not defeat resolved_fields_note/
+                        # resolve_weekday_time inside this builder; the full
+                        # attachment-merged `query` is still visible to the
+                        # model via the iteration prompt/action digest above.
+                        _round_prompt = iteration_prompt + "\n\n" + self._build_native_action_prompt(
+                            self._action_query_ws, _forced_action, is_followup=_forced_via_gate)
                         _round_system_prompt = augmented_system_prompt + (
                             f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a write "
                             f"action ({_forced_action.value}) and ONLY that action_type — do not "
@@ -934,8 +1107,12 @@ class AgenticSearchController:
                         # NOTHING and fell through to implicit-ready. Give the model the
                         # actual marker syntax with the spec's required fields as
                         # attributes, one marker per item.
+                        # A10 (round 3): same self._action_query_ws rationale
+                        # as the native-tools branch above.
                         _round_prompt = iteration_prompt + "\n\n" + self._build_xml_action_force_prompt(
-                            query, _forced_action, _spec, reject_reason=_prior_reject_reason)
+                            self._action_query_ws, _forced_action, _spec,
+                            reject_reason=_prior_reject_reason,
+                            is_followup=_forced_via_gate)
                         _round_system_prompt = augmented_system_prompt + (
                             f"\n\n[ACTION REQUIRED] The user explicitly asked you to perform a "
                             f"write action ({_forced_action.value}). Emit the <action> marker(s) "
@@ -1083,20 +1260,38 @@ class AgenticSearchController:
                 # it, record why, and never re-force this session — the
                 # loop continues unforced so the model can look the time up
                 # or ask; the no-card backstop keeps the reply honest.
+                # A22 (2026-09-11, round 6): the check didn't recognize its
+                # OWN deterministic resolution — a forced round proposed
+                # exactly resolve_weekday_time's 1-hour-default end time and
+                # got declined as an invented guess anyway.
+                # ground_calendar_params_by_resolution grounds/replaces
+                # against that resolution before the pool-text check gets
+                # the final say; calendar_times_ungrounded itself is
+                # untouched (called internally, still pure).
                 if (
                     _action_decisions
                     and _should_ground_calendar_times(session, _this_round_forced_type)
                     and session.action_context_digest
                 ):
-                    from core.actions.registry import calendar_times_ungrounded
+                    from core.actions.registry import ground_calendar_params_by_resolution
                     _pool = "\n".join(str(x or "") for x in (
                         query, session.action_context_digest,
                         session.recent_conversation_digest, session.accumulated_context))
                     _kept = []
                     for _ad in _action_decisions:
                         _t = str(getattr(_ad.action_type, "value", _ad.action_type) or "")
-                        _bad = (calendar_times_ungrounded(_ad.action_params or {}, _pool)
-                                if _t == "calendar_create_event" else [])
+                        if _t == "calendar_create_event":
+                            _grounded, _replaced, _bad = ground_calendar_params_by_resolution(
+                                _ad.action_params or {}, self._action_query_ws, _pool)
+                            if _replaced:
+                                _ad.action_params = _grounded
+                                for _label, _old, _new in _replaced:
+                                    logger.info(
+                                        f"[AgenticSearch] ungrounded {_label}={_old} "
+                                        f"replaced by request resolution {_new}"
+                                    )
+                        else:
+                            _bad = []
                         if _bad:
                             _reason = (
                                 f"forced {_t} not proposed: {', '.join(_bad)} appears nowhere in "
@@ -1119,9 +1314,30 @@ class AgenticSearchController:
                             _bf = backfill_params(_AT(_ad.action_type), query)
                         except ValueError:
                             _bf = {}
+                        # Weekday + clock-time backfill (2026-09-10, A2): a
+                        # calendar_create_event request naming a weekday and
+                        # a bare hour ("Tuesdays at 3, through Dec 4") with
+                        # no explicit date — resolve_weekday_time fills the
+                        # date the model otherwise has to guess (or, live,
+                        # left as a dateless bare clock time that the new
+                        # proposal-time shape check now rejects outright).
+                        _wd_bf = {}
+                        if _ad.action_type == "calendar_create_event":
+                            try:
+                                # A10 (round 3): normalized bare user text —
+                                # see the run_agentic_search docstring entry
+                                # for action_query_ws.
+                                _wd_bf = resolve_weekday_time(self._action_query_ws)
+                            except Exception as e:
+                                logger.debug(
+                                    f"[AgenticSearch] Weekday/time backfill failed (non-fatal): {e}"
+                                )
+                                _wd_bf = {}
+                            for _wk, _wv in _wd_bf.items():
+                                _bf.setdefault(_wk, _wv)
                         if _bf:
                             _params = dict(_ad.action_params or {})
-                            _filled = [k for k, v in _bf.items() if not _params.get(k) and v]
+                            _filled = _backfill_fill_keys(_params, _bf, _wd_bf)
                             for _k in _filled:
                                 _params[_k] = _bf[_k]
                             if _filled:
@@ -1307,6 +1523,69 @@ class AgenticSearchController:
                         )
                         continue
 
+                    # A11 deterministic fallback (2026-09-10, round 3): the
+                    # forced round AND its one retry (above) BOTH produced no
+                    # calendar decision — live: "put a recurring calendar
+                    # event ... for the MGT study group, Tuesdays at 3,
+                    # through Dec 4" silently fell through to "ready to
+                    # answer" twice, and the final synthesis narrated a
+                    # queue that never happened. When the request's own
+                    # weekday+clock-time is resolvable AND a title is
+                    # extractable, mint the proposal ourselves through the
+                    # SAME dispatch path a model decision takes — still
+                    # human-gated (a pending card, never auto-executed).
+                    if (
+                        _forced_action is not None
+                        and str(getattr(_forced_action, "value", _forced_action))
+                        == "calendar_create_event"
+                        and not _action_decisions
+                        and not getattr(session, '_action_dispatched', False)
+                        and not getattr(session, '_action_force_declined', False)
+                        and getattr(session, '_action_force_retry_sent', False)
+                        and not getattr(session, '_action_force_fallback_sent', False)
+                    ):
+                        session._action_force_fallback_sent = True
+                        _fb_wd = resolve_weekday_time(self._action_query_ws)
+                        _fb_title = extract_calendar_title(self._action_query_ws)
+                        if _fb_wd and _fb_title:
+                            _fb_params = {
+                                "summary": _fb_title,
+                                "start_time": _fb_wd["start_time"],
+                                "end_time": _fb_wd["end_time"],
+                            }
+                            if _fb_wd.get("recurrence"):
+                                _fb_params["recurrence"] = _fb_wd["recurrence"]
+                            _fb_decision = SearchDecision(
+                                wants_action=True,
+                                action_type="calendar_create_event",
+                                action_params=_fb_params,
+                                action_reason=(
+                                    "deterministic fallback: model declined "
+                                    "to propose"
+                                ),
+                            )
+                            logger.warning(
+                                "[AgenticSearch] Forced calendar round + retry "
+                                "both declined to propose — minting the "
+                                f"proposal deterministically: {_fb_params}"
+                            )
+                            _fb_round = session.current_round
+                            telemetry_entry.setdefault("rounds", []).append(_fb_round)
+                            _fb_result = await self._dispatch_single(
+                                _fb_decision, _fb_round, session, crisis_level,
+                                sandbox_session,
+                            )
+                            for ev in _fb_result.start_events:
+                                yield ev
+                            for ev in _fb_result.end_events:
+                                yield ev
+                            if _fb_result.round_data is not None:
+                                session.rounds.append(_fb_result.round_data)
+                            if _fb_result.formatted_context:
+                                self._append_accumulated(session, _fb_result.formatted_context)
+                            session._action_dispatched = True
+                            continue  # let the model produce its final answer
+
                     if not _action_decisions:
                         _decision_answer_text = "".join(
                             d.partial_response or "" for d in decisions
@@ -1396,6 +1675,69 @@ class AgenticSearchController:
                         continue
                     if tr.decision.wants_search and tr.round_data is not None:
                         self._update_relaxation_tracking(session, tr)
+
+            # A19 (2026-09-11, round 5): deterministic note-save fallback —
+            # the A11 calendar pattern, one chokepoint placed right after
+            # the round loop so it covers ALL THREE ways the loop can end
+            # (explicit done, implicit ready-to-answer, or max-rounds
+            # exhaustion) without duplicating the check at each exit. Live:
+            # a gate-detected note-save request ("jot down a note for this
+            # session: TA sessions are Saturdays at 11 CT,") ran two
+            # implicit-ready-to-answer rounds with NO
+            # `Native tool create_daemon_note` call at all — the tool HINT
+            # offered to the model is advisory only, the model declined it
+            # twice, and the final reply narrated the note as already
+            # saved. session.note_body_override is set only for a
+            # gate-detected note-save request (session init above);
+            # session._note_dispatched is set at the single dispatch
+            # chokepoint (_dispatch_single_inner / ToolExecutor.dispatch_single)
+            # whenever a create_daemon_note decision — model-authored or
+            # this fallback — actually runs, so this check has one source
+            # of truth rather than re-deriving it from session.rounds.
+            if (
+                getattr(session, "note_body_override", None)
+                and not getattr(session, "_note_dispatched", False)
+                and not getattr(session, "_note_force_fallback_sent", False)
+            ):
+                session._note_force_fallback_sent = True
+                _fb_note_body = session.note_body_override
+                _fb_note_decision = SearchDecision(
+                    wants_create_daemon_note=True,
+                    daemon_note_title=note_fallback_title(_fb_note_body),
+                    daemon_note_category="implementation",
+                    daemon_note_summary=_fb_note_body,
+                    daemon_note_user_requested=True,
+                    daemon_note_reason=(
+                        "deterministic fallback: model declined to save"
+                    ),
+                )
+                logger.warning(
+                    "[AgenticSearch] Note-save request never dispatched "
+                    "create_daemon_note across the round loop — minting "
+                    f"the note deterministically: {_fb_note_body!r}"
+                )
+                _fb_note_round = session.current_round
+                _fb_note_result = await self._dispatch_single(
+                    _fb_note_decision, _fb_note_round, session, crisis_level,
+                    sandbox_session,
+                )
+                for ev in _fb_note_result.start_events:
+                    yield ev
+                for ev in _fb_note_result.end_events:
+                    yield ev
+                if _fb_note_result.round_data is not None:
+                    session.rounds.append(_fb_note_result.round_data)
+                if _fb_note_result.formatted_context:
+                    self._append_accumulated(session, _fb_note_result.formatted_context)
+                # The model's final answer must reflect what the note
+                # fallback just did, not a stale narration captured before
+                # it ran (the exact live R5 confabulation) — discard any
+                # decision-round reuse candidate so a real final-generation
+                # call runs. A11's in-loop `continue` re-queries the model
+                # for the same reason; there is no further round to
+                # re-query here, so full synthesis IS "let the model
+                # produce its final answer".
+                _decision_answer_text = None
 
             # === FINAL GENERATION ===
             session.state = AgentState.GENERATING
@@ -1560,6 +1902,26 @@ class AgenticSearchController:
         """
         from core.agentic.tools import DISPATCH_TABLE, reroute_url_search
         decision = reroute_url_search(decision)
+        # A14 (2026-09-10, round 3): a gate-detected note-save request's
+        # body is the USER'S stated content — computed once at session
+        # start (run_agentic_search) — never the model's own elaboration.
+        # Overridden here, the single chokepoint both routers dispatch
+        # through, rather than inside ToolExecutor._dispatch_create_daemon_note
+        # (which has no session access).
+        if getattr(decision, "wants_create_daemon_note", False):
+            # A19 (2026-09-11, round 5): mark the session as having actually
+            # dispatched create_daemon_note THIS turn — whichever path
+            # drives it (a model decision or the post-loop deterministic
+            # fallback in run_agentic_search) — so that fallback's
+            # "was a note ever dispatched" check has a single source of
+            # truth instead of re-deriving it from session.rounds.
+            session._note_dispatched = True
+            if getattr(session, "note_body_override", None):
+                decision.daemon_note_summary = session.note_body_override
+                # A15 (round 4): this note's body came from an explicit user
+                # request, not model initiative — the executor's autonomy
+                # guardrails (session cap, semantic dedup) must not veto it.
+                decision.daemon_note_user_requested = True
         for predicate, handler_name, arg_builder in DISPATCH_TABLE:
             if predicate(decision):
                 handler = getattr(self, handler_name, None) or getattr(self._tool_executor, handler_name)
@@ -2029,15 +2391,53 @@ class AgenticSearchController:
         ]
 
     @staticmethod
+    def _build_native_action_prompt(
+        query: str, forced_action, is_followup: bool = False
+    ) -> str:
+        """Native-tools forced-round directive appended to `_round_prompt`.
+
+        A5 (round 2, BC-30-adjacent): includes the [RESOLVED FIELDS] block
+        from `resolved_fields_note` for a calendar_create_event whose
+        weekday+time `resolve_weekday_time` can ground deterministically —
+        live, a forced round asked "how long does the study group run?"
+        because the resolved start/end/recurrence were only ever applied
+        POST-HOC to the model's own decision, never shown to the model
+        itself, so it treated end_time as unstated.
+
+        A6 (round 2): `is_followup` labels the query as a [USER ANSWER]
+        instead of "The user asked" when this forced round was reached via
+        the gate's prior-turn offer/retry/clarification-answer arm — the
+        CURRENT text ("Yes 1 hour") is a short reply, not the request
+        itself (the actual request lives in the action-context digest
+        already present earlier in this prompt).
+        """
+        lead = f"[USER ANSWER] {query}" if is_followup else f"The user asked: {query}"
+        text = (
+            "[ACTION EXECUTION DIRECTIVE]\n"
+            f"{lead}\n\n"
+            f"Call propose_action now to do exactly this, filling in ALL content "
+            f"fields from the request and conversation context above. For several "
+            f"calendar events, use one events[] batch.\n\n"
+            f"{_pending_cards_note()}"
+        )
+        if getattr(forced_action, "value", None) == "calendar_create_event":
+            note = resolved_fields_note(query)
+            if note:
+                text += "\n\n" + note
+        return text
+
+    @staticmethod
     def _build_xml_action_force_prompt(
-        query: str, forced_action, spec, reject_reason: Optional[str] = None
+        query: str, forced_action, spec, reject_reason: Optional[str] = None,
+        is_followup: bool = False,
     ) -> str:
         """Forced-round prompt for the XML-markers protocol: a concrete
         <action> example whose attributes are the spec's required/optional
         fields, one marker per item (a calendar request can carry several
         events — each is its own marker). `reject_reason` (F12, 2026-09-09):
         when the immediately-prior forced attempt was rejected, name why so
-        the single retry is not a blind re-ask."""
+        the single retry is not a blind re-ask. `is_followup` (A6, round 2):
+        see `_build_native_action_prompt`."""
         _fields = list(getattr(spec, "required", ()) or ())
         _attr_example = " ".join(f'{f}="<{f}>"' for f in _fields) or 'recipient="<who>"'
         _type = forced_action.value
@@ -2077,8 +2477,10 @@ class AgenticSearchController:
                 "zone; never silently reinterpret a stated zone as local."
             )
         _reject_note = f" Your previous attempt was REJECTED: {reject_reason}." if reject_reason else ""
+        _lead = f"[USER ANSWER] {query}" if is_followup else f"The user asked: {query}"
+        _note = resolved_fields_note(query) if _type == "calendar_create_event" else ""
         return (
-            f"The user asked: {query}\n\n"
+            f"{_lead}\n\n"
             f"Perform exactly this request by emitting one or more <action> "
             f"markers — nothing else, no prose. Syntax (fill every field from "
             f"the request and the conversation context above):\n"
@@ -2091,7 +2493,9 @@ class AgenticSearchController:
             f"time, date, or recipient that is not stated in the request or context — "
             f"a guessed value is rejected. Use "
             f'type="{_type}" exactly — do not substitute a different '
-            f"action_type.{_reject_note}"
+            f"action_type.{_reject_note}\n\n"
+            f"{_pending_cards_note('emit the <action> marker')}"
+            + (f"\n\n{_note}" if _note else "")
         )
 
     @staticmethod
@@ -2622,6 +3026,18 @@ class AgenticSearchController:
         return list(reversed(ordered))
 
     @staticmethod
+    def _previous_user_query(initial_context: Optional[Dict[str, Any]]) -> str:
+        """The most recent PRIOR user turn's raw text (A9, round 2) — used
+        only to detect a git-push cue for an otherwise-unnamed document
+        follow-up ("Can you take a look?" right after "Managed to push
+        today and there is a new doc...")."""
+        ordered = AgenticSearchController._ordered_recent_conversations(initial_context)
+        if not ordered:
+            return ""
+        last = ordered[-1]
+        return str(last.get('query', last.get('user', '')) or '')
+
+    @staticmethod
     def _head_tail(text: str, limit: int) -> str:
         """Bound text without dropping the closing question/preference cue."""
         value = (text or "").strip()
@@ -2668,6 +3084,22 @@ class AgenticSearchController:
             + rendered
         )
 
+    @staticmethod
+    def _clip_preserving_claim_marker(text: str, limit: int) -> str:
+        """Clip `text` to `limit` chars, but when it ends with the action-
+        claim marker (2026-09-11, round 5, B13 sibling: core.action_claim_
+        guard.UNVERIFIED_CLAIM_MARKER), clip the message BODY instead of
+        the raw tail so the marker itself always survives — a hard
+        char-cap silently dropping the exact flag a laundered claim needs
+        would defeat the point of annotating it upstream in
+        core/prompt/gatherer_memory.py. Ordinary (unmarked) text keeps the
+        prior plain `text[:limit]` behavior."""
+        suffix = "\n" + UNVERIFIED_CLAIM_MARKER
+        if text.endswith(suffix):
+            body = text[: -len(suffix)]
+            return body[: max(0, limit - len(suffix))] + suffix
+        return text[:limit]
+
     def _compute_recent_conversation_digest(
         self, initial_context: Optional[Dict[str, Any]]
     ) -> str:
@@ -2691,7 +3123,10 @@ class AgenticSearchController:
                 continue
             lines.append(f"- User: {user_msg[:self._DIGEST_MSG_CHARS]}")
             if assistant_msg:
-                lines.append(f"  Daemon: {assistant_msg[:self._DIGEST_MSG_CHARS]}")
+                lines.append(
+                    "  Daemon: "
+                    + self._clip_preserving_claim_marker(assistant_msg, self._DIGEST_MSG_CHARS)
+                )
         if not lines:
             return ""
 
@@ -2707,11 +3142,16 @@ class AgenticSearchController:
         return header + "\n" + "\n".join(lines)
 
     @staticmethod
-    def _detect_tool_hints(query: str) -> str:
+    def _detect_tool_hints(query: str, prev_user_text: str = "") -> str:
         """Detect tool name mentions in a query and return usage hints.
 
         When the user explicitly mentions tools by name, the model should
         prioritize calling those tools rather than narrating about them.
+
+        ``prev_user_text`` (A9, round 2): the immediately-prior USER turn's
+        raw text, checked for the git-cued document hint below alongside
+        the current query — default "" preserves the pre-A9 single-turn
+        behavior for every other caller/test.
         """
         q = query.lower()
         hints = []
@@ -2724,6 +3164,34 @@ class AgenticSearchController:
             hints.append('Use <git_stats>your query</git_stats> (or the git_stats tool) for repo stats.')
         if any(w in q for w in ('search memory', 'remember', 'recall', 'my facts')):
             hints.append('Use <memory collection="facts">query</memory> (or the search_memory tool).')
+        # Note-save request (2026-09-10, A3): the gate's note-save Tier-1 arm
+        # routes here via modes=['tools'] with no forced tool the way a
+        # write-action round has — live: "jot down a note for this session:
+        # …" reached the loop and the model replied that it can't save
+        # notes at all, never calling create_daemon_note.
+        try:
+            from utils.query_checker import is_note_save_request
+            if is_note_save_request(query):
+                hints.append(
+                    'Use the create_daemon_note tool to save this note now — '
+                    'do not just say you will or that you cannot.'
+                )
+        except Exception:
+            pass
+        # Git-cued document hint (2026-09-10, round 2, A9): the CURRENT or
+        # PREVIOUS user turn names a git action AND a doc noun together —
+        # live: "Managed to push today and there is a new doc..." followed
+        # by "Can you take a look?" resolved to a 5-day-old uploaded PDF via
+        # the reuse pool, never the repository file just pushed.
+        def _has_git_doc_cue(text: str) -> bool:
+            return bool(text) and bool(_GIT_CUE_RE.search(text)) and bool(_DOC_NOUN_RE.search(text))
+        if _has_git_doc_cue(query) or _has_git_doc_cue(prev_user_text):
+            hints.append(
+                'The document is probably a REPOSITORY file (the user pushed '
+                'today): use file_list/file_grep on docs/ and the newest git '
+                'commits BEFORE the upload pool; if the loop cannot identify '
+                'it, ask which file.'
+            )
         if not hints:
             return ''
         return (
@@ -2736,14 +3204,15 @@ class AgenticSearchController:
         query: str,
         search_context: str,
         round_number: int,
-        session: Optional[AgenticSearchSession] = None
+        session: Optional[AgenticSearchSession] = None,
+        prev_user_text: str = "",
     ) -> str:
         """Build prompt for iteration decision."""
         _now = datetime.now()
         _time_ctx = _now.strftime("Today is %A, %Y-%m-%d %H:%M. ")
 
         # Detect tool mentions and add hints
-        _tool_hints = self._detect_tool_hints(query)
+        _tool_hints = self._detect_tool_hints(query, prev_user_text)
 
         parts = [f"""{_time_ctx}User Question: {query}{_tool_hints}
 

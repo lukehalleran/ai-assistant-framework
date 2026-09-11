@@ -213,6 +213,15 @@ class SearchDecision:
     daemon_note_category: Optional[str] = None  # implementation | architecture | research | decisions
     daemon_note_summary: Optional[str] = None
     daemon_note_reason: Optional[str] = None
+    # A15 (2026-09-11, round 4): True when this note's summary was overridden
+    # from the user's own stated content (session.note_body_override) — i.e.
+    # the user explicitly requested this save this turn, as opposed to the
+    # model deciding on its own to leave a working note. The AUTONOMY
+    # guardrails in DaemonNotesManager.create_autonomous_note (per-session
+    # cap, semantic dedup) are scoped to unprompted self-notes and must not
+    # veto an explicit request (docs/BUG_CLASSES.md BC-77). Set at the single
+    # chokepoint where note_body_override is applied, never elsewhere.
+    daemon_note_user_requested: bool = False
     # Google Contacts lookup (read-only, no confirmation needed)
     wants_lookup_contact: bool = False
     lookup_contact_name: Optional[str] = None

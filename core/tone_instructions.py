@@ -7,7 +7,7 @@ Module Contract
 - Inputs:
   - get_tone_instructions(tone_level, user_profile=None, suppress_style_modifier=False) -> str
   - get_response_instructions(ctx, user_profile=None, suppress_style_modifier=False) -> str
-  - get_intent_style_instructions(intent_value, confidence, crisis_level_str) -> str
+  - get_intent_style_instructions(intent_value, confidence, crisis_level_str, query=None) -> str
   - get_session_headers_instructions() -> str
 - Outputs: Instruction strings appended to system prompt.
 - Side effects: None (pure functions).
@@ -33,7 +33,8 @@ logger = get_logger("tone_instructions")
 
 
 def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
-                          suppress_style_modifier: bool = False) -> str:
+                          suppress_style_modifier: bool = False,
+                          query: str = None) -> str:
     """
     Return mode-specific response instructions based on detected crisis level.
 
@@ -47,6 +48,15 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
             injected and could contradict ("prioritize connection" vs "skip
             reassurance, lead with the diagnosis"), leaving the model to
             paper over the conflict.
+        query: Optional raw user text (2026-09-10, probe T2). When the tone
+            is CONCERN and the query is REQUEST-shaped (a direct question —
+            "what time should I take meds tonight?"), the LIGHT SUPPORT
+            block drops "don't offer unsolicited advice / let them vent"
+            (nonsensical against an explicit request for advice, and a
+            direct dosing question was answered with a hedge instead of the
+            answer) for a "the user asked a direct question — answer it
+            plainly" instruction. Omitted (None) keeps the vent-oriented
+            block exactly as before.
 
     Returns:
         String containing tone-specific instructions to append to system prompt
@@ -91,17 +101,40 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
         return style_modifier + base_instructions if style_modifier else base_instructions
     elif tone_level == CrisisLevel.CONCERN:
         # LIGHT_SUPPORT: Brief validation for moderate concern
-        base_instructions = (
-            "\n\n## RESPONSE MODE: LIGHT SUPPORT\n"
-            "The user is expressing concern, anxiety, or stress about something. "
-            "Respond with brief, grounded validation:\n"
-            "- 2-4 sentences - acknowledge without expanding unnecessarily\n"
-            "- \"That sucks\" + brief validation is often sufficient\n"
-            "- Don't offer unsolicited advice or try to solve their problem\n"
-            "- Match their energy - if they're venting, let them vent\n"
-            "- Only expand if they explicitly ask for more\n"
-            + GROUNDING_ACCURACY_CLAUSE
-        )
+        _request_shaped = False
+        if query:
+            try:
+                from utils.query_checker import is_request_shaped
+                _request_shaped = is_request_shaped(query)
+            except Exception:
+                _request_shaped = False
+        if _request_shaped:
+            # 2026-09-10 (probe T2): a direct question mid-distress ("What
+            # time should I take meds melatonin etc tonight to get to bed")
+            # still got the vent-oriented ruleset — "don't offer unsolicited
+            # advice" / "let them vent" makes no sense against an explicit
+            # request for advice, and the reply hedged instead of answering.
+            base_instructions = (
+                "\n\n## RESPONSE MODE: LIGHT SUPPORT\n"
+                "The user is expressing concern, anxiety, or stress about something. "
+                "Respond with brief, grounded validation:\n"
+                "- 2-4 sentences - acknowledge without expanding unnecessarily\n"
+                "- The user asked a direct question — answer it plainly; keep the support brief.\n"
+                "- Only expand if they explicitly ask for more\n"
+                + GROUNDING_ACCURACY_CLAUSE
+            )
+        else:
+            base_instructions = (
+                "\n\n## RESPONSE MODE: LIGHT SUPPORT\n"
+                "The user is expressing concern, anxiety, or stress about something. "
+                "Respond with brief, grounded validation:\n"
+                "- 2-4 sentences - acknowledge without expanding unnecessarily\n"
+                "- \"That sucks\" + brief validation is often sufficient\n"
+                "- Don't offer unsolicited advice or try to solve their problem\n"
+                "- Match their energy - if they're venting, let them vent\n"
+                "- Only expand if they explicitly ask for more\n"
+                + GROUNDING_ACCURACY_CLAUSE
+            )
         return style_modifier + base_instructions if style_modifier else base_instructions
     else:  # CrisisLevel.CONVERSATIONAL
         # CONVERSATIONAL: Natural friend voice - most interactions
@@ -144,7 +177,8 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
 
 
 def get_response_instructions(ctx: EmotionalContext, user_profile=None,
-                              suppress_style_modifier: bool = False) -> str:
+                              suppress_style_modifier: bool = False,
+                              query: str = None) -> str:
     """
     Generate response instructions based on combined emotional context.
 
@@ -159,6 +193,8 @@ def get_response_instructions(ctx: EmotionalContext, user_profile=None,
     Args:
         ctx: EmotionalContext with crisis level and need type
         user_profile: Optional UserProfile for style modifier injection
+        query: Optional raw user text, forwarded to get_tone_instructions'
+            request-shaped CONCERN carve-out (2026-09-10).
 
     Returns:
         String containing response instructions to append to system prompt
@@ -169,7 +205,8 @@ def get_response_instructions(ctx: EmotionalContext, user_profile=None,
 
     # Combined instructions for non-crisis
     base = get_tone_instructions(ctx.crisis_level, user_profile,
-                                 suppress_style_modifier=suppress_style_modifier)
+                                 suppress_style_modifier=suppress_style_modifier,
+                                 query=query)
 
     if ctx.need_type == NeedType.PRESENCE:
         presence_addon = """
@@ -270,7 +307,7 @@ _INTENT_STYLE_BLOCKS = {
 
 
 def get_intent_style_instructions(
-    intent_value, confidence, crisis_level_str=None,
+    intent_value, confidence, crisis_level_str=None, query: str = None,
 ) -> str:
     """
     Return a short per-intent response-style block, or "" when it shouldn't
@@ -280,6 +317,15 @@ def get_intent_style_instructions(
     - crisis_level_str is anything but CONVERSATIONAL (tone owns style then)
     - confidence < _INTENT_STYLE_MIN_CONFIDENCE (signal too weak)
     - the intent has no style block (emotional_support, general, unknown)
+    - query is a task directive (2026-09-11, round 5, B15): a note-save/
+      action request misclassified as e.g. factual_recall got the FACTUAL
+      RECALL block ("lead with the answer... state where you know it
+      from"), which pushed the model to answer FROM the digest instead of
+      routing the note-save request to a tool — live: "jot down a note for
+      this session: TA sessions are Saturdays at 11 CT" rendered a
+      [RESPONSE PLAN]/style block that restated a false calendar claim.
+      Only a task DIRECTIVE is excluded here; ordinary questions (even
+      ones that happen to classify factual_recall) keep their style block.
 
     Args:
         intent_value: Intent value string (e.g. "technical_help") or an
@@ -287,6 +333,8 @@ def get_intent_style_instructions(
         confidence: Classifier confidence 0.0-1.0.
         crisis_level_str: Tone level string ("HIGH"/"MEDIUM"/"CONCERN"/
                           "CONVERSATIONAL"); None is treated as conversational.
+        query: Optional raw user text. Omitted (None) keeps prior behavior
+               (no task-directive gating) for any caller that doesn't pass it.
 
     Returns:
         Instruction block to append to the system prompt tail, or "".
@@ -301,6 +349,18 @@ def get_intent_style_instructions(
     key = getattr(intent_value, "value", intent_value)
     if not key:
         return ""
+    if query:
+        try:
+            # lazy import: patch point + avoids a module-load-time cycle
+            # (utils.query_checker call-time-imports core.actions.registry
+            # and core.agentic.gate; tone_instructions is itself imported
+            # early by core.orchestrator, so this stays call-time like the
+            # other query-shape checks in this module).
+            from utils.query_checker import is_task_directive
+            if is_task_directive(query):
+                return ""
+        except Exception:
+            pass
     return _INTENT_STYLE_BLOCKS.get(str(key).lower(), "")
 
 

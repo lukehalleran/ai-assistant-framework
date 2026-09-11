@@ -113,6 +113,11 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-70 | Log, comment or severity misdescribes the control flow | H | partial |
 | BC-71 | Documentation and tool self-description drift | H | partial |
 | BC-72 | Unobservable decision (no receipt in telemetry or debug) | H | partial |
+| BC-73 | Ambiguous short-form token expanded to an unstated referent via background context | E | partial |
+| BC-74 | Broad continuation/affirmation arm outranks a narrower explicit-request arm | A | partial |
+| BC-75 | Self-authored artifact laundered into evidence via a persistent store | E | open |
+| BC-76 | Closure by phrase-append (narrow remedy pattern) | J process | open |
+| BC-77 | Autonomy guardrail vetoes an explicit user request; dispatcher receipt still claims success | B | open |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -146,17 +151,17 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-05 Short-circuit skips the only component that could judge the shape
 - Mechanism: a conservative deterministic rule plus a "confident no" short-circuit means a whole message shape is never judged by anything — the cheap stage says "nothing here" and the expensive judge is skipped on exactly that verdict.
-- Incidents: 2026-09-10 "The president says he will pay everyone 5000…" scored heuristic 0.0/no keywords → the LLM trigger was skipped, `requires_fresh_public_evidence` needs question+temporal cues a share lacks; 2026-09-09 "Uhm. Please investigate thank you" same skip, no context consult (HANDOFF_20260910_web_search_gap).
+- Incidents: 2026-09-10 "The president says he will pay everyone 5000…" scored heuristic 0.0/no keywords → the LLM trigger was skipped, `requires_fresh_public_evidence` needs question+temporal cues a share lacks; 2026-09-09 "Uhm. Please investigate thank you" same skip, no context consult (HANDOFF_20260910_web_search_gap); 2026-09-10 (evening) "jot down a note for this session: TA sessions are Saturdays at 11 CT" scored gate "no trigger" though `create_daemon_note` exists — the deterministic tiers' conservative "no" left the note-save shape unjudged by any component, and the reply confabulated a queued calendar event instead (probe-dump handoff T5).
 - Find: for every `if conf <= 0 and not hits: return` style short-circuit, enumerate which shapes reach 0.0 (a probe set of statement-shaped inputs) and whether any later stage sees them.
-- Closure: `consult_classifier` flag + `public_actor_statement` arm + contextual `is_verification_request`, pinned by `test_sep10_web_search_gap.py` (09-10).
-- Status: partial — the public-claim and verification shapes are closed; other zero-signal short-circuits still require shape enumeration.
+- Closure: `consult_classifier` flag + `public_actor_statement` arm + contextual `is_verification_request`, pinned by `test_sep10_web_search_gap.py` (09-10); `query_checker.is_note_save_request` + a gate Tier-1 tools arm for the note-save shape (probe-dump A3).
+- Status: partial — the public-claim, verification and note-save shapes are closed; other zero-signal short-circuits still require shape enumeration.
 
 ### BC-06 Agentic gate over-fire on non-requests
 - Mechanism: a gate tier classifies conversation as tool-worthy and launches a multi-second to multi-minute loop for no informational need.
-- Incidents: 2026-07-15 60 s on a vibe remark (continuation override); 2026-08-18 49 s via `temporal_recall@0.85`; 2026-08-27 106 s paste, 369 s decision timeout with zero tools; 2026-08-29 151 s on lyrics; 2026-09-02 129 s on an emotional check-in, cause invisible until `gate_reason` was surfaced (RETRO §3.12); 2026-09-10 course-document narration forced a calendar-create loop that invented a 17:00 event (calendar forced-action handoff T9).
+- Incidents: 2026-07-15 60 s on a vibe remark (continuation override); 2026-08-18 49 s via `temporal_recall@0.85`; 2026-08-27 106 s paste, 369 s decision timeout with zero tools; 2026-08-29 151 s on lyrics; 2026-09-02 129 s on an emotional check-in, cause invisible until `gate_reason` was surfaced (RETRO §3.12); 2026-09-10 course-document narration forced a calendar-create loop that invented a 17:00 event (calendar forced-action handoff T9); 2026-09-10 (evening) a forced calendar-create round on an explicit recurring-event request still burned 7.8 s of web search + 3.6 s of wiki lookup inside the agentic loop with no informational need (probe-dump handoff T6/probe 2).
 - Find: DM-10 — `jq -r 'select(.mode=="agentic-search") | .gate_reason' logs/turn_records.jsonl | sort | uniq -c` against `wall_elapsed_s` outliers; the 09-04 audit found `llm-fallback` launched 27 % of agentic turns.
 - Closure: per-arm (word caps, head anchors, vent-shape veto, action arm, decision-timeout one-shot); `gate_reason` in every record.
-- Status: recurs — no precision measurement of the Tier-4 LLM fallback.
+- Status: recurs — no precision measurement of the Tier-4 LLM fallback; the web/wiki legs of a forced action round are still unguarded (see BC-58 sibling incident, same handoff).
 
 ### BC-07 Probabilistic verdict overrides a deterministic route
 - Mechanism: an LLM flag early-returns and discards a routing decision already computed deterministically, or is accepted without a speech-act check.
@@ -218,10 +223,10 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-15 Protocol/schema vocabulary drift (taught ≠ parsed; enum gap)
 - Mechanism: the vocabulary the model is taught and the vocabulary the parser or schema accepts diverge; a forced round has no valid expression and substitutes a sibling type.
-- Incidents: 2026-08-29 fixed attribute groups couldn't express calendar fields; 2026-09-01 `ACTION_ATTR_RE` truncated at an apostrophe (F20); 2026-09-09 `PROPOSE_ACTION_TOOL_DEFINITION` enum lacked update/delete → a forced delete emitted a create (F12); 2026-09-10 action detectors missed the system's own "queue it up" / "approval card pop up" wording and recurrence amendments, leaving affirmative and retry turns unrouteable.
+- Incidents: 2026-08-29 fixed attribute groups couldn't express calendar fields; 2026-09-01 `ACTION_ATTR_RE` truncated at an apostrophe (F20); 2026-09-09 `PROPOSE_ACTION_TOOL_DEFINITION` enum lacked update/delete → a forced delete emitted a create (F12); 2026-09-10 action detectors missed the system's own "queue it up" / "approval card pop up" wording and recurrence amendments, leaving affirmative and retry turns unrouteable; 2026-09-10 (evening) a note-save request found no expressible route in the action-type vocabulary (only a bare tool, `create_daemon_note`, existed, with nothing bridging "jot down a note" phrasing to it) — the reply disclaimed the capability outright rather than routing to the tool (probe-dump handoff T5, sibling of the same turn's BC-05 incident); 2026-09-10 round 3 retest — `claims_pending_card`/`claims_calendar_state` still lacked the modal/participle vocabulary the assistant's OWN retry offers actually use ("the card should be up now", "it's already in place", "re-queued"), and `is_offer_affirmation`/`is_action_retry_request`/`is_clarification_answer` all returned False on "Yes it failed" — a five-way vocabulary gap between what the system says/asks and what its own parsers recognize, all on the SAME turn.
 - Find: diff `ACTION_SPECS`/`ActionType` against every tool-schema enum and every taught tag in `core/agentic/types.py` vs what `protocols.py` matches; replay the assistant's own offer/completion phrasings through the detectors; DM-02 `test_tool_wiring_parity`.
-- Closure: registry-driven attribute parsing; `build_forced_tool_schema` one-value enum; `resolve_forced_action` coerce-or-reject; forced-type and assistant-self-phrasing parity tests in the 09-09/09-10 regression modules.
-- Status: partial — forced action types and current self-phrasing are guarded, but vocabulary families can still drift outside those registries.
+- Closure: registry-driven attribute parsing; `build_forced_tool_schema` one-value enum; `resolve_forced_action` coerce-or-reject; forced-type and assistant-self-phrasing parity tests in the 09-09/09-10 regression modules; `query_checker.is_note_save_request` bridges the note-save phrasing to the `create_daemon_note` tool (probe-dump A3); round 3 widens `claims_pending_card`/`claims_calendar_state` with the modal/participle forms (A13) and adds `is_failure_report` ("yes it failed", "didn't go through"…) to the affirmation family so a bare failure report after a retry offer routes to a forced retry (A12).
+- Status: partial — forced action types, current self-phrasing, and the note-save bridge are guarded, but vocabulary families can still drift outside those registries; round 3 closed the specific five phrasings found, not the class.
 
 ### BC-16 Related constants drift / one constant, two purposes
 - Mechanism: two constants encode one relationship (collect 6000, truncate 3500) or one constant serves two features.
@@ -236,6 +241,13 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Find: diff `API_ERROR_PREFIXES` against `_API_ERROR_DISPLAY`; `tests/unit/test_api_error_fail_fast.py`.
 - Closure: parity test exists; no single registry ties prefix→display→filter.
 - Status: partial.
+
+### BC-77 Autonomy guardrail vetoes an explicit user request; dispatcher receipt still claims success
+- Mechanism: a guardrail written to bound the model's OWN unprompted behavior (a per-session cap, a semantic near-duplicate skip, a rate limit) sits on the same execution path a user-forced request takes, so an explicit "save this" is silently vetoed by a rule meant for autonomous note-taking; the dispatcher above it emits a fixed success-shaped event/receipt regardless of the executor's result, so the loop's context and the progress stream both read "saved" while the store is unchanged, and the model narrates completion.
+- Incidents: 2026-09-11 10:10 "jot down a note for this session: TA sessions are Saturdays at 11 CT" — the model called `create_daemon_note`; `DaemonNotesManager.create_autonomous_note` skipped it as a 0.879 near-duplicate of two poisoned self-notes; `_dispatch_create_daemon_note` still yielded `note_saved` and a "Self-Note Saved" round header; the reply said "Already covered".
+- Find: for every executor reachable from a gate-forced or user-directed tool route, `grep -n "return None\|skipped" <executor>` and check whether the dispatcher keys its end event / round header off the executor's RESULT or off a constant; `grep -n "event_type="[a-z_]*_saved"\|_created"\|_sent"" core/agentic/tools.py` and confirm each sits under a result check.
+- Closure: the request's provenance rides on the decision object (`SearchDecision.daemon_note_user_requested`, set wherever the gate-detected body override is applied) and the guardrail branches on it (cap and dedup skip bypassed, the near-duplicate still logged); the executor exposes the skip reason (`last_skip_reason`) and the dispatcher emits `note_skipped` / "Self-Note NOT Saved" unless the result string starts with the success prefix. Tests: `tests/unit/test_sep10_probe_dump_actions.py::TestA15*`.
+- Status: closed for `create_daemon_note` (2026-09-11); other autonomy-bounded executors (proposal capacity in `PendingActionsStore`, email/contact rate caps) not yet audited with the Find grep.
 
 ## C. Ordering, data shape, transport
 
@@ -327,9 +339,9 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-30 State scoped to the wrong lifetime
 - Mechanism: a flag or cache that should reset at a round/turn/session boundary persists past it.
-- Incidents: 2026-08-31 `_forced_action` never cleared across rounds (F13); expired token reported AVAILABLE (F15); `_conversation_depth` zeroed by restart so STM skipped the first 3 messages (08-05 round 3); 2026-09-10 an older calendar card blocked a fresh amendment/retry because proposal ownership was not scoped to the turn that minted it.
+- Incidents: 2026-08-31 `_forced_action` never cleared across rounds (F13); expired token reported AVAILABLE (F15); `_conversation_depth` zeroed by restart so STM skipped the first 3 messages (08-05 round 3); 2026-09-10 an older calendar card blocked a fresh amendment/retry because proposal ownership was not scoped to the turn that minted it; 2026-09-10 (evening, BC-30/48 sibling) an agentic tool-loop turn resolved an unnamed "look at it" reference to a document uploaded five days earlier and asserted "You uploaded [it] today" — a retrieved file's actual upload date was not checked against the current turn/session, so a stale file read as freshly scoped to the live turn (probe-dump handoff T4).
 - Find: attributes assigned once and read across boundaries with no reset at boundary start.
-- Closure: per-site resets; `_has_recent_history`; pending-card ownership uses `_card_created_by_turn` and explicit supersession.
+- Closure: per-site resets; `_has_recent_history`; pending-card ownership uses `_card_created_by_turn` and explicit supersession; `action_claim_guard.claims_fresh_upload` + a handlers post-check comparing the claim against `ActiveDocumentRegistry`/the upload roster's actual date (probe-dump B6).
 - Status: partial.
 
 ### BC-31 Read-through cache not invalidated by the mutation path
@@ -441,10 +453,10 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-46 Prompt instruction loses to a structural input or model prior
 - Mechanism: prose tells the model X; an attached image, an offset convention or a self-belief about tool access wins.
-- Incidents: vault screenshot narrated (07-14, again 08-27); `13:00:00-04:00` emitted three turns despite "ET = America/New_York" (09-01); "I don't have calendar access" with healthy OAuth (08-29); planner invented a birthday (09-03); a forced calendar proposal invented 17:00 despite its own reasoning saying the time needed confirmation (09-10) (RETRO §3.5; calendar forced-action handoff).
-- Find: DM-20 — every prohibitive prompt instruction (`never|don't|do not`) must have a deterministic sibling (gate, executor check, post-check).
-- Closure: CM-03 executor/backstop functions (`wall_clock_time`, `get_runtime_action_health`, `weekday_date_mismatches`, `unsupported_key_points`, `calendar_times_ungrounded`, visual-intent gate).
-- Status: recurs — bespoke backstop per incident.
+- Incidents: vault screenshot narrated (07-14, again 08-27); `13:00:00-04:00` emitted three turns despite "ET = America/New_York" (09-01); "I don't have calendar access" with healthy OAuth (08-29); planner invented a birthday (09-03); a forced calendar proposal invented 17:00 despite its own reasoning saying the time needed confirmation (09-10) (RETRO §3.5; calendar forced-action handoff); 2026-09-10 (evening) a calendar-create card was minted with `start_time="15:00:00"`/`end_time="16:00:00"` — a bare clock time with no date — and failed only at approve time ("invalid ISO 8601 start/end time"); nothing validated the full-ISO-datetime shape structurally before the card was created (probe-dump handoff T6/probe 2); 2026-09-10 round 3, T2 — a forced round instructed the model to call `propose_action` for a calendar request, but the model refused ("We actually already locked this one in… Approving that card puts it on your calendar"), its own PRIOR narration in `[RECENT CONVERSATION]` outweighing the current-turn forced-tool instruction; no card resulted despite the retry.
+- Find: DM-20 — every prohibitive prompt instruction (`never|don't|do not`) must have a deterministic sibling (gate, executor check, post-check); for a forced-round refusal specifically, check whether the refusal's stated reason quotes the assistant's OWN earlier turn.
+- Closure: CM-03 executor/backstop functions (`wall_clock_time`, `get_runtime_action_health`, `weekday_date_mismatches`, `unsupported_key_points`, `calendar_times_ungrounded`, visual-intent gate); calendar datetime validation at PROPOSAL time — reject-and-retry when start/end is not a full `YYYY-MM-DDTHH:MM:SS`, with deterministic weekday/clock-time backfill from `wall_clock_time()` (probe-dump A2, "validate at parse"); the forced round's own "[PENDING CARDS] none — any earlier 'queued'/'locked in'/'re-queued' wording was NOT backed by a card" prompt line (round 3 A11) plus a deterministic mint-anyway fallback when the model still declines and a weekday/time/title all resolve.
+- Status: recurs — bespoke backstop per incident; the T2 refusal is the first instance of the model's OWN prior narration (not an image or offset convention) as the overriding "structural input", closed only for the calendar forced-round path.
 
 ### BC-47 Failure or not-run collapsed into a valid empty result
 - Mechanism: timeout/unavailable/never-ran is encoded like a genuine negative — in code (same return shape) or in the prompt (`web_search=ON(0)` for both "0 results" and "never ran") — so downstream, including the model, cannot tell "nothing" from "couldn't check".
@@ -477,7 +489,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 ### BC-51 Attribute or count inferred from a label, not the user's words
 - Mechanism: a topic label, graph edge, planner point or narrative asserts species/role/event/duration/count the user never stated.
 - Incidents: 2026-09-03 cat called a dog (edge + label + planner aligned); "birthday celebration" from "turned 2"; 2026-09-04 "withdrawn from the semester" vs a one-course drop; 2026-09-05 "six consecutive days" copied across days.
-- Find: `ResponsePlanner.unsupported_key_points`-style overlap check; `utils/streak_claims.py`, `utils/status_claims.py`, `completed_plan_claims` post-checks.
+- Find: `ResponsePlanner.unsupported_key_points`-style overlap check; `utils/streak_claims.py`, `utils/status_claims.py`, `completed_plan_claims` post-checks; DM-27 corpus-replay planner canary (see BC-73) catches the same shape one stage earlier, at resolution time.
 - Closure: those modules + `GraphMemory.edge_is_suppressed`.
 - Status: recurs — bespoke checker per incident shape.
 
@@ -529,10 +541,10 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-58 Guard covers only the first-observed path
 - Mechanism: the fix lands where the incident was seen; structurally identical siblings (read sites, sibling generators, other collections, other display paths) stay unguarded. The project's meta-class.
-- Incidents: artifact strip covered storage + enhanced only (08-14); species guard ingestion-only until read sites (09-03); `backup_targets` missed every store since 07-14 (09-01); `weekly_notes_generator` missed when daily/monthly were fixed (09-01); privacy scrub covered git only, not the share surfaces (09-02); chroma junk curator never touched `user_profile.json` (09-05); the pending-action filesystem guard allowed the canonical state file but blocked its atomic temp siblings (09-10); action-offer and completion guards omitted phrases emitted by the assistant itself (09-10).
-- Find: DM-15 — after fixing site A, enumerate every read AND write of the same primitive/store (`rg` the store method or the sibling naming pattern) before closing the batch.
-- Closure: none structural; situation-coverage sweeps (`docs/SITUATION_COVERAGE_AUDIT_20260901.md`).
-- Status: recurs.
+- Incidents: artifact strip covered storage + enhanced only (08-14); species guard ingestion-only until read sites (09-03); `backup_targets` missed every store since 07-14 (09-01); `weekly_notes_generator` missed when daily/monthly were fixed (09-01); privacy scrub covered git only, not the share surfaces (09-02); chroma junk curator never touched `user_profile.json` (09-05); the pending-action filesystem guard allowed the canonical state file but blocked its atomic temp siblings (09-10); action-offer and completion guards omitted phrases emitted by the assistant itself (09-10); 2026-09-10 (evening) the same-day 0aeffb7 batch closed web-trigger over-fire for PUBLIC-NEWS-statement shapes (`public_actor_statement`) but left the sibling PERSONAL/ACTION-shaped path unguarded — a 14 s Tavily search still ran for a personal medication-dosing question and a forced calendar-create round still burned 7.8 s web + 3.6 s wiki (probe-dump handoff T2, T6); 2026-09-10 round 3 — the round-2 fix for `is_status_report` (and its `is_self_report`/`is_request_shaped`/`is_note_save_request`/`is_personal_doc_search`/`is_casual_acknowledgment` siblings) closed the CLEAN probe-text string only; the live client sends the same message LINE-WRAPPED ("...a new doc I\n  think will be helpful"), and every one of those shape predicates went blind on the wrapped form even though the regression test for the clean form passed.
+- Find: DM-15 — after fixing site A, enumerate every read AND write of the same primitive/store (`rg` the store method or the sibling naming pattern) before closing the batch; for a text-shape predicate specifically, re-run it against `" ".join(text.split())` and flag any predicate whose verdict changes.
+- Closure: none structural; situation-coverage sweeps (`docs/SITUATION_COVERAGE_AUDIT_20260901.md`); `is_personal_routine_question` + action-request web-trigger stand-down (probe-dump A4) closes this sibling for the two cited shapes only; round 3 closes the wrapped-text sibling with `utils/trigger_match.normalize_ws` applied ONCE at ingress (`gui/handlers.py`, CM-01 chokepoint) rather than patching each predicate — the generalized closure this class has otherwise lacked.
+- Status: recurs — the wrapped-text instance is now closed by a chokepoint rather than a per-predicate patch, but the class's other cited siblings (privacy scrub, backup_targets, action-offer vocabulary) remain per-incident.
 
 ### BC-59 Owner-identity hardcoding
 - Mechanism: name, vault path, timezone or owner few-shot embedded in generators/prompts.
@@ -573,9 +585,9 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-64 Fixture or fake contract drift
 - Mechanism: a fake replaces where the driver merges; a fixture is hand-typed to the consumer's assumption, not the producer's output.
-- Incidents: `FakeCollection.update` replaced metadata (T03, hid F01); `/api/graph` fixture matched the wrong schema (T06/F09); the 09-07 pending-card fixture used a plain `.value` string, hiding the real `ActionType` enum/string mismatch found 09-10.
-- Find: DM-07 build fixtures through the real writer (`GraphMemory.save()`), validate fakes against `chromadb.EphemeralClient`.
-- Closure: corrected fakes + real-driver contract tests; 09-10 action sequence tests use real `ActionProposal` values through `PendingActionsStore`.
+- Incidents: `FakeCollection.update` replaced metadata (T03, hid F01); `/api/graph` fixture matched the wrong schema (T06/F09); the 09-07 pending-card fixture used a plain `.value` string, hiding the real `ActionType` enum/string mismatch found 09-10; 2026-09-10 round 3 — every regression fixture for the round-1/2 probe texts was typed as a CLEAN string (`"Cool. Managed to push today..."`), never the line-wrapped form the client actually transmits (`"...a new doc I\n  think will be helpful"`); the fixtures matched the developer's mental model of the input, not the producer's (the browser/API client's) actual output shape, so a genuinely fixed predicate still failed live.
+- Find: DM-07 build fixtures through the real writer (`GraphMemory.save()`), validate fakes against `chromadb.EphemeralClient`; for text-input fixtures specifically, add the wrapped/indented form alongside the clean one (`docs/DEVELOPMENT_WORKFLOW.md` §3 fixture rule).
+- Closure: corrected fakes + real-driver contract tests; 09-10 action sequence tests use real `ActionProposal` values through `PendingActionsStore`; round 3 requires every live-text fixture in `test_sep10_probe_dump_*.py` to be asserted in BOTH clean and wrapped form, and the WORKFLOW fixture rule now names line-wrapping explicitly.
 - Status: partial.
 
 ### BC-65 Git-state-dependent tests
@@ -634,6 +646,50 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Closure: CM-12 receipts (`gate_reason`, `tone_trigger`, `grounding_status`, `answer_call`, timings); `web_trigger_*`, result count and error fields added 09-10.
 - Status: partial.
 
+## I. New mechanisms (2026-09-10 probe-dump)
+
+Two mechanisms from the 2026-09-10 evening probe-dump handoff did not match any
+of the 72 classes above closely enough to file as an incident; both are judged
+genuinely new — distinct failure points from their nearest relatives (BC-51's
+downstream embellishment, and BC-04/06/07/15's anchor/over-fire/override/
+vocabulary mechanisms) — and are added here rather than stretched into an
+existing entry. A third, from the same handoff's round-3 retest, is added
+below for the same reason (BC-75).
+
+### BC-73 Ambiguous short-form token expanded to an unstated referent via background context
+- Mechanism: an LLM-driven interpretation stage (STM/coreference/short-term-memory analysis) resolves an ambiguous abbreviation or elliptical noun to a SPECIFIC referent found elsewhere in background context — an older mention, an unrelated topic — rather than leaving it unresolved; the guess then rides unchecked into a planner or response as if the user had said it. Distinct from BC-51 (a downstream stage embellishes a stated fact with unstated detail): here the referent itself is substituted at the resolution step, before any planning happens, and can poison every consumer that reads the resolved value, not just one planner's key points.
+- Incidents: 2026-09-10 "Cool. Managed to push today and there is a new doc I think will be helpful" — the STM analyzer expanded "doc" to "doctor" by drawing on an unrelated earlier TEMPORAL GROUNDING mention (a psychiatrist reference), and the planner's three key points (all about a new doctor) survived `unsupported_key_points` because "doctor" appeared in the digest, not because the query or exchange supported it; the reply answered about a psychiatrist instead of addressing the actual document (probe-dump handoff T3); 2026-09-10 round 3 retest — the SAME "doc"→"doctor" expansion survived `unsupported_key_points` a second time because the round-1/2 closure checked the plan's `key_points` field only: the LLM's `key_points` came back empty ("Cover: (none)"), but its `strategy` field ("Acknowledge the user's progress and express support for their new doctor.") carried the identical unsupported referent, unchecked because no sibling field of the SAME planner output was ever covered.
+- Find: DM-27 corpus-replay planner canary — run the deployed `ResponsePlanner`/STM stage over recorded turns from `logs/turn_records.jsonl` and flag any resolved topic/key-point head noun absent from BOTH the current query and the immediately preceding exchange; `(proposed)`; for a structured multi-field model output specifically, check that an embellishment guard fixed for one field is applied to every sibling field of the same schema, not just the one where the incident was first observed (a BC-58 sibling check).
+- Closure: `stm_analyzer.abbreviation_expansion_conflicts` (a query token of ≤4 letters that is a strict prefix of a longer STM-resolved token absent from the query + recent window is flagged and the resolved-state line dropped) + `ResponsePlanner.unsupported_key_points` requiring the query/last-exchange, not the digest alone, to support a key point's head noun (probe-dump B4/B5); round 3 factors the same head-noun/prefix-expansion check into `ResponsePlanner._statement_unsupported` and applies it to `strategy` and every `avoid` line too, discarding the whole plan (rather than injecting an empty "Cover: (none)" plus a leaked strategy sentence) when nothing survives (probe-dump B12).
+- Status: partial — the doc→doctor shape is now closed across ALL of a plan's text fields (key_points, strategy, avoid), not just key_points; the general "confident wrong-referent expansion" pattern has no standing detector until DM-27 runs across recorded turns, and other structured-output schemas in the codebase have not been checked for the same per-field coverage gap.
+
+### BC-74 Broad continuation/affirmation arm outranks a narrower, self-sufficient explicit-request arm (arm precedence)
+- Mechanism: when a continuation/affirmation arm (matches short go-ahead phrasing after a prior offer) is evaluated before, or matches more permissively than, an explicit-new-request arm on the same text, a long, fully-specified imperative gets classified as "affirming the prior offer" instead of "a new request in its own right" — the forced type then comes from the PRIOR turn's offer, not the current message. Distinct from BC-15 (a vocabulary/schema/enum the model is taught has no expressible parser match) and BC-07 (a probabilistic LLM verdict overrides an already-computed deterministic route): here both competing arms are deterministic and each individually fires correctly on its own trigger text, but no precedence rule prefers the narrower, more specific arm over the broader one when both match.
+- Incidents: 2026-09-10 a 17-word explicit calendar-creation imperative ("put a recurring calendar event on my google calendar for the MGT study group, Tuesdays at 3, through Dec 4") was classified by `registry.is_offer_affirmation` as an affirmation of the prior turn's calendar offer rather than parsed as its own explicit request — the resulting action type was right only by coincidence, since a differently-typed prior offer (e.g. an unbacked email-send narration) would have forced the wrong action on the same explicit text (probe-dump handoff T6/probe 2).
+- Find: for every offer/continuation-affirmation arm, check whether it runs before an explicit-action/explicit-request detector on the SAME text, and whether it is capped to a terse go-ahead shape (short, no object noun of its own) rather than any text that merely doesn't contradict the offer; `(proposed)` as a standing detector.
+- Closure: `core/agentic/gate.py` runs `detect_action_intent(user_text)` BEFORE `_prior_turn_offer_action`; `registry.is_offer_affirmation` returns False when `detect_action_intent` matches the current text or the head clause exceeds a terse-go-ahead word count with an object noun of its own (probe-dump A1).
+- Status: partial — the calendar-offer vs. explicit-action pair is closed; other continuation arms (note-save, retry-after-failure, thread-resolution) have not been checked for the same precedence gap.
+
+### BC-75 Self-authored artifact laundered into evidence via a persistent store
+- Mechanism: an LLM's own unverified narration or claim, made in the course of answering the current turn, is persisted through a tool call into a store that a LATER turn's context-assembly step reads back and renders as trusted background — with no attribution or verification tag distinguishing "the model said this" from "the user said this" or "this was checked." The model then treats its own earlier, uncorroborated assertion as independently-established fact, compounding a single hallucination into a recurring, self-reinforcing false context across turns. Distinct from BC-48 (a single-turn confabulated completion claim, contained to that turn's reply text) because the false claim here escapes the turn boundary through a WRITE path with no provenance concept, and distinct from BC-28 (a derived signal like tone level feeding back into its own future scoring) because what re-enters is free-text natural-language content read by the model, not a scored/derived value.
+- Incidents: 2026-09-10 round 3, T1 — a note-save request ("jot down a note for this session: TA sessions are Saturdays at 11 CT,") routed correctly to `create_daemon_note`, but the SAME reply also asserted an unbacked calendar-state claim ("the recurring Saturday 11:00 AM CT calendar event … is already in place from earlier today"); the persisted note in `daemon_notes/ta-sessions-schedule-2026-09-10.md` was not limited to the user's stated content, and the following turn's [DAEMON SELF-NOTES] section fed the false claim back as apparent established fact ("A recurring calendar event was already created earlier today") — a contamination loop that will keep re-asserting itself on every future turn that surfaces this note until it is deleted (owner action pending; see this handoff's Owner section).
+- Find: DM-28 — for every tool/generator that persists model-authored text into a store later re-rendered into a prompt (daemon self-notes, synthesis results, narrative/daily notes, proposal descriptions), check whether the WRITE path can distinguish and strip content the model itself asserted (as opposed to content it is merely recording on the user's behalf) from what it persists, and whether the READ/render path labels provenance the way `core/insight/provenance.py`'s "assistant-inferred" marker convention already does for insight-mode evidence — a convention this write path did not use.
+- Closure: round-3 A14 — the note-save write path persists only the user's stated content (the text after the note cue/colon), stripping model-authored elaboration before the `create_daemon_note` call; a note whose body itself trips `claims_calendar_state`/`detect_completion_claims` is rendered in [DAEMON SELF-NOTES] with an appended "[unverified action claim]" marker, borrowing the insight-mode provenance-labeling convention rather than inventing a bespoke one.
+- Status: open — the note-save path is guarded; the other model-output-persisting paths named in Find (synthesis results, narrative/daily-note generation, proposal descriptions) have not been swept for the same write-time attribution gap.
+
+## J. Process (how the catalog's own fixes are made)
+
+Not a failure mechanism in the running system — a pattern in HOW this project's
+fixes are made, observed across enough dated batches to name. Filed separately
+from A–I because it audits the remedy, not the defect.
+
+### BC-76 Closure by phrase-append (narrow remedy pattern)
+- Mechanism: a vocabulary/coverage miss (a phrase the model uses that a parser doesn't recognize, a keyword a matcher lacks) is closed by literally appending one more phrase/keyword to the existing regex or list, rather than adopting one of this project's own generalized remedies (a chokepoint module, a categorized-generic vocabulary with per-user anchors, or a seeds+learned/auto-promoted channel). The fix pattern itself — not any single incident — is what recurs: the next unseen phrasing of the SAME underlying vocabulary family reopens the class a batch or two later.
+- Incidents: 2026-08-15 the tone-veto no_search teacher gained one exemplar phrase after "look it up" was missed, then needed a second narrowing pass 2026-08-15 for a poisoned pair; 2026-08-27 institution/action-claim regexes grew phrase by phrase per incident rather than through a resolver; 2026-09-07 calendar offer/retry vocabulary (`is_offer_affirmation`, `is_action_retry_request`, `claims_pending_card`) grew phrase by phrase across two same-day rounds; 2026-09-10 round 3 the SAME three functions (`claims_pending_card`, `claims_calendar_state`, plus a new `is_failure_report`) grew again by literal phrase addition ("card should be up", "already in place", "yes it failed") rather than a generalized mechanism — the fourth dated batch to widen this exact vocabulary family by appending phrases.
+- Find: `grep -n 'gained\|added.*exemplar\|widen\|extended.*regex\|new phrase' CLAUDE_CHANGELOG.md` grouped by the function/list touched; a function or list edited in three or more dated batches for "one more phrase" each time is the signature — cross-reference against `docs/GENERALIZATION_AUDIT_20260901.md`'s "Remedy patterns" to see whether a generalized alternative already exists elsewhere in the codebase for the same shape of problem.
+- Closure: none structural — `docs/GENERALIZATION_AUDIT_20260901.md` §"Remedy patterns" names four alternatives this project already uses successfully for OTHER vocabulary families (SEEDS+LEARNED: `adaptive_exemplars`; AUTO-PROMOTE/DERIVE: `learned_relations`; CALIBRATE-ON-DATA: probe scripts; CATEGORIZED-GENERIC+ANCHORS: `terms_are_private_sphere_generic`); adopting one of these for a repeatedly-patched vocabulary family, instead of the next phrase-append, is the closure — judged per family by a human/frontier reviewer, not automatable from the Find grep alone.
+- Status: open — a process observation tracked so an audit can flag "this is the Nth phrase-append to the same function" as a signal to escalate to a generalized mechanism, rather than filing a tenth incident line under whatever failure-mechanism class the symptom happens to match.
+
 ## Detection methods (DM) — find instances without a full read
 
 | ID | Method | Runs as | Classes |
@@ -664,6 +720,9 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | DM-24 | Disposable-store runtime smoke and read-only budget replay | `scripts/audit_runtime_smoke.py`, `scripts/audit_context_budget.py` | BC-22–BC-26 |
 | DM-25 | Controlled race reproduction (two threads into one loader; count invocations) | test pattern | BC-38, BC-39 |
 | DM-26 | Receipt rollups (`scripts/latency_rollup.py`; web-trigger rollup planned) | shell, read-only | BC-72, BC-41 |
+| DM-27 | Corpus-replay planner canary: run the deployed planner/STM stage over recorded turns, flag key points or resolved referents whose head noun is absent from the query + last exchange | script `(proposed)` | BC-51, BC-73 |
+| DM-28 | Persisted-model-output sweep: for every tool/generator writing model text into a store later re-rendered into a prompt, check write-path attribution stripping and read-path provenance marking | grep + manual | BC-75 |
+| DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | shell (`grep -n` over `CLAUDE_CHANGELOG.md`) | BC-76 |
 
 ## Closure methods (CM) — what has actually stopped a class
 
@@ -705,7 +764,7 @@ Cross-checked this catalog against the incident families and open findings in
 `BUG_RETROSPECTIVE_20260715_20260904.md`, both generalization audits, the
 09-05 independent/runtime audits, the 09-06 conversation audit, the 09-08 and
 09-09 independent audit handoffs, the 09-09 follow-up ledger, and both 09-10
-handoffs. The 72 classes cover every repeated mechanism named in those
+handoffs. The 76 classes cover every repeated mechanism named in those
 sources; the remaining one-off mechanisms are retained below rather than
 promoted without recurrence evidence.
 
@@ -717,6 +776,34 @@ sibling-path omissions, and a fake that did not match the real enum contract.
 The web-search handoff maps to BC-05/47/72: the only competent classifier was
 short-circuited, not-run collapsed into zero results, and the decision had no
 receipt. This review updated those incident and closure lines.
+
+The 2026-09-10 evening probe-dump handoff (T1-T6, six turns after the same
+day's restart) added incidents to BC-05, BC-06, BC-15, BC-30, BC-46 and BC-58,
+and introduced two new mechanisms. BC-73 (an ambiguous short-form token
+expanded to an unstated referent via background context — "doc" read as
+"doctor") is a resolution-time ambiguity failure distinct from BC-51's
+downstream embellishment of a stated fact. BC-74 (a broad continuation/
+affirmation arm outranking a narrower explicit-request arm) is an arm-
+precedence failure between two individually-correct deterministic matchers,
+distinct from BC-15's vocabulary/schema gap and BC-07's probabilistic-override
+of a deterministic route. DM-27 (corpus-replay planner canary) was added to
+detect the BC-73/BC-51 shape across recorded turns without a live probe.
+
+The same handoff's round-3 retest (T1-T5, 20:56-20:59) added incidents to
+BC-15, BC-46, BC-58, BC-64 and BC-73, and introduced two more mechanisms.
+BC-75 (a self-authored artifact laundered into evidence via a persistent
+store — the model's own unbacked calendar-state claim got written into a
+daemon self-note and fed back as trusted context the following turn) is a
+write-path provenance failure distinct from BC-48 (a same-turn confabulated
+claim, contained to that turn) and BC-28 (a scored/derived signal, not
+free text, feeding back). BC-76 (closure by phrase-append) is filed as a
+PROCESS class in a new §J, not a runtime failure mechanism: it names the
+recurring pattern, across four dated batches (08-15, 08-27, 09-07, 09-10),
+of closing a vocabulary-drift incident (BC-15's territory) by appending one
+literal phrase to a regex/list instead of adopting one of this project's own
+generalized remedies (`docs/GENERALIZATION_AUDIT_20260901.md` §"Remedy
+patterns") — this round's own BC-15 fix (A12/A13) is itself an instance,
+noted honestly rather than exempted.
 
 Completeness here means all mechanisms encountered in the cited repository
 audits through 2026-09-10 are either classified or listed as a singleton. It

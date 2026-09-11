@@ -2008,7 +2008,33 @@ class KnowledgeRetrievalMixin:
                     continue
                 filtered.append(item)
 
-            return filtered[:limit]
+            filtered = filtered[:limit]
+
+            # A14 (2026-09-10, round 3): a self-note can carry a model-
+            # authored false action claim — live: "jot down a note for this
+            # session" ended up saving "A recurring calendar event was
+            # already created earlier today" (never true), and every
+            # subsequent turn's [DAEMON SELF-NOTES] section fed that false
+            # claim straight back in — a contamination loop. Flag it in
+            # place (the manager/gatherer that PRODUCES the note text is
+            # the right layer; core/prompt/formatter.py just renders
+            # `content` verbatim) so the model treats it as unverified
+            # rather than settled fact.
+            try:
+                # 2026-09-10, round 4, B12: delegates to the ONE shared
+                # annotator (also used at formatter.py's two conversation
+                # render sites) instead of its own inline check — same
+                # marker string, same regex-only detection.
+                from core.action_claim_guard import annotate_unverified_action_claim
+                for item in filtered:
+                    content = item.get("content", "") or ""
+                    if not content:
+                        continue
+                    item["content"] = annotate_unverified_action_claim(content)
+            except Exception as e:
+                logger.debug(f"[ContextGatherer] Self-note action-claim check failed: {e}")
+
+            return filtered
 
         except Exception as e:
             logger.debug(f"[ContextGatherer] daemon_self_notes retrieval failed: {e}")

@@ -92,6 +92,49 @@ ones agents break):
 - **Prefer neutralization over deletion.** Read-time suppression, then
   reversible metadata, then additive changes; deletion is a human click or
   a terminal step, never automatic (`docs/AUTONOMOUS_CURATION_DESIGN.md`).
+- **Every probe/dump text becomes an outcome fixture (added 2026-09-10).**
+  A live probe text and every dump text that exposed a defect goes into that
+  batch's test file verbatim, driven through the deployed function — and the
+  assertion checks the OUTCOME the owner would actually see (the card's
+  params, the reply's claims, the notice text), never just which arm or
+  route fired. 2026-09-10: the first probe pass judged the calendar/note
+  turns on routing alone; the second probe passed routing and still failed
+  at execution (a card minted with a bare clock time that rejected on
+  approve) — a fixture asserting only "gate chose tools" would have stayed
+  green through that failure. Round 2 (same day): a live fixture must also
+  carry the live CONTEXT, not just the live query text — the actual plan
+  point, the actual STM topic/user_question, and the actual window
+  including the assistant's OWN prior replies — since a synthetic stand-in
+  exchange can accidentally omit the exact word (e.g. "doctor") whose
+  presence in Daemon's own reply was the thing masking the bug. Round 3
+  (same day): a live text fixture must ALSO carry the client's actual
+  surface form, not just its content — the client line-wraps long messages
+  ("...a new doc I\n  think will be helpful"), and a shape predicate fixed
+  and tested against the clean string alone stayed broken on the live input
+  (BC-58/BC-64). Every live-text fixture is now asserted in BOTH its clean
+  and its wrapped/indented form.
+- **A vocabulary miss is closed with a categorized-generic table or a
+  learned channel, never a new phrase appended to a regex** (added
+  2026-09-10, round 3; `docs/GENERALIZATION_AUDIT_20260901.md` §"Remedy
+  patterns"; catalogued as `docs/BUG_CLASSES.md` BC-76). Four dated batches
+  (08-15, 08-27, 09-07, 09-10) closed the same class of vocabulary-drift
+  incident (BC-15) by literally adding one more phrase to an existing
+  regex/list; the fix pattern itself is what recurs, not any one incident.
+  Reach for one of this project's own generalized remedies instead — a
+  single chokepoint module (CM-01: `utils/trigger_match.py`), a categorized-
+  generic vocabulary with per-user anchors (`terms_are_private_sphere_generic`),
+  or a seeds+learned/auto-promoted channel (`adaptive_exemplars`,
+  `learned_relations`) — and name which one a fix used.
+- **Before a round is called done, run the BC-58 Find method on every
+  function the round touched** (added 2026-09-11, round 5): grep every
+  sibling site that renders, routes, or consumes the same data
+  (`rg -n "<field or helper>" core/ gui/ utils/ knowledge/`) and either wire
+  the fix at the PRODUCER so all consumers inherit it, or list each sibling
+  as covered/exempt in the handoff. Rounds 2-5 of the 2026-09-10 probe batch
+  each exposed a sibling path the previous fix skipped (a clean-string
+  predicate vs the wrapped input; `key_points` vs `strategy`; the formatter
+  render sites vs the agentic decision digest and planner digest) — a live
+  retest is not the tool for finding siblings, the grep is.
 
 ## 3a. Commit discipline (added 2026-09-07)
 

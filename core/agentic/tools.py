@@ -359,6 +359,17 @@ class ToolExecutor:
     ) -> _ToolResult:
         """Route a single SearchDecision to its handler via the shared DISPATCH_TABLE."""
         decision = reroute_url_search(decision)
+        # A14 (2026-09-10, round 3): see the identical override in
+        # AgenticSearchController._dispatch_single_inner — kept in sync here
+        # for parity, though production always routes through the
+        # controller's own dispatcher (this path is test-only today).
+        if getattr(decision, "wants_create_daemon_note", False):
+            # A19 (round 5, parity with the controller's own marking above).
+            session._note_dispatched = True
+            if getattr(session, "note_body_override", None):
+                decision.daemon_note_summary = session.note_body_override
+                # A15 (round 4, parity with the controller's own override above).
+                decision.daemon_note_user_requested = True
         for predicate, handler_name, arg_builder in DISPATCH_TABLE:
             if predicate(decision):
                 handler = getattr(self, handler_name)
@@ -1145,6 +1156,7 @@ class ToolExecutor:
         note_result = await self._execute_create_daemon_note(
             title, decision.daemon_note_category or "implementation",
             decision.daemon_note_summary or "",
+            user_requested=getattr(decision, "daemon_note_user_requested", False),
         )
         duration = (time.time() - start_time) * 1000
 
@@ -1160,15 +1172,32 @@ class ToolExecutor:
         )
         round_data.summary = note_result
 
-        end_events = [ProgressEvent(
-            event_type="note_saved",
-            message=f"Self-note saved: {title}",
-            round_number=round_number,
-            metadata={"duration_ms": duration}
-        )]
+        # A15 (round 4, receipt honesty — docs/BUG_CLASSES.md BC-77): the
+        # dispatcher used to emit a fixed "note_saved" event regardless of
+        # what the executor actually returned, so a guardrail-skipped note
+        # (dedup/session-cap) still surfaced as a success. Key the event off
+        # the executor's own result string.
+        if note_result.startswith("Self-note saved"):
+            end_events = [ProgressEvent(
+                event_type="note_saved",
+                message=f"Self-note saved: {title}",
+                round_number=round_number,
+                metadata={"duration_ms": duration}
+            )]
+        else:
+            end_events = [ProgressEvent(
+                event_type="note_skipped",
+                message=note_result,
+                round_number=round_number,
+                metadata={"duration_ms": duration}
+            )]
 
+        _round_label = (
+            "Self-Note Saved" if note_result.startswith("Self-note saved")
+            else "Self-Note NOT Saved"
+        )
         formatted = (
-            f"\n---\n**Round {round_number}: Self-Note Saved**\n"
+            f"\n---\n**Round {round_number}: {_round_label}**\n"
             f"{note_result}\n---\n"
         )
 
@@ -1557,14 +1586,25 @@ class ToolExecutor:
     _daemon_notes_manager: Optional[Any] = None
 
     async def _execute_create_daemon_note(
-        self, title: str, category: str, summary: str,
+        self, title: str, category: str, summary: str, *, user_requested: bool = False,
     ) -> str:
-        """Execute autonomous self-note creation with guardrails.
+        """Execute self-note creation with autonomy guardrails.
 
-        Uses create_autonomous_note() which enforces:
+        Uses create_autonomous_note() which enforces (for UNPROMPTED notes
+        only — see ``user_requested`` below):
         - Per-session cap (max 3)
         - Semantic dedup (skip if >0.85 similarity to existing note)
         - Session ID tracking for audit trail
+
+        ``user_requested`` (A15, round 4, docs/BUG_CLASSES.md BC-77): True
+        when the caller resolved this note's body from the user's OWN
+        stated content this turn (session.note_body_override) — an explicit
+        request, not model initiative. The autonomy guardrails above are
+        scoped to unprompted self-notes and must not veto an explicit
+        request; ``create_autonomous_note`` bypasses the session cap and
+        writes despite a near-duplicate when this is True. Either way, a
+        skip result names the exact reason (no generic "guardrails" string)
+        so the dispatcher's receipt is honest about what happened.
         """
         from config import app_config
 
@@ -1599,10 +1639,12 @@ class ToolExecutor:
                 confidence="tentative",
                 session_id=session_id,
                 status="tentative",
+                user_requested=user_requested,
             )
 
             if result is None:
-                return "[Self-note skipped by guardrails (session cap or dedup)]"
+                reason = getattr(manager, "last_skip_reason", None) or "guardrails (session cap or dedup)"
+                return f"[Self-note NOT saved — {reason}; nothing was written]"
 
             return (
                 f"Self-note saved: {result.title}\n"

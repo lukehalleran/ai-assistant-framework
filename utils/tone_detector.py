@@ -1297,6 +1297,32 @@ Classification:"""
         return None
 
 
+def _is_task_directive_signal(message: str) -> bool:
+    """True when `message` is a task directive (`utils.query_checker.
+    is_task_directive`) — the user directing Daemon to DO something, not
+    venting or asking a question. Both the distress-sticky floor and the
+    borderline backstop below stand down for a task directive (2026-09-10,
+    round 4, B10): "jot down a note for this session: TA sessions are
+    Saturdays at 11 CT" scored borderline-distress on the semantic tier and
+    was floored to CONCERN even though the arbiter itself said
+    CONVERSATIONAL, carrying LIGHT SUPPORT ("let them vent") onto a plain
+    instruction. Fails open (False) on any error — never blocks tone
+    detection.
+    """
+    if not message:
+        return False
+    try:
+        # lazy import: call-time patch point (tests monkeypatch
+        # utils.query_checker.is_task_directive) and avoids importing
+        # core.actions.registry at tone_detector module load time — the
+        # same convention already used a few lines up for
+        # heavy_keyword_hits/strip_code_shaped_lines.
+        from utils.query_checker import is_task_directive
+        return bool(is_task_directive(message))
+    except Exception:
+        return False
+
+
 async def detect_crisis_level(
     message: str,
     conversation_history: Optional[List[dict]] = None,
@@ -1418,6 +1444,7 @@ async def detect_crisis_level(
         and level == CrisisLevel.CONVERSATIONAL
         and not _is_explicit_casual(message)
         and not _is_positive_state_report(message)
+        and not _is_task_directive_signal(message)
     ):
         logger.debug("[ToneDetector] Distress-sticky floor: CONVERSATIONAL → CONCERN")
         return ToneAnalysis(
@@ -1493,7 +1520,12 @@ async def detect_crisis_level(
     # (Fail-conversational was the live failure mode while the arbiter was
     # broken: "I keep thinking I am a stupid piece of shit ... I wanna cry"
     # scored medium=0.39 > conversational=0.30 and was labeled CONVERSATIONAL.)
-    if use_llm_fallback and level == CrisisLevel.CONVERSATIONAL and raw_scores:
+    if (
+        use_llm_fallback
+        and level == CrisisLevel.CONVERSATIONAL
+        and raw_scores
+        and not _is_task_directive_signal(message)
+    ):
         _conv = raw_scores.get("conversational", 0.0)
         _top_distress = max(
             (raw_scores.get(k, 0.0) for k in ("high", "medium", "concern")),

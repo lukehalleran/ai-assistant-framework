@@ -101,7 +101,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import re as _re_gate
 import re as _re_gate2
 
@@ -770,6 +770,34 @@ async def evaluate_agentic_gate(
                 },
             )
 
+    # ── Explicit action intent from the CURRENT text (2026-09-10, A1) ──
+    # Computed here — before the prior-turn offer-affirmation arm below —
+    # so a fully-specified request ("put a recurring calendar event on my
+    # google calendar for the MGT study group, Tuesdays at 3, through Dec
+    # 4") is never misread as a terse go-ahead accepting whatever the PRIOR
+    # reply narrated/offered. Live: is_offer_affirmation(q6) matched the
+    # go-ahead directive shape on "put a recurring calendar event…" itself,
+    # so the offer arm forced the type the PRIOR reply's narration implied
+    # (right by coincidence — an EMAIL narration in the prior reply would
+    # have forced SEND_EMAIL for an obviously-calendar request). An explicit
+    # action pattern in the CURRENT text always wins; the offer arm only
+    # handles genuine affirmations ("yes", "go ahead") where the current
+    # text carries no action pattern of its own.
+    try:
+        from core.actions.registry import detect_action_intent
+        _explicit_action = detect_action_intent(user_text)
+    except Exception as e:
+        logger.debug(f"[Agentic Gate] Action-intent detection failed (non-fatal): {e}")
+        _explicit_action = None
+    if _explicit_action is not None and _ACTION_DISAVOWAL_RE.search(user_text):
+        # The message disavows acting ("I will not send", "in my head",
+        # "I am VENTING") — an action pattern inside it is narration of a
+        # fantasy, not a request. Never let it suppress the offer arm.
+        logger.info(
+            f"[Agentic Gate] Action intent ({_explicit_action.value}) "
+            "suppressed — message explicitly disavows acting")
+        _explicit_action = None
+
     # ── Prior-turn action-offer affirmation (2026-09-07) ─────────────
     # A chat-mode reply that OFFERED an external action ("Want me to go ahead
     # and create the recurring event?") followed by a user go-ahead ("yeah
@@ -780,13 +808,33 @@ async def evaluate_agentic_gate(
     # already awaiting approval — the card UI owns that approval, and a chat
     # "yes" must not mint a duplicate. Checked BEFORE the tiers: the live
     # "yeah lets do that" carried two Zoom URLs, and the URL arm had turned
-    # the affirmation into a web search of the meeting links.
-    _offer_action = _prior_turn_offer_action(user_text, corpus_manager)
+    # the affirmation into a web search of the meeting links. Also stood
+    # down (2026-09-10, A1) whenever the CURRENT text is itself an explicit
+    # action request — see _explicit_action above.
+    #
+    # Clarification-answer continuation (2026-09-10, round 2, A6): a forced
+    # round can ask a field-level clarifying question instead of proposing
+    # ("how long does the study group run?"). "Yes 1 hour" answers that
+    # question but is neither a bare affirmation (extra tokens) nor a retry
+    # request — `_prior_turn_offer_action` also resolves this shape, and the
+    # second element of its return distinguishes the reason wording.
+    _offer_action, _offer_is_clarification = (
+        _prior_turn_offer_action(user_text, corpus_manager)
+        if _explicit_action is None else (None, False)
+    )
     if _offer_action is not None:
-        logger.info(
-            f"[Agentic Gate] Affirmation of prior-turn action offer "
-            f"({_offer_action}) — routing to tools with the action forced"
-        )
+        if _offer_is_clarification:
+            _offer_reason = f"clarification answer → forced {_offer_action}"
+            logger.info(
+                f"[Agentic Gate] Clarification answer to a prior forced-round "
+                f"question — forcing {_offer_action}"
+            )
+        else:
+            _offer_reason = f"affirmation of prior-turn action offer ({_offer_action})"
+            logger.info(
+                f"[Agentic Gate] Affirmation of prior-turn action offer "
+                f"({_offer_action}) — routing to tools with the action forced"
+            )
         return AgenticDecision(
             should_trigger=True,
             modes=["tools"],
@@ -794,7 +842,7 @@ async def evaluate_agentic_gate(
             skip_initial_search=True,
             veto_exempt=True,
             forced_action=_offer_action,
-            reason=f"affirmation of prior-turn action offer ({_offer_action})",
+            reason=_offer_reason,
         )
 
     modes: List[str] = []
@@ -828,13 +876,8 @@ async def evaluate_agentic_gate(
     # mode, but the gate did not consult the same registry, so the exact live
     # request "create the calendar events" (plural) stayed in tool-less chat.
     # Keep one source of truth for every action type and make explicit writes
-    # veto-exempt below.
-    try:
-        from core.actions.registry import detect_action_intent
-        _explicit_action = detect_action_intent(user_text)
-    except Exception as e:
-        logger.debug(f"[Agentic Gate] Action-intent detection failed (non-fatal): {e}")
-        _explicit_action = None
+    # veto-exempt below. (_explicit_action itself is computed earlier now,
+    # before the prior-turn offer-affirmation arm — see 2026-09-10, A1.)
 
     # Negation-aware (2026-09-04): "don't search the web for this, just tell
     # me" must not force web-search mode just because 'search the web'
@@ -856,14 +899,6 @@ async def evaluate_agentic_gate(
         # Log the trigger — this arm fired SILENTLY for months; the 09-01
         # 'actions' misfire took three probes to attribute because of it.
         logger.debug("[Agentic Gate] Tier 1: tool keyword detected")
-    if _explicit_action is not None and _ACTION_DISAVOWAL_RE.search(user_text):
-        # The message disavows acting ("I will not send", "in my head",
-        # "I am VENTING") — an action pattern inside it is narration of a
-        # fantasy, not a request. Never force a veto-exempt tools loop on it.
-        logger.info(
-            f"[Agentic Gate] Action intent ({_explicit_action.value}) "
-            "suppressed — message explicitly disavows acting")
-        _explicit_action = None
     if _explicit_action is not None:
         needs_tools = True
         try:
@@ -1239,6 +1274,23 @@ async def evaluate_agentic_gate(
     except Exception as e:
         logger.debug(f"[Agentic Gate] Self-note intent check failed: {e}")
 
+    # Note-save request (2026-09-10, A3): "jot down a note for this session:
+    # TA sessions are Saturdays at 11 CT," found NO trigger (create_daemon_note
+    # exists but detect_self_note_intent only matches Daemon's OWN "note to
+    # yourself/for future" phrasing) — the reply then claimed it can't write
+    # notes at all. A narrower session-note request ("jot down"/"save"/
+    # "write … a note", "remember this", "note to self") routes to tools;
+    # the controller nudges the model toward create_daemon_note via
+    # _detect_tool_hints. detect_self_note_intent (the direct bypass) still
+    # wins when it also matches — this arm only fires when it didn't.
+    _note_save_request = False
+    if not self_note_intent:
+        from utils.query_checker import is_note_save_request
+        if is_note_save_request(user_text):
+            _note_save_request = True
+            needs_tools = True
+            logger.debug("[Agentic Gate] Tier 1: note-save request detected")
+
     # ── Decision: skip, keyword trigger, or LLM fallback ─────────────
     should_trigger = False
 
@@ -1417,11 +1469,13 @@ async def evaluate_agentic_gate(
         _explicit_kw or _has_url or needs_files
         or bool(doc_gen_intent) or bool(self_note_intent)
         or _explicit_action is not None
+        or _note_save_request
     )
     # Bare pasted link with NO request shape — the only exemption the acute
     # tone arm may pierce (see AgenticDecision.veto_exempt_url_only).
     _veto_exempt_url_only = _has_url and not (
         _explicit_kw or needs_files or bool(doc_gen_intent) or bool(self_note_intent)
+        or _note_save_request
     )
 
     # ── Build modes list ──────────────────────────────────────────────
@@ -1450,7 +1504,16 @@ async def evaluate_agentic_gate(
     )
 
     # ── Build reason string ───────────────────────────────────────────
-    if should_trigger:
+    # An explicit action request from the CURRENT text names itself in the
+    # reason (2026-09-10, A1) — distinguishing it from a prior-turn OFFER
+    # affirmation (which names its own reason above and returns early) and
+    # from the generic "triggered: tools" label that gave no visibility
+    # into WHY a live turn forced a write action.
+    if should_trigger and _explicit_action is not None:
+        reason = f"explicit action request ({_explicit_action.value})"
+    elif should_trigger and _note_save_request:
+        reason = "note-save request"
+    elif should_trigger:
         reason = f"triggered: {', '.join(modes) if modes else 'llm-fallback'}"
     elif any(_skip_patterns) and not _prev_was_agentic:
         reason = "casual/short message"
@@ -1468,6 +1531,7 @@ async def evaluate_agentic_gate(
         reason=reason,
         veto_exempt=_veto_exempt,
         veto_exempt_url_only=_veto_exempt_url_only,
+        forced_action=(_explicit_action.value if _explicit_action is not None else None),
     )
 
     # Intent veto — applied here when intent_info was available at call time.
@@ -1504,10 +1568,27 @@ _LOOKUP_CUE_RE = re.compile(
     r"\b(?:look|pull)\s+(?:(?:it|this|that|them|these|those)\s+)?up\b"
 )
 
+# Sentence splitter for the per-sentence interrogative-opener check below
+# (2026-09-10) — deliberately simple, matching the email-clause splitter's
+# approach elsewhere in this module.
+_INFO_SEEKING_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
 
 def _is_info_seeking(query: str) -> bool:
     """True when the query has question/command/lookup shape. Fail-open on
-    empty input (no veto without evidence)."""
+    empty input (no veto without evidence).
+
+    Sentence-level (2026-09-10, probe T2): the interrogative-opener check
+    used to test only the WHOLE text's start, so a direct question buried
+    later in a multi-sentence message never counted — "Took 30 mg focus supplement
+    at like 1115. ... What time should I take meds melatonin etc tn to get
+    to bed" has no "?" and doesn't open with "what", but its third sentence
+    plainly is a question. The tone-statement veto then read the whole
+    message as a vent and suppressed LIGHT SUPPORT's direct-question
+    carve-out. "?"/lookup-cue/info-seeking-cue checks already scan the
+    whole text; only the interrogative-opener check needed to become
+    per-sentence.
+    """
     q = (query or "").strip().lower()
     if not q:
         return True
@@ -1517,7 +1598,13 @@ def _is_info_seeking(query: str) -> bool:
         return True
     if _LOOKUP_CUE_RE.search(q):
         return True
-    return any(c in q for c in _INFO_SEEKING_CUES)
+    if any(c in q for c in _INFO_SEEKING_CUES):
+        return True
+    for sent in _INFO_SEEKING_SENTENCE_SPLIT_RE.split(q):
+        s = sent.strip()
+        if s and s.startswith(_INTERROGATIVE_OPENERS):
+            return True
+    return False
 
 
 # Email-READ request at CLAUSE level (2026-09-04). The terse email-search arm
@@ -1700,12 +1787,14 @@ def supersede_pending_cards(action_type_value: str, reason: str) -> int:
     return n
 
 
-def _prior_turn_offer_action(user_text: str, corpus_manager) -> Optional[str]:
-    """ActionType.value the previous stored reply offered — or NARRATED
-    without backing — when ``user_text`` accepts it.
+def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[str], bool]:
+    """(ActionType.value, is_clarification_answer) the previous stored reply
+    offered — or NARRATED without backing, or is being CLARIFIED — when
+    ``user_text`` accepts/answers it.
 
-    Returns None on any doubt (no corpus, no prior turn, no external offer,
-    not an affirmation, any exception) — the normal tiers then run unchanged.
+    Returns (None, False) on any doubt (no corpus, no prior turn, no
+    external offer, not an affirmation/retry/clarification answer, any
+    exception) — the normal tiers then run unchanged.
 
     Pending cards (2026-09-10): a same-type card minted BY the prior turn
     stands the arm down (the card UI owns that approval; a chat "yes" must
@@ -1716,32 +1805,54 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Optional[str]:
     Retry after a no-card reply (2026-09-10): "try again" / "yes" after a
     reply that narrated "Queued up …" with nothing queued (NO_CARD_NOTICE
     appended) routes the narrated action — the notice itself promised that.
+
+    Clarification-answer continuation (2026-09-10, round 2, A6): a forced
+    round can ask a field-level clarifying question instead of proposing
+    ("how long does the study group run?"); "Yes 1 hour" answers it but is
+    neither a bare affirmation nor a retry request. When
+    `offer_action_type`/`narrated_unbacked_action_type` find nothing in the
+    prior reply's own text (a bare question carries no offer marker or
+    completion claim), the PRIOR USER TURN's own request is the ground
+    truth for what's being clarified — `detect_action_intent` on it names
+    the action type the clarification answer is completing.
     """
     if not user_text or corpus_manager is None:
-        return None
+        return None, False
     try:
         # lazy import: cycle (registry ↔ claim guard ↔ pending proposal are
         # leaves; gate stays call-time on all internal imports)
         from core.actions.registry import (
-            is_action_retry_request, is_offer_affirmation, narrated_unbacked_action_type,
+            detect_action_intent, is_action_retry_request, is_clarification_answer,
+            is_failure_report, is_offer_affirmation, narrated_unbacked_action_type,
             offer_action_type,
         )
         _affirm = is_offer_affirmation(user_text)
         _retry = is_action_retry_request(user_text)
-        if not (_affirm or _retry):
-            return None
+        # A12 (2026-09-10, round 3): "Yes it failed" answers a prior reply's
+        # "If it failed, say the word and I'll queue it again" — none of the
+        # three checks above fire on it (extra tokens beat _affirm, no retry
+        # verb, no field-cue question), so a failure report joins the family.
+        _failure = is_failure_report(user_text)
         _recent = corpus_manager.get_recent_memories(1)
         if not _recent:
-            return None
+            return None, False
         _prev = _recent[0]
         _prev_response = (_prev.get("response", "") or "")
+        _clarify = is_clarification_answer(user_text, _prev_response)
+        if not (_affirm or _retry or _clarify or _failure):
+            return None, False
         _offer = offer_action_type(_prev_response)
         _narrated = False
         if _offer is None:
             _offer = narrated_unbacked_action_type(_prev_response)
             _narrated = _offer is not None
+        _is_clarification = False
+        if _offer is None and _clarify:
+            _prev_query = _prev.get("query") or _prev.get("user_text") or ""
+            _offer = detect_action_intent(_prev_query)
+            _is_clarification = _offer is not None
         if _offer is None:
-            return None
+            return None, False
         try:
             from core.agentic.tools import ToolExecutor
             _store = ToolExecutor._get_pending_actions_store()
@@ -1753,7 +1864,7 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Optional[str]:
                     logger.debug(
                         "[Agentic Gate] Offer affirmation ignored — a "
                         f"{_offer.value} proposal card is already pending")
-                    return None
+                    return None, False
             supersede_pending_cards(_offer.value, "amended offer accepted in chat")
         except Exception as e:
             logger.debug(f"[Agentic Gate] Pending-card check failed (non-fatal): {e}")
@@ -1761,10 +1872,37 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Optional[str]:
             logger.info(
                 f"[Agentic Gate] Prior reply narrated an unbacked {_offer.value}; "
                 "routing the follow-up to the forced action route")
-        return _offer.value
+        if _failure:
+            # A13 seeds+learned teacher (2026-09-10, round 3): an
+            # INDEPENDENT channel — the user just said the promised action
+            # did not happen — confirms the prior reply's own narration WAS
+            # a false claim. Teach the exact sentence that claimed it so the
+            # semantic channel catches future paraphrases; never taught from
+            # claims_pending_card/claims_calendar_state's own verdict
+            # (self-reinforcement guard, docs/BUG_CLASSES.md CM-09).
+            try:
+                from core.action_claim_guard import (
+                    claims_calendar_state, claims_pending_card,
+                    record_claim_exemplar, split_claim_sentences,
+                )
+                _state_hits = claims_calendar_state(_prev_response)
+                if _state_hits:
+                    record_claim_exemplar(
+                        "calendar_state", _state_hits[0], "user_failure_report")
+                elif claims_pending_card(_prev_response):
+                    _card_sents = [
+                        s for s in split_claim_sentences(_prev_response)
+                        if not s.rstrip().endswith("?")
+                    ]
+                    if _card_sents:
+                        record_claim_exemplar(
+                            "card_claim", _card_sents[-1], "user_failure_report")
+            except Exception as e:
+                logger.debug(f"[Agentic Gate] Claim-exemplar teaching skipped: {e}")
+        return _offer.value, _is_clarification
     except Exception as e:
         logger.debug(f"[Agentic Gate] Offer-continuation check failed (non-fatal): {e}")
-        return None
+        return None, False
 
 
 # One-shot cross-turn slot for a tone-deferred request. Armed by

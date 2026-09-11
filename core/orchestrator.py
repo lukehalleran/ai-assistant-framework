@@ -869,11 +869,13 @@ class DaemonOrchestrator:
         return _ext_get_tone_instructions(tone_level, getattr(self, "user_profile", None))
 
     def _get_response_instructions(self, ctx: EmotionalContext,
-                                   suppress_style_modifier: bool = False) -> str:
+                                   suppress_style_modifier: bool = False,
+                                   query: str = None) -> str:
         """Generate response instructions based on combined emotional context."""
         return _ext_get_response_instructions(
             ctx, getattr(self, "user_profile", None),
             suppress_style_modifier=suppress_style_modifier,
+            query=query,
         )
 
     # ---------- 1b) Session Headers Instructions ----------
@@ -1448,6 +1450,7 @@ class DaemonOrchestrator:
                         getattr(context.intent, "intent", None),
                         getattr(context.intent, "confidence", None),
                         getattr(context, "crisis_level_str", None),
+                        query=getattr(context, "original_query", None),
                     )
             except Exception as e:
                 logger.debug(f"[Orchestrator] Intent style resolution failed (non-fatal): {e}")
@@ -1456,7 +1459,8 @@ class DaemonOrchestrator:
             emotional_ctx = context.emotional_context
             if emotional_ctx:
                 response_instructions = self._get_response_instructions(
-                    emotional_ctx, suppress_style_modifier=bool(_intent_style)
+                    emotional_ctx, suppress_style_modifier=bool(_intent_style),
+                    query=context.original_query,
                 )
                 system_prompt = system_prompt.rstrip() + response_instructions
 

@@ -62,6 +62,7 @@ from datetime import datetime
 from pathlib import Path
 from utils.logging_utils import get_logger
 from core.response_parser import ResponseParser
+from core.action_claim_guard import annotate_unverified_action_claim
 
 logger = get_logger("prompt_formatter")
 
@@ -583,6 +584,10 @@ class PromptFormatter:
                 # sanitize_for_storage is the storage-boundary defense; this is
                 # the same conservative transform at the retrieval boundary.
                 response = _strip_stored_thinking(response)
+                # 2026-09-10, round 4, B12 (BC-75): flag a stored Daemon
+                # reply that confabulated a pending/completed/existing
+                # action — the DAEMON segment only, never `query`.
+                response = annotate_unverified_action_claim(response)
 
             # Get timestamp - check multiple possible locations and format as datetime
             timestamp = mem.get("timestamp", "")
@@ -878,6 +883,10 @@ class PromptFormatter:
                     # Fallback to query/response format
                     q = str(mem.get("query", ""))
                     r = str(mem.get("response", ""))
+                    # 2026-09-10, round 4, B12 (BC-75): flag a stored Daemon
+                    # reply that confabulated a pending/completed/existing
+                    # action — the DAEMON segment only, never `q`.
+                    r = annotate_unverified_action_claim(r)
 
                     # Build the content
                     if q and r:
@@ -1764,7 +1773,36 @@ class PromptFormatter:
                     "restating or introducing an occurrence."
                 )
 
+            # Abbreviation-expansion backstop (2026-09-10, probe T3): the
+            # analyzer flagged that a short query token ("doc") was silently
+            # expanded into a longer, unevidenced referent ("doctor")
+            # somewhere in its own output. Say so, and drop any Resolved
+            # State line that repeats the unsupported long form — surfacing
+            # the note AND still asserting "doctor" as resolved state in the
+            # same block would just contradict itself.
+            _abbrev_conflicts = stm_summary.get('abbreviation_conflicts') or []
+            _unsupported_longs = set()
+            for _pair in _abbrev_conflicts:
+                if not (isinstance(_pair, (list, tuple)) and len(_pair) == 2):
+                    continue
+                _short, _long = _pair
+                if not (isinstance(_short, str) and isinstance(_long, str) and _short and _long):
+                    continue
+                _unsupported_longs.add(_long.lower())
+                stm_lines.append(
+                    f"NOTE: '{_long}' expands the user's '{_short}' — not stated; "
+                    "treat the referent as unresolved."
+                )
+
             temporal_facts = stm_summary.get('temporal_facts', [])
+            if _unsupported_longs and temporal_facts:
+                temporal_facts = [
+                    f for f in temporal_facts
+                    if not any(
+                        re.search(r"(?<!\w)" + re.escape(_long) + r"(?!\w)", str(f), re.IGNORECASE)
+                        for _long in _unsupported_longs
+                    )
+                ]
             if temporal_facts:
                 stm_lines.append(f"Resolved State: {' | '.join(temporal_facts)}")
 

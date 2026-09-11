@@ -47,6 +47,29 @@ from typing import Iterable, List, NamedTuple, Sequence
 
 
 # ---------------------------------------------------------------------------
+# (0) Whitespace normalization — line-wrapped client input
+# ---------------------------------------------------------------------------
+
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
+def normalize_ws(text: str) -> str:
+    """Collapse all whitespace runs (including newlines and leading
+    indentation) to single spaces, then strip.
+
+    2026-09-10 probe-dump round 3: live client input arrives line-wrapped
+    ("...a new doc I\\n  think will be helpful") and every shape predicate
+    that worked on the clean fixture went blind on the wrapped form —
+    `is_status_report(wrapped)` was False while
+    `is_status_report(" ".join(wrapped.split()))` was True. Deterministic
+    shape/cue detectors should normalize their input through this function
+    before matching so a client's line-wrap can never change the verdict.
+    Semantics-preserving only: no case-folding, no trimming of punctuation.
+    """
+    return _WHITESPACE_RUN_RE.sub(" ", text).strip()
+
+
+# ---------------------------------------------------------------------------
 # (a) Keyword matching — word-boundary for bare words, substring for phrases
 # ---------------------------------------------------------------------------
 

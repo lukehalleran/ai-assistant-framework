@@ -44,7 +44,12 @@ Module Contract
     proposal state this pure module doesn't see.
 - Side effects: NONE. This module is pure detection + classification. Actually
   executing or repairing an action is the caller's responsibility.
-- Dependencies: stdlib re + pydantic. No LLM, no I/O.
+- Dependencies: stdlib re + pydantic + utils.trigger_match (leaf,
+  whitespace normalization only). No LLM, no I/O for the core detectors.
+  The A13 seeds+learned semantic channel (claims_pending_card/
+  claims_calendar_state) lazily imports models.model_manager +
+  utils.adaptive_exemplars only when the composed grammar misses — a
+  missing/unavailable embedder degrades to grammar-only, never an error.
 """
 
 from __future__ import annotations
@@ -53,6 +58,8 @@ import re
 from enum import Enum
 
 from pydantic import BaseModel, Field
+
+from utils.trigger_match import normalize_ws
 
 
 # ============================================================================
@@ -325,6 +332,16 @@ def _split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p and p.strip()]
 
 
+def split_claim_sentences(text: str) -> list[str]:
+    """Public wrapper: drafted/quoted regions stripped, then split into
+    sentences — the exact per-sentence view claims_pending_card/
+    claims_calendar_state/detect_completion_claims scan. Exposed for
+    callers outside this module that need to locate WHICH sentence a claim
+    lives in (2026-09-10, round 3: the adaptive-exemplar teacher records
+    the specific claim sentence a user's failure report just discredited)."""
+    return _split_sentences(_strip_quoted_and_drafts(text or ""))
+
+
 def _detect_kind(clause: str) -> ActionKind | None:
     for kind, pat in _KIND_PATTERNS:
         if pat.search(clause):
@@ -494,6 +511,71 @@ _KIND_LABEL = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Categorized-generic composed claim grammar (2026-09-10, round 3, A13) —
+# docs/GENERALIZATION_AUDIT_20260901.md remedy pattern #5, closing the
+# docs/BUG_CLASSES.md CM-01 "new regex per phrasing" class for THIS specific
+# vocabulary. A claim-narration sentence is very often (THING) + (STATE-VERB
+# /MODAL) + (STATE) — "the card should be up", "it's already scheduled" — so
+# that shape is now a template over three small tables, bridged by a bounded
+# same-sentence gap (never crossing '.', '?', '!' — BC-03 — though we are
+# already scoped to one sentence via _split_sentences). Extending coverage
+# for a shape that fits the template (round-3 gap: "is already IN PLACE
+# from earlier today") is a new row in _CLAIM_STATES, never a new
+# hand-written alternative. Idioms that do not fit the template (button
+# clicks, "confirm and it", bare "locked in") stay enumerated below exactly
+# as before this batch — a rigid grammar covering those too would either
+# miss them or over-match ordinary prose.
+_CLAIM_THING_RE = r"(?:card|proposal|event|it|that|this)"
+_CLAIM_MODAL_RE = (
+    r"(?:is|'s|are|should\s+be|will\s+be|'ll\s+be|would\s+be|shall\s+be|"
+    r"already|re-?queued|queued|locked\s+in)"
+)
+# state word/phrase -> claim families it counts toward ("card" and/or
+# "calendar"). A state may serve both claims_pending_card AND
+# claims_calendar_state.
+_CLAIM_STATES: list[tuple[str, frozenset]] = [
+    (r"up", frozenset({"card"})),
+    # A16 (2026-09-11, round 4, docs/BUG_CLASSES.md BC-58): "is on there"
+    # (a calendar-STATE claim, "the event ... is on there through December
+    # 12") was matching the card family's bare "there" row, so a reply
+    # asserting an existing calendar item wrongly tripped claims_pending_card
+    # (-> NO_CARD_NOTICE) instead of the calendar-state backstop. The two
+    # families are disambiguated by the same fixed-width lookbehind the
+    # A10 ingress chokepoint already guarantees is exactly one space wide
+    # (normalize_ws runs before every scan): "on there" -> calendar,
+    # bare "there" (not preceded by "on ") -> card.
+    (r"(?<!on\s)there", frozenset({"card"})),
+    (r"on\s+there", frozenset({"calendar"})),
+    (r"ready", frozenset({"card"})),
+    (r"waiting", frozenset({"card"})),
+    (r"showing", frozenset({"card"})),
+    (r"in\s+place", frozenset({"calendar"})),
+    (r"on\s+the\s+books", frozenset({"calendar"})),
+    (r"on\s+(?:the|your)\s+calendar", frozenset({"calendar"})),
+    (r"scheduled", frozenset({"calendar"})),
+    (r"created", frozenset({"calendar"})),
+    (r"added", frozenset({"calendar"})),
+    (r"set\s+up", frozenset({"calendar"})),
+]
+
+
+def _compose_thing_modal_state(family: str) -> str:
+    """THING + MODAL + (bounded gap) + STATE alternation for one claim
+    family, assembled from the category tables above — a new state word
+    for `family` extends both `claims_pending_card`/`claims_calendar_state`
+    with zero regex edits at the two call sites below."""
+    states = "|".join(pat for pat, families in _CLAIM_STATES if family in families)
+    return (
+        rf"\b{_CLAIM_THING_RE}\b[^.?!]{{0,45}}?\b{_CLAIM_MODAL_RE}\b"
+        rf"[^.?!]{{0,20}}?\b(?:{states})\b"
+    )
+
+
+_CLAIM_CARD_TEMPLATE = _compose_thing_modal_state("card")
+_CLAIM_CALENDAR_TEMPLATE = _compose_thing_modal_state("calendar")
+
+
 # "Approve it and it'll land on your calendar" / "hit approve" — the reply
 # directs the user at an approval card. With no proposal created this turn
 # that card does not exist (2026-09-07 live: an enhanced-path reply said
@@ -501,6 +583,7 @@ _KIND_LABEL = {
 # request that had no tool route). Kind-independent: the bullets under such a
 # line often carry no kind word at all ("Zoom link + Piazza-first note").
 _APPROVAL_PROMPT_RE = re.compile(
+    _CLAIM_CARD_TEMPLATE + r"|"
     # 2026-09-10: "You should see the approval card pop up" pointed at a card
     # that was never created; card-appearance phrasings join the list.
     r"\b(?:approval\s+card|(?:the\s+)?card\s+(?:will|should|'?ll|to)\s+(?:pop\s+up|appear|show(?:\s+up)?)|"
@@ -514,21 +597,136 @@ _APPROVAL_PROMPT_RE = re.compile(
     # "confirm that"/"the queue is" stay excluded (ordinary, non-directive
     # prose) since neither matches "confirm and"/"confirm to"/"queued the".
     r"queued\s+the\s+\w+|confirm\s+and\s+it|confirm\s+to\s+(?:proceed|confirm|finalize|approve)|"
-    r"waiting\s+for\s+your\s+(?:confirmation|approval))\b",
+    r"waiting\s+for\s+your\s+(?:confirmation|approval))\b|"
+    # A7 (2026-09-10, round 2): gerund/participle/future forms. Live:
+    # "Locked in … Approving the card will put it on your calendar" shipped
+    # with NO card ever created — "Locked in" and "Approving" are neither
+    # a completion claim (no assertive completion cue) nor the original
+    # approval-prompt vocabulary above.
+    r"\b(?:approving\s+(?:the|that|this)\s+card|"
+    r"once\s+you(?:'?ve)?\s+approve[d]?\b|"
+    r"it'?s\s+queued|"
+    r"will\s+(?:put|land|show\s+up)\s+(?:it\s+)?on\s+your\s+calendar)\b",
     re.IGNORECASE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Seeds+learned semantic channel (2026-09-10, round 3, A13) —
+# docs/GENERALIZATION_AUDIT_20260901.md remedy pattern #2. A composed
+# grammar still cannot cover every possible phrasing; per-user LEARNED
+# exemplars (utils.adaptive_exemplars, domain "action_claim") grow from an
+# INDEPENDENT confirmation channel only (a user failure report —
+# registry.is_failure_report, wired at core/agentic/gate.py's
+# _prior_turn_offer_action — or an explicit correction the next turn);
+# NEVER from this module's own verdict (self-reinforcement guard,
+# docs/BUG_CLASSES.md CM-09). record_claim_exemplar() is the only writer.
+# Same embedding-cache pattern as utils.web_search_trigger._get_search_anchors.
+# ---------------------------------------------------------------------------
+_CLAIM_SEED_EXEMPLARS: dict[str, list[str]] = {
+    "card_claim": [
+        "Locked in. Approving the card will put it on your calendar.",
+        "I've queued it. Once you approve, it'll be created.",
+        "It's queued and ready for you.",
+        "Once you hit approve, it will show up on your calendar.",
+    ],
+    "calendar_state": [
+        "It's also already on your calendar as a recurring weekly event.",
+        "The recurring calendar event is already in place from earlier today.",
+    ],
+}
+_CLAIM_SEMANTIC_THRESHOLD = 0.85
+_claim_exemplar_text_emb_cache: dict = {}
+_claim_anchor_embs: dict = {}
+_claim_anchor_version = None
+
+
+def _get_claim_anchors() -> dict:
+    """Lazily embed CLAIM seed+learned exemplars per label, keyed on the
+    adaptive store's version (mirrors utils.web_search_trigger's anchor
+    cache exactly)."""
+    global _claim_anchor_embs, _claim_anchor_version
+    try:
+        from utils.adaptive_exemplars import get_store
+        version = get_store().version
+    except Exception:
+        version = -1
+    if _claim_anchor_embs and _claim_anchor_version == version:
+        return _claim_anchor_embs
+    try:
+        from models.model_manager import ModelManager
+        embedder = ModelManager._get_cached_embedder()
+        if embedder is None:
+            return {}
+        from utils.adaptive_exemplars import encode_texts_cached, get_store
+        out = {}
+        for label, seeds in _CLAIM_SEED_EXEMPLARS.items():
+            texts = list(seeds)
+            try:
+                texts += get_store().get_learned("action_claim", label)
+            except Exception:
+                pass
+            out[label] = encode_texts_cached(
+                embedder, texts, _claim_exemplar_text_emb_cache, normalize=True
+            )
+        _claim_anchor_embs = out
+        _claim_anchor_version = version
+        return out
+    except Exception:
+        return {}
+
+
+def _claim_semantic_hit(sentence: str, label: str) -> bool:
+    """True when ``sentence`` is cosine >= 0.85 similar to a seed/learned
+    exemplar for ``label`` ("card_claim" or "calendar_state")."""
+    if not sentence:
+        return False
+    anchors = _get_claim_anchors()
+    embs = anchors.get(label)
+    if embs is None or len(embs) == 0:
+        return False
+    try:
+        from models.model_manager import ModelManager
+        embedder = ModelManager._get_cached_embedder()
+        if embedder is None:
+            return False
+        import numpy as np
+        q = embedder.encode([sentence], convert_to_numpy=True, normalize_embeddings=True)[0]
+        sims = embs @ q
+        return bool(np.max(sims) >= _CLAIM_SEMANTIC_THRESHOLD)
+    except Exception:
+        return False
+
+
+def record_claim_exemplar(label: str, text: str, source: str) -> bool:
+    """Teach a confirmed claim-narration exemplar. INDEPENDENT-channel
+    callers only (see module docstring above) — never call this from
+    claims_pending_card/claims_calendar_state's own verdict."""
+    try:
+        from utils.adaptive_exemplars import get_store
+        return get_store().record("action_claim", label, text, source)
+    except Exception:
+        return False
 
 
 def claims_pending_card(text: str) -> bool:
     """True when the reply directs the user to approve a proposal card.
 
     Offer-framed or question clauses are skipped ("want me to queue it so you
-    can approve it?"); quoted/drafted blocks are stripped first.
+    can approve it?"); quoted/drafted blocks are stripped first (real
+    newlines still intact, so fence/blockquote stripping is unaffected),
+    THEN the stripped text is whitespace-normalized before sentence
+    splitting (2026-09-10, round 3, A10 sibling) — a client-side soft line-
+    wrap inside one narration sentence ("...calendar event\n  is already in
+    place...") must not get mis-split into two harmless-looking fragments
+    at the wrap's newline; a genuine multi-sentence reply splits identically
+    either way since real sentence breaks already follow '.', '?', or '!'.
+    Detection = the composed grammar OR a seeds+learned semantic hit (A13).
     """
-    for sent in _split_sentences(_strip_quoted_and_drafts(text or "")):
+    for sent in _split_sentences(normalize_ws(_strip_quoted_and_drafts(text or ""))):
         if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
             continue
-        if _APPROVAL_PROMPT_RE.search(sent):
+        if _APPROVAL_PROMPT_RE.search(sent) or _claim_semantic_hit(sent, "card_claim"):
             return True
     return False
 
@@ -537,6 +735,314 @@ NO_CARD_NOTICE = (
     "\n\n> ⚠️ Heads up — there's no card to approve: nothing was actually queued "
     "this turn. Ask me again (or say \"try again\") and I'll queue it for real."
 )
+
+
+# Fresh-upload confabulation (2026-09-10, probe T4): "Can you take a look?"
+# resolved the unnamed document to a PDF uploaded five days earlier via the
+# upload roster/reuse pool, and the reply asserted "You uploaded
+# Homework1-2.pdf today" — a session/recency claim the retrieval path never
+# supports (it only knows the file EXISTS, not that this session attached
+# it). Checked per-SENTENCE (via _split_sentences, whitespace-after-period
+# so a filename's own "." like "Homework1-2.pdf" never splits mid-sentence)
+# so the freshness word can be anywhere in the same sentence as the claim,
+# without a naive fixed-width gap wrongly excluding filename periods.
+_FRESH_UPLOAD_CLAIM_RE = re.compile(
+    r"\byou\s+(?:just\s+)?uploaded\b"
+    r"|\bthe\s+file\s+you\s+just\s+attached\b"
+    r"|\byou\s+(?:just\s+)?attached\b",
+    re.IGNORECASE,
+)
+_FRESH_UPLOAD_TIME_RE = re.compile(
+    r"\b(?:today|just\s+now|this\s+session|a\s+(?:moment|minute)\s+ago)\b",
+    re.IGNORECASE,
+)
+_FRESH_UPLOAD_JUST_RE = re.compile(r"\bjust\s+(?:uploaded|attached)\b", re.IGNORECASE)
+
+
+def claims_fresh_upload(reply: str) -> bool:
+    """True when the reply asserts the user uploaded/attached a file THIS
+    session or today ("you uploaded ... today", "the file you just
+    attached") — a claim the upload-reuse pool never actually supports (it
+    only knows a matching file exists, not when THIS session attached it).
+    A reply that names an actual past date ("uploaded Sept 5") is not this
+    shape. Quoted/drafted blocks are stripped first."""
+    for sent in _split_sentences(_strip_quoted_and_drafts(reply or "")):
+        if not _FRESH_UPLOAD_CLAIM_RE.search(sent):
+            continue
+        if _FRESH_UPLOAD_JUST_RE.search(sent) or _FRESH_UPLOAD_TIME_RE.search(sent):
+            return True
+    return False
+
+
+# Schedule-narration existence claim (2026-09-11, round 5, A20): "the
+# recurring Saturday 11:00 AM CT calendar event runs through December 12
+# with the Zoom link attached" carries no MODAL word ("is"/"already"/
+# "should be"/...) — the THING+MODAL+STATE template above requires one — it
+# narrates the event's ongoing SCHEDULE ("runs ... through December 12")
+# rather than asserting a static state. Same category-table method as
+# _compose_thing_modal_state (docs/GENERALIZATION_AUDIT_20260901.md remedy
+# #5, closing docs/BUG_CLASSES.md's CM-01 "new regex per phrasing" class):
+# THING + SCHEDULE-VERB + RANGE/CADENCE, bounded gaps that never cross a
+# sentence boundary (belt-and-suspenders — _split_sentences already scopes
+# each scan to one sentence). A new schedule verb or cadence word is a new
+# table row, never a hand-written alternative.
+_SCHEDULE_CAL_THING_RE = r"(?:calendar\s+event|recurring\s+event|series|event|it)"
+_SCHEDULE_VERB_RE = r"(?:runs|repeats|recurs|continues|goes|is\s+set)"
+_SCHEDULE_RANGE_RE = r"(?:through|until|till|every|weekly|each)"
+
+
+def _compose_schedule_narration() -> str:
+    """THING + SCHEDULE-VERB + RANGE/CADENCE alternation for the calendar
+    family, assembled from the three tables above."""
+    return (
+        rf"\b{_SCHEDULE_CAL_THING_RE}\b[^.?!]{{0,30}}?\b{_SCHEDULE_VERB_RE}\b"
+        rf"[^.?!]{{0,30}}?\b{_SCHEDULE_RANGE_RE}\b"
+    )
+
+
+_SCHEDULE_NARRATION_TEMPLATE = _compose_schedule_narration()
+
+
+# Calendar STATE claim (2026-09-10, round 2, A8): "It's also already on your
+# calendar as a recurring weekly event (through December 12, Zoom link
+# attached)" for a TA session that was never created. This is a STATE claim
+# ("it already exists"), not a completion claim ("I created it") —
+# `detect_completion_claims`'s _COMPLETION_PATTERNS require an assertive
+# create/save/send verb and deliberately never match "is already on your
+# calendar" wording, so it needs its own detector. Offer/question clauses
+# are skipped the same way as the other claim detectors here.
+_CALENDAR_STATE_RE = re.compile(
+    _CLAIM_CALENDAR_TEMPLATE + r"|"
+    r"\balready\s+on\s+(?:your\s+)?calendar\b"
+    r"|\bis\s+on\s+(?:your\s+)?calendar\b"
+    r"|\bit'?s\s+on\s+the\s+calendar\b"
+    r"|\byou'?ve\s+got\s+it\s+on\s+the\s+calendar\b"
+    r"|\balready\s+scheduled\b"
+    r"|" + _SCHEDULE_NARRATION_TEMPLATE,
+    re.IGNORECASE,
+)
+
+
+# Entity-anchored calendar-state claims (2026-09-11, round 6, A21) — the
+# PRIMARY detector for calendar existence claims from here on (the composed
+# THING+MODAL+STATE / schedule-narration templates above are KEPT as a
+# fallback — round 2-5 vocabulary like "in place", "on the books" carries
+# no temporal anchor and would otherwise stop matching). Live R6a: "...and
+# the recurring Saturday 11 AM CT calendar event through December 12" (a
+# bare NOUN PHRASE inside a list, no verb) and "Zoom link's on the event"
+# (a possessive-state form, no verb) — neither fits ANY verb/modal-anchored
+# template. Three rounds of adding a new state/verb row each time this
+# happened is BC-76 territory (docs/BUG_CLASSES.md): the generalizable axis
+# here is ENTITY + TIME, not grammar. A DECLARATIVE sentence (not a
+# question, not an offer, not conditional) that names a calendar-thing noun
+# AND a temporal anchor is claiming a concrete scheduled thing exists,
+# whether or not it uses a verb to say so — the existing handler-side
+# matcher (gui.handlers._calendar_claim_matches_event) already verifies
+# weekday+title agreement against [GOOGLE CALENDAR] and only fires the
+# notice when nothing matches, so a TRUE claim about a real event is never
+# corrected just because this detector is more permissive.
+_CONDITIONAL_RE = re.compile(
+    r"\b(?:could|would|might|can|if\s+you(?:'d|\s+want|\s+like)|let\s+me\s+know)\b",
+    re.IGNORECASE,
+)
+
+# Card-lifecycle narration (2026-09-11, round 7): "this exact event was
+# already queued yesterday evening, re-queued after you said it failed, and
+# queued again this morning at 10:12" names a calendar noun and a clock time
+# but describes a PROPOSAL's history, not an event that exists — the A21
+# entity rule read it as an existence claim and the handler appended
+# "I don't see that on your calendar" under a real, just-minted card. A
+# sentence whose calendar noun sits with a proposal-lifecycle verb belongs
+# to the card family (`claims_pending_card`), never the calendar family.
+_LIFECYCLE_NARRATION_RE = re.compile(
+    r"\b(?:re-?queued|queued|proposed|minted|fired|approval\s+card|the\s+card)\b",
+    re.IGNORECASE,
+)
+
+_calendar_temporal_anchor_re_cache: re.Pattern | None = None
+
+
+def _calendar_temporal_anchor_re() -> re.Pattern:
+    """Weekday name | ``through|until|till|every`` + a month or weekday —
+    lazily composed from the existing closed category tables in
+    ``core.actions.registry`` (``_WEEKDAY_NAMES``) and
+    ``utils.temporal_resolver`` (``_MONTH_NAMES``), never a new
+    hand-written phrase list. A clock-time anchor is checked separately via
+    ``core.actions.registry._CLOCK_TOKEN_RE`` (that pattern already covers
+    "5 pm"/"17:00"/"1700"/bare-hour-after-preposition/noon/midnight shapes
+    — reusing it here keeps the vocabulary in ONE place)."""
+    global _calendar_temporal_anchor_re_cache
+    if _calendar_temporal_anchor_re_cache is not None:
+        return _calendar_temporal_anchor_re_cache
+    from core.actions.registry import _WEEKDAY_NAMES
+    from utils.temporal_resolver import _MONTH_NAMES
+    weekday_alt = "|".join(sorted(_WEEKDAY_NAMES.keys()))
+    month_alt = "|".join(sorted(_MONTH_NAMES.keys()))
+    _calendar_temporal_anchor_re_cache = re.compile(
+        rf"\b(?:{weekday_alt})\b"
+        rf"|\b(?:through|until|till|every)\b[^.?!]{{0,20}}?\b(?:{month_alt}|{weekday_alt})\b",
+        re.IGNORECASE,
+    )
+    return _calendar_temporal_anchor_re_cache
+
+
+def _has_calendar_temporal_anchor(sent: str) -> bool:
+    from core.actions.registry import _CLOCK_TOKEN_RE
+    return bool(_CLOCK_TOKEN_RE.search(sent) or _calendar_temporal_anchor_re().search(sent))
+
+
+def _is_entity_anchored_calendar_claim(sent: str) -> bool:
+    """DECLARATIVE (checked by the caller: not "?", not ``_PROPOSAL_MARKER``)
+    + not conditional (``_CONDITIONAL_RE``) + a calendar-thing noun
+    (``_CALENDAR_STRONG_RE`` — "calendar event"/"event"/"appointment"/
+    "reminder"/"recurring"/"office hours"; a bare "on the event"/"on your
+    calendar" possessive-state already matches it via the bare "event"/
+    "calendar" tokens, no separate alternative needed) + a temporal anchor
+    (weekday name, clock time, or a through/until/till/every cadence word
+    with a month or weekday)."""
+    if _CONDITIONAL_RE.search(sent):
+        return False
+    if _LIFECYCLE_NARRATION_RE.search(sent):
+        return False  # narrates a CARD's history — the card family judges it
+    if not _CALENDAR_STRONG_RE.search(sent):
+        return False
+    return _has_calendar_temporal_anchor(sent)
+
+
+def claims_calendar_state(reply: str) -> list[str]:
+    """Sentences asserting a calendar event ALREADY exists ("already on
+    your calendar", "already scheduled", "it's on the calendar", "is
+    already in place") OR, per A21, any declarative sentence naming a
+    calendar-thing noun plus a temporal anchor (weekday/clock-time/cadence)
+    with no verb needed at all. Returns the matched sentences (not just
+    True/False) so a caller can compare each one's title/weekday/time
+    tokens against the turn's actual gathered calendar events. Quoted/
+    drafted blocks are stripped first (real newlines still intact for
+    fence/blockquote stripping), THEN the stripped text is whitespace-
+    normalized before sentence splitting (2026-09-10, round 3, A10
+    sibling) — see claims_pending_card's docstring for why. Detection =
+    the composed grammar OR a seeds+learned semantic hit (A13) OR the A21
+    entity-anchored rule."""
+    out: list[str] = []
+    for sent in _split_sentences(normalize_ws(_strip_quoted_and_drafts(reply or ""))):
+        if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
+            continue
+        if (
+            _CALENDAR_STATE_RE.search(sent)
+            or _claim_semantic_hit(sent, "calendar_state")
+            or _is_entity_anchored_calendar_claim(sent)
+        ):
+            out.append(sent)
+    return out
+
+
+# Unverified-action-claim marker (2026-09-10, round 4, B12; BC-75 via the
+# CONVERSATIONS store). A stored Daemon reply that once confabulated a
+# completed/existing action re-enters every future turn's prompt context —
+# self-notes ([DAEMON SELF-NOTES]), [RECENT CONVERSATION], and [RELEVANT
+# MEMORIES] — and both the model and downstream deterministic checks treat
+# it as settled fact unless it is flagged IN PLACE at render time. Live:
+# "Done — note saved to daemon_notes/ta-sessions-schedule-2026-09-10.md.
+# And it's doubly covered: the recurring Saturday 11:00 AM CT calendar
+# event (through December 12, Zoom attached) is already in place from
+# earlier today." — [RECENT CONVERSATION] item 5, unflagged — became the
+# SOURCE the next turn's reply cited for "you had me save that exact note
+# yesterday ... the recurring ... calendar event ... is on there".
+_UNVERIFIED_CLAIM_MARKER = "[unverified action claim]"
+
+#: Public alias (2026-09-11, round 5, B13 sibling) — a hard-char-capped
+#: digest (core.agentic.controller._compute_recent_conversation_digest)
+#: needs to recognize and preserve this exact marker through truncation
+#: rather than importing the private name.
+UNVERIFIED_CLAIM_MARKER = _UNVERIFIED_CLAIM_MARKER
+
+
+def annotate_unverified_action_claim(text: str) -> str:
+    """Append the exact existing marker line "[unverified action claim]"
+    to `text` when it contains an unbacked action pending-card/state/
+    completion claim — REGEX ONLY (the composed grammars
+    ``_APPROVAL_PROMPT_RE`` + ``_CALENDAR_STATE_RE``, plus
+    ``detect_completion_claims``). The ``_claim_semantic_hit`` embedding
+    channel is deliberately NEVER consulted here: this runs once per
+    RENDERED conversation/self-note item (potentially many per turn), not
+    once per live reply like the turn-level guard checks in this module —
+    an embedding call per rendered item would be an unbounded per-turn
+    cost. Under-fires relative to the full live-reply checks by design;
+    offer/question-framed sentences are skipped exactly as in
+    ``claims_pending_card``/``claims_calendar_state``. Idempotent (a text
+    that already carries the marker is returned unchanged). `text` is
+    returned unmodified (not `None`) when nothing is found, on empty
+    input, or on any internal error — this must never raise into a render
+    path.
+
+    Shared by the two conversation-render sites in
+    ``core/prompt/formatter.py`` (``_format_memory``, ``mem_parts``) — applied
+    to the DAEMON segment only, never the user's own text — and by
+    ``core/prompt/gatherer_knowledge.py``'s self-note block, which now
+    delegates to this single implementation instead of its own inline
+    ``claims_calendar_state(...) or detect_completion_claims(...)`` check.
+    """
+    if not text:
+        return text
+    if _UNVERIFIED_CLAIM_MARKER in text:
+        return text
+    try:
+        if detect_completion_claims(text):
+            return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
+        cleaned = normalize_ws(_strip_quoted_and_drafts(text))
+        if not cleaned:
+            return text
+        for sent in _split_sentences(cleaned):
+            if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
+                continue
+            if _APPROVAL_PROMPT_RE.search(sent) or _CALENDAR_STATE_RE.search(sent):
+                return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
+    except Exception:
+        return text
+    return text
+
+
+# Content-field conversation items (2026-09-11, round 5, B13). The hybrid
+# retriever's `content` field renders a whole turn as one string — "User:
+# ...\nDaemon: ..." or "...\nAssistant: ..." — rather than the separate
+# query/response fields `annotate_unverified_action_claim` is applied to
+# directly at the two formatter render sites. Pointing that same annotator
+# at the FULL content string would risk a false hit inside the user's own
+# text (a user message that happens to read as a calendar-state claim);
+# this wrapper locates the LAST assistant label and re-annotates only the
+# text after it, leaving the User segment (and everything before the
+# label) byte-identical.
+_LAST_ASSISTANT_LABEL_RE = re.compile(
+    r"^(?:Daemon|Assistant):[ \t]*", re.MULTILINE
+)
+
+
+def annotate_conversation_content(content: str) -> str:
+    """Annotate a rendered "User: ...\\nDaemon: ..." / "...\\nAssistant:
+    ..." content-field conversation item: find the LAST "Daemon:"/
+    "Assistant:" label (line-start match — start of string or right after
+    a newline; case as rendered, i.e. capitalized) and re-annotate only the
+    segment AFTER that label via ``annotate_unverified_action_claim``. The
+    segment before the label (the User portion, and any earlier turns) is
+    returned byte-identical. No label found -> `content` returned
+    unchanged. Idempotent — delegates to the already-idempotent
+    ``annotate_unverified_action_claim`` — and never raises into a
+    gather/render path (any internal error returns `content` unmodified).
+    """
+    if not content:
+        return content
+    try:
+        matches = list(_LAST_ASSISTANT_LABEL_RE.finditer(content))
+        if not matches:
+            return content
+        m = matches[-1]
+        head, tail = content[: m.end()], content[m.end():]
+        annotated_tail = annotate_unverified_action_claim(tail)
+        if annotated_tail == tail:
+            return content
+        return head + annotated_tail
+    except Exception:
+        return content
 
 
 def build_correction_notice(external_unbacked: list[DetectedAction]) -> str:

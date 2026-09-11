@@ -146,6 +146,11 @@ class DaemonNotesManager:
         # Autonomous note guardrails (class-level state, shared across instances in same process)
         self._session_id: str = ""
         self._session_note_count: int = 0
+        # A15 (2026-09-11, round 4): exposes WHY the last create_autonomous_note
+        # call skipped (None on success or when nothing has run yet) so a
+        # caller's receipt can name the reason precisely instead of a single
+        # generic string (docs/BUG_CLASSES.md BC-77).
+        self.last_skip_reason: str | None = None
 
     async def create_note(
         self,
@@ -261,25 +266,38 @@ class DaemonNotesManager:
         confidence: str = "tentative",
         session_id: str = "",
         status: str = "tentative",
+        user_requested: bool = False,
         **kwargs,
     ) -> DaemonNote | None:
         """Create a note from the agentic loop with safety guardrails.
 
         Applies: per-session cap, semantic dedup, session_id tracking.
-        Returns None (silently skips) if guardrails reject the note.
+        Returns None (silently skips) if guardrails reject the note; the
+        reason is left on ``self.last_skip_reason`` either way (None on
+        success) so a caller can render an honest receipt.
+
+        ``user_requested`` (A15, round 4, docs/BUG_CLASSES.md BC-77): these
+        guardrails exist to bound the model's OWN unprompted note-taking —
+        they must not veto a note whose content the user explicitly asked
+        to be saved this turn. When True, the per-session cap is skipped
+        entirely and a near-duplicate no longer blocks the write (it is
+        still logged, since writing despite a known duplicate is itself
+        worth a trace).
         """
-        # 1. Per-session cap
+        self.last_skip_reason = None
+
+        # 1. Per-session cap — bypassed for an explicit user request.
         if session_id and session_id != self._session_id:
             self._session_id = session_id
             self._session_note_count = 0
 
-        if self._session_note_count >= MAX_AUTONOMOUS_NOTES_PER_SESSION:
-            logger.info(
-                f"[DaemonNotes] Autonomous note skipped (session cap {MAX_AUTONOMOUS_NOTES_PER_SESSION} reached): {title}"
-            )
+        if not user_requested and self._session_note_count >= MAX_AUTONOMOUS_NOTES_PER_SESSION:
+            self.last_skip_reason = f"session cap {MAX_AUTONOMOUS_NOTES_PER_SESSION} reached"
+            logger.info(f"[DaemonNotes] Autonomous note skipped ({self.last_skip_reason}): {title}")
             return None
 
-        # 2. Semantic dedup — skip if near-duplicate exists
+        # 2. Semantic dedup — skip if near-duplicate exists (an explicit
+        # user request writes anyway; only the skip is bypassed).
         if self.chroma_store and summary:
             try:
                 existing = self.chroma_store.query_collection(
@@ -290,10 +308,20 @@ class DaemonNotesManager:
                 if existing:
                     top_score = existing[0].get("relevance_score", 0.0)
                     if top_score >= DEDUP_SIMILARITY_THRESHOLD:
+                        existing_title = (existing[0].get("content") or "").split("\n", 1)[0].strip() or title
+                        if not user_requested:
+                            self.last_skip_reason = (
+                                f"near-duplicate of existing note '{existing_title}' "
+                                f"(score={top_score:.2f})"
+                            )
+                            logger.info(
+                                f"[DaemonNotes] Autonomous note skipped (dedup score={top_score:.3f}): {title}"
+                            )
+                            return None
                         logger.info(
-                            f"[DaemonNotes] Autonomous note skipped (dedup score={top_score:.3f}): {title}"
+                            f"[DaemonNotes] user-requested note written despite near-duplicate "
+                            f"'{existing_title}' (score={top_score:.3f})"
                         )
-                        return None
             except Exception as e:
                 logger.debug(f"[DaemonNotes] Dedup check failed (proceeding): {e}")
 

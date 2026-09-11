@@ -543,6 +543,20 @@ def _is_local_repo_audit_query(query: str) -> bool:
     return action and repo_cue
 
 
+def _is_action_request_query(query: str) -> bool:
+    """True for an explicit write-action request (calendar/email/github/…) —
+    detect_action_intent already routes these to tools; encyclopedic wiki
+    lookups have no use there. Live 2026-09-10 (A4): "put a recurring
+    calendar event on my google calendar for the MGT study group, Tuesdays
+    at 3, through Dec 4" ran a 3.6s wiki FAISS lookup in parallel with the
+    gate's own (correct) tools routing."""
+    try:
+        from core.actions.registry import detect_action_intent
+        return detect_action_intent(query) is not None
+    except Exception:
+        return False
+
+
 # Self-report retrieval trim (2026-09-06): a one-line first-person status
 # update with no request ("I took my stimulant at 10 AM today and I'm just
 # resting this afternoon, feels good honestly even though I got nothing
@@ -1085,6 +1099,12 @@ class UnifiedPromptBuilder:
             if _continuation_shaped and (eff_max_wiki > 0 or eff_max_semantic > 0):
                 logger.debug("[BUILD_PROMPT] Continuation-shaped query — suppressing wiki retrieval")
                 eff_max_semantic = 0
+                eff_max_wiki = 0
+            # Action requests (2026-09-10, A4): a calendar/email/github write
+            # request has no use for encyclopedic wiki lookups (builder
+            # override, like the casual_social/continuation gates above).
+            if eff_max_wiki > 0 and _is_action_request_query(user_input):
+                logger.debug("[BUILD_PROMPT] Action request — suppressing wiki retrieval")
                 eff_max_wiki = 0
             eff_max_skills = _ro.get("max_skills", PROMPT_MAX_SKILLS)
             eff_max_proposals = _ro.get("max_proposals", PROMPT_MAX_PROPOSALS)

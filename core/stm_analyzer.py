@@ -45,7 +45,7 @@ Module Contract
 """
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from utils.logging_utils import get_logger
 from datetime import date, timedelta
 from datetime import datetime
@@ -296,6 +296,142 @@ def new_data_override(user_query: str, window_text: str) -> Dict[str, Any]:
         return {}
 
 
+# Short function words never treated as an abbreviation candidate below —
+# grammar, not a shorthand for anything.
+_ABBREV_MIN_LEN = 2
+_ABBREV_MAX_LEN = 4
+_ABBREV_STOPWORDS = frozenset({
+    "a", "an", "am", "as", "at", "be", "by", "do", "go", "he", "if", "in",
+    "is", "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us",
+    "we", "and", "are", "but", "can", "did", "for", "get", "got", "had",
+    "has", "her", "him", "his", "how", "its", "let", "new", "not", "now",
+    "our", "out", "see", "she", "the", "was", "who", "why", "yes", "you",
+    "yet", "tn", "im", "idk", "one", "two", "way",
+})
+
+# Regular-inflection suffixes (2026-09-10, round 4, B11): a query short
+# token that is a strict prefix of a longer STM-output token used to be
+# flagged unconditionally — but "take"/"takes" is the SAME LEMMA (a verb
+# conjugation the STM's own paraphrase introduced), not an unevidenced
+# abbreviation expansion ("doc"/"doctor" IS a different, longer word).
+# Categorical morphology (suffix + final-e drop + single-consonant
+# doubling), never a hand-maintained word list per pair.
+_INFLECTIONAL_SUFFIXES: Tuple[str, ...] = (
+    "s", "es", "d", "ed", "ing", "n", "en", "er", "ers", "ly",
+)
+_VOWELS = frozenset("aeiou")
+
+
+def _inflected_forms(short: str) -> frozenset:
+    """Closed set of regular-inflection surface forms of `short` — direct
+    suffix concatenation, final-e drop before a suffix ("take" -> "taking",
+    "taken"), and single-final-consonant doubling after a short CVC stem
+    ("plan" -> "planning", "planned")."""
+    forms: set = set()
+    for suf in _INFLECTIONAL_SUFFIXES:
+        forms.add(short + suf)
+        if len(short) > 1 and short[-1] == "e":
+            forms.add(short[:-1] + suf)
+        if (
+            len(short) >= 3
+            and short[-1] not in _VOWELS
+            and short[-2] in _VOWELS
+            and short[-3] not in _VOWELS
+        ):
+            forms.add(short + short[-1] + suf)
+    return frozenset(forms)
+
+
+def _is_regular_inflection(short: str, long_tok: str) -> bool:
+    """True when `long_tok` is explainable as a regular English inflection
+    of `short` (same lemma: verb conjugation/adverb form) rather than a
+    genuinely different, longer word. "doctor" is NOT a regular inflection
+    of "doc" (stays flagged); "takes"/"taking"/"taken" ARE regular
+    inflections of "take" (never flagged)."""
+    if not short or not long_tok or long_tok == short:
+        return False
+    return long_tok in _inflected_forms(short)
+
+
+def abbreviation_expansion_conflicts(
+    query: str,
+    stm_output: Dict[str, Any],
+    window_text: str = "",
+) -> List[Tuple[str, str]]:
+    """Query short tokens the STM output silently EXPANDED into a longer,
+    unevidenced referent (2026-09-10, probe T3).
+
+    "Cool. Managed to push today and there is a new doc I think will be
+    helpful" (a repo document just pushed) had its STM topic/temporal_facts
+    read "doc" as "doctor" ("new doctor is helpful"), and the downstream
+    planner confidently planned three points about a psychiatrist. A query
+    token of length 2-4 that is a STRICT PREFIX of a longer token appearing
+    in the STM output's topic/user_question/resolved-state (temporal_facts)
+    is flagged, UNLESS: the longer form already appears (word-bounded) in
+    the query itself (then it isn't an abbreviation at all), or in
+    ``window_text`` (the short-term window actually supports the expansion
+    — "hw" -> "homework" is fine when "homework" is already in the window).
+    A prefix match that is merely a REGULAR INFLECTION of the short token
+    (``_is_regular_inflection``, 2026-09-10 round 4, B11 — "take"/"takes"
+    from the STM's own paraphrase is the same lemma, not an unevidenced
+    expansion) never counts either. Common short function words never
+    count. Returns [(short, long), ...] in first-seen order; [] on no
+    conflict, missing input, or any failure.
+    """
+    try:
+        q = (query or "").strip()
+        if not q:
+            return []
+        q_lower = q.lower()
+        q_tokens = re.findall(r"[a-z]+", q_lower)
+        short_tokens: List[str] = []
+        seen_short: set = set()
+        for tok in q_tokens:
+            if (_ABBREV_MIN_LEN <= len(tok) <= _ABBREV_MAX_LEN
+                    and tok not in _ABBREV_STOPWORDS and tok not in seen_short):
+                seen_short.add(tok)
+                short_tokens.append(tok)
+        if not short_tokens:
+            return []
+
+        stm = stm_output if isinstance(stm_output, dict) else {}
+        long_source_parts = [str(stm.get("topic") or ""), str(stm.get("user_question") or "")]
+        facts = stm.get("temporal_facts")
+        if isinstance(facts, list):
+            long_source_parts.extend(str(f) for f in facts if isinstance(f, str))
+        long_text = " ".join(long_source_parts).lower()
+        long_tokens: List[str] = []
+        seen_long: set = set()
+        for tok in re.findall(r"[a-z]+", long_text):
+            if len(tok) > _ABBREV_MAX_LEN and tok not in seen_long:
+                seen_long.add(tok)
+                long_tokens.append(tok)
+        if not long_tokens:
+            return []
+
+        window = (window_text or "").lower()
+        conflicts: List[Tuple[str, str]] = []
+        seen_pair: set = set()
+        for short in short_tokens:
+            for long_tok in long_tokens:
+                if long_tok == short or not long_tok.startswith(short):
+                    continue
+                if _is_regular_inflection(short, long_tok):
+                    continue  # same lemma (B11) — not an abbreviation expansion
+                pair = (short, long_tok)
+                if pair in seen_pair:
+                    continue
+                if _word_in_text(long_tok, q_lower):
+                    continue  # the query already states the long form itself
+                if _word_in_text(long_tok, window):
+                    continue  # the window actually supports this expansion
+                seen_pair.add(pair)
+                conflicts.append(pair)
+        return conflicts
+    except Exception:
+        return []
+
+
 class STMAnalyzer:
     """
     Analyzes short-term conversation context using a lightweight LLM pass.
@@ -418,6 +554,7 @@ CRITICAL DISAMBIGUATION RULES:
 6. Name substances, medications, and proper nouns EXACTLY as the user did in the CURRENT message. Never substitute a different drug/entity from earlier context: if the user says "900 mg of lorvatin" but earlier turns discussed kavarin, the fact is about Lorvatin. When the current message names no substance and the referent is ambiguous, write "the medication" rather than guessing a name.
 7. If the current message is a SHORT FRAGMENT (a few words, no verb, no question mark), do NOT invent a "user_question" or reframe it as an information request — it is almost always a riff or continuation of the immediately preceding exchange. Describe it as a continuation (e.g. "User is continuing the joke about X") and set reference_type to "recall" or "clarification", not "new_event".
 8. temporal_facts must never restate a clock time, date, or elapsed-time figure taken from an earlier ASSISTANT reply; a time-of-day fact comes only from the user's CURRENT message or the Current time line above. Older exchanges carry [relative] prefixes — treat them as past.
+9. Never expand an abbreviation or shorthand in the current message ("doc", "app", "hw") into a longer referent ("doctor", "appointment", "homework") that the message and recent conversation do not evidence. If the short form is ambiguous, keep it as written rather than guessing the fuller word.
 
 Example (new event):
 {{
@@ -528,6 +665,30 @@ Return JSON only, no markdown or extra text:"""
                         )
             except Exception:
                 pass
+            # Abbreviation-expansion backstop (2026-09-10, probe T3; window
+            # fix round 2 same day): runs regardless of reference_type — the
+            # analyzer can silently expand a short query token ("doc") into
+            # an unevidenced longer referent ("doctor") in the topic/
+            # user_question/temporal_facts fields no matter how
+            # reference_type was classified. The window checked for
+            # "support" of the expansion must be USER-authored only:
+            # `conversation_text`/`daily_notes_text`/`last_assistant_response`
+            # all carry ASSISTANT (or Daemon-generated note) text, and the
+            # live round-2 miss was exactly this — Daemon's own prior reply
+            # ("The new doctor being helpful tracks with...") contained the
+            # word "doctor", which the (assistant-inclusive) window then read
+            # as the expansion being "supported", masking the very
+            # abbreviation-expansion conflict this backstop exists to catch.
+            try:
+                user_window = self._user_authored_window(recent_memories)
+                conflicts = abbreviation_expansion_conflicts(user_query, parsed, user_window)
+                if conflicts:
+                    parsed["abbreviation_conflicts"] = [[s, l] for s, l in conflicts]
+                    logger.debug(
+                        f"[STMAnalyzer] Abbreviation-expansion conflict(s): {conflicts}"
+                    )
+            except Exception:
+                pass
             logger.debug(f"[STMAnalyzer] Analysis complete: topic={parsed.get('topic')}, tone={parsed.get('tone')}")
             return parsed
 
@@ -576,6 +737,28 @@ Return JSON only, no markdown or extra text:"""
 
         logger.debug(f"[STMAnalyzer] Injecting {len(parts)} daily note(s) into STM input")
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _user_authored_window(memories: List[Dict[str, Any]]) -> str:
+        """USER-authored-only slice of the short-term window (2026-09-10,
+        probe T5 round 2). The abbreviation-expansion backstop's "the window
+        already supports this expansion" suppression must never fire on the
+        ASSISTANT's own phrasing — a hallucinated or paraphrased word in a
+        prior Daemon reply is not the user having said it. Corpus entries
+        carry the user's own text under `user_text` (preferred, since the
+        2026-09-05 corpus split) or `query` (the merged/legacy field);
+        `response` is a Daemon field and is never included here. Pure;
+        missing/malformed entries are skipped, never raise.
+        """
+        lines: List[str] = []
+        for mem in memories or []:
+            if not isinstance(mem, dict):
+                continue
+            text = mem.get("user_text") or mem.get("query") or ""
+            text = str(text).strip()
+            if text:
+                lines.append(text)
+        return "\n".join(lines)
 
     def _format_memories(self, memories: List[Dict]) -> str:
         """

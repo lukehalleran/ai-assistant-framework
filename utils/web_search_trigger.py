@@ -77,8 +77,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
-from utils.query_checker import is_personal_doc_search
+from utils.query_checker import is_personal_doc_search, is_note_save_request
 from utils.trigger_match import is_negated as _trigger_is_negated
+from core.actions.registry import detect_action_intent
 import json
 
 logger = get_logger("web_search_trigger")
@@ -685,6 +686,35 @@ def _semantic_search_boost(query: str, threshold: float = 0.35) -> float:
     return 0.0
 
 
+# Personal routine / dosing question (2026-09-10, A4): "What time should I
+# take meds melatonin etc tn to get to bed" is a first-person question about
+# the user's OWN routine — never a web-search target. A generic factual
+# question about the SAME nouns ("what does the FDA say about melatonin
+# dosing") still consults; this only fires on a first-person "should I"
+# shape.
+_PERSONAL_ROUTINE_CUE_RE = re.compile(
+    r"\bwhat\s+time\s+should\s+i\b|\bwhen\s+should\s+i\b|\bshould\s+i\s+take\b",
+    re.IGNORECASE,
+)
+_PERSONAL_ROUTINE_NOUN_RE = re.compile(
+    r"\b(?:meds?|medication|medicine|melatonin|vyvanse|caffeine|sleep|"
+    r"bed(?:time)?|workout|exercise|gym|schedule|routine)\b",
+    re.IGNORECASE,
+)
+
+
+def is_personal_routine_question(query: str) -> bool:
+    """True for a first-person question about the user's own routine/dosing
+    ("What time should I take meds melatonin etc tn to get to bed") — a
+    personal-schedule question Daemon should engage with directly (or from
+    what the user already said), never a web-search target."""
+    if not query:
+        return False
+    if not _PERSONAL_ROUTINE_CUE_RE.search(query):
+        return False
+    return bool(_PERSONAL_ROUTINE_NOUN_RE.search(query))
+
+
 def should_search_heuristic(query: str) -> WebSearchDecision:
     """
     Determine if query needs web search using heuristics only.
@@ -765,6 +795,36 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
             reason="Suppressed: personal-document search (internal retrieval target)",
             matched_keywords=[],
             matched_patterns=["personal_doc_search"],
+        )
+
+    # Action requests / note-save requests (2026-09-10, A4, deterministic —
+    # LLM-independent): "put a recurring calendar event … Tuesdays at 3,
+    # through Dec 4" is a write-action request the agentic gate routes to
+    # tools, never a web target — live: it paid a 7.8s web search + 3.6s
+    # wiki lookup in parallel with the gate's own (correct) routing.
+    if detect_action_intent(query) is not None or is_note_save_request(query):
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.0,
+            reason="action request",
+            matched_keywords=[],
+            matched_patterns=["action_request"],
+        )
+
+    # Personal routine/dosing question (2026-09-10, A4): "What time should I
+    # take meds melatonin etc tn to get to bed" is the user's own routine
+    # question, not a web target — live: it triggered a 14s Tavily search
+    # via the LLM channel while the tone-veto separately (and correctly)
+    # suppressed unsolicited advice.
+    if is_personal_routine_question(query):
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.0,
+            reason="personal routine question",
+            matched_keywords=[],
+            matched_patterns=["personal_routine_question"],
         )
 
     # Check explicit search phrases (strongest signal)
@@ -1750,6 +1810,36 @@ async def analyze_for_web_search_llm(
             reason="Personal-document search: internal retrieval target",
             matched_keywords=[],
             matched_patterns=["personal_doc_search"],
+            source="heuristic",
+        )
+
+    # Action requests / note-save requests (2026-09-10, A4, deterministic —
+    # LLM-independent): never consult the LLM for a write-action request —
+    # live: a calendar-create request paid a 7.8s web search + 3.6s wiki
+    # lookup in parallel with the gate's own (correct) tools routing.
+    if detect_action_intent(query) is not None or is_note_save_request(query):
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.0,
+            reason="action request",
+            matched_keywords=[],
+            matched_patterns=["action_request"],
+            source="heuristic",
+        )
+
+    # Personal routine/dosing question (2026-09-10, A4, deterministic —
+    # LLM-independent): "What time should I take meds melatonin etc tn to
+    # get to bed" is the user's own routine question, never a web target —
+    # live: it triggered a 14s Tavily search via this LLM channel.
+    if is_personal_routine_question(query):
+        return WebSearchDecision(
+            should_search=False,
+            depth=WebSearchDepth.QUICK,
+            confidence=0.0,
+            reason="personal routine question",
+            matched_keywords=[],
+            matched_patterns=["personal_routine_question"],
             source="heuristic",
         )
 

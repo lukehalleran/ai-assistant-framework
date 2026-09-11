@@ -169,6 +169,43 @@ class ResponsePlanner:
         if len(query.split()) < 8:
             return False
 
+        # A task directive ("jot down a note for this session: TA sessions
+        # are Saturdays at 11 CT") needs an ACTION routed through the
+        # agentic gate, not an answer plan (2026-09-11, round 5, B14): the
+        # live turn's [RESPONSE PLAN] restated a false calendar claim
+        # pulled straight from the digest ("TA sessions are scheduled for
+        # Saturdays at 11 AM CT... recurring weekly events through
+        # December 12") in place of actually saving the user's one-line
+        # note. QUESTIONS are never task directives (see
+        # ``is_task_directive``'s own docstring), so an info-seeking
+        # request is unaffected and keeps planning normally.
+        try:
+            from utils.query_checker import is_task_directive
+            if is_task_directive(query):
+                return False
+        except Exception:
+            pass
+
+        # A bare self-report ("Cool. Managed to push today and there is a
+        # new doc I think will be helpful") requests nothing — planning for
+        # it invites the same embellishment the digest guard exists for
+        # (2026-09-10 probe T3: STM misread "doc" as "doctor" and the
+        # planner confidently planned three points about a new doctor). A
+        # self-report that is ALSO request-shaped (asks a question, wants
+        # something) still plans normally. Round 2 (same probe, retest):
+        # ``is_self_report`` alone returned False on this EXACT text — its
+        # subject is elided after the "Cool." ack rather than restated as a
+        # pronoun, so the skip never fired and the planner ran anyway.
+        # ``is_status_report`` is the same shape's separate, narrow cousin
+        # (see its docstring for why it's not folded into is_self_report).
+        try:
+            from utils.query_checker import is_self_report, is_status_report, is_request_shaped
+            if ((is_self_report(query) or is_status_report(query))
+                    and not is_request_shaped(query)):
+                return False
+        except Exception:
+            pass
+
         return True
 
     # ------------------------------------------------------------------
@@ -525,11 +562,45 @@ class ResponsePlanner:
             # introduces an event noun or a name absent from the query, the
             # previous exchange and the digest is dropped (never rewritten).
             sources = "\n".join(filter(None, [query or "", exchange_block or "", context_digest or ""]))
-            kept, dropped = self.unsupported_key_points(plan.key_points, sources)
+            strict_sources = "\n".join(filter(None, [query or "", exchange_block or ""]))
+            original_points = list(plan.key_points)
+            kept, dropped = self.unsupported_key_points(
+                original_points, sources, query=query, strict_sources=strict_sources,
+            )
+            # "Every key point dropped" (as opposed to "there were none to
+            # begin with") is only true when unsupported_key_points's own
+            # never-fully-empty safeguard did NOT fall back to keeping
+            # everything — i.e. dropped is non-empty and kept came back
+            # empty from a genuine strict-mode wipe.
+            all_points_dropped = bool(original_points) and bool(dropped) and not kept
             if dropped:
                 logger.info(f"[RESPONSE PLANNER] Dropped {len(dropped)} unsupported key point(s): {dropped}")
                 plan.key_points = kept
                 plan.dropped_points = dropped
+
+            # B12 (2026-09-10, round 3): the same prefix-expansion + head-noun
+            # checks apply to `strategy` and each `avoid` line — the live
+            # round-3 plan had key_points=[] from the LLM itself (nothing to
+            # drop above) but strategy "...express support for their new
+            # doctor" carried the exact same unsupported "doc"->"doctor"
+            # expansion, uncaught because only key_points was ever checked.
+            if self._statement_unsupported(plan.strategy, sources, query=query, strict_sources=strict_sources):
+                logger.info(f"[RESPONSE PLANNER] Blanked unsupported strategy: {plan.strategy!r}")
+                plan.strategy = ""
+            plan.avoid = [
+                a for a in plan.avoid
+                if not self._statement_unsupported(a, sources, query=query, strict_sources=strict_sources)
+            ]
+
+            # An all-points-dropped plan, or a plan left with nothing at all
+            # (no key points, no strategy, no avoid — T5's exact shape once
+            # its lone strategy sentence is blanked), is discarded outright
+            # rather than injecting an empty "[RESPONSE PLAN] Cover: (none)"
+            # block that adds nothing but plan-shaped noise to the prompt.
+            if all_points_dropped or (not plan.key_points and not plan.strategy and not plan.avoid):
+                logger.info("[RESPONSE PLANNER] Plan emptied by embellishment guards — discarding")
+                return None
+
             plan.planner_source = "llm"
             plan.planner_model = planner_model
             plan.context_digest_sha256 = digest_hash
@@ -650,36 +721,222 @@ class ResponsePlanner:
         "Share", "Cover", "Note", "Ask", "Offer", "Keep", "Avoid", "Acknowledge", "Mention",
     })
 
+    # Closed-class function words skipped when hunting for a key point's head
+    # noun below — grammar, not topic vocabulary. 2026-09-10 round 2 (probe
+    # T5): "user"/"they"/"assistant"/"daemon" are the plan's own subject
+    # labels (and, via the rendered "User: ..." exchange block, trivially
+    # "present in the sources" no matter what the point actually claims), and
+    # "believes"/"thinks"/"feels"/"wants"/"found"/"mentioned"/"shared" are
+    # reporting verbs, not content — "The user believes this new doctor will
+    # be helpful" head-nouned to "user" and was kept because the exchange
+    # label literally contains the word "User". ("has"/"they" were already
+    # covered by "have/has/had" and the pronoun row above.)
+    _HEAD_NOUN_STOP = frozenset({
+        "a", "an", "the", "this", "that", "these", "those",
+        "is", "are", "was", "were", "be", "been", "being",
+        "will", "would", "can", "could", "should", "may", "might", "must",
+        "have", "has", "had", "do", "does", "did",
+        "and", "or", "but", "nor", "so", "yet",
+        "of", "to", "in", "on", "at", "by", "for", "with", "about", "as",
+        "i", "you", "he", "she", "it", "we", "they", "me", "him", "her",
+        "us", "them", "my", "your", "his", "its", "our", "their",
+        "not", "no",
+        "user", "assistant", "daemon",
+        "believes", "thinks", "feels", "wants", "found", "mentioned", "shared",
+    })
+
     @classmethod
-    def unsupported_key_points(cls, points: List[str], sources: str) -> tuple:
+    def _head_noun_stop_words(cls) -> frozenset:
+        """``_HEAD_NOUN_STOP`` plus the current user's own display name
+        (2026-09-10 round 2) — resolved dynamically via
+        ``utils.user_identity`` rather than hardcoded, per the project's
+        no-personal-vocabulary-in-source doctrine. Falls back to the base
+        set on any failure (the resolver's own fallback, "the user", is
+        already covered by the "the"/"user" stop tokens)."""
+        try:
+            from utils.user_identity import get_user_display_name
+            name = get_user_display_name() or ""
+        except Exception:
+            return cls._HEAD_NOUN_STOP
+        extra = {t.lower() for t in re.findall(r"[A-Za-z']+", name)}
+        return cls._HEAD_NOUN_STOP | extra if extra else cls._HEAD_NOUN_STOP
+
+    @classmethod
+    def _head_noun(cls, point: str) -> str:
+        """Coarse content-word anchor: the first token after a key point's
+        leading subject/verb word that isn't a closed-class function word.
+        Deliberately a heuristic guard, not a parser — see
+        ``unsupported_key_points``'s statement-mode check."""
+        tokens = re.findall(r"[A-Za-z']+", point or "")
+        if len(tokens) < 2:
+            return ""
+        stop = cls._head_noun_stop_words()
+        for tok in tokens[1:]:
+            low = tok.lower().strip("'")
+            if not low or low in stop:
+                continue
+            return low
+        return ""
+
+    # Statement-mode companion to the head-noun check above (2026-09-10
+    # round 2, probe T5): the head-noun check alone can miss an embellishment
+    # when the word right after the subject is itself grammar/reporting
+    # vocabulary now in ``_HEAD_NOUN_STOP`` — the next content word it lands
+    # on ("new" in "The user believes this new doctor...") can coincidentally
+    # appear in strict_sources even though the point's actual (unsupported)
+    # claim is a different word entirely ("doctor"). Independently: any QUERY
+    # token of <= 4 letters that is a STRICT PREFIX of a LONGER word in the
+    # point ("doc" -> "doctor") is an unsupported abbreviation expansion
+    # unless that longer word itself appears in strict_sources.
+    @classmethod
+    def _has_unsupported_prefix_expansion(cls, point_text: str, query: str, strict_src: str) -> bool:
+        q_tokens = {
+            t.lower() for t in re.findall(r"[A-Za-z']+", query or "")
+            if 1 < len(t) <= 4 and t.lower() not in cls._HEAD_NOUN_STOP
+        }
+        if not q_tokens:
+            return False
+        strict_src = strict_src or ""
+        for tok in re.findall(r"[A-Za-z']+", point_text or ""):
+            low = tok.lower().strip("'")
+            if len(low) <= 4:
+                continue
+            for qt in q_tokens:
+                if low != qt and low.startswith(qt):
+                    if low not in strict_src and low.rstrip("s") not in strict_src:
+                        return True
+        return False
+
+    @classmethod
+    def _strict_mode_context(cls, query: Optional[str], strict_sources: Optional[str]) -> tuple:
+        """Resolve (strict_mode, strict_src) from a query the same way for
+        every caller (unsupported_key_points, _statement_unsupported):
+        strict mode applies only to a non-request-shaped (bare statement)
+        query, and ``strict_src`` defaults to the query itself when
+        ``strict_sources`` is omitted. ``query=None`` always yields
+        (False, "") — prior no-query behavior is preserved exactly."""
+        if query is None:
+            return False, ""
+        try:
+            from utils.query_checker import is_request_shaped
+            if is_request_shaped(query):
+                return False, ""
+        except Exception:
+            return False, ""
+        return True, (strict_sources if strict_sources is not None else query).lower()
+
+    @classmethod
+    def _basic_unsupported(cls, text: str, src: str) -> bool:
+        """Event-stem / TitleCase-name check — the ORIGINAL (pre-2026-09-10)
+        unsupported-point test, factored out so both the list-mode
+        (``unsupported_key_points``) and single-string (``_statement_unsupported``)
+        callers share one implementation."""
+        low = (text or "").lower()
+        for stem in cls._EVENT_STEMS:
+            if re.search(r"\b" + stem + r"\b", low) and not re.search(r"\b" + stem + r"\b", src):
+                return True
+        words = (text or "").split()
+        for tok in cls._POINT_NAME_RE.findall(" ".join(words[1:])):
+            if tok in cls._POINT_NAME_STOP:
+                continue
+            if tok.lower() not in src and tok.lower().rstrip("s") not in src:
+                return True
+        return False
+
+    @classmethod
+    def _strict_unsupported(cls, text: str, query: str, strict_src: str) -> bool:
+        """Statement-mode head-noun + prefix-expansion checks (2026-09-10
+        rounds 1-2), factored out for reuse by ``_statement_unsupported``."""
+        head = cls._head_noun(text)
+        if head and head not in strict_src and head.rstrip("s") not in strict_src:
+            return True
+        return cls._has_unsupported_prefix_expansion(text, query, strict_src)
+
+    @classmethod
+    def unsupported_key_points(cls, points: List[str], sources: str, *,
+                                query: str = None, strict_sources: str = None) -> tuple:
         """Split ``points`` into (kept, dropped). A point is dropped when it
         carries an event stem or a TitleCase name (past its first word) that
         the sources never mention. Under-fires: only the listed event stems
         and capitalised names are checked; if every point would be dropped the
-        original list is kept (an empty plan is worse than an embellished one)."""
+        original list is kept (an empty plan is worse than an embellished one).
+
+        Statement-mode head-noun check (2026-09-10, probe T3): when ``query``
+        is given and is NOT request-shaped (a bare statement, not a question
+        or a request), a point is additionally dropped when its head noun —
+        the first content word after its subject — never appears in
+        ``strict_sources`` (query + last exchange; the retrieval DIGEST is
+        deliberately excluded). A statement turn's digest alone is not
+        support: "Cool. Managed to push today and there is a new doc I
+        think will be helpful" (a repo-doc share) had its STM-expanded
+        "doc"→"doctor" misread validated by a digest full of doctor/
+        psychiatrist memories, and the planner confidently planned three
+        points about a new doctor. ``strict_sources`` defaults to ``query``
+        when omitted. Passing no ``query`` (None) preserves prior behavior
+        exactly — a request-shaped query still gets full digest support.
+
+        Round 2 (2026-09-10, same probe, retest): the head-noun alone still
+        missed it — "The user believes this new doctor will be helpful"
+        head-nouned to "user" (present in the exchange's own "User: ..."
+        label) — so a second, independent statement-mode check
+        (``_has_unsupported_prefix_expansion``) drops a point whose text
+        contains a word that is a strict, longer expansion of a short (<=4
+        letter) query token ("doc" -> "doctor") and that expanded word is
+        itself absent from ``strict_sources``.
+        """
         src = (sources or "").lower()
+        strict_mode, strict_src = cls._strict_mode_context(query, strict_sources)
         kept: List[str] = []
         dropped: List[str] = []
+        # Tracked separately from the final bad/kept split so the "never
+        # fully empty" safeguard below can tell WHY everything was dropped:
+        # the original event/name checks emptying the plan still falls back
+        # to keeping everything (unchanged prior behavior), but the new
+        # strict-mode check emptying an otherwise-fine plan is allowed to
+        # stand — a statement with every point built on an unsupported
+        # referent is better left unplanned than embellished.
+        any_kept_pre_strict = False
         for pt in points or []:
             text = str(pt or "")
-            low = text.lower()
-            bad = False
-            for stem in cls._EVENT_STEMS:
-                if re.search(r"\b" + stem + r"\b", low) and not re.search(r"\b" + stem + r"\b", src):
-                    bad = True
-                    break
+            bad = cls._basic_unsupported(text, src)
             if not bad:
-                words = text.split()
-                for tok in cls._POINT_NAME_RE.findall(" ".join(words[1:])):
-                    if tok in cls._POINT_NAME_STOP:
-                        continue
-                    if tok.lower() not in src and tok.lower().rstrip("s") not in src:
-                        bad = True
-                        break
+                any_kept_pre_strict = True
+            if not bad and strict_mode and cls._strict_unsupported(text, query, strict_src):
+                bad = True
             (dropped if bad else kept).append(text)
         if points and not kept:
+            if strict_mode and any_kept_pre_strict:
+                return kept, dropped
             return list(points), []
         return kept, dropped
+
+    @classmethod
+    def _statement_unsupported(cls, text: str, sources: str, *,
+                                query: str = None, strict_sources: str = None) -> bool:
+        """Single-string counterpart to ``unsupported_key_points`` for the
+        plan's ``strategy`` sentence and each ``avoid`` line (2026-09-10,
+        round 3): the SAME event-stem/name + statement-mode head-noun/
+        prefix-expansion checks, but with NO "never fully empty" list
+        safeguard — an embellished strategy sentence is blanked outright
+        rather than kept because it happened to be the plan's only content.
+
+        Live round-3 finding: T5 ("Cool. Managed to push today and there is
+        a new doc I think will be helpful") produced key_points=[] from the
+        LLM itself (nothing to drop) plus strategy "Acknowledge the user's
+        progress and express support for their new doctor." — the same
+        unsupported "doc"->"doctor" expansion ``unsupported_key_points``
+        already catches for key points, un-checked for strategy/avoid.
+        """
+        text = str(text or "")
+        if not text.strip():
+            return False
+        src = (sources or "").lower()
+        if cls._basic_unsupported(text, src):
+            return True
+        strict_mode, strict_src = cls._strict_mode_context(query, strict_sources)
+        if strict_mode and cls._strict_unsupported(text, query, strict_src):
+            return True
+        return False
 
     @staticmethod
     def _parse_plan(raw: str) -> Optional[ResponsePlan]:

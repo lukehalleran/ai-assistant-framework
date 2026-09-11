@@ -34,10 +34,57 @@ from datetime import datetime
 
 from .formatter import _as_summary_dict, _parse_bool
 from utils.ordered_slice import newest_first as _ordered_newest_first
+from core.action_claim_guard import (
+    annotate_conversation_content,
+    annotate_unverified_action_claim,
+)
 
 
 def _summary_ts_key(item):
     return item.get('timestamp') if isinstance(item, dict) else None
+
+
+def _annotate_memory_item_claim(mem: Dict[str, Any]) -> Dict[str, Any]:
+    """Flag an unbacked action claim in a memory item BEFORE it leaves the
+    gatherer (2026-09-11, round 5, B13 — moved here from the formatter
+    render sites; those stay as belt-and-suspenders). The agentic decision
+    digest (``core.agentic.controller._compute_recent_conversation_digest``)
+    and the planner's context digest (``core.response_planner.
+    ResponsePlanner.build_context_digest``) both render ``recent_
+    conversations``/``memories`` items straight from these raw dicts,
+    bypassing the two formatter-level markers entirely — the live decision
+    round that answered "already covered, actually — you had me save that
+    exact note yesterday" was reading an unflagged self-note claim through
+    exactly this path (BC-75, the same laundered-claim class B12 closed at
+    the formatter, now also closed at the producer).
+
+    ``content``-shaped items (hybrid retriever: "User: ...\\nDaemon: ...")
+    use ``annotate_conversation_content``; plain query/response-shaped
+    items (corpus manager) use ``annotate_unverified_action_claim`` on
+    ``response`` only — the user's own ``query``/``content`` User segment
+    is never touched. Both annotators are idempotent, so running this
+    alongside the formatter's own (redundant) re-annotation never double-
+    marks a reply. Returns a shallow copy when a field changes so the
+    caller's original list/dicts are not mutated in place; returns `mem`
+    unchanged on any error or when `mem` isn't a dict.
+    """
+    if not isinstance(mem, dict):
+        return mem
+    try:
+        content = mem.get("content")
+        if content:
+            annotated = annotate_conversation_content(str(content))
+            if annotated != content:
+                mem = {**mem, "content": annotated}
+        else:
+            response = mem.get("response")
+            if response:
+                annotated = annotate_unverified_action_claim(str(response))
+                if annotated != response:
+                    mem = {**mem, "response": annotated}
+    except Exception:
+        return mem
+    return mem
 
 logger = logging.getLogger("prompt_context_gatherer")
 
@@ -146,8 +193,10 @@ class MemoryRetrievalMixin:
                 except Exception as e:
                     logger.warning(f"Fallback memory retrieval failed: {e}")
 
-            # Track memory IDs for citations
-            result_memories = memories or []
+            # Flag unbacked action claims BEFORE this list leaves the
+            # gatherer (2026-09-11, round 5, B13) — the single exit point
+            # for `recent_conversations`; see _annotate_memory_item_claim.
+            result_memories = [_annotate_memory_item_claim(m) for m in (memories or [])]
             logger.debug(f"[DEBUG RECENT] _get_recent_conversations: Returning {len(result_memories)} memories")
             for idx, mem in enumerate(result_memories, start=1):
                 mem_id = f"MEM_RECENT_{idx}"
@@ -547,6 +596,14 @@ class MemoryRetrievalMixin:
             # Apply enhanced deduplication
             result = self._deduplicate_memories(semantic_memories)
             result = result[:limit]  # Final limit in case deduplication removed items
+
+            # Flag unbacked action claims BEFORE this list leaves the
+            # gatherer (2026-09-11, round 5, B13) — the single exit point
+            # for `memories`; see _annotate_memory_item_claim. Applied after
+            # dedup so the dedup content-key comparison sees the raw
+            # (un-annotated) text, never two copies of the same reply
+            # treated as distinct because one carries the marker.
+            result = [_annotate_memory_item_claim(m) for m in result]
 
             # Track memory IDs for citations
             for idx, mem in enumerate(result, start=1):
