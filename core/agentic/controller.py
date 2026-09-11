@@ -174,6 +174,24 @@ from core.actions.registry import (  # noqa: E402
 )
 
 
+def _should_ground_calendar_times(session, this_round_forced_type: Optional[str]) -> bool:
+    """Whether THIS round's calendar_create_event decisions must be checked
+    against the gathered-context time pool (2026-09-10, narrowed same day by
+    referee follow-up).
+
+    A forced round always grounds — that's the original guessed-17:00
+    incident. But once a session has DECLINED a guessed time
+    (``session._action_force_declined`` set by that same check below), the
+    loop continues UNFORCED and the model was previously free to re-propose
+    the same guessed time on a later, unforced round with no check at all.
+    Once a session has declined once, every LATER calendar_create_event
+    decision in the session is grounded too. Callers still separately
+    require ``session.action_context_digest`` to be truthy (no pool built =
+    nothing to check against).
+    """
+    return bool(this_round_forced_type) or bool(getattr(session, "_action_force_declined", False))
+
+
 class AgenticSearchController:
     """
     Controls the ReAct-style agentic search loop.
@@ -1065,7 +1083,11 @@ class AgenticSearchController:
                 # it, record why, and never re-force this session — the
                 # loop continues unforced so the model can look the time up
                 # or ask; the no-card backstop keeps the reply honest.
-                if _action_decisions and _this_round_forced_type and session.action_context_digest:
+                if (
+                    _action_decisions
+                    and _should_ground_calendar_times(session, _this_round_forced_type)
+                    and session.action_context_digest
+                ):
                     from core.actions.registry import calendar_times_ungrounded
                     _pool = "\n".join(str(x or "") for x in (
                         query, session.action_context_digest,

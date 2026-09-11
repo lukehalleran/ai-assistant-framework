@@ -740,19 +740,56 @@ def action_kind_of(action_type: ActionType):
 # "5 pm", "5:00", "17:00", "1700", "730A", "noon", "midnight". No ±1h zone
 # tolerance: the executor's timezone doctrine writes a source-stated zone's
 # time verbatim with time_zone set, so a grounded proposal matches exactly.
+#
+# 2026-09-10 referee follow-up: two sibling shapes were still ungrounded.
+# (a) A bare hour after a time preposition ("office hours at 3 on Fridays",
+#     "meets at 11", "from 9 to 10", "9-10 on Saturdays") had no meridiem and
+#     no colon, so none of the arms above matched it — a correctly-stated
+#     time was flagged as an invented guess. The `bare`/`r1`+`r2` arms below
+#     add it; noise guards keep them off unit-suffixed numbers ("1264 rows",
+#     "30 mg") and 4-digit years/ISO dates ("2026", "2026-09-11").
+# (b) An ISO timestamp embedded IN the pool text itself (action digests and
+#     the controller's own "[ACTION NOT PROPOSED]" note both render
+#     "start_time=2026-09-11T17:00:00") has no word boundary between the "T"
+#     and the hour digits, so the `h2` arm's leading \b never matched. The
+#     `ih`/`im` arm below matches the ISO "T17:00" shape directly.
+_TIME_NOISE_GUARD = r"(?!\s*(?:rows?|mg|days?|minutes?|mins?|hours?|%|k)\b)"
 _CLOCK_TOKEN_RE = re.compile(
     r"\b(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>a\.?m\.?|p\.?m\.?|a|p)\b"
     r"|\b(?P<h2>\d{1,2}):(?P<m2>\d{2})\b"
     r"|\b(?P<mil>\d{3,4})\s*(?P<ap2>a|p|am|pm)?\b"
-    r"|\b(?P<word>noon|midday|midnight)\b",
+    r"|\b(?P<word>noon|midday|midnight)\b"
+    r"|T(?P<ih>\d{2}):(?P<im>\d{2})"
+    r"|\b(?:at|from|to|until|till|by|around|before|after|@)\s+(?P<bare>\d{1,2})\b"
+    r"(?!\s*:)(?!\s*[ap]\.?m\.?\b)" + _TIME_NOISE_GUARD +
+    r"|(?<!\d{4}-)\b(?P<r1>\d{1,2})\s*(?:-|–|to)\s*(?P<r2>\d{1,2})\b" + _TIME_NOISE_GUARD,
     re.IGNORECASE,
 )
+
+
+def _add_hour(hours: set, h: int, mi: Optional[str], ap: Optional[str]) -> None:
+    """Record a parsed (hour, minute[, ambiguous-pm-reading]) into ``hours``."""
+    if h > 24:
+        return
+    if ap == "p" and h < 12:
+        h += 12
+    if ap == "a" and h == 12:
+        h = 0
+    mi_i = None if mi is None else int(mi)
+    hours.add((h % 24, mi_i))
+    hours.add((h % 24, None))
+    if ap is None and 1 <= h <= 12:
+        # A 12-hour token with no meridiem ("9:00-10:00pm", "the 3:30",
+        # "meets at 11", "9-10 on Saturdays") is ambiguous — it grounds both
+        # readings.
+        hours.add(((h + 12) % 24, mi_i))
+        hours.add(((h + 12) % 24, None))
 
 
 def _pool_hours(pool: str) -> set:
     """Every (hour, minute) a text mentions, as 24h tuples; minutes=None when
     the mention has no minutes ("5 pm")."""
-    hours = set()
+    hours: set = set()
     for m in _CLOCK_TOKEN_RE.finditer(pool or ""):
         if m.group("word"):
             w = m.group("word").lower()
@@ -762,6 +799,14 @@ def _pool_hours(pool: str) -> set:
             h, mi, ap = int(m.group("h")), m.group("m"), m.group("ap").lower()[0]
         elif m.group("h2") is not None:
             h, mi, ap = int(m.group("h2")), m.group("m2"), None
+        elif m.group("ih") is not None:
+            h, mi, ap = int(m.group("ih")), m.group("im"), None
+        elif m.group("bare") is not None:
+            h, mi, ap = int(m.group("bare")), None, None
+        elif m.group("r1") is not None:
+            _add_hour(hours, int(m.group("r1")), None, None)
+            _add_hour(hours, int(m.group("r2")), None, None)
+            continue
         else:
             raw = m.group("mil")
             ap = (m.group("ap2") or "").lower()[:1] or None
@@ -773,20 +818,7 @@ def _pool_hours(pool: str) -> set:
                 continue  # "1264 rows" — not a clock
             if not ap and len(raw) == 4 and (h < 1 or raw[:2] in ("19", "20")):
                 continue  # "2026-09-11" is a year, not 20:26
-        if h > 24:
-            continue
-        if ap == "p" and h < 12:
-            h += 12
-        if ap == "a" and h == 12:
-            h = 0
-        mi_i = None if mi is None else int(mi)
-        hours.add((h % 24, mi_i))
-        hours.add((h % 24, None))
-        if ap is None and 1 <= h <= 12:
-            # A 12-hour token with no meridiem ("9:00-10:00pm", "the 3:30")
-            # is ambiguous — it grounds both readings.
-            hours.add(((h + 12) % 24, mi_i))
-            hours.add(((h + 12) % 24, None))
+        _add_hour(hours, h, mi, ap)
     return hours
 
 

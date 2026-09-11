@@ -122,20 +122,33 @@ class ClaimReconciliation(BaseModel):
 # Kind keyword patterns, checked in priority order. External kinds first so a
 # clause mentioning both an external target and a generic word resolves to the
 # external (more consequential) kind; NOTE before DOCUMENT (notes are primary).
+#
+# CALENDAR is split into a STRONG tier (unambiguous calendar nouns — always
+# wins) and a WEAK tier (2026-09-10: recurrence-cadence words that also show
+# up in ordinary NOTE offers — "weekly note", "note from this session").
+# _detect_kind only lets the weak tier resolve to CALENDAR when the clause
+# carries no NOTE word too; see the 2026-09-10 referee-followup comment there.
+_CALENDAR_STRONG_RE = re.compile(
+    r"\b(calendar(?:\s+event)?|events?|appointments?|reminders?|remind(?:ing)?\s+you|"
+    r"recurring|repeating|office\s+hours)\b", re.IGNORECASE)
+# Bare "event"/"appointment" added 2026-09-01: "Re-queuing the event with
+# the corrected date … Approve that one" carried no "calendar" word and
+# the confabulated re-queue claim went kind-less. The downstream
+# expected-to-act gate still suppresses no-context narration.
+# 2026-09-10: "Queuing it now: **MGT 6203 TA Session — Saturdays 11:00
+# AM–12:00 PM CT, weekly through December 12**" was kind-less (no
+# calendar/event word) so the narrated queue claim went unguarded —
+# recurrence words and a named session/office-hours slot are calendar.
+_CALENDAR_WEAK_RE = re.compile(r"\b(weekly|sessions?)\b", re.IGNORECASE)
+_NOTE_KIND_RE = re.compile(
+    r"\b(daemon\s+note|self-?notes?|notes?|memos?|note\s+to\s+self|"
+    r"jot\s+(?:this|it|that)\s+down|write\s+(?:this|it|that)\s+down)\b", re.IGNORECASE)
 _KIND_PATTERNS: list[tuple[ActionKind, re.Pattern]] = [
     (ActionKind.EMAIL, re.compile(r"\b(e-?mail(?:s|ed|ing)?)\b", re.IGNORECASE)),
-    # Bare "event"/"appointment" added 2026-09-01: "Re-queuing the event with
-    # the corrected date … Approve that one" carried no "calendar" word and
-    # the confabulated re-queue claim went kind-less. The downstream
-    # expected-to-act gate still suppresses no-context narration.
-    # 2026-09-10: "Queuing it now: **MGT 6203 TA Session — Saturdays 11:00
-    # AM–12:00 PM CT, weekly through December 12**" was kind-less (no
-    # calendar/event word) so the narrated queue claim went unguarded —
-    # recurrence words and a named session/office-hours slot are calendar.
-    (ActionKind.CALENDAR, re.compile(r"\b(calendar(?:\s+event)?|events?|appointments?|reminders?|remind(?:ing)?\s+you|recurring|repeating|weekly|office\s+hours|sessions?)\b", re.IGNORECASE)),
+    (ActionKind.CALENDAR, _CALENDAR_STRONG_RE),
     (ActionKind.MESSAGE, re.compile(r"\b(telegram|discord|dm\s+you|message\s+you|text\s+you)\b", re.IGNORECASE)),
     (ActionKind.GITHUB, re.compile(r"\b(github\s+(?:issue|comment|pr|pull\s+request)|(?:open|file|create)\s+an?\s+issue)\b", re.IGNORECASE)),
-    (ActionKind.NOTE, re.compile(r"\b(daemon\s+note|self-?notes?|notes?|memos?|note\s+to\s+self|jot\s+(?:this|it|that)\s+down|write\s+(?:this|it|that)\s+down)\b", re.IGNORECASE)),
+    (ActionKind.NOTE, _NOTE_KIND_RE),
     (ActionKind.DOCUMENT, re.compile(r"\b(documents?|write-?ups?|reports?|markdown\s+(?:doc|file))\b", re.IGNORECASE)),
 ]
 
@@ -316,6 +329,14 @@ def _detect_kind(clause: str) -> ActionKind | None:
     for kind, pat in _KIND_PATTERNS:
         if pat.search(clause):
             return kind
+    # 2026-09-10 referee follow-up (class BC-06 over-fire): the CALENDAR
+    # weak-cadence words ("weekly", "session(s)") also show up in ordinary
+    # NOTE offers ("Want me to save a note from this session?", "add that to
+    # your weekly note?"). They only resolve to CALENDAR when the clause
+    # carries no NOTE word too — otherwise fall through to the NOTE pattern
+    # already checked (and missed) above.
+    if _CALENDAR_WEAK_RE.search(clause) and not _NOTE_KIND_RE.search(clause):
+        return ActionKind.CALENDAR
     return None
 
 
