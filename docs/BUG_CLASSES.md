@@ -117,7 +117,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-74 | Broad continuation/affirmation arm outranks a narrower explicit-request arm | A | partial |
 | BC-75 | Self-authored artifact laundered into evidence via a persistent store | E | open |
 | BC-76 | Closure by phrase-append (narrow remedy pattern) | J process | open |
-| BC-77 | Autonomy guardrail vetoes an explicit user request; dispatcher receipt still claims success | B | open |
+| BC-77 | Autonomy guardrail vetoes an explicit user request; dispatcher receipt still claims success | B | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -247,7 +247,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Incidents: 2026-09-11 10:10 "jot down a note for this session: TA sessions are Saturdays at 11 CT" — the model called `create_daemon_note`; `DaemonNotesManager.create_autonomous_note` skipped it as a 0.879 near-duplicate of two poisoned self-notes; `_dispatch_create_daemon_note` still yielded `note_saved` and a "Self-Note Saved" round header; the reply said "Already covered".
 - Find: for every executor reachable from a gate-forced or user-directed tool route, `grep -n "return None\|skipped" <executor>` and check whether the dispatcher keys its end event / round header off the executor's RESULT or off a constant; `grep -n "event_type="[a-z_]*_saved"\|_created"\|_sent"" core/agentic/tools.py` and confirm each sits under a result check.
 - Closure: the request's provenance rides on the decision object (`SearchDecision.daemon_note_user_requested`, set wherever the gate-detected body override is applied) and the guardrail branches on it (cap and dedup skip bypassed, the near-duplicate still logged); the executor exposes the skip reason (`last_skip_reason`) and the dispatcher emits `note_skipped` / "Self-Note NOT Saved" unless the result string starts with the success prefix. Tests: `tests/unit/test_sep10_probe_dump_actions.py::TestA15*`.
-- Status: closed for `create_daemon_note` (2026-09-11); other autonomy-bounded executors (proposal capacity in `PendingActionsStore`, email/contact rate caps) not yet audited with the Find grep.
+- Status: partial — closed for `create_daemon_note` (2026-09-11); other autonomy-bounded executors (proposal capacity in `PendingActionsStore`, email/contact rate caps) not yet audited with the Find grep.
 
 ## C. Ordering, data shape, transport
 
@@ -694,7 +694,7 @@ from A–I because it audits the remedy, not the defect.
 
 | ID | Method | Runs as | Classes |
 |---|---|---|---|
-| DM-01 | Raw-substring / negation audit: `rg` for `in <x>.lower()` and cue regexes not routed through `utils/trigger_match.py` | grep | BC-01, BC-02 |
+| DM-01 | Raw-substring / negation audit: `rg` for `in <x>.lower()` and cue regexes not routed through `utils/trigger_match.py` | `check_bug_classes.py scan` — dm01_raw_substring (gated) | BC-01, BC-02 |
 | DM-02 | Registry parity tests that walk a table and assert every entry is wired | `test_tool_wiring_parity`, `test_model_capability_wiring`, `test_budget_meters_rendered_sections`, `test_api_error_fail_fast` | BC-10, BC-15, BC-17, BC-22, BC-23 |
 | DM-03 | Ordered-slice AST guard (content-anchored allowlist) | `tests/unit/test_ordered_slice_guard.py` | BC-18 |
 | DM-04 | Same-instance before/after settings probe | test pattern, `test_sep09_live_controls.py` | BC-11 |
@@ -709,9 +709,9 @@ from A–I because it audits the remedy, not the defect.
 | DM-13 | Unignore rerun under the CI marker filter | shell | BC-66 |
 | DM-14 | Peak-RSS measurement of the exact hook/CI selection under `systemd-run -p MemoryMax=` + `/usr/bin/time -v` | shell | BC-67 |
 | DM-15 | Sibling-site enumeration after a fix: every read AND write of the primitive, every sibling by naming pattern | grep, manual | BC-58, BC-27, BC-13 |
-| DM-16 | Config-key reachability: each YAML leaf → readers outside schema/app_config | script (proposed) | BC-12, BC-10 |
-| DM-17 | `grep -L daemon_guard scripts/*.py \| xargs grep -l -- --apply`; `rg '"data/' tests/` | shell | BC-37 |
-| DM-18 | Broad `except` returning an empty result beside a store call | `rg -Pzo` | BC-20, BC-47 |
+| DM-16 | Config-key reachability: each YAML leaf → readers outside schema/app_config | `check_bug_classes.py scan` — dm16_config_key_reachability (report-only, 87 live candidates) | BC-12, BC-10 |
+| DM-17 | `grep -L daemon_guard scripts/*.py \| xargs grep -l -- --apply`; `rg '"data/' tests/` | `check_bug_classes.py scan` — dm17_apply_without_guard (gated) | BC-37 |
+| DM-18 | Broad `except` returning an empty result beside a store call | `check_bug_classes.py scan` — dm18_except_returns_empty (gated) | BC-20, BC-47 |
 | DM-19 | Dead-call kwarg grep + kwargs-capturing fake client | grep + test pattern | BC-14 |
 | DM-20 | Prohibitive prompt instruction → deterministic sibling check | grep `config/prompts/*.txt` | BC-46 |
 | DM-21 | Contamination and junk reports on the deployed predicates | `scripts/report_claim_contamination.py`, `purge_junk_facts.py` dry-run, exemplar cap check | BC-54, BC-55, BC-56, BC-29 |
@@ -722,7 +722,7 @@ from A–I because it audits the remedy, not the defect.
 | DM-26 | Receipt rollups (`scripts/latency_rollup.py`; web-trigger rollup planned) | shell, read-only | BC-72, BC-41 |
 | DM-27 | Corpus-replay planner canary: run the deployed planner/STM stage over recorded turns, flag key points or resolved referents whose head noun is absent from the query + last exchange | script `(proposed)` | BC-51, BC-73 |
 | DM-28 | Persisted-model-output sweep: for every tool/generator writing model text into a store later re-rendered into a prompt, check write-path attribution stripping and read-path provenance marking | grep + manual | BC-75 |
-| DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | shell (`grep -n` over `CLAUDE_CHANGELOG.md`) | BC-76 |
+| DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human) | BC-76 |
 
 ## Closure methods (CM) — what has actually stopped a class
 

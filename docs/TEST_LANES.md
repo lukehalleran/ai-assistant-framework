@@ -122,6 +122,14 @@ separate `frontend` job: `npm run typecheck` then `npm test` (the Vitest
 behaviour lane B4 added for F07/T09); there is no `npm run build` step
 in CI.
 
+**Bug-class scan lane (added 2026-09-11)** — stdlib-only, no application
+import, ~2 s; runs in `hooks/pre-push` step 2a and in the CI backend job
+before the suite:
+
+| Lane | Command | What it gates | Baseline |
+|---|---|---|---|
+| bug-class scan ratchet | `python scripts/check_bug_classes.py scan --root .` then `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider --confcutdir=tests/bug_class_guards tests/bug_class_guards` | the DM scanners in `scripts/bug_class_guards/scanners/` (DM-01/17/18 gated, DM-16/29 report-only) + `docs/BUG_CLASSES.md` admission | `config/bug_class_baseline.json` — content-anchored `(scanner, path, enclosing qualname, source line)`; exit 1 on a NEW finding, on a STALE entry, or when a gated scanner processed zero files; exit 2 when a scanner could not run |
+
 **The five repo-wide guards** (must be green before every push per
 `docs/DEVELOPMENT_WORKFLOW.md` §7.1, and are always included in
 `hooks/pre-push`'s selection regardless of what changed):

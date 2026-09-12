@@ -6,13 +6,16 @@
 # Install:
 #   ln -s ../../hooks/pre-push .git/hooks/pre-push
 #
-# Checks, in order (1-3 mirror steps of .github/workflows/tests.yml; 0 is local-only):
+# Checks, in order (1-3 and 2a mirror steps of .github/workflows/tests.yml;
+# 0 is local-only):
 #   0. the pushed commit IS the tree being tested: no modified tracked files,
 #      no untracked *.py (a test file you forgot to `git add` passes here and
 #      is missing on the runner)
 #   1. the CI privacy guard (tracked real-memory fixtures, fixture size,
 #      dosage-shaped text outside the reviewed allowlist)
 #   2. ruff check .
+#   2a. the bug-class scan ratchet (scripts/check_bug_classes.py scan) and its
+#      stdlib-only guard lane — a NEW finding or a STALE baseline entry fails
 #   3. pytest: every test file changed in the push range + the repo-wide
 #      guard tests (never in a module-scoped local selection)
 #   PREPUSH_FULL=1 additionally runs the CI marker filter over tests/unit ONLY
@@ -108,6 +111,16 @@ done < <(git grep -IlE '[0-9]{3,4}[[:space:]]*mg([^[:alnum:]_]|$)' -- tests docs
 
 # ---- 2. lint -------------------------------------------------------------
 python -m ruff check . || fail "ruff"
+
+# ---- 2a. bug-class scan ratchet (docs/BUG_CLASSES.md detection methods) ----
+# Fail-closed: exit 1 = a NEW finding or a STALE baseline entry (fixed debt
+# must be REMOVED from config/bug_class_baseline.json, never laundered by a
+# leftover row); exit 2 = a scanner could not run, which is never a pass.
+# Stdlib-only, so it costs no model/torch import and runs before the suite.
+python scripts/check_bug_classes.py scan --root . || fail "bug-class scan"
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider \
+  --confcutdir=tests/bug_class_guards tests/bug_class_guards \
+  || fail "bug-class guard tests"
 
 # ---- 3. tests ------------------------------------------------------------
 guards=(

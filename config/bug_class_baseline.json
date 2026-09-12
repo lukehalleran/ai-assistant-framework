@@ -1,0 +1,785 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "core/orchestrator.py",
+      "symbol": "DaemonOrchestrator._build_system_prompt",
+      "text": "elif \"/\" in pronouns_lower:"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "core/prompt/formatter.py",
+      "symbol": "_format_session_header",
+      "text": "elif \"(yesterday)\" in rel.lower():"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "core/prompt/formatter.py",
+      "symbol": "_format_session_header",
+      "text": "if \"(today)\" in rel.lower():"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "knowledge/git_memory.py",
+      "symbol": "GitMemoryExtractor._extract_tags",
+      "text": "if \"breaking\" in subject_lower:"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "knowledge/git_memory.py",
+      "symbol": "GitMemoryExtractor._extract_tags",
+      "text": "if \"hotfix\" in subject_lower:"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "knowledge/git_memory.py",
+      "symbol": "GitMemoryExtractor._extract_tags",
+      "text": "if \"wip\" in subject_lower:"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "knowledge/sandbox_manager.py",
+      "symbol": "_kill_sandbox_quietly",
+      "text": "if name == \"NotFoundException\" or \"404\" in text or \"not found\" in text.lower():"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "knowledge/web_search_manager.py",
+      "symbol": "WebSearchManager.decompose_query",
+      "text": "should_split = \"yes\" in line.lower()"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "memory/memory_retriever.py",
+      "symbol": "MemoryRetriever._maybe_temporal_window_rerank",
+      "text": "if not any(m in query_lower for m in self._RETROSPECTIVE_MARKERS):"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "memory/memory_scorer.py",
+      "symbol": "MemoryScorer.rank_memories",
+      "text": "if cq_density > 0.08 and _analogy_markers(blob) > 0 and \"analogy\" not in current_query.lower():"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "memory/user_profile.py",
+      "symbol": "UserProfile._is_temporal_query",
+      "text": "return any(kw in query_lower for kw in self.TEMPORAL_KEYWORDS)"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "scripts/migrate_proposals_supervision.py",
+      "symbol": "infer_test_files",
+      "text": "return [f for f in affected if \"test\" in f.lower()]"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "scripts/cleanup_stale_illness.py",
+      "symbol": "",
+      "text": "python scripts/cleanup_stale_illness.py --apply # back up + apply"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "scripts/graph_relation_normalize.py",
+      "symbol": "",
+      "text": "* --apply backs up the graph JSON first (timestamped byte-copy)."
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "scripts/reclassify_proposals.py",
+      "symbol": "",
+      "text": "with ``--apply`` to persist."
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "scripts/restore_backup.py",
+      "symbol": "",
+      "text": "python scripts/restore_backup.py --restore 20260714_183000 --apply"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/agent_branch/test_coding_worker.py",
+      "symbol": "test_repo_map_lists_files_and_skips_heavy_dirs",
+      "text": "assert \"data/huge.bin\" not in m and \".git/config\" not in m # heavy/irrelevant skipped"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/agent_branch/test_manifest.py",
+      "symbol": "test_default_forbidden_paths_cover_safety_surface",
+      "text": "for required in (\"tests/\", \"data/\", \".env\", \"scripts/safe_git.sh\", \"scripts/bin/\"):"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/test_eval/test_persistence_guard.py",
+      "symbol": "TestPersistenceSnapshot._make_snapshot",
+      "text": "name=\"data/graph.json\", kind=\"json_file\","
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/test_eval/test_persistence_guard.py",
+      "symbol": "TestPersistenceSnapshot.test_changed_file_hash_fails",
+      "text": "name=\"data/graph.json\", kind=\"json_file\","
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/test_eval/test_persistence_guard.py",
+      "symbol": "TestPersistenceSnapshot.test_changed_file_size_fails",
+      "text": "name=\"data/graph.json\", kind=\"json_file\","
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/test_eval/test_persistence_guard.py",
+      "symbol": "TestPersistenceSnapshot.test_diff_reports_all_changes",
+      "text": "name=\"data/graph.json\", kind=\"json_file\","
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/test_git_memory.py",
+      "symbol": "TestHotFiles.test_exclude_globs_filters",
+      "text": "assert all(\"data/\" not in e[\"path\"] and \"venv/\" not in e[\"path\"] for e in hot)"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/test_git_memory.py",
+      "symbol": "TestHotFiles.test_exclude_globs_filters",
+      "text": "since_days=3650, limit=100, exclude_globs=[\"data/\", \"venv/\"]"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_fs_snapshot.py",
+      "symbol": "TestShouldExclude.test_backup_dir_excluded",
+      "text": "\"\"\"data/backups churns every shutdown (backup_manager) — never hashed.\"\"\""
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_fs_snapshot.py",
+      "symbol": "TestShouldExclude.test_backup_dir_excluded",
+      "text": "assert should_exclude(\"data/backups/20260714_182627/chroma_db_v4/chroma.sqlite3\") is True"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_fs_snapshot.py",
+      "symbol": "TestShouldExclude.test_backup_dir_excluded",
+      "text": "assert should_exclude(\"data/backups/20260714_182627/manifest.json\") is True"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_fs_snapshot.py",
+      "symbol": "TestShouldExclude.test_other_data_files_still_included",
+      "text": "assert should_exclude(\"data/knowledge_graph.json\") is False"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_python_fs_guard.py",
+      "symbol": "TestPathResolution.test_nested_path",
+      "text": "assert result == \"data/chroma_db\""
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_python_fs_guard.py",
+      "symbol": "TestProtectedPathChecks.test_deeply_nested",
+      "text": "assert _is_protected_path(\"data/a/b/c/d.txt\") is True"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_python_fs_guard.py",
+      "symbol": "TestProtectedPathChecks.test_normal_path_not_always_blocked",
+      "text": "assert _is_always_blocked(\"data/file.txt\", \"data/file.txt\") is False"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_python_fs_guard.py",
+      "symbol": "TestProtectedPathChecks.test_protected_subpath",
+      "text": "assert _is_protected_path(\"data/chroma_db\") is True"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_retrospective_small_guards.py",
+      "symbol": "TestDaemonStateFsExemption.test_check_and_maybe_block_allows_credits_in_agent_mode",
+      "text": "\"os.remove\", str(g._repo_root / \"data/knowledge_graph.json\"))"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_retrospective_small_guards.py",
+      "symbol": "TestDaemonStateFsExemption.test_check_and_maybe_block_allows_credits_in_agent_mode",
+      "text": "\"os.replace\", str(g._repo_root / \"data/web_search_credits.json.tmp\"))"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_retrospective_small_guards.py",
+      "symbol": "TestDaemonStateFsExemption.test_exemption_covers_tmp_sibling",
+      "text": "rel = \"data/web_search_credits.json.tmp\""
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_retrospective_small_guards.py",
+      "symbol": "TestDaemonStateFsExemption.test_other_data_paths_not_exempt",
+      "text": "\"data/entity_aliases.json\"):"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_retrospective_small_guards.py",
+      "symbol": "TestDaemonStateFsExemption.test_other_data_paths_not_exempt",
+      "text": "for rel in (\"data/knowledge_graph.json\", \"data/corpus_v4.json\","
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+      "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+      "text": "assert _is_daemon_state_path(\"data/.pending_actions.json.rj_1_c9i.tmp\")"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+      "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+      "text": "assert _is_daemon_state_path(\"data/.web_search_credits.json.abc123.tmp\")"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+      "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+      "text": "assert _is_daemon_state_path(\"data/pending_actions.json\")"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+      "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+      "text": "assert not _is_daemon_state_path(\"data/.knowledge_graph.json.abc.tmp\")"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestMvProtected.test_mv_data_subpath",
+      "text": "result = classify_shell_cmd([\"mv\", \"data/corpus_v4.json\", \"/tmp/\"], repo)"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestProtectedPaths.test_deeply_nested_protected",
+      "text": "assert _is_protected(\"data/a/b/c/file.txt\", PROTECTED_DIRS, PROTECTED_FILES) is True"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestProtectedPaths.test_subpath_of_protected_dir",
+      "text": "assert _is_protected(\"data/chroma_db_v4\", PROTECTED_DIRS, PROTECTED_FILES) is True"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestResolveTarget.test_nested_path",
+      "text": "assert _resolve_target(\"data/chroma_db_v4\", repo) == \"data/chroma_db_v4\""
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestResolveTarget.test_traversal_stays_in_repo",
+      "text": "result = _resolve_target(\"data/../config\", repo)"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestRmProtected.test_rm_data_file_inside_protected",
+      "text": "result = classify_shell_cmd([\"rm\", \"data/knowledge_graph.json\"], repo)"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestRmProtected.test_rm_path_traversal",
+      "text": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/../config\"], repo)"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestRmProtected.test_rm_rf_data_subdir",
+      "text": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/chroma_db_v4\"], repo)"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_shell_cmd_guard.py",
+      "symbol": "TestTruncateProtected.test_truncate_data_file",
+      "text": "[\"truncate\", \"-s\", \"0\", \"data/knowledge_graph.json\"], repo,"
+    },
+    {
+      "scanner": "dm17_apply_without_guard",
+      "path": "tests/unit/test_tone_floor_self_latch.py",
+      "symbol": "TestStateSandbox.test_tone_state_path_is_sandboxed_here",
+      "text": "assert not str(ContextPipeline._TONE_STATE_PATH).startswith(\"data/\")"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin._fetch_upload_roster",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin._get_wiki_content_timed",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_daemon_self_notes",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_git_commits",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_graph_context",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_narrative_context",
+      "text": "return \"\""
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_personal_notes",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_procedural_skills",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_proposed_features",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_reference_docs",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_unresolved_threads",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_knowledge.py",
+      "symbol": "KnowledgeRetrievalMixin.get_user_uploads",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_memory.py",
+      "symbol": "MemoryRetrievalMixin._get_recent_conversations",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_memory.py",
+      "symbol": "MemoryRetrievalMixin._get_reflections",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_memory.py",
+      "symbol": "MemoryRetrievalMixin._get_semantic_memories",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_memory.py",
+      "symbol": "MemoryRetrievalMixin.get_facts",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_memory.py",
+      "symbol": "MemoryRetrievalMixin.get_recent_facts",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_memory.py",
+      "symbol": "MemoryRetrievalMixin.get_upcoming_schedule",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_memory.py",
+      "symbol": "MemoryRetrievalMixin.get_user_profile_context",
+      "text": "return \"\""
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "core/prompt/gatherer_web.py",
+      "symbol": "WebSearchMixin._get_web_search_results",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/WikiManager.py",
+      "symbol": "WikiManager._fetch_extract_action_api",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/WikiManager.py",
+      "symbol": "WikiManager.resolve_and_fetch",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/clip_manager.py",
+      "symbol": "CLIPManager.encode_image",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/clip_manager.py",
+      "symbol": "CLIPManager.encode_text",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/document_generator.py",
+      "symbol": "DocumentGenerator._search_collection",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/document_generator.py",
+      "symbol": "DocumentGenerator._search_web",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/graph_walk_generator.py",
+      "symbol": "GraphWalkGenerator._articulate_and_package",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/implementation_detector.py",
+      "symbol": "ImplementationDetector._stage_llm_judgment",
+      "text": "return {}"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/obsidian_manager.py",
+      "symbol": "ObsidianManager._keyword_search",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/obsidian_manager.py",
+      "symbol": "ObsidianManager.get_notes",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/reference_docs_manager.py",
+      "symbol": "ReferenceDocsManager._get_document_chunks",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/reference_docs_manager.py",
+      "symbol": "ReferenceDocsManager._keyword_search",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/reference_docs_manager.py",
+      "symbol": "ReferenceDocsManager.get_documents",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/reference_docs_manager.py",
+      "symbol": "ReferenceDocsManager.list_documents",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/semantic_search.py",
+      "symbol": "SemanticSearchIndex.search",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/semantic_search.py",
+      "symbol": "SemanticSearchIndex.search",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/visual_memory_store.py",
+      "symbol": "VisualMemoryStore.search_by_text",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/web_search_manager.py",
+      "symbol": "WebSearchManager._select_links_for_following",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/web_search_manager.py",
+      "symbol": "WebSearchManager._tavily_extract",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "knowledge/web_search_manager.py",
+      "symbol": "WebSearchManager._tavily_search",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/context_surfacer.py",
+      "symbol": "ContextSurfacer.generate_insights",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/curation/engine.py",
+      "symbol": "CurationEngine._store_size",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/llm_fact_extractor.py",
+      "symbol": "LLMFactExtractor.extract_triples",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/llm_fact_extractor.py",
+      "symbol": "LLMFactExtractor.extract_triples",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_consolidator.py",
+      "symbol": "MemoryConsolidator._current_status_facts",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_consolidator.py",
+      "symbol": "MemoryConsolidator._read_obsidian_daily_notes",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_consolidator.py",
+      "symbol": "MemoryConsolidator._read_obsidian_monthly_summaries",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_consolidator.py",
+      "symbol": "MemoryConsolidator._read_obsidian_weekly_summaries",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_coordinator.py",
+      "symbol": "MemoryCoordinator.get_unresolved_threads",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_expander.py",
+      "symbol": "MemoryExpander._fetch_conversations_in_range",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_retriever.py",
+      "symbol": "MemoryRetriever._keyword_anchor_memories",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_retriever.py",
+      "symbol": "MemoryRetriever.get_recent_facts",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_retriever.py",
+      "symbol": "MemoryRetriever.get_skills",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_retriever.py",
+      "symbol": "_metadata_fallback_search",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_storage.py",
+      "symbol": "MemoryStorage._get_recent_summaries_by_timespan",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_storage.py",
+      "symbol": "MemoryStorage.store_interaction",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_storage.py",
+      "symbol": "MemoryStorage.store_skill",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/memory_storage.py",
+      "symbol": "MemoryStorage.store_skill",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/proposal_store.py",
+      "symbol": "ProposalStore.check_similarity",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/proposal_store.py",
+      "symbol": "ProposalStore.get_for_dedup",
+      "text": "return \"\""
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/proposal_store.py",
+      "symbol": "ProposalStore.get_pending",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/proposal_store.py",
+      "symbol": "ProposalStore.get_pending_and_approved",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/proposal_store.py",
+      "symbol": "ProposalStore.get_proposal",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/proposal_store.py",
+      "symbol": "ProposalStore.query_proposals",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/proposal_store.py",
+      "symbol": "ProposalStore.store_proposal",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/shutdown_processor.py",
+      "symbol": "ShutdownProcessor._extract_procedural_skills",
+      "text": "return"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/storage/multi_collection_chroma_store.py",
+      "symbol": "MultiCollectionChromaStore.add_conversation_memory",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/storage/multi_collection_chroma_store.py",
+      "symbol": "MultiCollectionChromaStore.get_by_id",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/synthesis_memory.py",
+      "symbol": "SynthesisMemory.find_similar",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/synthesis_memory.py",
+      "symbol": "SynthesisMemory.get_all_results",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/synthesis_memory.py",
+      "symbol": "SynthesisMemory.get_recurring",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/thread_extractor.py",
+      "symbol": "ThreadExtractor.detect_resolutions",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/thread_extractor.py",
+      "symbol": "ThreadExtractor.extract_new_threads",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/thread_store.py",
+      "symbol": "ThreadStore.list_open_threads",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/thread_store.py",
+      "symbol": "ThreadStore.query_threads",
+      "text": "return []"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/thread_store.py",
+      "symbol": "ThreadStore.store_thread",
+      "text": "return None"
+    },
+    {
+      "scanner": "dm18_except_returns_empty",
+      "path": "memory/user_profile_schema.py",
+      "symbol": "_get_exemplar_embeddings",
+      "text": "return None"
+    }
+  ]
+}

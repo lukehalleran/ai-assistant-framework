@@ -77,6 +77,18 @@ jobs:
       - name: Lint (bug-focused floor — rules in pyproject [tool.ruff])
         run: python -m ruff check .
 
+      - name: Bug-class scan ratchet (docs/BUG_CLASSES.md detection methods)
+        run: |
+          set -euo pipefail
+          # Fail-closed both ways: exit 1 = a NEW finding, or a STALE entry in
+          # config/bug_class_baseline.json (fixed debt must be REMOVED from the
+          # baseline, never laundered by a leftover row); exit 2 = a scanner
+          # could not run, which is never reported as a clean pass.
+          # Stdlib-only, so it runs before the suite pays for torch.
+          python scripts/check_bug_classes.py scan --root .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider \
+            --confcutdir=tests/bug_class_guards tests/bug_class_guards
+
       - name: Run fast test suite
         run: |
           python -m pytest -q -m "not slow and not benchmark and not semantic" --tb=short

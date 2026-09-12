@@ -290,6 +290,11 @@ batch size, not in the loop.
    `test_budget_meters_rendered_sections`, `test_tool_wiring_parity`,
    `test_model_capability_wiring`) are never in a module-scoped local
    selection; `hooks/pre-push` runs them on every push (§3a.6).
+   Beside them, `hooks/pre-push` and CI also run the bug-class scan ratchet
+   (`python scripts/check_bug_classes.py scan --root .` plus its stdlib-only
+   lane `tests/bug_class_guards`): a NEW finding from any DM scanner, or a
+   STALE entry in `config/bug_class_baseline.json` — fixed debt must be
+   REMOVED from the baseline, never left behind — fails the push.
 2. **One commit per root cause, restart immediately, then probe.** Three
    agents' work landed on one dirty tree on 2026-09-05 and the running
    Daemon predated every fix for hours. Commit as soon as a fix is green
