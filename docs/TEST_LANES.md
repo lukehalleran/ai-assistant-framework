@@ -128,7 +128,15 @@ before the suite:
 
 | Lane | Command | What it gates | Baseline |
 |---|---|---|---|
-| bug-class scan ratchet | `python scripts/check_bug_classes.py scan --root .` then `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider --confcutdir=tests/bug_class_guards tests/bug_class_guards` | the DM scanners in `scripts/bug_class_guards/scanners/` (DM-01/17/18 gated, DM-16/29 report-only) + `docs/BUG_CLASSES.md` admission | `config/bug_class_baseline.json` — content-anchored `(scanner, path, enclosing qualname, source line)`; exit 1 on a NEW finding, on a STALE entry, or when a gated scanner processed zero files; exit 2 when a scanner could not run |
+| bug-class scan ratchet | `python scripts/check_bug_classes.py scan --root .` then `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider --confcutdir=tests/bug_class_guards tests/bug_class_guards` | the DM scanners in `scripts/bug_class_guards/scanners/` (DM-01/17/18/31 gated, DM-16/29 report-only) + `docs/BUG_CLASSES.md` consistency | `config/bug_class_baseline.json` — content-anchored `(scanner, path, enclosing qualname, source line)`; exit 1 on a NEW finding, on a STALE entry, or when a gated scanner processed zero files; exit 2 when a scanner could not run |
+
+**2026-09-13 verification:** the five gates caught synthetic new findings and
+stale entries; the isolated harness passed 63 tests. The latest pushed tree
+accepted 133 baselined findings. DM-29 processed zero files in GitHub because
+its local changelog input is untracked; its zero is not a clean audit result.
+The [consolidated review](GENERALIZATION_CI_REVIEW_20260913.md) records the
+exact CI run, guard limitations, branch-protection state, and proposed probe
+lane. No assembled-turn probe lane is wired yet.
 
 **The five repo-wide guards** (must be green before every push per
 `docs/DEVELOPMENT_WORKFLOW.md` §7.1, and are always included in

@@ -295,9 +295,15 @@ batch size, not in the loop.
    selection; `hooks/pre-push` runs them on every push (§3a.6).
    Beside them, `hooks/pre-push` and CI also run the bug-class scan ratchet
    (`python scripts/check_bug_classes.py scan --root .` plus its stdlib-only
-   lane `tests/bug_class_guards`): a NEW finding from any DM scanner, or a
+   lane `tests/bug_class_guards`): a NEW finding from a **gated** scanner, or a
    STALE entry in `config/bug_class_baseline.json` — fixed debt must be
-   REMOVED from the baseline, never left behind — fails the push.
+   REMOVED from the baseline, never left behind — fails the local hook and
+   CI check. Current gates are DM-01/17/18/31 plus catalog consistency;
+   DM-16/29 are report-only. This is a ratchet over reviewed baseline debt,
+   not coverage of every known class. A failing CI check prevents landing
+   only when branch protection requires it. The independent verification,
+   generalization findings, and third-prong probe backlog are consolidated
+   in [the 2026-09-13 review](GENERALIZATION_CI_REVIEW_20260913.md).
 2. **One commit per root cause, restart immediately, then probe.** Three
    agents' work landed on one dirty tree on 2026-09-05 and the running
    Daemon predated every fix for hours. Commit as soon as a fix is green

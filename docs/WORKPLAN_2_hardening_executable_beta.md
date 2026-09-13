@@ -74,9 +74,15 @@ testers — pick bundling for the beta, size be damned).
 
 ## Phase 3 — five-friend beta with a structural privacy boundary
 
-**Principle:** chat content never leaves the tester's machine except by the
-tester's explicit per-turn choice, and even then the owner receives a
-redacted copy. There is no server; the owner has no path to the text.
+**Principle:** this beta uses `HOSTED_TRANSITION`: prompts and selected
+conversation/memory context leave the device for hosted inference. Optional
+network tools also transmit request data. Personal stores remain local.
+Sharing a bug report with the developer is a separate, explicit choice;
+the default report must contain metadata only, with any opted-in text
+previewed and redacted. The UI and consent text must explain provider egress
+and developer report sharing separately. Local storage is not private
+inference. See `generalization/03-private-data-and-egress.md` and the
+[2026-09-13 review](GENERALIZATION_CI_REVIEW_20260913.md).
 
 1. **Per-tester model keys.** Each tester uses their own OpenRouter key (or a
    provisioned sub-key with a spend cap, created by the owner). The owner's
@@ -134,8 +140,11 @@ redacted copy. There is no server; the owner has no path to the text.
 | Roll-up script | ½ day | low |
 
 Order: Phase 0 → smoke → feature audit → executable → telemetry profile →
-bug bundle + README → invite testers. The executable is the gate for inviting
-anyone; the telemetry allowlist is the gate for accepting any data back.
+bug bundle + README → invite testers. Before invitations, also close the
+loopback API authorization, packaged profile/timezone, and hosted-inference
+disclosure gaps identified in the 2026-09-13 review. The executable alone
+does not establish those properties. The telemetry allowlist remains the
+gate for accepting any data back.
 Nothing here needs a new subsystem; every piece reuses existing modules
 (preflight, wizard, privacy_redaction, turn_telemetry, backup_manager, the
 SPA debug view).
