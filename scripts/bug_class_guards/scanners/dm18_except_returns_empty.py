@@ -16,7 +16,14 @@ Structural rule (all three must hold):
   3. the enclosing function makes a store-shaped call — an attribute call whose
      name contains query/get_/search/collection/retrieve/load/fetch.
 
-Scoped to the retrieval layers where the incidents happened.
+Scoped to the retrieval layers where the incidents happened (four required
+roots).  Documented scope boundaries: a handler that returns a variable which
+happens to be empty, an empty result built by a helper call, and a bare-name
+store call (``query(...)``) are not candidates.
+
+Contract v2: the candidate anchor is the whole handler (type and body), one
+candidate per returning line, and every file is parsed — the old ``except``
+substring prefilter is gone, the CLI's syntax preflight covers all inputs.
 """
 
 from __future__ import annotations
@@ -25,21 +32,24 @@ import ast
 from pathlib import Path
 
 from .common import (
-    Finding,
+    Leg,
     ScanResult,
-    function_spans,
-    iter_python_files,
+    canonical,
+    line_group_findings,
     parse_module,
     read_source,
     relpath,
-    scope_for,
-    source_line,
+    resolve_leg,
 )
 
 SCANNER_ID = "dm18_except_returns_empty"
 CLASS_IDS = ("BC-20", "BC-47")
-
+CONTRACT_VERSION = 2
 ROOTS = ("memory", "knowledge", "core/prompt", "api")
+LEG = Leg("dm18_retrieval", "python_tree", ROOTS, True)
+LEGS = (LEG,)
+KIND = "broad_except_returns_empty"
+KINDS = (KIND,)
 
 _STORE_CALL_FRAGMENTS = (
     "query",
@@ -107,42 +117,33 @@ def _functions(tree: ast.Module):
 
 
 def scan(root: Path) -> ScanResult:
-    findings: list[Finding] = []
-    files = iter_python_files(root, ROOTS)
-    processed = 0
-    for path in files:
+    resolved = resolve_leg(root, LEG)
+    findings = []
+    for path in resolved.files:
         source = read_source(path)
-        processed += 1
-        if "except" not in source:
-            continue
-        rel = relpath(root, path)
         tree = parse_module(path, source)
-        spans = function_spans(tree)
-        lines = source.splitlines()
+        groups: dict[int, list[tuple[int, str, str]]] = {}
         seen: set[int] = set()
         for func in _functions(tree):
             if not _has_store_call(func):
                 continue
             for node in ast.walk(func):
-                if not isinstance(node, ast.ExceptHandler):
+                if not isinstance(node, ast.ExceptHandler) or id(node) in seen:
                     continue
                 if not _is_broad_handler(node) or not node.body:
                     continue
                 last = node.body[-1]
                 if not isinstance(last, ast.Return) or not _is_empty_literal(last.value):
                     continue
-                if last.lineno in seen:
-                    continue
-                seen.add(last.lineno)
-                findings.append(
-                    Finding(
-                        SCANNER_ID,
-                        CLASS_IDS,
-                        rel,
-                        scope_for(spans, last.lineno),
-                        last.lineno,
-                        source_line(lines, last.lineno),
-                    )
+                seen.add(id(node))
+                groups.setdefault(last.lineno, []).append(
+                    (last.col_offset, KIND, canonical(node), node.lineno, node.end_lineno or last.lineno)
                 )
-    findings.sort(key=lambda f: (f.path, f.line, f.text))
-    return ScanResult(findings, processed)
+        findings.extend(
+            line_group_findings(
+                SCANNER_ID, CLASS_IDS, relpath(root, path), tree,
+                source.splitlines(), groups, LEG.id,
+            )
+        )
+    findings.sort(key=lambda f: (f.path, f.line, f.excerpt))
+    return ScanResult(findings, (resolved.receipt(),))

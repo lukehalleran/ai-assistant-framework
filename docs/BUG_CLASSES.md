@@ -705,7 +705,7 @@ from A–I because it audits the remedy, not the defect.
 
 | ID | Method | Runs as | Classes |
 |---|---|---|---|
-| DM-01 | Raw-substring / negation audit: `rg` for `in <x>.lower()` and cue regexes not routed through `utils/trigger_match.py` | `check_bug_classes.py scan` — dm01_raw_substring (gated) | BC-01, BC-02 |
+| DM-01 | Raw-substring / negation audit: `rg` for `in <x>.lower()` and cue regexes not routed through `utils/trigger_match.py` | `check_bug_classes.py scan` — dm01_raw_substring (gated; contract v2 2026-09-13: no module exemption for importing the chokepoint, no lexical prefilter) | BC-01, BC-02 |
 | DM-02 | Registry parity tests that walk a table and assert every entry is wired | `test_tool_wiring_parity`, `test_model_capability_wiring`, `test_budget_meters_rendered_sections`, `test_api_error_fail_fast` | BC-10, BC-15, BC-17, BC-22, BC-23 |
 | DM-03 | Ordered-slice AST guard (content-anchored allowlist) | `tests/unit/test_ordered_slice_guard.py` | BC-18 |
 | DM-04 | Same-instance before/after settings probe | test pattern, `test_sep09_live_controls.py` | BC-11 |
@@ -720,9 +720,9 @@ from A–I because it audits the remedy, not the defect.
 | DM-13 | Unignore rerun under the CI marker filter | shell | BC-66 |
 | DM-14 | Peak-RSS measurement of the exact hook/CI selection under `systemd-run -p MemoryMax=` + `/usr/bin/time -v` | shell | BC-67 |
 | DM-15 | Sibling-site enumeration after a fix: every read AND write of the primitive, every sibling by naming pattern | grep, manual | BC-58, BC-27, BC-13 |
-| DM-16 | Config-key reachability: each YAML leaf → readers outside schema/app_config | `check_bug_classes.py scan` — dm16_config_key_reachability (report-only, 87 live candidates) | BC-12, BC-10 |
-| DM-17 | `grep -L daemon_guard scripts/*.py \| xargs grep -l -- --apply`; `rg '"data/' tests/` | `check_bug_classes.py scan` — dm17_apply_without_guard (gated) | BC-37 |
-| DM-18 | Broad `except` returning an empty result beside a store call | `check_bug_classes.py scan` — dm18_except_returns_empty (gated) | BC-20, BC-47 |
+| DM-16 | Config-key reachability: each YAML leaf → readers outside schema/app_config | `check_bug_classes.py scan` — dm16_config_key_reachability (report-only; YAML, app_config and consumer roots are required inputs; unsupported YAML shapes are unresolved candidates) | BC-12, BC-10 |
+| DM-17 | `--apply` scripts without a `utils.daemon_guard.daemon_running` guard that runs before every apply-consuming statement (a mention in a comment, string or import is not a guard); `data/` literals in tests | `check_bug_classes.py scan` — dm17_apply_without_guard (gated; scripts and tests legs counted separately; unproven guard shapes are unresolved candidates) | BC-37 |
+| DM-18 | Broad `except` returning an empty result beside a store call | `check_bug_classes.py scan` — dm18_except_returns_empty (gated; four required retrieval roots) | BC-20, BC-47 |
 | DM-19 | Dead-call kwarg grep + kwargs-capturing fake client | grep + test pattern | BC-14 |
 | DM-20 | Prohibitive prompt instruction → deterministic sibling check | grep `config/prompts/*.txt` | BC-46 |
 | DM-21 | Contamination and junk reports on the deployed predicates | `scripts/report_claim_contamination.py`, `purge_junk_facts.py` dry-run, exemplar cap check | BC-54, BC-55, BC-56, BC-29 |
@@ -735,7 +735,15 @@ from A–I because it audits the remedy, not the defect.
 | DM-28 | Persisted-model-output sweep: for every tool/generator writing model text into a store later re-rendered into a prompt, check write-path attribution stripping and read-path provenance marking | grep + manual | BC-75 |
 | DM-31 | Public function asserting live budget/toggle state through a literal default (`remaining_credits: float = 100`, `web_search_enabled: bool = True`); `None` = "resolve it" is the fix shape | `check_bug_classes.py scan` — dm31_live_state_default (gated) | BC-78, BC-11, BC-12 |
 | DM-30 | Keyword-boundary corpus diff: for every list compiled through `utils/trigger_match.py`, diff old vs new match sets over the corpus's word tokens and review BOTH directions (lost tokens must be unrelated words; gained tokens must be true inflections) | `scripts/probe_keyword_boundary.py`, read-only | BC-01 |
-| DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human) | BC-76 |
+| DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human; its untracked changelog input reports *unavailable* in CI, never a clean zero) | BC-76 |
+
+The `check_bug_classes.py scan` rows above are pinned by
+`config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
+Together they are a scoped structural lane. 11 of the 78 classes have a
+scanner (9 gated, 2 report-only), and every scan report lists the classes no
+scanner covers. A green scan is not a behavioral guarantee for any class.
+Baseline candidates and their per-occurrence reviews live in
+`config/bug_class_baseline.json` and `config/bug_class_dispositions.json`.
 
 ## Closure methods (CM) — what has actually stopped a class
 

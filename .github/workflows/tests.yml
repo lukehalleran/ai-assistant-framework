@@ -1,12 +1,60 @@
 name: Tests
 
+# One required status lands a change on master: bug-class-gate. It needs every
+# other job in this workflow, runs even when one of them failed or was
+# skipped, rejects any dependency result other than success, and re-verifies
+# the scan and JUnit receipts against the checked-out policy for this commit.
+# GitHub treats skipped and neutral checks as satisfying a required status, so
+# the gate cannot be conditional itself and cannot trust job colours alone.
+# The enforcement wiring is tested by tests/bug_class_guards/test_enforcement.py.
+
 on:
   push:
     branches: [master, refactor/prompt-modular]
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
 jobs:
+  bug-class-scan:
+    name: bug-class-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the isolated harness runner (the lane itself is stdlib-only)
+        run: python -m pip install --no-cache-dir pytest==9.0.2
+
+      - name: Full bug-class scan (policy contract, every input leg)
+        run: |
+          set -euo pipefail
+          mkdir -p receipts
+          python scripts/check_bug_classes.py scan --root . --receipt receipts/bug-class-scan.json
+
+      - name: Isolated bug-class harness
+        run: |
+          set -euo pipefail
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider \
+            --confcutdir=tests/bug_class_guards --junitxml=receipts/bug-class-harness.xml \
+            tests/bug_class_guards
+
+      - name: Upload bug-class receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bug-class-receipts
+          path: receipts/
+          if-no-files-found: error
+          retention-days: 30
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -67,7 +115,7 @@ jobs:
                 ;;
               *) unexpected+=("$f") ;;
             esac
-          done < <(git grep -IlE '[0-9]{3,4}[[:space:]]*mg([^[:alnum:]_]|$)' -- tests docs || true)
+          done < <(git grep -IlE '[0-9]{3,4}[[:space:]]*mg([^[:alnum:]_]|$)' -- tests docs)
           if [ "${#unexpected[@]}" -gt 0 ]; then
             echo "ERROR: Dosage-shaped text found in unreviewed tracked paths:"
             printf '  %s\n' "${unexpected[@]}"
@@ -77,17 +125,27 @@ jobs:
       - name: Lint (bug-focused floor — rules in pyproject [tool.ruff])
         run: python -m ruff check .
 
-      - name: Bug-class scan ratchet (docs/BUG_CLASSES.md detection methods)
+      - name: Five repo-wide guards (always selected, JUnit receipt)
         run: |
           set -euo pipefail
-          # Fail-closed both ways: exit 1 = a NEW finding, or a STALE entry in
-          # config/bug_class_baseline.json (fixed debt must be REMOVED from the
-          # baseline, never laundered by a leftover row); exit 2 = a scanner
-          # could not run, which is never reported as a clean pass.
-          # Stdlib-only, so it runs before the suite pays for torch.
-          python scripts/check_bug_classes.py scan --root .
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider \
-            --confcutdir=tests/bug_class_guards tests/bug_class_guards
+          mkdir -p receipts
+          python -m pytest -q -p no:cacheprovider --junitxml=receipts/repo-wide-guards.xml \
+            tests/unit/test_no_git_state_in_tests.py \
+            tests/unit/test_ordered_slice_guard.py \
+            tests/unit/test_budget_meters_rendered_sections.py \
+            tests/unit/test_tool_wiring_parity.py \
+            tests/unit/test_model_capability_wiring.py
+        env:
+          OPENAI_API_KEY: "sk-test-placeholder"
+          CHROMA_DEVICE: "cpu"
+
+      - name: Upload repo-wide guard receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-wide-guard-receipts
+          path: receipts/repo-wide-guards.xml
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Run fast test suite
         run: |
@@ -120,3 +178,51 @@ jobs:
       - name: Test (Vitest — component/state behaviour lane, F07/T09)
         working-directory: web
         run: npm test
+
+  bug-class-gate:
+    name: bug-class-gate
+    needs: [bug-class-scan, test, frontend]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Require every dependency job to conclude success
+        env:
+          SCAN_RESULT: ${{ needs.bug-class-scan.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+        run: |
+          set -euo pipefail
+          status=0
+          for pair in "bug-class-scan=$SCAN_RESULT" "test=$TEST_RESULT" "frontend=$FRONTEND_RESULT"; do
+            echo "$pair"
+            if [ "${pair#*=}" != "success" ]; then status=1; fi
+          done
+          exit "$status"
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download bug-class receipts
+        uses: actions/download-artifact@v4
+        with:
+          name: bug-class-receipts
+          path: receipts
+
+      - name: Download repo-wide guard receipts
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-wide-guard-receipts
+          path: receipts
+
+      - name: Verify receipts against the checked-out policy, baseline and dispositions
+        run: |
+          set -euo pipefail
+          python scripts/check_bug_classes.py verify-receipts --root . \
+            --scan receipts/bug-class-scan.json --harness-junit receipts/bug-class-harness.xml \
+            --guards-junit receipts/repo-wide-guards.xml --expect-sha "$GITHUB_SHA"
