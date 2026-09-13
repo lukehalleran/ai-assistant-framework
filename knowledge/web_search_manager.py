@@ -61,6 +61,7 @@ import logging
 import os
 import re
 import socket
+import threading
 import time
 import urllib.parse
 import weakref
@@ -625,12 +626,58 @@ def live_remaining_credits() -> Optional[float]:
     return min(values) if values else None
 
 
+@dataclass
+class SearchReservation:
+    """A provisional credit hold created by ``WebSearchRateLimiter.reserve()``.
+
+    Charge-on-dispatch: ``spend(cost)`` must be called immediately BEFORE a
+    billable provider call is dispatched, and commits that cost into
+    ``used`` right away — a dispatched call is billed even if the overall
+    search is later cancelled or times out, so ``used`` only ever grows.
+    ``settle()`` is idempotent and MUST run in a ``finally``: it folds
+    ``used`` into the limiter's real daily counter and releases the
+    reservation's outstanding hold (``amount - used``, including any
+    extensions), but only against the day the reservation was taken on — a
+    midnight rollover between ``reserve()`` and ``settle()`` neither debits
+    nor releases against the (already-reset) new day.
+    """
+    limiter: "WebSearchRateLimiter"
+    amount: float
+    date: str
+    used: float = 0.0
+    _settled: bool = False
+
+    def spend(self, cost: float) -> bool:
+        """Commit ``cost`` against this reservation before dispatching a
+        billable call. Extends the reservation (against the limiter's daily
+        cap) when the hold is too small; returns False — dispatch nothing —
+        when even an extension can't afford it."""
+        return self.limiter._reservation_spend(self, cost)
+
+    def settle(self) -> None:
+        """Fold ``used`` into the limiter's real counter and release the
+        rest of the hold. Safe to call more than once; only the first call
+        does anything."""
+        self.limiter._reservation_settle(self)
+
+
 class WebSearchRateLimiter:
     """
     Credit-aware rate limiter for Tavily API.
 
     Tracks daily credit usage and enforces limits to prevent overuse.
     Designed for Tavily free tier (1000 credits/month).
+
+    Reservation API (2026-09-12): two concurrent callers each checking
+    ``can_search()`` before ever recording usage could both be admitted for
+    the same last credit — ``can_search``/``record_usage`` are a
+    check-then-act race with no hold in between. ``reserve()`` closes it by
+    debiting the budget UP FRONT (into ``_reserved_today``, alongside
+    ``_credits_today``) so a second concurrent caller sees the first
+    reservation's amount and can be correctly refused; ``record_usage()``
+    still works unchanged for any direct caller that never reserves. A
+    plain ``threading.Lock`` guards the shared counters — the event loop
+    itself is single-threaded, but Tavily calls run in executor threads.
     """
 
     def __init__(
@@ -651,6 +698,12 @@ class WebSearchRateLimiter:
                 self.state_file = os.path.join("data", "web_search_credits.json")
         self._credits_today = 0.0
         self._current_date = ""
+        # In-flight reservations not yet settled (2026-09-12) — see
+        # `reserve()`. Always zero outside an active reserve/spend/settle
+        # cycle; never persisted (a crash mid-search should not permanently
+        # shrink tomorrow's budget).
+        self._reserved_today = 0.0
+        self._lock = threading.Lock()
         self._load_state()
         _LIVE_RATE_LIMITERS.add(self)
 
@@ -676,30 +729,89 @@ class WebSearchRateLimiter:
         except Exception as e:
             log.debug(f"[WebSearch] Failed to save rate limit state: {e}")
 
-    def _check_date_reset(self) -> None:
-        """Reset credits if we're on a new day."""
+    def _check_date_reset_locked(self) -> None:
+        """Reset credits (and any outstanding reservation hold) on a new
+        day. Caller must already hold ``self._lock``."""
         today = datetime.now().strftime("%Y-%m-%d")
         if today != self._current_date:
             self._credits_today = 0.0
+            self._reserved_today = 0.0
             self._current_date = today
             self._save_state()
 
+    def _check_date_reset(self) -> None:
+        """Reset credits if we're on a new day."""
+        with self._lock:
+            self._check_date_reset_locked()
+
     def can_search(self, estimated_credits: float = 1.0) -> bool:
-        """Check if we have budget for a search."""
-        self._check_date_reset()
-        return (self._credits_today + estimated_credits) <= self.daily_limit
+        """Check if we have budget for a search, net of any in-flight
+        (not yet settled) reservations."""
+        with self._lock:
+            self._check_date_reset_locked()
+            return (self._credits_today + self._reserved_today + estimated_credits) <= self.daily_limit
 
     def record_usage(self, credits: float) -> None:
-        """Record credit usage."""
-        self._check_date_reset()
-        self._credits_today += credits
-        self._save_state()
+        """Record credit usage directly (callers that never reserved)."""
+        with self._lock:
+            self._check_date_reset_locked()
+            self._credits_today += credits
+            self._save_state()
         log.debug(f"[WebSearch] Credits used: {credits}, total today: {self._credits_today}/{self.daily_limit}")
 
     def get_remaining_credits(self) -> float:
-        """Get remaining daily credits."""
-        self._check_date_reset()
-        return max(0.0, self.daily_limit - self._credits_today)
+        """Get remaining daily credits, net of any in-flight reservations."""
+        with self._lock:
+            self._check_date_reset_locked()
+            return max(0.0, self.daily_limit - self._credits_today - self._reserved_today)
+
+    def reserve(self, amount: float) -> Optional[SearchReservation]:
+        """Provisionally hold ``amount`` credits against today's budget.
+
+        Returns None when the budget (net of every other outstanding
+        reservation) can't afford it. On success the caller owns the
+        returned reservation for the lifetime of one search: it must call
+        ``.spend(cost)`` before each billable provider call and ``.settle()``
+        exactly once, in a ``finally``, no matter how the search ends.
+        """
+        with self._lock:
+            self._check_date_reset_locked()
+            if self._credits_today + self._reserved_today + amount > self.daily_limit:
+                return None
+            self._reserved_today += amount
+            return SearchReservation(limiter=self, amount=amount, date=self._current_date)
+
+    def _reservation_spend(self, reservation: SearchReservation, cost: float) -> bool:
+        """Commit ``cost`` into ``reservation.used``, extending the hold
+        (against today's remaining budget) when it doesn't already fit."""
+        with self._lock:
+            if reservation._settled:
+                return False
+            if reservation.used + cost <= reservation.amount:
+                reservation.used += cost
+                return True
+            needed = (reservation.used + cost) - reservation.amount
+            if self._credits_today + self._reserved_today + needed <= self.daily_limit:
+                self._reserved_today += needed
+                reservation.amount += needed
+                reservation.used += cost
+                return True
+            return False
+
+    def _reservation_settle(self, reservation: SearchReservation) -> None:
+        """Fold ``reservation.used`` into today's real counter and release
+        the rest of the hold — idempotent, and a no-op for a reservation
+        whose day has already rolled over (its hold was already zeroed by
+        the date reset)."""
+        with self._lock:
+            if reservation._settled:
+                return
+            reservation._settled = True
+            self._check_date_reset_locked()
+            if reservation.date == self._current_date:
+                self._credits_today += reservation.used
+                self._reserved_today = max(0.0, self._reserved_today - reservation.amount)
+                self._save_state()
 
     def estimate_credits(self, depth: WebSearchDepth, num_extracts: int = 0) -> float:
         """Estimate credits for a search operation."""
@@ -1117,9 +1229,14 @@ class WebSearchManager:
                 log.debug(f"[WebSearch] Cache hit for: {query[:50]}...")
                 return cached
 
-        # Rate limit check
+        # Rate limit check — RESERVE the estimate up front (2026-09-12).
+        # can_search() + record_usage()-at-the-end was a check-then-act race:
+        # two concurrent callers could each pass can_search() against the
+        # same last credit before either recorded usage. reserve() debits
+        # the hold immediately so a second concurrent caller sees it.
         estimated_credits = self.rate_limiter.estimate_credits(depth)
-        if not self.rate_limiter.can_search(estimated_credits):
+        reservation = self.rate_limiter.reserve(estimated_credits)
+        if reservation is None:
             remaining = self.rate_limiter.get_remaining_credits()
             log.warning(f"[WebSearch] Daily limit reached. Remaining: {remaining}")
             return WebSearchResult(
@@ -1130,6 +1247,7 @@ class WebSearchManager:
 
         # Ensure Tavily is ready
         if not self._ensure_tavily():
+            reservation.settle()  # never dispatched anything — releases the hold
             return WebSearchResult(
                 query=query,
                 search_depth=depth,
@@ -1142,7 +1260,8 @@ class WebSearchManager:
             result = await asyncio.wait_for(
                 self._execute_search(query, depth, max_results,
                                      include_domains=include_domains,
-                                     exclude_domains=exclude_domains),
+                                     exclude_domains=exclude_domains,
+                                     reservation=reservation),
                 timeout=timeout
             )
 
@@ -1166,6 +1285,11 @@ class WebSearchManager:
                 search_depth=depth,
                 error=str(e)
             )
+        finally:
+            # Settles on every exit — success, exception, timeout, or this
+            # coroutine being cancelled out from under `wait_for` — so a
+            # reservation can never leak as a phantom hold against tomorrow.
+            reservation.settle()
 
     async def _execute_search(
         self,
@@ -1174,8 +1298,17 @@ class WebSearchManager:
         max_results: int,
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
+        reservation: Optional[SearchReservation] = None,
     ) -> WebSearchResult:
-        """Execute the actual search based on depth."""
+        """Execute the actual search based on depth.
+
+        Charge-on-dispatch (2026-09-12): with a ``reservation``, every
+        billable provider call is paid for via ``reservation.spend(cost)``
+        immediately BEFORE it is dispatched — a call already in flight is
+        never refunded even if the search later times out or is cancelled.
+        Without a reservation (a direct caller that bypassed ``search()``),
+        credit usage is recorded the old way, once, at the end.
+        """
         session = WebSearchSession(initial_query=query, depth=depth)
 
         # Detect if this is a news query - use news topic for better results
@@ -1187,6 +1320,13 @@ class WebSearchManager:
             log.info(f"[WebSearch] News query detected, using topic='news', days=1")
 
         # Step 1: Basic search (all depths)
+        if reservation is not None and not reservation.spend(1.0):
+            remaining = self.rate_limiter.get_remaining_credits()
+            return WebSearchResult(
+                query=query,
+                search_depth=depth,
+                error=f"Daily credit limit reached. Remaining: {remaining}"
+            )
         search_pages = await self._tavily_search(
             query, max_results, topic=topic, days=days,
             include_domains=include_domains, exclude_domains=exclude_domains,
@@ -1205,9 +1345,13 @@ class WebSearchManager:
         # Step 2: Extract content for STANDARD and DEEP
         if depth in (WebSearchDepth.STANDARD, WebSearchDepth.DEEP) and search_pages:
             urls_to_extract = [p.url for p in search_pages[:2]]  # Top 2 results
-            extracted = await self._tavily_extract(urls_to_extract)
-            session.extracted_pages = extracted
-            session.credits_used += len(urls_to_extract) * 0.5  # Extract costs
+            extract_cost = len(urls_to_extract) * 0.5
+            if reservation is None or reservation.spend(extract_cost):
+                extracted = await self._tavily_extract(urls_to_extract)
+                session.extracted_pages = extracted
+                session.credits_used += extract_cost  # Extract costs
+            else:
+                log.debug("[WebSearch] Skipping extract: reservation budget exhausted")
 
         # Step 3: LLM-driven link following for DEEP
         if depth == WebSearchDepth.DEEP and search_pages:
@@ -1215,14 +1359,26 @@ class WebSearchManager:
                 query,
                 session.all_pages
             )
+            if reservation is not None and additional_urls:
+                # Charge on dispatch per URL: keep only as many as the
+                # reservation can afford (with extension), in order, so the
+                # extract call below never dispatches an unpaid-for URL.
+                affordable_urls = []
+                for candidate_url in additional_urls:
+                    if not reservation.spend(0.5):
+                        break
+                    affordable_urls.append(candidate_url)
+                additional_urls = affordable_urls
             if additional_urls:
                 session.followed_links = additional_urls
                 more_extracted = await self._tavily_extract(additional_urls)
                 session.extracted_pages.extend(more_extracted)
                 session.credits_used += len(additional_urls) * 0.5
 
-        # Record credit usage
-        self.rate_limiter.record_usage(session.credits_used)
+        # Record credit usage — only for a direct caller with no reservation;
+        # a reservation already tracks `used` and is settled by the caller.
+        if reservation is None:
+            self.rate_limiter.record_usage(session.credits_used)
 
         return WebSearchResult(
             query=query,
@@ -1339,6 +1495,11 @@ class WebSearchManager:
         salvage (utils/page_extract — chatgpt.com/share links returned
         "blank page" through Tavily, 2026-08-29) and costs no API credits.
         Env WEB_FETCH_DIRECT_ENABLED (default on) disables the local layer.
+
+        The Tavily fallback is billed (2026-09-12): it reserves 0.5 credits
+        before dispatching and settles in a `finally`, same as `search()`.
+        A manager built without a `rate_limiter` (some direct-fetch-only
+        test doubles) skips budgeting entirely rather than erroring.
         """
         # This check applies even when direct fetching is disabled: otherwise a
         # private URL could still be forwarded to a third-party extractor.
@@ -1348,7 +1509,20 @@ class WebSearchManager:
             direct = await self._direct_fetch(url)
             if direct and len(direct[0].content) >= self._DIRECT_FETCH_MIN_CHARS:
                 return direct
-        tavily = await self._tavily_extract([url])
+
+        limiter = getattr(self, "rate_limiter", None)
+        reservation = limiter.reserve(0.5) if limiter is not None else None
+        if limiter is not None and reservation is None:
+            # Unaffordable: skip the billed Tavily fallback, keep whatever
+            # the free direct layer already produced (possibly nothing).
+            return direct
+        try:
+            if reservation is not None:
+                reservation.spend(0.5)
+            tavily = await self._tavily_extract([url])
+        finally:
+            if reservation is not None:
+                reservation.settle()
         if tavily and (tavily[0].content or "").strip():
             # Prefer whichever layer extracted more actual content.
             if direct and len(direct[0].content) > len(tavily[0].content):

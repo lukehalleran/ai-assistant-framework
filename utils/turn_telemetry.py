@@ -24,6 +24,7 @@ Typical record fields (all optional — record what the turn produced):
   gate_reason, mode (enhanced|agentic-search|best-of-duel|...),
   web_trigger_should_search, web_trigger_source, web_trigger_reason,
   web_trigger_confidence, web_results_n, web_error, web_budget_remaining,
+  web_evidence (requested/blocked/acquired/fetched — utils.web_evidence_receipt),
   uncertainty_fired, uncertainty_accepted, review_fired, review_passed,
   review_retry_accepted, grounding_prefilter_fired, grounding_verifier_fired,
   grounding_flagged, grounding_confidence, grounding_corrected,

@@ -205,6 +205,12 @@ async def test_gatherer_exposes_not_triggered_decision():
         "confidence": 0.0,
         "results": None,
         "error": None,
+        # 2026-09-12 evidence receipt (review F4): additive fields — a
+        # budget-blocked need survives, with the budget the decision used.
+        "requested": False,
+        "blocked": None,
+        "budget_remaining": 100.0,
+        "from_cache": False,
     }
 
 

@@ -1689,11 +1689,17 @@ class DaemonOrchestrator:
             if not isinstance(_web_decision, dict):
                 _web_decision = {}
             _web_reason = _web_decision.get("reason")
-            try:
-                from knowledge.web_search_manager import live_remaining_credits
-                _web_budget = live_remaining_credits()
-            except Exception:
-                _web_budget = None
+            # The budget the web decision was actually made against, frozen in
+            # the gatherer's receipt (2026-09-12, adversarial review F4).
+            # Sampling the limiter here reported whatever it said later in
+            # the turn, after other searches had run.
+            _web_budget = _web_decision.get("budget_remaining")
+            if not isinstance(_web_budget, (int, float)) or isinstance(_web_budget, bool):
+                try:
+                    from knowledge.web_search_manager import live_remaining_credits
+                    _web_budget = live_remaining_credits()
+                except Exception:
+                    _web_budget = None
             self._last_turn_signals = {
                 "intent": getattr(getattr(_intent_obj, "intent", None), "value", None),
                 "intent_confidence": getattr(_intent_obj, "confidence", None),

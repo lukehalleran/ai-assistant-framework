@@ -3922,6 +3922,25 @@ async def _run_agentic_search(ctx):
         except Exception as _ag_gc_err:
             logger.warning(f"[Handle Submit] Agentic grounding check failed (non-fatal): {_ag_gc_err}")
 
+        # ── Web-evidence honesty (2026-09-12, review F4): the same receipt and
+        # notice as the enhanced path, plus this turn's own loop rounds
+        # (limiter refusals, results, URL fetches that returned a page).
+        try:
+            from utils.web_evidence_receipt import (
+                apply_web_evidence_notice, build_web_evidence_receipt, web_evidence_notice,
+            )
+            _ag_we_receipt = build_web_evidence_receipt(
+                getattr(ctx, "gate_decision", None),
+                (raw_context or {}).get("web_search_decision"),
+                session=_agentic_session,
+            )
+            ctx.telemetry["web_evidence"] = _ag_we_receipt
+            if web_evidence_notice(_ag_we_receipt):
+                display_output = apply_web_evidence_notice(display_output, _ag_we_receipt)
+                final_output = apply_web_evidence_notice(final_output, _ag_we_receipt)
+        except Exception as _ag_we_err:
+            logger.warning(f"[Handle Submit] Agentic web-evidence notice failed (non-fatal): {_ag_we_err}")
+
         # Audit F9 (2026-08-31): contact resolution, the action guard, and the
         # grounding check above mutate display_output AFTER debug_record was
         # built — on exactly the turns grounding changed facts, the Debug tab
@@ -4557,6 +4576,25 @@ async def _run_enhanced(ctx):
                 final_output = (final_output or "").rstrip() + _gc_suffix
         except Exception as e:
             logger.warning(f"[Handle Submit] Grounding check failed (non-fatal): {e}")
+
+        # ── Web-evidence honesty (2026-09-12, adversarial review F4): a turn
+        # that wanted fresh web evidence the spent budget could not fund says
+        # so — once, after retries/guard/grounding, identically in the
+        # streamed bubble and the stored reply. The receipt goes to telemetry.
+        try:
+            from utils.web_evidence_receipt import (
+                apply_web_evidence_notice, build_web_evidence_receipt, web_evidence_notice,
+            )
+            _we_receipt = build_web_evidence_receipt(
+                getattr(ctx, "gate_decision", None),
+                (ctx.raw_context or {}).get("web_search_decision"),
+            )
+            ctx.telemetry["web_evidence"] = _we_receipt
+            if web_evidence_notice(_we_receipt):
+                _resp_for_debug = apply_web_evidence_notice(_resp_for_debug, _we_receipt)
+                final_output = apply_web_evidence_notice(final_output, _we_receipt)
+        except Exception as e:
+            logger.warning(f"[Handle Submit] Web-evidence notice failed (non-fatal): {e}")
 
         # Make [WEB_N] citations from the standard web-search path clickable
         # (display only; stored response keeps the canonical markers).

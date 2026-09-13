@@ -192,11 +192,22 @@ class WebSearchDecision:
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
     document_source: str = ""  # "research" (external lookup) | "conversation" (summarize THIS conversation) | ""
+    # Evidence need vs. paid-search capability (2026-09-12, adversarial
+    # review F3/F4). The budget veto used to erase the need together with the
+    # search: should_search=False read exactly like "no evidence wanted", so
+    # nothing downstream could consult the cache or tell the user the turn
+    # went unchecked. These carry the need past the veto.
+    evidence_needed: bool = False
+    blocked_reason: str = ""  # "" | "budget"
+    blocked_search_terms: List[str] = None  # the terms the veto withheld
+    budget_remaining: Optional[float] = None  # credits the decision was made against
 
     def __post_init__(self):
         """Initialize mutable defaults."""
         if self.search_terms is None:
             self.search_terms = []
+        if self.blocked_search_terms is None:
+            self.blocked_search_terms = []
 
 
 @dataclass
@@ -1810,7 +1821,41 @@ def _apply_budget_veto(decision, remaining_credits: float):
         source="budget",
         reason=(f"Daily web-search budget exhausted "
                 f"({remaining_credits:.0f} credits left); {decision.reason}"),
+        # The NEED survives the veto (2026-09-12, review F3/F4): the gatherer
+        # can still serve an exact cached result for these terms, and the
+        # delivery notice can say the turn went unchecked.
+        evidence_needed=True,
+        blocked_reason="budget",
+        blocked_search_terms=list(decision.search_terms or []),
+        budget_remaining=remaining_credits,
     )
+
+
+def paid_search_block_reason(remaining_credits=None, web_search_enabled=None) -> Optional[str]:
+    """Why a NEW paid web search cannot run right now, or None when it can.
+
+    "disabled" — the live Settings toggle is off; "budget" — the remaining
+    daily budget cannot fund the cheapest search. One judgement for every
+    entry path that would otherwise route a search it cannot pay for
+    (2026-09-12, adversarial review F3: the gate's Tier 1 routed web-only
+    loops at 104/100 credits). Direct URL fetches and cached results are
+    separate capabilities and are deliberately not judged here."""
+    if not _resolve_web_search_enabled(web_search_enabled):
+        return "disabled"
+    try:
+        from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor
+    except Exception:
+        _floor = 1.0
+    if _resolve_remaining_credits(remaining_credits) < _floor:
+        return "budget"
+    return None
+
+
+def apply_search_budget(decision, remaining_credits=None):
+    """The budget veto for a decision that did not come through
+    analyze_for_web_search_llm — the gatherer's synchronous heuristic
+    fallback bypassed it entirely before 2026-09-12."""
+    return _apply_budget_veto(decision, _resolve_remaining_credits(remaining_credits))
 
 
 async def analyze_for_web_search_llm(
@@ -1835,7 +1880,12 @@ async def analyze_for_web_search_llm(
         timeout=timeout,
         conversation_context=conversation_context,
     )
-    return _apply_budget_veto(decision, credits)
+    decision = _apply_budget_veto(decision, credits)
+    if isinstance(decision, WebSearchDecision) and decision.budget_remaining is None:
+        # Freeze the budget this decision was made against (2026-09-12,
+        # review F4) — later limiter readings in the same turn differ.
+        decision = replace(decision, budget_remaining=credits)
+    return decision
 
 
 async def _analyze_for_web_search_llm(

@@ -594,6 +594,12 @@ class AgenticSearchController:
             max_rounds=self.max_rounds,
             protocol=protocol,
         )
+        # Name THIS run's session from the start (2026-09-12, review F4
+        # sibling). It used to be assigned only after a successful synthesis,
+        # so on the error-fallback path the handlers' provenance, grounding
+        # source and web-evidence receipt all read the PREVIOUS turn's rounds
+        # — the same staleness the _last_final_* resets above close.
+        self._last_session = session
         # A14 (2026-09-10, round 3): a gate-detected note-save request's
         # saved note body must be the USER'S stated content, never the
         # model's own elaboration on the create_daemon_note call — live:

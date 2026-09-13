@@ -159,6 +159,12 @@ class AgenticDecision:
     # it to the controller, which forces propose_action on the first decision
     # round exactly as it does for a same-turn detect_action_intent hit.
     forced_action: Optional[str] = None
+    # Paid web search wanted but unable to run (2026-09-12, adversarial
+    # review F3): "budget" when the daily budget cannot fund the cheapest
+    # search, "disabled" when the Settings toggle is off. The web arm is NOT
+    # routed then; this records the unmet need for the delivery-time notice
+    # (utils.web_evidence_receipt). None = no blocked need.
+    web_evidence_blocked: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +741,15 @@ async def evaluate_agentic_gate(
                 # vetoed); if re-evaluation flakes, honor the user's consent.
                 _redo.should_trigger = True
                 if not _redo.modes:
-                    _redo.modes = ["web_search", "memory"]
+                    # Never force a web arm a paid search cannot serve
+                    # (2026-09-12, adversarial review F3).
+                    from utils.web_search_trigger import paid_search_block_reason
+                    _redo_block = paid_search_block_reason()
+                    if _redo_block is None:
+                        _redo.modes = ["web_search", "memory"]
+                    else:
+                        _redo.modes = ["memory"]
+                        _redo.web_evidence_blocked = _redo.web_evidence_blocked or _redo_block
             _redo.reason = (
                 f"deferred-request affirmation: '{_deferred_query[:80]}' "
                 f"({_redo.reason or 'triggered'})"
@@ -885,17 +899,35 @@ async def evaluate_agentic_gate(
     # Negation-aware (2026-09-04): "don't search the web for this, just tell
     # me" must not force web-search mode just because 'search the web'
     # appears — a bare URL still always counts (pasting a link is explicit).
-    if _has_url or (_hit_non_negated(_lower, _WEB_SEARCH_HIT) and not _personal_doc_search):
+    _keyword_web = _hit_non_negated(_lower, _WEB_SEARCH_HIT) and not _personal_doc_search
+    if _has_url:
         needs_web_search = True
-        logger.debug("[Agentic Gate] Tier 1: explicit web search/URL keyword detected")
+        logger.debug("[Agentic Gate] Tier 1: URL detected")
 
     # Clear dated public-event questions must not depend on the optional
     # classifier succeeding. Share the same rule with enhanced-mode retrieval.
-    from utils.web_search_trigger import requires_fresh_public_evidence
-    if requires_fresh_public_evidence(user_text):
-        needs_web_search = True
-        search_terms = [user_text]
-        logger.debug("[Agentic Gate] Tier 1: fresh public evidence required")
+    from utils.web_search_trigger import paid_search_block_reason, requires_fresh_public_evidence
+    _fresh_public = requires_fresh_public_evidence(user_text)
+    # A paid search that cannot run is not a web route (2026-09-12,
+    # adversarial review F3). With the budget spent or the Settings toggle
+    # off, an explicit "search the web" or a fresh-public-evidence question
+    # used to route a web-only loop whose every search was refused. The need
+    # is recorded for the delivery notice instead; other arms still route.
+    # A pasted URL is a direct fetch (free) and is not judged by this rule.
+    _web_block = None
+    if _keyword_web or _fresh_public:
+        _web_block = paid_search_block_reason()
+        if _web_block is not None:
+            logger.info(
+                "[Agentic Gate] Tier 1: web evidence wanted but a paid search "
+                f"cannot run ({_web_block}) — web arm not routed")
+        else:
+            needs_web_search = True
+            if _fresh_public:
+                search_terms = [user_text]
+                logger.debug("[Agentic Gate] Tier 1: fresh public evidence required")
+            else:
+                logger.debug("[Agentic Gate] Tier 1: explicit web search keyword detected")
 
     if _hit_non_negated(_lower, _TOOL_HIT):
         needs_tools = True
@@ -1347,6 +1379,11 @@ async def evaluate_agentic_gate(
                     )
                 should_trigger = getattr(trigger_decision, 'should_search', False)
                 search_terms = getattr(trigger_decision, 'search_terms', []) or []
+                _t4_block = getattr(trigger_decision, 'blocked_reason', "")
+                if isinstance(_t4_block, str) and _t4_block:
+                    # The classifier wanted evidence a paid search could not
+                    # fund (2026-09-12, review F3): recorded for the notice.
+                    _web_block = _web_block or _t4_block
 
                 # Temporal-generic term guard (2026-08-29): if every proposed
                 # term is time words + filler ("useful information for Monday
@@ -1360,6 +1397,13 @@ async def evaluate_agentic_gate(
                         f"proposed terms are temporal-generic: {search_terms}")
                     should_trigger = False
                     search_terms = []
+
+                # A surviving web verdict IS the web arm (2026-09-12, review
+                # F3). It used to route with modes=[] ("llm-fallback"), so
+                # neither the receipt nor telemetry said the loop was a web
+                # loop.
+                if should_trigger is True:
+                    needs_web_search = True
 
                 if getattr(trigger_decision, 'needs_memory_search', False):
                     # Deterministic backstop (2026-09-06, generalized 2026-09-08
@@ -1535,6 +1579,7 @@ async def evaluate_agentic_gate(
         veto_exempt=_veto_exempt,
         veto_exempt_url_only=_veto_exempt_url_only,
         forced_action=(_explicit_action.value if _explicit_action is not None else None),
+        web_evidence_blocked=_web_block,
     )
 
     # Intent veto — applied here when intent_info was available at call time.

@@ -14,6 +14,7 @@ Depends on self.web_search_manager, self.web_search_trigger, self.web_search_tri
 self.model_manager, self.memory_id_map (set by ContextGatherer.__init__).
 """
 
+import dataclasses
 import os
 import logging
 from typing import Optional, Any
@@ -51,6 +52,14 @@ def _web_search_enabled() -> bool:
         return bool(getattr(_cfg, "WEB_SEARCH_ENABLED", WEB_SEARCH_ENABLED))
     except ImportError:
         return bool(WEB_SEARCH_ENABLED)
+
+
+def _text_field(obj: Any, name: str) -> str:
+    """A string attribute, or "". Trigger doubles in tests are mocks whose
+    every attribute is truthy; a receipt must never mistake one for a real
+    block reason."""
+    value = getattr(obj, name, "")
+    return value if isinstance(value, str) else ""
 
 
 class WebSearchMixin:
@@ -91,6 +100,11 @@ class WebSearchMixin:
             "confidence": None,
             "results": None,
             "error": None,
+            # Evidence receipt (2026-09-12, review F4) — see the update below.
+            "requested": False,
+            "blocked": None,
+            "budget_remaining": None,
+            "from_cache": False,
         }
 
         # Check if web search is enabled (live value — Settings can flip it)
@@ -127,14 +141,17 @@ class WebSearchMixin:
             return None
 
         try:
+            # This manager's live budget, read ONCE for both trigger paths —
+            # the synchronous fallback below never saw it before 2026-09-12.
+            remaining_credits = 100.0  # no limiter: unknown is not exhausted
+            if hasattr(manager, 'rate_limiter') and manager.rate_limiter:
+                _live = manager.rate_limiter.get_remaining_credits()
+                if isinstance(_live, (int, float)) and not isinstance(_live, bool):
+                    remaining_credits = float(_live)
+
             # Use LLM-first trigger if available, otherwise fall back to heuristics
             trigger_llm = self.web_search_trigger_llm
             if trigger_llm and self.model_manager:
-                # Get remaining credits for credit-aware search planning
-                remaining_credits = 100.0  # Default
-                if hasattr(manager, 'rate_limiter') and manager.rate_limiter:
-                    remaining_credits = manager.rate_limiter.get_remaining_credits()
-
                 logger.debug("[WebSearch] Using LLM-first trigger analysis...")
                 decision = await trigger_llm(
                     query=query,
@@ -153,15 +170,48 @@ class WebSearchMixin:
                     logger.warning("[ContextGatherer] Web search trigger not available")
                     return None
                 decision = trigger(query)
+                # The heuristic path bypassed the shared budget veto
+                # (2026-09-12, adversarial review F3): at zero budget an
+                # explicit "search" query still went to the provider path.
+                if dataclasses.is_dataclass(decision):
+                    from utils.web_search_trigger import apply_search_budget
+                    decision = apply_search_budget(decision, remaining_credits)
 
+            _blocked = _text_field(decision, "blocked_reason") or None
+            _decision_budget = getattr(decision, "budget_remaining", None)
             self.last_web_decision.update({
                 "triggered": bool(decision.should_search),
                 "source": getattr(decision, "source", None),
                 "reason": getattr(decision, "reason", None),
                 "confidence": getattr(decision, "confidence", None),
+                # Evidence receipt (2026-09-12, review F4): the need survives
+                # a budget block, and the budget recorded is the one the
+                # decision was made against — not a later limiter reading.
+                "requested": bool(decision.should_search)
+                or getattr(decision, "evidence_needed", False) is True,
+                "blocked": _blocked,
+                "budget_remaining": (
+                    _decision_budget
+                    if isinstance(_decision_budget, (int, float))
+                    and not isinstance(_decision_budget, bool)
+                    else remaining_credits
+                ),
             })
 
             if not decision.should_search:
+                if _blocked == "budget":
+                    # A spent budget blocks NEW paid searches, not evidence
+                    # already in the local cache — the veto used to sit in
+                    # front of both.
+                    cached = self._cached_web_evidence(manager, decision, query)
+                    if cached is not None:
+                        self.last_web_decision["results"] = len(cached.pages)
+                        self.last_web_decision["from_cache"] = True
+                        logger.info(
+                            "[ContextGatherer] Search budget spent — using an "
+                            "exact cached result (no provider call)"
+                        )
+                        return cached
                 logger.debug(
                     f"[ContextGatherer] Web search not triggered: {decision.reason} "
                     f"(confidence={decision.confidence:.2f}, source={getattr(decision, 'source', 'unknown')})"
@@ -242,6 +292,36 @@ class WebSearchMixin:
             self.last_web_decision["error"] = type(e).__name__
             logger.warning(f"[ContextGatherer] Web search failed: {e}")
             return None
+
+    @staticmethod
+    def _cached_web_evidence(manager: Any, decision: Any, query: str) -> Optional[Any]:
+        """An exact cached result for a search the budget blocked, or None.
+
+        WebSearchManager.search checks its cache BEFORE the limiter, so a
+        spent budget never blocked cached evidence until the 2026-09-12
+        trigger veto started returning early. This restores that path without
+        ever reaching the provider: the terms the veto withheld (or the query
+        itself), localized exactly as search() would key them, tried at every
+        depth."""
+        cache = getattr(manager, "cache", None)
+        if cache is None or not hasattr(cache, "get"):
+            return None
+        from knowledge.web_search_manager import WebSearchDepth as ManagerDepth
+        wanted = getattr(getattr(decision, "depth", None), "value", "")
+        depths = sorted(ManagerDepth, key=lambda d: d.value != wanted)
+        terms = [t for t in (getattr(decision, "blocked_search_terms", None) or [])
+                 if isinstance(t, str) and t.strip()] or [query]
+        localize = getattr(manager, "_localize_query", None)
+        for term in terms:
+            key = localize(term) if callable(localize) else term
+            for depth in depths:
+                try:
+                    hit = cache.get(key, depth)
+                except Exception:
+                    hit = None
+                if hit is not None and getattr(hit, "has_results", False) is True:
+                    return hit
+        return None
 
     def should_trigger_web_search(self, query: str, crisis_level: Optional[str] = None) -> bool:
         """
