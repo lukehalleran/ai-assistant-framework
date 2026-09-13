@@ -261,6 +261,16 @@ class WebSearchMixin:
 
             pages = list(getattr(result, "pages", None) or [])
             self.last_web_decision["results"] = len(pages)
+            # Adversarial-review follow-up finding 3: a partial budget
+            # refusal (one sub-query funded, one refused) used to vanish
+            # once `error` was cleared by the successful sub-query — the
+            # result's own typed `blocked` field survives that.
+            _result_blocked = getattr(result, "blocked", None)
+            if isinstance(_result_blocked, str) and _result_blocked == "budget":
+                self.last_web_decision["requested"] = True
+                self.last_web_decision["blocked"] = (
+                    self.last_web_decision.get("blocked") or "budget"
+                )
 
             if result.has_results:
                 decomp_info = ""

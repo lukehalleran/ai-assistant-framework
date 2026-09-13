@@ -17,7 +17,13 @@ Sources (all per-turn, never the previous turn's state):
   * the prompt builder's ``raw_context["web_search_decision"]`` receipt — the
     enhanced-path trigger's requested / blocked / results / error;
   * this turn's agentic session rounds — web results, the manager's budget
-    refusal, and URL fetches that returned a page.
+    refusal, and URL fetches that returned a page;
+  * a round's or a ``WebSearchResult``/``MultiSearchResult``'s own typed
+    ``blocked`` field (2026-09-12, follow-up findings 2/3) — set even when
+    the same round/result also carries pages, so a PARTIAL budget refusal
+    (one sub-query funded, one refused; a free direct fetch that could not
+    afford its billed Tavily fallback) is never silently discarded just
+    because something else in the round succeeded.
 
 Only a BUDGET block produces a notice. A disabled toggle is the owner's
 choice, and other failures (timeouts, provider errors) are out of scope here.
@@ -46,6 +52,12 @@ BUDGET_NOTICE_PARTIAL = (
 
 def _is_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
+
+
+def _is_budget_block(value: Any) -> bool:
+    """True only for the literal string "budget" — a MagicMock attribute (or
+    any other non-str truthy stand-in) never counts as a real block reason."""
+    return isinstance(value, str) and value == "budget"
 
 
 def _count(value: Any) -> int:
@@ -89,6 +101,9 @@ def build_web_evidence_receipt(
 
     rounds = getattr(session, "rounds", None) if session is not None else None
     for rnd in rounds if isinstance(rounds, list) else []:
+        if _is_budget_block(getattr(rnd, "blocked", None)):
+            receipt["requested"] = True
+            receipt["blocked"] = receipt["blocked"] or "budget"
         query = getattr(getattr(rnd, "request", None), "query", "")
         if isinstance(query, str) and query.startswith("[Fetch URL]"):
             # Fetch failures render as bracketed notes ("[Could not fetch
@@ -104,6 +119,9 @@ def build_web_evidence_receipt(
         pages = getattr(results, "pages", None)
         if isinstance(pages, list):
             receipt["acquired"] += len(pages)
+        if _is_budget_block(getattr(results, "blocked", None)):
+            receipt["requested"] = True
+            receipt["blocked"] = receipt["blocked"] or "budget"
         error = getattr(results, "error", None)
         if isinstance(error, str) and BUDGET_ERROR_MARKER in error:
             receipt["requested"] = True

@@ -636,20 +636,35 @@ _APPROVAL_PROMPT_RE = re.compile(
 #       check, so a third-party approver ("the board will approve that")
 #       must not read as an instruction to the addressee.
 #
-# REFERENT ANCHOR (regex hits only — see the semantic-channel note below): a
-# pronoun THING ("it"/"that"/"this") needs an approval-surface word in the
-# SAME sentence or the IMMEDIATELY PRECEDING one (card family: card/
-# approval/confirm.../queue.../pending — UNAMBIGUOUS, always anchor; an
-# eligible owner-directed "approve" mention — always an anchor; or
-# "proposal(s)" — AMBIGUOUS, ordinary news/legislative/business vocabulary
-# too, so it anchors only alongside a first/second-person reference — I/we/
-# you/your — in the SAME sentence, see GAP 2 below. Calendar family: a
-# _CALENDAR_STRONG_RE word). A non-pronoun approval-surface THING ("card")
-# always satisfies this trivially — the anchor-word scan finds its own
-# matched token — so no separate pronoun/non-pronoun branch is needed for
-# the unambiguous vocabulary; one word-level scan covers both.
+# REFERENT ANCHOR (regex hits only — see the semantic-channel note below),
+# CARD FAMILY: a pronoun THING ("it"/"that"/"this") needs an
+# approval-surface word in the SAME sentence or the IMMEDIATELY PRECEDING
+# one — card/approval/confirm.../queue.../pending — UNAMBIGUOUS, always
+# anchor; an eligible owner-directed "approve" mention — always an anchor;
+# or "proposal(s)" — AMBIGUOUS, ordinary news/legislative/business
+# vocabulary too, so it anchors only alongside a first/second-person
+# reference — I/we/you/your — in the SAME sentence, see GAP 2 below. A
+# non-pronoun approval-surface THING ("card") always satisfies this
+# trivially — the anchor-word scan finds its own matched token — so no
+# separate pronoun/non-pronoun branch is needed for the unambiguous
+# vocabulary; one word-level scan covers both. As of A23 (below) this
+# check is scoped to voice-ok REGIONS (a maximal run of consecutive
+# voice-ok clauses within a sentence), not whole sentences, and "the
+# immediately preceding one" means any voice-ok region of the preceding
+# SENTENCE.
 #
-# The anchor check does NOT apply to the A13 seeds+learned semantic channel:
+# CALENDAR FAMILY: a bare `_CALENDAR_STRONG_RE` anchor word was the WHOLE
+# check here through A22 — "does a calendar-strong word appear nearby",
+# never "whose calendar". A23 below (2026-09-12, docs/BUG_CLASSES.md BC-04)
+# replaces this with full OWNER ATTRIBUTION (S1/S2/S3 direct surface + a D
+# definite/anaphoric reference riding on an earlier established surface) —
+# see the A23 module note further down for the complete rule. A third-
+# party or hypothetical calendar sentence with no owner surface anywhere
+# in the reply is no longer a claim just because a calendar noun is
+# nearby.
+#
+# The anchor/attribution check does NOT apply to the A13 seeds+learned
+# semantic channel:
 # TestA13SeedsAndLearnedSemanticChannel.test_novel_phrasing_near_a_seed_is_
 # caught_semantically ("Everything's set on my end — it'll be finalized the
 # moment you give it a nod.") is caught ONLY by cosine similarity and names
@@ -785,10 +800,6 @@ def _card_anchor_present(sentence: str) -> bool:
     return False
 
 
-def _calendar_anchor_present(sentence: str) -> bool:
-    return bool(_CALENDAR_STRONG_RE.search(sentence))
-
-
 def _claim_voice_ok(sentence: str, family: str) -> bool:
     """VOICE check only (no anchor) — shared by the regex AND semantic
     detection channels for both families."""
@@ -799,21 +810,239 @@ def _claim_voice_ok(sentence: str, family: str) -> bool:
     return True
 
 
-def _claim_anchor_ok(sentences: list[str], i: int, family: str) -> bool:
-    """REFERENT-ANCHOR check only — regex hits only, never applied to the
-    semantic channel (see the module note above)."""
-    present = _card_anchor_present if family == "card" else _calendar_anchor_present
-    if present(sentences[i]):
+# ---------------------------------------------------------------------------
+# Clause splitting + voice-ok REGIONS (2026-09-12, A23, docs/BUG_CLASSES.md
+# BC-04) — the sentence-level review-finding follow-up
+# (/tmp/daemon_sep12_followup_review.md, finding 1). A22's VOICE check
+# above operates on a whole SENTENCE, which has two failure modes: (1) a
+# reporting frame anywhere in a sentence vetoes the ENTIRE sentence even
+# when it also carries an independently-voiced clause ("The email says the
+# meeting is already scheduled, and it is already on your calendar for
+# Friday at 3 PM." lost the real "it is already on your calendar..." claim
+# to the "email says" veto), and (2) neither family previously required
+# the claim to be ATTRIBUTED to the addressed OWNER's own calendar at all
+# — a third-party/hypothetical calendar sentence with no "your" anywhere
+# near it ("The event is already scheduled for March.", "Their appointment
+# is already scheduled...") still returned as a claim.
+#
+# ``_claim_clause_spans`` splits a sentence into independent-clause
+# character spans on a CLOSED boundary grammar (semicolon; an em/en dash or
+# space-padded hyphen; a comma+coordinator UNLESS followed by a
+# complementizer that/whether/if, which continues reported speech; a bare
+# coordinator with no comma, only when the next word is a closed set of
+# subject pronouns). ``_voice_ok_regions``/`_voice_ok_regions_from`` then
+# group consecutive voice-ok clauses (per the existing, UNCHANGED
+# ``_claim_voice_ok``) into REGIONS — spanning from the first kept clause's
+# start to the last kept clause's end in the ORIGINAL sentence, so text
+# between kept clauses (coordinators included) survives inside the region
+# and regex spans like "Approve it and it should land" still match. When
+# EVERY clause is voice-ok the sole region is the WHOLE sentence —
+# byte-identical to the pre-A23 text, so every existing whole-sentence
+# equality assertion is unaffected.
+#
+# The CARD family (``claims_pending_card`` / the annotator's card branch,
+# via the shared ``_card_claim_regions``) is rescoped from whole sentences
+# to these voice-ok regions: ``_APPROVAL_PROMPT_RE`` searches each region,
+# and ``_card_anchor_present`` is checked against that region or any
+# voice-ok region of the PRECEDING sentence (unchanged semantics from A22's
+# whole-sentence "i-1" check, just region-scoped).
+#
+# The CALENDAR family (``claims_calendar_state`` / the annotator's calendar
+# branch, via the shared ``_calendar_claim_regions``) additionally requires
+# OWNER ATTRIBUTION, replacing the old bare ``_calendar_anchor_present``
+# (which only asked "does a calendar-strong word appear nearby", never
+# "whose calendar"). A calendar-state candidate clause is attributed iff:
+#   (a) the clause itself carries an OWNER-CALENDAR SURFACE — S1 (a direct
+#       your/our/the/google-calendar mention, or "calendar event/invite/
+#       entry/item", or bare "on calendar"), S2 ("your" + up to 4
+#       non-genitive modifier words + a calendar-entry noun — "your
+#       professor's office hours" is excluded by the genitive), or S3
+#       ("you"/"we" have/had (got) + up to 4 modifier words + a
+#       calendar-entry noun, unless guarded by a preceding if/unless/
+#       whether/"in case" — "If you have an appointment..." is not a claim
+#       about an EXISTING appointment); or
+#   (b) the clause carries a definite/anaphoric REFERENCE (D — "the/this/
+#       that (...) <entry noun>", a bare it/it's/that's/this, or "on
+#       there") AND an EARLIER voice-ok clause of the SAME REPLY (an
+#       earlier clause of the same sentence, or any clause of an earlier
+#       sentence) already established surface. Clauses of skipped sentences
+#       (questions / ``_PROPOSAL_MARKER``) and voice-ineligible (reported)
+#       clauses never supply an antecedent.
+# This lets a bare "it's on your calendar" open a claim outright (a),
+# while a later bare "it" or "the event" rides on a surface established
+# earlier in the same reply (b) — exactly the R6A/R2/R4/R5 replay pattern
+# where a live TA-session calendar event is established once and then
+# referred to anaphorically across several sentences.
+# ---------------------------------------------------------------------------
+
+_CLAUSE_SUBJECT_PRONOUN_RE = (
+    r"(?:it|it['’]s|that['’]s|this|there|there['’]s|you|you['’]ve|you['’]re|your|"
+    r"i|i['’]ve|i['’]m|we|we['’]ve|we['’]re|they|they['’]re|he|she)"
+)
+_CLAUSE_BOUNDARY_RE = re.compile(
+    r";"
+    # A dash followed by a digit is a numeric range ("8–9 PM", "2 - 3"), not
+    # a clause break: splitting there separates "Your appointment runs 2"
+    # from "3 on Friday" and the per-clause A21 rule loses the claim.
+    r"|\s*[—–](?!\s*\d)\s*"
+    r"|\s-(?!\s*\d)\s"
+    r"|,\s+(?:and|but|so|yet)\s+(?!(?:that|whether|if)\b)"
+    r"|\s+(?:and|but|so|yet)\s+(?=" + _CLAUSE_SUBJECT_PRONOUN_RE + r"\b)",
+    re.IGNORECASE,
+)
+
+
+def _claim_clause_spans(sentence: str) -> list[tuple[int, int]]:
+    """Character spans of ``sentence``'s independent clauses, in order,
+    boundaries excluded (see the closed grammar in the module note above),
+    empty/whitespace-only spans dropped."""
+    if not sentence:
+        return []
+    bounds = [(m.start(), m.end()) for m in _CLAUSE_BOUNDARY_RE.finditer(sentence)]
+    cuts = [0]
+    for s, e in bounds:
+        cuts.append(s)
+        cuts.append(e)
+    cuts.append(len(sentence))
+    spans: list[tuple[int, int]] = []
+    for i in range(0, len(cuts), 2):
+        start, end = cuts[i], cuts[i + 1]
+        while start < end and sentence[start].isspace():
+            start += 1
+        while end > start and sentence[end - 1].isspace():
+            end -= 1
+        if start < end:
+            spans.append((start, end))
+    return spans
+
+
+def _claim_sentence_clauses(sentence: str, family: str) -> tuple[list[tuple[int, int]], list[bool]]:
+    """(clause spans, per-clause voice-ok flags) for ``sentence`` in
+    ``family`` — the shared computation ``_voice_ok_regions_from`` and the
+    per-family region builders below all key off."""
+    spans = _claim_clause_spans(sentence)
+    if not spans:
+        spans = [(0, len(sentence))] if sentence.strip() else []
+    ok = [_claim_voice_ok(sentence[s:e], family) for s, e in spans]
+    return spans, ok
+
+
+def _voice_ok_regions_from(
+    sentence: str, spans: list[tuple[int, int]], ok: list[bool]
+) -> list[tuple[int, int, list[int]]]:
+    """(region_start, region_end, clause_indices) — maximal runs of
+    consecutive voice-ok clauses. If every clause is voice-ok the only
+    region is the WHOLE sentence (byte-identical to pre-A23 text)."""
+    n = len(spans)
+    if n == 0:
+        return []
+    if all(ok):
+        return [(0, len(sentence), list(range(n)))]
+    regions: list[tuple[int, int, list[int]]] = []
+    i = 0
+    while i < n:
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and ok[j + 1]:
+            j += 1
+        regions.append((spans[i][0], spans[j][1], list(range(i, j + 1))))
+        i = j + 1
+    return regions
+
+
+def _voice_ok_regions(sentence: str, family: str) -> list[tuple[int, int]]:
+    """Public-ish (contract #2) wrapper: (start, end) character spans of
+    ``sentence``'s voice-ok regions in ``family``."""
+    spans, ok = _claim_sentence_clauses(sentence, family)
+    return [(s, e) for s, e, _ in _voice_ok_regions_from(sentence, spans, ok)]
+
+
+# ---------------------------------------------------------------------------
+# Calendar OWNER-ATTRIBUTION grammar (A23) — see the module note above for
+# the full (a)/(b) attribution rule this vocabulary implements.
+# ---------------------------------------------------------------------------
+
+#: Exactly the calendar-entry nouns already in ``_CALENDAR_STRONG_RE`` /
+#: ``_CALENDAR_WEAK_RE`` — a single constant so S1-S3 and D share one
+#: vocabulary.
+_CALENDAR_ENTRY_NOUN_RE = r"(?:events?|appointments?|reminders?|office\s+hours|sessions?)"
+
+_S1_OWNER_CALENDAR_RE = re.compile(
+    r"\b(?:your|our|the|google)\s+calendars?\b"
+    r"|\bcalendar\s+(?:events?|invites?|entr(?:y|ies)|items?)\b"
+    r"|\bon\s+calendar\b",
+    re.IGNORECASE,
+)
+_GENITIVE_WORD_RE = re.compile(r"\b\w+['’]s\b")
+_S2_YOUR_ENTRY_RE = re.compile(
+    r"\byour\b((?:\s+[\w’'-]+){0,4})\s+" + _CALENDAR_ENTRY_NOUN_RE + r"\b",
+    re.IGNORECASE,
+)
+_S3_LEAD_RE = re.compile(
+    r"\b(?:you|we)(?:['’]ve|\s+have|\s+had)(?:\s+got)?"
+    r"((?:\s+[\w’'-]+){0,4})\s+" + _CALENDAR_ENTRY_NOUN_RE + r"\b",
+    re.IGNORECASE,
+)
+_S3_SUBJECT_RE = re.compile(r"\b(?:you|we)\b", re.IGNORECASE)
+_WORD_TOKEN_RE = re.compile(r"[\w’']+")
+
+
+def _has_surface_s2(text: str) -> bool:
+    for m in _S2_YOUR_ENTRY_RE.finditer(text):
+        modifiers = m.group(1) or ""
+        if not _GENITIVE_WORD_RE.search(modifiers):
+            return True
+    return False
+
+
+def _s3_preceding_words_reject(text: str, pos: int) -> bool:
+    """True when the two words immediately before ``pos`` disqualify an S3
+    match — a conditional guard ("if/unless/whether you have...") or the
+    pair "in case"."""
+    words = [w.lower() for w in _WORD_TOKEN_RE.findall(text[:pos])]
+    tail = words[-2:]
+    if any(w in ("if", "unless", "whether") for w in tail):
         return True
-    return i > 0 and present(sentences[i - 1])
+    return len(tail) == 2 and tail[0] == "in" and tail[1] == "case"
 
 
-def _claim_sentence_eligible(sentences: list[str], i: int, family: str) -> bool:
-    """Combined VOICE + REFERENT-ANCHOR gate for a regex-matched
-    ``sentences[i]`` in ``family`` ("card" or "calendar"). ``sentences`` is
-    the caller's own already-split, already-normalized list so index
-    ``i - 1`` is the true immediately-preceding sentence of the same scan."""
-    return _claim_voice_ok(sentences[i], family) and _claim_anchor_ok(sentences, i, family)
+def _has_surface_s3(text: str) -> bool:
+    for m in _S3_LEAD_RE.finditer(text):
+        subj_m = _S3_SUBJECT_RE.search(text, m.start(), m.end())
+        pos = subj_m.start() if subj_m else m.start()
+        if _s3_preceding_words_reject(text, pos):
+            continue
+        return True
+    return False
+
+
+def _owner_calendar_surface_present(text: str) -> bool:
+    """OWNER-CALENDAR SURFACE — S1 | S2 | S3 (see the module note above)."""
+    if not text:
+        return False
+    return bool(_S1_OWNER_CALENDAR_RE.search(text)) or _has_surface_s2(text) or _has_surface_s3(text)
+
+
+_D_DEFINITE_REFERENCE_RE = re.compile(
+    r"\b(?:the|this|that)\s+(?:[\w:-]+\s+){0,6}?(?:calendar\s+)?"
+    + _CALENDAR_ENTRY_NOUN_RE + r"\b"
+    r"|\b(?:it|it['’]s|that['’]s|this)\b"
+    r"|\bon\s+there\b",
+    re.IGNORECASE,
+)
+
+
+def _clause_is_calendar_attributed(clause_text: str, surface_before: bool) -> bool:
+    """A calendar claim living in ``clause_text`` is ATTRIBUTED iff (a) the
+    clause itself carries an owner-calendar SURFACE (S1|S2|S3), or (b) it
+    carries a definite/anaphoric REFERENCE (D) and ``surface_before`` says
+    an earlier voice-ok clause of the same reply already established
+    surface."""
+    if _owner_calendar_surface_present(clause_text):
+        return True
+    return bool(surface_before and _D_DEFINITE_REFERENCE_RE.search(clause_text))
 
 
 # ---------------------------------------------------------------------------
@@ -914,6 +1143,37 @@ def record_claim_exemplar(label: str, text: str, source: str) -> bool:
         return False
 
 
+def _card_claim_regions(text: str) -> list[str]:
+    """Region texts where the CARD family's composed grammar +
+    REFERENT-ANCHOR check fire (2026-09-12, A23) — the ONE shared helper
+    ``claims_pending_card`` and ``annotate_unverified_action_claim``'s card
+    branch both call, so the two can never drift. Question/
+    ``_PROPOSAL_MARKER`` sentences are skipped as candidates but their
+    voice-ok regions are still computed and available to donate an anchor
+    to the FOLLOWING sentence — the same "sentence i-1" semantics A22's
+    whole-sentence ``_claim_anchor_ok`` had, just region-scoped. Regex-only
+    — never calls ``_claim_semantic_hit`` (annotate's REGEX-ONLY contract
+    relies on that)."""
+    sentences = _split_sentences(normalize_ws(_strip_quoted_and_drafts(text or "")))
+    all_region_texts: list[list[str]] = []
+    for sent in sentences:
+        spans, ok = _claim_sentence_clauses(sent, "card")
+        regions = _voice_ok_regions_from(sent, spans, ok)
+        all_region_texts.append([sent[s:e] for s, e, _ in regions])
+    hits: list[str] = []
+    for i, sent in enumerate(sentences):
+        if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
+            continue
+        prev_region_texts = all_region_texts[i - 1] if i > 0 else []
+        for rt in all_region_texts[i]:
+            if _APPROVAL_PROMPT_RE.search(rt) and (
+                _card_anchor_present(rt)
+                or any(_card_anchor_present(p) for p in prev_region_texts)
+            ):
+                hits.append(rt)
+    return hits
+
+
 def claims_pending_card(text: str) -> bool:
     """True when the reply directs the user to approve a proposal card.
 
@@ -926,23 +1186,27 @@ def claims_pending_card(text: str) -> bool:
     place...") must not get mis-split into two harmless-looking fragments
     at the wrap's newline; a genuine multi-sentence reply splits identically
     either way since real sentence breaks already follow '.', '?', or '!'.
+
     Detection = the composed grammar OR a seeds+learned semantic hit (A13),
-    both gated by the VOICE + REFERENT-ANCHOR eligibility check above (A22)
-    — a third-party "approve" (reported or not) and an unanchored pronoun
-    THING+MODAL+STATE hit ("it's there", "that's given up") are not card
-    claims. The anchor half of the check is skipped for the semantic hit
-    (see the A22 module note).
+    both scoped to VOICE-OK REGIONS within each sentence (2026-09-12, A23:
+    ``_card_claim_regions`` — a clause-level split so a reported clause
+    elsewhere in the same sentence can no longer veto an independently
+    owner-directed claim, e.g. "The email says the card is pending, and
+    you can approve it below." still fires on its second clause) + the
+    REFERENT-ANCHOR check (a third-party "approve", reported or not, and
+    an unanchored pronoun THING+MODAL+STATE hit like "it's there"/"that's
+    given up" are not card claims). The anchor half of the check is
+    skipped for the semantic hit (see the module note above A23).
     """
+    if _card_claim_regions(text):
+        return True
     sentences = _split_sentences(normalize_ws(_strip_quoted_and_drafts(text or "")))
-    for i, sent in enumerate(sentences):
+    for sent in sentences:
         if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
             continue
-        if not _claim_voice_ok(sent, "card"):
-            continue
-        if _APPROVAL_PROMPT_RE.search(sent) and _claim_anchor_ok(sentences, i, "card"):
-            return True
-        if _claim_semantic_hit(sent, "card_claim"):
-            return True
+        for s, e in _voice_ok_regions(sent, "card"):
+            if _claim_semantic_hit(sent[s:e], "card_claim"):
+                return True
     return False
 
 
@@ -1051,11 +1315,17 @@ _CALENDAR_STATE_RE = re.compile(
 # here is ENTITY + TIME, not grammar. A DECLARATIVE sentence (not a
 # question, not an offer, not conditional) that names a calendar-thing noun
 # AND a temporal anchor is claiming a concrete scheduled thing exists,
-# whether or not it uses a verb to say so — the existing handler-side
-# matcher (gui.handlers._calendar_claim_matches_event) already verifies
-# weekday+title agreement against [GOOGLE CALENDAR] and only fires the
-# notice when nothing matches, so a TRUE claim about a real event is never
-# corrected just because this detector is more permissive.
+# whether or not it uses a verb to say so. A21 alone is permissive by
+# design — it is the CANDIDATE finder, not the final verdict. Two layers
+# now keep it honest: the OWNER-ATTRIBUTION gate below (2026-09-12, A23 —
+# a candidate clause only becomes a claim when it is attributed to the
+# addressed owner's own calendar, never a third party's or a hypothetical
+# one) run at the DETECTOR level, and — for a claim that DOES survive
+# attribution — the handler-side matcher (gui.handlers.
+# _calendar_claim_matches_event) verifies weekday+title agreement against
+# [GOOGLE CALENDAR] and only fires the notice when nothing matches, so a
+# TRUE claim about a real event is never corrected just because A21 is
+# more permissive than a verb-anchored template.
 _CONDITIONAL_RE = re.compile(
     r"\b(?:could|would|might|can|if\s+you(?:'d|\s+want|\s+like)|let\s+me\s+know)\b",
     re.IGNORECASE,
@@ -1124,41 +1394,108 @@ def _is_entity_anchored_calendar_claim(sent: str) -> bool:
     return _has_calendar_temporal_anchor(sent)
 
 
+def _calendar_claim_regions(
+    reply: str, *, use_entity_anchor: bool, use_semantic: bool
+) -> list[str]:
+    """Core CALENDAR-family algorithm (2026-09-12, A23) shared by
+    ``claims_calendar_state`` (``use_entity_anchor=True,
+    use_semantic=True``) and ``annotate_unverified_action_claim``'s
+    calendar branch (both False — regex-only contract, no A21 permissive
+    entity rule). Per sentence: skip questions/``_PROPOSAL_MARKER``
+    (contributing nothing, including as a surface antecedent); split into
+    clauses and voice-ok REGIONS; within each region, find CANDIDATE
+    clauses via ``_CALENDAR_STATE_RE`` (+ ``_is_entity_anchored_calendar_
+    claim`` per clause when ``use_entity_anchor``); a region becomes a
+    claim when any candidate clause is OWNER-ATTRIBUTED (module note above
+    A23) given the surface established by earlier voice-ok clauses of the
+    same reply; falling back to a semantic hit on the region (when
+    ``use_semantic``) still requires SOME voice-ok clause in the region to
+    be attributed — a genuinely novel phrasing still can't ride on zero
+    owner-calendar surface anywhere in the reply."""
+    out: list[str] = []
+    sentences = _split_sentences(normalize_ws(_strip_quoted_and_drafts(reply or "")))
+    surface_seen = False
+    for sent in sentences:
+        if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
+            continue
+        spans, ok = _claim_sentence_clauses(sent, "calendar")
+        clause_texts = [sent[s:e] for s, e in spans]
+        n = len(clause_texts)
+        surface_before: list[bool] = []
+        acc = surface_seen
+        for k in range(n):
+            surface_before.append(acc)
+            if ok[k] and _owner_calendar_surface_present(clause_texts[k]):
+                acc = True
+        regions = _voice_ok_regions_from(sent, spans, ok)
+        for region_start, region_end, clause_idxs in regions:
+            region_text = sent[region_start:region_end]
+            candidates: list[int] = []
+            for m in _CALENDAR_STATE_RE.finditer(region_text):
+                m_start = region_start + m.start()
+                m_end = region_start + m.end()
+                # A match can legitimately span a clause boundary WITHIN a
+                # merged (all-voice-ok) region — section 2's own example
+                # ("Approve it and it should land") is exactly this shape
+                # for the card family; the calendar-state template has the
+                # same property ("Approve it and it's on your calendar." —
+                # THING="it" starts in one clause, STATE="on your
+                # calendar" lands in the next). Every clause the match
+                # OVERLAPS is a candidate, not just the one containing the
+                # match's start.
+                for k in clause_idxs:
+                    if spans[k][0] < m_end and spans[k][1] > m_start:
+                        candidates.append(k)
+            if use_entity_anchor:
+                for k in clause_idxs:
+                    if _is_entity_anchored_calendar_claim(clause_texts[k]):
+                        candidates.append(k)
+            seen_c: set[int] = set()
+            candidates = [k for k in candidates if not (k in seen_c or seen_c.add(k))]
+            if any(_clause_is_calendar_attributed(clause_texts[k], surface_before[k]) for k in candidates):
+                out.append(region_text.strip())
+                continue
+            if use_semantic and _claim_semantic_hit(region_text, "calendar_state") and any(
+                _clause_is_calendar_attributed(clause_texts[k], surface_before[k])
+                for k in clause_idxs
+            ):
+                out.append(region_text.strip())
+        surface_seen = acc
+    return out
+
+
 def claims_calendar_state(reply: str) -> list[str]:
-    """Sentences asserting a calendar event ALREADY exists ("already on
-    your calendar", "already scheduled", "it's on the calendar", "is
-    already in place") OR, per A21, any declarative sentence naming a
-    calendar-thing noun plus a temporal anchor (weekday/clock-time/cadence)
-    with no verb needed at all. Returns the matched sentences (not just
-    True/False) so a caller can compare each one's title/weekday/time
+    """Sentences/regions asserting a calendar event ALREADY exists
+    ("already on your calendar", "already scheduled", "it's on the
+    calendar", "is already in place") OR, per A21, any declarative clause
+    naming a calendar-thing noun plus a temporal anchor (weekday/clock-
+    time/cadence) with no verb needed at all — AND (2026-09-12, A23)
+    OWNER-ATTRIBUTED to the addressed owner's own calendar, either
+    directly (an owner-calendar SURFACE — "your calendar", "your
+    appointment", "you have an event...") or anaphorically (a definite/
+    pronoun REFERENCE riding on surface established by an EARLIER
+    voice-ok clause of the same reply). A third-party or hypothetical
+    calendar sentence with no owner surface anywhere in the reply ("The
+    event is already scheduled for March.", "Their appointment is already
+    scheduled...") is not a claim. Returns the matched region texts (not
+    just True/False; a region can be a whole sentence or a sub-sentence
+    clause run) so a caller can compare each one's title/weekday/time
     tokens against the turn's actual gathered calendar events. Quoted/
     drafted blocks are stripped first (real newlines still intact for
     fence/blockquote stripping), THEN the stripped text is whitespace-
     normalized before sentence splitting (2026-09-10, round 3, A10
-    sibling) — see claims_pending_card's docstring for why. Detection =
-    the composed grammar OR a seeds+learned semantic hit (A13) OR the A21
-    entity-anchored rule, all gated by the VOICE + REFERENT-ANCHOR
-    eligibility check (A22) — reported content ("the email says the meeting
-    is already scheduled") and an unanchored schedule-narration hit ("see
-    whether it goes through") are not calendar-state claims. The A21 rule
-    already requires ``_CALENDAR_STRONG_RE`` in-sentence, so the anchor half
-    of the check is always trivially satisfied for it; the reported-content
-    half still applies. The anchor half is skipped entirely for the
-    semantic hit (see the A22 module note)."""
-    out: list[str] = []
-    sentences = _split_sentences(normalize_ws(_strip_quoted_and_drafts(reply or "")))
-    for i, sent in enumerate(sentences):
-        if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
-            continue
-        if not _claim_voice_ok(sent, "calendar"):
-            continue
-        regex_hit = _CALENDAR_STATE_RE.search(sent) or _is_entity_anchored_calendar_claim(sent)
-        if regex_hit and _claim_anchor_ok(sentences, i, "calendar"):
-            out.append(sent)
-            continue
-        if _claim_semantic_hit(sent, "calendar_state"):
-            out.append(sent)
-    return out
+    sibling) — see claims_pending_card's docstring for why.
+
+    Sentence-level VOICE (reported content — "the email says...") no
+    longer vetoes an entire multi-clause sentence: clauses are split
+    (A23) and grouped into voice-ok REGIONS first, so an independently
+    owner-attributed clause in the same sentence as a reported one still
+    fires ("The email says the meeting is already scheduled, and it is
+    already on your calendar for Friday at 3 PM." returns only the
+    second, un-reported clause). See ``_calendar_claim_regions`` for the
+    full algorithm; this is a thin wrapper enabling the A21 entity rule
+    and the seeds+learned semantic channel (A13)."""
+    return _calendar_claim_regions(reply, use_entity_anchor=True, use_semantic=True)
 
 
 # Unverified-action-claim marker (2026-09-10, round 4, B12; BC-75 via the
@@ -1207,10 +1544,13 @@ def annotate_unverified_action_claim(text: str) -> str:
     delegates to this single implementation instead of its own inline
     ``claims_calendar_state(...) or detect_completion_claims(...)`` check.
 
-    Also gated by the VOICE + REFERENT-ANCHOR eligibility check (2026-09-12,
-    A22) shared with ``claims_pending_card``/``claims_calendar_state`` —
-    ``_claim_sentence_eligible`` is pure regex (no embedder call), so this
-    stays within the REGEX-ONLY contract above.
+    Also gated by the clause-scoped VOICE + OWNER-ATTRIBUTION machinery
+    (2026-09-12, A23) shared with ``claims_pending_card`` (via
+    ``_card_claim_regions``) / ``claims_calendar_state`` (via
+    ``_calendar_claim_regions`` with ``use_entity_anchor=False,
+    use_semantic=False`` — no A21 permissive entity rule, no embedder
+    call), so this stays within the REGEX-ONLY contract above and the
+    detector/annotator can never drift on what counts as a claim.
     """
     if not text:
         return text
@@ -1219,17 +1559,10 @@ def annotate_unverified_action_claim(text: str) -> str:
     try:
         if detect_completion_claims(text):
             return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
-        cleaned = normalize_ws(_strip_quoted_and_drafts(text))
-        if not cleaned:
-            return text
-        sentences = _split_sentences(cleaned)
-        for i, sent in enumerate(sentences):
-            if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
-                continue
-            if _APPROVAL_PROMPT_RE.search(sent) and _claim_sentence_eligible(sentences, i, "card"):
-                return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
-            if _CALENDAR_STATE_RE.search(sent) and _claim_sentence_eligible(sentences, i, "calendar"):
-                return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
+        if _card_claim_regions(text):
+            return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
+        if _calendar_claim_regions(text, use_entity_anchor=False, use_semantic=False):
+            return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
     except Exception:
         return text
     return text

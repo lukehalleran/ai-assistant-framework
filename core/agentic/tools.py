@@ -56,6 +56,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_COMPRESSION_MAX_TOKENS = 1500
 
 
+class BlockedFetchText(str):
+    """Fetch-tool text (what a dispatch renders into context) that also
+    carries a typed block reason (2026-09-12, adversarial-review follow-up
+    finding 3). A plain ``str`` in every other respect — callers that only
+    ever treat a fetch result as text (f-strings, ``in`` checks, formatter
+    calls) see no difference; ``getattr(result, "blocked", None)`` is how
+    ``_dispatch_fetch_url`` and the evidence receipt recover the reason."""
+
+    def __new__(cls, text: str, *, blocked: Optional[str] = None):
+        obj = str.__new__(cls, text)
+        obj.blocked = blocked
+        return obj
+
+
 # ---------------------------------------------------------------------------
 # Unified dispatch table — the SINGLE source of truth for routing a SearchDecision
 # to a tool handler. BOTH ToolExecutor.dispatch_single and the controller's
@@ -1004,6 +1018,8 @@ class ToolExecutor:
             duration_ms=duration
         )
         round_data.summary = fetch_result
+        _blocked = getattr(fetch_result, "blocked", None)
+        round_data.blocked = _blocked if isinstance(_blocked, str) else None
 
         end_events = [ProgressEvent(
             event_type="url_fetched",
@@ -2056,6 +2072,12 @@ Provide a focused summary with the most important information."""
         try:
             pages = await self.web_search_manager.fetch_url_content(url)
             if not pages:
+                if getattr(pages, "blocked", None) == "budget":
+                    return BlockedFetchText(
+                        f"[Could not fetch content from {url}: today's web "
+                        "search budget is used up]",
+                        blocked="budget",
+                    )
                 return f"[Could not fetch content from {url}]"
             page = pages[0]
             title = page.title or url

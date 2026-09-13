@@ -759,6 +759,19 @@ class AgenticSearchController:
                     r if not isinstance(r, Exception) else f"[Error: {r}]"
                     for r in fetch_results
                 )
+                # Adversarial-review follow-up finding 3: carry a typed
+                # budget-block reason through even when one of several URLs
+                # fetched fine — the first non-exception result that has one
+                # wins (there is one round for all of round 1's URLs).
+                first_round.blocked = next(
+                    (
+                        getattr(r, "blocked", None)
+                        for r in fetch_results
+                        if not isinstance(r, Exception)
+                        and isinstance(getattr(r, "blocked", None), str)
+                    ),
+                    None,
+                )
                 session.rounds.append(first_round)
                 session.accumulated_context = "\n\n".join(fetch_context_parts)
                 session.round_telemetry.append({

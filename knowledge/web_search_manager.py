@@ -231,6 +231,19 @@ class WebPage:
     source: str = "tavily"  # "tavily_search" or "tavily_extract"
 
 
+class FetchedPages(list):
+    """``List[WebPage]`` that also records why a fetch came back empty.
+
+    ``blocked`` is "budget" when nothing free was fetched and the billed
+    fallback could not be paid for; otherwise None. Plain ``list`` equality
+    still holds (an empty ``FetchedPages`` compares equal to ``[]``), so
+    existing "not pages"/"pages == []" checks keep working unchanged."""
+
+    def __init__(self, pages=(), *, blocked: Optional[str] = None):
+        super().__init__(pages)
+        self.blocked = blocked
+
+
 @dataclass
 class WebSearchResult:
     """Complete result from a web search operation."""
@@ -241,6 +254,13 @@ class WebSearchResult:
     from_cache: bool = False
     timestamp: float = field(default_factory=time.time)
     error: Optional[str] = None
+    # Typed block reason (2026-09-12, adversarial-review follow-up findings
+    # 2/3): "budget" when the daily search-credit budget refused this call
+    # (or, for a merged MultiSearchResult, refused at least one sub-query).
+    # None otherwise — a disabled toggle or any other failure stays in
+    # ``error`` only, this field is reserved for the one case a receipt must
+    # never lose track of even when other pages/results came back fine.
+    blocked: Optional[str] = None
 
     @property
     def has_results(self) -> bool:
@@ -332,6 +352,10 @@ class MultiSearchResult:
     timestamp: float = field(default_factory=time.time)
     error: Optional[str] = None
     decomposition_used: bool = False
+    # See WebSearchResult.blocked — "budget" when at least one sub-query was
+    # refused by the daily budget, even when other sub-queries returned
+    # pages and ``error`` was therefore cleared.
+    blocked: Optional[str] = None
 
     @property
     def has_results(self) -> bool:
@@ -371,7 +395,8 @@ class MultiSearchResult:
             search_depth=self.search_depth,
             from_cache=self.from_cache,
             timestamp=self.timestamp,
-            error=self.error
+            error=self.error,
+            blocked=self.blocked,
         )
 
 
@@ -634,17 +659,30 @@ class SearchReservation:
     billable provider call is dispatched, and commits that cost into
     ``used`` right away — a dispatched call is billed even if the overall
     search is later cancelled or times out, so ``used`` only ever grows.
+    A charge lands on the day its call is actually DISPATCHED, not the day
+    the reservation was first taken (2026-09-12): ``day_used`` tracks the
+    portion of ``used`` charged against ``date`` — the current dispatch
+    day — and a ``spend()`` that finds the reservation's day has rolled
+    over re-books it on today's budget (empty hold) before charging this
+    dispatch, so a search that starts before midnight and keeps dispatching
+    provider calls after it competes for TODAY's budget like anything else,
+    instead of spending against a day the limiter has already closed the
+    books on.
     ``settle()`` is idempotent and MUST run in a ``finally``: it folds
-    ``used`` into the limiter's real daily counter and releases the
-    reservation's outstanding hold (``amount - used``, including any
-    extensions), but only against the day the reservation was taken on — a
-    midnight rollover between ``reserve()`` and ``settle()`` neither debits
-    nor releases against the (already-reset) new day.
+    ``day_used`` into the limiter's real daily counter and releases the
+    reservation's outstanding hold (``amount``, including any extensions),
+    but only against the day the reservation is CURRENTLY booked on — a
+    midnight rollover between the last ``spend()`` and ``settle()`` neither
+    debits nor releases against the (already-reset) new day.
     """
     limiter: "WebSearchRateLimiter"
     amount: float
     date: str
     used: float = 0.0
+    # Part of ``used`` charged against ``date`` (today's dispatch day). See
+    # the class docstring — this is what actually gets folded into
+    # ``_credits_today`` on settle, never the full lifetime ``used``.
+    day_used: float = 0.0
     _settled: bool = False
 
     def spend(self, cost: float) -> bool:
@@ -678,6 +716,14 @@ class WebSearchRateLimiter:
     still works unchanged for any direct caller that never reserves. A
     plain ``threading.Lock`` guards the shared counters — the event loop
     itself is single-threaded, but Tavily calls run in executor threads.
+
+    Cross-midnight dispatch (2026-09-12, adversarial-review follow-up
+    finding 2): a charge lands on the day its provider call is actually
+    DISPATCHED. ``_reservation_spend`` re-books a reservation whose ``date``
+    predates today onto today's budget (with an empty hold) before charging
+    it, so a search that reserved before midnight and is still dispatching
+    calls after it competes for TODAY's budget instead of silently spending
+    against a day the limiter has already reset and closed the books on.
     """
 
     def __init__(
@@ -782,34 +828,54 @@ class WebSearchRateLimiter:
             return SearchReservation(limiter=self, amount=amount, date=self._current_date)
 
     def _reservation_spend(self, reservation: SearchReservation, cost: float) -> bool:
-        """Commit ``cost`` into ``reservation.used``, extending the hold
-        (against today's remaining budget) when it doesn't already fit."""
+        """Commit ``cost`` into ``reservation.day_used``/``reservation.used``,
+        extending the hold (against today's remaining budget) when it
+        doesn't already fit.
+
+        Cross-midnight dispatch (2026-09-12): a reservation whose ``date``
+        predates today has already had its hold zeroed by the date reset,
+        and the old-day usage it carries belongs to a day this limiter no
+        longer tracks. Re-book it on today's budget with an empty hold
+        first — the extension below then competes for exactly this
+        dispatch's cost, like any other reservation today, instead of the
+        charge silently landing nowhere.
+        """
         with self._lock:
             if reservation._settled:
                 return False
-            if reservation.used + cost <= reservation.amount:
+            self._check_date_reset_locked()
+            if reservation.date != self._current_date:
+                reservation.date = self._current_date
+                reservation.amount = 0.0
+                reservation.day_used = 0.0
+            if reservation.day_used + cost <= reservation.amount:
+                reservation.day_used += cost
                 reservation.used += cost
                 return True
-            needed = (reservation.used + cost) - reservation.amount
+            needed = (reservation.day_used + cost) - reservation.amount
             if self._credits_today + self._reserved_today + needed <= self.daily_limit:
                 self._reserved_today += needed
                 reservation.amount += needed
+                reservation.day_used += cost
                 reservation.used += cost
                 return True
             return False
 
     def _reservation_settle(self, reservation: SearchReservation) -> None:
-        """Fold ``reservation.used`` into today's real counter and release
-        the rest of the hold — idempotent, and a no-op for a reservation
-        whose day has already rolled over (its hold was already zeroed by
-        the date reset)."""
+        """Fold ``reservation.day_used`` (the part of ``used`` charged
+        against ``reservation.date``, today's dispatch day) into today's
+        real counter and release the rest of the hold — idempotent, and a
+        no-op for a reservation whose day has rolled over since its last
+        spend: the date reset already zeroed its hold, and usage charged
+        against a closed day is dropped with that day, never moved onto the
+        new one."""
         with self._lock:
             if reservation._settled:
                 return
             reservation._settled = True
             self._check_date_reset_locked()
             if reservation.date == self._current_date:
-                self._credits_today += reservation.used
+                self._credits_today += reservation.day_used
                 self._reserved_today = max(0.0, self._reserved_today - reservation.amount)
                 self._save_state()
 
@@ -1242,7 +1308,8 @@ class WebSearchManager:
             return WebSearchResult(
                 query=query,
                 search_depth=depth,
-                error=f"Daily credit limit reached. Remaining: {remaining}"
+                error=f"Daily credit limit reached. Remaining: {remaining}",
+                blocked="budget",
             )
 
         # Ensure Tavily is ready
@@ -1325,7 +1392,8 @@ class WebSearchManager:
             return WebSearchResult(
                 query=query,
                 search_depth=depth,
-                error=f"Daily credit limit reached. Remaining: {remaining}"
+                error=f"Daily credit limit reached. Remaining: {remaining}",
+                blocked="budget",
             )
         search_pages = await self._tavily_search(
             query, max_results, topic=topic, days=days,
@@ -1499,7 +1567,17 @@ class WebSearchManager:
         The Tavily fallback is billed (2026-09-12): it reserves 0.5 credits
         before dispatching and settles in a `finally`, same as `search()`.
         A manager built without a `rate_limiter` (some direct-fetch-only
-        test doubles) skips budgeting entirely rather than erroring.
+        test doubles) skips budgeting entirely rather than erroring. Both
+        the reservation AND the actual `spend()` are checked before the
+        billed provider call ever dispatches (adversarial-review follow-up
+        finding 3) — a reservation can still be refused at spend time (a
+        cross-midnight re-book that can no longer afford it), and the old
+        code dispatched Tavily regardless because it never looked at
+        `spend()`'s return value. A refusal at either point returns
+        whatever the free direct layer already produced, or a
+        ``FetchedPages(blocked="budget")`` when it produced nothing —
+        callers can then tell "genuinely nothing there" from "budget
+        stopped us from checking".
         """
         # This check applies even when direct fetching is disabled: otherwise a
         # private URL could still be forwarded to a third-party extractor.
@@ -1515,10 +1593,11 @@ class WebSearchManager:
         if limiter is not None and reservation is None:
             # Unaffordable: skip the billed Tavily fallback, keep whatever
             # the free direct layer already produced (possibly nothing).
-            return direct
+            return direct if direct else FetchedPages(blocked="budget")
         try:
-            if reservation is not None:
-                reservation.spend(0.5)
+            if reservation is not None and not reservation.spend(0.5):
+                # Refused at spend time: never dispatch the billed call.
+                return direct if direct else FetchedPages(blocked="budget")
             tavily = await self._tavily_extract([url])
         finally:
             if reservation is not None:
@@ -2293,7 +2372,8 @@ If not splitting, leave SUB_QUERIES empty."""
                 from_cache=single_result.from_cache,
                 timestamp=single_result.timestamp,
                 error=single_result.error,
-                decomposition_used=False
+                decomposition_used=False,
+                blocked=single_result.blocked,
             )
 
         # Execute parallel searches for sub-queries
@@ -2339,11 +2419,21 @@ If not splitting, leave SUB_QUERIES empty."""
         total_credits = 0.0
         any_from_cache = False
         errors = []
+        # Adversarial-review follow-up finding 3: a budget refusal on ONE
+        # sub-query used to disappear whenever another sub-query still
+        # returned pages (the joined `errors` string below is dropped
+        # entirely once `all_pages` is non-empty). Checked BEFORE the
+        # `result.error` skip so a refused-but-erroring sub-result is still
+        # counted here even though its pages/credits are not merged in.
+        budget_blocked = False
 
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 errors.append(f"Sub-query {i+1} error: {str(result)}")
                 continue
+
+            if getattr(result, "blocked", None) == "budget":
+                budget_blocked = True
 
             if result.error:
                 errors.append(f"Sub-query '{sub_queries[i][:30]}...': {result.error}")
@@ -2380,7 +2470,8 @@ If not splitting, leave SUB_QUERIES empty."""
             from_cache=any_from_cache,
             timestamp=time.time(),
             error="; ".join(errors) if errors and not all_pages else None,
-            decomposition_used=True
+            decomposition_used=True,
+            blocked="budget" if budget_blocked else None,
         )
 
     def get_status(self) -> Dict[str, Any]:

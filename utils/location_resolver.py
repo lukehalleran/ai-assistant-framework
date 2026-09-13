@@ -42,6 +42,7 @@ import time
 from typing import Optional
 
 from utils.logging_utils import get_logger
+from utils.trigger_match import normalize_ws
 
 logger = get_logger("location_resolver")
 
@@ -354,6 +355,129 @@ def _sub_outside_spans(pattern, text: str, spans: list) -> str:
     return "".join(out)
 
 
+# Proper-name spans (2026-09-12 follow-up review F4). A state or city name is
+# also the leading word of newspapers, companies, characters and schools
+# ("Washington Post", "Texas Instruments", "Indiana Jones", "New York Times").
+# Removing the owner's state from such a name changes the search target:
+# "Washington Post election coverage" became "Post election coverage".
+# Capitalization is the only local signal, so it is read structurally and
+# only in text that also has lowercase words (an all-TitleCase headline says
+# nothing about proper nouns).
+_NAME_TOKEN_RE = re.compile(r"[A-Za-z][\w&'’.\-]*")
+_RUN_LEADING_ARTICLES = frozenset({"the", "a", "an"})
+# "Washington State" names the place itself, not a separate entity.
+_PLACE_DESIGNATORS = frozenset({"state"})
+
+
+def _name_key(word: str) -> str:
+    """Comparison key for one capitalized token: lowercase, possessive and
+    abbreviation dot removed ("Washington's" -> "washington", "St." -> "st")."""
+    key = word.lower()
+    for suffix in ("'s", "’s"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+    return key.rstrip(".")
+
+
+def _state_forms(state: str) -> list:
+    """The state as given plus its abbreviation/full-name counterpart."""
+    forms = []
+    if state:
+        forms.append(state)
+        if state.upper() in _US_STATES:
+            forms.append(_US_STATES[state.upper()])
+        elif state.lower() in _US_STATES_INV:
+            forms.append(_US_STATES_INV[state.lower()])
+    return forms
+
+
+def _location_words(location: str) -> frozenset:
+    """Every word of the resolved location's city variants and state forms."""
+    parts = [p.strip() for p in location.split(",")]
+    city = parts[0] if parts else location.strip()
+    state = parts[1] if len(parts) > 1 else ""
+    words = set(_PLACE_DESIGNATORS)
+    for form in _city_variants(city) + _state_forms(state):
+        words.update(_name_key(w) for w in form.split())
+    words.discard("")
+    return frozenset(words)
+
+
+def _city_state_patterns(location: str) -> list:
+    """'City, ST' / 'City Statename' sequences — the complete resolved location."""
+    parts = [p.strip() for p in location.split(",")]
+    city = parts[0] if parts else location.strip()
+    state = parts[1] if len(parts) > 1 else ""
+    return [
+        re.compile(rf"\b{re.escape(c)}\s*,?\s+{re.escape(s)}\b", re.I)
+        for c in _city_variants(city)
+        for s in _state_forms(state)
+    ]
+
+
+def _capitalized_runs(text: str) -> list:
+    """Runs of two or more capitalized tokens separated only by whitespace,
+    leading articles trimmed. Empty when `text` has no lowercase-initial
+    word, because then capitalization carries no proper-noun signal."""
+    tokens = list(_NAME_TOKEN_RE.finditer(text))
+    if not any(tok.group()[0].islower() for tok in tokens):
+        return []
+    runs, current = [], []
+    for tok in tokens:
+        capitalized = tok.group()[0].isupper()
+        if capitalized and current and text[current[-1].end():tok.start()].isspace():
+            current.append(tok)
+            continue
+        if current:
+            runs.append(current)
+        current = [tok] if capitalized else []
+    if current:
+        runs.append(current)
+    trimmed = []
+    for run in runs:
+        while run and _name_key(run[0].group()) in _RUN_LEADING_ARTICLES:
+            run = run[1:]
+        if len(run) >= 2:
+            trimmed.append(run)
+    return trimmed
+
+
+def _proper_name_spans(
+    text: str, location: str, query: Optional[str] = None, either_side: bool = False
+) -> list:
+    """Spans in `text` of capitalized runs that use a location word as part of
+    a proper name rather than as a location.
+
+    A run qualifies when it mixes location words with other words and either
+    a non-location word FOLLOWS a location word (a place used as a modifier:
+    "Washington Post", "New York Times"), or the user's own `query` contains
+    the same run ("George Washington"). A run containing the complete
+    "City State" sequence is the injected location itself and never
+    qualifies; neither does a state appended after a name ("Chicago Tribune
+    Illinois"). `either_side=True` drops the direction requirement — used on
+    the user's query, where a state inside ANY name is not the user naming
+    their state."""
+    loc_words = _location_words(location)
+    city_state = _city_state_patterns(location)
+    query_lower = normalize_ws(query).lower() if query else ""
+    spans = []
+    for run in _capitalized_runs(text):
+        keys = [_name_key(tok.group()) for tok in run]
+        loc_idx = [i for i, key in enumerate(keys) if key in loc_words]
+        other_idx = [i for i, key in enumerate(keys) if key not in loc_words]
+        if not loc_idx or not other_idx:
+            continue
+        start, end = run[0].start(), run[-1].end()
+        run_text = text[start:end]
+        if any(p.search(run_text) for p in city_state):
+            continue
+        modifier = max(other_idx) > min(loc_idx)
+        typed_by_user = bool(query_lower) and normalize_ws(run_text).lower() in query_lower
+        if either_side or modifier or typed_by_user:
+            spans.append((start, end))
+    return spans
+
+
 def _location_patterns(location: str) -> list:
     """Compiled patterns matching the location as the LLM tends to render it:
     'City, ST' / 'City ST' / 'City Statename' / bare 'City', plus (2026-09-12)
@@ -367,13 +491,7 @@ def _location_patterns(location: str) -> list:
     city = parts[0] if parts else location.strip()
     state = parts[1] if len(parts) > 1 else ""
 
-    state_forms = []
-    if state:
-        state_forms.append(state)
-        if state.upper() in _US_STATES:
-            state_forms.append(_US_STATES[state.upper()])
-        elif state.lower() in _US_STATES_INV:
-            state_forms.append(_US_STATES_INV[state.lower()])
+    state_forms = _state_forms(state)
 
     compiled = []
     for c in _city_variants(city):
@@ -384,6 +502,9 @@ def _location_patterns(location: str) -> list:
 
     abbrev, full_name = _canonical_state_forms(state)
     if full_name:
+        # "Washington State" first, so the designator never survives the
+        # bare-name removal as a stray "State".
+        compiled.append(re.compile(rf"\b{re.escape(full_name)}\s+State\b", re.I))
         compiled.append(re.compile(rf"\b{re.escape(full_name)}\b", re.I))
     if abbrev:
         compiled.append(re.compile(rf"\b{re.escape(abbrev)}\b"))  # case-sensitive
@@ -420,7 +541,11 @@ def query_justifies_location(
     abbrev, full_name = _canonical_state_forms(state)
     if not (abbrev or full_name):
         return False
-    protected = _institution_protected_spans(query, institution)
+    # A state inside a school name or any other proper name ("the Washington
+    # Post") names that thing, not the user's state.
+    protected = _institution_protected_spans(query, institution) + _proper_name_spans(
+        query, location, either_side=True
+    )
     if full_name:
         for m in re.finditer(rf"\b{re.escape(full_name)}\b", query, re.I):
             if not _contained_in_any(m.start(), m.end(), protected):
@@ -454,7 +579,9 @@ def strip_unjustified_location(
     for term in terms:
         new = term
         for pat in patterns:
-            protected = _institution_protected_spans(new, institution)
+            protected = _institution_protected_spans(new, institution) + _proper_name_spans(
+                new, location, query=query
+            )
             new = _sub_outside_spans(pat, new, protected)
         if new != term:
             changed = True

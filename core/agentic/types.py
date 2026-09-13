@@ -90,6 +90,12 @@ class SearchRound:
     summary: Optional[str] = None  # Compressed version for context
     duration_ms: float = 0.0
     error: Optional[str] = None
+    # Typed block reason (2026-09-12, adversarial-review follow-up finding 3):
+    # "budget" when this round's web search/fetch was refused by the daily
+    # search-credit budget, set even when the round also carries a partial
+    # success (e.g. a free direct fetch whose billed Tavily fallback the
+    # budget refused). None otherwise.
+    blocked: Optional[str] = None
 
 
 @dataclass
