@@ -45,7 +45,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
-from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher
+from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher, prefix_only_hits
 from memory.fact_source import strip_quoted_correspondence
 import re
 from datetime import datetime
@@ -1115,6 +1115,10 @@ async def analyze_query_async(q: str, model_manager=None) -> QueryAnalysis:
 # ===== Heavy Topic Classification =====
 
 # Configuration
+# Retired 2026-09-12: length alone no longer implies a heavy topic (see
+# _is_heavy_topic_heuristic). Kept as a named constant only so the env
+# variable does not silently become a no-op for anyone who set it; nothing
+# reads it. Delete with the env var.
 HEAVY_TOPIC_CHAR_THRESHOLD = int(os.getenv("HEAVY_TOPIC_CHAR_THRESHOLD", "2500"))
 HEAVY_TOPIC_MODEL = os.getenv("HEAVY_TOPIC_MODEL", "gpt-4o-mini")
 HEAVY_TOPIC_TIMEOUT = float(os.getenv("HEAVY_TOPIC_TIMEOUT", "2.0"))
@@ -1134,7 +1138,7 @@ HEAVY_KEYWORDS = {
     "killed", "dead", "death", "deaths", "casualties", "wounded", "injured",
 
     # Human rights & persecution
-    "persecution", "discriminat", "racism", "racist", "hate crime",
+    "persecution", "discriminat*", "racism", "racist", "hate crime",
     "ethnic cleansing", "genocide", "war crime", "torture", "abuse",
     "refugee", "refugees", "asylum", "sanctuary",
 
@@ -1183,9 +1187,23 @@ HEAVY_KEYWORDS = {
 # that alone, which then fed the tone sticky-floor's history scan (see
 # tone_detector._recent_distress_from_history) into an unwarranted CONCERN
 # floor on 11 homework turns. Phrases (containing a space, e.g. "tear gas")
-# keep substring semantics; a stem like "discriminat" still matches
-# "discrimination" (left boundary only).
+# keep substring semantics; a deliberately truncated stem declares
+# itself with a trailing "*" ("discriminat*" → discriminate/discrimination/
+# discriminatory) now that bare words are bounded on BOTH sides
+# (2026-09-12: 'dead' had fired HEAVY on "deadline"/"deadlift" and 'war' on
+# "warning"/"warm" — 282 hits in the owner's corpus, and 17 rows stored
+# is_heavy_topic=True with no valid heavy hit at all).
 _HEAVY_MATCHER = compile_keyword_matcher(sorted(HEAVY_KEYWORDS))
+
+
+def heavy_prefix_only_hits(text: str) -> List[str]:
+    """HEAVY_KEYWORDS hits that only the pre-2026-09-12 left-boundary-only
+    matcher would have produced (see `trigger_match.prefix_only_hits`).
+    Used by `tone_detector._heavy_row_is_distress_evidence` to neutralize
+    corpus rows stored `is_heavy_topic=True` on nothing but a boundary bug."""
+    if not text or not isinstance(text, str):
+        return []
+    return prefix_only_hits(_HEAVY_MATCHER, text.lower())
 
 
 def heavy_keyword_hits(text: str) -> List[str]:
@@ -1201,19 +1219,26 @@ def _is_heavy_topic_heuristic(q: str) -> bool:
     """
     Fast heuristic check for heavy topics.
 
-    Strategy:
-      1. Length check (>2500 chars = likely article/news)
-      2. Keyword matching against crisis/violence/rights/emotional/mental health terms
+    Strategy: keyword matching against crisis/violence/rights/emotional/
+    mental-health terms — heaviness is a property of the CONTENT.
+
+    2026-09-12: a bare length check ("> HEAVY_TOPIC_CHAR_THRESHOLD chars =
+    likely article/news") used to return True on its own, which made EVERY
+    long paste a heavy topic. An 18,549-char R package-install log on
+    2026-09-11 was stored `is_heavy_topic=True` on length alone, and
+    `tone_detector._recent_distress_from_history` then armed the
+    distress-sticky floor from it: nine consecutive package-debugging turns
+    were answered under LIGHT SUPPORT ("let them vent, don't offer
+    unsolicited advice") while the user was asking technical yes/no
+    questions. Length is not a signal here; a genuinely heavy long paste
+    carries heavy vocabulary, and `analyze_query_async` still consults
+    `_classify_heavy_topic_llm` whenever this heuristic says no.
 
     Returns:
         True if heuristics suggest heavy topic (political, emotional, or mental health crisis)
     """
     if not q or not isinstance(q, str):
         return False
-    
-    # Length check
-    if len(q) > HEAVY_TOPIC_CHAR_THRESHOLD:
-        return True
 
     # Keyword matching (word-bounded for bare words, substring for phrases)
     hits = len(heavy_keyword_hits(q))

@@ -333,7 +333,10 @@ FILE_OFFER_MARKERS = (
 
 RECALL_SIGNAL_WORDS = [
     'what', 'when', 'where', 'who', 'how', 'why',
-    'tell me', 'remind', 'remember', 'know about',
+    # 'remind*' is an explicit PREFIX entry (utils.trigger_match): bare
+    # words are bounded on both sides since 2026-09-12, and a recall arm
+    # genuinely wants "reminder"/"reminders" as well as "remind me".
+    'tell me', 'remind*', 'remember', 'know about',
     'recall', 'anything about', 'details on',
 ]
 

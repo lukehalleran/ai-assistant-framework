@@ -28,6 +28,27 @@ def temp_sites(source):
             if not isinstance(node.value, ast.Constant):  # ignore docstrings
                 self.generic_visit(node)
 
+        def visit_Call(self, node):
+            # A suffix PREDICATE cannot write anything: `rel.endswith(".tmp")`
+            # in utils/python_fs_guard.py exists to RECOGNISE safe_json's temp
+            # sibling, and the guard flagged it as a writer (2026-09-12, red
+            # at HEAD since 0aeffb7). Skip the arguments of the string tests;
+            # still visit the object being tested, so a derived name inside
+            # the call (`(path + ".tmp").endswith(x)`) is caught.
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in (
+                    "endswith", "startswith"):
+                self.visit(func.value)
+                for kw in node.keywords:
+                    self.visit(kw.value)
+                return
+            self.generic_visit(node)
+
+        def visit_Compare(self, node):
+            # Same reasoning for `name == ".x.tmp"` / `name in (...)`: a
+            # comparison is a check, not a construction.
+            self.visit(node.left)
+
         def visit_Constant(self, node):
             if isinstance(node.value, str) and node.value.endswith(".tmp"):
                 sites.append((".".join(self.scope) or "<module>", node.value))
@@ -54,6 +75,20 @@ def test_no_shared_temp_filename_writers_outside_the_shared_helper():
                 unexpected.append((relative, function, anchor))
     assert not unexpected, f"Use the shared atomic writer: {unexpected}"
     assert used == set(ALLOWLIST), "Remove stale atomic-writer exceptions"
+
+
+def test_guard_ignores_suffix_predicates_and_comparisons():
+    """Recognising a temp sibling is not writing one."""
+    source = '''
+def example(name, path):
+    if name.endswith(".tmp") or name.startswith(".x.tmp"):
+        return True
+    if name == "state.json.tmp":
+        return True
+    return (path + ".tmp").endswith(".tmp")
+'''
+    # only the DERIVED name inside the predicate is a site
+    assert temp_sites(source) == [("example", ".tmp")]
 
 
 def test_guard_recognizes_concat_fstring_and_suffix_forms():

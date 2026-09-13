@@ -80,16 +80,77 @@ class KeywordHit(NamedTuple):
     end: int
 
 
-class KeywordMatcher:
-    """Callable matcher (`matcher(lower_text) -> bool`, matching the original
-    core.agentic.gate._compile_keyword_matcher contract exactly) that also
-    exposes position-aware hits via `.iter_hits()` for negation-aware callers.
+# Sense-preserving suffixes a bare keyword may carry and still MEAN the
+# keyword: inflections plus the derivations that keep the sense ("numbness",
+# "hopelessness", "sadly", "fearful", "suicidality"). Deliberately EXCLUDES
+# the agent-noun "-er"/"-ers": 'numb' + "er" is the English comparative but
+# also spells "number", and the collision cost 567 false CONCERN keyword
+# hits in the owner's corpus (2026-09-11 statistics homework). A list that
+# genuinely wants prefix semantics declares it with a trailing "*".
+_KEYWORD_SUFFIXES = ("s", "es", "ed", "d", "ing", "ings", "ness", "ly", "ity", "ful")
 
-    'solve' must not match "resolution"/"unresolved" — a memory-ingest paste
-    titled "crisis resolution" keyword-routed to a 49s computation+tools loop
-    (2026-08-28, same substring class as 'document'⊂"documented"). Only the
-    LEFT boundary is enforced so 'solve' still matches "solves"/"solving";
-    keywords containing spaces, apostrophes, or trailing-space sentinels keep
+# The subset that triggers an English spelling change in the stem, and so may
+# follow the ALTERED stem ("solv-ing", "stopp-ed", "panick-ing"). The altered
+# stem is never matched on its own: 'hate' must not match "hat" (live 2026-09-12
+# — a gcc banner reading "(Red Hat 14.3.1-4)" scored a HEAVY hit while this rule
+# let the bare stem through).
+_KEYWORD_VOWEL_SUFFIXES = ("es", "ed", "ing", "ings")
+
+# Right boundary: a word boundary OR an underscore, so identifier forms
+# ("git_stats_manager", "wolfram_alpha", "obsidian_notes") still match the
+# bare tool keyword while "downloaded_packages" does not match 'down'.
+_KEYWORD_RIGHT = r"(?=_|\b)"
+
+_VOWELS = "aeiou"
+
+
+def _altered_stem(kw: str) -> "str | None":
+    """The stem an English suffix would leave behind, for the three regular
+    spelling changes: final-e drop ('solve' → "solv" + ing), final-consonant
+    doubling ('stop' → "stopp" + ed), and c→ck ('panic' → "panick" + ing).
+    None when no rule applies."""
+    if kw.endswith("e") and len(kw) > 3:
+        return kw[:-1]
+    if kw.endswith("c"):
+        return kw + "k"
+    if (len(kw) > 2 and kw[-1].isalpha() and kw[-1] not in _VOWELS
+            and kw[-2] in _VOWELS and kw[-3] not in _VOWELS):
+        return kw + kw[-1]
+    return None
+
+
+def _bare_word_pattern(kw: str) -> "re.Pattern":
+    """Compile one bare-word keyword into a morphology-bounded pattern: the
+    keyword with an optional sense-preserving suffix, or its altered stem
+    followed by a REQUIRED vowel-initial suffix."""
+    branches = [re.escape(kw) + f"(?:{'|'.join(_KEYWORD_SUFFIXES)})?"]
+    stem = _altered_stem(kw)
+    if stem:
+        branches.append(
+            re.escape(stem) + f"(?:{'|'.join(_KEYWORD_VOWEL_SUFFIXES)})")
+    return re.compile(rf"\b(?:{'|'.join(branches)}){_KEYWORD_RIGHT}")
+
+
+class KeywordMatcher:
+    """Callable matcher (`matcher(lower_text) -> bool`, the calling contract
+    moved verbatim from core.agentic.gate._compile_keyword_matcher) that also
+    exposes position-aware hits via `.iter_hits()` for negation-aware callers.
+    The BOUNDARY semantics have moved on twice since that move — see below.
+
+    A bare word matches the keyword or one of its sense-preserving inflected
+    forms and NOTHING ELSE: 'solve' matches "solves"/"solving" but not
+    "resolution" (left boundary, 2026-08-28) and 'numb' matches "numbness"
+    but not "number" (right boundary, 2026-09-11 — the left-only rule scored
+    CONCERN on "number of doors" and "downloaded 238 KB", setting a
+    statistics-homework turn's tone to CONCERN and arming the distress-sticky
+    floor for the rest of the session; 'dead' likewise fired HEAVY on
+    "deadline"/"deadlift" and 'war' on "warning"/"warm").
+
+    A keyword ending in "*" is an explicit PREFIX entry ('discriminat*' →
+    discriminate/discrimination/discriminatory): the list author declares the
+    intent instead of relying on a matcher quirk.
+
+    Keywords containing spaces, apostrophes, or trailing-space sentinels keep
     their original substring semantics ('go to http' must still match
     "go to https://...").
     """
@@ -100,8 +161,12 @@ class KeywordMatcher:
         word_pats: List[tuple] = []
         substrings: List[str] = []
         for kw in keywords:
-            if re.fullmatch(r"[a-z][a-z0-9_]*", kw):
-                word_pats.append((kw, re.compile(rf"\b{re.escape(kw)}")))
+            stem = kw[:-1] if kw.endswith("*") else kw
+            if re.fullmatch(r"[a-z][a-z0-9_]*", stem):
+                if kw.endswith("*"):
+                    word_pats.append((stem, re.compile(rf"\b{re.escape(stem)}")))
+                else:
+                    word_pats.append((kw, _bare_word_pattern(kw)))
             else:
                 substrings.append(kw)
         self._word_pats = word_pats
@@ -123,6 +188,28 @@ class KeywordMatcher:
             idx = lower_text.find(kw)
             if idx != -1:
                 yield KeywordHit(kw, idx, idx + len(kw))
+
+
+def prefix_only_hits(matcher: KeywordMatcher, lower_text: str) -> List[str]:
+    """Bare keywords that the PRE-2026-09-12 left-boundary-only matcher would
+    have hit in `lower_text` but the bounded matcher does not ('dead' in
+    "deadline", 'numb' in "number", 'war' in "warning").
+
+    MIGRATION PREDICATE, not a trigger: derived flags already persisted under
+    the old rule (`is_heavy_topic` on corpus rows) cannot be distinguished
+    from flags set by another path — an LLM classifier, a genuine unlisted
+    phrase — without knowing what the old rule would have matched. A read-time
+    check uses this to neutralize exactly the rows the boundary bug explains,
+    instead of blanket-distrusting every stored flag or rewriting the store.
+    Delete it when no store still holds pre-fix flags.
+    """
+    hits: List[str] = []
+    for kw, pat in matcher._word_pats:
+        for m in re.finditer(rf"\b{re.escape(kw)}", lower_text):
+            if not pat.match(lower_text, m.start()):
+                hits.append(kw)
+                break
+    return hits
 
 
 def compile_keyword_matcher(keywords: Sequence[str]) -> KeywordMatcher:

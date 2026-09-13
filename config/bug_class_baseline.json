@@ -780,6 +780,24 @@
       "path": "memory/user_profile_schema.py",
       "symbol": "_get_exemplar_embeddings",
       "text": "return None"
+    },
+    {
+      "scanner": "dm31_live_state_default",
+      "path": "core/competitive_scorer.py",
+      "symbol": "apply_competitive_selection",
+      "text": "budget: int = 3000"
+    },
+    {
+      "scanner": "dm31_live_state_default",
+      "path": "core/safety_canary.py",
+      "symbol": "SafetyCanary.__init__",
+      "text": "enabled: bool = True,"
+    },
+    {
+      "scanner": "dm31_live_state_default",
+      "path": "memory/skill_activation.py",
+      "symbol": "SkillActivationPolicy.__init__",
+      "text": "enabled: bool = True,"
     }
   ]
 }

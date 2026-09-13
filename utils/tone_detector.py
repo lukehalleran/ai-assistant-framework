@@ -792,7 +792,11 @@ def _heavy_row_is_distress_evidence(turn: dict) -> bool:
         return True  # fail-closed: no text field to inspect
     # lazy import: call-time patch point — tests monkeypatch
     # utils.query_checker.heavy_keyword_hits/strip_code_shaped_lines
-    from utils.query_checker import heavy_keyword_hits, strip_code_shaped_lines
+    from utils.query_checker import (
+        heavy_keyword_hits,
+        heavy_prefix_only_hits,
+        strip_code_shaped_lines,
+    )
 
     text = str(text)
     stripped = strip_code_shaped_lines(text)
@@ -807,6 +811,23 @@ def _heavy_row_is_distress_evidence(turn: dict) -> bool:
                 "distress evidence"
             )
             return False
+    elif not heavy_keyword_hits(text) and heavy_prefix_only_hits(text):
+        # 2026-09-12: ordinary PROSE stored heavy on nothing but the
+        # left-boundary matcher bug — 'dead' inside "deadline", 'war'
+        # inside "warning"/"warm" (17 such rows in the owner's corpus,
+        # 10 of them ordinary prose this branch is the only cover for,
+        # 7 from the 09-11 R session, which floored ~40% of an hour of
+        # package-install debugging to CONCERN / LIGHT SUPPORT).
+        # Narrow by construction: the stored flag is neutralized only when
+        # the CURRENT matcher finds nothing AND the OLD rule would have hit
+        # here, so a row flagged by the LLM classifier or by a genuine
+        # unlisted distress phrase keeps the first-person-only check below.
+        logger.debug(
+            "[ToneDetector] heavy history row's only heavy-keyword signal "
+            "was a pre-fix prefix match (%s) — not distress evidence",
+            heavy_prefix_only_hits(text),
+        )
+        return False
     if _HISTORY_FIRST_PERSON_RE.search(stripped.lower()):
         return True
     logger.debug(

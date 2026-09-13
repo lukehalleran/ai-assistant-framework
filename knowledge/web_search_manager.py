@@ -63,6 +63,7 @@ import re
 import socket
 import time
 import urllib.parse
+import weakref
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
@@ -594,6 +595,36 @@ def format_web_sources_with_ids(
 DISABLED_ERROR = "Web search is disabled in Settings"
 
 
+# Live rate limiters, so any module can ask what the REAL remaining search
+# budget is without holding a manager reference (2026-09-12). The agentic
+# gate's Tier-4 trigger call passed no credit count and therefore assumed the
+# default 100 while the prompt builder's call passed the live number: on
+# 2026-09-11 the true budget was 0 from 19:11 onward, so the two calls landed
+# in different cache buckets ("ok" vs "none"), paid gpt-4o-mini TWICE per turn
+# (87 calls in one session, 12 cache hits) and returned CONTRADICTORY verdicts
+# for the same message — the gate's True routed 5 turns into 24-28 s agentic
+# loops the gatherer's False had declined, and 83 searches ran into
+# "Daily limit reached". WeakSet: a limiter is registered for as long as its
+# manager lives, and never keeps one alive.
+_LIVE_RATE_LIMITERS: "weakref.WeakSet" = weakref.WeakSet()
+
+# Cheapest search Tavily will bill (QUICK) — the floor under which a search
+# cannot be funded at all. Keep in step with estimate_credits().
+MIN_SEARCH_CREDITS = 1.0
+
+
+def live_remaining_credits() -> Optional[float]:
+    """Smallest remaining daily budget across live rate limiters, or None when
+    no limiter exists in this process (tests, scripts, search disabled)."""
+    values = []
+    for limiter in list(_LIVE_RATE_LIMITERS):
+        try:
+            values.append(float(limiter.get_remaining_credits()))
+        except Exception:
+            continue
+    return min(values) if values else None
+
+
 class WebSearchRateLimiter:
     """
     Credit-aware rate limiter for Tavily API.
@@ -621,6 +652,7 @@ class WebSearchRateLimiter:
         self._credits_today = 0.0
         self._current_date = ""
         self._load_state()
+        _LIVE_RATE_LIMITERS.add(self)
 
     def _load_state(self) -> None:
         """Load credit state from disk."""
@@ -997,6 +1029,20 @@ class WebSearchManager:
         if self._api_key_invalid:
             return False
         return bool(self.api_key) and self._ensure_tavily()
+
+    def budget_exhausted(self) -> bool:
+        """True when the remaining daily credit budget cannot fund even the
+        cheapest search. Separate from `is_available()` on purpose: the API
+        key and the Settings toggle are configuration, this is a budget that
+        refills at midnight, and every surface that reports capability has to
+        say which one is missing (2026-09-12)."""
+        limiter = getattr(self, "rate_limiter", None)
+        if limiter is None:
+            return False
+        try:
+            return float(limiter.get_remaining_credits()) < MIN_SEARCH_CREDITS
+        except Exception:
+            return False
 
     @staticmethod
     def is_enabled() -> bool:

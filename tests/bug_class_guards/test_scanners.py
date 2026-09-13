@@ -17,6 +17,7 @@ from bug_class_guards.scanners import SCANNERS
 from bug_class_guards.scanners import catalog_scanner, dm01_raw_substring
 from bug_class_guards.scanners import dm16_config_reachability, dm17_apply_without_guard
 from bug_class_guards.scanners import dm18_except_returns_empty, dm29_phrase_append
+from bug_class_guards.scanners import dm31_live_state_default
 from bug_class_guards.scanners.common import ScannerError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +39,10 @@ from fixtures import (
     DM18_GREEN_RERAISE,
     DM18_RED,
     DM29_WIDENING_LINE,
+    DM31_GREEN_CALLER_SIZES,
+    DM31_GREEN_PRIVATE_HELPER,
+    DM31_GREEN_RESOLVED,
+    DM31_RED,
     build_tree,
     catalog_doc,
     changelog,
@@ -192,6 +197,45 @@ class TestDm18ExceptReturnsEmpty:
         build_tree(tmp_path, {"gui/handlers.py": DM18_RED, "memory/store.py": DM18_RED})
         result = dm18_except_returns_empty.scan(tmp_path)
         assert {f.path for f in result.findings} == {"memory/store.py"}
+
+
+class TestDm31LiveStateDefault:
+    """BC-78/BC-11/BC-12: a public function that asserts live external state
+    through a literal default. The reference case is the 2026-09-11 web
+    trigger — `remaining_credits: float = 100` and `web_search_enabled: bool
+    = True`, neither passed by the agentic gate."""
+
+    def test_red_flags_both_live_state_defaults(self, tmp_path):
+        build_tree(tmp_path, {"utils/trigger.py": DM31_RED})
+        result = dm31_live_state_default.scan(tmp_path)
+        assert [(f.path, f.symbol, f.text) for f in result.findings] == [
+            ("utils/trigger.py", "analyze_for_web_search_llm",
+             "web_search_enabled: bool = True,"),
+            ("utils/trigger.py", "analyze_for_web_search_llm",
+             "remaining_credits: float = 100,"),
+        ]
+
+    def test_green_none_default_is_the_fix_not_a_finding(self, tmp_path):
+        build_tree(tmp_path, {"utils/trigger.py": DM31_GREEN_RESOLVED})
+        assert dm31_live_state_default.scan(tmp_path).findings == []
+
+    def test_green_caller_chosen_sizes_and_fail_closed_toggle(self, tmp_path):
+        build_tree(tmp_path, {"core/gather.py": DM31_GREEN_CALLER_SIZES})
+        assert dm31_live_state_default.scan(tmp_path).findings == []
+
+    def test_green_private_helper_is_out_of_scope(self, tmp_path):
+        build_tree(tmp_path, {"utils/trigger.py": DM31_GREEN_PRIVATE_HELPER})
+        assert dm31_live_state_default.scan(tmp_path).findings == []
+
+    def test_the_live_tree_has_no_unbaselined_finding(self):
+        """Consistency, not a moving oracle: fixing real debt can only make
+        this pass (see the catalog controls' note on BC-65)."""
+        result = dm31_live_state_default.scan(REPO_ROOT)
+        assert result.files_processed > 100
+        for finding in result.findings:
+            assert finding.path != "utils/web_search_trigger.py", (
+                "the reference defect is back: "
+                f"{finding.symbol} {finding.text}")
 
 
 class TestDm29PhraseAppend:

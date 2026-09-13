@@ -5690,7 +5690,8 @@ PROMPT_MAX_REFLECTIONS = 10
 PROMPT_MAX_WIKI = 3
 
 # Heavy Topic Detection
-HEAVY_TOPIC_CHAR_THRESHOLD = 2500
+HEAVY_TOPIC_CHAR_THRESHOLD = 2500  # RETIRED 2026-09-12: unread; length
+                                   # alone no longer implies a heavy topic
 HEAVY_TOPIC_TIMEOUT = 2.0  # seconds
 
 # Short-Term Memory (STM) [NEW]

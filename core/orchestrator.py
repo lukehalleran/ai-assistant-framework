@@ -1689,6 +1689,11 @@ class DaemonOrchestrator:
             if not isinstance(_web_decision, dict):
                 _web_decision = {}
             _web_reason = _web_decision.get("reason")
+            try:
+                from knowledge.web_search_manager import live_remaining_credits
+                _web_budget = live_remaining_credits()
+            except Exception:
+                _web_budget = None
             self._last_turn_signals = {
                 "intent": getattr(getattr(_intent_obj, "intent", None), "value", None),
                 "intent_confidence": getattr(_intent_obj, "confidence", None),
@@ -1712,6 +1717,11 @@ class DaemonOrchestrator:
                 "web_trigger_confidence": _web_decision.get("confidence"),
                 "web_results_n": _web_decision.get("results"),
                 "web_error": _web_decision.get("error"),
+                # The live search budget at decision time (2026-09-12). Without
+                # it a record reading "triggered, 0 results" is indistinguishable
+                # from a search that ran and found nothing — the 2026-09-11
+                # evening had six of the former and no way to see it.
+                "web_budget_remaining": _web_budget,
                 "plan_points": len(_plan_result.key_points) if _plan_result else None,
                 "plan_tone": getattr(_plan_result, "tone", None) if _plan_result else None,
                 # Exact operative instructions (not the planner's raw response)
@@ -2189,11 +2199,18 @@ class DaemonOrchestrator:
                 # Get web search decision from LLM-first trigger
                 from utils.web_search_trigger import analyze_for_web_search_llm
 
+                # web_search_enabled was hardcoded True here (2026-09-12):
+                # this path ignored the live Settings toggle that
+                # WebSearchManager.is_enabled() owns, and passed no credit
+                # count, so it classified as if the daily budget were full.
+                # The toggle now comes from the predicate that owns it.
+                # (Credits resolve inside the trigger when not passed.)
+                from knowledge.web_search_manager import WebSearchManager
                 web_decision = await analyze_for_web_search_llm(
                     query=user_input,
                     model_manager=self.model_manager,
                     crisis_level=str(self.current_tone_level) if self.current_tone_level else None,
-                    web_search_enabled=True,
+                    web_search_enabled=WebSearchManager.is_enabled(),
                 )
 
                 if web_decision and web_decision.should_search and web_decision.search_terms:

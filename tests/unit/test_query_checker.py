@@ -432,10 +432,14 @@ def test_thread_continuity_same_topic_bonus():
 # _is_heavy_topic_heuristic Tests
 # =============================================================================
 
-def test_heavy_topic_long_text():
-    # Text over 2500 chars should be considered heavy
+def test_heavy_topic_long_text_is_not_heavy_on_length_alone():
+    # 2026-09-12: length used to imply heaviness on its own, as a proxy for
+    # "pasted news article". Every long paste was therefore a heavy topic —
+    # an 18,549-char R install log armed the distress-sticky floor for nine
+    # homework turns. Heaviness is a property of the content now.
     long_text = "a" * 2600
-    assert _is_heavy_topic_heuristic(long_text) == True
+    assert _is_heavy_topic_heuristic(long_text) == False
+    assert _is_heavy_topic_heuristic("police raid and arrests " + "a" * 2600) == True
 
 
 def test_heavy_topic_multiple_keywords():

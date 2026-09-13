@@ -212,7 +212,18 @@ class ToolExecutor:
 
         # Web search
         _ws = self.web_search_manager
-        if _ws and _ws.is_available():
+        # getattr for the same reason the is_enabled branch below uses
+        # hasattr: test doubles and older manager stubs may not have it.
+        if _ws and _ws.is_available() and getattr(
+                _ws, "budget_exhausted", lambda: False)():
+            # 2026-09-12: the block said AVAILABLE for three hours after the
+            # daily credit limit was hit, so the loop kept choosing a tool
+            # whose every call returned "Daily limit reached" with zero
+            # results (83 of them on 2026-09-11).
+            lines.append(
+                "web_search: UNAVAILABLE (daily credit budget spent; resets "
+                "at midnight — answer from existing context or say so)")
+        elif _ws and _ws.is_available():
             lines.append("web_search: AVAILABLE")
         elif _ws and hasattr(_ws, "is_enabled") and not _ws.is_enabled():
             lines.append("web_search: DISABLED (turned off in Settings)")

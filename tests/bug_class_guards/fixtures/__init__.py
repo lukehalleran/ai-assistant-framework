@@ -238,6 +238,52 @@ def changelog(batches: list[tuple[str, str]]) -> str:
     return "\n".join(parts) + "\n"
 
 
+# ------------------------------------------------------------- dm31 ----
+
+DM31_RED = '''"""The 2026-09-11 shape: a public classifier asserts the world."""
+
+
+async def analyze_for_web_search_llm(
+    query,
+    model_manager=None,
+    web_search_enabled: bool = True,
+    remaining_credits: float = 100,
+):
+    return (query, web_search_enabled, remaining_credits)
+'''
+
+DM31_GREEN_RESOLVED = '''"""None means "resolve it", which is the fix."""
+
+
+def _resolve_remaining_credits(value):
+    return 100.0 if value is None else float(value)
+
+
+async def analyze_for_web_search_llm(
+    query,
+    model_manager=None,
+    web_search_enabled=None,
+    remaining_credits=None,
+):
+    return (query, web_search_enabled, _resolve_remaining_credits(remaining_credits))
+'''
+
+DM31_GREEN_CALLER_SIZES = '''"""Caller-chosen sizes and a fail-closed toggle are not assertions."""
+
+
+def gather(query, limit: int = 30, max_tokens: int = 4000, estimated_credits: float = 1.0,
+           verbose_enabled: bool = False):
+    return (query, limit, max_tokens, estimated_credits, verbose_enabled)
+'''
+
+DM31_GREEN_PRIVATE_HELPER = '''"""A private helper's default is an internal convenience."""
+
+
+def _build_prompt(query, remaining_credits: float = 100, web_search_enabled: bool = True):
+    return f"{query}{remaining_credits}{web_search_enabled}"
+'''
+
+
 DM29_WIDENING_LINE = "`_INFO_SEEKING_CUES` gained one more phrase for the missed shape."
 
 

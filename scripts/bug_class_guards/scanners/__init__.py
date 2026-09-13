@@ -17,6 +17,7 @@ from __future__ import annotations
 from .common import Finding, Scanner, ScannerError, ScanResult
 from . import catalog_scanner, dm01_raw_substring, dm16_config_reachability
 from . import dm17_apply_without_guard, dm18_except_returns_empty, dm29_phrase_append
+from . import dm31_live_state_default
 
 _SCANNER_LIST = (
     Scanner(
@@ -56,6 +57,17 @@ _SCANNER_LIST = (
         # BC-76's own Closure line says the judgment is human, not automatable.
         mode="report",
         run=dm29_phrase_append.scan,
+    ),
+    Scanner(
+        id=dm31_live_state_default.SCANNER_ID,
+        class_ids=dm31_live_state_default.CLASS_IDS,
+        description="public function asserts live budget/toggle state via a default",
+        # Gated on arrival: the whole tree yields six candidates, hand-reviewed
+        # (two were the live 2026-09-11 defect and are fixed; four are
+        # caller-chosen sizes or component-local flags and sit in the
+        # baseline), so a NEW one is worth a human look.
+        mode="gate",
+        run=dm31_live_state_default.scan,
     ),
     Scanner(
         id=catalog_scanner.SCANNER_ID,

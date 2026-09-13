@@ -117,6 +117,14 @@ class LocationResolver:
     # ------------------------------------------------------------------
 
     def _start_background_refresh(self) -> None:
+        if os.getenv("DAEMON_TEST_MODE"):
+            # The test lane must not reach the network or log the machine's
+            # city (2026-09-12: a pre-push run printed "[Location] IP
+            # geolocation resolved: <city>" — outbound HTTPS plus a location
+            # leak from pytest). Same doctrine as the DAEMON_TEST_MODE store
+            # and backup guards; a test that wants this path monkeypatches
+            # `_fetch_ip_location`.
+            return
         if time.time() - self._ip_failed_at < _IP_FAILURE_RETRY_S:
             return
         with self._refresh_lock:

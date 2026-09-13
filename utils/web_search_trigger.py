@@ -1052,7 +1052,7 @@ def analyze_for_web_search(query: str) -> WebSearchDecision:
 def get_search_decision_for_prompt(
     query: str,
     crisis_level: Optional[str] = None,
-    web_search_enabled: bool = True
+    web_search_enabled: Optional[bool] = None,
 ) -> WebSearchDecision:
     """
     Get search decision with additional context filtering.
@@ -1060,13 +1060,15 @@ def get_search_decision_for_prompt(
     Args:
         query: User query
         crisis_level: Current tone/crisis level
-        web_search_enabled: Whether web search is enabled in config
+        web_search_enabled: Whether web search is enabled; None (the
+            default) resolves the live Settings toggle via
+            WebSearchManager.is_enabled()
 
     Returns:
         WebSearchDecision (may have should_search=False due to suppression)
     """
     # Quick exits
-    if not web_search_enabled:
+    if not _resolve_web_search_enabled(web_search_enabled):
         return WebSearchDecision(
             should_search=False,
             depth=WebSearchDepth.QUICK,
@@ -1700,7 +1702,118 @@ def _detect_retry_after_inability(query: str, conversation_context) -> str:
         return None
 
 
+# Assumed budget when this process has no rate limiter at all (tests,
+# scripts, search disabled): unknown is not exhausted.
+_ASSUMED_CREDITS_NO_LIMITER = 100.0
+
+
+def _resolve_remaining_credits(remaining_credits) -> float:
+    """The live search budget, resolved at ONE place.
+
+    A caller may pass the count it already has; a caller that passes None (the
+    agentic gate) gets the live number from the shared rate limiter instead of
+    a hardcoded default. Before 2026-09-12 the gate's default of 100 and the
+    gatherer's live count put the SAME turn in two different cache buckets —
+    two gpt-4o-mini calls with independently sampled, sometimes contradictory
+    verdicts (see knowledge.web_search_manager._LIVE_RATE_LIMITERS)."""
+    if remaining_credits is not None:
+        try:
+            return float(remaining_credits)
+        except (TypeError, ValueError):
+            return _ASSUMED_CREDITS_NO_LIMITER
+    try:
+        # lazy import: layering + patch point. These three are the ONLY
+        # knowledge/ imports anywhere in utils/, and keeping them call-time
+        # keeps the lower layer independent of the provider package (and
+        # makes the credit source monkeypatchable). There is no cycle:
+        # web_search_manager does not import this module.
+        from knowledge.web_search_manager import live_remaining_credits
+        live = live_remaining_credits()
+    except Exception:
+        live = None
+    return _ASSUMED_CREDITS_NO_LIMITER if live is None else float(live)
+
+
+def _resolve_web_search_enabled(web_search_enabled) -> bool:
+    """The live Settings toggle, resolved at ONE place.
+
+    Same defect as the credit default it sits beside (2026-09-12, found by
+    the dm31 scanner): the agentic gate passes nothing, so a hardcoded
+    `True` had it classify as if web search were on no matter what the
+    Settings toggle said — and the toggle's owner is
+    `WebSearchManager.is_enabled()`, the predicate every other consumer
+    reads. None means "resolve it"; an explicit value is honoured."""
+    if web_search_enabled is not None:
+        return bool(web_search_enabled)
+    try:
+        # lazy import: layering + patch point (see _resolve_remaining_credits)
+        from knowledge.web_search_manager import WebSearchManager
+        return bool(WebSearchManager.is_enabled())
+    except Exception:
+        return True
+
+
+def _apply_budget_veto(decision, remaining_credits: float):
+    """Force `should_search` False when the remaining daily budget cannot fund
+    even the cheapest search, leaving every OTHER routing flag the classifier
+    produced (memory / knowledge / document generation / pattern analysis)
+    untouched.
+
+    Deterministic route beats probabilistic verdict: the trigger prompt is
+    TOLD the budget ("Available search budget: 0 credits") and still returned
+    should_search=True on 2026-09-11 after the daily limit was hit at 19:11 —
+    six turns then ran 25-33 s agentic loops whose searches all came back
+    "Daily limit reached" with zero results."""
+    if decision is None or not getattr(decision, "should_search", False):
+        return decision
+    try:
+        from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor
+    except Exception:
+        _floor = 1.0
+    if remaining_credits >= _floor:
+        return decision
+    logger.info(
+        "[WebSearchTrigger] Search vetoed — daily budget exhausted "
+        f"({remaining_credits:.0f} credits left, need {_floor:.0f}); "
+        f"other routing flags preserved"
+    )
+    return replace(
+        decision,
+        should_search=False,
+        search_terms=[],
+        num_searches=0,
+        source="budget",
+        reason=(f"Daily web-search budget exhausted "
+                f"({remaining_credits:.0f} credits left); {decision.reason}"),
+    )
+
+
 async def analyze_for_web_search_llm(
+    query: str,
+    model_manager=None,
+    crisis_level: Optional[str] = None,
+    web_search_enabled: Optional[bool] = None,
+    remaining_credits: Optional[float] = None,
+    timeout: float = None,
+    conversation_context: str = None,
+) -> WebSearchDecision:
+    """Public entry point: resolve the live toggle and budget, classify, then
+    veto a search the budget cannot fund (one chokepoint — every early return
+    inside `_analyze_for_web_search_llm` passes through here)."""
+    credits = _resolve_remaining_credits(remaining_credits)
+    decision = await _analyze_for_web_search_llm(
+        query,
+        model_manager=model_manager,
+        crisis_level=crisis_level,
+        web_search_enabled=_resolve_web_search_enabled(web_search_enabled),
+        remaining_credits=credits,
+        timeout=timeout,
+        conversation_context=conversation_context,
+    )
+    return _apply_budget_veto(decision, credits)
+
+
+async def _analyze_for_web_search_llm(
     query: str,
     model_manager=None,
     crisis_level: Optional[str] = None,
