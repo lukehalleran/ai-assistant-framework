@@ -166,11 +166,14 @@ class TestAcademicCue:
 
     @pytest.mark.parametrize("query", [
         LIVE_QUERY,
-        "when is the withdrawal deadline",
         "how do I contact the registrar",
         "academic calendar fall 2026",
         "tuition refund policy",
-        "when does registration open",
+        # Cross-domain logistics words count beside a school anchor
+        # (2026-09-12 category split).
+        "when is the class withdrawal deadline",
+        "when does course registration open",
+        "can I get my transcript from the university",
     ])
     def test_logistics_queries_detected(self, query):
         assert query_is_academic_logistics(query)
@@ -180,6 +183,19 @@ class TestAcademicCue:
         "what's the weather in Atlanta",
         "best pizza near me",
         "",
+        # 2026-09-12: cross-domain logistics words with no school anchor.
+        # Each of these used to attach the user's school to a third-party
+        # search ("Georgia Tech benzodiazepine withdrawal symptoms").
+        "what are benzodiazepine withdrawal symptoms",
+        "when is the voter registration deadline",
+        "Medicare enrollment period 2026",
+        "did they release the court transcript",
+        "troop withdrawal news",
+        # Pinned as detected before the split; unanchored, these are now
+        # generic. A follow-up inside a school exchange is covered by the
+        # bounded-context arm (test_sep12_search_identity_scope.py).
+        "when is the withdrawal deadline",
+        "when does registration open",
     ])
     def test_non_logistics_queries_rejected(self, query):
         assert not query_is_academic_logistics(query)

@@ -1284,6 +1284,22 @@ def is_verification_request(query: str) -> bool:
     return bool(_VERIFICATION_REQUEST_RE.match(text))
 
 
+def _identity_scope_context(query: str, conversation_context: Optional[str]) -> Optional[str]:
+    """The prior-turn digest identity scoping may consult, or None.
+
+    Only a referential follow-up ("is it this Friday?", "check that") may
+    inherit a school-logistics shape from the exchange before it — the same
+    two predicates that let such a query reach the classifier at all. Clipped
+    to the 1,200 characters the trigger prompt itself shows the LLM, so the
+    deterministic scope never sees more context than the model did."""
+    ctx = (conversation_context or "").strip()
+    if not ctx or not query:
+        return None
+    if not (query_depends_on_context(query) or is_verification_request(query)):
+        return None
+    return ctx[:1200]
+
+
 def _build_llm_trigger_prompt(
     query: str,
     current_date: str,
@@ -1345,18 +1361,28 @@ def _build_llm_trigger_prompt(
     institution_line = ""
     institution_guideline = ""
     if user_institution and user_institution.strip():
-        _inst = user_institution.strip()
-        institution_line = f"User's school: {_inst}\n"
-        institution_guideline = (
-            f"\n- SCHOOL-LOGISTICS QUERIES: the user attends \"{_inst}\". For queries about "
-            f"THEIR OWN school logistics (drop/withdrawal deadlines, registration, registrar, "
-            f"tuition, academic calendar, transcripts), use \"{_inst}\" in search terms instead "
-            f"of generic \"college\"/\"school\"/\"my school\". NEVER apply it when the user names "
-            f"a DIFFERENT school, and never use it for general coursework/concept questions. "
-            f"NEVER search for THEIR course's assignment/homework/quiz details or due dates — "
-            f"the web does not know their course section; those facts live in their own "
-            f"syllabus/Canvas/uploaded documents, which the assistant can already retrieve."
-        )
+        # 2026-09-12: only inject the school when the QUERY itself gives a
+        # reason to name it (academic-logistics shape, the user naming their
+        # own school, or "my school/college/..."). An unrelated query ("I am
+        # referring to voting") got "Georgia Tech voting information" out of
+        # the LLM with this line present on every call regardless of query
+        # content; the post-parse backstop below still scrubs a slip-through.
+        from utils.institution_resolver import query_justifies_institution
+        if query_justifies_institution(
+                query, user_institution,
+                context=_identity_scope_context(query, conversation_context)):
+            _inst = user_institution.strip()
+            institution_line = f"User's school: {_inst}\n"
+            institution_guideline = (
+                f"\n- SCHOOL-LOGISTICS QUERIES: the user attends \"{_inst}\". For queries about "
+                f"THEIR OWN school logistics (drop/withdrawal deadlines, registration, registrar, "
+                f"tuition, academic calendar, transcripts), use \"{_inst}\" in search terms instead "
+                f"of generic \"college\"/\"school\"/\"my school\". NEVER apply it when the user names "
+                f"a DIFFERENT school, and never use it for general coursework/concept questions. "
+                f"NEVER search for THEIR course's assignment/homework/quiz details or due dates — "
+                f"the web does not know their course section; those facts live in their own "
+                f"syllabus/Canvas/uploaded documents, which the assistant can already retrieve."
+            )
     return f"""Analyze if this query needs real-time web search OR stored memory search, and generate optimized search terms.
 
 Query: "{query[:500]}"
@@ -1610,24 +1636,23 @@ async def _classify_with_llm_unified(
         logger.debug(f"[WebSearchTrigger] LLM raw response: {response[:200]}...")
         parsed = LLMSearchTriggerResponse.parse(response)
         if parsed:
-            if parsed.search_terms and user_location:
+            if parsed.search_terms:
                 # Backstop: the prompt forbids localizing institution/account
-                # queries, but the LLM sometimes does it anyway (2026-07-08:
-                # "college login" + injected city -> wrong college asserted as
-                # the user's school). Strip location the query never justified.
-                from utils.location_resolver import strip_unjustified_location
-                parsed.search_terms = strip_unjustified_location(
-                    parsed.search_terms, query, user_location
-                )
-            if parsed.search_terms and user_institution:
-                # Backstop: name the user's school in academic-logistics
-                # terms the LLM left generic ("college drop date August
-                # 2026" retrieved nothing usable, 2026-08-27). Runs after
-                # the location strip so a de-localized term can still gain
-                # the institution.
-                from utils.institution_resolver import apply_institution
-                parsed.search_terms = apply_institution(
-                    parsed.search_terms, query, user_institution
+                # queries and only injects the school line when the query
+                # justifies it, but the LLM sometimes does it anyway
+                # (2026-07-08: "college login" + injected city -> wrong
+                # college asserted as the user's school; 2026-09-12: "I am
+                # referring to voting" -> "Georgia Tech voting information").
+                # One scoping policy for both search-term producers (BC-58):
+                # strip an unjustified location (institution spans
+                # protected), strip an unjustified institution, then apply
+                # the deterministic institution backstop for academic-
+                # logistics terms that stayed generic ("college drop date"
+                # 2026-08-27).
+                from utils.institution_resolver import scope_identity_terms
+                parsed.search_terms = scope_identity_terms(
+                    parsed.search_terms, query, user_location, user_institution,
+                    context=_identity_scope_context(query, conversation_context),
                 )
             if parsed.should_search and parsed.search_terms:
                 try:

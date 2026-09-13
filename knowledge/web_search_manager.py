@@ -1703,14 +1703,20 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
             institution_block = ""
             user_institution = self._get_user_institution()
             if user_institution:
-                institution_block = (
-                    f"\nUser's school: {user_institution}\n"
-                    f"If the query is about the user's OWN school logistics (drop/withdrawal "
-                    f"deadlines, registration, registrar, tuition, academic calendar), use "
-                    f"\"{user_institution}\" in those sub-queries instead of generic "
-                    f"\"college\"/\"school\". Never apply it when the user names a different "
-                    f"school, and never for general coursework/concept questions.\n"
-                )
+                # 2026-09-12: only inject the school when the QUERY itself
+                # gives a reason to name it — mirrors the same gate in
+                # utils.web_search_trigger._build_llm_trigger_prompt. The
+                # post-parse backstop below still scrubs any slip-through.
+                from utils.institution_resolver import query_justifies_institution
+                if query_justifies_institution(query, user_institution):
+                    institution_block = (
+                        f"\nUser's school: {user_institution}\n"
+                        f"If the query is about the user's OWN school logistics (drop/withdrawal "
+                        f"deadlines, registration, registrar, tuition, academic calendar), use "
+                        f"\"{user_institution}\" in those sub-queries instead of generic "
+                        f"\"college\"/\"school\". Never apply it when the user names a different "
+                        f"school, and never for general coursework/concept questions.\n"
+                    )
 
             prompt = f"""Analyze this search query and determine if it should be split into multiple focused sub-queries for better search results.
 
@@ -1787,24 +1793,19 @@ If not splitting, leave SUB_QUERIES empty."""
                 should_split = False
                 reason = f"Confidence {confidence:.2f} below threshold {min_confidence}"
 
-            # Backstop: strip the injected location from sub-queries the
-            # original query never justified localizing (institution/account
-            # queries must stay place-free — the 2026-07-08 wrong-college
-            # incident came through this path).
-            if sub_queries and user_location:
-                from utils.location_resolver import strip_unjustified_location
-                sub_queries = strip_unjustified_location(
-                    sub_queries, query, user_location
-                )
-
-            # Backstop: name the user's school in academic-logistics
+            # Backstop: strip an unjustified location (institution/account
+            # sub-queries must stay place-free — 2026-07-08 wrong-college
+            # incident) and an unjustified institution, then apply the
+            # deterministic institution backstop for academic-logistics
             # sub-queries the LLM left generic (2026-08-27: "class
-            # withdrawal deadline 2026" et al. burned 6 credits on
-            # generic pages while the profile knew the school).
-            if sub_queries and user_institution:
-                from utils.institution_resolver import apply_institution
-                sub_queries = apply_institution(
-                    sub_queries, query, user_institution
+            # withdrawal deadline 2026" et al. burned 6 credits on generic
+            # pages while the profile knew the school). Same policy the
+            # trigger classifier uses (BC-58) — one scoping fix reaches both
+            # producers instead of two independently-drifting blocks.
+            if sub_queries:
+                from utils.institution_resolver import scope_identity_terms
+                sub_queries = scope_identity_terms(
+                    sub_queries, query, user_location, user_institution
                 )
 
             # Validate we have enough sub-queries

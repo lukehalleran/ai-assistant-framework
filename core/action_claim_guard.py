@@ -612,6 +612,211 @@ _APPROVAL_PROMPT_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Claim-sentence eligibility (2026-09-12, A22, docs/BUG_CLASSES.md BC-04/
+# BC-58/BC-76) — a shared VOICE + REFERENT-ANCHOR gate for
+# claims_pending_card / claims_calendar_state / annotate_unverified_action_
+# claim. Two live over-fires exposed the composed grammar's blind spot: a
+# THIRD-PARTY "approve" ("...when asked whether Congress would need to
+# approve it, said...") read as though the OWNER were being told to approve
+# something, and a bare-pronoun THING+MODAL+STATE hit ("it's there if the
+# question resurfaces", "that's given up", "the cleaned-up version", "a good
+# one to wake up to", "all there is to it") matched ordinary English with no
+# approval-surface word anywhere nearby. Both share one root cause: the
+# grammar never asked WHOSE voice a claim is in.
+#
+# VOICE has two closed-table checks, applied to every card/calendar
+# candidate sentence (both the regex AND the seeds+learned semantic
+# channel):
+#   (1) reported content — a source noun or third party plus a reporting
+#       verb ("Congress ... said", "the email says", "asked whether") is
+#       someone ELSE's speech/writing being relayed, never Daemon's own
+#       claim.
+#   (2) a non-owner-directed "approve" mention (card family only) — the
+#       bare `approve\s+(?:it|that|...)` alternative above has no subject
+#       check, so a third-party approver ("the board will approve that")
+#       must not read as an instruction to the addressee.
+#
+# REFERENT ANCHOR (regex hits only — see the semantic-channel note below): a
+# pronoun THING ("it"/"that"/"this") needs an approval-surface word in the
+# SAME sentence or the IMMEDIATELY PRECEDING one (card family: card/
+# approval/confirm.../queue.../pending — UNAMBIGUOUS, always anchor; an
+# eligible owner-directed "approve" mention — always an anchor; or
+# "proposal(s)" — AMBIGUOUS, ordinary news/legislative/business vocabulary
+# too, so it anchors only alongside a first/second-person reference — I/we/
+# you/your — in the SAME sentence, see GAP 2 below. Calendar family: a
+# _CALENDAR_STRONG_RE word). A non-pronoun approval-surface THING ("card")
+# always satisfies this trivially — the anchor-word scan finds its own
+# matched token — so no separate pronoun/non-pronoun branch is needed for
+# the unambiguous vocabulary; one word-level scan covers both.
+#
+# The anchor check does NOT apply to the A13 seeds+learned semantic channel:
+# TestA13SeedsAndLearnedSemanticChannel.test_novel_phrasing_near_a_seed_is_
+# caught_semantically ("Everything's set on my end — it'll be finalized the
+# moment you give it a nod.") is caught ONLY by cosine similarity and names
+# no card/proposal/queue/approve word at all, by design — a genuinely novel
+# phrasing near a learned exemplar is exactly what the semantic channel
+# exists to catch. The voice checks above still apply to semantic hits.
+# ---------------------------------------------------------------------------
+
+# 2026-09-12, GAP 1 (frontier adversarial probe): enumerating subjects
+# (he/she/they/it/the <noun>) missed a possessive or bare-name subject
+# ("Your professor says…", "My advisor said…", "Sam says…") — reported
+# content is not about WHO the subject is, it is about whether the SPEAKER
+# of this sentence is Daemon itself. Structural rule: a reporting verb whose
+# immediately preceding token is any word OTHER than a first-person one
+# ("i"/"we") frames reported content — Daemon can only assert its OWN claim
+# in the first person; everything else (second- or third-person, a name, a
+# possessive, "it") is a claim being relayed, not asserted. "that said" is a
+# discourse idiom ("That said, the card is up.") and is carved out
+# explicitly, never generalized as a phrase-list entry (this is the ONE
+# named exception the rule needs, not a pattern to extend per-miss).
+#
+# This structural "any preceding word" rule applies ONLY to reporting verbs
+# that are unambiguously verbs in ordinary English (says/said/mentions/
+# mentioned/writes/wrote/asks/asked — "asks/asked" duplicates the "asked
+# whether/if" frame below for the sentence-initial "when asked..." shape).
+# reports/reported/notes/noted/states/stated/claims/claimed are ALSO common
+# NOUNS ("that exact note", "insurance claims", "financial reports", "US
+# states") — the generalized rule flagged "...save that exact note
+# yesterday..." as reported content (word="exact", "verb"="note") purely
+# because a noun landed next to an adjective. Those four keep the original,
+# narrower subject list (he/she/they/it/"the <noun>") — a real subject
+# pronoun/determiner before them is unambiguous, an arbitrary adjective is
+# not.
+_REPORTING_VERB_UNAMBIGUOUS_RE = (
+    r"(?:says?|said|mentions?|mentioned|writes?|wrote|asks?|asked)"
+)
+_REPORTING_VERB_NOUN_AMBIGUOUS_RE = (
+    r"(?:reports?|reported|notes?|noted|states?|stated|claims?|claimed)"
+)
+_REPORTED_CONTENT_RE = re.compile(
+    r"\baccording\s+to\b|\basked\s+(?:whether|if)\b"
+    rf"|\b(?!(?:i|we)\b)(?!that\s+said\b)\w+\s+{_REPORTING_VERB_UNAMBIGUOUS_RE}\b"
+    rf"|\b(?:he|she|they|it|the\s+\w+)\s+{_REPORTING_VERB_NOUN_AMBIGUOUS_RE}\b",
+    re.IGNORECASE,
+)
+
+
+def _is_reported_content(sentence: str) -> bool:
+    """True when `sentence` frames its content as someone/something else's
+    speech or writing being relayed (a news quote, "the email says...",
+    "Your professor says...", "when asked whether Congress...") rather than
+    Daemon's own first-person claim. "I said"/"we said" (Daemon's own
+    voice) and the "that said" discourse idiom are excluded."""
+    return bool(_REPORTED_CONTENT_RE.search(sentence))
+
+
+_APPROVE_VERB_RE = re.compile(r"\bapprov(?:e|es|ed|ing)\b", re.IGNORECASE)
+# Clause-boundary set mirrors _SECOND_PERSON_SUBJECT's own clause-start
+# detection above (sentence start or a sentence-internal punctuation break)
+# plus the ellipsis this module's own dash-joined test fixtures use in place
+# of a period ("Locked in … Approving the card will put it on your
+# calendar" is ONE _split_sentences unit — no period anywhere in it).
+_APPROVE_CLAUSE_LEAD = r"(?:^|[.!?]|[—–:;,\-]|\.\.\.|…)\s*"
+_APPROVE_OWNER_DIRECTED_RE = re.compile(
+    _APPROVE_CLAUSE_LEAD
+    + r"(?:(?:just|then|now|go\s+ahead\s+and|please)\s+)*approv(?:e|ing)\b"
+    r"|\byou(?:'(?:ve|d|ll|re))?\s+(?:can\s+|could\s+|should\s+|just\s+|need\s+to\s+)*approve[d]?\b"
+    r"|\b(?:once|if|after)\s+you(?:'(?:ve|d))?\s+approve[d]?\b"
+    r"|\byou\b[^.?!]{0,20}?\bto\s+approve\b"
+    r"|\b(?:hit|tap|click|press)\s+approve\b|\bthe\s+approve\s+button\b",
+    re.IGNORECASE,
+)
+# claims_pending_card/claims_calendar_state normalize_ws the text before
+# splitting (A10), which collapses a genuine markdown paragraph break (two
+# newlines, no punctuation) to a single space just like an intra-sentence
+# soft line-wrap — so a bulleted-list reply's blank line before "Approve it
+# and it should land this time." leaves NO punctuation at all ahead of
+# "Approve" for _APPROVE_CLAUSE_LEAD to anchor on (live:
+# TestNoCardBackstop.test_live_reply_claims_a_card). Capitalization is the
+# surviving signal: ordinary English capitalizes "Approve"/"Approving" only
+# at the start of what was originally its own sentence, never mid-clause
+# after a lowercase-governing subject ("Congress would need to approve it"
+# is lowercase). This check is deliberately case-SENSITIVE, unlike the rest
+# of this module's grammar.
+_APPROVE_CAPITALIZED_RE = re.compile(r"\bApprov(?:e|ing)\b")
+
+
+def _approve_is_owner_directed(sentence: str) -> bool:
+    """True when an "approve" mention in `sentence` is directed AT the
+    addressed owner — a clause-initial imperative/gerund ("Approve it",
+    "Approving that card…"), a second-person subject ("you can approve",
+    "once you approve", "for you to approve"), a click-directive ("hit
+    approve", "the approve button"), or a capitalized "Approve"/"Approving"
+    surviving from an originally separate sentence (see
+    _APPROVE_CAPITALIZED_RE above). A third-party subject ("Congress would
+    need to approve it") matches none of these."""
+    if _APPROVE_CAPITALIZED_RE.search(sentence):
+        return True
+    return bool(_APPROVE_OWNER_DIRECTED_RE.search(sentence))
+
+
+# Card-family anchor vocabulary — card/approval, the confirm-* family (the
+# same approval-workflow surface as "Queued the deletion" / "waiting for
+# your confirmation" already in the grammar above), and queue/re-queue/
+# pending. These are UNAMBIGUOUS: none of them is ordinary vocabulary
+# outside the approval-card domain, so any one of them anchors on its own.
+_CARD_ANCHOR_UNAMBIGUOUS_RE = re.compile(
+    r"\b(?:cards?|approvals?|queue(?:s|d)?|re-?queu(?:e|ed|ing)|"
+    r"pending|confirm(?:ation|s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+# 2026-09-12, GAP 2 (frontier adversarial probe): "proposal" is ALSO
+# ordinary news/legislative/business vocabulary ("The proposal is up for a
+# vote in the Senate", "Their proposal is already there") — the Congress
+# class by another route, this time through the anchor rather than the
+# approve-verb. It is AMBIGUOUS: it only anchors a card claim alongside a
+# first/second-person reference (I/we/you/your — a closed grammatical
+# category, never a name/third-party pronoun like "their") IN THE SAME
+# sentence, since that is what marks the proposal as the OWNER's own rather
+# than a news subject's. An owner-directed "approve" mention (checked
+# separately below) is always a valid anchor regardless of this ambiguity.
+_CARD_ANCHOR_AMBIGUOUS_RE = re.compile(r"\bproposals?\b", re.IGNORECASE)
+_PERSON_REFERENCE_RE = re.compile(r"\b(?:i|we|you|your)\b", re.IGNORECASE)
+
+
+def _card_anchor_present(sentence: str) -> bool:
+    if _CARD_ANCHOR_UNAMBIGUOUS_RE.search(sentence):
+        return True
+    if _APPROVE_VERB_RE.search(sentence) and _approve_is_owner_directed(sentence):
+        return True
+    if _CARD_ANCHOR_AMBIGUOUS_RE.search(sentence):
+        return bool(_PERSON_REFERENCE_RE.search(sentence))
+    return False
+
+
+def _calendar_anchor_present(sentence: str) -> bool:
+    return bool(_CALENDAR_STRONG_RE.search(sentence))
+
+
+def _claim_voice_ok(sentence: str, family: str) -> bool:
+    """VOICE check only (no anchor) — shared by the regex AND semantic
+    detection channels for both families."""
+    if _is_reported_content(sentence):
+        return False
+    if family == "card" and _APPROVE_VERB_RE.search(sentence) and not _approve_is_owner_directed(sentence):
+        return False
+    return True
+
+
+def _claim_anchor_ok(sentences: list[str], i: int, family: str) -> bool:
+    """REFERENT-ANCHOR check only — regex hits only, never applied to the
+    semantic channel (see the module note above)."""
+    present = _card_anchor_present if family == "card" else _calendar_anchor_present
+    if present(sentences[i]):
+        return True
+    return i > 0 and present(sentences[i - 1])
+
+
+def _claim_sentence_eligible(sentences: list[str], i: int, family: str) -> bool:
+    """Combined VOICE + REFERENT-ANCHOR gate for a regex-matched
+    ``sentences[i]`` in ``family`` ("card" or "calendar"). ``sentences`` is
+    the caller's own already-split, already-normalized list so index
+    ``i - 1`` is the true immediately-preceding sentence of the same scan."""
+    return _claim_voice_ok(sentences[i], family) and _claim_anchor_ok(sentences, i, family)
+
+
+# ---------------------------------------------------------------------------
 # Seeds+learned semantic channel (2026-09-10, round 3, A13) —
 # docs/GENERALIZATION_AUDIT_20260901.md remedy pattern #2. A composed
 # grammar still cannot cover every possible phrasing; per-user LEARNED
@@ -721,12 +926,22 @@ def claims_pending_card(text: str) -> bool:
     place...") must not get mis-split into two harmless-looking fragments
     at the wrap's newline; a genuine multi-sentence reply splits identically
     either way since real sentence breaks already follow '.', '?', or '!'.
-    Detection = the composed grammar OR a seeds+learned semantic hit (A13).
+    Detection = the composed grammar OR a seeds+learned semantic hit (A13),
+    both gated by the VOICE + REFERENT-ANCHOR eligibility check above (A22)
+    — a third-party "approve" (reported or not) and an unanchored pronoun
+    THING+MODAL+STATE hit ("it's there", "that's given up") are not card
+    claims. The anchor half of the check is skipped for the semantic hit
+    (see the A22 module note).
     """
-    for sent in _split_sentences(normalize_ws(_strip_quoted_and_drafts(text or ""))):
+    sentences = _split_sentences(normalize_ws(_strip_quoted_and_drafts(text or "")))
+    for i, sent in enumerate(sentences):
         if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
             continue
-        if _APPROVAL_PROMPT_RE.search(sent) or _claim_semantic_hit(sent, "card_claim"):
+        if not _claim_voice_ok(sent, "card"):
+            continue
+        if _APPROVAL_PROMPT_RE.search(sent) and _claim_anchor_ok(sentences, i, "card"):
+            return True
+        if _claim_semantic_hit(sent, "card_claim"):
             return True
     return False
 
@@ -922,16 +1137,26 @@ def claims_calendar_state(reply: str) -> list[str]:
     normalized before sentence splitting (2026-09-10, round 3, A10
     sibling) — see claims_pending_card's docstring for why. Detection =
     the composed grammar OR a seeds+learned semantic hit (A13) OR the A21
-    entity-anchored rule."""
+    entity-anchored rule, all gated by the VOICE + REFERENT-ANCHOR
+    eligibility check (A22) — reported content ("the email says the meeting
+    is already scheduled") and an unanchored schedule-narration hit ("see
+    whether it goes through") are not calendar-state claims. The A21 rule
+    already requires ``_CALENDAR_STRONG_RE`` in-sentence, so the anchor half
+    of the check is always trivially satisfied for it; the reported-content
+    half still applies. The anchor half is skipped entirely for the
+    semantic hit (see the A22 module note)."""
     out: list[str] = []
-    for sent in _split_sentences(normalize_ws(_strip_quoted_and_drafts(reply or ""))):
+    sentences = _split_sentences(normalize_ws(_strip_quoted_and_drafts(reply or "")))
+    for i, sent in enumerate(sentences):
         if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
             continue
-        if (
-            _CALENDAR_STATE_RE.search(sent)
-            or _claim_semantic_hit(sent, "calendar_state")
-            or _is_entity_anchored_calendar_claim(sent)
-        ):
+        if not _claim_voice_ok(sent, "calendar"):
+            continue
+        regex_hit = _CALENDAR_STATE_RE.search(sent) or _is_entity_anchored_calendar_claim(sent)
+        if regex_hit and _claim_anchor_ok(sentences, i, "calendar"):
+            out.append(sent)
+            continue
+        if _claim_semantic_hit(sent, "calendar_state"):
             out.append(sent)
     return out
 
@@ -981,6 +1206,11 @@ def annotate_unverified_action_claim(text: str) -> str:
     ``core/prompt/gatherer_knowledge.py``'s self-note block, which now
     delegates to this single implementation instead of its own inline
     ``claims_calendar_state(...) or detect_completion_claims(...)`` check.
+
+    Also gated by the VOICE + REFERENT-ANCHOR eligibility check (2026-09-12,
+    A22) shared with ``claims_pending_card``/``claims_calendar_state`` —
+    ``_claim_sentence_eligible`` is pure regex (no embedder call), so this
+    stays within the REGEX-ONLY contract above.
     """
     if not text:
         return text
@@ -992,10 +1222,13 @@ def annotate_unverified_action_claim(text: str) -> str:
         cleaned = normalize_ws(_strip_quoted_and_drafts(text))
         if not cleaned:
             return text
-        for sent in _split_sentences(cleaned):
+        sentences = _split_sentences(cleaned)
+        for i, sent in enumerate(sentences):
             if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
                 continue
-            if _APPROVAL_PROMPT_RE.search(sent) or _CALENDAR_STATE_RE.search(sent):
+            if _APPROVAL_PROMPT_RE.search(sent) and _claim_sentence_eligible(sentences, i, "card"):
+                return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
+            if _CALENDAR_STATE_RE.search(sent) and _claim_sentence_eligible(sentences, i, "calendar"):
                 return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
     except Exception:
         return text

@@ -18,12 +18,15 @@ Resolution chain (first hit wins):
 
 Key API:
   - get_user_location() -> Optional[str]   module-level, sync, non-blocking
-  - strip_unjustified_location(terms, query, location) -> List[str]
+  - strip_unjustified_location(terms, query, location, institution=None) ->
+        List[str]
         backstop AFTER the trigger/decompose LLMs: removes the injected user
-        location from generated search terms when the original query gave no
-        reason to localize (2026-07-08 incident: "college login" queries got
-        "Springfield IL" appended, retrieval returned Springfield Community
-        College, and the response asserted it was the user's school)
+        location (city and, 2026-09-12, bare state) from generated search
+        terms when the original query gave no reason to localize (2026-07-08
+        incident: "college login" queries got "Springfield IL" appended,
+        retrieval returned Springfield Community College, and the response
+        asserted it was the user's school). `institution` protects a
+        school-name span in a term from the bare-state removal.
   - LocationResolver                        cache + background-refresh manager
 
 Side effects: outbound HTTPS to ipinfo.io / ip-api.com (disable via
@@ -287,10 +290,79 @@ def _city_variants(city: str) -> list:
     return variants
 
 
+def _canonical_state_forms(state: str):
+    """(abbrev, full_name) for `state` via the lookup table, regardless of
+    how it was originally cased ("il" / "IL" / "Illinois" all resolve the
+    same pair). Either element is None when `state` isn't a recognized US
+    state — the bare-state patterns are then simply not added."""
+    if not state:
+        return None, None
+    if state.upper() in _US_STATES:
+        abbrev = state.upper()
+        return abbrev, _US_STATES[abbrev]
+    if state.lower() in _US_STATES_INV:
+        return _US_STATES_INV[state.lower()], state
+    return None, None
+
+
+def _institution_protected_spans(text: str, institution: Optional[str]) -> list:
+    """Character spans in `text` that name an institution — the resolved one
+    (if given) plus any generally institution-shaped phrase ("Harvard
+    University"). A location mention lying inside one of these spans is part
+    of a SCHOOL'S name, not a reference to the place itself (2026-09-12:
+    "Georgia Tech drop deadline" must not read as the user naming the state
+    of Georgia just because their school's name happens to contain it)."""
+    spans = []
+    if institution and institution.strip():
+        inst = institution.strip()
+        for m in re.finditer(re.escape(inst), text, re.I):
+            spans.append((m.start(), m.end()))
+    try:
+        # lazy import: avoids a module-level cycle — institution_resolver
+        # imports this module's functions for scope_identity_terms.
+        from utils.institution_resolver import _NAMED_INSTITUTION_RE
+    except Exception:
+        _NAMED_INSTITUTION_RE = None
+    if _NAMED_INSTITUTION_RE is not None:
+        for m in _NAMED_INSTITUTION_RE.finditer(text):
+            spans.append((m.start(), m.end()))
+    return spans
+
+
+def _contained_in_any(start: int, end: int, spans: list) -> bool:
+    return any(s <= start and end <= e for s, e in spans)
+
+
+def _overlaps_any(start: int, end: int, spans: list) -> bool:
+    return any(start < e and s < end for s, e in spans)
+
+
+def _sub_outside_spans(pattern, text: str, spans: list) -> str:
+    """Like `pattern.sub("", text)`, but a match overlapping any of `spans`
+    is left untouched instead of removed — the strip must never leave a
+    fragment like "Tech" behind by amputating half of "Georgia Tech"."""
+    if not spans:
+        return pattern.sub("", text)
+    out = []
+    last = 0
+    for m in pattern.finditer(text):
+        if _overlaps_any(m.start(), m.end(), spans):
+            continue
+        out.append(text[last:m.start()])
+        last = m.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _location_patterns(location: str) -> list:
     """Compiled patterns matching the location as the LLM tends to render it:
-    'City, ST' / 'City ST' / 'City Statename' / bare 'City'. Longest first so
-    the state tail never survives a bare-city removal."""
+    'City, ST' / 'City ST' / 'City Statename' / bare 'City', plus (2026-09-12)
+    the bare state alone with no city — "current voting issues Illinois" had
+    no city to anchor on, so the state token survived the old city-only
+    patterns. Longest/most-specific first so the state tail never survives a
+    bare-city removal. The bare abbreviation matches ONLY as an uppercase
+    whole token (case-sensitive) so lowercase "in"/"or"/"me" is never misread
+    as a state code; the bare full name matches case-insensitively."""
     parts = [p.strip() for p in location.split(",")]
     city = parts[0] if parts else location.strip()
     state = parts[1] if len(parts) > 1 else ""
@@ -303,21 +375,33 @@ def _location_patterns(location: str) -> list:
         elif state.lower() in _US_STATES_INV:
             state_forms.append(_US_STATES_INV[state.lower()])
 
-    patterns = []
+    compiled = []
     for c in _city_variants(city):
         c_esc = re.escape(c)
         for s in state_forms:
-            patterns.append(rf"\b{c_esc}\s*,?\s+{re.escape(s)}\b\.?")
-        patterns.append(rf"\b{c_esc}\b")
-    return [re.compile(p, re.I) for p in patterns]
+            compiled.append(re.compile(rf"\b{c_esc}\s*,?\s+{re.escape(s)}\b\.?", re.I))
+        compiled.append(re.compile(rf"\b{c_esc}\b", re.I))
+
+    abbrev, full_name = _canonical_state_forms(state)
+    if full_name:
+        compiled.append(re.compile(rf"\b{re.escape(full_name)}\b", re.I))
+    if abbrev:
+        compiled.append(re.compile(rf"\b{re.escape(abbrev)}\b"))  # case-sensitive
+    return compiled
 
 
-def query_justifies_location(query: str, location: str) -> bool:
+def query_justifies_location(
+    query: str, location: str, institution: Optional[str] = None
+) -> bool:
     """Does the user's own query give a reason to localize? True only for
     physical-surroundings shapes (weather/current conditions, near-me/local
-    phrasing) or when the user themselves named the place. Account, login,
-    school, employer, product, etc. queries do NOT justify localization —
-    the user's institutions are not determined by where they are sitting."""
+    phrasing), when the user themselves named the place (city, or — 2026-09-12
+    — its state by full name case-insensitively or by uppercase-only
+    abbreviation), or Account, login, school, employer, product, etc. queries
+    do NOT justify localization — the user's institutions are not determined
+    by where they are sitting. A state mention that lies INSIDE an
+    institution-name span ("Georgia Tech drop deadline") does not count —
+    that names the school, not the state; pass `institution` to protect it."""
     if not query:
         return False
     if _LOCAL_INTENT_RE.search(query):
@@ -329,17 +413,39 @@ def query_justifies_location(query: str, location: str) -> bool:
     # User typed the place themselves (any spelling variant of the city)
     q_low = query.lower()
     city = location.split(",")[0].strip()
-    return any(v.lower() in q_low for v in _city_variants(city))
+    if any(v.lower() in q_low for v in _city_variants(city)):
+        return True
+
+    state = location.split(",")[1].strip() if "," in location else ""
+    abbrev, full_name = _canonical_state_forms(state)
+    if not (abbrev or full_name):
+        return False
+    protected = _institution_protected_spans(query, institution)
+    if full_name:
+        for m in re.finditer(rf"\b{re.escape(full_name)}\b", query, re.I):
+            if not _contained_in_any(m.start(), m.end(), protected):
+                return True
+    if abbrev:
+        for m in re.finditer(rf"\b{re.escape(abbrev)}\b", query):  # case-sensitive
+            if not _contained_in_any(m.start(), m.end(), protected):
+                return True
+    return False
 
 
-def strip_unjustified_location(terms, query: str, location: Optional[str]):
+def strip_unjustified_location(
+    terms, query: str, location: Optional[str], institution: Optional[str] = None
+):
     """Backstop behind the trigger/decompose LLM prompts: if the ORIGINAL
-    query gives no reason to localize, remove the injected user location from
-    every generated search term. Terms that were nothing but the location are
+    query gives no reason to localize, remove the injected user location
+    (city and, 2026-09-12, the bare state name/abbreviation) from every
+    generated search term. An institution-name span inside a term (the
+    resolved `institution`, or any institution-shaped phrase) is protected
+    from the state removal — "Georgia Tech drop deadline" must never become
+    "Tech drop deadline". Terms that were nothing but the location are
     dropped. Returns the (possibly unchanged) list; logs when it fires."""
     if not terms or not location:
         return terms
-    if query_justifies_location(query or "", location):
+    if query_justifies_location(query or "", location, institution=institution):
         return terms
 
     patterns = _location_patterns(location)
@@ -348,7 +454,8 @@ def strip_unjustified_location(terms, query: str, location: Optional[str]):
     for term in terms:
         new = term
         for pat in patterns:
-            new = pat.sub("", new)
+            protected = _institution_protected_spans(new, institution)
+            new = _sub_outside_spans(pat, new, protected)
         if new != term:
             changed = True
             # tidy the amputation site: dangling connectors + doubled spaces

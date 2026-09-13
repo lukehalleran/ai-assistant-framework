@@ -25,6 +25,14 @@ Scope guards (the wrong-college doctrine, inverted):
     drop deadline" must stay Harvard's.
   - Values must look like an institution name (short TitleCase phrase), not
     profile sentence junk ("in third best grad program in nation").
+
+2026-09-12: query_justifies_institution() / strip_unjustified_institution()
+are the institution-side mirror of location_resolver's
+query_justifies_location()/strip_unjustified_location() — an unrelated query
+must not carry the school into search terms just because the LLM attached it
+unprompted. scope_identity_terms() is the single call BOTH search-term
+producers (the trigger classifier and WebSearchManager.decompose_query) use
+for the full location-then-institution scoping policy (BC-58).
 """
 
 import json
@@ -63,15 +71,44 @@ _INSTITUTION_VALUE_RE = re.compile(
 # Academic-logistics cues — the ONLY query class the institution attaches to.
 # Deliberately narrow (logistics, not coursework): "how does SVM work" is
 # schoolwork but not a school-logistics lookup.
-_ACADEMIC_CUE_RE = re.compile(
+#
+# Two categories (2026-09-12). SCHOOL-LOGISTICS cues name a school process
+# outright. CROSS-DOMAIN cues are logistics words other domains share —
+# withdrawal (a medication, troops), registration (voters), enrollment
+# (Medicare), transcript (a court hearing). Bare, they had attached the
+# user's school to "benzodiazepine withdrawal symptoms" and "voter
+# registration deadline" searches: the owner's identity sent to a third-party
+# search provider on an unrelated query (BC-59). A cross-domain cue now counts
+# only beside a SCHOOL-DOMAIN anchor noun, or the user's own school, in the
+# same text. Coverage grows by adding a word to one of these tables, never by
+# a per-incident alternative (BC-76).
+_SCHOOL_LOGISTICS_CUE_RE = re.compile(
     r"\b(?:"
     r"drop\s+(?:date|deadline|period)|add[/\s-]?drop|"
-    r"withdraw(?:al|ing|s)?|re-?enroll(?:ment|ing)?|enroll(?:ment|ing)?|"
-    r"registrar|registration|academic\s+calendar|semester|term\s+start|"
-    r"tuition|bursar|financial\s+aid|refund\s+(?:date|deadline|policy)|"
-    r"transcript|census\s+date|course\s+(?:catalog|schedule|registration)|"
+    r"registrar|academic\s+calendar|semester|"
+    r"tuition|bursar|financial\s+aid|"
+    r"census\s+date|course\s+(?:catalog|schedule|registration)|"
     r"incomplete\s+grade|grade\s+portal|final\s+exam\s+schedule"
     r")\b",
+    re.IGNORECASE,
+)
+_CROSS_DOMAIN_LOGISTICS_CUE_RE = re.compile(
+    r"\b(?:"
+    r"withdraw(?:al|ing|s)?|re-?enroll(?:ment|ing)?|enroll(?:ment|ing)?|"
+    r"registration|term\s+start|refund\s+(?:date|deadline|policy)|transcript"
+    r")\b",
+    re.IGNORECASE,
+)
+_SCHOOL_DOMAIN_ANCHOR_RE = re.compile(
+    r"\b(?:class(?:es)?|courses?|school|college|university|campus|"
+    r"professors?|syllabus|credit\s+hours?|academic|degree\s+program)\b",
+    re.IGNORECASE,
+)
+# Either category. Used on a search TERM once the query itself has been
+# established as school logistics ("withdrawal deadline fall 2026" inside a
+# drop-date request is academic), never to decide that on its own.
+_ACADEMIC_CUE_RE = re.compile(
+    rf"{_SCHOOL_LOGISTICS_CUE_RE.pattern}|{_CROSS_DOMAIN_LOGISTICS_CUE_RE.pattern}",
     re.IGNORECASE,
 )
 
@@ -241,24 +278,96 @@ def get_user_anchors() -> List[str]:
 
 
 def query_is_academic_logistics(query: str) -> bool:
-    return bool(_ACADEMIC_CUE_RE.search(query or ""))
+    return _academic_logistics_shape(query)
+
+
+def _names_institution(text: str, institution: Optional[str]) -> bool:
+    """The resolved institution named in `text` (word-bounded, possessive ok)."""
+    inst = (institution or "").strip()
+    if not inst or not text:
+        return False
+    return bool(re.search(rf"\b{re.escape(inst)}(?:'s)?\b", text, re.IGNORECASE))
+
+
+def _academic_logistics_shape(text: str, institution: Optional[str] = None) -> bool:
+    """A school-logistics request: a school-logistics cue, or a cross-domain
+    cue anchored in the same text by a school-domain noun, "my school/...",
+    or the user's own school named (see the cue tables above)."""
+    t = text or ""
+    if not t:
+        return False
+    if _SCHOOL_LOGISTICS_CUE_RE.search(t):
+        return True
+    if not _CROSS_DOMAIN_LOGISTICS_CUE_RE.search(t):
+        return False
+    return bool(
+        _SCHOOL_DOMAIN_ANCHOR_RE.search(t)
+        or _MY_SCHOOL_RE.search(t)
+        or _names_institution(t, institution)
+    )
+
+
+# A generic self-reference to the user's own school ("my school/college/
+# university/program") — distinct from _GENERIC_SCHOOL_RE, which also
+# matches bare "college"/"university" with no possessive (that broader form
+# is for REPLACING a generic word with the resolved name inside a term, not
+# for deciding whether the query justifies naming the school at all).
+_MY_SCHOOL_RE = re.compile(
+    r"\bmy\s+(?:school|college|university|program)\b", re.IGNORECASE
+)
+
+
+def query_justifies_institution(
+    query: str, institution: Optional[str], context: Optional[str] = None
+) -> bool:
+    """Does the user's own query give a reason to name their institution in
+    search terms? True when the query is school-logistics-shaped (drop dates,
+    registrar, tuition, or a cross-domain cue beside a school anchor), when it
+    names the user's OWN school, or when it refers to "my school/college/
+    university/program" generically. Otherwise False — an unrelated query
+    carrying no school-relevant cue at all must not have the school attached
+    (2026-09-12: "I am referring to voting" produced the search term "Georgia
+    Tech voting information" with nothing in the query pointing at school
+    logistics or the school itself).
+
+    `context` is the bounded prior-turn digest, passed ONLY for a referential
+    follow-up (the caller decides — utils.web_search_trigger
+    ._identity_scope_context). An elliptical "is it this Friday?" after a
+    drop-deadline exchange carries no cue of its own, and stripping the school
+    from its terms would send a generic search. Only a school-logistics SHAPE
+    in that context counts: the school merely having been NAMED in an earlier
+    turn never re-justifies it, or an unrelated follow-up in a long session
+    would inherit the school forever."""
+    q = query or ""
+    if not q:
+        return False
+    if _academic_logistics_shape(q, institution):
+        return True
+    if _names_institution(q, institution):
+        return True
+    if _MY_SCHOOL_RE.search(q):
+        return True
+    return bool(context and _academic_logistics_shape(context, institution))
 
 
 def apply_institution(
-    terms: List[str], query: str, institution: Optional[str]
+    terms: List[str], query: str, institution: Optional[str],
+    context: Optional[str] = None,
 ) -> List[str]:
     """Deterministic backstop behind the LLM prompts: name the user's school
     in academic-logistics search terms that stayed generic.
 
-    Applies only when the QUERY is academic-logistics-shaped and names no
-    other institution; within it, only terms that are themselves academic or
-    carry a generic school word are touched — a weather sub-query in a mixed
-    request stays untouched. Under-fires by design.
+    Applies only when the QUERY is school-logistics-shaped (or a referential
+    follow-up whose bounded `context` is — see query_justifies_institution)
+    and names no other institution; within it, only terms that are themselves
+    academic or carry a generic school word are touched — a weather sub-query
+    in a mixed request stays untouched. Under-fires by design.
     """
     if not terms or not institution or not (institution := institution.strip()):
         return terms
     q = query or ""
-    if not _ACADEMIC_CUE_RE.search(q):
+    if not (_academic_logistics_shape(q, institution)
+            or (context and _academic_logistics_shape(context, institution))):
         return terms
     named = _NAMED_INSTITUTION_RE.search(q)
     if named and institution.lower() not in q.lower():
@@ -285,3 +394,76 @@ def apply_institution(
             f"search terms: {'; '.join(changed)}"
         )
     return out
+
+
+def strip_unjustified_institution(
+    terms: List[str], query: str, institution: Optional[str],
+    context: Optional[str] = None,
+) -> List[str]:
+    """Backstop mirroring strip_unjustified_location: when the ORIGINAL
+    query gives no reason to name the user's institution
+    (query_justifies_institution is False), remove the resolved institution
+    name — plus a trailing possessive — from every generated search term.
+    Terms that were nothing but the institution are dropped. Only ever
+    touches the resolved institution STRING itself; a DIFFERENT institution
+    the query or terms name is never removed (2026-09-12: "Georgia Tech
+    voting information" needed the school stripped from a query with no
+    school cue at all; "Harvard University student voting" must stay
+    untouched when the user's own school is Georgia Tech). Returns the
+    (possibly unchanged) list; logs when it fires."""
+    if not terms or not institution or not (institution := institution.strip()):
+        return terms
+    if query_justifies_institution(query or "", institution, context=context):
+        return terms
+
+    pattern = re.compile(rf"\b{re.escape(institution)}(?:'s)?\b", re.IGNORECASE)
+    cleaned = []
+    changed = False
+    for term in terms:
+        t = term or ""
+        new = pattern.sub("", t)
+        if new != t:
+            changed = True
+            new = re.sub(r"\s+(?:in|at|near|around|for|of)\s*$", "", new, flags=re.IGNORECASE)
+            new = re.sub(r"\s{2,}", " ", new).strip(" ,;-")
+        if new:
+            cleaned.append(new)
+    if changed:
+        logger.info(
+            f"[Institution] Stripped unjustified school name '{institution}' from "
+            f"search terms (query gave no academic-logistics/self-reference cue): "
+            f"{terms} -> {cleaned}"
+        )
+    return cleaned if changed else terms
+
+
+def scope_identity_terms(
+    terms: List[str],
+    query: str,
+    location: Optional[str],
+    institution: Optional[str],
+    context: Optional[str] = None,
+) -> List[str]:
+    """Single scoping policy for BOTH search-term producers — the LLM
+    trigger classifier (utils.web_search_trigger._classify_with_llm_unified)
+    and WebSearchManager.decompose_query. BC-58: the two producers had grown
+    independent two-step "strip location, then apply institution" blocks
+    that had drifted (neither protected an institution-name span while
+    stripping a bare state out of the SAME term), so a fix to the scoping
+    policy had to land twice. From 2026-09-12 both call this instead.
+
+    Order: strip an unjustified location — an institution-name span inside
+    each term is protected from the state-name removal — then strip an
+    unjustified institution, then run the deterministic institution backstop
+    (which can re-introduce the institution into a term that stayed
+    academic-logistics-generic once its location was removed, e.g. "drop
+    deadline" -> "Georgia Tech drop deadline")."""
+    from utils.location_resolver import strip_unjustified_location
+
+    if terms and location:
+        terms = strip_unjustified_location(terms, query, location, institution=institution)
+    if terms and institution:
+        terms = strip_unjustified_institution(terms, query, institution, context=context)
+    if terms and institution:
+        terms = apply_institution(terms, query, institution, context=context)
+    return terms
