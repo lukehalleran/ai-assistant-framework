@@ -186,7 +186,7 @@ UnifiedPromptBuilder.build_prompt()
   │     ├── wiki_content (3)              ← FAISS (41M wiki vectors; ChromaDB fallback)
   │     ├── reference_docs (5)            ← ChromaDB reference_docs
   │     ├── personal_notes (5)            ← Obsidian vault
-  │     ├── git_commits (10)              ← ChromaDB procedural
+  │     ├── git_commits (10)              ← local git for repository status; otherwise ChromaDB procedural
   │     ├── web_search (if triggered)     ← Tavily API
   │     └── codebase_changes (first msg)  ← git diff
   │
@@ -1058,6 +1058,15 @@ Priority  3: Summaries, proposed_features, git commits, proactive insights
 Priority  2: Reflections, dreams, codebase changes
 Priority  1: Wiki
 ```
+
+**Repository status exception (2026-09-13):** compact records read from local
+git receive priority 8 in both budget passes. Other git context stays at
+priority 3. The existing hard budget still applies. The builder retains the
+caller's git limit on a repository status report while trimming other personal
+context; an explicit zero or disabled git setting still prevents retrieval.
+The procedural index is manually synchronized and remains the source for
+historical questions. Local commit dates and authors do not establish push
+dates, push success, or the process that pushed.
 
 **Compression hierarchy:**
 1. LLM compression — items >=3x over limit get intelligent reduction

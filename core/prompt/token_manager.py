@@ -43,6 +43,7 @@ the four rendered summary/reflection sections were unmetered AND untrimmable):
   - reference_docs / memories: 5
   - procedural_skills / facts: 4
   - recent_summaries / semantic_summaries / proposed_features / git_commits / proactive_insights: 3
+  - git_commits from local repository status retrieval: 8 in both budget passes
   - recent_reflections / semantic_reflections / daemon_self_notes / dreams / codebase_changes: 2
   - wiki: 1
 UNRENDERED_CONTEXT_KEYS (summaries, reflections, stm_summary, memory_id_map) are
@@ -353,7 +354,17 @@ class TokenManager:
             return self.get_token_count(text, model_name)
 
         # First pass: optimistic inclusion with per-item compression
-        for name, _prio in sorted(PRIORITY_ORDER, key=lambda entry: entry[1], reverse=True):
+        priority_order = list(PRIORITY_ORDER)
+        if any(
+            isinstance(item, dict)
+            and item.get("metadata", {}).get("retrieval_source") == "local_git"
+            for item in context.get("git_commits", []) or []
+        ):
+            # Current repository status is direct evidence for this turn.
+            # Admit it before historical conversation, within the same budget.
+            priority_order = [(name, 8 if name == "git_commits" else priority)
+                              for name, priority in priority_order]
+        for name, _prio in sorted(priority_order, key=lambda entry: entry[1], reverse=True):
             val = trimmed.get(name)
             if not val:
                 continue
@@ -527,7 +538,7 @@ class TokenManager:
             for _pass in range(3):
                 if usage <= self.token_budget:
                     break
-                for name, prio in sorted(PRIORITY_ORDER, key=lambda x: x[1]):  # low → high
+                for name, prio in sorted(priority_order, key=lambda x: x[1]):  # low → high
                     v = trimmed.get(name)
                     if not v:
                         continue

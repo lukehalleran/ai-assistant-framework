@@ -11,7 +11,7 @@ Module Contract
   - get_personal_notes(query, limit) -> List[Dict]  [Obsidian vault: 1/3 keyword + 2/3 semantic]
   - get_reference_docs(query, limit) -> List[Dict]  [uploaded docs: 1/3 keyword + 2/3 semantic]
   - get_user_uploads(query, limit) -> List[Dict]  [user_uploads collection]
-  - get_git_commits(query, limit) -> List[Dict]  [procedural collection git commits]
+  - get_git_commits(query, limit) -> List[Dict]  [local git for repository status reports; otherwise procedural index]
   - get_proposed_features(query, limit) -> List[Dict]  [proposals collection]
   - get_procedural_skills(query, limit) -> List[Dict]  [procedural_skills collection]
   - get_graph_context(query, max_sentences) -> List[str]  [knowledge graph BFS traversal]

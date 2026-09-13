@@ -63,7 +63,7 @@ turn dump / telemetry  →  root cause (read the code that ran, not a re-derivat
   →  targeted suites green + ruff clean
   →  probe the deployed function live (read-only script, or a relayed Daemon turn)
   →  CLAUDE.md one-liner + CLAUDE_CHANGELOG.md narrative + memory note
-  →  owner: git add -A · commit -F commit_message.txt · push  (BEFORE the restart)
+  →  owner: reviewed exact-file commit runner, then separate git push (§3a.7; BEFORE restart)
   →  restart Daemon
   →  live probe after the restart (the fix is not real until this passes)
 ```
@@ -165,7 +165,10 @@ Principles:
    principle 1, not `git add -p`.
 5. **Docs and code move together.** The changelog entry, the CLAUDE.md
    one-liner, the handoff doc's results section and the memory note are part of
-   the batch, written before the commit, so the commit's `Docs:` line is true.
+   the batch, written before the commit. Public documentation is staged with
+   code; owner-private handoffs, CLAUDE.md, CLAUDE_CHANGELOG.md and memory
+   notes remain local when excluded by .gitignore. Do not force-add them.
+   Any commit `Docs:` line must describe the files actually included.
 6. **The pushed commit is the tested tree, and tests never read git state.**
    The first push after adopting these principles (05fd300) went red: four
    tests proved their "failed-before" evidence with `git show HEAD:<file>`, so
