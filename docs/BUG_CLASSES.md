@@ -119,6 +119,10 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-76 | Closure by phrase-append (narrow remedy pattern) | J process | open |
 | BC-77 | Autonomy guardrail vetoes an explicit user request; dispatcher receipt still claims success | B | partial |
 | BC-78 | Exhausted budget enforced only at the leaf call; routing and self-description still promise the capability | B | partial |
+| BC-80 | Long operation's outcome delivered only on the request that started it | E | open |
+| BC-81 | Private instance of a process-wide heavyweight resource | D | open |
+| BC-82 | Change validated only under the committed default configuration | G | open |
+| BC-83 | Sandbox or probe resolves live code or live paths through the inherited environment | H | open |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -589,7 +593,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-63 Validation not against the deployed function
 - Mechanism: a test or harness checks a re-derivation, a mock, a getsource string, a hardcoded literal, a proxy metric or only the shape of the result.
-- Incidents: the five Critical-Rule incidents (inverted oracle, L2-as-cosine, mocked `.intent_type`, monotone AUC, `distance` key); `test_prompt_timeout` rebuilt the gather loop (T02); getsource-only coverage of a 230-line branch (F12); hardcoded date vs live clock (F4); shape-only assertions (T12/T13).
+- Incidents: the five Critical-Rule incidents (inverted oracle, L2-as-cosine, mocked `.intent_type`, monotone AUC, `distance` key); `test_prompt_timeout` rebuilt the gather loop (T02); getsource-only coverage of a 230-line branch (F12); hardcoded date vs live clock (F4); shape-only assertions (T12/T13); 2026-09-14 `scripts/safe_cmd.sh`'s unlock path and its BLOCKED message have been unreachable for protected paths since the script's first commit (2026-05-21) — `tests/unit/test_destructive_op_guard.py` exercises only the Python helper `utils/destructive_op_guard.unlock_allowed`, never the deployed shell wrapper, so nothing went red (the defect itself is the `set -e` singleton below).
 - Find: `rg -n "inspect.getsource" tests/`; helpers defined but unused in a test module; DM-08 perturbation proof.
 - Closure: CLAUDE.md Critical Rule; per-test rewrites; `tests/unit/test_hybrid_semantic_score.py`.
 - Status: recurs — doctrine, no static check.
@@ -638,7 +642,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-70 Log, comment or severity misdescribes the control flow
 - Mechanism: a log says "skipping" but the code falls through; a degradation logs at DEBUG; an idempotent outcome logs ERROR.
-- Incidents: "skipping wiki" fell through to the live API (F26); pattern-preemption crash at DEBUG "how the arbiter stayed dead" (F7/F22); absent FAISS index at ERROR, E2B 404 at ERROR (CODEX 09-03).
+- Incidents: "skipping wiki" fell through to the live API (F26); pattern-preemption crash at DEBUG "how the arbiter stayed dead" (F7/F22); absent FAISS index at ERROR, E2B 404 at ERROR (CODEX 09-03); 2026-09-14 `knowledge/obsidian_manager.py` logs vault-embedding progress when `embedded_files % 50 == 0`, a counter an update-only sync never advances, so "Embedded 0/810 files..." printed once per updated note (34 times).
 - Find: `rg -n "skip|checked first|never|always"` near a branch and read the next lines; `rg -n "logger.debug"` in gate/trigger except blocks.
 - Closure: per-site.
 - Status: partial.
@@ -701,6 +705,53 @@ from A–I because it audits the remedy, not the defect.
 - Closure: none structural — `docs/GENERALIZATION_AUDIT_20260901.md` §"Remedy patterns" names four alternatives this project already uses successfully for OTHER vocabulary families (SEEDS+LEARNED: `adaptive_exemplars`; AUTO-PROMOTE/DERIVE: `learned_relations`; CALIBRATE-ON-DATA: probe scripts; CATEGORIZED-GENERIC+ANCHORS: `terms_are_private_sphere_generic`); adopting one of these for a repeatedly-patched vocabulary family, instead of the next phrase-append, is the closure — judged per family by a human/frontier reviewer, not automatable from the Find grep alone.
 - Status: open — a process observation tracked so an audit can flag "this is the Nth phrase-append to the same function" as a signal to escalate to a generalized mechanism, rather than filing a tenth incident line under whatever failure-mechanism class the symptom happens to match.
 
+## K. New mechanisms (2026-09-14 session)
+
+Four mechanisms from a 2026-09-14 session (a notes-sync false failure, a
+pre-landing review of an uncommitted launch-auth batch, and a reproduction of
+a guard-script defect) matched none of the 78 classes above closely enough to
+file as incidents. BC-80 is the inverse of BC-47 — a success shown as a
+failure because the outcome's only channel is the initiating request — not
+BC-45's shown-versus-stored text or BC-40's cancellation. BC-81 duplicates an
+already-loaded resource, which is neither BC-11 (a live setting not reaching a
+built consumer) nor BC-41 (acquisition before it is needed). BC-82 is a
+coverage gap between committed defaults and the deployed local override,
+distinct from BC-12's unreachable key. BC-83 is the isolation defeat itself:
+BC-37 records the write consequence against the live Daemon's stores, not a
+probe that silently executes live code. BC-79 is deliberately unassigned: two
+unlanded proposals claim it (the held non-reentrant-lock patch in
+`docs/execution/codex_20260913/` and the import-hygiene plan); it goes to the
+earlier claim, the lock class, when that lands, and later proposals take the
+next free number at their own merge.
+
+### BC-80 Long operation's outcome delivered only on the request that started it
+- Mechanism: an API route runs seconds-to-minutes work inside the HTTP request and reports the result only in that response; when the client connection drops (a backgrounded or sleeping browser tab, a network blip) the work still completes, but the SPA's fetch rejects, the UI reports failure, and no status endpoint lets a reloaded page read the real outcome — a success shown as a failure.
+- Incidents: 2026-09-14 10:05 `POST /api/sync-notes` (`api/routes/system.py`): the server finished 2 new + 34 updated notes with 0 errors in 25.4 s while the SPA showed "Notes sync failed"; uvicorn 0.38 skips the access-log line when the client has already disconnected (`protocols/http/httptools_impl.py` `send()`), no access line followed completion, and the next requests were a page reload. Same shape, not yet observed failing: the curation routes through `_run_operation` (`api/routes/curation.py`) handle a server-side wait timeout (504 "still running") but not a dropped client, and the curation page titles any fetch rejection "… failed".
+- Find: `rg -n "asyncio.to_thread|run_in_executor" api/routes`; for each route, does it return only after the work finishes, and can the SPA re-read the outcome from a status endpoint? Then read the SPA `catch` blocks that title a notification "… failed" on a fetch rejection.
+- Closure: none yet — per-incident.
+- Status: open — a background-job, single-flight, status-endpoint fix for sync-notes is planned for after the launch-auth batches land, not built.
+
+### BC-81 Private instance of a process-wide heavyweight resource
+- Mechanism: a component constructs its own `MultiCollectionChromaStore` (and with it its own embedder), or a manager that lazily builds one, instead of receiving the live instance the orchestrator already holds; every copy repeats the load (GPU memory, time) and keeps in-memory state (opened collections) the live instance never sees.
+- Incidents: 2026-09-14 10:05:36 the sync route's bare `ObsidianManager()` (`api/routes/system.py`) lazily built a second store inside the running Daemon and logged a fresh `[Chroma] Embedder BAAI/bge-small-en-v1.5 on device=cuda` load, although the constructor accepts the live store (`ObsidianManager(chroma_store=...)`) and no caller passes it.
+- Find: `rg -n "MultiCollectionChromaStore\(|ObsidianManager\(\)" --glob '*.py' --glob '!tests/**' --glob '!scripts/**'` (18 hits on 2026-09-14), minus separate-process entry points (`main.py` CLI modes, `agent_branch/`); in-process candidates to confirm one by one: `api/routes/system.py`, `gui/launch.py` (notes button), `core/prompt/context_gatherer.py` → `knowledge/obsidian_manager.py`, `knowledge/reference_docs_manager.py`, `knowledge/web_search_manager.py`, `knowledge/git_memory_loader.py`, `memory/hybrid_retriever.py` (fallback when no store is passed).
+- Closure: none — per-site injection of the orchestrator's store is the fix shape; no scanner.
+- Status: open — the per-copy cost (GPU memory, divergent state) has not been measured.
+
+### BC-82 Change validated only under the committed default configuration
+- Mechanism: a change is designed and tested against `config.yaml` defaults and fixtures that mirror them, while the owner's deployment runs a `config.local.yaml` override that takes a different code path; the change breaks the real deployment while every test stays green.
+- Incidents: 2026-09-14 (caught before landing) an uncommitted launch-auth batch rejected every non-loopback `Host` with 400 "invalid host", while the owner's deployment binds the API to a non-loopback remote-access address through the `config.local.yaml` `api.host` override — after landing, every request including `GET /` would have failed. The batch had scoped the non-loopback bind out as a known limitation without checking the live override; a host allowance was requested before landing.
+- Find: `(proposed)` for each config constant a change's modules read, check whether `config/config.local.yaml` overrides that key (read it locally; never copy its values into a committed file); every overlap needs a test that runs with the override's shape.
+- Closure: none — a reviewer question ("does the owner's local override change this path?") until a check exists.
+- Status: open — one incident, filed as a class rather than a singleton because a planned multi-user beta multiplies deployments with different overrides.
+
+### BC-83 Sandbox or probe resolves live code or live paths through the inherited environment
+- Mechanism: a probe, sandbox or throwaway clone inherits the agent shell's environment and runs or writes the live thing while appearing isolated — `PYTHONPATH` pointing at the guard directory whose `usercustomize.py` pre-imports the live `utils` package into every interpreter, or config defaults that resolve store paths — so the result looks valid and is not.
+- Incidents: 2026-09-14 a sandbox reproduction of the `scripts/safe_cmd.sh` defect put a stub `utils/shell_cmd_guard.py` in a scratch repository; the pre-imported live `utils` package won, the real classifier judged the scratch target safe, and the "blocked" command deleted the scratch file (caught only because the run checked the file afterwards; no real data involved). 2026-09-13 generalization-plan probes wrote the clone's gitignored `data/adaptive_exemplars.json` through default store paths (live store verified untouched; the probes were then sandboxed). 2026-09-14 an import-plan review found the same preload active for every plain `python` in a clone — the login shell sources `scripts/activate_guards.sh`, and `hooks/pre-push` calls plain `python` — so `utils.safe_json.__file__` resolved into the live checkout from a clone root, and a push from any clone runs the hook's test passes against the live checkout's `utils/*` mixed with the clone's other packages (GitHub CI unaffected: no `PYTHONPATH`).
+- Find: in a probe, print `module.__file__` for the module under test and assert it is inside the sandbox; `python -c "import sys; print('utils' in sys.modules)"` shows the preload. `python -s` and `python -I` both stop it (verified 2026-09-14), as does `env -u PYTHONPATH`.
+- Closure: none — CM-11 isolation covers store paths only for code that honours `DAEMON_TEST_MODE`; "probes run `python -s` and assert `__file__`" is not yet adopted, and `hooks/pre-push` still calls plain `python` (interim manual workaround for a push from a clone: `env -u PYTHONPATH git push`).
+- Status: open.
+
 ## Detection methods (DM) — find instances without a full read
 
 | ID | Method | Runs as | Classes |
@@ -739,7 +790,7 @@ from A–I because it audits the remedy, not the defect.
 
 The `check_bug_classes.py scan` rows above are pinned by
 `config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
-Together they are a scoped structural lane. 11 of the 78 classes have a
+Together they are a scoped structural lane. 11 of the 82 classes have a
 scanner (9 gated, 2 report-only), and every scan report lists the classes no
 scanner covers. A green scan is not a behavioral guarantee for any class.
 Baseline candidates and their per-occurrence reviews live in
@@ -826,6 +877,11 @@ generalized remedies (`docs/GENERALIZATION_AUDIT_20260901.md` §"Remedy
 patterns") — this round's own BC-15 fix (A12/A13) is itself an instance,
 noted honestly rather than exempted.
 
+A 2026-09-14 session added four mechanisms (§K: BC-80 to BC-83, with BC-79
+left unassigned for the earlier of its two claimants), incidents to BC-63 and
+BC-70, and one singleton (the `set -e` status capture in `scripts/safe_cmd.sh`).
+No scanners were added; that waits for the class-guard re-review.
+
 Completeness here means all mechanisms encountered in the cited repository
 audits through 2026-09-10 are either classified or listed as a singleton. It
 does not claim that unknown production defects have already been enumerated;
@@ -849,6 +905,7 @@ new audits still apply the lenses and checklist below.
 - `config.yaml` comments dropped on every settings save (FOLLOWUPS #4, open).
 - Docker path stale (FOLLOWUPS #10, open; also BC-71).
 - Repeated final-answer display duplication: investigated, not reproduced (09-05).
+- `set -e` exits a shell script at an intended non-zero status, so the branches that handle it never run: in `scripts/safe_cmd.sh`, `result=$(python3 …)` returns the classifier's 1/2 and errexit exits before `CLASSIFY_EXIT=$?`, so the documented unlock and the BLOCKED message never worked (09-14, open; the only `VAR=$?` after a command in a `set -e` script repo-wide; also BC-63).
 
 ## Adding a class — checklist
 
