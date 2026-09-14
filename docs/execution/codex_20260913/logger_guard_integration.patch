@@ -1,0 +1,178 @@
+--- a/docs/BUG_CLASSES.md
++++ b/docs/BUG_CLASSES.md
+@@ -119,6 +119,7 @@
+ | BC-76 | Closure by phrase-append (narrow remedy pattern) | J process | open |
+ | BC-77 | Autonomy guardrail vetoes an explicit user request; dispatcher receipt still claims success | B | partial |
+ | BC-78 | Exhausted budget enforced only at the leaf call; routing and self-description still promise the capability | B | partial |
++| BC-79 | Same-thread re-entry into a non-reentrant lock | D | partial |
+ 
+ ## A. Matching and routing (deterministic classifiers)
+ 
+@@ -232,7 +233,7 @@
+ 
+ ### BC-16 Related constants drift / one constant, two purposes
+ - Mechanism: two constants encode one relationship (collect 6000, truncate 3500) or one constant serves two features.
+-- Incidents: 2026-08-31 `_SOURCE_MATERIAL_TRUNC` vs the 6000-char collector (F23); `GOOGLE_CALENDAR_MAX_EVENTS` as fetch limit AND batch cap (F35).
++- Incidents: 2026-08-31 `_SOURCE_MATERIAL_TRUNC` vs the 6000-char collector (F23); `GOOGLE_CALENDAR_MAX_EVENTS` as fetch limit AND batch cap (F35); 2026-09-13 `ConversationLogger._check_rotation` checks `.txt` part paths even in JSONL mode and can reuse an existing `.jsonl` part.
+ - Find: grep both halves of a collect/consume pair; grep a constant's hit sites and check they belong to one feature.
+ - Closure: F23 aligned; F35 not split.
+ - Status: partial.
+@@ -656,6 +657,13 @@
+ - Find: for each decision function, does its verdict + source + reason reach `_last_turn_signals`/the debug record? DM-26 rollups exist only for fields that exist.
+ - Closure: CM-12 receipts (`gate_reason`, `tone_trigger`, `grounding_status`, `answer_call`, timings); `web_trigger_*`, result count and error fields added 09-10; `web_budget_remaining` added 09-12 so a "triggered, 0 results" row is distinguishable from a search that ran. Still open for the divergence half: the receipt records the GATHERER's verdict, and only the credit/toggle resolution (which makes the two agree) keeps it honest — nothing asserts that the recorded decision is the one that routed the turn. 2026-09-12 (evening, adversarial review F4): `web_evidence` (requested / blocked / acquired / fetched), built at delivery from the gate decision, the gatherer receipt and THIS turn's loop rounds, is on the turn record for both answer routes; `web_budget_remaining` is the budget frozen at the decision rather than a later limiter reading; and the agentic controller names `_last_session` at session creation — it had been set only after a successful synthesis, so an error-fallback turn's provenance, grounding source and receipt read the PREVIOUS turn's rounds.
+ - Status: partial.
++
++### BC-79 Same-thread re-entry into a non-reentrant lock
++- Mechanism: an operation holds a non-reentrant lock, then synchronously calls an internal helper that tries to acquire the same lock on the same thread; the affected branch blocks forever.
++- Incidents: 2026-09-13 `utils/conversation_logger.py`: `log_interaction` held `self.lock`, `_check_rotation` called `_write_session_header`, and the latter reacquired the lock on rollover; a bounded scratch reproduction timed out at two seconds.
++- Find: (proposed) trace synchronous calls made inside each `with self.lock`/`acquire()` region and check whether a called helper re-enters the same lock; force the branch in a bounded subprocess.
++- Closure: explicit locked/unlocked session-header helpers plus `tests/unit/test_conversation_logger_rotation_contract.py` cover text and JSONL rotation and concurrent writes.
++- Status: partial — the logger rotation path is guarded; other lock re-entry paths have not been enumerated.
+ 
+ ## I. New mechanisms (2026-09-10 probe-dump)
+ 
+--- a/config/bug_class_policy.json
++++ b/config/bug_class_policy.json
+@@ -202,6 +202,7 @@
+     "tests/unit/test_ordered_slice_guard.py",
+     "tests/unit/test_budget_meters_rendered_sections.py",
+     "tests/unit/test_tool_wiring_parity.py",
+-    "tests/unit/test_model_capability_wiring.py"
++    "tests/unit/test_model_capability_wiring.py",
++    "tests/unit/test_conversation_logger_rotation_contract.py"
+   ]
+ }
+--- a/tests/bug_class_guards/fixtures/__init__.py
++++ b/tests/bug_class_guards/fixtures/__init__.py
+@@ -767,6 +767,7 @@
+     "tests/unit/test_budget_meters_rendered_sections.py",
+     "tests/unit/test_tool_wiring_parity.py",
+     "tests/unit/test_model_capability_wiring.py",
++    "tests/unit/test_conversation_logger_rotation_contract.py",
+ ]
+ 
+ BENIGN = '"""Synthetic module."""\n\nVALUE = 1\n'
+--- a/tests/bug_class_guards/test_policy.py
++++ b/tests/bug_class_guards/test_policy.py
+@@ -87,7 +87,7 @@
+         assert "not behavioral coverage" in claim
+         assert "coverage gap" in claim
+ 
+-    def test_policy_names_the_five_repo_wide_guards(self):
++    def test_policy_names_required_repo_wide_guards(self):
+         assert _live_policy()["repo_wide_guards"] == EXPECTED_REPO_WIDE_GUARDS
+ 
+     def test_duplicate_scanner_ids_are_rejected_when_the_registry_is_built(self):
+--- a/hooks/pre-push
++++ b/hooks/pre-push
+@@ -20,7 +20,7 @@
+ #      against the checked-out policy, baseline and dispositions
+ #      (docs/TEST_LANES.md §4; enforcement wiring is itself tested by
+ #      tests/bug_class_guards/test_enforcement.py)
+-#   3. pytest: the five repo-wide guards (always; a missing guard file blocks
++#   3. pytest: the required repo-wide guards (always; a missing guard file blocks
+ #      the push) + every test file changed in the push range, with a JUnit
+ #      receipt proving each guard module ran
+ #   PREPUSH_FULL=1 additionally runs the CI marker filter over tests/unit ONLY
+@@ -142,10 +142,11 @@
+   tests/unit/test_budget_meters_rendered_sections.py
+   tests/unit/test_tool_wiring_parity.py
+   tests/unit/test_model_capability_wiring.py
++  tests/unit/test_conversation_logger_rotation_contract.py
+ )
+ selection=()
+ for g in "${guards[@]}"; do
+-  [ -f "$g" ] || fail "repo-wide guard $g is missing — the five guards are never optional"
++  [ -f "$g" ] || fail "repo-wide guard $g is missing — required guards are never optional"
+   selection+=("$g")
+ done
+ for f in "${changed_tests[@]:-}"; do
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -125,7 +125,7 @@
+       - name: Lint (bug-focused floor — rules in pyproject [tool.ruff])
+         run: python -m ruff check .
+ 
+-      - name: Five repo-wide guards (always selected, JUnit receipt)
++      - name: Required repo-wide guards (always selected, JUnit receipt)
+         run: |
+           set -euo pipefail
+           mkdir -p receipts
+@@ -134,7 +134,8 @@
+             tests/unit/test_ordered_slice_guard.py \
+             tests/unit/test_budget_meters_rendered_sections.py \
+             tests/unit/test_tool_wiring_parity.py \
+-            tests/unit/test_model_capability_wiring.py
++            tests/unit/test_model_capability_wiring.py \
++            tests/unit/test_conversation_logger_rotation_contract.py
+         env:
+           OPENAI_API_KEY: "sk-test-placeholder"
+           CHROMA_DEVICE: "cpu"
+--- a/docs/TEST_LANES.md
++++ b/docs/TEST_LANES.md
+@@ -174,7 +174,7 @@
+   [consolidated review](GENERALIZATION_CI_REVIEW_20260913.md) records the
+   pre-v2 CI run and the proposed probe lane.
+ 
+-**The five repo-wide guards** (must be green before every push per
++**The required repo-wide guards** (must be green before every push per
+ `docs/DEVELOPMENT_WORKFLOW.md` §7.1). They are always in `hooks/pre-push`'s
+ selection regardless of what changed; a missing guard file blocks the push. CI
+ runs them as an explicit step whose JUnit receipt `bug-class-gate` verifies.
+@@ -201,13 +201,17 @@
+   a capability row and the classifiers agree. Every alias is also checked
+   through the public `ModelManager` classifiers and `detect_protocol`.
+ 
++- `tests/unit/test_conversation_logger_rotation_contract.py` — bounded text/JSONL
++  rotation and serialized concurrent writes detect lock re-entry and part reuse.
++
+ Run together (also used as this batch's own regression sweep, §5 below):
+ ```bash
+ python -m pytest -q tests/unit/test_no_git_state_in_tests.py \
+   tests/unit/test_ordered_slice_guard.py \
+   tests/unit/test_budget_meters_rendered_sections.py \
+   tests/unit/test_tool_wiring_parity.py \
+-  tests/unit/test_model_capability_wiring.py
++  tests/unit/test_model_capability_wiring.py \
++  tests/unit/test_conversation_logger_rotation_contract.py
+ ```
+ 
+ **New real-driver Chroma/JSON tests from this repair plan** — collection
+@@ -219,7 +223,7 @@
+   tests/unit/test_sep09_backup_recovery.py
+ # => 59 tests collected, 0 errors, 0 deselected
+ ```
+-None of the five is in either ignore list and none carries a `slow`/
++None of these guards is in either ignore list and none carries a `slow`/
+ `benchmark`/`semantic` marker, so all 59 are already part of the fast CI
+ lane described above — no additional CI wiring is needed for them. (B4's
+ frontend Vitest lane, if adopted per B0's decision, is out of scope for this
+@@ -239,7 +243,7 @@
+ BOTH its selections — the changed-files-in-the-push-range selection and the
+ optional `PREPUSH_FULL=1` unit re-run — under the same `MemoryMax=6G`
+ wrapper, in ONE pytest process. The changed-files selection is not unit-only:
+-it is whatever test files the push range touched, plus the five guards, plus
++it is whatever test files the push range touched, plus the required guards, plus
+ the same-named test of every changed source file (T14 mapping). When the
+ push range touches non-unit test files, that selection IS a non-unit batch
+ under a cap 2 GiB below the one this section documents, and it gets
+--- a/docs/DEVELOPMENT_WORKFLOW.md
++++ b/docs/DEVELOPMENT_WORKFLOW.md
+@@ -179,7 +179,7 @@
+    the repo root (git against a `tmp_path` repo stays allowed), and
+    `hooks/pre-push` (installed as `.git/hooks/pre-push`) refuses a push from a
+    dirty tracked tree or with untracked `.py` files, then mirrors the CI privacy
+-   guard and ruff and runs the changed test files + the five repo-wide guards
++   guard and ruff and runs the changed test files + the required repo-wide guards
+    — in one pytest process under `MemoryMax=6G`, 2 GiB below the §3 cap the
+    non-unit batch needs. A push range that touches non-unit test files
+    therefore gets SIGKILLed, not failed (2026-09-10: the T01 repair push, 24
+@@ -355,7 +355,7 @@
+    drift no longer goes red; a real edit to a slice still does).
+    Repo-wide guard tests (`test_no_git_state_in_tests`, `test_ordered_slice_guard`,
+    `test_budget_meters_rendered_sections`, `test_tool_wiring_parity`,
+-   `test_model_capability_wiring`) are never in a module-scoped local
++   `test_model_capability_wiring`, `test_conversation_logger_rotation_contract`) are never in a module-scoped local
+    selection; `hooks/pre-push` runs them on every push (§3a.6).
+    Beside them, `hooks/pre-push` and CI also run the bug-class contract
+    (`python scripts/check_bug_classes.py scan --root .`, its stdlib-only lane

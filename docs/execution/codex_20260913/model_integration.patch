@@ -1,0 +1,356 @@
+--- a/models/model_manager.py
++++ b/models/model_manager.py
+@@ -231,6 +231,8 @@
+     # high-risk queries.
+     "claude-fable-5": "anthropic/claude-fable-5",
+     "fable-5": "anthropic/claude-fable-5",
++    "claude-fable-5.1": "anthropic/claude-fable-5.1",
++    "fable-5.1": "anthropic/claude-fable-5.1",
+     "sonnet-4.5": "anthropic/claude-sonnet-4.5",
+     "sonnet-4.6": "anthropic/claude-sonnet-4.6",
+     "haiku-4.5": "anthropic/claude-haiku-4.5",
+@@ -241,6 +243,7 @@
+     "gpt-5": "openai/gpt-5",
+     "gpt-5.1": "openai/gpt-5.1",
+     "gpt-5.5": "openai/gpt-5.5",
++    "gpt-6-astra": "openai/gpt-6-astra",
+     # GLM
+     "glm-4.6": "z-ai/glm-4.6",
+     "glm-4.7": "z-ai/glm-4.7",
+@@ -251,6 +254,7 @@
+     "deepseek-v3.1": "deepseek/deepseek-chat-v3.1",
+     "deepseek-v4": "deepseek/deepseek-v4-pro",
+     "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
++    "deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
+     "deepseek-r1": "deepseek/deepseek-r1-0528",
+     # Moonshot AI (Kimi) via OpenRouter. Kimi K3: 2.8T-param multimodal reasoning
+     # model, 1.05M ctx ($3/M in, $15/M out). "kimi-3" alias matches common usage.
+@@ -277,6 +281,7 @@
+     "anthropic/claude-opus-4.7": _CLAUDE,
+     "anthropic/claude-opus-4.8": _CLAUDE,
+     "anthropic/claude-fable-5": _CLAUDE,
++    "anthropic/claude-fable-5.1": _CLAUDE,
+     "anthropic/claude-sonnet-4.5": _CLAUDE,
+     "anthropic/claude-sonnet-4.6": _CLAUDE,
+     "anthropic/claude-haiku-4.5": _CLAUDE,
+@@ -286,6 +291,8 @@
+     "openai/gpt-5": _GPT,
+     "openai/gpt-5.1": _GPT,
+     "openai/gpt-5.5": _GPT,
++    # Astra reasons, accepts images and OpenRouter Chat tools, and auto-caches.
++    "openai/gpt-6-astra": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
+     # All GLM models on OpenRouter support tools (verified 2026-07-22).
+     "z-ai/glm-4.6": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+     "z-ai/glm-4.7": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+@@ -295,6 +302,8 @@
+     "deepseek/deepseek-chat-v3.1": {"reasoning": False, "vision": False, "tools": True, "caching": None},
+     "deepseek/deepseek-v4-pro": {"reasoning": True, "vision": False, "tools": True, "caching": None},
+     "deepseek/deepseek-v4-flash": {"reasoning": True, "vision": False, "tools": True, "caching": None},
++    # V4.1 Flash adds native image understanding; caching is provider-managed.
++    "deepseek/deepseek-v4.1-flash": {"reasoning": True, "vision": True, "tools": True, "caching": None},
+     # deepseek-r1 tools=True: verified against OpenRouter's supported_parameters
+     # (tools + tool_choice present) on 2026-07-22.
+     "deepseek/deepseek-r1-0528": {"reasoning": True, "vision": False, "tools": True, "caching": None},
+@@ -318,13 +327,71 @@
+ # (extend scripts/verify_model_capabilities_live.py).
+ DEFAULT_API_CONTEXT_LIMIT = 128_000
+ MODEL_CONTEXT_LIMITS = {
+-    # Anthropic Claude: 200K standard tier across current models.
+-    **{slug: 200_000 for slug in MODEL_CAPABILITIES if slug.startswith("anthropic/claude")},
++    # Most Claude routes are 200K; Fable 5.1 is 1M.
++    **{slug: 200_000 for slug in MODEL_CAPABILITIES
++       if slug.startswith("anthropic/claude") and slug != "anthropic/claude-fable-5.1"},
++    "anthropic/claude-fable-5.1": 1_000_000,
++    "deepseek/deepseek-v4.1-flash": 1_048_576,
++    "openai/gpt-6-astra": 1_050_000,
+     "openai/gpt-4o": 128_000,
+     "openai/gpt-4o-mini": 128_000,
+     # Kimi K3: 1.05M ctx (see alias comment above).
+     "moonshotai/kimi-k3": 1_050_000,
+ }
++
++# These OpenRouter routes omit the listed parameters from GET /api/v1/models.
++_OPENROUTER_UNSUPPORTED_PARAMETERS = {
++    "anthropic/claude-fable-5.1": frozenset({"temperature", "top_p", "tool_choice"}),
++    "openai/gpt-6-astra": frozenset({"temperature", "top_p", "stop"}),
++}
++_ALWAYS_ON_REASONING_MODELS = frozenset({
++    "anthropic/claude-fable-5.1",
++    "openai/gpt-6-astra",
++})
++_SYNC_REASONING_MODELS = frozenset({
++    "deepseek/deepseek-v4.1-flash",
++    "anthropic/claude-fable-5.1",
++    "openai/gpt-6-astra",
++})
++
++
++def _filter_openrouter_request_params(full_slug: str, params: dict) -> dict:
++    """Drop parameters this exact OpenRouter model route does not advertise."""
++    unsupported = _OPENROUTER_UNSUPPORTED_PARAMETERS.get(str(full_slug), frozenset())
++    return {key: value for key, value in params.items() if key not in unsupported}
++
++
++def _slug_supports_openrouter_parameter(full_slug: str, parameter: str) -> bool:
++    """Whether this model route advertises a parameter in OpenRouter metadata."""
++    return parameter not in _OPENROUTER_UNSUPPORTED_PARAMETERS.get(
++        str(full_slug), frozenset()
++    )
++
++
++def _unsupported_tool_choice_error(full_slug: str, tool_choice) -> str:
++    """Classify unsupported explicit tool selection before sending a request."""
++    if _slug_supports_openrouter_parameter(full_slug, "tool_choice"):
++        return ""
++    if tool_choice is None or tool_choice == "auto" or tool_choice == "none":
++        return ""
++    return (
++        f"[MODEL NOT SUPPORTED] {full_slug} via OpenRouter does not advertise "
++        "forced tool_choice. Use auto tool selection or switch models."
++    )
++
++
++def _reasoning_request_config(full_slug: str, disable_reasoning: bool = False) -> dict:
++    """Build route-compatible reasoning settings, preserving mandatory reasoning."""
++    if not disable_reasoning:
++        if str(full_slug) == "deepseek/deepseek-v4.1-flash":
++            # OpenRouter advertises low/high/max for this route; low is the
++            # cost-conscious valid effort and avoids sending unsupported medium.
++            return {"effort": "low"}
++        return {"effort": "medium"}
++    if str(full_slug) in _ALWAYS_ON_REASONING_MODELS:
++        # These routes require reasoning; low effort and exclusion cannot disable it.
++        return {"effort": "low", "exclude": True}
++    return {"enabled": False}
+ 
+ 
+ def _slug_forced_top_p(full_slug: str):
+@@ -343,6 +410,8 @@
+         return True
+     if "deepseek-r1" in s or "deepseek-v4" in s:
+         return True
++    if s == "openai/gpt-6-astra":
++        return True
+     # Moonshot reasoning variants: K3 reasoning model, K2 Thinking, and K2.6
+     # (OpenRouter reports `reasoning` in its supported_parameters).
+     if "kimi-k3" in s or "kimi-k2-thinking" in s or "kimi-k2.6" in s:
+@@ -353,14 +422,17 @@
+ def _slug_supports_vision(full_slug: str) -> bool:
+     """Whether a full model slug accepts image/vision input."""
+     s = str(full_slug).lower()
+-    # Text-only families never take image input.
+-    if "deepseek" in s or "glm" in s:
++    # DeepSeek V4.1 Flash is the first registered DeepSeek route with native
++    # images; the existing V4 and R1 routes remain text-only.
++    if "deepseek" in s:
++        return "deepseek-v4.1-flash" in s
++    if "glm" in s:
+         return False
+     # All Anthropic Claude models are multimodal — a startswith check (not a
+     # per-name substring list) so new Claude models like fable-5 aren't missed.
+     if s.startswith("anthropic/claude"):
+         return True
+-    vision_patterns = ("gpt-4o", "gpt-4.1", "gpt-5", "gemini",
++    vision_patterns = ("gpt-4o", "gpt-4.1", "gpt-5", "gpt-6-astra", "gemini",
+                        "kimi-k3", "kimi-k2.6", "kimi-k2.5")
+     return any(p in s for p in vision_patterns)
+ 
+@@ -371,7 +443,7 @@
+     # All Anthropic Claude models support tools (startswith, not per-name).
+     if s.startswith("anthropic/claude"):
+         return True
+-    tool_patterns = ("gpt-4", "gpt-5",
++    tool_patterns = ("gpt-4", "gpt-5", "gpt-6-astra",
+                      "deepseek-chat", "deepseek-coder", "deepseek-v4", "deepseek-r1",
+                      "gemini", "glm", "kimi")
+     return any(p in s for p in tool_patterns)
+@@ -387,7 +459,8 @@
+     if s.startswith("anthropic/claude"):
+         return True
+     if s.startswith("openai/gpt"):
+-        # gpt-4o, gpt-4o-mini, gpt-5+ and gpt-4.1+ support caching.
++        # gpt-4o, gpt-4o-mini, gpt-5+ and gpt-4.1+ use explicit cache markers.
++        # GPT-6 Astra is provider-managed/implicit; do not inject cache_control.
+         if "gpt-4o" in s or "gpt-5" in s:
+             return True
+         if "gpt-4." in s:
+@@ -887,17 +960,23 @@
+                 ]
+ 
+             # logger.debug(  Calling OpenAI API: {model_name}")
+-            response = self.client.chat.completions.create(
+-                model=model_name,
+-                messages=messages,
+-                max_tokens=max_tokens,
+-                temperature=temperature,
+-                top_p=top_p,
+-                stop=stop_sequences,
++            full_model = self.api_models.get(model_name, model_name)
++            extra_body = {"usage": {"include": True}}
++            if full_model in _SYNC_REASONING_MODELS:
++                extra_body["reasoning"] = _reasoning_request_config(full_model)
++            request_params = {
++                "model": model_name,
++                "messages": messages,
++                "max_tokens": max_tokens,
++                "temperature": temperature,
++                "top_p": top_p,
++                "stop": stop_sequences,
+                 # Ask OpenRouter to include usage accounting (cost + cache stats)
+                 # in the response, so prompt-cache hits are observable.
+-                extra_body={"usage": {"include": True}},
+-            )
++                "extra_body": extra_body,
++            }
++            request_params = _filter_openrouter_request_params(full_model, request_params)
++            response = self.client.chat.completions.create(**request_params)
+ 
+             self._log_cache_usage(
+                 getattr(response, "usage", None),
+@@ -1109,8 +1188,9 @@
+                         {"role": "user", "content": prompt}
+                     ]
+ 
++                full_model = self.api_models[target_model]
+                 create_kwargs = dict(
+-                    model=self.api_models[target_model],
++                    model=full_model,
+                     messages=messages,
+                     max_tokens=(max_tokens if max_tokens is not None else self.default_max_tokens),
+                     temperature=temperature if temperature is not None else self.default_temperature,
+@@ -1118,6 +1198,7 @@
+                     stop=stop_sequences,
+                     stream=False,
+                 )
++                create_kwargs = _filter_openrouter_request_params(full_model, create_kwargs)
+ 
+                 # Ask OpenRouter for usage accounting so prompt-cache stats
+                 # (cached_tokens, cache_discount) appear in the usage object —
+@@ -1127,14 +1208,10 @@
+                 # Request native reasoning separation for supported models
+                 # (unless the caller explicitly disabled it for a recovery retry)
+                 if self.supports_reasoning(target_model):
+-                    # Omitting the reasoning param does NOT disable reasoning
+-                    # for reasoning-by-default models: kimi-k3 kept reasoning
+-                    # through the 2026-08-31 insight assessor call with no
+-                    # reasoning key sent and blew the 75s timeout. OpenRouter's
+-                    # explicit off-switch is enabled=false.
+-                    create_kwargs["extra_body"]["reasoning"] = (
+-                        {"enabled": False} if disable_reasoning
+-                        else {"effort": "medium"}
++                    # Mandatory-reasoning routes use low effort on recovery;
++                    # other models retain the explicit enabled=false recovery.
++                    create_kwargs["extra_body"]["reasoning"] = _reasoning_request_config(
++                        full_model, disable_reasoning
+                     )
+ 
+                 response = await self.async_client.chat.completions.create(**create_kwargs)
+@@ -1282,6 +1359,7 @@
+ 
+         # Handle API models with tool support
+         if target_model in self.api_models:
++            full_model = self.api_models[target_model]
+             if self.async_client is None:
+                 return {"content": self._stub_response(prompt), "tool_calls": None}
+ 
+@@ -1300,10 +1378,23 @@
+                     "stream": False,
+                 }
+ 
+-                # Add tools if provided
+-                if tools:
++                # Fable 5.1 supports automatic tool calls but does not advertise
++                # tool_choice. Never silently downgrade an explicit selector.
++                tool_choice_error = _unsupported_tool_choice_error(full_model, tool_choice)
++                if tool_choice_error:
++                    return {"content": tool_choice_error, "tool_calls": None}
++
++                # Its route defaults to auto. For none, offer no tools so an
++                # ignored selector cannot accidentally permit a tool call.
++                if tools and not (
++                    tool_choice == "none"
++                    and not _slug_supports_openrouter_parameter(full_model, "tool_choice")
++                ):
+                     request_params["tools"] = tools
+-                    request_params["tool_choice"] = tool_choice
++                    if _slug_supports_openrouter_parameter(full_model, "tool_choice"):
++                        request_params["tool_choice"] = tool_choice
++
++                request_params = _filter_openrouter_request_params(full_model, request_params)
+ 
+                 # Request native reasoning separation for supported models — but NOT
+                 # when tools are in play. Reasoning models (DeepSeek) otherwise spend
+@@ -1313,13 +1404,12 @@
+                 # Ask OpenRouter for usage accounting (cost + cache stats).
+                 request_params["extra_body"] = {"usage": {"include": True}}
+ 
+-                if not tools and self.supports_reasoning(target_model):
+-                    request_params["extra_body"]["reasoning"] = {"effort": "medium"}
+-                elif tools and disable_reasoning and self.supports_reasoning(target_model):
+-                    # Omitting the key does NOT disable reasoning for
+-                    # reasoning-by-default models (kimi-k3) — explicit
+-                    # off-switch required (2026-09-06 fix 1.5).
+-                    request_params["extra_body"]["reasoning"] = {"enabled": False}
++                if self.supports_reasoning(target_model) and (not tools or disable_reasoning):
++                    # Mandatory-reasoning routes use low effort plus exclusion
++                    # on recovery; DeepSeek recovery still uses enabled=false.
++                    request_params["extra_body"]["reasoning"] = _reasoning_request_config(
++                        full_model, disable_reasoning
++                    )
+ 
+                 response = await self.async_client.chat.completions.create(**request_params)
+ 
+@@ -1464,8 +1554,9 @@
+                     "\n\nHuman:",
+                 ]
+ 
++                full_model = self.api_models[target_model]
+                 create_kwargs = dict(
+-                    model=self.api_models[target_model],
++                    model=full_model,
+                     messages=messages,
+                     max_tokens=kwargs.get('max_tokens', self.default_max_tokens),
+                     temperature=kwargs.get('temperature', self.default_temperature),
+@@ -1476,6 +1567,7 @@
+                     # consumer can log prompt-cache stats for the streaming path.
+                     stream_options={"include_usage": True},
+                 )
++                create_kwargs = _filter_openrouter_request_params(full_model, create_kwargs)
+ 
+                 # Request native reasoning separation for models that support it
+                 # (Claude, DeepSeek-R1, Kimi K3). Thinking arrives via
+@@ -1487,15 +1579,25 @@
+                 # observable on the streaming (main) path.
+                 create_kwargs["extra_body"] = {"usage": {"include": True}}
+ 
+-                if self.supports_reasoning(target_model) and not disable_reasoning:
+-                    create_kwargs["extra_body"]["reasoning"] = {"effort": "medium"}
+-                    logger.info(f"[generate_async] Enabled native reasoning for {target_model}"
+-                                + (" (images present)" if images else ""))
+-                elif disable_reasoning and self.supports_reasoning(target_model):
+-                    # Explicit off-switch — omission alone leaves
+-                    # reasoning-by-default models (kimi-k3) reasoning anyway.
+-                    create_kwargs["extra_body"]["reasoning"] = {"enabled": False}
+-                    logger.info(f"[generate_async] Native reasoning disabled by caller for {target_model} (recovery retry)")
++                if self.supports_reasoning(target_model):
++                    create_kwargs["extra_body"]["reasoning"] = _reasoning_request_config(
++                        full_model, disable_reasoning
++                    )
++                    if disable_reasoning and full_model in _ALWAYS_ON_REASONING_MODELS:
++                        logger.info(
++                            f"[generate_async] {target_model} requires reasoning; "
++                            "using low effort and excluding reasoning from output"
++                        )
++                    elif disable_reasoning:
++                        logger.info(
++                            f"[generate_async] Native reasoning disabled by caller "
++                            f"for {target_model} (recovery retry)"
++                        )
++                    else:
++                        logger.info(
++                            f"[generate_async] Enabled native reasoning for {target_model}"
++                            + (" (images present)" if images else "")
++                        )
+ 
+                 stream = await self.async_client.chat.completions.create(**create_kwargs)
+                 return stream
