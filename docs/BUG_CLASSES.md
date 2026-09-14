@@ -71,7 +71,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-28 | Derived-signal feedback latch | D state | partial |
 | BC-29 | Self-teaching store poisoned by a non-independent signal | D | recurs |
 | BC-30 | State scoped to the wrong lifetime | D | partial |
-| BC-31 | Read-through cache not invalidated by the mutation path | D | closed |
+| BC-31 | Read-through cache not invalidated by the mutation path | D | partial |
 | BC-32 | Cache-key inconsistency between call sites | D | partial |
 | BC-33 | Non-transactional multi-step write | D | closed |
 | BC-34 | Undo built on replace semantics against a merge-only store | D | closed |
@@ -146,6 +146,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 ### BC-04 Classifier missing an anchor or qualifier
 - Mechanism: a keyword/regex router lacks a required anchor (possessive, personal-record cue, request shape, TitleCase), so it over- or under-fires.
 - Incidents: 2026-08-27 unanchored "can you"/`document` rode file-continuation into a 106 s loop; 2026-08-31 `pattern_temporal` had no personal-record anchor (AUDIT 08-31 F3); 2026-09-05 `requires_fresh_public_evidence` under-fired on second-person wrappers and over-fired on pronoun-less private questions (FABLE_HANDOFF 09-05); 2026-09-08 `_REQUEST_SHAPED_RE` matched `read` the R function (HANDOFF_20260908 N1); 2026-09-10 calendar-create matched the user's narration "I only put professors hours in calendar" because the detector lacked a request/self-narration anchor (calendar forced-action handoff T9); 2026-09-12 `query_checker._is_heavy_topic_heuristic` returned True for ANY message over 2,500 chars — a length PROXY for "pasted news article" standing in, unqualified, for the thing it proxies: an 18,549-char R package-install log with zero heavy-keyword hits was stored `is_heavy_topic=True` on length alone and armed the distress-sticky floor over the nine debugging turns that followed; 2026-09-12 (evening) the card/calendar claim grammar behind NO_CARD_NOTICE and the "not on your calendar" notice had no voice or referent anchor — a pronoun THING plus a particle STATE matched "wake up to", "given up", "all there is to it", and `approve it` matched a news summary's "whether Congress would need to approve it" (8 of the 15 stored notice replies spurious, the annotator marking the same sentences `[unverified action claim]`); the same evening `institution_resolver`'s bare cross-domain cues ("withdrawal", "registration", "enrollment", "transcript") made "benzodiazepine withdrawal symptoms" and "voter registration deadline" school logistics and prefixed the owner's school to both searches; 2026-09-12 (follow-up review F1) the calendar family's anchor was any calendar-thing word, never WHOSE calendar — "The event is already scheduled for March." was a claim and, with one unrelated event gathered, drew "I don't see that on your calendar" (the handler's title/weekday match compares a claim to events; it does not attribute it) — and a reporting frame vetoed a whole sentence, dropping the independent owner claim in "The email says the meeting is already scheduled, and it is already on your calendar for Friday at 3 PM."
+- Post-push 2026-09-12: self-report trimming zeroed git retrieval even when commits were the report's subject. `repository_context.is_repository_status_report` shares categorized repository cues and commit-record noun syntax between the trim and gatherer; all other personal-context caps still apply. Clean/wrapped outcome fixtures: `tests/unit/test_sep12_repository_status_context.py`.
 - Find: DM-09 — adversarial probe set against the deployed function (`scripts/probe_tone_backstop.py` pattern), with the live texts as fixtures.
 - Closure: per-detector anchors (`_entity_mention_is_proper` TitleCase doctrine, head-anchored request shapes, `is_personal_doc_search`, private-sphere token sets, `_match_is_self_narration`); 2026-09-12 `action_claim_guard._claim_sentence_eligible` — VOICE (a categorized reporting-frame table + an owner-directed `approve` check) and REFERENT ANCHOR (an approval-surface word in the same or immediately preceding sentence; the ambiguous "proposal" only beside a first/second-person reference) — shared by `claims_pending_card`, `claims_calendar_state` and `annotate_unverified_action_claim`, and `institution_resolver`'s three cue tables (school-logistics / cross-domain / school-domain anchor). Tests: `test_sep12_action_claim_eligibility.py`, `test_sep12_search_identity_scope.py`.
 - Status: partial — no standing adversarial-probe suite across detectors.
@@ -358,7 +359,8 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Incidents: 2026-09-09 calendar cache after update/delete/partial create (F06); `MemoryExpander` served old text forever (F08).
 - Find: DM-05 read-mutate-read on one live instance.
 - Closure: `_invalidate_read_cache`; fingerprint + TTL + `notify_chroma_mutation`; `tests/unit/test_sep09_storage_repairs.py`.
-- Status: closed (residual: calendar key lacks lookahead dims).
+- Post-push 2026-09-12: the procedural git index ended on September 2 while local commits continued through September 12; no runtime path synchronizes it. Repository status reports now read bounded local git history directly and admit compact records before older conversation within the same token budget. Historical questions retain the indexed hybrid path. `tests/unit/test_sep12_repository_status_context.py` exercises the deployed extractor, gatherer, builder and formatter.
+- Status: partial — status-report freshness is closed at read time; the historical index still requires manual sync, and the calendar key lacks lookahead dimensions.
 
 ### BC-32 Cache-key inconsistency between call sites
 - Mechanism: two callers of one cached operation derive different keys for logically identical calls.
@@ -703,7 +705,7 @@ from A–I because it audits the remedy, not the defect.
 
 | ID | Method | Runs as | Classes |
 |---|---|---|---|
-| DM-01 | Raw-substring / negation audit: `rg` for `in <x>.lower()` and cue regexes not routed through `utils/trigger_match.py` | `check_bug_classes.py scan` — dm01_raw_substring (gated) | BC-01, BC-02 |
+| DM-01 | Raw-substring / negation audit: `rg` for `in <x>.lower()` and cue regexes not routed through `utils/trigger_match.py` | `check_bug_classes.py scan` — dm01_raw_substring (gated; contract v2 2026-09-13: no module exemption for importing the chokepoint, no lexical prefilter) | BC-01, BC-02 |
 | DM-02 | Registry parity tests that walk a table and assert every entry is wired | `test_tool_wiring_parity`, `test_model_capability_wiring`, `test_budget_meters_rendered_sections`, `test_api_error_fail_fast` | BC-10, BC-15, BC-17, BC-22, BC-23 |
 | DM-03 | Ordered-slice AST guard (content-anchored allowlist) | `tests/unit/test_ordered_slice_guard.py` | BC-18 |
 | DM-04 | Same-instance before/after settings probe | test pattern, `test_sep09_live_controls.py` | BC-11 |
@@ -718,9 +720,9 @@ from A–I because it audits the remedy, not the defect.
 | DM-13 | Unignore rerun under the CI marker filter | shell | BC-66 |
 | DM-14 | Peak-RSS measurement of the exact hook/CI selection under `systemd-run -p MemoryMax=` + `/usr/bin/time -v` | shell | BC-67 |
 | DM-15 | Sibling-site enumeration after a fix: every read AND write of the primitive, every sibling by naming pattern | grep, manual | BC-58, BC-27, BC-13 |
-| DM-16 | Config-key reachability: each YAML leaf → readers outside schema/app_config | `check_bug_classes.py scan` — dm16_config_key_reachability (report-only, 87 live candidates) | BC-12, BC-10 |
-| DM-17 | `grep -L daemon_guard scripts/*.py \| xargs grep -l -- --apply`; `rg '"data/' tests/` | `check_bug_classes.py scan` — dm17_apply_without_guard (gated) | BC-37 |
-| DM-18 | Broad `except` returning an empty result beside a store call | `check_bug_classes.py scan` — dm18_except_returns_empty (gated) | BC-20, BC-47 |
+| DM-16 | Config-key reachability: each YAML leaf → readers outside schema/app_config | `check_bug_classes.py scan` — dm16_config_key_reachability (report-only; YAML, app_config and consumer roots are required inputs; unsupported YAML shapes are unresolved candidates) | BC-12, BC-10 |
+| DM-17 | `--apply` scripts without a `utils.daemon_guard.daemon_running` guard that runs before every apply-consuming statement (a mention in a comment, string or import is not a guard); `data/` literals in tests | `check_bug_classes.py scan` — dm17_apply_without_guard (gated; scripts and tests legs counted separately; unproven guard shapes are unresolved candidates) | BC-37 |
+| DM-18 | Broad `except` returning an empty result beside a store call | `check_bug_classes.py scan` — dm18_except_returns_empty (gated; four required retrieval roots) | BC-20, BC-47 |
 | DM-19 | Dead-call kwarg grep + kwargs-capturing fake client | grep + test pattern | BC-14 |
 | DM-20 | Prohibitive prompt instruction → deterministic sibling check | grep `config/prompts/*.txt` | BC-46 |
 | DM-21 | Contamination and junk reports on the deployed predicates | `scripts/report_claim_contamination.py`, `purge_junk_facts.py` dry-run, exemplar cap check | BC-54, BC-55, BC-56, BC-29 |
@@ -733,7 +735,15 @@ from A–I because it audits the remedy, not the defect.
 | DM-28 | Persisted-model-output sweep: for every tool/generator writing model text into a store later re-rendered into a prompt, check write-path attribution stripping and read-path provenance marking | grep + manual | BC-75 |
 | DM-31 | Public function asserting live budget/toggle state through a literal default (`remaining_credits: float = 100`, `web_search_enabled: bool = True`); `None` = "resolve it" is the fix shape | `check_bug_classes.py scan` — dm31_live_state_default (gated) | BC-78, BC-11, BC-12 |
 | DM-30 | Keyword-boundary corpus diff: for every list compiled through `utils/trigger_match.py`, diff old vs new match sets over the corpus's word tokens and review BOTH directions (lost tokens must be unrelated words; gained tokens must be true inflections) | `scripts/probe_keyword_boundary.py`, read-only | BC-01 |
-| DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human) | BC-76 |
+| DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human; its untracked changelog input reports *unavailable* in CI, never a clean zero) | BC-76 |
+
+The `check_bug_classes.py scan` rows above are pinned by
+`config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
+Together they are a scoped structural lane. 11 of the 78 classes have a
+scanner (9 gated, 2 report-only), and every scan report lists the classes no
+scanner covers. A green scan is not a behavioral guarantee for any class.
+Baseline candidates and their per-occurrence reviews live in
+`config/bug_class_baseline.json` and `config/bug_class_dispositions.json`.
 
 ## Closure methods (CM) — what has actually stopped a class
 

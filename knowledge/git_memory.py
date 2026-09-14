@@ -2,7 +2,8 @@
 # knowledge/git_memory.py
 
 Module Contract
-- Purpose: Extract git commit history as structured dicts for PROCEDURAL memory population.
+- Purpose: Extract git commit history for PROCEDURAL memory population and
+  read-only current repository status context (five-second git-log timeout).
 - Class: GitMemoryExtractor(repo_path)
 - Key methods:
   - extract_commits(limit, since, include_diffs, diff_max_lines) -> List[Dict]
@@ -83,8 +84,9 @@ class GitMemoryExtractor:
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
+                timeout=5,
             )
-        except (FileNotFoundError, OSError) as e:
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
             logger.error(f"Git command failed: {e}")
             return []
 

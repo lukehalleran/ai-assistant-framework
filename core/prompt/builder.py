@@ -580,7 +580,8 @@ SELF_REPORT_RETRIEVAL_TRIM = {
     # 2026-09-06 retest: on a one-line status update the weight was NOT the
     # profile — [PROJECT COMMIT HISTORY] n=5 cost 2.4K tokens and ten
     # [RECENT CONVERSATION] turns 4.8K. Commits are noise on a personal
-    # self-report; six recent turns keep continuity.
+    # self-report; repository status reports retain their git limit below.
+    # Six recent turns keep continuity.
     "max_git_commits": 0,
     "max_recent": 6,
 }
@@ -611,6 +612,8 @@ def _apply_self_report_trim(
     intent already set LOWER than the trim value is left alone (the trim
     never raises a count), a key absent from `ro` takes the trim value
     outright, and a higher intent value is capped down to the trim value.
+    Repository status reports exempt max_git_commits from this trim, retaining
+    the caller's limit (including zero) or the configured default.
     No-op (returns `ro` unchanged) unless the message is self-report shaped
     (`utils.query_checker.is_self_report`), and even then only when the turn
     is neither distress (`_distress_from_crisis_level`) nor a heavy topic
@@ -627,7 +630,13 @@ def _apply_self_report_trim(
         return ro
 
     merged = dict(ro)
+    from utils.repository_context import is_repository_status_report
+    repository_report = is_repository_status_report(user_input)
     for key, trim_value in SELF_REPORT_RETRIEVAL_TRIM.items():
+        if key == "max_git_commits" and repository_report:
+            # Keep the caller's limit/default for the subject of this report;
+            # personal context still receives every other self-report cap.
+            continue
         if key in merged:
             try:
                 merged[key] = min(int(merged[key]), int(trim_value))

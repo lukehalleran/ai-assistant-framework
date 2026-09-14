@@ -23,7 +23,6 @@ from bug_class_guards.scanners.common import ScannerError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from fixtures import (
-    DM01_GREEN_CHOKEPOINT,
     DM01_GREEN_ORDINARY,
     DM01_RED,
     DM16_APP_CONFIG,
@@ -67,17 +66,11 @@ class TestDm01RawSubstring:
         build_tree(tmp_path, {"core/tone.py": DM01_RED})
         result = dm01_raw_substring.scan(tmp_path)
         assert result.files_processed == 1
-        texts = [f.text for f in result.findings]
+        texts = [f.excerpt for f in result.findings]
         assert texts == ['if "ice" in text_lower:',
                          "return any(word in text_lower for word in HEAVY_KEYWORDS)"]
         assert all(f.symbol == "is_heavy" for f in result.findings)
         assert all(f.path == "core/tone.py" for f in result.findings)
-
-    def test_green_chokepoint_importer_is_never_flagged(self, tmp_path):
-        build_tree(tmp_path, {"core/tone.py": DM01_GREEN_CHOKEPOINT})
-        result = dm01_raw_substring.scan(tmp_path)
-        assert result.files_processed == 1
-        assert result.findings == []
 
     def test_green_ordinary_membership_is_never_flagged(self, tmp_path):
         build_tree(tmp_path, {"core/tone.py": DM01_GREEN_ORDINARY})
@@ -113,9 +106,12 @@ class TestDm16ConfigReachability:
             },
         )
         result = dm16_config_reachability.scan(tmp_path)
-        symbols = [f.symbol for f in result.findings]
-        assert symbols == ["section.dead_key", "section.nested.deep_dead_key"]
+        unreached = [f.symbol for f in result.findings if f.kind == "config_leaf_unreached"]
+        assert unreached == ["section.dead_key", "section.nested.deep_dead_key"]
         assert all(f.path == "config/config.yaml" for f in result.findings)
+        # Contract v2: a mapping inside a list item is surfaced, not skipped.
+        unresolved = [f for f in result.findings if f.kind == "config_yaml_unresolved"]
+        assert [(f.symbol, f.unresolved) for f in unresolved] == [("list_section", True)]
 
     def test_green_every_constant_has_a_consumer(self, tmp_path):
         build_tree(
@@ -126,7 +122,8 @@ class TestDm16ConfigReachability:
                 "core/consumer.py": DM16_CONSUMER_ALL,
             },
         )
-        assert dm16_config_reachability.scan(tmp_path).findings == []
+        findings = dm16_config_reachability.scan(tmp_path).findings
+        assert [f for f in findings if f.kind == "config_leaf_unreached"] == []
 
     def test_multiline_scalar_continuation_is_never_read_as_a_key(self):
         leaves = dm16_config_reachability.read_leaves(DM16_YAML)
@@ -135,9 +132,12 @@ class TestDm16ConfigReachability:
         assert not any("Input" in name for name in dotted)
         assert not any("item_one" in name for name in dotted)
 
-    def test_missing_config_reports_zero_files_rather_than_passing(self, tmp_path):
+    def test_missing_config_reports_missing_legs_rather_than_passing(self, tmp_path):
         result = dm16_config_reachability.scan(tmp_path)
         assert result.files_processed == 0 and result.findings == []
+        legs = {leg.id: leg.status for leg in result.legs}
+        assert legs["dm16_config_yaml"] == "missing" and legs["dm16_app_config"] == "missing"
+        assert legs["dm16_schema"] == "unavailable"
 
 
 class TestDm17ApplyWithoutGuard:
@@ -153,8 +153,8 @@ class TestDm17ApplyWithoutGuard:
         paths = [f.path for f in result.findings]
         assert paths == ["scripts/purge_things.py", "tests/unit/test_store.py"]
         script = result.findings[0]
-        assert script.symbol == ""
-        assert "--apply" in script.text
+        assert (script.symbol, script.kind) == ("<module>", "apply_without_guard")
+        assert "--apply" in script.excerpt
 
     def test_green_guarded_script_and_sandboxed_test(self, tmp_path):
         build_tree(
@@ -177,7 +177,7 @@ class TestDm18ExceptReturnsEmpty:
     def test_red_flags_broad_handler_returning_empty_beside_a_store_call(self, tmp_path):
         build_tree(tmp_path, {"memory/store.py": DM18_RED})
         result = dm18_except_returns_empty.scan(tmp_path)
-        assert [(f.path, f.symbol, f.text) for f in result.findings] == [
+        assert [(f.path, f.symbol, f.excerpt) for f in result.findings] == [
             ("memory/store.py", "Store.get_rows", "return []")
         ]
 
@@ -208,7 +208,7 @@ class TestDm31LiveStateDefault:
     def test_red_flags_both_live_state_defaults(self, tmp_path):
         build_tree(tmp_path, {"utils/trigger.py": DM31_RED})
         result = dm31_live_state_default.scan(tmp_path)
-        assert [(f.path, f.symbol, f.text) for f in result.findings] == [
+        assert [(f.path, f.symbol, f.excerpt) for f in result.findings] == [
             ("utils/trigger.py", "analyze_for_web_search_llm",
              "web_search_enabled: bool = True,"),
             ("utils/trigger.py", "analyze_for_web_search_llm",
@@ -252,7 +252,7 @@ class TestDm29PhraseAppend:
         assert [(f.symbol, f.path) for f in result.findings] == [
             ("_INFO_SEEKING_CUES", "CLAUDE_CHANGELOG.md")
         ]
-        assert "3 dated batches" in result.findings[0].text
+        assert "3 dated batches" in result.findings[0].excerpt
 
     def test_green_two_batches_is_below_the_signature(self, tmp_path):
         text = changelog(
@@ -266,10 +266,12 @@ class TestDm29PhraseAppend:
         build_tree(tmp_path, {"CLAUDE_CHANGELOG.md": changelog([("2026-09-10", body)])})
         assert dm29_phrase_append.scan(tmp_path).findings == []
 
-    def test_missing_changelog_reports_zero_files_rather_than_passing(self, tmp_path):
+    def test_missing_changelog_is_an_unavailable_leg_not_a_clean_zero(self, tmp_path):
         result = dm29_phrase_append.scan(tmp_path)
         assert result.files_processed == 0
         assert result.findings == []
+        (leg,) = result.legs
+        assert (leg.required, leg.status, leg.available) == (False, "unavailable", False)
 
 
 class TestCatalogScanner:
@@ -284,7 +286,7 @@ class TestCatalogScanner:
         )
         result = catalog_scanner.scan(tmp_path)
         assert result.files_processed == 1
-        assert [(f.symbol, f.text) for f in result.findings] == [
+        assert [(f.symbol, f.excerpt) for f in result.findings] == [
             ("BC-01", "index/body status disagreement: BC-01 index=open body=closed")
         ]
 
@@ -298,7 +300,7 @@ class TestCatalogScanner:
             },
         )
         findings = catalog_scanner.scan(tmp_path).findings
-        assert any("only in index" in f.text for f in findings)
+        assert any("only in index" in f.excerpt for f in findings)
 
     def test_green_consistent_catalog_has_no_findings(self, tmp_path):
         build_tree(
@@ -321,9 +323,11 @@ class TestCatalogScanner:
         with pytest.raises(ScannerError):
             catalog_scanner.scan(tmp_path)
 
-    def test_missing_catalog_is_a_scanner_error(self, tmp_path):
-        with pytest.raises(ScannerError):
-            catalog_scanner.scan(tmp_path)
+    def test_missing_catalog_is_a_missing_required_leg(self, tmp_path):
+        result = catalog_scanner.scan(tmp_path)
+        assert result.findings == []
+        (leg,) = result.legs
+        assert (leg.required, leg.status, leg.files_processed) == (True, "missing", 0)
 
 
 class TestDeterminism:
@@ -332,8 +336,224 @@ class TestDeterminism:
             tmp_path,
             {"core/tone.py": DM01_RED, "core/other/tone.py": DM01_RED},
         )
-        first = [f.fingerprint() for f in dm01_raw_substring.scan(tmp_path).findings]
+        findings = dm01_raw_substring.scan(tmp_path).findings
+        first = [f.fingerprint() for f in findings]
         second = [f.fingerprint() for f in dm01_raw_substring.scan(tmp_path).findings]
         assert first == second
-        assert first == sorted(first)
+        assert [(f.path, f.line) for f in findings] == sorted((f.path, f.line) for f in findings)
         assert not any(str(tmp_path) in part for key in first for part in key)
+
+
+# ---------------------------------------------------------------------------
+# Contract v2 controls (2026-09-13 class-guard completion plan)
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402
+
+from fixtures import (  # noqa: E402
+    BENIGN,
+    DM01_GREEN_MATCHER_ONLY,
+    DM01_RED_BESIDE_MATCHER,
+    DM01_RED_IMPORT_ONLY,
+    DM01_RED_OUTSIDE_OLD_PREFILTER,
+    DM17_GREEN_GUARDED_CALLEE,
+    DM17_GREEN_TRY_IMPORT,
+    DM17_GREEN_WRAPPER,
+    DM17_RED_GUARD_IMPORT_ONLY,
+    DM17_RED_GUARD_IN_COMMENT,
+    DM17_RED_GUARD_IN_STRING,
+    DM17_RED_GUARD_LATE,
+    DM17_RED_GUARD_UNCALLED_HELPER,
+    DM17_RED_GUARD_UNREACHABLE,
+    DM17_RED_TEST_CONCATENATED,
+    DM17_ROOT_CONFTEST_SANDBOX,
+    DM17_SCOPE_PROSE_ONLY_APPLY,
+    DM18_TWIN_HANDLERS,
+)
+
+
+class TestDm01NoModuleExemption:
+    """An import of ``utils.trigger_match`` — or a real matcher call — says
+    nothing about the OTHER keyword tests in the same module. Contract v1
+    skipped the whole module on the import; v2 judges every expression."""
+
+    def test_matcher_import_alone_does_not_exempt_a_raw_test(self, tmp_path):
+        build_tree(tmp_path, {"core/tone.py": DM01_RED_IMPORT_ONLY})
+        findings = dm01_raw_substring.scan(tmp_path).findings
+        assert [(f.symbol, f.excerpt) for f in findings] == [("is_heavy", 'return "ice" in text_lower')]
+
+    def test_real_matcher_use_does_not_hide_a_raw_test_beside_it(self, tmp_path):
+        build_tree(tmp_path, {"core/tone.py": DM01_RED_BESIDE_MATCHER})
+        findings = dm01_raw_substring.scan(tmp_path).findings
+        assert [f.excerpt for f in findings] == ['if "ice" in text_lower:']
+
+    def test_module_that_only_calls_the_matcher_has_no_finding(self, tmp_path):
+        build_tree(tmp_path, {"core/tone.py": DM01_GREEN_MATCHER_ONLY})
+        assert dm01_raw_substring.scan(tmp_path).findings == []
+
+    def test_lowered_text_shapes_outside_the_removed_prefilter_are_found(self, tmp_path):
+        build_tree(tmp_path, {"core/tone.py": DM01_RED_OUTSIDE_OLD_PREFILTER})
+        findings = dm01_raw_substring.scan(tmp_path).findings
+        assert [(f.symbol, f.excerpt) for f in findings] == [
+            ("Detector.is_heavy", 'if "ice" in normalize(text).lower():'),
+            ("Detector.is_heavy", 'return "crisis" in self.text_lower'),
+        ]
+
+
+class TestDm17GuardEvidence:
+    """BC-37 contract v2: guard TEXT is not guard EVIDENCE.
+
+    Only a recognized guard ``if`` — a call to ``utils.daemon_guard``'s
+    ``daemon_running`` (directly or through a module wrapper that returns it)
+    whose body refuses — counts, and only when it structurally runs before
+    every statement that consumes the ``--apply`` value in its function.
+    Anything else with a guard call is an unresolved candidate for a human.
+    """
+
+    def _script_findings(self, tmp_path, source):
+        build_tree(tmp_path, {"scripts/store_tool.py": source, "tests/unit/test_ok.py": DM17_GREEN_TEST})
+        result = dm17_apply_without_guard.scan(tmp_path)
+        return result, [f for f in result.findings if f.path == "scripts/store_tool.py"]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param(DM17_RED_GUARD_IN_COMMENT, id="comment"),
+            pytest.param(DM17_RED_GUARD_IN_STRING, id="string"),
+            pytest.param(DM17_RED_GUARD_IMPORT_ONLY, id="import-only"),
+            pytest.param(DM17_RED_SCRIPT, id="no-mention"),
+        ],
+    )
+    def test_guard_text_without_a_call_is_an_unguarded_script(self, tmp_path, source):
+        _, findings = self._script_findings(tmp_path, source)
+        assert [(f.kind, f.symbol) for f in findings] == [("apply_without_guard", "<module>")]
+        assert "--apply" in findings[0].excerpt
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param(DM17_RED_GUARD_LATE, id="late"),
+            pytest.param(DM17_RED_GUARD_UNREACHABLE, id="constant-false-branch"),
+            pytest.param(DM17_RED_GUARD_UNCALLED_HELPER, id="uncalled-helper"),
+        ],
+    )
+    def test_guard_call_that_does_not_run_first_is_unresolved(self, tmp_path, source):
+        result, findings = self._script_findings(tmp_path, source)
+        assert [f.kind for f in findings] == ["apply_guard_unresolved"]
+        legs = {leg.id: leg for leg in result.legs}
+        assert legs["dm17_scripts"].unresolved == 1
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param(DM17_GREEN_SCRIPT, id="direct-guard"),
+            pytest.param(DM17_GREEN_WRAPPER, id="wrapped-guard-with-force"),
+            pytest.param(DM17_GREEN_TRY_IMPORT, id="try-import-after-dry-run"),
+            pytest.param(DM17_GREEN_GUARDED_CALLEE, id="self-guarded-callee"),
+        ],
+    )
+    def test_recognized_guard_that_runs_before_apply_is_green(self, tmp_path, source):
+        _, findings = self._script_findings(tmp_path, source)
+        assert findings == []
+
+    def test_scope_boundary_prose_mentioning_the_flag_is_not_an_apply_script(self, tmp_path):
+        _, findings = self._script_findings(tmp_path, DM17_SCOPE_PROSE_ONLY_APPLY)
+        assert findings == []
+
+    def test_concatenated_data_literal_outside_the_removed_prefilter_is_found(self, tmp_path):
+        build_tree(tmp_path, {"tests/unit/test_store.py": DM17_RED_TEST_CONCATENATED, "scripts/tool.py": BENIGN})
+        findings = dm17_apply_without_guard.scan(tmp_path).findings
+        assert [(f.path, f.kind) for f in findings] == [("tests/unit/test_store.py", "test_data_path_literal")]
+
+    def test_leg_receipts_count_scripts_and_tests_independently(self, tmp_path):
+        build_tree(
+            tmp_path,
+            {"scripts/a.py": BENIGN, "scripts/b.py": BENIGN, "tests/unit/test_x.py": DM17_GREEN_TEST},
+        )
+        legs = {leg.id: leg for leg in dm17_apply_without_guard.scan(tmp_path).legs}
+        assert (legs["dm17_scripts"].files_processed, legs["dm17_tests"].files_processed) == (2, 1)
+
+    def test_empty_scripts_leg_is_not_hidden_by_a_nonempty_tests_leg(self, tmp_path):
+        build_tree(tmp_path, {"scripts/nested/tool.py": BENIGN, "tests/unit/test_x.py": DM17_GREEN_TEST})
+        legs = {leg.id: leg for leg in dm17_apply_without_guard.scan(tmp_path).legs}
+        assert legs["dm17_scripts"].status == "empty"
+        assert legs["dm17_tests"].status == "available"
+
+
+class TestDm17RootConftestException:
+    def test_only_the_exact_root_conftest_path_is_exempt(self, tmp_path):
+        build_tree(
+            tmp_path,
+            {
+                "tests/conftest.py": DM17_ROOT_CONFTEST_SANDBOX,
+                "tests/unit/conftest.py": DM17_ROOT_CONFTEST_SANDBOX,
+                "scripts/tool.py": BENIGN,
+            },
+        )
+        result = dm17_apply_without_guard.scan(tmp_path)
+        assert {f.path for f in result.findings} == {"tests/unit/conftest.py"}
+        legs = {leg.id: leg for leg in result.legs}
+        assert legs["dm17_tests"].files_processed == 2
+
+
+class TestAnchors:
+    """Contract v2 identity: (scanner, path, qualname, kind, SHA-256 of the
+    candidate's canonical AST). Line numbers are never identity; the excerpt
+    is for humans only."""
+
+    def _only(self, tmp_path, source):
+        build_tree(tmp_path, {"memory/store.py": source})
+        (finding,) = dm18_except_returns_empty.scan(tmp_path).findings
+        return finding
+
+    def test_anchor_is_five_nonempty_fields_with_a_sha256_digest(self, tmp_path):
+        finding = self._only(tmp_path, DM18_RED)
+        assert finding.fingerprint() == (
+            "dm18_except_returns_empty", "memory/store.py", "Store.get_rows",
+            "broad_except_returns_empty", finding.digest,
+        )
+        assert re.fullmatch(r"[0-9a-f]{64}", finding.digest)
+        assert finding.excerpt == "return []"
+
+    def test_pure_line_movement_keeps_the_anchor(self, tmp_path):
+        before = self._only(tmp_path, DM18_RED)
+        after = self._only(tmp_path, DM18_RED.replace("import logging\n", "import logging\nimport os\n\n# note\n\n"))
+        assert after.fingerprint() == before.fingerprint()
+        assert after.line != before.line
+
+    def test_formatting_inside_the_candidate_keeps_the_digest(self, tmp_path):
+        before = self._only(tmp_path, DM18_RED)
+        after = self._only(tmp_path, DM18_RED.replace("return []", "return [ ]"))
+        assert after.digest == before.digest
+
+    def test_editing_the_candidate_changes_the_digest(self, tmp_path):
+        before = self._only(tmp_path, DM18_RED)
+        after = self._only(tmp_path, DM18_RED.replace("logger.warning(", "logger.error("))
+        assert after.digest != before.digest and after.symbol == before.symbol
+
+    def test_moving_the_candidate_into_another_function_changes_the_symbol(self, tmp_path):
+        before = self._only(tmp_path, DM18_RED)
+        after = self._only(tmp_path, DM18_RED.replace("def get_rows", "def fetch_rows"))
+        assert after.symbol == "Store.fetch_rows" and after.fingerprint() != before.fingerprint()
+
+    def test_identical_candidates_in_one_function_share_one_anchor(self, tmp_path):
+        build_tree(tmp_path, {"memory/store.py": DM18_TWIN_HANDLERS})
+        findings = dm18_except_returns_empty.scan(tmp_path).findings
+        assert len(findings) == 2
+        assert findings[0].fingerprint() == findings[1].fingerprint()
+
+    def test_every_finding_kind_is_declared_by_its_scanner(self, tmp_path):
+        build_tree(
+            tmp_path,
+            {
+                "core/tone.py": DM01_RED,
+                "memory/store.py": DM18_RED,
+                "utils/trigger.py": DM31_RED,
+                "scripts/purge_things.py": DM17_RED_SCRIPT,
+                "tests/unit/test_store.py": DM17_RED_TEST,
+            },
+        )
+        for scanner in SCANNERS.values():
+            for finding in scanner.scan(tmp_path).findings:
+                assert finding.kind in scanner.kinds, (scanner.id, finding.kind)
+                assert finding.scanner_id == scanner.id

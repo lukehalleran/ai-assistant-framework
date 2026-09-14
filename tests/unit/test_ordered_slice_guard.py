@@ -4,15 +4,16 @@ incidents: agentic digest 2026-08-02, LLM extractor 2026-08-05,
 _recent_distress_from_history 2026-08-22, summary/reflection floors
 2026-08-27, insight evidence 2026-08-31/2026-09-04).
 
-Scans core/, memory/, utils/, gui/ for the pattern
-``<name>[-N:]`` / ``<name>[:N]`` / ``[::-1]`` where ``<name>`` matches
-``(recent|conversations|summaries|reflections|memories|history|entries|
-evidence|events|items)\\w*`` — a variable name that SOUNDS like a
-retrieval list being truncated by raw position instead of by timestamp.
-Every hit must be either:
+Scans core/, memory/, utils/, gui/ for a slice of a variable whose name
+SOUNDS like a retrieval list — ``(recent|conversations|summaries|reflections|
+memories|history|entries|evidence|events|items)\\w*`` — truncated by raw
+position (``[-N:]``, ``[:N]``, ``[a:b]``) or reversed (``[::-1]``) instead of
+by timestamp.  Every hit must be either:
   (a) inside utils/ordered_slice.py itself (the single source of truth),
-  (b) preceded within 3 lines by a sort/helper call establishing the order
-      the slice then trusts, or
+  (b) ordered for THAT variable right before the slice — a sort/helper call
+      naming the same identifier within 3 lines, or a ``<name>.sort(...)`` /
+      ``<name> = sorted(...)``-style statement among the 3 statements
+      preceding the slice's statement in the same block, or
   (c) explicitly allowlisted below with a one-line reason.
 
 The allowlist is where the doctrine lives — each entry documents WHY that
@@ -31,6 +32,14 @@ surfaces the entry as STALE for re-review. Identical lines inside one
 function (a success branch and its exception-fallback twin) each need
 their own entry: the list is matched as a multiset, so a THIRD identical
 line would still show up as unexplained.
+
+Detection (2026-09-13): slices are found in the syntax tree, not by a line
+regex, so a slice split across lines or bounded by an expression
+(``memories[:min(10, len(memories))]``, ``items[: self.max_docs]``) is seen,
+and slices inside strings or comments are not.  The sort exemption must name
+the same identifier: an unrelated ``.sort(`` within three lines no longer
+hides a slice.  Two identical slices on one line are two occurrences of the
+same anchor.
 """
 import ast
 import re
@@ -40,9 +49,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_DIRS = ("core", "memory", "utils", "gui")
 
-_NAME_RE = r"(recent|conversations|summaries|reflections|memories|history|entries|evidence|events|items)\w*"
-_PATTERN = re.compile(rf"\b{_NAME_RE}\s*\[(?:-\s*\w*\s*:\s*\w*|\w*\s*:\s*\w*|::-1)\]")
+_NAME_RE = re.compile(r"(recent|conversations|summaries|reflections|memories|history|entries|evidence|events|items)\w*$")
 _SORT_HINT_RE = re.compile(r"\.sort\(|sorted\(|newest_first\(|oldest_first\(|window_fair_sample\(|round_robin_merge\(|head\(")
+_ORDERING_CALLS = frozenset({"sorted", "newest_first", "oldest_first", "window_fair_sample", "round_robin_merge", "head"})
+_LINE_LOOKBACK = 3
+_STATEMENT_LOOKBACK = 3
 
 Hit = namedtuple("Hit", "rel lineno scope text match")
 
@@ -63,6 +74,11 @@ ALLOWLIST = (
       "return events[:max_events]"),
      "Google Calendar API call sets orderBy='startTime' — events already "
      "arrive date-ordered; [:max_events] correctly keeps the soonest N."),
+    (("utils/adaptive_exemplars.py", "AdaptiveExemplarStore.record",
+      "del entries[: len(entries) - _PER_LABEL_CAP]"),
+     "Per-label exemplar list is append-only (record() appends the new entry "
+     "two lines above), so deleting the head drops the OLDEST entries and "
+     "keeps the newest _PER_LABEL_CAP. Newly visible 2026-09-13 (AST detection)."),
 
     # --- Dead / unused helpers: nothing to fix ---
     (("core/prompt/base.py", "_truncate_list",
@@ -129,15 +145,22 @@ ALLOWLIST = (
     (("memory/memory_retriever.py", "MemoryRetriever._maybe_cross_encoder_rerank",
       "tail = memories[RERANK_TOP_N:]"),
      "Same split as above — the tail keeps its scorer rank by design."),
+    (("memory/memory_retriever.py", "MemoryRetriever._gate_memories",
+      "return memories[:min(10, len(memories))]"),
+     "Gate-error fallback mirrors get_memories' no-gate path "
+     "(candidates[:cap]): the caller builds `memories` in priority order — "
+     "very-recent tail, then semantic, then hierarchical — so the head is the "
+     "intended subset, not a newest-first list read as oldest-first. Newly "
+     "visible 2026-09-13 (the expression bound hid it from the line regex)."),
 
-    # NOTE: hits immediately preceded (within 3 lines) by a .sort(/sorted(/
-    # newest_first(/etc. call are auto-excluded by _find_hits()'s rule (b)
-    # and never need an entry here — memory/corpus_manager.py's
-    # get_summaries/get_summaries_of_type/get_items_by_type,
-    # memory/cross_deduplicator.py's entries[1:], and
-    # memory/user_profile.py's recent_candidates[:recent_count] all fall
-    # in this category (each sorts by timestamp on the line(s) directly
-    # above its slice).
+    # NOTE: hits ordered for the SAME variable right above the slice — a
+    # sort/helper call naming it within 3 lines, or a `<name>.sort(...)` /
+    # `<name> = sorted(...)` statement among the 3 preceding statements — are
+    # auto-excluded by rule (b) and never need an entry here:
+    # memory/corpus_manager.py's get_summaries/get_summaries_of_type/
+    # get_items_by_type, memory/cross_deduplicator.py's entries[1:] and
+    # items[: self.max_docs] (multi-line items.sort above), and
+    # memory/user_profile.py's recent_candidates[:recent_count].
 
     # --- Contract-guaranteed ordering documented at the source function ---
     (("memory/user_profile.py", "UserProfile.get_context_injection",
@@ -207,14 +230,9 @@ ALLOWLIST = (
 _ALLOWED = Counter(key for key, _reason in ALLOWLIST)
 
 
-def _function_spans(path: Path):
+def _function_spans(tree):
     """(start_line, end_line, dotted_name) for every def/async def in the
-    file, qualified through enclosing classes and functions. Empty on a
-    parse failure (the hit is then attributed to "<unparsed>")."""
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (SyntaxError, ValueError):
-        return None
+    tree, qualified through enclosing classes and functions."""
     spans = []
 
     def walk(node, prefix):
@@ -233,8 +251,6 @@ def _function_spans(path: Path):
 
 
 def _scope_for(spans, lineno: int) -> str:
-    if spans is None:
-        return "<unparsed>"
     innermost = None
     for start, end, name in spans:
         if start <= lineno <= end and (
@@ -248,24 +264,89 @@ def _key(hit: Hit):
     return (hit.rel, hit.scope, hit.text)
 
 
+def _tail_name(expr):
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        return expr.attr
+    return None
+
+
+def _sliced_identifier(node):
+    """The retrieval-list-shaped identifier a truncating/reversing slice reads, or None."""
+    if not isinstance(node, ast.Subscript) or not isinstance(node.slice, ast.Slice):
+        return None
+    ident = _tail_name(node.value)
+    if not ident or not _NAME_RE.match(ident):
+        return None
+    part = node.slice
+    reversal = (
+        part.lower is None and part.upper is None
+        and isinstance(part.step, ast.UnaryOp) and isinstance(part.step.op, ast.USub)
+        and isinstance(part.step.operand, ast.Constant) and part.step.operand.value == 1
+    )
+    truncation = part.step is None and (part.lower is not None or part.upper is not None)
+    return ident if reversal or truncation else None
+
+
+def _orders(statement, ident) -> bool:
+    """``<ident>.sort(...)`` or ``<ident> = sorted(...)``-style ordering statement."""
+    for node in ast.walk(statement):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "sort" and _tail_name(node.func.value) == ident):
+            return True
+    if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is not None:
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if any(_tail_name(target) == ident for target in targets):
+            return any(
+                isinstance(node, ast.Call) and _tail_name(node.func) in _ORDERING_CALLS
+                for node in ast.walk(statement.value)
+            )
+    return False
+
+
 def _find_hits_in_file(path: Path, rel: str):
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        source = path.read_text(encoding="utf-8")
     except Exception:
         return []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return [Hit(rel, 0, "<unparsed>", "<file does not parse>", "")]
+    lines = source.splitlines()
+    spans = _function_spans(tree)
+    parent_of = {}
+    block_of = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parent_of[id(child)] = parent
+        for _field, value in ast.iter_fields(parent):
+            if isinstance(value, list):
+                for index, item in enumerate(value):
+                    if isinstance(item, ast.stmt):
+                        block_of[id(item)] = (value, index)
     hits = []
-    spans = None  # parsed lazily: only files with a raw hit pay for ast
-    for i, line in enumerate(lines):
-        if line.strip().startswith("#"):
+    for node in ast.walk(tree):
+        ident = _sliced_identifier(node)
+        if ident is None:
             continue
-        for m in _PATTERN.finditer(line):
-            context = lines[max(0, i - 3):i + 1]
-            if any(_SORT_HINT_RE.search(c) for c in context):
-                continue  # (b) sorted/helper-derived within 3 lines
-            if spans is None:
-                spans = _function_spans(path)
-            lineno = i + 1
-            hits.append(Hit(rel, lineno, _scope_for(spans, lineno), line.strip(), m.group(0)))
+        lineno = node.lineno
+        window = lines[max(0, lineno - 1 - _LINE_LOOKBACK):lineno]
+        name_re = re.compile(rf"\b{re.escape(ident)}\b")
+        if any(_SORT_HINT_RE.search(line) and name_re.search(line) for line in window):
+            continue  # (b) ordered for this name within 3 lines
+        statement = node
+        while statement is not None and not isinstance(statement, ast.stmt):
+            statement = parent_of.get(id(statement))
+        block, index = block_of.get(id(statement), (None, 0))
+        if block is not None and any(
+            _orders(previous, ident) for previous in block[max(0, index - _STATEMENT_LOOKBACK):index]
+        ):
+            continue  # (b) an ordering statement for this name just above
+        segment = " ".join((ast.get_source_segment(source, node) or "").split())
+        hits.append(Hit(rel, lineno, _scope_for(spans, lineno), lines[lineno - 1].strip(), segment))
+    hits.sort(key=lambda hit: (hit.lineno, hit.match))
     return hits
 
 
@@ -286,6 +367,17 @@ def _find_hits():
     return hits
 
 
+def _unexplained(hits, allowed: Counter):
+    seen = Counter()
+    unexplained = []
+    for hit in hits:
+        key = _key(hit)
+        seen[key] += 1
+        if seen[key] > allowed.get(key, 0):
+            unexplained.append(hit)
+    return unexplained
+
+
 def _fmt(hit: Hit) -> str:
     return (f"  {hit.rel}:{hit.lineno} [{hit.scope}] {hit.text!r}\n"
             f"    allowlist key: ({hit.rel!r}, {hit.scope!r}, {hit.text!r})")
@@ -293,13 +385,7 @@ def _fmt(hit: Hit) -> str:
 
 class TestOrderedSliceGuard:
     def test_every_hit_is_fixed_or_allowlisted(self):
-        seen = Counter()
-        unexplained = []
-        for hit in _find_hits():
-            key = _key(hit)
-            seen[key] += 1
-            if seen[key] > _ALLOWED.get(key, 0):
-                unexplained.append(hit)
+        unexplained = _unexplained(_find_hits(), _ALLOWED)
         assert not unexplained, (
             "New/changed newest-first-then-truncate-shaped slice(s) found "
             "with no sort nearby and no allowlist entry — fix it (sort via "
@@ -330,6 +416,9 @@ class TestOrderedSliceGuard:
             f"Allowlist grew to {len(ALLOWLIST)} entries — review whether "
             "genuine fixes are being allowlisted instead of applied."
         )
+
+    def test_every_allowlist_entry_has_a_reason(self):
+        assert all(isinstance(reason, str) and len(reason) > 20 for _key_, reason in ALLOWLIST)
 
     # --- properties of the anchor itself ---------------------------------
 
@@ -392,3 +481,78 @@ class TestOrderedSliceGuard:
         assert list(keys.values()) == [2]  # one key, two occurrences
         one_entry = Counter({next(iter(keys)): 1})
         assert list((keys - one_entry).elements())  # a single entry leaves one unexplained
+
+
+class TestDetectionBoundaries:
+    """Shapes the 2026-09-05 line regex could not see or wrongly hid (2026-09-13)."""
+
+    def _hits(self, tmp_path, src):
+        p = tmp_path / "m.py"
+        p.write_text(src, encoding="utf-8")
+        return _find_hits_in_file(p, "m.py")
+
+    def test_slice_split_across_lines_is_seen(self, tmp_path):
+        hits = self._hits(tmp_path, "def f(memories):\n    return memories[\n        :5\n    ]\n")
+        assert [(h.lineno, h.text) for h in hits] == [(2, "return memories[")]
+
+    def test_expression_bounds_are_seen(self, tmp_path):
+        hits = self._hits(tmp_path,
+            "def f(self, history, recent, n, limit):\n"
+            "    a = history[-(n):]\n"
+            "    b = recent[: limit - 1]\n"
+            "    return self.recent_items[len(history) - 3:], a, b\n"
+        )
+        assert [h.match for h in hits] == ["history[-(n):]", "recent[: limit - 1]", "self.recent_items[len(history) - 3:]"]
+
+    def test_reversal_is_seen_but_a_stride_or_copy_is_not(self, tmp_path):
+        hits = self._hits(tmp_path, "def f(events):\n    return events[::-1], events[::2], events[:]\n")
+        assert [h.match for h in hits] == ["events[::-1]"]
+
+    def test_same_line_duplicate_is_a_second_occurrence(self, tmp_path):
+        hits = self._hits(tmp_path, "def f(memories):\n    return memories[:3], memories[:3]\n")
+        assert len(hits) == 2 and _key(hits[0]) == _key(hits[1])
+        assert len(_unexplained(hits, Counter({_key(hits[0]): 1}))) == 1
+
+    def test_unrelated_sort_nearby_does_not_hide_a_slice(self, tmp_path):
+        hits = self._hits(tmp_path, "def f(items, memories):\n    items.sort()\n    return memories[:5]\n")
+        assert [h.match for h in hits] == ["memories[:5]"]
+
+    def test_sort_of_the_same_name_in_a_preceding_statement_hides_it(self, tmp_path):
+        hits = self._hits(tmp_path,
+            "def f(items, cap):\n"
+            "    if len(items) > cap:\n"
+            "        items.sort(\n"
+            "            key=lambda x: x['ts'],\n"
+            "            reverse=True,\n"
+            "        )\n"
+            "        items = items[: cap]\n"
+            "    return items\n"
+        )
+        assert hits == []
+
+    def test_ordering_statement_more_than_three_statements_above_does_not_count(self, tmp_path):
+        hits = self._hits(tmp_path,
+            "def f(memories):\n"
+            "    memories = sorted(memories)\n"
+            "    a = 1\n"
+            "    b = 2\n"
+            "    c = 3\n"
+            "    d = 4\n"
+            "    return memories[:5]\n"
+        )
+        assert [h.match for h in hits] == ["memories[:5]"]
+
+    def test_new_slice_is_not_hidden_by_line_shift_of_an_allowlisted_one(self, tmp_path):
+        base = "def f(memories):\n    return memories[:5]\n"
+        allowed = Counter(_key(h) for h in self._hits(tmp_path, base))
+        shifted = "import os\n\n\ndef f(memories):\n    return memories[:5]\n\ndef g(recent):\n    return recent[-2:]\n"
+        unexplained = _unexplained(self._hits(tmp_path, shifted), allowed)
+        assert [h.match for h in unexplained] == ["recent[-2:]"]
+
+    def test_slices_inside_strings_and_comments_are_not_hits(self, tmp_path):
+        hits = self._hits(tmp_path, 'DOC = "memories[:5]"\n# recent[:3]\n')
+        assert hits == []
+
+    def test_unparseable_file_fails_closed(self, tmp_path):
+        hits = self._hits(tmp_path, "def broken(:\n")
+        assert [h.scope for h in hits] == ["<unparsed>"]

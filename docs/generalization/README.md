@@ -2,6 +2,10 @@
 
 Status: planning baseline
 
+Current source/test audit: [2026-09-13 generalization and CI review](../GENERALIZATION_CI_REVIEW_20260913.md).
+It covers all thirteen documents, distinguishes existing behavior from planned
+release requirements, and connects unit tests, class guards, and turn probes.
+
 Target window: 18-24 months
 
 Primary target: a single-user Windows desktop executable for adult users who

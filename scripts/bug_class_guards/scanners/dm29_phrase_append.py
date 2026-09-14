@@ -15,6 +15,10 @@ Heuristic by construction, so this scanner is report-only: it flags a family
 for a human to judge against
 ``docs/GENERALIZATION_AUDIT_20260901.md`` §"Remedy patterns", which is the
 closure BC-76 actually calls for.  It never fails a push on its own.
+
+Its only input, ``CLAUDE_CHANGELOG.md``, is gitignored and local-only.  An
+absent changelog is an UNAVAILABLE optional leg — never "0 files, clean" —
+and cannot be cited as evidence that BC-76 was scanned (contract v2).
 """
 
 from __future__ import annotations
@@ -22,12 +26,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .common import Finding, ScanResult, clip
+from .common import Finding, Leg, ScanResult, clip, digest_of, resolve_leg
 
 SCANNER_ID = "dm29_phrase_append_signature"
 CLASS_IDS = ("BC-76",)
+CONTRACT_VERSION = 2
 
 CHANGELOG = "CLAUDE_CHANGELOG.md"
+LEG = Leg("dm29_changelog", "file", (CHANGELOG,), False)
+LEGS = (LEG,)
+KIND = "phrase_append_signature"
+KINDS = (KIND,)
 MIN_BATCHES = 3
 
 _BATCH_HEADING_RE = re.compile(r"^##\s+(?P<date>20[0-9]{2}-[0-9]{2}-[0-9]{2})")
@@ -46,10 +55,10 @@ _SHAPE_RES = (
 
 
 def scan(root: Path) -> ScanResult:
-    path = root / CHANGELOG
-    if not path.is_file():
-        return ScanResult([], 0)
-    text = path.read_bytes().decode("utf-8", errors="replace")
+    resolved = resolve_leg(root, LEG)
+    if resolved.status != "available":
+        return ScanResult([], (resolved.receipt(),))
+    text = resolved.files[0].read_bytes().decode("utf-8", errors="replace")
 
     batch = ""
     # target -> {batch date: (last line number, last matching line text)}
@@ -69,8 +78,7 @@ def scan(root: Path) -> ScanResult:
     for target, batches in hits.items():
         if len(batches) < MIN_BATCHES:
             continue
-        last_batch = max(batches)
-        lineno, _line = batches[last_batch]
+        lineno, _line = batches[max(batches)]
         findings.append(
             Finding(
                 SCANNER_ID,
@@ -78,8 +86,11 @@ def scan(root: Path) -> ScanResult:
                 CHANGELOG,
                 target,
                 lineno,
+                KIND,
+                digest_of([target]),
                 clip(f"{target} widened in {len(batches)} dated batches"),
+                LEG.id,
             )
         )
     findings.sort(key=lambda f: (f.symbol, f.line))
-    return ScanResult(findings, 1)
+    return ScanResult(findings, (resolved.receipt(),))

@@ -122,27 +122,84 @@ separate `frontend` job: `npm run typecheck` then `npm test` (the Vitest
 behaviour lane B4 added for F07/T09); there is no `npm run build` step
 in CI.
 
-**Bug-class scan lane (added 2026-09-11)** — stdlib-only, no application
-import, ~2 s; runs in `hooks/pre-push` step 2a and in the CI backend job
-before the suite:
+**Bug-class contract lane (added 2026-09-11; contract v2 2026-09-13).**
+Stdlib-only, with no application import, and about 8 s on the real tree. It
+runs as the `bug-class-scan` job in CI and in `hooks/pre-push` step 2a, before
+the suite:
 
-| Lane | Command | What it gates | Baseline |
+| Lane | Command | What it enforces | Ledgers |
 |---|---|---|---|
-| bug-class scan ratchet | `python scripts/check_bug_classes.py scan --root .` then `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider --confcutdir=tests/bug_class_guards tests/bug_class_guards` | the DM scanners in `scripts/bug_class_guards/scanners/` (DM-01/17/18 gated, DM-16/29 report-only) + `docs/BUG_CLASSES.md` admission | `config/bug_class_baseline.json` — content-anchored `(scanner, path, enclosing qualname, source line)`; exit 1 on a NEW finding, on a STALE entry, or when a gated scanner processed zero files; exit 2 when a scanner could not run |
+| bug-class contract | `python scripts/check_bug_classes.py scan --root .` (CI and the hook add `--receipt <file>`), then `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider --confcutdir=tests/bug_class_guards tests/bug_class_guards` (with `--junitxml=<file>`), then `python scripts/check_bug_classes.py verify-receipts …` | `config/bug_class_policy.json`: seven pinned scanners (gates: DM-01, DM-17, DM-18, DM-31, catalog; report-only: DM-16, DM-29), every declared input leg and root counted separately, the top-level Python root inventory, a syntax preflight over every declared Python input, and the two-way ratchet | `config/bug_class_baseline.json` (schema 2; each occurrence is `(scanner, path, qualname, kind, SHA-256 of the candidate AST)`) and `config/bug_class_dispositions.json` (one reviewed record per active occurrence, bound to the source file's SHA-256; resolved history kept as `confirmed_fixed`/`false_positive`) |
+
+Exit 2 means the contract could not be evaluated (policy, registry parity,
+syntax, unreadable input, scanner error, invalid baseline or ledger). Exit 1
+means it was evaluated and failed:
+- a NEW or STALE occurrence;
+- a disposition that is missing, orphaned, or needs re-review;
+- a missing or empty required leg or root;
+- an unclassified top-level Python root.
+
+`--scanner` gives an explicit, labelled partial scan and is never used for
+enforcement. `--write-baseline` is a developer bootstrap; its rows still need
+reviewed dispositions. `tests/bug_class_guards/test_enforcement.py` fails if
+the hook or workflow drops the full scan, adds a selector, a baseline write or
+a ledger override, masks a failure, or adds a path filter.
+
+**Scope, stated honestly.** This is a scoped structural lane. 11 of the 78
+catalog classes have a scanner (9 gated, 2 report-only), and every scan lists
+the 67 uncovered classes. DM-29's only input is the untracked
+`CLAUDE_CHANGELOG.md`, so CI reports it *unavailable*, not zero. Python roots
+outside every scanner (`agent_branch`, `eval`, `hooks`, `integrations`, the
+root `conftest.py`, `debug_graph_context.py`) are classified in the policy and
+listed in each report.
+
+**Accepted debt needs re-review when its file changes.** Editing any file that
+carries accepted debt (listed in
+[`BASELINE_REVIEW_20260913.md`](execution/class_guards/BASELINE_REVIEW_20260913.md))
+fails the scan with `disposition_source_changed` until the class-guard owner
+re-reviews the remaining debt and records the new `source_sha256`. A pure line
+move never changes an anchor, so the baseline itself does not change.
+
+**2026-09-13 execution.** The class-guard work log
+([`WORKLOG_20260913.md`](execution/class_guards/WORKLOG_20260913.md)) records
+the details:
+- The 133 legacy occurrences mapped one-to-one to schema-2 anchors, and contract
+  v2 exposed 19 new DM-01 candidates.
+- All 152 occurrences are `accepted_debt`: 80 product-risk under 10 Plan 2
+  request packets, 63 reviewed benign, 9 uncertain.
+- The isolated harness passes its policy-pinned case count.
+- No GitHub run exists yet for contract v2, and `master` protection is not yet
+  applied (see `DEVELOPMENT_WORKFLOW.md` §3a.8).
+- No assembled-turn probe lane is wired yet. The
+  [consolidated review](GENERALIZATION_CI_REVIEW_20260913.md) records the
+  pre-v2 CI run and the proposed probe lane.
 
 **The five repo-wide guards** (must be green before every push per
-`docs/DEVELOPMENT_WORKFLOW.md` §7.1, and are always included in
-`hooks/pre-push`'s selection regardless of what changed):
+`docs/DEVELOPMENT_WORKFLOW.md` §7.1). They are always in `hooks/pre-push`'s
+selection regardless of what changed; a missing guard file blocks the push. CI
+runs them as an explicit step whose JUnit receipt `bug-class-gate` verifies.
+Strengthened 2026-09-13:
 - `tests/unit/test_no_git_state_in_tests.py` — bans tests reading git-tracked
-  blobs/refs (the class that made 05fd300 pass dirty and fail committed).
+  blobs/refs (the class that made 05fd300 pass dirty and fail committed). Git
+  calls are found in the AST: split calls, `cwd=` before the arguments, `-C`,
+  module root aliases, and git reads with no `cwd` (which run in the project
+  root). Violations report path, line and rule only.
 - `tests/unit/test_ordered_slice_guard.py` — content-anchored guard against
-  reintroducing newest-first-then-truncate bugs.
+  reintroducing newest-first-then-truncate bugs. Slices are found in the AST
+  (multi-line and expression bounds), and a sort exemption must name the same
+  variable.
 - `tests/unit/test_budget_meters_rendered_sections.py` — every rendered
   prompt section has a `PRIORITY_ORDER` row (the 2026-08-14 dead-key class).
+  Rendered keys come from the formatter AST: any quote style, subscripts,
+  membership tests, literal loops and local helpers. Every exception has a
+  reason.
 - `tests/unit/test_tool_wiring_parity.py` — every tool/action has a
-  dispatch/executor row.
+  dispatch/executor row. Consumption comes from evaluating the real
+  `DISPATCH_TABLE` predicates; each handler's argument hand-off is bound against
+  its signature; both routers are driven through a sentinel table.
 - `tests/unit/test_model_capability_wiring.py` — every registered model has
-  a capability row and the four classifiers agree.
+  a capability row and the classifiers agree. Every alias is also checked
+  through the public `ModelManager` classifiers and `detect_protocol`.
 
 Run together (also used as this batch's own regression sweep, §5 below):
 ```bash

@@ -849,7 +849,7 @@ and fetches from a different source or collection:
 | Wiki content | FAISS (41M vectors, IVFPQ index) | 3 | Gated at 0.30 threshold; falls back to ChromaDB if FAISS unavailable |
 | Reference docs | ChromaDB `reference_docs` | 15 | Auto-seeded from docs/ |
 | Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at 0.45 threshold |
-| Git commits | ChromaDB `procedural` | 10 | Project history |
+| Git commits | Local git for repository status reports; otherwise ChromaDB `procedural` | 10 | Compact current records or hybrid indexed history; caller limits apply |
 | Web search | Tavily API | if triggered | Cached 72 hours |
 | Google Calendar | Calendar API (OAuth2) | 10 | 5-min module cache, read-only |
 | Codebase changes | git diff | first msg only | Session-start awareness |
@@ -1145,12 +1145,12 @@ Sections are assigned priorities for trimming:
 ```
 Priority 10: STM summary (metadata, never trimmed)
 Priority  9: User profile (identity, naturally bounded)
-Priority  8: Narrative state (hard cap 500 tokens)
+Priority  8: Narrative state (hard cap 500 tokens), web search results, local repository status records
 Priority  7: Recent conversations, graph context, threads
 Priority  6: Semantic chunks, personal notes, user uploads
-Priority  5: Reference docs, memories, web search results
+Priority  5: Reference docs, memories
 Priority  4: Procedural skills, facts
-Priority  3: Summaries, proposals, git commits, proactive insights
+Priority  3: Summaries, proposals, indexed git commits, proactive insights
 Priority  2: Reflections, dreams, codebase changes
 Priority  1: Wiki
 ```
@@ -2394,13 +2394,24 @@ User's personal notes synced from Obsidian:
 
 **Files**: `knowledge/git_memory.py`, `knowledge/git_memory_loader.py`
 
-Git commit history extracted as procedural knowledge:
+Git commit history extracted as procedural knowledge (manual index population):
 
 - Commit messages, authors, timestamps, optional diffs
 - Stored in `procedural` collection
 - Surfaced during project-related queries
 - **Structured per-commit diff metadata** (2026-07-02): every commit carries a derived `change_type` (feature/bugfix/refactor/… or other, from the conventional-commit tag); with diffs enabled it also carries filterable fields parsed from `git show --numstat` — `files_changed` (comma-joined, post-rename), `files_changed_count`, `lines_added`, `lines_removed` — instead of just an embedded `--stat` text blob
 - **Hot-files churn tracker** (`get_hot_files`, 2026-07-02): ranks files by recent commit frequency (the active dev frontier) via a single read-only `git log --name-only` — no LLM. Exposed as `python main.py git-hot [SINCE_DAYS] [LIMIT]`; intended to bias code proposals / context toward actively-evolving files
+
+**Current repository status (2026-09-13):** `is_repository_status_report`
+shares categorized domain cues between the self-report trim and git gatherer.
+These reports retain the caller's git limit/default and read compact local
+commit subjects, hashes, authors and timestamps through `GitMemoryExtractor`
+in a worker thread, with a five-second git-log timeout. This path neither
+opens nor updates Chroma. Failure yields no records; other queries retain
+the indexed recent/semantic blend. Local status records receive priority 8
+within the existing prompt budget. The formatter distinguishes commit
+metadata from evidence of a push or its actor. Explicit zero limits and the
+git feature toggle remain authoritative.
 
 ### Reference Docs
 

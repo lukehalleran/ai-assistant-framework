@@ -8,10 +8,12 @@ and uninstalls without repository access or a Python development environment.
 
 ## Current gap
 
-The existing installer documentation depends on a PyInstaller spec that is no
-longer present, describes the legacy Gradio path, and assumes hosted API keys.
-The current React/FastAPI application and future local-model sidecar need a new
-packaging baseline.
+The tracked `daemon.spec` is present, but packages the legacy Gradio assets
+and does not include `web/dist`. Existing installer documentation also assumes
+hosted API keys. The current React/FastAPI application and future local-model
+sidecar need a validated packaging baseline; the spec's presence is not
+clean-machine release evidence. See the
+[2026-09-13 review](../GENERALIZATION_CI_REVIEW_20260913.md).
 
 ## Proposed process architecture
 
@@ -227,4 +229,3 @@ G08 is validated when a clean standard-user Windows 11 VM can install, onboard,
 run locally, work offline, update, roll back, restore, and uninstall without
 developer tools; all artifacts are verified; private data is separate; and the
 clean-machine matrix blocks stable release on failure.
-

@@ -999,10 +999,12 @@ class KnowledgeRetrievalMixin:
 
     async def get_git_commits(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Get relevant git commits from PROCEDURAL collection.
+        Get current local commits for repository status reports; otherwise
+        retrieve relevant git commits from the PROCEDURAL collection.
 
-        Uses hybrid retrieval: 1/3 most recent commits + 2/3 semantically
-        relevant commits, deduplicated by document ID.
+        Repository status reports use compact local history (no index or store
+        writes). Other queries use hybrid indexed retrieval: 1/3 recent and
+        2/3 semantic commits, deduplicated by document ID.
 
         Args:
             query: Search query for semantic retrieval
@@ -1012,12 +1014,34 @@ class KnowledgeRetrievalMixin:
             List of commit dicts with content, metadata, and relevance_score
         """
         try:
-            chroma = getattr(self.memory_coordinator, 'chroma_store', None)
-            if not chroma or 'procedural' not in chroma.collections:
+            from config.app_config import GIT_MEMORY_ENABLED
+            if not GIT_MEMORY_ENABLED or limit <= 0:
                 return []
 
-            from config.app_config import GIT_MEMORY_ENABLED
-            if not GIT_MEMORY_ENABLED:
+            from utils.repository_context import is_repository_status_report
+            if is_repository_status_report(query):
+                # The procedural index is manually synced; it cannot establish
+                # what just landed. Read local git without writing the index.
+                from knowledge.git_memory import GitMemoryExtractor
+                from pathlib import Path
+
+                extractor = GitMemoryExtractor(str(Path(__file__).resolve().parents[2]))
+                commits = await asyncio.to_thread(extractor.extract_commits, limit=limit)
+                for idx, commit in enumerate(commits, start=1):
+                    # A status update needs subjects, hashes and dates; long
+                    # commit bodies would crowd out the rest of the batch.
+                    commit["content"] = commit["content"].split("\n", 1)[0]
+                    meta = commit["metadata"]
+                    meta["retrieval_source"] = "local_git"
+                    self.memory_id_map[f"COMMIT_{idx}"] = {
+                        "type": "git_commit", "timestamp": meta["timestamp"],
+                        "content": commit["content"], "commit_hash": meta["commit_hash"],
+                        "relevance_score": 1.0,
+                    }
+                return commits
+
+            chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+            if not chroma or 'procedural' not in chroma.collections:
                 return []
 
             # Hybrid split: 1/3 recent, 2/3 semantic

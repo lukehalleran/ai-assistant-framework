@@ -1384,7 +1384,15 @@ class PromptFormatter:
                 gc_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
 
         if gc_lines:
-            sections.append(f"[PROJECT COMMIT HISTORY] n={len(gc_lines)}\n" + "\n\n".join(gc_lines))
+            scope = ""
+            if any(isinstance(c, dict) and c.get("metadata", {}).get("retrieval_source") == "local_git"
+                   for c in git_commits):
+                scope = (
+                    "Recent local repository records. Commit dates are not push dates; "
+                    "authors do not identify the person or process that pushed them. "
+                    "Do not infer automation or a surprise push from older assistant replies.\n"
+                )
+            sections.append(f"[PROJECT COMMIT HISTORY] n={len(gc_lines)}\n" + scope + "\n\n".join(gc_lines))
 
         # Procedural skills (adaptive workflows)
         proc_skills = context.get("procedural_skills", []) or []

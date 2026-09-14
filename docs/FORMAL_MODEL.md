@@ -643,7 +643,7 @@ Each intent type has a corresponding entry in the `_PROFILES` dict (`intent_clas
 | PROJECT_WORK | 0.40 | 0.10 | 0.20 | 0.05 | 0.15 | 0.10 | 0.40 | Code-focused, more skills/git/proposals |
 | GENERAL | (defaults) | | | | | | (default) | No overrides |
 
-CASUAL_SOCIAL zeroes out wiki, skills, proposals, git, and reference docs retrieval counts; TEMPORAL_RECALL threads a `_temporal_anchor_hours` key to reshape the scorer's decay curve. GENERAL uses all defaults unchanged.
+CASUAL_SOCIAL zeroes out wiki, skills, proposals, git, and reference docs retrieval counts; TEMPORAL_RECALL threads a `_temporal_anchor_hours` key to reshape the scorer's decay curve. GENERAL supplies no intent overrides. The builder can still apply its independent self-report trim: repository status reports retain the caller's git limit/default, use compact local git records at budget priority 8, and keep the other personal-context caps. Historical questions use the manually synchronized index; explicit zero limits and the git feature toggle still apply.
 
 where:
 - **w_override** is a subset of R^6 overriding the weight vector [w_relevance, w_recency, w_truth, w_importance, w_continuity, w_structure]. Note the `structure` entries in the intent profiles are **inert**: `rank_memories()` never reads a `structure` weight — the structure term is always added directly as `0.15 * density_alignment`
