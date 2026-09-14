@@ -1,0 +1,4239 @@
+{
+  "report_schema": 1,
+  "command": "scan",
+  "root": ".",
+  "source_sha": null,
+  "scope": "full",
+  "selected_scanners": [
+    "dm01_raw_substring",
+    "dm16_config_key_reachability",
+    "dm17_apply_without_guard",
+    "dm18_except_returns_empty",
+    "dm29_phrase_append_signature",
+    "dm31_live_state_default",
+    "catalog"
+  ],
+  "claim": "Scoped structural-detector ratchet. Each scanner detects only its listed patterns over its declared input legs; report-only scanners never gate. This is not behavioral coverage of the docs/BUG_CLASSES.md classes: every catalog class with no scanner is listed as an explicit coverage gap in each scan report.",
+  "policy": {
+    "path": "config/bug_class_policy.json",
+    "version": "2026-09-13.1",
+    "sha256": "21e7c189c3bd5168253f927df26262a91e73a51579a73518d2738a6d027136d7"
+  },
+  "registry": {
+    "expected": [
+      {
+        "id": "dm01_raw_substring",
+        "mode": "gate",
+        "class_ids": [
+          "BC-01",
+          "BC-02"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "python_source"
+        ],
+        "kinds": [
+          "raw_membership"
+        ]
+      },
+      {
+        "id": "dm16_config_key_reachability",
+        "mode": "report",
+        "class_ids": [
+          "BC-12",
+          "BC-10"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm16_config_yaml",
+          "dm16_app_config",
+          "dm16_schema",
+          "dm16_consumers"
+        ],
+        "kinds": [
+          "config_leaf_unreached",
+          "config_yaml_unresolved"
+        ]
+      },
+      {
+        "id": "dm17_apply_without_guard",
+        "mode": "gate",
+        "class_ids": [
+          "BC-37"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm17_scripts",
+          "dm17_tests"
+        ],
+        "kinds": [
+          "apply_without_guard",
+          "apply_guard_unresolved",
+          "test_data_path_literal"
+        ]
+      },
+      {
+        "id": "dm18_except_returns_empty",
+        "mode": "gate",
+        "class_ids": [
+          "BC-20",
+          "BC-47"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm18_retrieval"
+        ],
+        "kinds": [
+          "broad_except_returns_empty"
+        ]
+      },
+      {
+        "id": "dm29_phrase_append_signature",
+        "mode": "report",
+        "class_ids": [
+          "BC-76"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm29_changelog"
+        ],
+        "kinds": [
+          "phrase_append_signature"
+        ]
+      },
+      {
+        "id": "dm31_live_state_default",
+        "mode": "gate",
+        "class_ids": [
+          "BC-78",
+          "BC-11",
+          "BC-12"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "python_source"
+        ],
+        "kinds": [
+          "live_state_literal_default"
+        ]
+      },
+      {
+        "id": "catalog",
+        "mode": "gate",
+        "class_ids": [
+          "BC-71"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "catalog_document"
+        ],
+        "kinds": [
+          "catalog_diagnostic"
+        ]
+      }
+    ],
+    "observed": [
+      {
+        "id": "dm01_raw_substring",
+        "mode": "gate",
+        "class_ids": [
+          "BC-01",
+          "BC-02"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "python_source"
+        ],
+        "kinds": [
+          "raw_membership"
+        ]
+      },
+      {
+        "id": "dm16_config_key_reachability",
+        "mode": "report",
+        "class_ids": [
+          "BC-12",
+          "BC-10"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm16_config_yaml",
+          "dm16_app_config",
+          "dm16_schema",
+          "dm16_consumers"
+        ],
+        "kinds": [
+          "config_leaf_unreached",
+          "config_yaml_unresolved"
+        ]
+      },
+      {
+        "id": "dm17_apply_without_guard",
+        "mode": "gate",
+        "class_ids": [
+          "BC-37"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm17_scripts",
+          "dm17_tests"
+        ],
+        "kinds": [
+          "apply_without_guard",
+          "apply_guard_unresolved",
+          "test_data_path_literal"
+        ]
+      },
+      {
+        "id": "dm18_except_returns_empty",
+        "mode": "gate",
+        "class_ids": [
+          "BC-20",
+          "BC-47"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm18_retrieval"
+        ],
+        "kinds": [
+          "broad_except_returns_empty"
+        ]
+      },
+      {
+        "id": "dm29_phrase_append_signature",
+        "mode": "report",
+        "class_ids": [
+          "BC-76"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "dm29_changelog"
+        ],
+        "kinds": [
+          "phrase_append_signature"
+        ]
+      },
+      {
+        "id": "dm31_live_state_default",
+        "mode": "gate",
+        "class_ids": [
+          "BC-78",
+          "BC-11",
+          "BC-12"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "python_source"
+        ],
+        "kinds": [
+          "live_state_literal_default"
+        ]
+      },
+      {
+        "id": "catalog",
+        "mode": "gate",
+        "class_ids": [
+          "BC-71"
+        ],
+        "contract_version": 2,
+        "legs": [
+          "catalog_document"
+        ],
+        "kinds": [
+          "catalog_diagnostic"
+        ]
+      }
+    ],
+    "mismatches": []
+  },
+  "inventory": {
+    "evaluated": true,
+    "unclassified_python": [],
+    "unclassified_non_python": [],
+    "unscanned_python_present": [
+      "agent_branch",
+      "conftest.py",
+      "debug_graph_context.py",
+      "eval",
+      "hooks",
+      "integrations"
+    ],
+    "excluded_present": [
+      ".git",
+      ".ruff_cache",
+      "data"
+    ],
+    "not_inspected": []
+  },
+  "syntax": {
+    "files_checked": 887,
+    "errors": []
+  },
+  "scanners": {
+    "dm01_raw_substring": {
+      "mode": "gate",
+      "class_ids": [
+        "BC-01",
+        "BC-02"
+      ],
+      "contract_version": 2,
+      "selected": true,
+      "status": "ok",
+      "files_processed": 399,
+      "finding_count": 31,
+      "unresolved": 0,
+      "findings": [
+        {
+          "path": "core/actions/google_auth.py",
+          "symbol": "GoogleAuthManager.authenticate._run_flow",
+          "kind": "raw_membership",
+          "digest": "59f2d5d6639d5987f502db52dad6d4211a1775bd70c7a15527cadb94dfcc8084",
+          "line": 170,
+          "excerpt": "if \"browser\" not in str(browser_err).lower():",
+          "span": [
+            170,
+            170
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "2c1438c716fed306a889d7d79fa8d63f1424a0b84161e6ba3620bd25f0415166",
+          "line": 713,
+          "excerpt": "_has_url = 'http://' in _lower or 'https://' in _lower",
+          "span": [
+            713,
+            713
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
+          "line": 724,
+          "excerpt": "and any(p in _lower for p in CONTINUATION_PHRASES)",
+          "span": [
+            724,
+            724
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
+          "line": 770,
+          "excerpt": "and any(p in _lower for p in CONTINUATION_PHRASES)",
+          "span": [
+            770,
+            770
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "bc595068cda174dc0167c0d796cacd53c59fbcaa4495b485f710ac9e825203b7",
+          "line": 973,
+          "excerpt": "elif 'email' in _lower and any(w in _lower for w in ('send', 'draft', 'write', 'compose', 'fire off')):",
+          "span": [
+            973,
+            973
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "4a720fec20a104bc21b96aac57c663422efae743f623ecb2bbda291afb054298",
+          "line": 1080,
+          "excerpt": "any(w in _lower for w in SEARCH_SIGNAL_WORDS)",
+          "span": [
+            1080,
+            1080
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
+          "line": 1107,
+          "excerpt": "and any(p in _lower for p in CONTINUATION_PHRASES)",
+          "span": [
+            1107,
+            1107
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
+          "line": 1185,
+          "excerpt": "any(p in _lower for p in CONTINUATION_PHRASES)",
+          "span": [
+            1185,
+            1185
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/agentic/gate.py",
+          "symbol": "evaluate_agentic_gate",
+          "kind": "raw_membership",
+          "digest": "bd46f63251b2a19f90450974e5679d57c2d24982a6fa8b8626c9cdb038aaaa31",
+          "line": 1514,
+          "excerpt": "_explicit_kw = any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS)",
+          "span": [
+            1514,
+            1514
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/insight/coordinator.py",
+          "symbol": "_event_from_row",
+          "kind": "raw_membership",
+          "digest": "579321e2d3e713192d39ad13af8f3ca38472d66a17e3931c62bfa126baa49a53",
+          "line": 202,
+          "excerpt": "or \"daily note\" in str(row.get(\"title\", \"\")).lower())",
+          "span": [
+            202,
+            202
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/orchestrator.py",
+          "symbol": "DaemonOrchestrator._build_system_prompt",
+          "kind": "raw_membership",
+          "digest": "e50f717251cff0a795ebe4a3d23f93d5a2a574d9122dd163e6677c08c92208da",
+          "line": 1286,
+          "excerpt": "elif \"/\" in pronouns_lower:",
+          "span": [
+            1286,
+            1286
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/formatter.py",
+          "symbol": "_format_session_header",
+          "kind": "raw_membership",
+          "digest": "14401ee69b65dedaf4ae7cafbb166d0ab700a2b236b1a8131dba936410d41d4b",
+          "line": 287,
+          "excerpt": "if \"(today)\" in rel.lower():",
+          "span": [
+            287,
+            287
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/formatter.py",
+          "symbol": "_format_session_header",
+          "kind": "raw_membership",
+          "digest": "e9cbed17156ac986f48639c491f894101e0f44ff65ac0c8183a20c636faadb85",
+          "line": 289,
+          "excerpt": "elif \"(yesterday)\" in rel.lower():",
+          "span": [
+            289,
+            289
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/safety_canary.py",
+          "symbol": "SafetyCanary._is_conversational",
+          "kind": "raw_membership",
+          "digest": "61868d586a02511e14675b3b00f3dd0a72b91a5d7ce938a7c58571079c28c7af",
+          "line": 49,
+          "excerpt": "return \"conversational\" in str(tone).lower()",
+          "span": [
+            49,
+            49
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/git_memory.py",
+          "symbol": "GitMemoryExtractor._extract_tags",
+          "kind": "raw_membership",
+          "digest": "535a7846dd33be61249414bace96ccdb67b4ae7cd3c035984954c4263e43a823",
+          "line": 364,
+          "excerpt": "if \"wip\" in subject_lower:",
+          "span": [
+            364,
+            364
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/git_memory.py",
+          "symbol": "GitMemoryExtractor._extract_tags",
+          "kind": "raw_membership",
+          "digest": "5a705170c0d30f7eeb9f2b7a824347576064d82f971d2e19c3ebcf97199f8dba",
+          "line": 366,
+          "excerpt": "if \"breaking\" in subject_lower:",
+          "span": [
+            366,
+            366
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/git_memory.py",
+          "symbol": "GitMemoryExtractor._extract_tags",
+          "kind": "raw_membership",
+          "digest": "b2b6e9cc4bfa3a775a11fc52a526c854a1684a7caf3d99d543412d85889267a3",
+          "line": 368,
+          "excerpt": "if \"hotfix\" in subject_lower:",
+          "span": [
+            368,
+            368
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/sandbox_manager.py",
+          "symbol": "_kill_sandbox_quietly",
+          "kind": "raw_membership",
+          "digest": "6e9ef52dd8b1e7a431027338f6dd13c4b6aa8300704c1b2ada2820668699bb76",
+          "line": 78,
+          "excerpt": "if name == \"NotFoundException\" or \"404\" in text or \"not found\" in text.lower():",
+          "span": [
+            78,
+            78
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/web_search_manager.py",
+          "symbol": "WebSearchManager.decompose_query",
+          "kind": "raw_membership",
+          "digest": "9d5df111d4dafb05d8298a03883db675eb3a7cf47a119eb26cc344f3303db618",
+          "line": 2029,
+          "excerpt": "should_split = \"yes\" in line.lower()",
+          "span": [
+            2029,
+            2029
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "memory/corpus_manager.py",
+          "symbol": "CorpusManager.prune_corpus",
+          "kind": "raw_membership",
+          "digest": "f0f0941d017a5d0ee46ec168146ba56cf5d0bfd04aae6dab1d65df6aca6bcb9f",
+          "line": 464,
+          "excerpt": "summaries = [e for e in self.corpus if (\"@summary\" in (e.get(\"tags\") or []) or (\"summary\" in (e.get(\"type\") or \"\").lower()))]",
+          "span": [
+            464,
+            464
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_retriever.py",
+          "symbol": "MemoryRetriever._maybe_temporal_window_rerank",
+          "kind": "raw_membership",
+          "digest": "1ed687b5c34c26ee0c15f19b28e242a1eb1df13e4dc23acaed7d41f20e44845c",
+          "line": 1693,
+          "excerpt": "if not any(m in query_lower for m in self._RETROSPECTIVE_MARKERS):",
+          "span": [
+            1693,
+            1693
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_scorer.py",
+          "symbol": "MemoryScorer.rank_memories",
+          "kind": "raw_membership",
+          "digest": "806b5a858f14f6bf638eb40ba3c3cd52aa16c542cc0f36054df592927207cb69",
+          "line": 514,
+          "excerpt": "if cq_density > 0.08 and _analogy_markers(blob) > 0 and \"analogy\" not in current_query.lower():",
+          "span": [
+            514,
+            514
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "memory/user_profile.py",
+          "symbol": "UserProfile._is_temporal_query",
+          "kind": "raw_membership",
+          "digest": "031e1c0068a017f75df0c3c4de84c37c2f3b7fb27d4e12b891128d2a8a42a90e",
+          "line": 686,
+          "excerpt": "return any(kw in query_lower for kw in self.TEMPORAL_KEYWORDS)",
+          "span": [
+            686,
+            686
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "scripts/latency_rollup.py",
+          "symbol": "main",
+          "kind": "raw_membership",
+          "digest": "4797e2348b5e0bdd1b034f44cd88b57c80dc5a399eb383b947d497fbdb73baae",
+          "line": 80,
+          "excerpt": "\"image\" in str(key).lower() or \"vision\" in str(key).lower()",
+          "span": [
+            80,
+            80
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "scripts/migrate_proposals_supervision.py",
+          "symbol": "infer_test_files",
+          "kind": "raw_membership",
+          "digest": "1babbc662dbdd19d274395c3945b3e5856ecd49502a5258cc3bf0a20772a01c1",
+          "line": 106,
+          "excerpt": "return [f for f in affected if \"test\" in f.lower()]",
+          "span": [
+            106,
+            106
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "scripts/test_reflection_self_rewrite.py",
+          "symbol": "main",
+          "kind": "raw_membership",
+          "digest": "e4c6560c5cabe2ed13559d2eaa65b468523059c677150639dccc03403ec7e450",
+          "line": 162,
+          "excerpt": "good = next((r for r in out_rows if \"Oliver\" in r[\"pair\"] or \"boss\" in r[\"pair\"].lower() or \"Swall\" in r[\"pair\"]), None)",
+          "span": [
+            162,
+            162
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "scripts/test_reflection_self_rewrite.py",
+          "symbol": "main",
+          "kind": "raw_membership",
+          "digest": "fc9f694ac1a2e875a84633cfd2652a3176fe65a6b4ed464bb8ce602b6874466b",
+          "line": 163,
+          "excerpt": "ctrl = next((r for r in out_rows if \"kavarin\" in r[\"pair\"].lower() or \"stimul\" in r[\"pair\"].lower() or \"Dosing\" in r[\"pair\"]), None)",
+          "span": [
+            163,
+            163
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "utils/query_checker.py",
+          "symbol": "has_thread_break_marker",
+          "kind": "raw_membership",
+          "digest": "6eec6b756d470457f347e268d18936f9c5d1096a8f8cbfc756c0abd409986393",
+          "line": 1436,
+          "excerpt": "return any(marker in query_lower for marker in THREAD_BREAK_MARKERS)",
+          "span": [
+            1436,
+            1436
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "utils/tone_detector.py",
+          "symbol": "_check_observational_language",
+          "kind": "raw_membership",
+          "digest": "f35eed657914639b29ab3543e44302a8b792b92822acbefd7891f70744fc5d9f",
+          "line": 941,
+          "excerpt": "marker_count = sum(1 for marker in OBSERVATIONAL_MARKERS if marker in message_lower)",
+          "span": [
+            941,
+            941
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "utils/tone_detector.py",
+          "symbol": "_calculate_harm_score",
+          "kind": "raw_membership",
+          "digest": "fcc1e1114001238aa6e72318dca7ea9022fdb193e2572ff4d05c83bf3d990d9e",
+          "line": 1023,
+          "excerpt": "if \"overwhelmed\" in message_lower:",
+          "span": [
+            1023,
+            1023
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "utils/web_search_trigger.py",
+          "symbol": "quick_prefilter_should_skip",
+          "kind": "raw_membership",
+          "digest": "f50b50809eecfa19791adb461723e9c0c80206bb82c02afb8e613ee6e0696795",
+          "line": 1178,
+          "excerpt": "if len(query_lower) > 500 and not any(p in query_lower for p in EXPLICIT_SEARCH_PHRASES):",
+          "span": [
+            1178,
+            1178
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        }
+      ],
+      "legs": [
+        {
+          "id": "python_source",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 399,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "core",
+              "status": "available",
+              "files": 87
+            },
+            {
+              "path": "memory",
+              "status": "available",
+              "files": 59
+            },
+            {
+              "path": "knowledge",
+              "status": "available",
+              "files": 35
+            },
+            {
+              "path": "utils",
+              "status": "available",
+              "files": 52
+            },
+            {
+              "path": "gui",
+              "status": "available",
+              "files": 10
+            },
+            {
+              "path": "api",
+              "status": "available",
+              "files": 15
+            },
+            {
+              "path": "models",
+              "status": "available",
+              "files": 3
+            },
+            {
+              "path": "processing",
+              "status": "available",
+              "files": 2
+            },
+            {
+              "path": "config",
+              "status": "available",
+              "files": 4
+            },
+            {
+              "path": "scripts",
+              "status": "available",
+              "files": 131
+            },
+            {
+              "path": "main.py",
+              "status": "available",
+              "files": 1
+            }
+          ]
+        }
+      ]
+    },
+    "dm16_config_key_reachability": {
+      "mode": "report",
+      "class_ids": [
+        "BC-12",
+        "BC-10"
+      ],
+      "contract_version": 2,
+      "selected": true,
+      "status": "ok",
+      "files_processed": 398,
+      "finding_count": 91,
+      "unresolved": 4,
+      "findings": [
+        {
+          "path": "config/config.yaml",
+          "symbol": "daemon.data_dir",
+          "kind": "config_leaf_unreached",
+          "digest": "72c51d3718c4702293e86c7b658405bd7755135326ca1eb9ca4a79913e4e4313",
+          "line": 4,
+          "excerpt": "data_dir: ./data",
+          "span": [
+            4,
+            4
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "daemon.log_dir",
+          "kind": "config_leaf_unreached",
+          "digest": "787b0dcd3a87fcda580a6ec318b0cb8cd2a223e46759e8d9ad129ba58c1f5b31",
+          "line": 5,
+          "excerpt": "log_dir: ./conversation_logs",
+          "span": [
+            5,
+            5
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "daemon.in_harm_test",
+          "kind": "config_leaf_unreached",
+          "digest": "fcaa1e2d09ffae19d62eea1d64cd2e93d4bed1f77b21302772865ecfad91afb7",
+          "line": 6,
+          "excerpt": "in_harm_test: false",
+          "span": [
+            6,
+            6
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "daemon.debug_mode",
+          "kind": "config_leaf_unreached",
+          "digest": "088a8d6304b8e907fe96c36df49d8689f582ef38b7a493e002a7b8bd54ac56a2",
+          "line": 7,
+          "excerpt": "debug_mode: false",
+          "span": [
+            7,
+            7
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "daemon.log_level",
+          "kind": "config_leaf_unreached",
+          "digest": "62451477c3d7a0a8f96daaf2e4d984ddae46f99cd465b8d2d8328fa5af26e7bb",
+          "line": 8,
+          "excerpt": "log_level: INFO",
+          "span": [
+            8,
+            8
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.max_final_memories",
+          "kind": "config_leaf_unreached",
+          "digest": "4515c4c2377c0a7b63e06b68dbf66a99740d35ed455f2f4f1a7b01c7da583ac1",
+          "line": 15,
+          "excerpt": "max_final_memories: 30",
+          "span": [
+            15,
+            15
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.max_working_memory",
+          "kind": "config_leaf_unreached",
+          "digest": "74a3edc02198acd5b5546d5c3955c4a8444d0abb142a3ce040c4be47e54aa744",
+          "line": 16,
+          "excerpt": "max_working_memory: 30",
+          "span": [
+            16,
+            16
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.mem_no",
+          "kind": "config_leaf_unreached",
+          "digest": "b70cb55dbcc381cb64bce23ed78e1398dc1eef34f7c8a8fbd02560cb94382c60",
+          "line": 17,
+          "excerpt": "mem_no: 5",
+          "span": [
+            17,
+            17
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.mem_importance_score",
+          "kind": "config_leaf_unreached",
+          "digest": "9fd0114b81a57745029d3f53519032fe81dad8c9679589b469f96c060a1b1ef0",
+          "line": 18,
+          "excerpt": "mem_importance_score: 0.75",
+          "span": [
+            18,
+            18
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.num_memories",
+          "kind": "config_leaf_unreached",
+          "digest": "1a5ecf2aabe231e57907d0454288b1521af577a03bbb8174dfd0525288dee8a3",
+          "line": 21,
+          "excerpt": "num_memories: 30",
+          "span": [
+            21,
+            21
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.child_mem_limit",
+          "kind": "config_leaf_unreached",
+          "digest": "737705d44cf088beaeec73b2781be753cb67711b13f00ef9664a8b785dbb4a82",
+          "line": 23,
+          "excerpt": "child_mem_limit: 3",
+          "span": [
+            23,
+            23
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.truth_score_update_rate",
+          "kind": "config_leaf_unreached",
+          "digest": "bfab8b41090c0d9b41ee5f41480620ddae227dd4473af94c07c3194c114a41fb",
+          "line": 25,
+          "excerpt": "truth_score_update_rate: 0.02",
+          "span": [
+            25,
+            25
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.truth_score_max",
+          "kind": "config_leaf_unreached",
+          "digest": "1768062e45776573105859d3c33d15c573d9d3de7fea97cc29df1b7059ed0f8b",
+          "line": 26,
+          "excerpt": "truth_score_max: 0.95",
+          "span": [
+            26,
+            26
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.default_summary_prompt_header",
+          "kind": "config_leaf_unreached",
+          "digest": "eaac22e41e5657d98c85eaaab65ac049edce419dd4c3a6ea902730175c3bceb7",
+          "line": 34,
+          "excerpt": "default_summary_prompt_header: 'Summary of last 20 exchanges:",
+          "span": [
+            34,
+            34
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.default_tagging_prompt",
+          "kind": "config_leaf_unreached",
+          "digest": "d19cd71de59eb1634d33be3815c63407713308c846194811c8c3a8700cc7013e",
+          "line": 37,
+          "excerpt": "default_tagging_prompt: 'You are Daemon, my assistant. Extract 5 concise tags or",
+          "span": [
+            37,
+            37
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.retrieve_conversations",
+          "kind": "config_leaf_unreached",
+          "digest": "989afa8484982d10fa5b21211bf27198a008ad33d40123692d9acdb976197f34",
+          "line": 45,
+          "excerpt": "retrieve_conversations: true",
+          "span": [
+            45,
+            45
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.max_conversations",
+          "kind": "config_leaf_unreached",
+          "digest": "63a8f478ee1b35e042ee6f9a52190fd995680093821e17d0674d3bf2c49506d2",
+          "line": 46,
+          "excerpt": "max_conversations: 15",
+          "span": [
+            46,
+            46
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.conversation_collection",
+          "kind": "config_leaf_unreached",
+          "digest": "b8e70e7b9b0950531875d3f627321c969b0df7be75ff11ab35e65f22464f1506",
+          "line": 47,
+          "excerpt": "conversation_collection: conversations",
+          "span": [
+            47,
+            47
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.retrieve_summaries",
+          "kind": "config_leaf_unreached",
+          "digest": "41e190202c3cc7261e768652a42ee171d7025f95afb0abd272cb42d26b7af610",
+          "line": 48,
+          "excerpt": "retrieve_summaries: true",
+          "span": [
+            48,
+            48
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.summary_collection",
+          "kind": "config_leaf_unreached",
+          "digest": "4eed1a1bbcd3a10edcb2eb524a220206f9d4a2301418d0dda70fed76838eff80",
+          "line": 50,
+          "excerpt": "summary_collection: summaries",
+          "span": [
+            50,
+            50
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.hybrid_summaries_enabled",
+          "kind": "config_leaf_unreached",
+          "digest": "00fb72a7922d7b0c01d0c156eeadaa3724f0d31a16ed4df4522fa117770927e0",
+          "line": 54,
+          "excerpt": "hybrid_summaries_enabled: true",
+          "span": [
+            54,
+            54
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.hybrid_reflections_enabled",
+          "kind": "config_leaf_unreached",
+          "digest": "695a65da80e8bf6424e10e35deec4b8addcc0053d27c408eed429ba82527fe28",
+          "line": 55,
+          "excerpt": "hybrid_reflections_enabled: true",
+          "span": [
+            55,
+            55
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory.force_min_memories",
+          "kind": "config_leaf_unreached",
+          "digest": "8571e360bacc4ad9c3bb765821142ecea4e660a323dc67f0b87e52e1284a4f4b",
+          "line": 60,
+          "excerpt": "force_min_memories: true",
+          "span": [
+            60,
+            60
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "models.dream_model",
+          "kind": "config_leaf_unreached",
+          "digest": "b1099b0f8c9f1222ff6cc9d3915361e137ecb4822d14e865c05e189c73e50da7",
+          "line": 63,
+          "excerpt": "dream_model: gpt-neo",
+          "span": [
+            63,
+            63
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "models.openrouter_base",
+          "kind": "config_leaf_unreached",
+          "digest": "d6a2b077612b48ae2d4ebe47e117f43b6f3117209a8752d1a8e7ce77411d629b",
+          "line": 64,
+          "excerpt": "openrouter_base: https://openrouter.ai/api/v1",
+          "span": [
+            64,
+            64
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "models.load_local_model",
+          "kind": "config_leaf_unreached",
+          "digest": "11a33ba4fa4d59bbc92abef8a837af088613e2f0a025500eab3852dd22bec502",
+          "line": 65,
+          "excerpt": "load_local_model: true",
+          "span": [
+            65,
+            65
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "models.local_model_context_limit",
+          "kind": "config_leaf_unreached",
+          "digest": "61e0fad36698801b3f15fcd5bf0592f1edd57680992656b6b875d76679c085e9",
+          "line": 66,
+          "excerpt": "local_model_context_limit: 4096",
+          "span": [
+            66,
+            66
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "models.api_model_context_limit",
+          "kind": "config_leaf_unreached",
+          "digest": "9cf6a9ae51f54cdbc9ee68599e3810b94431b48d00921b6803aec32cebc6d7e3",
+          "line": 67,
+          "excerpt": "api_model_context_limit: 128000",
+          "span": [
+            67,
+            67
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "models.openai_api_key",
+          "kind": "config_leaf_unreached",
+          "digest": "8ffcecf82d4285206edb3cbe1e3fb823599cade97bf731707084e006d4fc9714",
+          "line": 75,
+          "excerpt": "openai_api_key: ''",
+          "span": [
+            75,
+            75
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "gating.cosine_similarity_threshold",
+          "kind": "config_leaf_unreached",
+          "digest": "b4986a032510d409862e8d2c29b46c88d84f42253a7b65a5b994d0789da000b2",
+          "line": 83,
+          "excerpt": "cosine_similarity_threshold: 0.15",
+          "span": [
+            83,
+            83
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "gating.use_reranking",
+          "kind": "config_leaf_unreached",
+          "digest": "7424f27850c1ac229fd2f9c6147a9fddd650a9969ef88e220031fcfe67dfd1df",
+          "line": 88,
+          "excerpt": "use_reranking: true",
+          "span": [
+            88,
+            88
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "gating.rerank_use_llm",
+          "kind": "config_leaf_unreached",
+          "digest": "33ea599b95a7a7fb3aa621911c792decabc1d09db47583e6bf694a8136a8e91c",
+          "line": 89,
+          "excerpt": "rerank_use_llm: false",
+          "span": [
+            89,
+            89
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "gating.cross_encoder_weight",
+          "kind": "config_leaf_unreached",
+          "digest": "7a45f8f9be00cb72c9f02c3957700a1852408265783846a0fb08312e8fe9a353",
+          "line": 90,
+          "excerpt": "cross_encoder_weight: 0.9",
+          "span": [
+            90,
+            90
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "gating.summary_cosine_threshold",
+          "kind": "config_leaf_unreached",
+          "digest": "3ab81840e8dbd4f50a471dd2ba19c9ac29a8486e94d589f953db40eff74c1265",
+          "line": 92,
+          "excerpt": "summary_cosine_threshold: 0.2",
+          "span": [
+            92,
+            92
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "gating.reflection_cosine_threshold",
+          "kind": "config_leaf_unreached",
+          "digest": "91407d1109400521c021582c72b55c431e0388a66e0d89374744305c30c5fb6c",
+          "line": 93,
+          "excerpt": "reflection_cosine_threshold: 0.15",
+          "span": [
+            93,
+            93
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "paths.system_prompt_file.system_prompt_file",
+          "kind": "config_leaf_unreached",
+          "digest": "21a02bb76960edd805c78446e2d2dbf3381ed7fde0be2808e931b5e994f3d5de",
+          "line": 107,
+          "excerpt": "system_prompt_file: core/system_prompt.txt",
+          "span": [
+            107,
+            107
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "features.enable_wikipedia",
+          "kind": "config_leaf_unreached",
+          "digest": "5f30ad470639a602b9a7bde2a3ecdb69308d62490c5a00101ea52043bf9bfa41",
+          "line": 109,
+          "excerpt": "enable_wikipedia: true",
+          "span": [
+            109,
+            109
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "features.enable_semantic_search",
+          "kind": "config_leaf_unreached",
+          "digest": "999f703aa4f4f4f03632348f640084333c982f1c9cdc7df3e5ee05ed69262ae4",
+          "line": 110,
+          "excerpt": "enable_semantic_search: true",
+          "span": [
+            110,
+            110
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "features.enable_facts",
+          "kind": "config_leaf_unreached",
+          "digest": "9dafc4a0e91cd94f58049be93fbe8a07b29cb5bb97e44cabb8dfd93d7fe1e131",
+          "line": 111,
+          "excerpt": "enable_facts: true",
+          "span": [
+            111,
+            111
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "features.enable_dreams",
+          "kind": "config_leaf_unreached",
+          "digest": "1f5c6a39b72a4836065935a509e117d788b1c962ff2ca8473f55138482676749",
+          "line": 112,
+          "excerpt": "enable_dreams: false",
+          "span": [
+            112,
+            112
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "features.semantic_only_mode",
+          "kind": "config_leaf_unreached",
+          "digest": "800cd995a21dfd9362294ed0f5835e30437d8747bed05784b569d80a95c5ee10",
+          "line": 113,
+          "excerpt": "semantic_only_mode: false",
+          "span": [
+            113,
+            113
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "web_search.llm_first_enabled",
+          "kind": "config_leaf_unreached",
+          "digest": "98711d4a03d3d1583c0ad2ddd57b33da59dcb00c81658ccfa5aa3b708eb2c256",
+          "line": 140,
+          "excerpt": "llm_first_enabled: true",
+          "span": [
+            140,
+            140
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "web_search.trigger_model",
+          "kind": "config_leaf_unreached",
+          "digest": "e933b27c12c4a5fdc6aeb4f58ae599b50a6c18c6f5c8764fb875df8d937ca2f6",
+          "line": 141,
+          "excerpt": "trigger_model: gpt-4o-mini",
+          "span": [
+            141,
+            141
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "web_search.trigger_timeout_s",
+          "kind": "config_leaf_unreached",
+          "digest": "09e54fb757785917a8f584e34dad1292cc399adb685484f7ed9849035f3b1db7",
+          "line": 142,
+          "excerpt": "trigger_timeout_s: 5.0",
+          "span": [
+            142,
+            142
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "web_search.trigger_max_tokens",
+          "kind": "config_leaf_unreached",
+          "digest": "b07ab5ce53a3410536a687763c3e0a6f1dcf4bb32cd16d8fec49c13d6856ff95",
+          "line": 143,
+          "excerpt": "trigger_max_tokens: 150",
+          "span": [
+            143,
+            143
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "web_search.llm_heuristic_weight",
+          "kind": "config_leaf_unreached",
+          "digest": "ef926177c7cb7314d393e5e8b1f9d6d7030d2b2589240fb25a1974b5832e1672",
+          "line": 144,
+          "excerpt": "llm_heuristic_weight: 0.7",
+          "span": [
+            144,
+            144
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "agentic_search.prefer_native_tools",
+          "kind": "config_leaf_unreached",
+          "digest": "e9ded032b6ea58a5685ed53b9376459f24f2f0a7bd2f4ce00163c1e27d49fd02",
+          "line": 157,
+          "excerpt": "prefer_native_tools: true",
+          "span": [
+            157,
+            157
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "agentic_search.memory_search_enabled",
+          "kind": "config_leaf_unreached",
+          "digest": "34ceaa7ad5b0c353e7c1dc3be41ad0ed0b5ad6546846a30cf5f6a34be89b45f0",
+          "line": 158,
+          "excerpt": "memory_search_enabled: true",
+          "span": [
+            158,
+            158
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "agentic_search.fetch_fastpath_min_chars",
+          "kind": "config_leaf_unreached",
+          "digest": "aecb537271d7e634075be1233d5f9f785ec3e6eb288faaaae13376801ed41931",
+          "line": 165,
+          "excerpt": "fetch_fastpath_min_chars: 400",
+          "span": [
+            165,
+            165
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "grounding_check.min_response_chars",
+          "kind": "config_leaf_unreached",
+          "digest": "a44064cdee41b56e294ba329ef6060fc032b2957c833b2e27dd1ae69bb8a6ec3",
+          "line": 218,
+          "excerpt": "min_response_chars: 40 # LOW on purpose - the live false endorsement was ~300 chars",
+          "span": [
+            218,
+            218
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "grounding_check.integrate_timeout_s",
+          "kind": "config_leaf_unreached",
+          "digest": "7685022ceb260cb6d5ffb26aec36743121673d3a99f513313723b46e2fe1fdeb",
+          "line": 220,
+          "excerpt": "integrate_timeout_s: 6.0",
+          "span": [
+            220,
+            220
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "grounding_check.integrate_max_response_chars",
+          "kind": "config_leaf_unreached",
+          "digest": "4f4206094771dfbb4bee7b5b14c47ff0918054e19874105f7dc706e68cf42510",
+          "line": 221,
+          "excerpt": "integrate_max_response_chars: 4000",
+          "span": [
+            221,
+            221
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "grounding_check.integrate_min_ratio",
+          "kind": "config_leaf_unreached",
+          "digest": "edcc9580c0bf7ea942c5c696eaca72afe298268c1524758997516d447a4712a9",
+          "line": 222,
+          "excerpt": "integrate_min_ratio: 0.75 # min (rewritten / original) length ratio",
+          "span": [
+            222,
+            222
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "grounding_check.integrate_max_ratio",
+          "kind": "config_leaf_unreached",
+          "digest": "88311077b5226a3892f3d18629c3b5bd5198cd83aaaf0ff1ae793533cb7b6504",
+          "line": 223,
+          "excerpt": "integrate_max_ratio: 1.30 # max (rewritten / original) length ratio",
+          "span": [
+            223,
+            223
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory_expansion.default_window",
+          "kind": "config_leaf_unreached",
+          "digest": "4ad6b01254e3b013421bd7a229e8842a452dd88e900878544c2955eac8ddf421",
+          "line": 278,
+          "excerpt": "default_window: 3",
+          "span": [
+            278,
+            278
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "memory_expansion.max_total_tokens",
+          "kind": "config_leaf_unreached",
+          "digest": "f961a2cd7992d4ec4fa9fecdee643c0ba1e856795edf0d551d1ba88999763c4e",
+          "line": 279,
+          "excerpt": "max_total_tokens: 2000",
+          "span": [
+            279,
+            279
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "proactive_surfacing.max_insights",
+          "kind": "config_leaf_unreached",
+          "digest": "4da932cd294070c6b068fd1e969309dc8212d6b2c88c16e2aac368a0ce57fa9c",
+          "line": 372,
+          "excerpt": "max_insights: 2",
+          "span": [
+            372,
+            372
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "thread_surfacing.max_surfaced",
+          "kind": "config_leaf_unreached",
+          "digest": "a9f66fce0672e692c9f4074562e790e9dd52ca9e286b5385ecb6e8897308b5c2",
+          "line": 413,
+          "excerpt": "max_surfaced: 3",
+          "span": [
+            413,
+            413
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "implementation_tracking.auto_complete",
+          "kind": "config_leaf_unreached",
+          "digest": "bfdf6d9092aca0d403eb003e5cbd55ed5f6a63440b4bd49685fe0c33dea661f3",
+          "line": 441,
+          "excerpt": "auto_complete: false",
+          "span": [
+            441,
+            441
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "synthesis.batch_size",
+          "kind": "config_leaf_unreached",
+          "digest": "a6ed19f08b3eb944930181e90a0a6bef1d5408331ab57661d222a7dbb4970bfd",
+          "line": 447,
+          "excerpt": "batch_size: 100",
+          "span": [
+            447,
+            447
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "synthesis.use_percentile_thresholds",
+          "kind": "config_leaf_unreached",
+          "digest": "57e14f3f9880ee8e27772ea5c5d5051ef82cb7f264998344832de363d92b2fdd",
+          "line": 454,
+          "excerpt": "use_percentile_thresholds: false",
+          "span": [
+            454,
+            454
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "synthesis.cooccurrence_known_threshold",
+          "kind": "config_leaf_unreached",
+          "digest": "3bd01a39a771bdfd731755b88a5dafcfccf26c7551cd4fa352d5f485cc3f0cad",
+          "line": 457,
+          "excerpt": "cooccurrence_known_threshold: 0.85",
+          "span": [
+            457,
+            457
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "synthesis.memory_similarity_threshold",
+          "kind": "config_leaf_unreached",
+          "digest": "dcfbd5f29c069b455a290e8bbc221994df3bb336a83eeb7d9aaa6967b3addb0e",
+          "line": 459,
+          "excerpt": "memory_similarity_threshold: 0.85",
+          "span": [
+            459,
+            459
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "synthesis.convergence_strong_paths",
+          "kind": "config_leaf_unreached",
+          "digest": "3c32f621c8cd5d59b71fa818654950fe10eca390866e34e89c4a62a98201737a",
+          "line": 468,
+          "excerpt": "convergence_strong_paths: 3",
+          "span": [
+            468,
+            468
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "synthesis.convergence_strong_sources",
+          "kind": "config_leaf_unreached",
+          "digest": "1e29fac60c9c4ec99e10a7b54532a9bac1702f86c6015c5ebaa96fe39912f2f9",
+          "line": 469,
+          "excerpt": "convergence_strong_sources: 2",
+          "span": [
+            469,
+            469
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "wikidata_import.max_total_entities",
+          "kind": "config_leaf_unreached",
+          "digest": "0115d966fb4797571be14cfec76860d07981fb3b5c3f31960efc2f46ad2542fd",
+          "line": 496,
+          "excerpt": "max_total_entities: 50000",
+          "span": [
+            496,
+            496
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "wikidata_import.sparql_batch_size",
+          "kind": "config_leaf_unreached",
+          "digest": "2a7107b40267e53ea164d2b5c2e6b554bcc162de2475f5df13ffbf6fb2288930",
+          "line": 497,
+          "excerpt": "sparql_batch_size: 500",
+          "span": [
+            497,
+            497
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "wikidata_enrichment.max_edges_per_entity",
+          "kind": "config_leaf_unreached",
+          "digest": "43684ad903ca29a9215dcc6dbb39ffa9c9c021d31088640ac4101c99594cca95",
+          "line": 511,
+          "excerpt": "max_edges_per_entity: 5",
+          "span": [
+            511,
+            511
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "wikidata_enrichment.max_new_nodes_per_run",
+          "kind": "config_leaf_unreached",
+          "digest": "7048321cbaffb0b815894554a289259590b13ecdee6dceaf8e0895d308cfb953",
+          "line": 512,
+          "excerpt": "max_new_nodes_per_run: 25",
+          "span": [
+            512,
+            512
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "wikidata_enrichment.max_edges_per_run",
+          "kind": "config_leaf_unreached",
+          "digest": "d6936b455d9e15ca0a0b893d0f51e2c5f541b678b4a599c561827e7e05f0c5b1",
+          "line": 513,
+          "excerpt": "max_edges_per_run: 50",
+          "span": [
+            513,
+            513
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "graph_walk.boundary_crossing_required",
+          "kind": "config_leaf_unreached",
+          "digest": "d3e7c36c14d0fedf84820a8748cd5fe11164240338e5fc1503dff17ec6605d34",
+          "line": 522,
+          "excerpt": "boundary_crossing_required: true",
+          "span": [
+            522,
+            522
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "visual_memory.ingest_on_obsidian_sync",
+          "kind": "config_leaf_unreached",
+          "digest": "3b663fa411a3759592e3245ed87b3483aacf7bba968fc8f40fa2c9dba0b8c8d8",
+          "line": 534,
+          "excerpt": "ingest_on_obsidian_sync: true",
+          "span": [
+            534,
+            534
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "code_proposals.require_tests",
+          "kind": "config_leaf_unreached",
+          "digest": "7aa6b59da0595e3626688b724b1911dedaa5c5762ddc182c3abd4bd814504769",
+          "line": 559,
+          "excerpt": "require_tests: true",
+          "span": [
+            559,
+            559
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "behavioral_patterns.min_turns",
+          "kind": "config_leaf_unreached",
+          "digest": "539522b53279ba571ecd222f54ffec6a726e0d350903d79c2070a1358a808d9b",
+          "line": 562,
+          "excerpt": "min_turns: 3",
+          "span": [
+            562,
+            562
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "behavioral_patterns.max_patterns",
+          "kind": "config_leaf_unreached",
+          "digest": "e664aab688d208e1749bbf42750388678471cd4a32af6b1d428bee955b56bc1b",
+          "line": 563,
+          "excerpt": "max_patterns: 3",
+          "span": [
+            563,
+            563
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "user_profile.personal_vocabulary",
+          "kind": "config_leaf_unreached",
+          "digest": "f4c3433246fd245c8dbb6e16849ad6ceed509515ecbcbbd1833b694e1913a29f",
+          "line": 599,
+          "excerpt": "personal_vocabulary: {}",
+          "span": [
+            599,
+            599
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "daemon_notes.collection_boost",
+          "kind": "config_leaf_unreached",
+          "digest": "038dbce8da9410558b455bc9a2a4ef66fc78bed6aca8bb596574c69f5d395ba1",
+          "line": 628,
+          "excerpt": "collection_boost: -0.05",
+          "span": [
+            628,
+            628
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.telegram_bot_token",
+          "kind": "config_leaf_unreached",
+          "digest": "64fc5b6cfd9312250da117100c2bb7029c8b12faf9ee8e97c51bff1959948f98",
+          "line": 636,
+          "excerpt": "telegram_bot_token: ''",
+          "span": [
+            636,
+            636
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.telegram_default_chat_id",
+          "kind": "config_leaf_unreached",
+          "digest": "03db87b8ba3902d514765b9c26001e60a5e40ccdb42e157d5604f04b8e1d4be6",
+          "line": 637,
+          "excerpt": "telegram_default_chat_id: ''",
+          "span": [
+            637,
+            637
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.discord_webhook_url",
+          "kind": "config_leaf_unreached",
+          "digest": "4d2ffce22753db8b32a06cb052da1112e071773989dd2d7af30bf5f4ab64d86f",
+          "line": 638,
+          "excerpt": "discord_webhook_url: ''",
+          "span": [
+            638,
+            638
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.smtp_password",
+          "kind": "config_leaf_unreached",
+          "digest": "0bd262f698972add5a9fa08fb25e41b5b33ddfb84f23563d0c5e626fec17b637",
+          "line": 642,
+          "excerpt": "smtp_password: ''",
+          "span": [
+            642,
+            642
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.google_client_id",
+          "kind": "config_leaf_unreached",
+          "digest": "fc97be75eb6206c245781fa5eaace2cac051cf2bcc600e02454e0e07dbe9918b",
+          "line": 645,
+          "excerpt": "google_client_id: ''",
+          "span": [
+            645,
+            645
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.google_client_secret",
+          "kind": "config_leaf_unreached",
+          "digest": "7a94f4a6b4e914bd244aa9d00d87f83eb982363eaaf91b7f673555cbf181fcd0",
+          "line": 646,
+          "excerpt": "google_client_secret: ''",
+          "span": [
+            646,
+            646
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.google_token_path",
+          "kind": "config_leaf_unreached",
+          "digest": "7e8d8e2b6a2bccbc17849d0fbf8c127fc62edec2e4576e6558bbcfa07e2c633c",
+          "line": 647,
+          "excerpt": "google_token_path: data/google_token.json",
+          "span": [
+            647,
+            647
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.playwright_enabled",
+          "kind": "config_leaf_unreached",
+          "digest": "03eabdb5165f761fbc7b886fa87fdb6f6030b70343ff8acab2ed176f2622bbe4",
+          "line": 656,
+          "excerpt": "playwright_enabled: false",
+          "span": [
+            656,
+            656
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.playwright_timeout_s",
+          "kind": "config_leaf_unreached",
+          "digest": "74d3f43251fab595f784e644b9bbc3d0976cbc87d0f5bc7fe693319d36b154f5",
+          "line": 657,
+          "excerpt": "playwright_timeout_s: 30",
+          "span": [
+            657,
+            657
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "internet_actions.pending_actions_path",
+          "kind": "config_leaf_unreached",
+          "digest": "63a31f54bfc14ca6ef94d941f110d0a1000ba32f5c9c617cd454376abe358912",
+          "line": 660,
+          "excerpt": "pending_actions_path: data/pending_actions.json",
+          "span": [
+            660,
+            660
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": false
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "prompts",
+          "kind": "config_yaml_unresolved",
+          "digest": "b48adbe6d6f0acf4fac663e33bc8e2eb8bcaf13279ed368f6addc6daef3c29ec",
+          "line": 664,
+          "excerpt": "the truth even when uncomfortable, admits ignorance freely, and uses dark humor",
+          "span": [
+            664,
+            664
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": true
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "prompts",
+          "kind": "config_yaml_unresolved",
+          "digest": "ac9b26583fa5bd193ad2587eb2bdf78fdb82edcaa0bca560f9a453bd778c59c8",
+          "line": 665,
+          "excerpt": "about current events. You're willing to call out BS while still being genuinely",
+          "span": [
+            665,
+            665
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": true
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "prompts",
+          "kind": "config_yaml_unresolved",
+          "digest": "31c6a1f5352ea1dcb812189bd15562c79738a40af957827b91c49022e9d1121a",
+          "line": 666,
+          "excerpt": "helpful.",
+          "span": [
+            666,
+            666
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": true
+        },
+        {
+          "path": "config/config.yaml",
+          "symbol": "prompts.default_core_directive",
+          "kind": "config_yaml_unresolved",
+          "digest": "9c7316851a38683212c014c8fd673fb36495de73c35e95f1653142243a725152",
+          "line": 671,
+          "excerpt": "You should respect user intent and be aligned with their goals.",
+          "span": [
+            671,
+            671
+          ],
+          "leg": "dm16_config_yaml",
+          "unresolved": true
+        }
+      ],
+      "legs": [
+        {
+          "id": "dm16_config_yaml",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 1,
+          "unresolved": 4,
+          "roots": [
+            {
+              "path": "config/config.yaml",
+              "status": "available",
+              "files": 1
+            }
+          ]
+        },
+        {
+          "id": "dm16_app_config",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 1,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "config/app_config.py",
+              "status": "available",
+              "files": 1
+            }
+          ]
+        },
+        {
+          "id": "dm16_schema",
+          "required": false,
+          "status": "available",
+          "available": true,
+          "files_processed": 1,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "config/schema.py",
+              "status": "available",
+              "files": 1
+            }
+          ]
+        },
+        {
+          "id": "dm16_consumers",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 395,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "core",
+              "status": "available",
+              "files": 87
+            },
+            {
+              "path": "memory",
+              "status": "available",
+              "files": 59
+            },
+            {
+              "path": "knowledge",
+              "status": "available",
+              "files": 35
+            },
+            {
+              "path": "utils",
+              "status": "available",
+              "files": 52
+            },
+            {
+              "path": "gui",
+              "status": "available",
+              "files": 10
+            },
+            {
+              "path": "api",
+              "status": "available",
+              "files": 15
+            },
+            {
+              "path": "models",
+              "status": "available",
+              "files": 3
+            },
+            {
+              "path": "processing",
+              "status": "available",
+              "files": 2
+            },
+            {
+              "path": "scripts",
+              "status": "available",
+              "files": 131
+            },
+            {
+              "path": "main.py",
+              "status": "available",
+              "files": 1
+            }
+          ]
+        }
+      ]
+    },
+    "dm17_apply_without_guard": {
+      "mode": "gate",
+      "class_ids": [
+        "BC-37"
+      ],
+      "contract_version": 2,
+      "selected": true,
+      "status": "ok",
+      "files_processed": 601,
+      "finding_count": 39,
+      "unresolved": 0,
+      "findings": [
+        {
+          "path": "scripts/cleanup_stale_illness.py",
+          "symbol": "<module>",
+          "kind": "apply_without_guard",
+          "digest": "c56e533e7ca5cb119e63134378e389a9841f0e5e46182b2c0de5068de459535c",
+          "line": 155,
+          "excerpt": "ap.add_argument(\"--apply\", action=\"store_true\", help=\"apply changes (default: dry-run)\")",
+          "span": [
+            155,
+            155
+          ],
+          "leg": "dm17_scripts",
+          "unresolved": false
+        },
+        {
+          "path": "scripts/graph_relation_normalize.py",
+          "symbol": "<module>",
+          "kind": "apply_without_guard",
+          "digest": "900dc03ef0933610a6a18727e5913c3b8aeeadcd9b1511fc1b473ce9ead6b699",
+          "line": 121,
+          "excerpt": "ap.add_argument(\"--apply\", action=\"store_true\",",
+          "span": [
+            121,
+            122
+          ],
+          "leg": "dm17_scripts",
+          "unresolved": false
+        },
+        {
+          "path": "scripts/reclassify_proposals.py",
+          "symbol": "<module>",
+          "kind": "apply_without_guard",
+          "digest": "4bc72ea01f237677f830d8607cd8e984f320d52b544caa23f9bb745e49b8566b",
+          "line": 114,
+          "excerpt": "parser.add_argument(\"--apply\", action=\"store_true\",",
+          "span": [
+            114,
+            115
+          ],
+          "leg": "dm17_scripts",
+          "unresolved": false
+        },
+        {
+          "path": "scripts/restore_backup.py",
+          "symbol": "<module>",
+          "kind": "apply_without_guard",
+          "digest": "537b72a4bacaa1b989530daf554a0e84798e946114bd4af3813840c199073be1",
+          "line": 135,
+          "excerpt": "parser.add_argument(\"--apply\", action=\"store_true\", help=\"Actually perform --restore\")",
+          "span": [
+            135,
+            135
+          ],
+          "leg": "dm17_scripts",
+          "unresolved": false
+        },
+        {
+          "path": "tests/agent_branch/test_coding_worker.py",
+          "symbol": "test_repo_map_lists_files_and_skips_heavy_dirs",
+          "kind": "test_data_path_literal",
+          "digest": "a16a329f496e6ba2defc3e88b2111b12e1c1411885ebbe5d56da63cacea6d339",
+          "line": 51,
+          "excerpt": "assert \"data/huge.bin\" not in m and \".git/config\" not in m # heavy/irrelevant skipped",
+          "span": [
+            51,
+            51
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/agent_branch/test_manifest.py",
+          "symbol": "test_default_forbidden_paths_cover_safety_surface",
+          "kind": "test_data_path_literal",
+          "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+          "line": 75,
+          "excerpt": "for required in (\"tests/\", \"data/\", \".env\", \"scripts/safe_git.sh\", \"scripts/bin/\"):",
+          "span": [
+            75,
+            75
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/test_eval/test_persistence_guard.py",
+          "symbol": "TestPersistenceSnapshot._make_snapshot",
+          "kind": "test_data_path_literal",
+          "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+          "line": 40,
+          "excerpt": "name=\"data/graph.json\", kind=\"json_file\",",
+          "span": [
+            40,
+            40
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/test_eval/test_persistence_guard.py",
+          "symbol": "TestPersistenceSnapshot.test_changed_file_hash_fails",
+          "kind": "test_data_path_literal",
+          "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+          "line": 72,
+          "excerpt": "name=\"data/graph.json\", kind=\"json_file\",",
+          "span": [
+            72,
+            72
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/test_eval/test_persistence_guard.py",
+          "symbol": "TestPersistenceSnapshot.test_changed_file_size_fails",
+          "kind": "test_data_path_literal",
+          "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+          "line": 83,
+          "excerpt": "name=\"data/graph.json\", kind=\"json_file\",",
+          "span": [
+            83,
+            83
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/test_eval/test_persistence_guard.py",
+          "symbol": "TestPersistenceSnapshot.test_diff_reports_all_changes",
+          "kind": "test_data_path_literal",
+          "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+          "line": 120,
+          "excerpt": "name=\"data/graph.json\", kind=\"json_file\",",
+          "span": [
+            120,
+            120
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/test_git_memory.py",
+          "symbol": "TestHotFiles.test_exclude_globs_filters",
+          "kind": "test_data_path_literal",
+          "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+          "line": 225,
+          "excerpt": "since_days=3650, limit=100, exclude_globs=[\"data/\", \"venv/\"]",
+          "span": [
+            225,
+            225
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/test_git_memory.py",
+          "symbol": "TestHotFiles.test_exclude_globs_filters",
+          "kind": "test_data_path_literal",
+          "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+          "line": 227,
+          "excerpt": "assert all(\"data/\" not in e[\"path\"] and \"venv/\" not in e[\"path\"] for e in hot)",
+          "span": [
+            227,
+            227
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_fs_snapshot.py",
+          "symbol": "TestShouldExclude.test_backup_dir_excluded",
+          "kind": "test_data_path_literal",
+          "digest": "f7fb143914c6e353cf86ddf111f5274a860b3d9c9ccb694586c5929685c9471a",
+          "line": 65,
+          "excerpt": "\"\"\"data/backups churns every shutdown (backup_manager) — never hashed.\"\"\"",
+          "span": [
+            65,
+            65
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_fs_snapshot.py",
+          "symbol": "TestShouldExclude.test_backup_dir_excluded",
+          "kind": "test_data_path_literal",
+          "digest": "a202ac4b61cf3319147cb7f8ad55893d04447cd558831d404cd3cb3d9a742d13",
+          "line": 66,
+          "excerpt": "assert should_exclude(\"data/backups/20260714_182627/manifest.json\") is True",
+          "span": [
+            66,
+            66
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_fs_snapshot.py",
+          "symbol": "TestShouldExclude.test_backup_dir_excluded",
+          "kind": "test_data_path_literal",
+          "digest": "c986574ca1350a6f074943f6579ba1fb7fa25cae8fac546dcd166da4541af2e9",
+          "line": 67,
+          "excerpt": "assert should_exclude(\"data/backups/20260714_182627/chroma_db_v4/chroma.sqlite3\") is True",
+          "span": [
+            67,
+            67
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_fs_snapshot.py",
+          "symbol": "TestShouldExclude.test_other_data_files_still_included",
+          "kind": "test_data_path_literal",
+          "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+          "line": 70,
+          "excerpt": "assert should_exclude(\"data/knowledge_graph.json\") is False",
+          "span": [
+            70,
+            70
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_python_fs_guard.py",
+          "symbol": "TestPathResolution.test_nested_path",
+          "kind": "test_data_path_literal",
+          "digest": "d2abd14642c5988e7c8c5036b32e29ea490e92d9fc08c82925eb24ea7d6a0eea",
+          "line": 502,
+          "excerpt": "assert result == \"data/chroma_db\"",
+          "span": [
+            502,
+            502
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_python_fs_guard.py",
+          "symbol": "TestProtectedPathChecks.test_protected_subpath",
+          "kind": "test_data_path_literal",
+          "digest": "d2abd14642c5988e7c8c5036b32e29ea490e92d9fc08c82925eb24ea7d6a0eea",
+          "line": 689,
+          "excerpt": "assert _is_protected_path(\"data/chroma_db\") is True",
+          "span": [
+            689,
+            689
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_python_fs_guard.py",
+          "symbol": "TestProtectedPathChecks.test_deeply_nested",
+          "kind": "test_data_path_literal",
+          "digest": "3a7c76396b550a6750e35101c553fb2627c822d06153c9ccbba72f3d8380fa37",
+          "line": 701,
+          "excerpt": "assert _is_protected_path(\"data/a/b/c/d.txt\") is True",
+          "span": [
+            701,
+            701
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_python_fs_guard.py",
+          "symbol": "TestProtectedPathChecks.test_normal_path_not_always_blocked",
+          "kind": "test_data_path_literal",
+          "digest": "616307e7af98fac7adeef2a98d080a143a5ec6819950cc14a7fc3f0f0e4be1bc",
+          "line": 713,
+          "excerpt": "assert _is_always_blocked(\"data/file.txt\", \"data/file.txt\") is False",
+          "span": [
+            713,
+            713
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_retrospective_small_guards.py",
+          "symbol": "TestDaemonStateFsExemption.test_exemption_covers_tmp_sibling",
+          "kind": "test_data_path_literal",
+          "digest": "be8a1ebcd79b432d1dde0ad6f273a84ffc94a366979bc1f5fab6798c187dadf0",
+          "line": 135,
+          "excerpt": "rel = \"data/web_search_credits.json.tmp\"",
+          "span": [
+            135,
+            135
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_retrospective_small_guards.py",
+          "symbol": "TestDaemonStateFsExemption.test_other_data_paths_not_exempt",
+          "kind": "test_data_path_literal",
+          "digest": "114deb0f6943a312c66e501c64de950f4757426c36049f122372f062cdbf7229",
+          "line": 140,
+          "excerpt": "for rel in (\"data/knowledge_graph.json\", \"data/corpus_v4.json\",",
+          "span": [
+            140,
+            140
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_retrospective_small_guards.py",
+          "symbol": "TestDaemonStateFsExemption.test_other_data_paths_not_exempt",
+          "kind": "test_data_path_literal",
+          "digest": "88b9e5dc55ffd49437db49251311389121fad0a214319da6540e479aa0742d49",
+          "line": 141,
+          "excerpt": "\"data/entity_aliases.json\"):",
+          "span": [
+            141,
+            141
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_retrospective_small_guards.py",
+          "symbol": "TestDaemonStateFsExemption.test_check_and_maybe_block_allows_credits_in_agent_mode",
+          "kind": "test_data_path_literal",
+          "digest": "be8a1ebcd79b432d1dde0ad6f273a84ffc94a366979bc1f5fab6798c187dadf0",
+          "line": 156,
+          "excerpt": "\"os.replace\", str(g._repo_root / \"data/web_search_credits.json.tmp\"))",
+          "span": [
+            156,
+            156
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_retrospective_small_guards.py",
+          "symbol": "TestDaemonStateFsExemption.test_check_and_maybe_block_allows_credits_in_agent_mode",
+          "kind": "test_data_path_literal",
+          "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+          "line": 160,
+          "excerpt": "\"os.remove\", str(g._repo_root / \"data/knowledge_graph.json\"))",
+          "span": [
+            160,
+            160
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+          "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+          "kind": "test_data_path_literal",
+          "digest": "7dfc866cf630faf4164a34dd6b920d6ae0bae4de372b492007dc1b2a1f98b635",
+          "line": 235,
+          "excerpt": "assert _is_daemon_state_path(\"data/pending_actions.json\")",
+          "span": [
+            235,
+            235
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+          "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+          "kind": "test_data_path_literal",
+          "digest": "6e60c158ff20ff08daec25217e8c313f76ed3c05db61de3af64726edaee8d4b8",
+          "line": 236,
+          "excerpt": "assert _is_daemon_state_path(\"data/.pending_actions.json.rj_1_c9i.tmp\")",
+          "span": [
+            236,
+            236
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+          "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+          "kind": "test_data_path_literal",
+          "digest": "8abf38b2c4a6d88263d2298541eced3a01a6b14289e713c572350dbba839db3a",
+          "line": 237,
+          "excerpt": "assert _is_daemon_state_path(\"data/.web_search_credits.json.abc123.tmp\")",
+          "span": [
+            237,
+            237
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
+          "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
+          "kind": "test_data_path_literal",
+          "digest": "4bf3df7aab0b5981c637d3493960f4b77a67e51a990d73ebc388510b6117002e",
+          "line": 238,
+          "excerpt": "assert not _is_daemon_state_path(\"data/.knowledge_graph.json.abc.tmp\")",
+          "span": [
+            238,
+            238
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestRmProtected.test_rm_rf_data_subdir",
+          "kind": "test_data_path_literal",
+          "digest": "d992fa3151e38456068fdc7940758ea2b74358fca2689a0675eb2aba0d6c7181",
+          "line": 184,
+          "excerpt": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/chroma_db_v4\"], repo)",
+          "span": [
+            184,
+            184
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestRmProtected.test_rm_data_file_inside_protected",
+          "kind": "test_data_path_literal",
+          "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+          "line": 220,
+          "excerpt": "result = classify_shell_cmd([\"rm\", \"data/knowledge_graph.json\"], repo)",
+          "span": [
+            220,
+            220
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestRmProtected.test_rm_path_traversal",
+          "kind": "test_data_path_literal",
+          "digest": "d068c67cb53e728209ef7e1ffb6d6a143a52a497383dbc4069c391412104aad2",
+          "line": 231,
+          "excerpt": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/../config\"], repo)",
+          "span": [
+            231,
+            231
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestMvProtected.test_mv_data_subpath",
+          "kind": "test_data_path_literal",
+          "digest": "30d578c3440cdb4bf0ffaee0bf68586d90860f575171b1544e3b48734238f932",
+          "line": 262,
+          "excerpt": "result = classify_shell_cmd([\"mv\", \"data/corpus_v4.json\", \"/tmp/\"], repo)",
+          "span": [
+            262,
+            262
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestTruncateProtected.test_truncate_data_file",
+          "kind": "test_data_path_literal",
+          "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+          "line": 363,
+          "excerpt": "[\"truncate\", \"-s\", \"0\", \"data/knowledge_graph.json\"], repo,",
+          "span": [
+            363,
+            363
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestResolveTarget.test_nested_path",
+          "kind": "test_data_path_literal",
+          "digest": "e529fe8374ab4922a46bf08b4a5cbc18bd882df27709ed89cefa33236eb497e2",
+          "line": 387,
+          "excerpt": "assert _resolve_target(\"data/chroma_db_v4\", repo) == \"data/chroma_db_v4\"",
+          "span": [
+            387,
+            387
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestResolveTarget.test_traversal_stays_in_repo",
+          "kind": "test_data_path_literal",
+          "digest": "d068c67cb53e728209ef7e1ffb6d6a143a52a497383dbc4069c391412104aad2",
+          "line": 400,
+          "excerpt": "result = _resolve_target(\"data/../config\", repo)",
+          "span": [
+            400,
+            400
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestProtectedPaths.test_subpath_of_protected_dir",
+          "kind": "test_data_path_literal",
+          "digest": "d992fa3151e38456068fdc7940758ea2b74358fca2689a0675eb2aba0d6c7181",
+          "line": 427,
+          "excerpt": "assert _is_protected(\"data/chroma_db_v4\", PROTECTED_DIRS, PROTECTED_FILES) is True",
+          "span": [
+            427,
+            427
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_shell_cmd_guard.py",
+          "symbol": "TestProtectedPaths.test_deeply_nested_protected",
+          "kind": "test_data_path_literal",
+          "digest": "271c1d7df2245775ee505d72540445fa7bdcfbdb99f836eb00609a3fdf05fa20",
+          "line": 439,
+          "excerpt": "assert _is_protected(\"data/a/b/c/file.txt\", PROTECTED_DIRS, PROTECTED_FILES) is True",
+          "span": [
+            439,
+            439
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        },
+        {
+          "path": "tests/unit/test_tone_floor_self_latch.py",
+          "symbol": "TestStateSandbox.test_tone_state_path_is_sandboxed_here",
+          "kind": "test_data_path_literal",
+          "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+          "line": 126,
+          "excerpt": "assert not str(ContextPipeline._TONE_STATE_PATH).startswith(\"data/\")",
+          "span": [
+            126,
+            126
+          ],
+          "leg": "dm17_tests",
+          "unresolved": false
+        }
+      ],
+      "legs": [
+        {
+          "id": "dm17_scripts",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 113,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "scripts",
+              "status": "available",
+              "files": 113
+            }
+          ]
+        },
+        {
+          "id": "dm17_tests",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 488,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "tests",
+              "status": "available",
+              "files": 488
+            }
+          ]
+        }
+      ]
+    },
+    "dm18_except_returns_empty": {
+      "mode": "gate",
+      "class_ids": [
+        "BC-20",
+        "BC-47"
+      ],
+      "contract_version": 2,
+      "selected": true,
+      "status": "ok",
+      "files_processed": 122,
+      "finding_count": 79,
+      "unresolved": 0,
+      "findings": [
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_personal_notes",
+          "kind": "broad_except_returns_empty",
+          "digest": "0aceb2a32d20d96b3f952140e18f16fc65faa393fd87a3e7d5babd2f106b6f56",
+          "line": 721,
+          "excerpt": "return []",
+          "span": [
+            719,
+            721
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_reference_docs",
+          "kind": "broad_except_returns_empty",
+          "digest": "1bf445bf8ac584fecf11bc10fab6ba943dec72d8f5102cad1461dabf0ab3b841",
+          "line": 789,
+          "excerpt": "return []",
+          "span": [
+            787,
+            789
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin._fetch_upload_roster",
+          "kind": "broad_except_returns_empty",
+          "digest": "65dc7fab931b5ed711facd0aa1fe081656dda447477ad177f27f0e2dbb71b3c1",
+          "line": 822,
+          "excerpt": "return []",
+          "span": [
+            820,
+            822
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_user_uploads",
+          "kind": "broad_except_returns_empty",
+          "digest": "0f7e8beca882221f12d6a04e3efc02149e378088dc8136c577745908ca3c0a80",
+          "line": 998,
+          "excerpt": "return []",
+          "span": [
+            996,
+            998
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_git_commits",
+          "kind": "broad_except_returns_empty",
+          "digest": "080e350f58e7eb365b38d63452ca02839ff4ce92dc801cceb9ac3788d7a15540",
+          "line": 1093,
+          "excerpt": "return []",
+          "span": [
+            1091,
+            1093
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_proposed_features",
+          "kind": "broad_except_returns_empty",
+          "digest": "f569c8b02c03431b8ca6341c44c7adb667e778353d00da794e8faad64d375722",
+          "line": 1148,
+          "excerpt": "return []",
+          "span": [
+            1146,
+            1148
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_procedural_skills",
+          "kind": "broad_except_returns_empty",
+          "digest": "a2a5682bc70718f05558ac2dafc51e7ed320aa4884553e5e85e7b298ac870695",
+          "line": 1191,
+          "excerpt": "return []",
+          "span": [
+            1189,
+            1191
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_graph_context",
+          "kind": "broad_except_returns_empty",
+          "digest": "90846424a576806884ee0a3a35cf20c62e15d437b21c5b54a238ba50443ffd8c",
+          "line": 1253,
+          "excerpt": "return []",
+          "span": [
+            1251,
+            1253
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_unresolved_threads",
+          "kind": "broad_except_returns_empty",
+          "digest": "54b28ae2d6aef293bebe6e14fcd99cc54100c01e2e26347b3d9f6f51a502a587",
+          "line": 1280,
+          "excerpt": "return []",
+          "span": [
+            1278,
+            1280
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin._get_wiki_content_timed",
+          "kind": "broad_except_returns_empty",
+          "digest": "1f054e9dd502ee3ef2f75a3f4fd776a6110395633f6d2b6253d36225b9468408",
+          "line": 1826,
+          "excerpt": "return []",
+          "span": [
+            1824,
+            1826
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_narrative_context",
+          "kind": "broad_except_returns_empty",
+          "digest": "b970de35eff0a8b56cc14cec74566b09fc54bed850e54d6826e17f0587e9d89a",
+          "line": 2000,
+          "excerpt": "return \"\"",
+          "span": [
+            1998,
+            2000
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_daemon_self_notes",
+          "kind": "broad_except_returns_empty",
+          "digest": "9c485c8e097e325e7586b0dcdbbbd85dd7ec981a9fcca96aca5607bc8d1b72c9",
+          "line": 2065,
+          "excerpt": "return []",
+          "span": [
+            2063,
+            2065
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
+          "kind": "broad_except_returns_empty",
+          "digest": "285fb945553669b4b64a2ee20d6af1946dfb6a2d4d6bb1857c7a1e0991105979",
+          "line": 2257,
+          "excerpt": "return []",
+          "span": [
+            2253,
+            2257
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_knowledge.py",
+          "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
+          "kind": "broad_except_returns_empty",
+          "digest": "fb824ccfe79cdefe40272841218f9bf964ff2c87a330c6c27349eeaa3f1f3d53",
+          "line": 2261,
+          "excerpt": "return []",
+          "span": [
+            2259,
+            2261
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_memory.py",
+          "symbol": "MemoryRetrievalMixin.get_recent_facts",
+          "kind": "broad_except_returns_empty",
+          "digest": "11ecd20abdf93022a8ae20f33a1ccff3799dc82967350717aa17fe7e868ce0c3",
+          "line": 155,
+          "excerpt": "return []",
+          "span": [
+            153,
+            155
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_memory.py",
+          "symbol": "MemoryRetrievalMixin.get_facts",
+          "kind": "broad_except_returns_empty",
+          "digest": "5ec5e4cecd6b9ed04eea93d6bf71776b84782869dc957dc011a2de4c334de2c5",
+          "line": 167,
+          "excerpt": "return []",
+          "span": [
+            165,
+            167
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_memory.py",
+          "symbol": "MemoryRetrievalMixin._get_recent_conversations",
+          "kind": "broad_except_returns_empty",
+          "digest": "ee96452023c17fc50b7edea5fde7c2427a4c595a4b1e88c7afb562bbe7122e67",
+          "line": 229,
+          "excerpt": "return []",
+          "span": [
+            227,
+            229
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_memory.py",
+          "symbol": "MemoryRetrievalMixin._get_semantic_memories",
+          "kind": "broad_except_returns_empty",
+          "digest": "b0785fd88c036db69d23cd397ea90e93dfafe4ba8472e6592e1b70833a9d45eb",
+          "line": 634,
+          "excerpt": "return []",
+          "span": [
+            630,
+            634
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_memory.py",
+          "symbol": "MemoryRetrievalMixin._get_reflections",
+          "kind": "broad_except_returns_empty",
+          "digest": "6c27f1f6f29661b5aa11106e60ea855129624a6cd8882bc08de1f50d368b3a94",
+          "line": 799,
+          "excerpt": "return []",
+          "span": [
+            797,
+            799
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_memory.py",
+          "symbol": "MemoryRetrievalMixin.get_user_profile_context",
+          "kind": "broad_except_returns_empty",
+          "digest": "7aad109e494dab00561ce841e28afa5e2527aa6943f819f3448e4d0982c31eb7",
+          "line": 964,
+          "excerpt": "return \"\"",
+          "span": [
+            962,
+            964
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_memory.py",
+          "symbol": "MemoryRetrievalMixin.get_upcoming_schedule",
+          "kind": "broad_except_returns_empty",
+          "digest": "1b8a2bd0a42513d840c54e927cb5ee91b4f37447a89cd0ae4879d1e0441d8022",
+          "line": 1070,
+          "excerpt": "return []",
+          "span": [
+            1068,
+            1070
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "core/prompt/gatherer_web.py",
+          "symbol": "WebSearchMixin._get_web_search_results",
+          "kind": "broad_except_returns_empty",
+          "digest": "495fad3f30ea6b68d0995ed52f4298461e85f1cbb87f601d4ed174b4d8326230",
+          "line": 304,
+          "excerpt": "return None",
+          "span": [
+            301,
+            304
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/WikiManager.py",
+          "symbol": "WikiManager._fetch_extract_action_api",
+          "kind": "broad_except_returns_empty",
+          "digest": "cd5800228d2c79d0577b34a667a876ccf64223f1b0ff1c2ea9225f765cfbe2d6",
+          "line": 344,
+          "excerpt": "return None",
+          "span": [
+            342,
+            344
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/WikiManager.py",
+          "symbol": "WikiManager.resolve_and_fetch",
+          "kind": "broad_except_returns_empty",
+          "digest": "d26e54b6ea04d3d82007214f22096cf808acd1c8cbaeef1216f5b2ad2ad61be0",
+          "line": 633,
+          "excerpt": "return None",
+          "span": [
+            631,
+            633
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/clip_manager.py",
+          "symbol": "CLIPManager.encode_image",
+          "kind": "broad_except_returns_empty",
+          "digest": "977a04df986fbf4e520e0fb50a8edeb552ff76d60de06694ba41a3743f269f94",
+          "line": 143,
+          "excerpt": "return None",
+          "span": [
+            141,
+            143
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/clip_manager.py",
+          "symbol": "CLIPManager.encode_text",
+          "kind": "broad_except_returns_empty",
+          "digest": "e5cc72d6ef1523693c75b2a5438414b1129ea725590d07fbfd02e4cd51ae3b9d",
+          "line": 173,
+          "excerpt": "return None",
+          "span": [
+            171,
+            173
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/document_generator.py",
+          "symbol": "DocumentGenerator._search_web",
+          "kind": "broad_except_returns_empty",
+          "digest": "28b3d64b0d020bf3609e40e5a504cb644e4070779eed157d5c079b7db201f4d0",
+          "line": 581,
+          "excerpt": "return []",
+          "span": [
+            579,
+            581
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/document_generator.py",
+          "symbol": "DocumentGenerator._search_collection",
+          "kind": "broad_except_returns_empty",
+          "digest": "be9ebe69d9d31bf26fd8752b14a9b6b35eab8d5c45925eeda3a678d983377e9b",
+          "line": 616,
+          "excerpt": "return []",
+          "span": [
+            614,
+            616
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/graph_walk_generator.py",
+          "symbol": "GraphWalkGenerator._articulate_and_package",
+          "kind": "broad_except_returns_empty",
+          "digest": "09b2c8dcf91199f57aeef42cd37db06269fb1c9102575e3650c30b6cca248435",
+          "line": 398,
+          "excerpt": "return None",
+          "span": [
+            396,
+            398
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/implementation_detector.py",
+          "symbol": "ImplementationDetector._stage_llm_judgment",
+          "kind": "broad_except_returns_empty",
+          "digest": "779fe5c8c6c6e10f3320c16f7866ce9880e4073c6d0ddaa70647acea8661597d",
+          "line": 410,
+          "excerpt": "return {}",
+          "span": [
+            408,
+            410
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/obsidian_manager.py",
+          "symbol": "ObsidianManager.get_notes",
+          "kind": "broad_except_returns_empty",
+          "digest": "aae847842dee50f6babe5410317977c72b612417bbf3bcd7d93371ee2ce88785",
+          "line": 781,
+          "excerpt": "return []",
+          "span": [
+            779,
+            781
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/obsidian_manager.py",
+          "symbol": "ObsidianManager._keyword_search",
+          "kind": "broad_except_returns_empty",
+          "digest": "361ac0cb653948fd48ccf314235e6171a4d31cbaa0122bd6bac5084ae6dcbb1a",
+          "line": 927,
+          "excerpt": "return []",
+          "span": [
+            925,
+            927
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/reference_docs_manager.py",
+          "symbol": "ReferenceDocsManager._get_document_chunks",
+          "kind": "broad_except_returns_empty",
+          "digest": "22cdf79574628955d522f50bc43239a1c4eed611b2b24c0e974db49bd2facec0",
+          "line": 509,
+          "excerpt": "return []",
+          "span": [
+            507,
+            509
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/reference_docs_manager.py",
+          "symbol": "ReferenceDocsManager.get_documents",
+          "kind": "broad_except_returns_empty",
+          "digest": "281aa17cae55f7812992afcc4f7959f5524dae8e4a64e70b59e9b35cc45eee94",
+          "line": 718,
+          "excerpt": "return []",
+          "span": [
+            716,
+            718
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/reference_docs_manager.py",
+          "symbol": "ReferenceDocsManager._keyword_search",
+          "kind": "broad_except_returns_empty",
+          "digest": "bb870d88384750cdcb0e2f6855c92af1de04096bd857dd4f79804aec0d8b74cc",
+          "line": 818,
+          "excerpt": "return []",
+          "span": [
+            816,
+            818
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/reference_docs_manager.py",
+          "symbol": "ReferenceDocsManager.list_documents",
+          "kind": "broad_except_returns_empty",
+          "digest": "160602899170f9625d26246ef810dc6fd15d891911e7135c4af3b14ffd6e110e",
+          "line": 855,
+          "excerpt": "return []",
+          "span": [
+            853,
+            855
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/semantic_search.py",
+          "symbol": "SemanticSearchIndex.search",
+          "kind": "broad_except_returns_empty",
+          "digest": "acecd33f773abb40e36129150317906836ddeeaaf0cd62e7ad4a794c061be551",
+          "line": 347,
+          "excerpt": "return []",
+          "span": [
+            345,
+            347
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/semantic_search.py",
+          "symbol": "SemanticSearchIndex.search",
+          "kind": "broad_except_returns_empty",
+          "digest": "24af3eabcf4dcffb1eb244276ea13e833104936c5d217301014145ce9907546b",
+          "line": 378,
+          "excerpt": "return []",
+          "span": [
+            376,
+            378
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/visual_memory_store.py",
+          "symbol": "VisualMemoryStore.search_by_text",
+          "kind": "broad_except_returns_empty",
+          "digest": "d56840dd4b313d1d06455f35dd43099c9688c8d7e744ed0716da75f68aa5d358",
+          "line": 281,
+          "excerpt": "return []",
+          "span": [
+            279,
+            281
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/web_search_manager.py",
+          "symbol": "WebSearchManager._tavily_search",
+          "kind": "broad_except_returns_empty",
+          "digest": "b3d096f91950c57d701e433031de7e5a38f34f1adc25bb1d76b8b710787584b9",
+          "line": 1538,
+          "excerpt": "return []",
+          "span": [
+            1531,
+            1538
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/web_search_manager.py",
+          "symbol": "WebSearchManager._tavily_extract",
+          "kind": "broad_except_returns_empty",
+          "digest": "e7408f555aeb903179a8801f07b8859ba775fc433e29a0f02288b353d0f8c99b",
+          "line": 1744,
+          "excerpt": "return []",
+          "span": [
+            1737,
+            1744
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "knowledge/web_search_manager.py",
+          "symbol": "WebSearchManager._select_links_for_following",
+          "kind": "broad_except_returns_empty",
+          "digest": "af4f65e1faf3e1e058ba514041973bc2a5289a83e7d3b9b246723122cead5c4a",
+          "line": 1810,
+          "excerpt": "return []",
+          "span": [
+            1808,
+            1810
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/context_surfacer.py",
+          "symbol": "ContextSurfacer.generate_insights",
+          "kind": "broad_except_returns_empty",
+          "digest": "e0a0745865e51342571fe512330cfc4337ec4652d32056ba229a5a032bc999ed",
+          "line": 194,
+          "excerpt": "return []",
+          "span": [
+            191,
+            194
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/curation/engine.py",
+          "symbol": "CurationEngine._store_size",
+          "kind": "broad_except_returns_empty",
+          "digest": "06b14c5d38043759254a0256e6857143b53219fd5923344c4c4fe186504cba8c",
+          "line": 348,
+          "excerpt": "return None",
+          "span": [
+            347,
+            348
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/llm_fact_extractor.py",
+          "symbol": "LLMFactExtractor.extract_triples",
+          "kind": "broad_except_returns_empty",
+          "digest": "22f9437f13b777108ad5018af5104eaa694276b29bc877a142771c3a4cc81d62",
+          "line": 578,
+          "excerpt": "return []",
+          "span": [
+            576,
+            578
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/llm_fact_extractor.py",
+          "symbol": "LLMFactExtractor.extract_triples",
+          "kind": "broad_except_returns_empty",
+          "digest": "d9296a83efb75fd8ddfe568480f3126c0e62876be02375286c0461e1dec522ed",
+          "line": 609,
+          "excerpt": "return []",
+          "span": [
+            607,
+            609
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_consolidator.py",
+          "symbol": "MemoryConsolidator._current_status_facts",
+          "kind": "broad_except_returns_empty",
+          "digest": "1151b107e66b5661dde387d919388ef2a24049dcebcd9924473e9e36738a0508",
+          "line": 216,
+          "excerpt": "return []",
+          "span": [
+            214,
+            216
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_consolidator.py",
+          "symbol": "MemoryConsolidator._read_obsidian_weekly_summaries",
+          "kind": "broad_except_returns_empty",
+          "digest": "a699b4ede0dc19c456639da072be955a8d7687bf21af27eda8b190c18d67b8f9",
+          "line": 490,
+          "excerpt": "return []",
+          "span": [
+            488,
+            490
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_consolidator.py",
+          "symbol": "MemoryConsolidator._read_obsidian_monthly_summaries",
+          "kind": "broad_except_returns_empty",
+          "digest": "fdecc0e254dfe029093f0c73bb7fa892049234f0aa17e167157018f98d0f3cda",
+          "line": 552,
+          "excerpt": "return []",
+          "span": [
+            550,
+            552
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_consolidator.py",
+          "symbol": "MemoryConsolidator._read_obsidian_daily_notes",
+          "kind": "broad_except_returns_empty",
+          "digest": "f7d0ec66bac7fe31ab2ac3fc1a91f8e244c463a7698f4eb7acc7538ff6d6269d",
+          "line": 618,
+          "excerpt": "return []",
+          "span": [
+            616,
+            618
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_coordinator.py",
+          "symbol": "MemoryCoordinator.get_unresolved_threads",
+          "kind": "broad_except_returns_empty",
+          "digest": "0f191e1ee4c908cb99b998aa23b790f7612091d8e823d2901361082c54065016",
+          "line": 600,
+          "excerpt": "return []",
+          "span": [
+            598,
+            600
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_expander.py",
+          "symbol": "MemoryExpander._fetch_conversations_in_range",
+          "kind": "broad_except_returns_empty",
+          "digest": "9b408d15cb41dda058d698059a95d26ca697b37f8d9d5f35e75f107050530439",
+          "line": 365,
+          "excerpt": "return []",
+          "span": [
+            363,
+            365
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_retriever.py",
+          "symbol": "_metadata_fallback_search",
+          "kind": "broad_except_returns_empty",
+          "digest": "4f0488a09ecb8de2f9279b8bca94d7728f26d3c9608bd563a73aa402977165cd",
+          "line": 407,
+          "excerpt": "return []",
+          "span": [
+            405,
+            407
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_retriever.py",
+          "symbol": "MemoryRetriever._keyword_anchor_memories",
+          "kind": "broad_except_returns_empty",
+          "digest": "ca03b03b3a469401aeb3ed7a02d40e30ee6e99b358403ab69ec0c8999088a013",
+          "line": 592,
+          "excerpt": "return []",
+          "span": [
+            591,
+            592
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_retriever.py",
+          "symbol": "MemoryRetriever.get_recent_facts",
+          "kind": "broad_except_returns_empty",
+          "digest": "7188f287c0d59a01e2968b8079dd8bc99b670033ca7279beb545e9ad1c9623ae",
+          "line": 646,
+          "excerpt": "return []",
+          "span": [
+            644,
+            646
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_retriever.py",
+          "symbol": "MemoryRetriever.get_skills",
+          "kind": "broad_except_returns_empty",
+          "digest": "fe0317e81c782c33bb59b0b6afc46adf03b85c362a99f9857e113223179165a2",
+          "line": 1184,
+          "excerpt": "return []",
+          "span": [
+            1182,
+            1184
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_storage.py",
+          "symbol": "MemoryStorage.store_interaction",
+          "kind": "broad_except_returns_empty",
+          "digest": "e0ee8b4e4bf7aad356a48aebec7bf640788237ce94555792a298888f180d3b8e",
+          "line": 1024,
+          "excerpt": "return None",
+          "span": [
+            1020,
+            1024
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_storage.py",
+          "symbol": "MemoryStorage.store_skill",
+          "kind": "broad_except_returns_empty",
+          "digest": "741ef36f9c287571895b57c33d5b25d6a16ec394adb22b435240fc9ac28e61b5",
+          "line": 1516,
+          "excerpt": "return None",
+          "span": [
+            1514,
+            1516
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_storage.py",
+          "symbol": "MemoryStorage.store_skill",
+          "kind": "broad_except_returns_empty",
+          "digest": "56dcad07c9dd541050fab4d2c4cc846e5e4c0adea12b7b32262eb5c4d0b2e3eb",
+          "line": 1550,
+          "excerpt": "return None",
+          "span": [
+            1548,
+            1550
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/memory_storage.py",
+          "symbol": "MemoryStorage._get_recent_summaries_by_timespan",
+          "kind": "broad_except_returns_empty",
+          "digest": "7bede00056b9726dcbd1f515fe7640c9d7b797c3c096151deab16cbca1f83025",
+          "line": 1650,
+          "excerpt": "return []",
+          "span": [
+            1648,
+            1650
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/proposal_store.py",
+          "symbol": "ProposalStore.store_proposal",
+          "kind": "broad_except_returns_empty",
+          "digest": "5b5f1d2297c93ca6310335e1aa09c3724aa4147ad9a3ea963f1e52d3b9f5679b",
+          "line": 103,
+          "excerpt": "return None",
+          "span": [
+            101,
+            103
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/proposal_store.py",
+          "symbol": "ProposalStore.query_proposals",
+          "kind": "broad_except_returns_empty",
+          "digest": "9ccced1ec50248d7c68e93dda451bdcd3f20649144949ad536f07f1d299f7a67",
+          "line": 163,
+          "excerpt": "return []",
+          "span": [
+            161,
+            163
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/proposal_store.py",
+          "symbol": "ProposalStore.get_proposal",
+          "kind": "broad_except_returns_empty",
+          "digest": "ca4b6597701ce5862c1933849e361041d0b68c897932d8b4f2de4d1282a084ef",
+          "line": 184,
+          "excerpt": "return None",
+          "span": [
+            182,
+            184
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/proposal_store.py",
+          "symbol": "ProposalStore.get_pending",
+          "kind": "broad_except_returns_empty",
+          "digest": "55053de7790297e9c5fe80981195af3a9969ded9f128603edf7e6812c3471723",
+          "line": 204,
+          "excerpt": "return []",
+          "span": [
+            202,
+            204
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/proposal_store.py",
+          "symbol": "ProposalStore.check_similarity",
+          "kind": "broad_except_returns_empty",
+          "digest": "fb860842117860de84578e6a771891841d1c967e52d899ffea0c5e1eda7b2383",
+          "line": 348,
+          "excerpt": "return None",
+          "span": [
+            346,
+            348
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/proposal_store.py",
+          "symbol": "ProposalStore.get_pending_and_approved",
+          "kind": "broad_except_returns_empty",
+          "digest": "3b129b9bc0ba590c291c7339bd9b69fa27ee7258b52d2b3babfc36ac5cb4ff14",
+          "line": 413,
+          "excerpt": "return []",
+          "span": [
+            411,
+            413
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/proposal_store.py",
+          "symbol": "ProposalStore.get_for_dedup",
+          "kind": "broad_except_returns_empty",
+          "digest": "8aae9b14a8ec049acbe6e5321e4f3a485025eb53b0e05018e59ae19e2d9b9687",
+          "line": 449,
+          "excerpt": "return \"\"",
+          "span": [
+            447,
+            449
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/shutdown_processor.py",
+          "symbol": "ShutdownProcessor._extract_procedural_skills",
+          "kind": "broad_except_returns_empty",
+          "digest": "64099756bd189df7f58e14fb31ede395ad9cf12bb3bdf52440e4bfa47b77be91",
+          "line": 1127,
+          "excerpt": "return",
+          "span": [
+            1125,
+            1127
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/storage/multi_collection_chroma_store.py",
+          "symbol": "MultiCollectionChromaStore.get_by_id",
+          "kind": "broad_except_returns_empty",
+          "digest": "06b14c5d38043759254a0256e6857143b53219fd5923344c4c4fe186504cba8c",
+          "line": 510,
+          "excerpt": "return None",
+          "span": [
+            509,
+            510
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/storage/multi_collection_chroma_store.py",
+          "symbol": "MultiCollectionChromaStore.add_conversation_memory",
+          "kind": "broad_except_returns_empty",
+          "digest": "c2aa1370af500131fcbe4aba5af1ea1f0a068dca076fa52c4a923f010c064796",
+          "line": 560,
+          "excerpt": "return None",
+          "span": [
+            556,
+            560
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/synthesis_memory.py",
+          "symbol": "SynthesisMemory.find_similar",
+          "kind": "broad_except_returns_empty",
+          "digest": "cacb9917f5db5a4b4a89d3ad6d8722d7f02a903c09d2c484db10f071b43a49ff",
+          "line": 99,
+          "excerpt": "return []",
+          "span": [
+            97,
+            99
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/synthesis_memory.py",
+          "symbol": "SynthesisMemory.get_recurring",
+          "kind": "broad_except_returns_empty",
+          "digest": "16b4483f4db588cdda1d0e723aa88d23b348e356a1dee47d6a1ca19205bcaa5c",
+          "line": 208,
+          "excerpt": "return []",
+          "span": [
+            206,
+            208
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/synthesis_memory.py",
+          "symbol": "SynthesisMemory.get_all_results",
+          "kind": "broad_except_returns_empty",
+          "digest": "fe6c2edd0ea4db2b0ef5d40abf897ff0887b52b9a90e19890972001fd90a5430",
+          "line": 435,
+          "excerpt": "return []",
+          "span": [
+            433,
+            435
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/thread_extractor.py",
+          "symbol": "ThreadExtractor.extract_new_threads",
+          "kind": "broad_except_returns_empty",
+          "digest": "a4bf7da64cf429c973e82021e5d301c712292dc4b1431da278046e67ec7a0cc5",
+          "line": 230,
+          "excerpt": "return []",
+          "span": [
+            228,
+            230
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/thread_extractor.py",
+          "symbol": "ThreadExtractor.detect_resolutions",
+          "kind": "broad_except_returns_empty",
+          "digest": "0b9a0de7d2f53f1c957215401d9a76dfe2c91b78e8c80eb4ecb55748d7d376cd",
+          "line": 329,
+          "excerpt": "return []",
+          "span": [
+            327,
+            329
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/thread_store.py",
+          "symbol": "ThreadStore.store_thread",
+          "kind": "broad_except_returns_empty",
+          "digest": "9ab58b725d85b2003d7fcd1635f417c8116e99454b95ca94a3f9a3b23a3ae54a",
+          "line": 257,
+          "excerpt": "return None",
+          "span": [
+            255,
+            257
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/thread_store.py",
+          "symbol": "ThreadStore.list_open_threads",
+          "kind": "broad_except_returns_empty",
+          "digest": "5bd9d94c58e496a49d0357d11562f366a20e1aff78b73f5dab592c0d9d414fcb",
+          "line": 277,
+          "excerpt": "return []",
+          "span": [
+            275,
+            277
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/thread_store.py",
+          "symbol": "ThreadStore.query_threads",
+          "kind": "broad_except_returns_empty",
+          "digest": "54188071ef722713fd4b969c58473c0a063fff91dde4bb5f3f0e537476beb105",
+          "line": 369,
+          "excerpt": "return []",
+          "span": [
+            367,
+            369
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        },
+        {
+          "path": "memory/user_profile_schema.py",
+          "symbol": "_get_exemplar_embeddings",
+          "kind": "broad_except_returns_empty",
+          "digest": "06b14c5d38043759254a0256e6857143b53219fd5923344c4c4fe186504cba8c",
+          "line": 721,
+          "excerpt": "return None",
+          "span": [
+            720,
+            721
+          ],
+          "leg": "dm18_retrieval",
+          "unresolved": false
+        }
+      ],
+      "legs": [
+        {
+          "id": "dm18_retrieval",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 122,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "memory",
+              "status": "available",
+              "files": 59
+            },
+            {
+              "path": "knowledge",
+              "status": "available",
+              "files": 35
+            },
+            {
+              "path": "core/prompt",
+              "status": "available",
+              "files": 13
+            },
+            {
+              "path": "api",
+              "status": "available",
+              "files": 15
+            }
+          ]
+        }
+      ]
+    },
+    "dm29_phrase_append_signature": {
+      "mode": "report",
+      "class_ids": [
+        "BC-76"
+      ],
+      "contract_version": 2,
+      "selected": true,
+      "status": "unavailable",
+      "files_processed": 0,
+      "finding_count": 0,
+      "unresolved": 0,
+      "findings": [],
+      "legs": [
+        {
+          "id": "dm29_changelog",
+          "required": false,
+          "status": "unavailable",
+          "available": false,
+          "files_processed": 0,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "CLAUDE_CHANGELOG.md",
+              "status": "missing",
+              "files": 0
+            }
+          ]
+        }
+      ]
+    },
+    "dm31_live_state_default": {
+      "mode": "gate",
+      "class_ids": [
+        "BC-78",
+        "BC-11",
+        "BC-12"
+      ],
+      "contract_version": 2,
+      "selected": true,
+      "status": "ok",
+      "files_processed": 399,
+      "finding_count": 3,
+      "unresolved": 0,
+      "findings": [
+        {
+          "path": "core/competitive_scorer.py",
+          "symbol": "apply_competitive_selection",
+          "kind": "live_state_literal_default",
+          "digest": "06a4d5b813ae776ae85171efe40d46f7a7f511479e7c94d8881e1cef2146331d",
+          "line": 22,
+          "excerpt": "budget: int = 3000",
+          "span": [
+            22,
+            22
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "core/safety_canary.py",
+          "symbol": "SafetyCanary.__init__",
+          "kind": "live_state_literal_default",
+          "digest": "9711f00d956e86435b3af943d32c49db41ea50ed24d3d7dd8c0412bb1ce3b55f",
+          "line": 35,
+          "excerpt": "enabled: bool = True,",
+          "span": [
+            35,
+            35
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        },
+        {
+          "path": "memory/skill_activation.py",
+          "symbol": "SkillActivationPolicy.__init__",
+          "kind": "live_state_literal_default",
+          "digest": "9711f00d956e86435b3af943d32c49db41ea50ed24d3d7dd8c0412bb1ce3b55f",
+          "line": 136,
+          "excerpt": "enabled: bool = True,",
+          "span": [
+            136,
+            136
+          ],
+          "leg": "python_source",
+          "unresolved": false
+        }
+      ],
+      "legs": [
+        {
+          "id": "python_source",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 399,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "core",
+              "status": "available",
+              "files": 87
+            },
+            {
+              "path": "memory",
+              "status": "available",
+              "files": 59
+            },
+            {
+              "path": "knowledge",
+              "status": "available",
+              "files": 35
+            },
+            {
+              "path": "utils",
+              "status": "available",
+              "files": 52
+            },
+            {
+              "path": "gui",
+              "status": "available",
+              "files": 10
+            },
+            {
+              "path": "api",
+              "status": "available",
+              "files": 15
+            },
+            {
+              "path": "models",
+              "status": "available",
+              "files": 3
+            },
+            {
+              "path": "processing",
+              "status": "available",
+              "files": 2
+            },
+            {
+              "path": "config",
+              "status": "available",
+              "files": 4
+            },
+            {
+              "path": "scripts",
+              "status": "available",
+              "files": 131
+            },
+            {
+              "path": "main.py",
+              "status": "available",
+              "files": 1
+            }
+          ]
+        }
+      ]
+    },
+    "catalog": {
+      "mode": "gate",
+      "class_ids": [
+        "BC-71"
+      ],
+      "contract_version": 2,
+      "selected": true,
+      "status": "ok",
+      "files_processed": 1,
+      "finding_count": 0,
+      "unresolved": 0,
+      "findings": [],
+      "legs": [
+        {
+          "id": "catalog_document",
+          "required": true,
+          "status": "available",
+          "available": true,
+          "files_processed": 1,
+          "unresolved": 0,
+          "roots": [
+            {
+              "path": "docs/BUG_CLASSES.md",
+              "status": "available",
+              "files": 1
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "coverage": {
+    "catalog_classes": 78,
+    "gate_classes": [
+      "BC-01",
+      "BC-02",
+      "BC-11",
+      "BC-12",
+      "BC-20",
+      "BC-37",
+      "BC-47",
+      "BC-71",
+      "BC-78"
+    ],
+    "report_only_classes": [
+      "BC-10",
+      "BC-76"
+    ],
+    "unavailable_report_classes": [
+      "BC-76"
+    ],
+    "uncovered_classes": [
+      "BC-03",
+      "BC-04",
+      "BC-05",
+      "BC-06",
+      "BC-07",
+      "BC-08",
+      "BC-09",
+      "BC-13",
+      "BC-14",
+      "BC-15",
+      "BC-16",
+      "BC-17",
+      "BC-18",
+      "BC-19",
+      "BC-21",
+      "BC-22",
+      "BC-23",
+      "BC-24",
+      "BC-25",
+      "BC-26",
+      "BC-27",
+      "BC-28",
+      "BC-29",
+      "BC-30",
+      "BC-31",
+      "BC-32",
+      "BC-33",
+      "BC-34",
+      "BC-35",
+      "BC-36",
+      "BC-38",
+      "BC-39",
+      "BC-40",
+      "BC-41",
+      "BC-42",
+      "BC-43",
+      "BC-44",
+      "BC-45",
+      "BC-46",
+      "BC-48",
+      "BC-49",
+      "BC-50",
+      "BC-51",
+      "BC-52",
+      "BC-53",
+      "BC-54",
+      "BC-55",
+      "BC-56",
+      "BC-57",
+      "BC-58",
+      "BC-59",
+      "BC-60",
+      "BC-61",
+      "BC-62",
+      "BC-63",
+      "BC-64",
+      "BC-65",
+      "BC-66",
+      "BC-67",
+      "BC-68",
+      "BC-69",
+      "BC-70",
+      "BC-72",
+      "BC-73",
+      "BC-74",
+      "BC-75",
+      "BC-77"
+    ],
+    "uncovered_count": 67
+  },
+  "baseline": {
+    "path": "config/bug_class_baseline.json",
+    "occurrences": 152,
+    "by_scanner": {
+      "dm01_raw_substring": 31,
+      "dm17_apply_without_guard": 39,
+      "dm18_except_returns_empty": 79,
+      "dm31_live_state_default": 3
+    }
+  },
+  "dispositions": {
+    "path": "config/bug_class_dispositions.json",
+    "active": 152,
+    "confirmed_fixed": 0,
+    "false_positive": 0,
+    "legacy_occurrences": 133
+  },
+  "comparison": {
+    "compared_scanners": [
+      "dm01_raw_substring",
+      "dm17_apply_without_guard",
+      "dm18_except_returns_empty",
+      "dm31_live_state_default",
+      "catalog"
+    ],
+    "not_compared": [],
+    "matched": 152,
+    "new": [],
+    "stale": []
+  },
+  "failures": [],
+  "exit": 0
+}

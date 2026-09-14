@@ -20,14 +20,18 @@
 #      against the checked-out policy, baseline and dispositions
 #      (docs/TEST_LANES.md §4; enforcement wiring is itself tested by
 #      tests/bug_class_guards/test_enforcement.py)
-#   3. pytest: the five repo-wide guards (always; a missing guard file blocks
-#      the push) + every test file changed in the push range, with a JUnit
-#      receipt proving each guard module ran
-#   PREPUSH_FULL=1 additionally runs the CI marker filter over tests/unit ONLY
-#      (the non-unit remainder needs the daemon down and the 8G cap, see
-#      docs/DEVELOPMENT_WORKFLOW.md §3). Both pytest runs execute under
-#      MemoryMax=6G; a push range that touches non-unit test files exceeds
-#      that (docs/TEST_LANES.md §4) — verify by hand, then SKIP_PREPUSH=1.
+#   3. pytest, in three passes: (a) the five repo-wide guards (always; a
+#      missing guard file blocks the push) + every test file changed in the
+#      push range, with a JUnit receipt proving each guard module ran, under
+#      MemoryMax=6G; (b) the CI marker filter over all of tests/unit, same
+#      cap (2026-09-13: promoted from the old PREPUSH_FULL=1 opt-in to the
+#      default — measured peak for a unit-shaped selection is ~1.3G, so 6G
+#      is not the binding constraint here); (c) the non-unit remainder
+#      (everything outside tests/unit), ONLY when utils.daemon_guard reports
+#      the Daemon is not running, under MemoryMax=8G (docs/DEVELOPMENT_WORKFLOW.md
+#      §3: this batch swap-thrashed the box to a hard reset in 2026-09-07
+#      when it ran beside a live Daemon — it is never attempted automatically
+#      while one is up; the hook says so and you verify it by hand instead).
 # Bypass (leave a note in the commit or handoff when you do):
 #   SKIP_PREPUSH=1 git push
 # Once master requires the bug-class-gate status, a bypassed local check is
@@ -165,11 +169,27 @@ echo "pre-push: pytest on ${#selection[@]} files (${#changed_tests[@]} changed i
 python scripts/check_bug_classes.py verify-receipts --root . \
   --guards-junit "$receipts/repo-wide-guards.xml" || fail "repo-wide guard receipts"
 
-if [ "${PREPUSH_FULL:-}" = "1" ]; then
-  echo "pre-push: PREPUSH_FULL=1 — running the CI fast selection on tests/unit"
-  "${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
-    -m "not slow and not benchmark and not semantic" tests/unit \
-    || fail "tests/unit"
+echo "pre-push: running the CI marker filter on all of tests/unit"
+"${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
+  -m "not slow and not benchmark and not semantic" tests/unit \
+  || fail "tests/unit"
+
+# ---- non-unit remainder — daemon-gated, never run beside a live Daemon ---
+daemon_state=$(python -c '
+from utils.daemon_guard import daemon_running
+print("up" if daemon_running() else "down")
+' 2>/dev/null) || daemon_state="unknown"
+if [ "$daemon_state" = "down" ]; then
+  echo "pre-push: Daemon is down — running the non-unit remainder under 8G"
+  runner8=()
+  if command -v systemd-run >/dev/null 2>&1; then
+    runner8=(systemd-run --user --scope --quiet -p MemoryMax=8G -p MemorySwapMax=512M)
+  fi
+  "${runner8[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
+    -m "not slow and not benchmark and not semantic" tests --ignore=tests/unit \
+    || fail "tests (non-unit remainder)"
+else
+  echo "pre-push: Daemon is $daemon_state — skipping the non-unit remainder (needs the daemon down + an 8G cap, docs/TEST_LANES.md §4). This push is NOT verified against non-unit tests; if the push range touches any, stop the Daemon and run that selection by hand first."
 fi
 
 echo "pre-push: OK"
