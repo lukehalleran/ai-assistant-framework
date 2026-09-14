@@ -72,8 +72,10 @@ fi
 # ---- push range → changed test files -----------------------------------
 changed_tests=()
 changed_sources=()
+has_content_push=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue            # branch deletion
+  has_content_push=1
   if [ "$remote_sha" = "$ZERO" ]; then
     base=$(git merge-base "$local_sha" origin/master 2>/dev/null) || base=""  # no origin/master: diff from the root
     range="${base:+$base..}$local_sha"
@@ -87,6 +89,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     [ -n "$f" ] && [ -f "$f" ] && changed_sources+=("$f")
   done < <(git diff --name-only --diff-filter=AMR "$range" -- '*.py' ':!tests/*.py' ':!tests/**/*.py' 2>/dev/null)
 done
+
+# A push whose every ref is a deletion (e.g. `git push origin --delete
+# <branch>`) has no commit content to verify — nothing to lint, no bug-class
+# contract to re-check, no tests to run. Skip the rest of the hook entirely
+# rather than paying the full tests/unit pass (minutes) for a ref removal.
+if [ "$has_content_push" = 0 ]; then
+  echo "pre-push: every ref in this push is a deletion — nothing to verify"
+  exit 0
+fi
 
 # ---- source→test mapping (T14) ------------------------------------------
 # A source-only change (no test file touched) selects nothing above, so its
