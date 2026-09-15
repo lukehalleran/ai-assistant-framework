@@ -55,28 +55,32 @@ class ConversationLogger:
         return self.log_dir / filename
 
     def _check_rotation(self):
-        """Check if log file needs rotation due to size."""
+        """Check rotation while the caller holds ``self.lock``."""
         if self.current_log_file.exists():
             size = self.current_log_file.stat().st_size
             if size > self.max_file_size_bytes:
                 # Find next available index
                 index = 1
-                while (self.log_dir / f"conversation_{self.session_id}_part{index}.txt").exists():
+                while self._get_log_filename(index).exists():
                     index += 1
                 self.current_log_file = self._get_log_filename(index)
-                self._write_session_header()
+                self._write_session_header_unlocked()
 
     def _write_session_header(self):
         """Write a header when starting a new log file."""
         with self.lock:
-            if self.log_format == "text":
-                with open(self.current_log_file, 'a', encoding='utf-8') as f:
-                    f.write("=" * 80 + "\n")
-                    f.write(f"DAEMON CONVERSATION LOG\n")
-                    f.write(f"Session Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write(f"Session ID: {self.session_id}\n")
-                    f.write("=" * 80 + "\n\n")
-            # JSON format doesn't need headers
+            self._write_session_header_unlocked()
+
+    def _write_session_header_unlocked(self):
+        """Write a text header; caller must hold ``self.lock``."""
+        if self.log_format == "text":
+            with open(self.current_log_file, 'a', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("DAEMON CONVERSATION LOG\n")
+                f.write(f"Session Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Session ID: {self.session_id}\n")
+                f.write("=" * 80 + "\n\n")
+        # JSON format doesn't need headers
 
     def log_interaction(self,
                         user_input: str,

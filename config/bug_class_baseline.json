@@ -1,419 +1,614 @@
 {
-  "schema": 1,
+  "schema": 2,
+  "anchor": "bug-class-anchor/1",
   "entries": [
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "core/actions/google_auth.py",
+      "symbol": "GoogleAuthManager.authenticate._run_flow",
+      "kind": "raw_membership",
+      "digest": "59f2d5d6639d5987f502db52dad6d4211a1775bd70c7a15527cadb94dfcc8084",
+      "excerpt": "if \"browser\" not in str(browser_err).lower():"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "core/agentic/gate.py",
+      "symbol": "evaluate_agentic_gate",
+      "kind": "raw_membership",
+      "digest": "2c1438c716fed306a889d7d79fa8d63f1424a0b84161e6ba3620bd25f0415166",
+      "excerpt": "_has_url = 'http://' in _lower or 'https://' in _lower"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "core/insight/coordinator.py",
+      "symbol": "_event_from_row",
+      "kind": "raw_membership",
+      "digest": "579321e2d3e713192d39ad13af8f3ca38472d66a17e3931c62bfa126baa49a53",
+      "excerpt": "or \"daily note\" in str(row.get(\"title\", \"\")).lower())"
+    },
     {
       "scanner": "dm01_raw_substring",
       "path": "core/orchestrator.py",
       "symbol": "DaemonOrchestrator._build_system_prompt",
-      "text": "elif \"/\" in pronouns_lower:"
+      "kind": "raw_membership",
+      "digest": "e50f717251cff0a795ebe4a3d23f93d5a2a574d9122dd163e6677c08c92208da",
+      "excerpt": "elif \"/\" in pronouns_lower:"
     },
     {
       "scanner": "dm01_raw_substring",
       "path": "core/prompt/formatter.py",
       "symbol": "_format_session_header",
-      "text": "elif \"(yesterday)\" in rel.lower():"
+      "kind": "raw_membership",
+      "digest": "14401ee69b65dedaf4ae7cafbb166d0ab700a2b236b1a8131dba936410d41d4b",
+      "excerpt": "if \"(today)\" in rel.lower():"
     },
     {
       "scanner": "dm01_raw_substring",
       "path": "core/prompt/formatter.py",
       "symbol": "_format_session_header",
-      "text": "if \"(today)\" in rel.lower():"
+      "kind": "raw_membership",
+      "digest": "e9cbed17156ac986f48639c491f894101e0f44ff65ac0c8183a20c636faadb85",
+      "excerpt": "elif \"(yesterday)\" in rel.lower():"
     },
     {
       "scanner": "dm01_raw_substring",
       "path": "knowledge/sandbox_manager.py",
       "symbol": "_kill_sandbox_quietly",
-      "text": "if name == \"NotFoundException\" or \"404\" in text or \"not found\" in text.lower():"
+      "kind": "raw_membership",
+      "digest": "6e9ef52dd8b1e7a431027338f6dd13c4b6aa8300704c1b2ada2820668699bb76",
+      "excerpt": "if name == \"NotFoundException\" or \"404\" in text or \"not found\" in text.lower():"
     },
     {
       "scanner": "dm01_raw_substring",
       "path": "knowledge/web_search_manager.py",
       "symbol": "WebSearchManager.decompose_query",
-      "text": "should_split = \"yes\" in line.lower()"
+      "kind": "raw_membership",
+      "digest": "9d5df111d4dafb05d8298a03883db675eb3a7cf47a119eb26cc344f3303db618",
+      "excerpt": "should_split = \"yes\" in line.lower()"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "memory/corpus_manager.py",
+      "symbol": "CorpusManager.prune_corpus",
+      "kind": "raw_membership",
+      "digest": "f0f0941d017a5d0ee46ec168146ba56cf5d0bfd04aae6dab1d65df6aca6bcb9f",
+      "excerpt": "summaries = [e for e in self.corpus if (\"@summary\" in (e.get(\"tags\") or []) or (\"summary\" in (e.get(\"type\") or \"\").lower()))]"
     },
     {
       "scanner": "dm01_raw_substring",
       "path": "memory/memory_scorer.py",
       "symbol": "MemoryScorer.rank_memories",
-      "text": "if cq_density > 0.08 and _analogy_markers(blob) > 0 and \"analogy\" not in current_query.lower():"
+      "kind": "raw_membership",
+      "digest": "806b5a858f14f6bf638eb40ba3c3cd52aa16c542cc0f36054df592927207cb69",
+      "excerpt": "if cq_density > 0.08 and _analogy_markers(blob) > 0 and \"analogy\" not in current_query.lower():"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "scripts/latency_rollup.py",
+      "symbol": "main",
+      "kind": "raw_membership",
+      "digest": "4797e2348b5e0bdd1b034f44cd88b57c80dc5a399eb383b947d497fbdb73baae",
+      "excerpt": "\"image\" in str(key).lower() or \"vision\" in str(key).lower()"
     },
     {
       "scanner": "dm01_raw_substring",
       "path": "scripts/migrate_proposals_supervision.py",
       "symbol": "infer_test_files",
-      "text": "return [f for f in affected if \"test\" in f.lower()]"
+      "kind": "raw_membership",
+      "digest": "1babbc662dbdd19d274395c3945b3e5856ecd49502a5258cc3bf0a20772a01c1",
+      "excerpt": "return [f for f in affected if \"test\" in f.lower()]"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "scripts/test_reflection_self_rewrite.py",
+      "symbol": "main",
+      "kind": "raw_membership",
+      "digest": "e4c6560c5cabe2ed13559d2eaa65b468523059c677150639dccc03403ec7e450",
+      "excerpt": "good = next((r for r in out_rows if \"Oliver\" in r[\"pair\"] or \"boss\" in r[\"pair\"].lower() or \"Swall\" in r[\"pair\"]), None)"
+    },
+    {
+      "scanner": "dm01_raw_substring",
+      "path": "scripts/test_reflection_self_rewrite.py",
+      "symbol": "main",
+      "kind": "raw_membership",
+      "digest": "fc9f694ac1a2e875a84633cfd2652a3176fe65a6b4ed464bb8ce602b6874466b",
+      "excerpt": "ctrl = next((r for r in out_rows if \"kavarin\" in r[\"pair\"].lower() or \"stimul\" in r[\"pair\"].lower() or \"Dosing\" in r[\"pair\"]), None)"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "scripts/restore_backup.py",
-      "symbol": "",
-      "text": "python scripts/restore_backup.py --restore 20260714_183000 --apply"
+      "symbol": "<module>",
+      "kind": "apply_without_guard",
+      "digest": "537b72a4bacaa1b989530daf554a0e84798e946114bd4af3813840c199073be1",
+      "excerpt": "parser.add_argument(\"--apply\", action=\"store_true\", help=\"Actually perform --restore\")"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/agent_branch/test_coding_worker.py",
       "symbol": "test_repo_map_lists_files_and_skips_heavy_dirs",
-      "text": "assert \"data/huge.bin\" not in m and \".git/config\" not in m # heavy/irrelevant skipped"
+      "kind": "test_data_path_literal",
+      "digest": "a16a329f496e6ba2defc3e88b2111b12e1c1411885ebbe5d56da63cacea6d339",
+      "excerpt": "assert \"data/huge.bin\" not in m and \".git/config\" not in m # heavy/irrelevant skipped"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/agent_branch/test_manifest.py",
       "symbol": "test_default_forbidden_paths_cover_safety_surface",
-      "text": "for required in (\"tests/\", \"data/\", \".env\", \"scripts/safe_git.sh\", \"scripts/bin/\"):"
+      "kind": "test_data_path_literal",
+      "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+      "excerpt": "for required in (\"tests/\", \"data/\", \".env\", \"scripts/safe_git.sh\", \"scripts/bin/\"):"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/test_eval/test_persistence_guard.py",
       "symbol": "TestPersistenceSnapshot._make_snapshot",
-      "text": "name=\"data/graph.json\", kind=\"json_file\","
+      "kind": "test_data_path_literal",
+      "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+      "excerpt": "name=\"data/graph.json\", kind=\"json_file\","
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/test_eval/test_persistence_guard.py",
       "symbol": "TestPersistenceSnapshot.test_changed_file_hash_fails",
-      "text": "name=\"data/graph.json\", kind=\"json_file\","
+      "kind": "test_data_path_literal",
+      "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+      "excerpt": "name=\"data/graph.json\", kind=\"json_file\","
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/test_eval/test_persistence_guard.py",
       "symbol": "TestPersistenceSnapshot.test_changed_file_size_fails",
-      "text": "name=\"data/graph.json\", kind=\"json_file\","
+      "kind": "test_data_path_literal",
+      "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+      "excerpt": "name=\"data/graph.json\", kind=\"json_file\","
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/test_eval/test_persistence_guard.py",
       "symbol": "TestPersistenceSnapshot.test_diff_reports_all_changes",
-      "text": "name=\"data/graph.json\", kind=\"json_file\","
+      "kind": "test_data_path_literal",
+      "digest": "d7210dc03b51388433c5cfe9c1fac4e228765ca350f7f8fcc756488ab95f37a3",
+      "excerpt": "name=\"data/graph.json\", kind=\"json_file\","
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/test_git_memory.py",
       "symbol": "TestHotFiles.test_exclude_globs_filters",
-      "text": "assert all(\"data/\" not in e[\"path\"] and \"venv/\" not in e[\"path\"] for e in hot)"
+      "kind": "test_data_path_literal",
+      "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+      "excerpt": "since_days=3650, limit=100, exclude_globs=[\"data/\", \"venv/\"]"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/test_git_memory.py",
       "symbol": "TestHotFiles.test_exclude_globs_filters",
-      "text": "since_days=3650, limit=100, exclude_globs=[\"data/\", \"venv/\"]"
+      "kind": "test_data_path_literal",
+      "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+      "excerpt": "since_days=3650, limit=100, exclude_globs=[\"data/\", \"venv/\"]"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_fs_snapshot.py",
       "symbol": "TestShouldExclude.test_backup_dir_excluded",
-      "text": "\"\"\"data/backups churns every shutdown (backup_manager) — never hashed.\"\"\""
+      "kind": "test_data_path_literal",
+      "digest": "a202ac4b61cf3319147cb7f8ad55893d04447cd558831d404cd3cb3d9a742d13",
+      "excerpt": "assert should_exclude(\"data/backups/20260714_182627/manifest.json\") is True"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_fs_snapshot.py",
       "symbol": "TestShouldExclude.test_backup_dir_excluded",
-      "text": "assert should_exclude(\"data/backups/20260714_182627/chroma_db_v4/chroma.sqlite3\") is True"
+      "kind": "test_data_path_literal",
+      "digest": "c986574ca1350a6f074943f6579ba1fb7fa25cae8fac546dcd166da4541af2e9",
+      "excerpt": "assert should_exclude(\"data/backups/20260714_182627/chroma_db_v4/chroma.sqlite3\") is True"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_fs_snapshot.py",
       "symbol": "TestShouldExclude.test_backup_dir_excluded",
-      "text": "assert should_exclude(\"data/backups/20260714_182627/manifest.json\") is True"
+      "kind": "test_data_path_literal",
+      "digest": "f7fb143914c6e353cf86ddf111f5274a860b3d9c9ccb694586c5929685c9471a",
+      "excerpt": "\"\"\"data/backups churns every shutdown (backup_manager) — never hashed.\"\"\""
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_fs_snapshot.py",
       "symbol": "TestShouldExclude.test_other_data_files_still_included",
-      "text": "assert should_exclude(\"data/knowledge_graph.json\") is False"
+      "kind": "test_data_path_literal",
+      "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+      "excerpt": "assert should_exclude(\"data/knowledge_graph.json\") is False"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_python_fs_guard.py",
       "symbol": "TestPathResolution.test_nested_path",
-      "text": "assert result == \"data/chroma_db\""
+      "kind": "test_data_path_literal",
+      "digest": "d2abd14642c5988e7c8c5036b32e29ea490e92d9fc08c82925eb24ea7d6a0eea",
+      "excerpt": "assert result == \"data/chroma_db\""
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_python_fs_guard.py",
       "symbol": "TestProtectedPathChecks.test_deeply_nested",
-      "text": "assert _is_protected_path(\"data/a/b/c/d.txt\") is True"
+      "kind": "test_data_path_literal",
+      "digest": "3a7c76396b550a6750e35101c553fb2627c822d06153c9ccbba72f3d8380fa37",
+      "excerpt": "assert _is_protected_path(\"data/a/b/c/d.txt\") is True"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_python_fs_guard.py",
       "symbol": "TestProtectedPathChecks.test_normal_path_not_always_blocked",
-      "text": "assert _is_always_blocked(\"data/file.txt\", \"data/file.txt\") is False"
+      "kind": "test_data_path_literal",
+      "digest": "616307e7af98fac7adeef2a98d080a143a5ec6819950cc14a7fc3f0f0e4be1bc",
+      "excerpt": "assert _is_always_blocked(\"data/file.txt\", \"data/file.txt\") is False"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_python_fs_guard.py",
       "symbol": "TestProtectedPathChecks.test_protected_subpath",
-      "text": "assert _is_protected_path(\"data/chroma_db\") is True"
+      "kind": "test_data_path_literal",
+      "digest": "d2abd14642c5988e7c8c5036b32e29ea490e92d9fc08c82925eb24ea7d6a0eea",
+      "excerpt": "assert _is_protected_path(\"data/chroma_db\") is True"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_retrospective_small_guards.py",
       "symbol": "TestDaemonStateFsExemption.test_check_and_maybe_block_allows_credits_in_agent_mode",
-      "text": "\"os.remove\", str(g._repo_root / \"data/knowledge_graph.json\"))"
+      "kind": "test_data_path_literal",
+      "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+      "excerpt": "\"os.remove\", str(g._repo_root / \"data/knowledge_graph.json\"))"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_retrospective_small_guards.py",
       "symbol": "TestDaemonStateFsExemption.test_check_and_maybe_block_allows_credits_in_agent_mode",
-      "text": "\"os.replace\", str(g._repo_root / \"data/web_search_credits.json.tmp\"))"
+      "kind": "test_data_path_literal",
+      "digest": "be8a1ebcd79b432d1dde0ad6f273a84ffc94a366979bc1f5fab6798c187dadf0",
+      "excerpt": "\"os.replace\", str(g._repo_root / \"data/web_search_credits.json.tmp\"))"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_retrospective_small_guards.py",
       "symbol": "TestDaemonStateFsExemption.test_exemption_covers_tmp_sibling",
-      "text": "rel = \"data/web_search_credits.json.tmp\""
+      "kind": "test_data_path_literal",
+      "digest": "be8a1ebcd79b432d1dde0ad6f273a84ffc94a366979bc1f5fab6798c187dadf0",
+      "excerpt": "rel = \"data/web_search_credits.json.tmp\""
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_retrospective_small_guards.py",
       "symbol": "TestDaemonStateFsExemption.test_other_data_paths_not_exempt",
-      "text": "\"data/entity_aliases.json\"):"
+      "kind": "test_data_path_literal",
+      "digest": "114deb0f6943a312c66e501c64de950f4757426c36049f122372f062cdbf7229",
+      "excerpt": "for rel in (\"data/knowledge_graph.json\", \"data/corpus_v4.json\","
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_retrospective_small_guards.py",
       "symbol": "TestDaemonStateFsExemption.test_other_data_paths_not_exempt",
-      "text": "for rel in (\"data/knowledge_graph.json\", \"data/corpus_v4.json\","
+      "kind": "test_data_path_literal",
+      "digest": "88b9e5dc55ffd49437db49251311389121fad0a214319da6540e479aa0742d49",
+      "excerpt": "\"data/entity_aliases.json\"):"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
       "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
-      "text": "assert _is_daemon_state_path(\"data/.pending_actions.json.rj_1_c9i.tmp\")"
+      "kind": "test_data_path_literal",
+      "digest": "4bf3df7aab0b5981c637d3493960f4b77a67e51a990d73ebc388510b6117002e",
+      "excerpt": "assert not _is_daemon_state_path(\"data/.knowledge_graph.json.abc.tmp\")"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
       "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
-      "text": "assert _is_daemon_state_path(\"data/.web_search_credits.json.abc123.tmp\")"
+      "kind": "test_data_path_literal",
+      "digest": "6e60c158ff20ff08daec25217e8c313f76ed3c05db61de3af64726edaee8d4b8",
+      "excerpt": "assert _is_daemon_state_path(\"data/.pending_actions.json.rj_1_c9i.tmp\")"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
       "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
-      "text": "assert _is_daemon_state_path(\"data/pending_actions.json\")"
+      "kind": "test_data_path_literal",
+      "digest": "7dfc866cf630faf4164a34dd6b920d6ae0bae4de372b492007dc1b2a1f98b635",
+      "excerpt": "assert _is_daemon_state_path(\"data/pending_actions.json\")"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_sep10_calendar_forced_action_loop.py",
       "symbol": "TestFsGuardTempSibling.test_pending_store_temp_sibling_is_exempt",
-      "text": "assert not _is_daemon_state_path(\"data/.knowledge_graph.json.abc.tmp\")"
+      "kind": "test_data_path_literal",
+      "digest": "8abf38b2c4a6d88263d2298541eced3a01a6b14289e713c572350dbba839db3a",
+      "excerpt": "assert _is_daemon_state_path(\"data/.web_search_credits.json.abc123.tmp\")"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestMvProtected.test_mv_data_subpath",
-      "text": "result = classify_shell_cmd([\"mv\", \"data/corpus_v4.json\", \"/tmp/\"], repo)"
+      "kind": "test_data_path_literal",
+      "digest": "30d578c3440cdb4bf0ffaee0bf68586d90860f575171b1544e3b48734238f932",
+      "excerpt": "result = classify_shell_cmd([\"mv\", \"data/corpus_v4.json\", \"/tmp/\"], repo)"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestProtectedPaths.test_deeply_nested_protected",
-      "text": "assert _is_protected(\"data/a/b/c/file.txt\", PROTECTED_DIRS, PROTECTED_FILES) is True"
+      "kind": "test_data_path_literal",
+      "digest": "271c1d7df2245775ee505d72540445fa7bdcfbdb99f836eb00609a3fdf05fa20",
+      "excerpt": "assert _is_protected(\"data/a/b/c/file.txt\", PROTECTED_DIRS, PROTECTED_FILES) is True"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestProtectedPaths.test_subpath_of_protected_dir",
-      "text": "assert _is_protected(\"data/chroma_db_v4\", PROTECTED_DIRS, PROTECTED_FILES) is True"
+      "kind": "test_data_path_literal",
+      "digest": "d992fa3151e38456068fdc7940758ea2b74358fca2689a0675eb2aba0d6c7181",
+      "excerpt": "assert _is_protected(\"data/chroma_db_v4\", PROTECTED_DIRS, PROTECTED_FILES) is True"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestResolveTarget.test_nested_path",
-      "text": "assert _resolve_target(\"data/chroma_db_v4\", repo) == \"data/chroma_db_v4\""
+      "kind": "test_data_path_literal",
+      "digest": "e529fe8374ab4922a46bf08b4a5cbc18bd882df27709ed89cefa33236eb497e2",
+      "excerpt": "assert _resolve_target(\"data/chroma_db_v4\", repo) == \"data/chroma_db_v4\""
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestResolveTarget.test_traversal_stays_in_repo",
-      "text": "result = _resolve_target(\"data/../config\", repo)"
+      "kind": "test_data_path_literal",
+      "digest": "d068c67cb53e728209ef7e1ffb6d6a143a52a497383dbc4069c391412104aad2",
+      "excerpt": "result = _resolve_target(\"data/../config\", repo)"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestRmProtected.test_rm_data_file_inside_protected",
-      "text": "result = classify_shell_cmd([\"rm\", \"data/knowledge_graph.json\"], repo)"
+      "kind": "test_data_path_literal",
+      "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+      "excerpt": "result = classify_shell_cmd([\"rm\", \"data/knowledge_graph.json\"], repo)"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestRmProtected.test_rm_path_traversal",
-      "text": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/../config\"], repo)"
+      "kind": "test_data_path_literal",
+      "digest": "d068c67cb53e728209ef7e1ffb6d6a143a52a497383dbc4069c391412104aad2",
+      "excerpt": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/../config\"], repo)"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestRmProtected.test_rm_rf_data_subdir",
-      "text": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/chroma_db_v4\"], repo)"
+      "kind": "test_data_path_literal",
+      "digest": "d992fa3151e38456068fdc7940758ea2b74358fca2689a0675eb2aba0d6c7181",
+      "excerpt": "result = classify_shell_cmd([\"rm\", \"-rf\", \"data/chroma_db_v4\"], repo)"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_shell_cmd_guard.py",
       "symbol": "TestTruncateProtected.test_truncate_data_file",
-      "text": "[\"truncate\", \"-s\", \"0\", \"data/knowledge_graph.json\"], repo,"
+      "kind": "test_data_path_literal",
+      "digest": "2cb9f3f2b2e025d60cd828f0252f851215f426a37db847f14fcfa427c0774d5d",
+      "excerpt": "[\"truncate\", \"-s\", \"0\", \"data/knowledge_graph.json\"], repo,"
     },
     {
       "scanner": "dm17_apply_without_guard",
       "path": "tests/unit/test_tone_floor_self_latch.py",
       "symbol": "TestStateSandbox.test_tone_state_path_is_sandboxed_here",
-      "text": "assert not str(ContextPipeline._TONE_STATE_PATH).startswith(\"data/\")"
+      "kind": "test_data_path_literal",
+      "digest": "4e6f5396343ffa7ffc56bdf642f4f646f296b92507dcfd97329f3aff183629da",
+      "excerpt": "assert not str(ContextPipeline._TONE_STATE_PATH).startswith(\"data/\")"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "core/prompt/gatherer_memory.py",
       "symbol": "MemoryRetrievalMixin._get_reflections",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "6c27f1f6f29661b5aa11106e60ea855129624a6cd8882bc08de1f50d368b3a94",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "core/prompt/gatherer_memory.py",
       "symbol": "MemoryRetrievalMixin.get_facts",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "5ec5e4cecd6b9ed04eea93d6bf71776b84782869dc957dc011a2de4c334de2c5",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "core/prompt/gatherer_memory.py",
       "symbol": "MemoryRetrievalMixin.get_recent_facts",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "11ecd20abdf93022a8ae20f33a1ccff3799dc82967350717aa17fe7e868ce0c3",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/WikiManager.py",
       "symbol": "WikiManager._fetch_extract_action_api",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "cd5800228d2c79d0577b34a667a876ccf64223f1b0ff1c2ea9225f765cfbe2d6",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/WikiManager.py",
       "symbol": "WikiManager.resolve_and_fetch",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "d26e54b6ea04d3d82007214f22096cf808acd1c8cbaeef1216f5b2ad2ad61be0",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/clip_manager.py",
       "symbol": "CLIPManager.encode_image",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "977a04df986fbf4e520e0fb50a8edeb552ff76d60de06694ba41a3743f269f94",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/clip_manager.py",
       "symbol": "CLIPManager.encode_text",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "e5cc72d6ef1523693c75b2a5438414b1129ea725590d07fbfd02e4cd51ae3b9d",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/document_generator.py",
       "symbol": "DocumentGenerator._search_collection",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "be9ebe69d9d31bf26fd8752b14a9b6b35eab8d5c45925eeda3a678d983377e9b",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/document_generator.py",
       "symbol": "DocumentGenerator._search_web",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "28b3d64b0d020bf3609e40e5a504cb644e4070779eed157d5c079b7db201f4d0",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/graph_walk_generator.py",
       "symbol": "GraphWalkGenerator._articulate_and_package",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "09b2c8dcf91199f57aeef42cd37db06269fb1c9102575e3650c30b6cca248435",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/implementation_detector.py",
       "symbol": "ImplementationDetector._stage_llm_judgment",
-      "text": "return {}"
+      "kind": "broad_except_returns_empty",
+      "digest": "779fe5c8c6c6e10f3320c16f7866ce9880e4073c6d0ddaa70647acea8661597d",
+      "excerpt": "return {}"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "knowledge/web_search_manager.py",
       "symbol": "WebSearchManager._select_links_for_following",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "af4f65e1faf3e1e058ba514041973bc2a5289a83e7d3b9b246723122cead5c4a",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/context_surfacer.py",
       "symbol": "ContextSurfacer.generate_insights",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "e0a0745865e51342571fe512330cfc4337ec4652d32056ba229a5a032bc999ed",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/curation/engine.py",
       "symbol": "CurationEngine._store_size",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "06b14c5d38043759254a0256e6857143b53219fd5923344c4c4fe186504cba8c",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/llm_fact_extractor.py",
       "symbol": "LLMFactExtractor.extract_triples",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "22f9437f13b777108ad5018af5104eaa694276b29bc877a142771c3a4cc81d62",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/llm_fact_extractor.py",
       "symbol": "LLMFactExtractor.extract_triples",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "d9296a83efb75fd8ddfe568480f3126c0e62876be02375286c0461e1dec522ed",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/memory_retriever.py",
       "symbol": "MemoryRetriever._keyword_anchor_memories",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "ca03b03b3a469401aeb3ed7a02d40e30ee6e99b358403ab69ec0c8999088a013",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/proposal_store.py",
       "symbol": "ProposalStore.check_similarity",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "fb860842117860de84578e6a771891841d1c967e52d899ffea0c5e1eda7b2383",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/proposal_store.py",
       "symbol": "ProposalStore.get_for_dedup",
-      "text": "return \"\""
+      "kind": "broad_except_returns_empty",
+      "digest": "8aae9b14a8ec049acbe6e5321e4f3a485025eb53b0e05018e59ae19e2d9b9687",
+      "excerpt": "return \"\""
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/shutdown_processor.py",
       "symbol": "ShutdownProcessor._extract_procedural_skills",
-      "text": "return"
+      "kind": "broad_except_returns_empty",
+      "digest": "64099756bd189df7f58e14fb31ede395ad9cf12bb3bdf52440e4bfa47b77be91",
+      "excerpt": "return"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/thread_extractor.py",
       "symbol": "ThreadExtractor.detect_resolutions",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "0b9a0de7d2f53f1c957215401d9a76dfe2c91b78e8c80eb4ecb55748d7d376cd",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/thread_extractor.py",
       "symbol": "ThreadExtractor.extract_new_threads",
-      "text": "return []"
+      "kind": "broad_except_returns_empty",
+      "digest": "a4bf7da64cf429c973e82021e5d301c712292dc4b1431da278046e67ec7a0cc5",
+      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
       "path": "memory/user_profile_schema.py",
       "symbol": "_get_exemplar_embeddings",
-      "text": "return None"
+      "kind": "broad_except_returns_empty",
+      "digest": "06b14c5d38043759254a0256e6857143b53219fd5923344c4c4fe186504cba8c",
+      "excerpt": "return None"
     },
     {
       "scanner": "dm31_live_state_default",
       "path": "core/competitive_scorer.py",
       "symbol": "apply_competitive_selection",
-      "text": "budget: int = 3000"
+      "kind": "live_state_literal_default",
+      "digest": "06a4d5b813ae776ae85171efe40d46f7a7f511479e7c94d8881e1cef2146331d",
+      "excerpt": "budget: int = 3000"
     },
     {
       "scanner": "dm31_live_state_default",
       "path": "core/safety_canary.py",
       "symbol": "SafetyCanary.__init__",
-      "text": "enabled: bool = True,"
+      "kind": "live_state_literal_default",
+      "digest": "9711f00d956e86435b3af943d32c49db41ea50ed24d3d7dd8c0412bb1ce3b55f",
+      "excerpt": "enabled: bool = True,"
     },
     {
       "scanner": "dm31_live_state_default",
       "path": "memory/skill_activation.py",
       "symbol": "SkillActivationPolicy.__init__",
-      "text": "enabled: bool = True,"
+      "kind": "live_state_literal_default",
+      "digest": "9711f00d956e86435b3af943d32c49db41ea50ed24d3d7dd8c0412bb1ce3b55f",
+      "excerpt": "enabled: bool = True,"
     }
   ]
 }

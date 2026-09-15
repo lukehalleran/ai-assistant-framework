@@ -8,18 +8,22 @@ matching) have nine recorded incidents between them: ``"crisis"`` inside
 ``in`` against lowered text instead of through
 ``utils/trigger_match.compile_keyword_matcher`` / ``has_non_negated_hit``.
 
-This scanner reports CANDIDATES, not verdicts: a module that already imports
-the chokepoint is skipped entirely (it has adopted the closure and its
-remaining raw tests are its own business), and the two AST shapes below are
-the ones the incidents actually took.
+This scanner reports CANDIDATES, not verdicts, in the two AST shapes the
+incidents actually took:
 
 Shape A  ``"literal" in <text>.lower()``            (a bare keyword constant)
 Shape B  ``any(k in text_lower for k in HEAVY_KEYWORDS)``  (a keyword list)
 
 Both require the right-hand side to be a lowered-text expression
-(``<expr>.lower()`` or a name ending ``_lower`` / ``_lc``) — the shape that
-says "I am matching keywords against user text", not an ordinary membership
-test over a dict or set.
+(``<expr>.lower()`` or a name/attribute ending ``_lower`` / ``_lc``) — the
+shape that says "I am matching keywords against user text", not an ordinary
+membership test over a dict or set.
+
+Contract v2 (2026-09-13): no module exemption and no lexical prefilter.
+Importing — or even calling — the chokepoint says nothing about the other raw
+tests in the same module, and the old ``in <name>.lower()`` regex prefilter
+missed ``in normalize(text).lower()`` and ``in self.text_lower``.  Every file
+in the leg is parsed (the CLI's syntax preflight has already parsed it).
 """
 
 from __future__ import annotations
@@ -29,28 +33,27 @@ import re
 from pathlib import Path
 
 from .common import (
-    Finding,
+    PYTHON_SOURCE_LEG,
     ScanResult,
-    function_spans,
-    iter_python_files,
+    canonical,
+    line_group_findings,
     parse_module,
     read_source,
     relpath,
-    scope_for,
-    source_line,
+    resolve_leg,
 )
 
 SCANNER_ID = "dm01_raw_substring"
 CLASS_IDS = ("BC-01", "BC-02")
-
-CHOKEPOINT = "trigger_match"
+CONTRACT_VERSION = 2
+LEGS = (PYTHON_SOURCE_LEG,)
+KIND = "raw_membership"
+KINDS = (KIND,)
 
 # A Name that reads as a keyword/cue vocabulary rather than a data container.
 _LIST_NAME_RE = re.compile(
     r"(KEYWORDS?|CUES?|WORDS?|PHRASES?|MARKERS?|TERMS?|STARTERS?|SIGNALS?)$"
 )
-# Cheap prefilter: skip files with no lowered-text membership test at all.
-_PREFILTER = re.compile(r"\bin\s+[A-Za-z_][A-Za-z_0-9.\[\]]*\s*\.lower\(\)|\bin\s+\w*_(lower|lc)\b")
 
 
 def _is_lowered_text(node: ast.expr) -> bool:
@@ -90,73 +93,42 @@ def _membership_hit(node: ast.AST, vocabulary_vars: set[str]) -> bool:
 def _comprehension_vars(node: ast.AST) -> set[str]:
     """Names bound by a comprehension over a keyword-vocabulary iterable."""
     bound: set[str] = set()
-    generators = getattr(node, "generators", None)
-    if not generators:
-        return bound
-    for generator in generators:
-        if not _vocabulary_name(generator.iter):
-            continue
-        target = generator.target
-        if isinstance(target, ast.Name):
-            bound.add(target.id)
+    for generator in getattr(node, "generators", None) or ():
+        if _vocabulary_name(generator.iter) and isinstance(generator.target, ast.Name):
+            bound.add(generator.target.id)
     return bound
 
 
-def _imports_chokepoint(tree: ast.Module) -> bool:
-    """Structural check: an actual import of ``utils.trigger_match``.
-
-    A mention in a comment or docstring is not adoption; only an import is.
-    """
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and CHOKEPOINT in (node.module or ""):
-            return True
-        if isinstance(node, ast.Import):
-            if any(CHOKEPOINT in alias.name for alias in node.names):
-                return True
-    return False
-
-
 def scan(root: Path) -> ScanResult:
-    findings: list[Finding] = []
-    files = iter_python_files(root)
-    processed = 0
-    for path in files:
+    resolved = resolve_leg(root, PYTHON_SOURCE_LEG)
+    findings = []
+    for path in resolved.files:
         source = read_source(path)
-        processed += 1
-        if not _PREFILTER.search(source):
-            continue
-        rel = relpath(root, path)
         tree = parse_module(path, source)
-        if _imports_chokepoint(tree):
-            continue  # module has adopted the chokepoint
-        spans = function_spans(tree)
-        lines = source.splitlines()
-        seen_lines: set[int] = set()
+        groups: dict[int, list[tuple[int, str, str]]] = {}
+        claimed: set[int] = set()
         for node in ast.walk(tree):
             bound = _comprehension_vars(node)
-            candidates: list[ast.AST] = []
             if bound:
-                candidates.extend(
-                    child for child in ast.walk(node) if isinstance(child, ast.Compare)
-                )
-            elif isinstance(node, ast.Compare):
-                candidates.append(node)
-            for candidate in candidates:
-                if not _membership_hit(candidate, bound):
-                    continue
-                lineno = candidate.lineno
-                if lineno in seen_lines:
-                    continue
-                seen_lines.add(lineno)
-                findings.append(
-                    Finding(
-                        SCANNER_ID,
-                        CLASS_IDS,
-                        rel,
-                        scope_for(spans, lineno),
-                        lineno,
-                        source_line(lines, lineno),
+                # Shape B: the candidate is the whole comprehension, so the
+                # vocabulary it iterates is part of the anchor.
+                for child in ast.walk(node):
+                    if id(child) in claimed or not _membership_hit(child, bound):
+                        continue
+                    claimed.add(id(child))
+                    groups.setdefault(child.lineno, []).append(
+                        (child.col_offset, KIND, canonical(node), node.lineno, node.end_lineno or node.lineno)
                     )
+            elif id(node) not in claimed and _membership_hit(node, set()):
+                claimed.add(id(node))
+                groups.setdefault(node.lineno, []).append(
+                    (node.col_offset, KIND, canonical(node), node.lineno, node.end_lineno or node.lineno)
                 )
-    findings.sort(key=lambda f: (f.path, f.line, f.text))
-    return ScanResult(findings, processed)
+        findings.extend(
+            line_group_findings(
+                SCANNER_ID, CLASS_IDS, relpath(root, path), tree,
+                source.splitlines(), groups, PYTHON_SOURCE_LEG.id,
+            )
+        )
+    findings.sort(key=lambda f: (f.path, f.line, f.excerpt))
+    return ScanResult(findings, (resolved.receipt(),))

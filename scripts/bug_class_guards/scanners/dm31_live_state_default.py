@@ -26,10 +26,15 @@ Structural rule (all three must hold):
      `web_search_trigger._resolve_remaining_credits`), and `False` for a
      toggle is the fail-closed direction.
 
-Deliberately NOT flagged: private helpers (their callers are in the same
-module and the resolving wrapper supplies the value), caller-chosen sizes
-(`limit`, `max_*`, `estimated_*` are a request, not a fact about the world),
-and any non-literal default.
+Deliberately NOT flagged (documented scope boundaries): private helpers
+(their callers are in the same module and the resolving wrapper supplies the
+value), caller-chosen sizes (`limit`, `max_*`, `estimated_*` are a request,
+not a fact about the world), any non-literal default (a module constant such
+as `DEFAULT_CREDITS`), and a live value read inside the body instead of
+through a parameter.
+
+Contract v2: one candidate per parameter, anchored on the parameter node
+(name and annotation) plus its default.
 """
 
 from __future__ import annotations
@@ -39,19 +44,26 @@ import re
 from pathlib import Path
 
 from .common import (
+    PYTHON_SOURCE_LEG,
     Finding,
     ScanResult,
+    canonical,
+    digest_of,
     function_spans,
-    iter_python_files,
     parse_module,
     read_source,
     relpath,
+    resolve_leg,
     scope_for,
     source_line,
 )
 
 SCANNER_ID = "dm31_live_state_default"
 CLASS_IDS = ("BC-78", "BC-11", "BC-12")
+CONTRACT_VERSION = 2
+LEGS = (PYTHON_SOURCE_LEG,)
+KIND = "live_state_literal_default"
+KINDS = (KIND,)
 
 # Budget/quota family: a number here asserts how much of a metered external
 # resource remains. `limit`/`max_*`/`estimated_*` are excluded by design —
@@ -95,11 +107,10 @@ def _params_with_defaults(node: ast.AST):
 
 
 def scan(root: Path) -> ScanResult:
+    resolved = resolve_leg(root, PYTHON_SOURCE_LEG)
     findings: list[Finding] = []
-    processed = 0
-    for path in iter_python_files(root):
+    for path in resolved.files:
         source = read_source(path)
-        processed += 1
         rel = relpath(root, path)
         tree = parse_module(path, source)
         spans = function_spans(tree)
@@ -120,8 +131,12 @@ def scan(root: Path) -> ScanResult:
                         rel,
                         scope_for(spans, node.lineno),
                         line,
+                        KIND,
+                        digest_of([canonical(arg), canonical(default)]),
                         source_line(lines, line),
+                        PYTHON_SOURCE_LEG.id,
+                        span=(line, getattr(default, "end_lineno", None) or line),
                     )
                 )
-    findings.sort(key=lambda f: (f.path, f.line, f.text))
-    return ScanResult(findings, processed)
+    findings.sort(key=lambda f: (f.path, f.line, f.excerpt))
+    return ScanResult(findings, (resolved.receipt(),))

@@ -188,9 +188,10 @@ Principles:
    hook's selection by hand under the 8G wrapper with durable output, then
    `SKIP_PREPUSH=1 git push` citing that output (`docs/TEST_LANES.md` §4).
    Failed-before evidence is a recorded result in the handoff doc, never an
-   assertion. The only way to make a red push literally impossible is GitHub
-   branch protection with the Tests check required on `master` (direct pushes
-   are then rejected; work lands via a branch and PR) — owner's call.
+   assertion. The only way to make a red landing literally impossible is
+   GitHub branch protection. The owner adopted it on 2026-09-13; §3a.8 has the
+   pull-request flow, the `bug-class-gate` required status, and the settings
+   payload.
 
 7. **Two owner lines, always — a runner and a push.** The owner commits from
    a phone. Every batch therefore ends with (a) a commit message file
@@ -206,7 +207,70 @@ Principles:
    is that runner. Line 2 is `git push` — separate, typed by the owner, never
    chained into the runner (`SKIP_PREPUSH=1 git push` only when the handoff
    cites the hand-run evidence, §3a.6). The agent's final message to the
-   owner shows exactly those two lines and nothing else to type.
+   owner shows exactly those two lines and nothing else to type. Once `master`
+   is protected (§3a.8), line 2 pushes the batch BRANCH, and the pull request
+   and merge follow.
+
+8. **Every landing goes through a pull request (owner decision, 2026-09-13).**
+   `master` is to be protected with:
+   - pull requests required;
+   - one required status check, `bug-class-gate`, published by the GitHub
+     Actions app (id 15368);
+   - strict "branch up to date" before merge;
+   - administrators included (no admin or direct-push bypass);
+   - 0 required approvals.
+
+   **How the gate works.** `bug-class-gate` needs every other job in
+   `.github/workflows/tests.yml` (`bug-class-scan`, `test`, `frontend`). It
+   runs even when a dependency failed or was skipped, and fails unless each
+   dependency's result is `success`. It then re-verifies the scan receipt and
+   the harness and guard JUnit receipts, against the checked-out policy,
+   baseline and dispositions, for `$GITHUB_SHA`. GitHub lets skipped and
+   neutral checks satisfy a required status, so the gate itself is never
+   conditional and never trusts job colours alone.
+
+   **Why "pull request required" is explicit.** A required check alone does not
+   stop a direct push of an already-checked commit.
+
+   **Solo maintainer.** 0 approvals avoids self-review deadlock, so **no
+   independent review is enforced** while there is one maintainer. Add a
+   required reviewer or code-owner rule when an eligible second reviewer
+   exists.
+
+   **Landing flow** (every batch, Plan 2's included):
+   1. the §3a.7 runner commits on a branch;
+   2. `git push -u origin <branch>`;
+   3. `gh pr create --base master --head <branch>`;
+   4. merge only after `bug-class-gate` has passed on the pull request's
+      current head.
+
+   A push to a branch that is neither `master` nor `refactor/prompt-modular`
+   runs no workflow until its pull request exists.
+
+   **Settings.** The reviewed payload is
+   `docs/execution/class_guards/branch_protection_master.json`. Only the owner
+   applies it, and only after a real pull-request run shows the `bug-class-gate`
+   check name and app:
+
+   ```bash
+   gh api -X PUT repos/lukehalleran/ai-assistant-framework/branches/master/protection \
+     --input docs/execution/class_guards/branch_protection_master.json
+   ```
+
+   **Verify read-only afterwards.** Protection is never reported from the
+   payload alone. The output must show the `bug-class-gate` check with app
+   15368, `strict: true`, `enforce_admins.enabled: true`, and a
+   `required_pull_request_reviews` block:
+
+   ```bash
+   gh api repos/lukehalleran/ai-assistant-framework/branches/master/protection
+   gh api repos/lukehalleran/ai-assistant-framework/branches/master \
+     --jq '{protected: .protected, sha: .commit.sha, protection: .protection}'
+   ```
+
+   If the API refuses the payload (plan or permission limits), stop. The
+   landing policy is then not enforced, and the refusal is recorded with the
+   exact API error.
 
 ## 4. Credit discipline
 
@@ -293,15 +357,23 @@ batch size, not in the loop.
    `test_budget_meters_rendered_sections`, `test_tool_wiring_parity`,
    `test_model_capability_wiring`) are never in a module-scoped local
    selection; `hooks/pre-push` runs them on every push (§3a.6).
-   Beside them, `hooks/pre-push` and CI also run the bug-class scan ratchet
-   (`python scripts/check_bug_classes.py scan --root .` plus its stdlib-only
-   lane `tests/bug_class_guards`): a NEW finding from a **gated** scanner, or a
-   STALE entry in `config/bug_class_baseline.json` — fixed debt must be
-   REMOVED from the baseline, never left behind — fails the local hook and
-   CI check. Current gates are DM-01/17/18/31 plus catalog consistency;
-   DM-16/29 are report-only. This is a ratchet over reviewed baseline debt,
-   not coverage of every known class. A failing CI check prevents landing
-   only when branch protection requires it. The independent verification,
+   Beside them, `hooks/pre-push` and CI also run the bug-class contract
+   (`python scripts/check_bug_classes.py scan --root .`, its stdlib-only lane
+   `tests/bug_class_guards`, and `verify-receipts`; `docs/TEST_LANES.md` §4).
+   The scan checks the pinned policy (seven scanners, every input leg and root,
+   the top-level Python inventory, a syntax preflight). It then ratchets the
+   gate scanners in both directions against `config/bug_class_baseline.json`.
+   Each baseline occurrence needs a reviewed record in
+   `config/bug_class_dispositions.json`, bound to its source file's SHA-256.
+
+   Fixed debt is REMOVED from the baseline and kept as `confirmed_fixed`
+   history. An edited file with accepted debt fails until the class-guard
+   owner re-reviews it. Current gates are DM-01/17/18/31 plus catalog
+   structure; DM-16/29 are report-only.
+
+   This is a scoped structural ratchet, not coverage of every known class;
+   each scan lists the uncovered classes. A failing CI check prevents landing
+   only once branch protection requires `bug-class-gate` (§3a.8). The independent verification,
    generalization findings, and third-prong probe backlog are consolidated
    in [the 2026-09-13 review](GENERALIZATION_CI_REVIEW_20260913.md).
 2. **One commit per root cause, restart immediately, then probe.** Three

@@ -6,26 +6,36 @@
 # Install:
 #   ln -s ../../hooks/pre-push .git/hooks/pre-push
 #
-# Checks, in order (1-3 and 2a mirror steps of .github/workflows/tests.yml;
-# 0 is local-only):
+# Checks, in order (1-3 and 2a mirror .github/workflows/tests.yml; 0 is
+# local-only):
 #   0. the pushed commit IS the tree being tested: no modified tracked files,
 #      no untracked *.py (a test file you forgot to `git add` passes here and
 #      is missing on the runner)
 #   1. the CI privacy guard (tracked real-memory fixtures, fixture size,
 #      dosage-shaped text outside the reviewed allowlist)
-#   2. ruff check .
-#   2a. the bug-class scan ratchet (scripts/check_bug_classes.py scan) and its
-#      stdlib-only guard lane — a NEW finding or a STALE baseline entry fails
-#   3. pytest: every test file changed in the push range + the repo-wide
-#      guard tests (never in a module-scoped local selection)
-#   PREPUSH_FULL=1 additionally runs the CI marker filter over tests/unit ONLY
-#      (the non-unit remainder needs the daemon down and the 8G cap, see
-#      docs/DEVELOPMENT_WORKFLOW.md §3). Both pytest runs execute in ONE
-#      process under MemoryMax=6G; a push range that touches non-unit test
-#      files exceeds that (docs/TEST_LANES.md §4) — verify by hand, then
-#      SKIP_PREPUSH=1.
+#   2. ruff over the whole tree
+#   2a. the bug-class contract: the FULL policy scan with a JSON receipt (no
+#      scanner selection, no baseline writes, no ledger or policy overrides),
+#      the stdlib-only harness with a JUnit receipt, then receipt verification
+#      against the checked-out policy, baseline and dispositions
+#      (docs/TEST_LANES.md §4; enforcement wiring is itself tested by
+#      tests/bug_class_guards/test_enforcement.py)
+#   3. pytest, in three passes: (a) the five repo-wide guards (always; a
+#      missing guard file blocks the push) + every test file changed in the
+#      push range, with a JUnit receipt proving each guard module ran, under
+#      MemoryMax=6G; (b) the CI marker filter over all of tests/unit, same
+#      cap (2026-09-13: promoted from the old PREPUSH_FULL=1 opt-in to the
+#      default — measured peak for a unit-shaped selection is ~1.3G, so 6G
+#      is not the binding constraint here); (c) the non-unit remainder
+#      (everything outside tests/unit), ONLY when utils.daemon_guard reports
+#      the Daemon is not running, under MemoryMax=8G (docs/DEVELOPMENT_WORKFLOW.md
+#      §3: this batch swap-thrashed the box to a hard reset in 2026-09-07
+#      when it ran beside a live Daemon — it is never attempted automatically
+#      while one is up; the hook says so and you verify it by hand instead).
 # Bypass (leave a note in the commit or handoff when you do):
 #   SKIP_PREPUSH=1 git push
+# Once master requires the bug-class-gate status, a bypassed local check is
+# still enforced server-side before the pull request can merge.
 
 set -euo pipefail
 
@@ -46,12 +56,14 @@ pyver=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/nul
 [ "$pyver" = "3.11" ] || fail "python resolves to $pyver, CI runs 3.11 (run from the repo root so pyenv picks 3.11.8)"
 
 # ---- 0. committed tree == tested tree -----------------------------------
-dirty=$(git status --porcelain --untracked-files=all | grep -vE '^\?\?' || true)
+# grep exits 1 for "no line matched", which is the clean case; any other
+# status is a real error and still stops the push.
+dirty=$(git status --porcelain --untracked-files=all | { grep -vE '^\?\?' || [ $? -eq 1 ]; })
 if [ -n "$dirty" ]; then
   echo "$dirty" >&2
   fail "modified tracked files — the tests would run on a tree that is not the pushed commit. Commit (or stash) first."
 fi
-untracked_py=$(git status --porcelain --untracked-files=all | grep -E '^\?\? .*\.py$' || true)
+untracked_py=$(git status --porcelain --untracked-files=all | { grep -E '^\?\? .*\.py$' || [ $? -eq 1 ]; })
 if [ -n "$untracked_py" ]; then
   echo "$untracked_py" >&2
   fail "untracked .py files — they exist here and not on the runner. git add them or move them out of the tree."
@@ -60,21 +72,32 @@ fi
 # ---- push range → changed test files -----------------------------------
 changed_tests=()
 changed_sources=()
+has_content_push=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue            # branch deletion
+  has_content_push=1
   if [ "$remote_sha" = "$ZERO" ]; then
-    base=$(git merge-base "$local_sha" origin/master 2>/dev/null || true)
+    base=$(git merge-base "$local_sha" origin/master 2>/dev/null) || base=""  # no origin/master: diff from the root
     range="${base:+$base..}$local_sha"
   else
     range="$remote_sha..$local_sha"
   fi
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$f" ] && changed_tests+=("$f")
-  done < <(git diff --name-only --diff-filter=AMR "$range" -- 'tests/*.py' 'tests/**/*.py' 2>/dev/null || true)
+  done < <(git diff --name-only --diff-filter=AMR "$range" -- 'tests/*.py' 'tests/**/*.py' 2>/dev/null)
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$f" ] && changed_sources+=("$f")
-  done < <(git diff --name-only --diff-filter=AMR "$range" -- '*.py' ':!tests/*.py' ':!tests/**/*.py' 2>/dev/null || true)
+  done < <(git diff --name-only --diff-filter=AMR "$range" -- '*.py' ':!tests/*.py' ':!tests/**/*.py' 2>/dev/null)
 done
+
+# A push whose every ref is a deletion (e.g. `git push origin --delete
+# <branch>`) has no commit content to verify — nothing to lint, no bug-class
+# contract to re-check, no tests to run. Skip the rest of the hook entirely
+# rather than paying the full tests/unit pass (minutes) for a ref removal.
+if [ "$has_content_push" = 0 ]; then
+  echo "pre-push: every ref in this push is a deletion — nothing to verify"
+  exit 0
+fi
 
 # ---- source→test mapping (T14) ------------------------------------------
 # A source-only change (no test file touched) selects nothing above, so its
@@ -106,21 +129,26 @@ while IFS= read -r f; do
     docs/ARCHITECTURE_GUIDE.md|docs/PROJECT_SKELETON.md|docs/QUICK_REFERENCE.md|tests/test_web_search_trigger.py|tests/unit/test_anaphoric_continuation.py|tests/unit/test_correction_gui_wiring.py|tests/unit/test_cross_section_dedup_role_labels.py|tests/unit/test_graph_integration.py) ;;
     *) unexpected+=("$f") ;;
   esac
-done < <(git grep -IlE '[0-9]{3,4}[[:space:]]*mg([^[:alnum:]_]|$)' -- tests docs || true)
+done < <(git grep -IlE '[0-9]{3,4}[[:space:]]*mg([^[:alnum:]_]|$)' -- tests docs)
 [ "${#unexpected[@]}" -eq 0 ] || { printf '  %s\n' "${unexpected[@]}" >&2; fail "dosage-shaped text in unreviewed tracked paths (CI privacy guard would fail)"; }
 
 # ---- 2. lint -------------------------------------------------------------
 python -m ruff check . || fail "ruff"
 
-# ---- 2a. bug-class scan ratchet (docs/BUG_CLASSES.md detection methods) ----
-# Fail-closed: exit 1 = a NEW finding or a STALE baseline entry (fixed debt
-# must be REMOVED from config/bug_class_baseline.json, never laundered by a
-# leftover row); exit 2 = a scanner could not run, which is never a pass.
+# ---- 2a. bug-class contract (docs/BUG_CLASSES.md detection methods) -------
+# Exit 1 = a NEW or STALE gate occurrence, an unreviewed or re-review
+# disposition, or a missing/empty required input; exit 2 = the contract could
+# not be evaluated (policy, registry, syntax, ledger). Neither is ever a pass.
 # Stdlib-only, so it costs no model/torch import and runs before the suite.
-python scripts/check_bug_classes.py scan --root . || fail "bug-class scan"
+receipts=$(mktemp -d)
+trap 'rm -rf "$receipts"' EXIT
+python scripts/check_bug_classes.py scan --root . --receipt "$receipts/bug-class-scan.json" || fail "bug-class scan"
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider \
-  --confcutdir=tests/bug_class_guards tests/bug_class_guards \
-  || fail "bug-class guard tests"
+  --confcutdir=tests/bug_class_guards --junitxml="$receipts/bug-class-harness.xml" \
+  tests/bug_class_guards || fail "bug-class guard tests"
+python scripts/check_bug_classes.py verify-receipts --root . \
+  --scan "$receipts/bug-class-scan.json" --harness-junit "$receipts/bug-class-harness.xml" \
+  || fail "bug-class receipts"
 
 # ---- 3. tests ------------------------------------------------------------
 guards=(
@@ -131,7 +159,10 @@ guards=(
   tests/unit/test_model_capability_wiring.py
 )
 selection=()
-for g in "${guards[@]}"; do [ -f "$g" ] && selection+=("$g"); done
+for g in "${guards[@]}"; do
+  [ -f "$g" ] || fail "repo-wide guard $g is missing — the five guards are never optional"
+  selection+=("$g")
+done
 for f in "${changed_tests[@]:-}"; do
   [ -z "$f" ] && continue
   case " ${guards[*]} " in *" $f "*) ;; *) selection+=("$f") ;; esac
@@ -143,14 +174,33 @@ if command -v systemd-run >/dev/null 2>&1; then
 fi
 echo "pre-push: pytest on ${#selection[@]} files (${#changed_tests[@]} changed in the push range + guards)"
 "${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
+  --junitxml="$receipts/repo-wide-guards.xml" \
   -m "not slow and not benchmark and not semantic" "${selection[@]}" \
   || fail "tests"
+python scripts/check_bug_classes.py verify-receipts --root . \
+  --guards-junit "$receipts/repo-wide-guards.xml" || fail "repo-wide guard receipts"
 
-if [ "${PREPUSH_FULL:-}" = "1" ]; then
-  echo "pre-push: PREPUSH_FULL=1 — running the CI fast selection on tests/unit"
-  "${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
-    -m "not slow and not benchmark and not semantic" tests/unit \
-    || fail "tests/unit"
+echo "pre-push: running the CI marker filter on all of tests/unit"
+"${runner[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
+  -m "not slow and not benchmark and not semantic" tests/unit \
+  || fail "tests/unit"
+
+# ---- non-unit remainder — daemon-gated, never run beside a live Daemon ---
+daemon_state=$(python -c '
+from utils.daemon_guard import daemon_running
+print("up" if daemon_running() else "down")
+' 2>/dev/null) || daemon_state="unknown"
+if [ "$daemon_state" = "down" ]; then
+  echo "pre-push: Daemon is down — running the non-unit remainder under 8G"
+  runner8=()
+  if command -v systemd-run >/dev/null 2>&1; then
+    runner8=(systemd-run --user --scope --quiet -p MemoryMax=8G -p MemorySwapMax=512M)
+  fi
+  "${runner8[@]}" python -m pytest -q -p no:cacheprovider --tb=short \
+    -m "not slow and not benchmark and not semantic" tests --ignore=tests/unit \
+    || fail "tests (non-unit remainder)"
+else
+  echo "pre-push: Daemon is $daemon_state — skipping the non-unit remainder (needs the daemon down + an 8G cap, docs/TEST_LANES.md §4). This push is NOT verified against non-unit tests; if the push range touches any, stop the Daemon and run that selection by hand first."
 fi
 
 echo "pre-push: OK"
