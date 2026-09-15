@@ -19,12 +19,12 @@ class TestUserProfile:
 
     def test_create_and_save(self, temp_profile):
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.9)
+        profile.add_fact("name", "Alex", confidence=0.9)
         profile.save()
 
         # Reload and verify
         profile2 = UserProfile(temp_profile)
-        assert profile2.get_quick_profile().get("name") == "Luke"
+        assert profile2.get_quick_profile().get("name") == "Alex"
 
     def test_categorization(self, temp_profile):
         profile = UserProfile(temp_profile)
@@ -57,7 +57,7 @@ class TestUserProfile:
     def test_batch_add(self, temp_profile):
         profile = UserProfile(temp_profile)
         facts = [
-            {"relation": "name", "value": "Luke", "confidence": 0.9},
+            {"relation": "name", "value": "Alex", "confidence": 0.9},
             {"relation": "location", "value": "Springfield, IL", "confidence": 0.85},
             {"subject": "user", "relation": "cat_name", "object": "Biscuit"},
         ]
@@ -67,22 +67,22 @@ class TestUserProfile:
 
     def test_markdown_export(self, temp_profile):
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke")
+        profile.add_fact("name", "Alex")
         profile.add_fact("squat_max", "365 lb")
 
         md = profile.export_markdown()
         assert "# User Profile" in md
-        assert "Luke" in md
+        assert "Alex" in md
         assert "365 lb" in md
 
     def test_context_injection(self, temp_profile):
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.9)
+        profile.add_fact("name", "Alex", confidence=0.9)
         profile.add_fact("location", "Springfield, IL", confidence=0.85)
         profile.add_fact("squat_max", "365 lb", confidence=0.8)
 
         context = profile.get_context_injection(max_tokens=500)
-        assert "Luke" in context
+        assert "Alex" in context
         assert "Springfield" in context
         assert "squat_max" in context
 
@@ -141,7 +141,7 @@ class TestUserProfile:
     def test_context_injection_with_query(self, temp_profile):
         """Test context injection uses query for semantic relevance"""
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.9)
+        profile.add_fact("name", "Alex", confidence=0.9)
         profile.add_fact("squat_max", "365 lb", confidence=0.9)
         profile.add_fact("bench_max", "285 lb", confidence=0.9)
         profile.add_fact("favorite_beer", "IPA", confidence=0.8)
@@ -149,7 +149,7 @@ class TestUserProfile:
         # Query about lifting - should prioritize fitness facts
         context = profile.get_context_injection(max_tokens=500, query="How much can I squat?")
 
-        assert "Luke" in context  # Quick profile always included
+        assert "Alex" in context  # Quick profile always included
         assert "squat" in context.lower()  # Should find squat_max semantically
 
 
@@ -187,9 +187,9 @@ class TestAppendOnlyStorage:
     def test_confidence_boost(self, temp_profile):
         """Same (relation, value) repeated → confidence increases by 0.05."""
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.7)
-        profile.add_fact("name", "Luke", confidence=0.7)  # Confirmation
-        profile.add_fact("name", "Luke", confidence=0.7)  # Another confirmation
+        profile.add_fact("name", "Alex", confidence=0.7)
+        profile.add_fact("name", "Alex", confidence=0.7)  # Confirmation
+        profile.add_fact("name", "Alex", confidence=0.7)  # Another confirmation
 
         facts = profile.get_category(ProfileCategory.IDENTITY)
         name_facts = [f for f in facts if f["relation"] == "name"]
@@ -199,8 +199,8 @@ class TestAppendOnlyStorage:
     def test_confidence_boost_capped_at_1(self, temp_profile):
         """Confidence boost should not exceed 1.0."""
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.98)
-        profile.add_fact("name", "Luke", confidence=0.98)  # Would be 1.03 without cap
+        profile.add_fact("name", "Alex", confidence=0.98)
+        profile.add_fact("name", "Alex", confidence=0.98)  # Would be 1.03 without cap
 
         facts = profile.get_category(ProfileCategory.IDENTITY)
         name_facts = [f for f in facts if f["relation"] == "name"]
@@ -209,7 +209,7 @@ class TestAppendOnlyStorage:
     def test_fact_id_generated(self, temp_profile):
         """All facts should get a UUID fact_id."""
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.9)
+        profile.add_fact("name", "Alex", confidence=0.9)
 
         facts = profile.get_category(ProfileCategory.IDENTITY)
         assert facts[0].get("fact_id") is not None
@@ -265,7 +265,7 @@ class TestComputedViews:
     def test_get_current_view_single_category(self, temp_profile):
         """get_current_view with specific category filters correctly."""
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.9)
+        profile.add_fact("name", "Alex", confidence=0.9)
         profile.add_fact("squat_max", "365 lb", confidence=0.9)
 
         view = profile.get_current_view(category=ProfileCategory.FITNESS)
@@ -371,7 +371,7 @@ class TestBackwardCompat:
     def test_context_injection_unchanged_non_temporal(self, temp_profile):
         """Non-temporal queries produce same format as before (no timeline)."""
         profile = UserProfile(temp_profile)
-        profile.add_fact("name", "Luke", confidence=0.9)
+        profile.add_fact("name", "Alex", confidence=0.9)
         profile.add_fact("squat_max", "365 lb", confidence=0.9)
         profile.add_fact("squat_max", "375 lb", confidence=0.9)
 
@@ -421,12 +421,12 @@ class TestMigration:
             "created_at": "2025-01-01T00:00:00",
             "updated_at": "2025-01-15T00:00:00",
             "version": "1.0",
-            "quick_profile": {"name": "Luke"},
-            "identity": {"name": "Luke", "pronouns": "he/him"},
+            "quick_profile": {"name": "Alex"},
+            "identity": {"name": "Alex", "pronouns": "he/him"},
             "preferences": {"style": "balanced", "check_distress": True, "brief_responses": False},
             "categories": {
                 "identity": [
-                    {"relation": "name", "value": "Luke", "category": "identity",
+                    {"relation": "name", "value": "Alex", "category": "identity",
                      "confidence": 0.9, "source_excerpt": "", "timestamp": "2025-01-01T00:00:00",
                      "supersedes": None},
                 ],

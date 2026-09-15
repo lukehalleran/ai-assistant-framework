@@ -77,7 +77,7 @@ def test_personal_anchors_school_employer_org(temp_profile):
     """Test that get_user_anchors returns school, employer, org in order."""
     make_profile, profile_path = temp_profile
     make_profile(
-        school="Georgia Tech",
+        school="Vermont Wrenfield",
         employer="Acme Corporation",
         org="Local Tech Meetup"
     )
@@ -86,7 +86,7 @@ def test_personal_anchors_school_employer_org(temp_profile):
     anchors = resolver.get_anchors()
 
     assert anchors == [
-        "Georgia Tech",
+        "Vermont Wrenfield",
         "Acme Corporation",
         "Local Tech Meetup",
     ]
@@ -123,12 +123,12 @@ def test_personal_anchors_junk_employer_excluded(temp_profile):
 def test_personal_anchors_no_employment(temp_profile):
     """Test that school-only profile returns only school."""
     make_profile, profile_path = temp_profile
-    make_profile(school="Georgia Tech")
+    make_profile(school="Vermont Wrenfield")
 
     resolver = InstitutionResolver(str(profile_path))
     anchors = resolver.get_anchors()
 
-    assert anchors == ["Georgia Tech"]
+    assert anchors == ["Vermont Wrenfield"]
 
 
 def test_personal_anchors_empty_profile(temp_profile):
@@ -147,13 +147,13 @@ def test_private_sphere_guard_with_anchors():
     # Single anchor
     assert terms_are_private_sphere_generic(
         ["Acme standup meeting time"],
-        ["Georgia Tech"]
+        ["Vermont Wrenfield"]
     ) is False
 
     # Multiple anchors — match with second
     assert terms_are_private_sphere_generic(
         ["Acme standup meeting time"],
-        ["Georgia Tech", "Acme"]
+        ["Vermont Wrenfield", "Acme"]
     ) is True
 
     # No anchors
@@ -166,10 +166,10 @@ def test_private_sphere_guard_with_anchors():
 def test_institution_value_regex():
     """Test that _INSTITUTION_VALUE_RE correctly validates institution shapes."""
     # Valid forms
-    assert _INSTITUTION_VALUE_RE.match("Georgia Tech")
-    assert _INSTITUTION_VALUE_RE.match("University of Chicago")
-    assert _INSTITUTION_VALUE_RE.match("MIT")
-    assert _INSTITUTION_VALUE_RE.match("Johns Hopkins")
+    assert _INSTITUTION_VALUE_RE.match("Vermont Wrenfield")
+    assert _INSTITUTION_VALUE_RE.match("University of Dunmere")
+    assert _INSTITUTION_VALUE_RE.match("XQT")
+    assert _INSTITUTION_VALUE_RE.match("Brightwater Kestrel")
     assert _INSTITUTION_VALUE_RE.match("Acme Corporation")
     assert _INSTITUTION_VALUE_RE.match("Local Tech Meetup")
 

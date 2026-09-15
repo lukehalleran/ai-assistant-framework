@@ -3,7 +3,7 @@
 1. Intent: bare \bissue\b classified "disclosure timing … is often a huge
    issue" (health-research) as technical_help@0.75 — everyday-English sense,
    same class as "commit to" (08-27). Removed; tracker-sense forms kept.
-2. [DAEMON DOCUMENTATION] origin gate: 54 OMSA course-transcript titles (206
+2. [DAEMON DOCUMENTATION] origin gate: 54 MXS course-transcript titles (206
    chunks, ingested without type='user_upload') rendered as Daemon
    self-knowledge; only repo-docs/-origin chunks may render there now.
 3. Accuracy-clause dedup: LIGHT SUPPORT + GROUNDING PRESENCE both carried
@@ -70,13 +70,13 @@ class TestSelfDocsOriginGate:
              "metadata": {"title": "ARCHITECTURE_GUIDE",
                           "file_path": f"{gk._SELF_DOCS_DIR}/ARCHITECTURE_GUIDE.md"}},
             {"content": ">> In some previous lessons we've seen survival models",
-             "metadata": {"title": "OMSA_ISyE6501_M16L7",
-                          "file_path": "/home/lukeh/Downloads/OMSA_ISyE6501_M16L7.txt"}},
+             "metadata": {"title": "MXS_Ktr5520_M16L7",
+                          "file_path": "/home/alexh/Downloads/MXS_Ktr5520_M16L7.txt"}},
             {"content": "legacy self-doc chunk with no path",
              "metadata": {"title": "QUICK_REFERENCE"}},
             {"content": "an upload with the proper tag",
              "metadata": {"title": "upload:syllabus.docx", "type": "user_upload",
-                          "file_path": "/home/lukeh/Downloads/syllabus.docx"}},
+                          "file_path": "/home/alexh/Downloads/syllabus.docx"}},
         ])
         g = ContextGatherer.__new__(ContextGatherer)
         # reference_docs_manager is a lazily-created property backed by
@@ -88,7 +88,7 @@ class TestSelfDocsOriginGate:
         titles = [d["metadata"]["title"] for d in docs]
         assert "ARCHITECTURE_GUIDE" in titles
         assert "QUICK_REFERENCE" in titles          # no-path legacy kept (fail-open)
-        assert "OMSA_ISyE6501_M16L7" not in titles  # foreign-origin dropped
+        assert "MXS_Ktr5520_M16L7" not in titles  # foreign-origin dropped
         assert "upload:syllabus.docx" not in titles # user_upload filter still works
 
     def test_self_docs_dir_points_at_repo_docs(self):

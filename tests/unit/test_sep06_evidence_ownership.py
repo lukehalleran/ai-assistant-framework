@@ -112,7 +112,7 @@ def test_label_evidence_is_idempotent_across_sweep_and_handler_passes():
 
     items = [
         EvidenceItem(doc_id="c1", collection="conversations", speaker="", date="2026-08-10",
-                     text="User: Hi Morgan,\nThanks for the note.\nBest,\nLuke\n"
+                     text="User: Hi Morgan,\nThanks for the note.\nBest,\nAlex\n"
                           "Assistant: Sure, sounds good."),
         EvidenceItem(doc_id="c2", collection="conversations", speaker="", date="2026-08-11",
                      text="User: I slept badly.\nAssistant: That sounds rough."),

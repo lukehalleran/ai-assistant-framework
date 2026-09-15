@@ -32,7 +32,7 @@ Features:
 - Rare-proper-noun floor [NEW 2026-08-26]: a word-boundary hit on a name-shaped query
   token (utils.query_checker.extract_rare_proper_nouns) floors the keyword score at
   0.75 — whole-query word-set scoring weighed "Morgan" the same as "not", so the
-  "Advisor: Morgan Reeves" note lost to date-titled daily notes on generic overlap
+  "Advisor: Morgan Ashdown" note lost to date-titled daily notes on generic overlap
 - Image loading with resolution: same folder → parent → attachments → vault root → global search
 """
 
@@ -44,6 +44,7 @@ import base64
 from pathlib import Path
 
 from utils.text_chunking import chunk_by_headers
+from utils.retrieval_outcome import OutcomeList, outcome_status
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -685,6 +686,8 @@ class ObsidianManager:
 
             # 1. KEYWORD SEARCH - match on title, tags, content
             keyword_results = self._keyword_search(query, keyword_limit * 3)  # Get extra for filtering
+            # Read status BEFORE any slice: slicing a list subclass drops it.
+            kw_status, kw_reason = outcome_status(keyword_results)
 
             # 2. SEMANTIC SEARCH - vector similarity
             semantic_results = self.chroma_store.query_collection(
@@ -774,11 +777,15 @@ class ObsidianManager:
                     else:
                         note['image_data'] = []
 
-            return final_results
+            # Keyword leg failed/unavailable: keep the semantic-derived items
+            # (a partial read) but surface the non-success status.
+            if kw_status in ("failed", "unavailable"):
+                return OutcomeList(final_results, status=kw_status, reason=f"keyword:{kw_reason}")
+            return OutcomeList(final_results)
 
         except Exception as e:
             logger.warning(f"[Obsidian] Failed to retrieve notes: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     def _keyword_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -796,7 +803,7 @@ class ObsidianManager:
         try:
             collection = self.chroma_store._get_collection('obsidian_notes')
             if not collection:
-                return []
+                return OutcomeList.unavailable("collection_unavailable")
 
             # Get all documents for keyword search
             all_docs = collection.get(include=['documents', 'metadatas'])
@@ -810,7 +817,7 @@ class ObsidianManager:
 
             # Rare-proper-noun floor (2026-08-26): the word-set scoring below
             # weighs every query word equally, so "Morgan" counted the same as
-            # "not" and the "Advisor: Morgan Reeves" note lost to daily
+            # "not" and the "Advisor: Morgan Ashdown" note lost to daily
             # notes on generic overlap. A word-boundary hit on a name-shaped
             # query token floors the score at 0.75 — above generic content
             # overlap, below exact-title matches.
@@ -855,7 +862,7 @@ class ObsidianManager:
                 # All query words present in title
                 elif query_words and query_words <= title_words:
                     score = 0.9
-                # All query words present in title + file path (e.g., "ISYE 6501" in path + "Week 2" in title)
+                # All query words present in title + file path (e.g., "KTR 5520" in path + "Week 2" in title)
                 elif query_words and query_words <= title_path_words:
                     score = 0.88
                 # Exact phrase match in section
@@ -920,11 +927,11 @@ class ObsidianManager:
 
             # Sort by score descending
             scored.sort(key=lambda x: x['relevance_score'], reverse=True)
-            return scored[:limit]
+            return OutcomeList(scored[:limit])
 
         except Exception as e:
             logger.warning(f"[Obsidian] Keyword search failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     def get_vault_stats(self) -> Dict[str, Any]:
         """

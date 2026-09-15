@@ -25,7 +25,7 @@ class TestLooksLikeDaemon:
         # THE regression shape: pyenv python, bare relative "main.py" —
         # no repo name anywhere in argv.
         assert _looks_like_daemon(
-            ["/home/lukeh/.pyenv/versions/3.11.8/bin/python", "main.py"]
+            ["/home/alexh/.pyenv/versions/3.11.8/bin/python", "main.py"]
         ) is True
 
     def test_frozen_executable(self):
@@ -99,6 +99,9 @@ class TestScriptsDelegate:
             "scripts/purge_adaptive_exemplars.py",
             "scripts/purge_profile_facts.py",
             "scripts/repair_thinking_leaks.py",
+            "scripts/cleanup_stale_illness.py",
+            "scripts/graph_relation_normalize.py",
+            "scripts/reclassify_proposals.py",
         ]
         for s in scripts:
             src = Path(s).read_text()

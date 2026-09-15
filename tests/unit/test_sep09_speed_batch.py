@@ -18,6 +18,14 @@ from tests.unit.test_handle_submit import (
 
 ANSWER = "The sample record says the scheduled event starts tomorrow at three in the afternoon. Please check the calendar entry for its details."
 REVISED = "The sample record says the scheduled event starts tomorrow at four in the afternoon. Please check the calendar entry for its details."
+# A05b-1: integrator disabled -> build_integrated_fallback's standalone reply
+# (the claim "sample time" does not locate uniquely in ANSWER), delivered
+# through the revised path instead of the retired draft-plus-suffix shape.
+FALLBACK_TEXT = (
+    "Before answering, I found something that needs correcting: The sample "
+    "time is four in the afternoon. Let me know if you'd like me to go ahead "
+    "and answer."
+)
 
 
 @pytest.fixture
@@ -122,10 +130,14 @@ async def test_correct_mode_waits_and_keeps_display_storage_equal(turn_setup, mo
         turn_setup.release.set()
         await asyncio.wait_for(task, 3)
     content = next(e.data["content"] for e in events if e.event == "complete")
-    assert content == (REVISED if integrate else ANSWER + "\n\n> ⚠️ Correction: The sample time is four in the afternoon.")
+    assert content == (REVISED if integrate else FALLBACK_TEXT)
     assert turn_setup.storage.call_args.args[2] == content
     assert state.session.debug_records[0]["response"] == content
-    assert json.loads(turn_setup.path.read_text())["grounding_corrected"] is True
+    row = json.loads(turn_setup.path.read_text())
+    assert row["grounding_corrected"] is True
+    if not integrate:
+        assert row["grounding_status"] == "fallback"
+        assert row["grounding_fallback"] == "standalone:claim_not_located"
 
 
 @pytest.mark.parametrize("outcome", ["timed_out", "failed", "cancelled"])
@@ -189,7 +201,7 @@ async def test_real_verifier_outcomes_reach_receipt_and_debug(
             return "not a verdict"
         return json.dumps({
             "false_claim_present": outcome == "demoted",
-            "claim": "sample time", "confidence": 0.99,
+            "claim": "sample time", "why_false": "", "confidence": 0.99,
             "correction": ANSWER if outcome == "demoted" else "",
         })
 

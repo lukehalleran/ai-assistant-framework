@@ -1164,7 +1164,7 @@ PROPOSE_ACTION_TOOL_DEFINITION = {
                 },
                 "recipient": {
                     "type": "string",
-                    "description": "Who/where to send (chat ID, webhook, email address or contact name, repo, etc.). For email, a contact name (e.g. 'Meagan') will be resolved via Google Contacts."
+                    "description": "Who/where to send (chat ID, webhook, email address or contact name, repo, etc.). For email, a contact name (e.g. 'Maren') will be resolved via Google Contacts."
                 },
                 "subject": {
                     "type": "string",

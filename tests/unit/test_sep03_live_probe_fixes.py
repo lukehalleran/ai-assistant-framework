@@ -92,7 +92,7 @@ class TestFamilyRelationEventObjects:
         ("has_brother", "Sam"),
         ("has_doctor", "no patient portal"),          # care-team status objects stay (2026-08-05)
         ("has_therapist", "doesn't respond to messages"),
-        ("has_partner", "Casey"),
+        ("has_partner", "Tamsin"),
     ])
     def test_names_and_care_team_status_survive(self, rel, obj):
         assert _is_junk_object(obj, rel) is False
@@ -182,10 +182,10 @@ class TestPlannerEmbellishmentGuard:
 # ── 8. negative mood-section notes need an emotional cue ──────────────────
 class TestMoodSectionNotes:
     NEG = {"title": "8 12 26 Daily Note", "metadata": {"section": "Emotional State"},
-           "content": "Luke feels like shit today, depression and severe sleep deprivation, anxiety about the mania fear.",
+           "content": "Avery feels like shit today, depression and severe sleep deprivation, anxiety about the mania fear.",
            "relevance_score": 0.74}
     POS = {"title": "8 13 26 Daily Note", "metadata": {"section": "Emotional State"},
-           "content": "Luke felt great today, calm and energized after the gym and a good night of sleep.",
+           "content": "Avery felt great today, calm and energized after the gym and a good night of sleep.",
            "relevance_score": 0.7}
     PET = {"title": "4 25 26 Daily Note", "metadata": {"section": "Main Quest"},
            "content": "Biscuit chased a moth across the porch and then slept in the sun for an hour.",

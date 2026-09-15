@@ -360,22 +360,26 @@ class MemoryCoordinator:
         user's own typed text for an attachment turn — forwarded verbatim.
 
         Returns:
-            str: Database ID (UUID) of the stored memory, or None if storage failed
+            str: Database ID (UUID) of the stored memory. None only for a
+                 deliberate skip; raises StoreWriteError on a failed write
+                 [F10a] — context/counter still sync back (see below).
         """
         # Sync state before delegation
         self._storage.current_topic = self.current_topic
         self._storage.conversation_context = self.conversation_context
 
-        memory_id = await self._storage.store_interaction(
-            query, response, tags,
-            session_id=session_id,
-            provenance=provenance,
-            user_text=user_text,
-        )
-
-        # Sync state back from storage
-        self.conversation_context = self._storage.conversation_context
-        self.interactions_since_consolidation = self._storage.interactions_since_consolidation
+        try:
+            memory_id = await self._storage.store_interaction(
+                query, response, tags,
+                session_id=session_id,
+                provenance=provenance,
+                user_text=user_text,
+            )
+        finally:
+            # Sync back even on a raise [F10a], or a failed turn drops from
+            # in-session context when the next turn's sync-in overwrites it.
+            self.conversation_context = self._storage.conversation_context
+            self.interactions_since_consolidation = self._storage.interactions_since_consolidation
 
         # --- Lightweight per-turn thread resolution (pure regex, ~1ms) ---
         if self.thread_store and query:
@@ -588,16 +592,23 @@ class MemoryCoordinator:
         Delegates to ThreadStore component.
 
         Returns:
-            List of thread dicts with topic, summary, thread_type, urgency, deadline_date
+            List of thread dicts with topic, summary, thread_type, urgency,
+            deadline_date; [] when there is no thread store (deliberate skip).
+
+        Raises:
+            RetrievalError: if the underlying read is attempted and fails.
         """
         if not self.thread_store:
             return []
+        from utils.retrieval_outcome import RetrievalError
         try:
             threads = self.thread_store.get_top_threads(max_results=max_results)
             return [t.to_dict() for t in threads]
+        except RetrievalError:
+            raise
         except Exception as e:
             logger.debug(f"[MemoryCoordinator] get_unresolved_threads failed: {e}")
-            return []
+            raise RetrievalError(source="unresolved_threads", reason=type(e).__name__) from e
 
     # ---------------------------
     # Delegation methods for sub-components

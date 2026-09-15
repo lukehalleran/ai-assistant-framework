@@ -132,7 +132,7 @@ class TestReflectionMetadata:
         assert meta["project_area"] == "daemon"
 
     def test_detects_project_area_academic(self):
-        text = "User's homework for the OMSA course at school was discussed."
+        text = "User's homework for the MXS course at school was discussed."
         meta = extract_reflection_metadata(text)
         assert meta["project_area"] == "academic"
 

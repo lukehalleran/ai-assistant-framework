@@ -48,6 +48,9 @@ export interface DebugRecord {
   task_timings?: Record<string, number>
   gather_elapsed?: number
   gate_reason?: string
+  // F13c-2a: a failed background/inline memory save (F13b/F13c-1); surfaced
+  // in the UI only as a fixed status-bar notice, never this raw label.
+  storage_failed?: string
   [key: string]: unknown
 }
 

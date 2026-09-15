@@ -320,8 +320,19 @@ export default function DebugPage() {
                       <Button
                         size="xs"
                         variant="outline"
-                        component="a"
-                        href={api.promptExportUrl(absIndex)}
+                        onClick={() => {
+                          // F01/G06-T02 (A02): a native <a href> to /api/*
+                          // cannot carry the launch-token header, so this
+                          // goes through an authorized fetch -> Blob ->
+                          // object URL -> temporary anchor click instead.
+                          api.downloadPromptExport(absIndex).catch((err) =>
+                            notifications.show({
+                              color: 'red',
+                              title: 'Download failed',
+                              message: err instanceof Error ? err.message : String(err),
+                            }),
+                          )
+                        }}
                       >
                         📥 Download full prompt as TXT
                       </Button>

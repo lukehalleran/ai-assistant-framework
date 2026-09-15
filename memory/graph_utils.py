@@ -17,7 +17,7 @@ mood/activity/illness states stop surfacing without any deletion.
 
 Stance filter [2026-08-23]: edges whose metadata carries an EXPLICIT
 "appraisal" or "inferred" stance (memory/stance_classifier.effective_stance)
-never route expansion or score — the user's value judgment (casey--is-->evil)
+never route expansion or score — the user's value judgment (tamsin--is-->evil)
 is their take, not a topical bridge; it had leaked "evil" into unrelated
 queries' expansion terms. Legacy untagged edges ("unknown") are unchanged.
 """
@@ -271,7 +271,7 @@ def rank_expansion_candidates(
 
     def _live(edge) -> bool:
         # Stance filter (2026-08-23): EXPLICIT appraisal/inferred edges never
-        # route expansion or score — the user's value judgment (casey--is-->evil)
+        # route expansion or score — the user's value judgment (tamsin--is-->evil)
         # is their take, not a topical bridge, and it leaked "evil" into
         # unrelated queries' expansion terms. Legacy edges without a stance
         # tag ("unknown") are unchanged — suppression acts only on explicit

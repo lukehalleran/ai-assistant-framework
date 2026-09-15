@@ -34,6 +34,7 @@ except Exception:
     faiss = None
 
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import OutcomeList
 logger = get_logger("knowledge.semantic_search")
 
 # ------------------------
@@ -320,17 +321,23 @@ class SemanticSearchIndex:
     def search(self, query: str, k: int = 8) -> List[Dict[str, Any]]:
         """
         Top-k semantic search.
-        - Returns [] if not loaded / resources missing
+        - Returns an OutcomeList: no_results (empty query, or a healthy
+          search with no/below-threshold hits); unavailable (index not
+          loaded, or a total row-read failure with no parquet handle);
+          failed (FAISS search/result-assembly raised, or a total
+          row-read failure WITH a parquet handle); succeeded (>=1 row,
+          including a PARTIAL row-read failure — no separate state for
+          that) (CGR-007/CGR-008).
         - Keeps result shape compatible with previous implementation
         """
         if not query:
-            return []
+            return OutcomeList()
 
         if not self.loaded:
             self.load()
         if not self.loaded:
-            # Still not ready (e.g., FAISS missing) -> no results
-            return []
+            # Still not ready (e.g., FAISS missing) -> distinguishable from no_results
+            return OutcomeList.unavailable("index_not_loaded")
 
         # 1) Encode query once (normalized float32)
         q = self._encode_query(query)
@@ -344,7 +351,7 @@ class SemanticSearchIndex:
             D, I = self.index.search(q, int(max(1, k)))
         except Exception as e:
             logger.error("[Semantic] FAISS search error: %s", e, exc_info=True)
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
         # 3) Collect valid FAISS hits
         hits: list[tuple[int, float]] = []
@@ -355,10 +362,17 @@ class SemanticSearchIndex:
                 hits.append((int(idx), self._to_similarity(float(score))))
 
         if not hits:
-            return []
+            return OutcomeList()
 
         # 4) Batch-read metadata + text for matched rows only (on-demand from parquet)
         row_data_map = self._read_rows([i for i, _ in hits])
+
+        # A total row-read failure (hits exist, nothing readable) must not
+        # read as no_results; a partial read stays succeeded (F4 review).
+        if hits and not row_data_map:
+            if self._pq_file:
+                return OutcomeList.failed("row_read_failed")
+            return OutcomeList.unavailable("metadata_unavailable")
 
         # 5) Assemble result dicts
         rows: List[Dict[str, Any]] = []
@@ -372,10 +386,10 @@ class SemanticSearchIndex:
                     rows.append(rec)
 
             rows.sort(key=lambda r: r["similarity"], reverse=True)
-            return rows[:k]
+            return OutcomeList(rows[:k])
         except Exception as e:
             logger.error("[Semantic] Result assembly error: %s", e, exc_info=True)
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
 
 # ------------------------

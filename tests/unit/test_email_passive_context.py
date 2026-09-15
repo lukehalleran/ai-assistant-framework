@@ -121,7 +121,7 @@ class TestCoverageAndContactIdentity:
     """2026-09-01 live-smoke findings: (F1) 'no reply from Morgan' was scoped
     to Gmail while the advisor's mail lived in unconnected Outlook — negative
     answers must name what was searched; (F2) the name-string anchor matched
-    a Hinge 'Morgan & Luke' marketing mail — sender IDENTITY outranks body
+    a Hinge 'Morgan & Alex' marketing mail — sender IDENTITY outranks body
     mentions."""
 
     def test_provider_coverage_shapes(self, monkeypatch):
@@ -195,21 +195,21 @@ class TestCoverageAndContactIdentity:
     def test_resolved_contact_sender_outranks_marketing_mention(self, monkeypatch):
         advisor = EmailMessage(
             provider="gmail", message_id="a1",
-            sender="Morgan Reeves <Morgan@gatech.edu>",
+            sender="Morgan Ashdown <Morgan@wrenfield.example>",
             subject="Fall registration", snippet="You are all set for fall.",
             date="2026-08-28T10:00:00")
         hinge = EmailMessage(
             provider="gmail", message_id="h1",
             sender="Hinge Team <hello@hinge.co>",
-            subject="Morgan & Luke, we recommend you to each other",
+            subject="Morgan & Alex, we recommend you to each other",
             snippet="View your most compatible. registration reply advisor",
             date="2026-08-09T10:00:00")
         out = self._run_gatherer(
             monkeypatch, [hinge, advisor],
-            [{"name": "Morgan Reeves", "email": "Morgan@gatech.edu"}],
+            [{"name": "Morgan Ashdown", "email": "Morgan@wrenfield.example"}],
             "did Morgan ever reply about registration?")
         assert out, "advisor email must be kept"
-        assert out[0]["sender"].startswith("Morgan Reeves")
+        assert out[0]["sender"].startswith("Morgan Ashdown")
 
     def test_sender_name_match_kept_without_semantic_pass(self, monkeypatch):
         # A genuine from-Morgan mail whose subject embeds poorly still surfaces.
@@ -227,7 +227,7 @@ class TestCoverageAndContactIdentity:
         msg = EmailMessage(
             provider="gmail", message_id="x1",
             sender="Hinge Team <hello@hinge.co>",
-            subject="Morgan & Luke, we recommend you to each other",
+            subject="Morgan & Alex, we recommend you to each other",
             snippet="View your most compatible.",
             date="2026-08-09T10:00:00")
         out = self._run_gatherer(

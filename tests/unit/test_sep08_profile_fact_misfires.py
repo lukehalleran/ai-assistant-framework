@@ -29,7 +29,7 @@ T_MELATONIN = ("Is okay, well try again in a min. Yeah today is nuts I don't rem
                "is early for that still idk. I want to get up as early as possible and reasonable "
                "tomorrow because if I can get in a workout before therapy appointment then I can "
                "justify it, but otherwise I probably need to focus on the assignment")
-T_CALENDAR = ("add the mgt office hours sessions to my google\n  ▎ calander, fridays 8 to 9 pm "
+T_CALENDAR = ("add the abc office hours sessions to my google\n  ▎ calander, fridays 8 to 9 pm "
               "central starting sept\n  ▎ 11, weekly through the end of the semester, zoom\n"
               "  ▎ link https://example-univ.zoom.us/j/00000000001")
 T_TOOK = "Took melatonin at 9 and was out by 10. Ready to take the day on now."
@@ -104,7 +104,7 @@ class TestFitnessCue:
         assert ev is not None and ev.claim_kind == "plan"
 
     def test_typo_calendar_request_still_supports_the_intent_relation(self):
-        ev = _find("wants_to", "add MGT office hours sessions to Google Calendar", T_CALENDAR)
+        ev = _find("wants_to", "add ABC office hours sessions to Google Calendar", T_CALENDAR)
         assert ev is not None
 
 

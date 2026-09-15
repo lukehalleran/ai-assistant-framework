@@ -50,14 +50,14 @@ they are not universal claims about every installation.
 ## Current-session integrity addendum (20:17 session)
 
 This addendum traces four failures observed in the later Fable/Claude relay
-session. It deliberately omits the owner's GTID, phone number, and other
+session. It deliberately omits the owner's student ID, phone number, and other
 unnecessary personal values.
 
 ### T01 — Full-prompt export crosses the privacy boundary without redaction
 
 **Observed claim**
 
-> The exported debug prompt contains the owner's GTID and phone number in clear
+> The exported debug prompt contains the owner's student ID and phone number in clear
 > text because recent conversation turns are copied into the prompt.
 
 **Verdict: `DIRECT-SOURCE`, `DIRECT-RUNTIME` — supported.**
@@ -120,14 +120,14 @@ and weak audit persistence.
 
 | Item | Verdict | Trace |
 |---|---|---|
-| `lived_in=Atlanta` | Fact supported; displayed evidence misleading | The same long user turn ends by saying the user moved to Atlanta. The stored excerpt shows unrelated opening lyrics because the pipeline truncates the selected whole message from character zero. |
+| `lived_in=Marrowby` | Fact supported; displayed evidence misleading | The same long user turn ends by saying the user moved to Marrowby. The stored excerpt shows unrelated opening lyrics because the pipeline truncates the selected whole message from character zero. |
 | `relationship=Sarah` | Partially supported; relation is broader than the exact wording | The same turn says the move was “with Sarah” and that “she left.” The displayed lyric excerpt still does not show that support. |
 | `laundry_done` under career | Misclassification confirmed | [`data/category_cache.json`](../data/category_cache.json) persistently maps `laundry_done`, `laundry_status`, and `laundry_time_left` to `career`; [`data/user_profile.json`](../data/user_profile.json#L4780) follows that cached mapping. |
 | Mochi/Waffles as dogs | Unsupported relation confirmed; stale contamination | The source turn only says the user played with them. The shutdown LLM invented `has_dog`; older graph metadata identifies them as cats. Current source and graph guards were added later, but the stale facts/edges remain injectable. |
 | WHOOP | Quoted-model contamination, not established user testimony | Its source is an earlier user message quoting another model's profile comparison (“you use WHOOP”). The extractor treated text contained in a user turn as an assertion by the user. No source excerpt was retained with the fact. A prior junk-candidate scan flagged both the boolean and canonical versions, but the canonical fact remains in live Chroma and its graph edge still surfaces. |
 | D&D and running | Synthetic test contamination confirmed | Both facts have Chroma source `test_calibration`. [`scripts/generate_test_facts.py`](../scripts/generate_test_facts.py#L3) intentionally creates synthetic personal facts and, at lines 137-147, imports the active `CHROMA_PATH` and graph paths. The live facts collection currently contains 48 records carrying that source. |
 
-The Atlanta/Sarah evidence mismatch follows directly from
+The Marrowby/Sarah evidence mismatch follows directly from
 [`memory/llm_fact_extractor.py`](../memory/llm_fact_extractor.py#L606): it picks a
 whole conversation pair by keyword overlap, combines user and Daemon text, then
 stores `best_msg[:200]`. [`memory/user_profile.py`](../memory/user_profile.py#L245)

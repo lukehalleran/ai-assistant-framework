@@ -184,7 +184,7 @@ When I emailed her, I received an auto-reply. I've also contacted my TA.
 I can provide medical records or a letter from my clinician.
 
 Thank you,
-Luke
+Alex
 
 ---
 

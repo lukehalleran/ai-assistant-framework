@@ -52,7 +52,7 @@ _FAMILY_RELATIONS: Dict[str, set] = {
 
 # --- Claim-shape patterns ----------------------------------------------
 # Deliberately the NARROW "big" claim shapes that a current family fact
-# would contradict — a specific course drop ("dropped CSE 6200") does not
+# would contradict — a specific course drop ("dropped QRS 7420") does not
 # match the enrollment pattern (no "out"/semester-shaped tail), so it is
 # never flagged; it is exactly what a current `dropped=<course>` fact
 # supports.

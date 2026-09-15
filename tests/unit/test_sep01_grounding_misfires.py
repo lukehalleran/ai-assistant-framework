@@ -201,6 +201,7 @@ class TestVerifierNoiseDemotions:
         raw = json.dumps({
             "false_claim_present": True,
             "claim": "the appointment time",
+            "why_false": "",
             "correction": "The appointment is scheduled for 1 PM on "
                           "September 9, 2026, as per the user's request.",
             "confidence": 0.9,
@@ -214,6 +215,7 @@ class TestVerifierNoiseDemotions:
         raw = json.dumps({
             "false_claim_present": True,
             "claim": "x",
+            "why_false": "",
             "correction": "The event is on September 9 at 1 PM.",
             "confidence": 0.9,
         })
@@ -224,13 +226,14 @@ class TestVerifierNoiseDemotions:
         raw = json.dumps({
             "false_claim_present": True,
             "claim": "the misdiagnosis era",
+            "why_false": "",
             "correction": "There is no widely accepted historical period "
                           "referred to as the 'misdiagnosis era' in medical "
                           "literature.",
             "confidence": 0.9,
         })
         response = ("Eight years means she's seen the whole arc — the "
-                    "misdiagnosis era, Casey, all of it.")
+                    "misdiagnosis era, Tamsin, all of it.")
         verdict = self._verify(raw, response)
         # Demoted at either layer (parse-time hedge classification or the
         # terminology-policing rule) — what matters is no correction ships.
@@ -242,6 +245,7 @@ class TestVerifierNoiseDemotions:
         raw = json.dumps({
             "false_claim_present": True,
             "claim": "due date is September 13",
+            "why_false": "",
             "correction": "The correct due date is September 20.",
             "confidence": 0.9,
         })
@@ -254,6 +258,7 @@ class TestVerifierNoiseDemotions:
         raw = json.dumps({
             "false_claim_present": True,
             "claim": "refrigerator mother theory lands closer to truth",
+            "why_false": "",
             "correction": "The refrigerator-mother theory was discredited "
                           "decades ago; autism is neurodevelopmental.",
             "confidence": 0.9,
@@ -276,9 +281,9 @@ class TestDateCorroborationDemotions:
                   "the 13th. Are you saying it's just a quiz on lectures "
                   "or is there deliverable")
     LIVE_SOURCE = (
-        "[2] upload:tmptffehsqj.pdf MGT 6203 COURSE SCHEDULE\n"
-        "| 2 | Aug 31-Sep 6 | Linear Models (1) | ISLR 3 MLBA 6 |  |\n"
-        "| 3 | Sep 7-13 | Linear Models (2): Beyond Linearity | ISLR 7 | "
+        "[2] upload:tmptffehsqj.pdf ABC 1234 COURSE SCHEDULE\n"
+        "| 2 | Aug 31-Sep 6 | Fitted Curves (1) | ISLR 3 MLBA 6 |  |\n"
+        "| 3 | Sep 7-13 | Fitted Curves (2): Past the Straight Line | ISLR 7 | "
         "HW 1 due on Sep 13 |\n"
     )
     LIVE_RESPONSE = ("It's a real deliverable, not just a quiz. HW 1 is due "
@@ -295,7 +300,7 @@ class TestDateCorroborationDemotions:
             "false_claim_present": True,
             "claim": self.LIVE_CLAIM,
             "why_false": "The syllabus indicates HW 1 is due at the end of "
-                         "the Linear Models (1) week.",
+                         "the Fitted Curves (1) week.",
             "correction": "HW 1 is due Sunday, Sep 6 at 11:59 PM ET.",
             "confidence": 1.0,
         })
@@ -317,7 +322,7 @@ class TestDateCorroborationDemotions:
             response=self.LIVE_RESPONSE, source=self.LIVE_SOURCE) is None
 
     def test_iso_source_date_demotes(self):
-        source = "Calendar: MGT 6203 HW 1 Due — all-day 2026-09-13\n"
+        source = "Calendar: ABC 1234 HW 1 Due — all-day 2026-09-13\n"
         assert self._verify(
             self._live_verdict_raw(), query="is it just a quiz?",
             response=self.LIVE_RESPONSE, source=source) is None

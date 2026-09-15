@@ -40,6 +40,7 @@ import time
 from typing import List, Optional
 
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import OutcomeList, RetrievalError, StoreWriteError
 from memory.thread_models import OpenThread, ThreadStatus
 
 logger = get_logger("thread_store")
@@ -232,7 +233,11 @@ class ThreadStore:
             thread: OpenThread to store
 
         Returns:
-            Document ID if stored, None if failed
+            Document ID if stored, None if the store is unavailable
+            (deliberate skip).
+
+        Raises:
+            StoreWriteError: if the write is attempted and fails.
         """
         if not self._ensure_collection():
             logger.warning("[ThreadStore] ChromaDB not available, cannot store")
@@ -254,10 +259,18 @@ class ThreadStore:
 
         except Exception as e:
             logger.error(f"[ThreadStore] Failed to store thread: {e}")
-            return None
+            raise StoreWriteError(source="thread_store", reason=type(e).__name__) from e
 
     def list_open_threads(self) -> List[OpenThread]:
-        """Get all threads with OPEN status."""
+        """Get all threads with OPEN status.
+
+        Returns:
+            [] when genuinely empty, or when the store is unavailable
+            (deliberate skip).
+
+        Raises:
+            RetrievalError: if the read is attempted and fails.
+        """
         if not self._ensure_collection():
             return []
 
@@ -274,7 +287,7 @@ class ThreadStore:
             return threads
         except Exception as e:
             logger.error(f"[ThreadStore] list_open_threads failed: {e}")
-            return []
+            raise RetrievalError(source="thread_store", reason=f"list_open:{type(e).__name__}") from e
 
     def get_top_threads(
         self,
@@ -336,14 +349,19 @@ class ThreadStore:
             n_results: Maximum results to return
 
         Returns:
-            List of OpenThread objects, ranked by relevance
+            An OutcomeList of OpenThread objects, ranked by relevance.
+            Callers read `.status` before slicing: "unavailable" (collection
+            missing), "failed" (query raised), or the default
+            succeeded/no_results.
         """
         if not self._ensure_collection():
             return []
 
         try:
             coll = self.chroma_store.collections.get(COLLECTION_NAME)
-            if coll is None or coll.count() == 0:
+            if coll is None:
+                return OutcomeList.unavailable("collection_missing")
+            if coll.count() == 0:
                 return []
 
             results = self.chroma_store.query_collection(
@@ -366,11 +384,62 @@ class ThreadStore:
 
         except Exception as e:
             logger.error(f"[ThreadStore] Query failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
+
+    def _replace_stored_thread(self, thread: OpenThread, old_item: dict) -> bool:
+        """
+        Staged replacement (CM-07): write the new version of `thread` first,
+        and delete `old_item`'s document only after that write is confirmed —
+        so a failed re-store never loses the existing record (the old
+        delete-then-store order lost it once the store's write failed).
+
+        Args:
+            thread: The thread to persist, already mutated by the caller
+                (e.g. mark_resolved(), an urgency bump, mark_stale()).
+            old_item: The list_all() item being replaced. Its "id" is deleted
+                only once the new document is safely stored.
+
+        Returns:
+            True once the new document is stored AND the old one is deleted.
+            False otherwise, leaving the old document as the sole surviving
+            copy — unless the post-write delete itself fails, in which case
+            the new document is rolled back (best-effort) to restore that
+            same single-old-copy state; if the rollback also fails, both
+            documents may remain (logged, never silently dropped).
+        """
+        old_doc_id = old_item.get("id")
+        coll = self.chroma_store.collections.get(COLLECTION_NAME)
+        if coll is None or not old_doc_id:
+            logger.warning("[ThreadStore] Cannot replace thread: missing collection or document id")
+            return False
+
+        try:
+            new_id = self.store_thread(thread)
+        except StoreWriteError as e:
+            logger.error(f"[ThreadStore] Staged replacement write failed: {type(e).__name__}")
+            return False
+        if new_id is None:
+            return False
+
+        try:
+            coll.delete(ids=[old_doc_id])
+        except Exception as e:
+            logger.error(f"[ThreadStore] Staged replacement delete failed: {type(e).__name__}")
+            try:
+                coll.delete(ids=[new_id])
+            except Exception as e2:
+                logger.error(f"[ThreadStore] Staged replacement rollback failed: {type(e2).__name__}")
+            return False
+
+        return True
 
     def resolve_thread(self, thread_id: str, resolution: str = "") -> bool:
         """
         Mark a thread as resolved.
+
+        Staged replacement (CM-07): the resolved version is written before
+        the old document is deleted (see _replace_stored_thread()), so a
+        failed re-store never loses the record.
 
         Args:
             thread_id: ID of the thread to resolve
@@ -389,12 +458,8 @@ class ThreadStore:
                 if meta.get("thread_id") == thread_id:
                     thread = OpenThread.from_metadata(meta)
                     thread.mark_resolved(resolution)
-                    # Delete old and re-store
-                    doc_id = item.get("id")
-                    coll = self.chroma_store.collections.get(COLLECTION_NAME)
-                    if coll and doc_id:
-                        coll.delete(ids=[doc_id])
-                    self.store_thread(thread)
+                    if not self._replace_stored_thread(thread, item):
+                        return False
                     logger.info(f"[ThreadStore] Resolved thread {thread_id}: '{thread.topic}'")
                     return True
 
@@ -460,7 +525,11 @@ class ThreadStore:
 
     def _update_thread(self, thread: OpenThread) -> bool:
         """
-        Update a thread in ChromaDB (delete-and-re-add pattern).
+        Update a thread in ChromaDB (staged replacement, CM-07).
+
+        Writes the updated version before deleting the old document (see
+        _replace_stored_thread()), so a failed re-store never loses the
+        existing record.
 
         Args:
             thread: Thread with updated fields
@@ -476,12 +545,7 @@ class ThreadStore:
             for item in all_items:
                 meta = item.get("metadata") or {}
                 if meta.get("thread_id") == thread.thread_id:
-                    doc_id = item.get("id")
-                    coll = self.chroma_store.collections.get(COLLECTION_NAME)
-                    if coll and doc_id:
-                        coll.delete(ids=[doc_id])
-                    self.store_thread(thread)
-                    return True
+                    return self._replace_stored_thread(thread, item)
             return False
         except Exception as e:
             logger.error(f"[ThreadStore] _update_thread failed: {e}")

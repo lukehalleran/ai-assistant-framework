@@ -12,7 +12,7 @@ Why (2026-09-02 provenance audit):
   - ``user | has_dog | Mochi`` came from "playing with Mochi and Waffles" —
     the relation name asserted a species the turn never stated (older graph
     metadata calls them cats).
-  - ``lived_in=Atlanta`` cited the first 200 characters of a long turn
+  - ``lived_in=Marrowby`` cited the first 200 characters of a long turn
     (song lyrics) instead of the sentence near the end that actually said it.
 
 Doctrine: deliberately conservative.  Missing a marginal fact is safer than
@@ -143,7 +143,7 @@ _PET_OWNERSHIP_SPECIES = {
 
 # Relation families whose name makes a claim the span must corroborate with a
 # verb/noun cue.  Pronoun anchoring is handled separately (a chat fragment
-# like "Moved to Atlanta in June" has an implied "I").
+# like "Moved to Marrowby in June" has an implied "I").
 _RESIDENCE_CUES = (
     r"live|lives|lived|living|reside|resides|residing|moved|moving|move|relocated|relocating|"
     r"based|home|apartment|house|from|staying|stay"
@@ -152,8 +152,8 @@ _LIKES_CUES = (
     r"like|likes|liked|love|loves|loved|prefer|prefers|enjoy|enjoys|enjoyed|into|fan|favorite|"
     r"favourite|obsessed|adore"
 )
-# Enrollment is a claim in the relation NAME (2026-09-03): "I dropped CSE 6040
-# and kept MGT 6203" token-matched a stale enrolled_in="CSE 6040 and MGT 6203"
+# Enrollment is a claim in the relation NAME (2026-09-03): "I dropped ABC 1234
+# and kept QRS 7310" token-matched a stale enrolled_in="ABC 1234 and QRS 7310"
 # object with no enrollment cue at all.
 _ENROLLMENT_CUES = (
     r"enrol|enrolled|enrolling|enrollment|enrolment|register|registered|registering|"
@@ -166,7 +166,7 @@ _OCCUPATION_CUES = (
     r"i'm\s+a|i\s+am\s+a|as\s+an?\b"
 )
 # Care-team relations name a CLINICAL role in the relation itself (2026-09-05:
-# `has_doctor = "Rowan is cautious about drinking …"` — a friend — and
+# `has_doctor = "Ellery is cautious about drinking …"` — a friend — and
 # `doctor_communication = "received email from advisor about project
 # timeline"` — an academic advisor — were both stored on the same afternoon).
 # The span must name a clinician; "advisor"/"friend" are not cues.
@@ -185,7 +185,7 @@ _PROJECT_WORK_CUES = (
     r"committed|repo|repository|feature|features|implement|implemented|implementing"
 )
 # Fitness-schedule relations name the ACTIVITY in the relation itself
-# (2026-09-08: the shutdown LLM extractor turned "add the mgt office hours
+# (2026-09-08: the shutdown LLM extractor turned "add the abc office hours
 # sessions to my google calander, fridays 8 to 9 pm central … weekly through
 # the end of the semester" into gym_schedule="Fridays 8 to 9 PM Central …",
 # joined on the fragment "weekly through the end of the semester" with no
@@ -636,8 +636,8 @@ def iter_user_messages(messages: Iterable[Any]) -> Iterator[tuple[int, str, str]
 
 # Pasted correspondence (2026-09-03).  A user turn that quotes an email —
 # their own outgoing one included — is reported/historical text, not a live
-# claim: "I'm … enrolled in two courses (CSE 6040 and MGT 6203)" inside a
-# pasted Aug-27 email superseded the curated enrolled_in=MGT 6203 fact on
+# claim: "I'm … enrolled in two courses (ABC 1234 and QRS 7310)" inside a
+# pasted Aug-27 email superseded the curated enrolled_in=QRS 7310 fact on
 # Sep 2, days after the drop.  A block runs from a greeting line to a closing
 # line plus the contiguous signature run after it; BOTH ends are required so a
 # bare chat "Hi," never swallows a message.
@@ -904,7 +904,7 @@ def supporting_excerpt(text: str, object_val: str, limit: int = 200) -> str:
 
     Used by the regex extraction path so a stored ``source_excerpt`` shows the
     span that carries the claim rather than the first N characters of a long
-    turn (the lived_in=Atlanta "song lyrics as evidence" defect).
+    turn (the lived_in=Marrowby "song lyrics as evidence" defect).
     """
     text = text or ""
     obj_low = (object_val or "").lower().strip()
@@ -976,7 +976,7 @@ def find_supporting_user_span(
         return None
 
     # Overlap floor (2026-09-05): a multi-token object joined on ONE shared
-    # token is coincidence, not evidence — `has_doctor = "Rowan is cautious
+    # token is coincidence, not evidence — `has_doctor = "Ellery is cautious
     # about drinking due to past accident"` was anchored to a meds sentence
     # via the single word "drinking" after the real (third-party) source
     # sentence was correctly rejected. Two content tokens are required once

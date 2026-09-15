@@ -60,7 +60,7 @@ class TestRecallSignalWordBounding:
         assert _RECALL_SIGNAL_HIT(q) is False
 
 
-# The exact live correction text that shipped on the MGT-6203 turn.
+# The exact live correction text that shipped on the ABC-1234 turn.
 _LIVE_ADVICE_CORRECTION = (
     "Please verify the due date with the official syllabus or course "
     "calendar, as it may differ from what was stated."
@@ -167,7 +167,7 @@ class TestFactPasteGuard:
             self._fact("students", "is",
                        "responsible for making sure that individual assignments "
                        "are submitted in a timely manner before"),
-            self._fact("user", "enrolled_in", "MGT 6203"),
+            self._fact("user", "enrolled_in", "ABC 1234"),
         ]
 
     def test_paste_sized_message_keeps_only_user_facts(self):

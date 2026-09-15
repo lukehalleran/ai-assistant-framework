@@ -193,7 +193,9 @@ class MemoryStorageProtocol(Protocol):
                         cited_ids, prompt_hash, agentic_summary
 
         Returns:
-            str: Database ID (UUID) of the stored memory, or None if storage failed
+            str: Database ID (UUID) of the stored memory. None only for a
+                 deliberate skip; raises StoreWriteError on a failed write
+                 [F10a].
         """
         ...
 
@@ -224,7 +226,8 @@ class MemoryStorageProtocol(Protocol):
         """Store a procedural skill with semantic deduplication.
 
         Returns:
-            str: Document ID if stored, None if duplicate or failed
+            str: Document ID if stored. None only for a deliberate skip
+                (disabled/dedup); raises StoreWriteError on a failed write [F10b].
         """
         ...
 

@@ -18,7 +18,7 @@ def test_force_wizard_launches_wizard():
     mock_orchestrator = Mock()
     mock_orchestrator.user_profile = Mock()
     mock_orchestrator.user_profile.identity = Mock()
-    mock_orchestrator.user_profile.identity.name = "Luke"
+    mock_orchestrator.user_profile.identity.name = "Alex"
     mock_orchestrator.memory_system = Mock()
     mock_orchestrator.memory_system.corpus_manager = Mock()
     mock_orchestrator.memory_system.corpus_manager.corpus = []
@@ -82,7 +82,7 @@ def test_normal_launch_skips_wizard_when_not_first_run():
     mock_orchestrator = Mock()
     mock_orchestrator.user_profile = Mock()
     mock_orchestrator.user_profile.identity = Mock()
-    mock_orchestrator.user_profile.identity.name = "Luke"
+    mock_orchestrator.user_profile.identity.name = "Alex"
     mock_orchestrator.user_profile.is_first_run = Mock(return_value=False)
     mock_orchestrator.memory_system = Mock()
     mock_orchestrator.memory_system.corpus_manager = Mock()
@@ -97,4 +97,4 @@ def test_normal_launch_skips_wizard_when_not_first_run():
     assert is_first_run is False
 
     # Verify identity exists
-    assert mock_orchestrator.user_profile.identity.name == "Luke"
+    assert mock_orchestrator.user_profile.identity.name == "Alex"

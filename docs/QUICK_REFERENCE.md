@@ -1380,7 +1380,7 @@ capture_tone_from_level(tone_level)       # shutdown LLM path joins triples to t
 #   graph_memory.add_relation — appraisal_days/appraisal_tones distinct-ISO-day tracking;
 #     ≥3 distinct non-elevated days → settled=True (elevated/unknown days never count)
 # Backfill: scripts/backfill_stance.py (dry-run default; refuses --apply while Daemon runs;
-#   pre-image backups to data/backups/stance_backfill_<ts>/; hard sentinel: casey|is|evil must
+#   pre-image backups to data/backups/stance_backfill_<ts>/; hard sentinel: tamsin|is|evil must
 #   classify appraisal. Dry-run validated 2026-08-23: 3268 facts / 20 appraisal, 987 edges)
 # Tests: tests/unit/test_stance_classifier.py, test_stance_write_path.py,
 #   test_stance_consumers.py, test_appraisal_settledness.py, test_backfill_stance.py
@@ -1877,6 +1877,9 @@ SKILL_ACTIVATION_USE_STM = True          # Enable STM topic bonus
 # Suppressed intents: EMOTIONAL_SUPPORT, CASUAL_SOCIAL → no skills surfaced
 # Cooldown store: data/skill_cooldown.json (JSON-backed TTL tracking)
 
+# API Trusted Hosts [NEW 2026-09-14]
+API_ALLOWED_HOSTS = []  # config.yaml api.allowed_hosts — exact hostnames/IPs trusted as a Host header beyond loopback (e.g. a Tailscale address); api.host trusted automatically when specific/non-wildcard
+
 # Config Schema Validation [NEW 2026-05-10]
 # config/schema.py — Pydantic v2 validation for config.yaml (~70 Pydantic models; 66 section fields on DaemonConfig)
 # Validates at startup after YAML load, before constant extraction
@@ -1942,12 +1945,15 @@ INSIGHT_DOC_ON_AGREEMENT = True        # Save doc on agree/partial assessment
 
 # Factual-Grounding Floor [NEW 2026-08-28] (YAML: grounding_check: → GROUNDING_* constants)
 GROUNDING_CHECK_ENABLED = True         # Post-generation check, ALL tones (review gate skips CONCERN+)
-GROUNDING_CONFIDENCE_THRESHOLD = 0.85  # Verifier confidence required to append a ⚠️ correction
+GROUNDING_CONFIDENCE_THRESHOLD = 0.85  # Verifier confidence required to flag a claim for correction
 GROUNDING_TIMEOUT_S = 5.0              # Verifier timeout — fail-open (never blocks the shown reply)
 GROUNDING_MIN_RESPONSE_CHARS = 40      # Skip tiny replies
+GROUNDING_FALLBACK_CLAIM_OVERLAP_THRESHOLD = 0.8  # min content-token overlap to locate a reworded claim
+GROUNDING_FALLBACK_MIN_CLAIM_TOKENS = 3           # below this, claims are located by containment only
 # core/grounding_check.py: claim-shape prefilter → gpt-4o-mini verifier (head+tail 2500+2500 query
 # slices so pasted source docs are visible; advice-shaped "please verify" verdicts demoted to
-# no-flag) → visible "> ⚠️ Correction:" appended to display AND storage (gentle wording CONCERN+).
+# no-flag) → log_only (default) records the verdict only; correct mode buffers and delivers either
+# the integrated rewrite or the spliced/standalone fallback, with gentle wording at CONCERN+.
 
 # Autonomous Curation Engine [NEW 2026-08-28] (YAML: curation: → memory/curation/; SPA 🧹 view)
 # Shutdown-phase scan by deployed-predicate curators (error sentinels, junk facts, stream

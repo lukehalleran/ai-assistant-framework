@@ -40,8 +40,13 @@ LIVE_MESSAGE = (
 
 class TestDocumentSourceParsing:
     def _parse(self, extra: str) -> LLMSearchTriggerResponse:
+        # S01: `search_terms` is a required taught field on the strict
+        # trigger contract (BC-64 fixture repair, mirrors A04's `why_false`
+        # repair) — added so this fixture exercises document_source
+        # normalization rather than the (unrelated) required-field rejection.
         resp = LLMSearchTriggerResponse.parse(
-            '{"should_search": false, "needs_document_generation": true, '
+            '{"should_search": false, "search_terms": [], '
+            '"needs_document_generation": true, '
             '"document_topic": "therapy insights", "document_type": "summary"'
             + extra + "}"
         )

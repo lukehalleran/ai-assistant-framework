@@ -44,7 +44,7 @@ def _ctx(intent_dict, tone_level=None):
 _SWEEP_ITEMS = [
     EvidenceItem(doc_id="d1", text="she wasn't abusive", date="2026-08-18",
                  collection="conversations", speaker="user"),
-    EvidenceItem(doc_id="d2", text="casey | is | evil", date="2026-08-18",
+    EvidenceItem(doc_id="d2", text="tamsin | is | evil", date="2026-08-18",
                  collection="facts"),
 ]
 
@@ -137,7 +137,7 @@ class TestInsightModeHandler:
 
     def test_elevated_tone_threads_to_synthesizer(self, stages, monkeypatch):
         monkeypatch.setattr(handlers, "_dispatch_storage", lambda *a, **k: None)
-        ctx = _ctx({"kind": "theme_sweep", "theme": "my pattern with casey",
+        ctx = _ctx({"kind": "theme_sweep", "theme": "my pattern with tamsin",
                     "wants_document": False, "raw_query": "gather it"},
                    tone_level="CONCERN")
         _collect(ctx)
@@ -180,10 +180,10 @@ class TestDocumentGating:
 
     def test_wants_document_saves(self, stages, monkeypatch):
         saved = self._dg_spy(monkeypatch)
-        ctx = _ctx({"kind": "theme_sweep", "theme": "my pattern with casey",
+        ctx = _ctx({"kind": "theme_sweep", "theme": "my pattern with tamsin",
                     "wants_document": True, "raw_query": "write a summary"})
         chunks = _collect(ctx)
-        assert saved["topic"] == "my pattern with casey"
+        assert saved["topic"] == "my pattern with tamsin"
         assert sorted(saved["source_types"]) == ["conversations", "facts"]
         assert "Saved as" in chunks[-1]["content"]
 

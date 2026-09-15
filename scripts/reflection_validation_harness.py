@@ -97,7 +97,7 @@ def _pairable(name: str, nlp) -> bool:
 GOLD_ANCHORS = [
     ("REAL", "dad", "kavarin"),
     ("REAL", "dad", "gym"),
-    ("REAL", "brother", "isye 6501"),
+    ("REAL", "brother", "KTR 5520"),
     ("THIN", "brother", "sister"),
     ("THIN", "kavarin", "dexivar"),
     ("THIN", "gym", "lift"),

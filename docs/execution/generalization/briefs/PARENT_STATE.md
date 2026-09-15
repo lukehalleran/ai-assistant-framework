@@ -1,0 +1,456 @@
+# Parent state (generalization lane) — durable copy
+
+Updated by the parent. Created on 2026-09-14 after a machine hard crash (≈12:01) wiped the /tmp session scratchpad.
+
+## Where things live
+
+- **Worker rules:** `briefs/R_common_rules.md`.
+- **Worker briefs:**
+  - already run: `briefs/F7a.md`, `briefs/F7b.md`, `briefs/F7c.md`, `briefs/F8a.md`, `briefs/F8b.md`, plus the F8 map notes in `briefs/F8_facts.md`;
+  - F9a through F13c-2b (the whole F-series), H03, H03b-1, H03b-2, H03c-1 and H03c-2 have all run; their briefs are in `briefs/`.
+  - **Queue status (2026-09-15 ≈12:52):** every H03c batch is integrated (H03c-1 … H03c-5). The parent repo-wide privacy sweep is done: long plus short/numeric token sets, the union of per-batch sets, case-insensitive for lane docs, class-guard paths excluded. Its results are in LANDING_NOTES "Real-name scrub".
+  - **OWNER DECISION R4 (2026-09-15 ≈12:53): "Swap both".** Two leftovers no earlier decision covered go to batch H03c-6:
+    - the real V3 course code (upper-case prefix plus number) in `scripts/reflection_domain_clustering.py:47` and `scripts/reflection_validation_harness.py:100` (dev-script sample tuples) → "KTR 5520";
+    - the real registration-portal name W in the `core/prompt/gatherer_knowledge.py:346` comment → "RegPortal".
+    - After H03c-6: update LANDING_NOTES "Pending owner answer" and give the final report.
+- **H03c-6:** integrated 2026-09-15.
+  - V3 → "KTR 5520" in the two dev-script gold-anchor tuples; W → "RegPortal" in the gatherer_knowledge.py:346 comment (with "an" → "a" for grammar). 3 lines.
+  - ORDER was correct. No script was run, and no class-guard file was read.
+  - Parent rerun: 21 passed. ruff is clean, and the scan is identical.
+  - V3 and W now have 0 hits repo-wide outside lane docs.
+  - **Owner-facing note:** both gold-anchor constants are used only inside their own dev scripts, which resolve the anchors against the owner's real entity graph. The swapped anchor now prints "unresolved — skipped" when a developer runs either script. The app is unaffected.
+- **Generalization lane queue: COMPLETE (2026-09-15 ≈13:06).** The deliverable is the uncommitted tree plus docs/execution/generalization/. The landing steps are in LANDING_NOTES.md.
+  - Reference notes in the parent scratchpad (lost on reboot; the batch packets carry the durable facts):
+    - maps: `F13c_map.md`, `F13c-2_map.md`, `H03b_map.md`, `H03c_map.md`, `H03c_residual_map.md`, `H03c_EN_map.md` (labels only);
+    - owner-question notes: `owner_question_extra_scrub.md`.
+- **Manifests:** `/tmp/…/scratchpad/manifest_post_<BATCH>.txt` plus `manifest_paths_post_<BATCH>.txt`. They are lost on reboot; recompute them from the tree at integration time, and use the per-file digests recorded in each batch's "Parent review and integration" section.
+- **Evidence:** `batches/<BATCH>.md` (worker packet plus parent section) and `class_guard_responses/`.
+- **Owner-facing landing facts:** `LANDING_NOTES.md`.
+
+## Queue (sequential; one worker per batch)
+
+- **Integrated (packets under `batches/`):**
+  - A01, A02, A03a, A03b-1, A03b-2, A04, A05a, A05b-1 to A05b-5, A05c, A05d;
+  - R01 to R06, T01 to T03, H01, H02a, H02b, S01 to S03;
+  - F1, F2, F3a, F3b, F4, F5;
+  - A01b (owner-requested Tailscale trusted-host allowance);
+  - F6a (attempt 2; attempt 1 was interrupted, see `batches/F6a_attempt1/ABORT.md`).
+- **H03:** integrated 2026-09-15 (entry below).
+- **F6b:** integrated 2026-09-14. The worker finished before the crash, and its files were verified intact after it. The parent rerun passed 1,920 tests, 1 skipped, 0 failed; see its parent section.
+- **F7a:** integrated 2026-09-14.
+  - It answers CGR-007 #71–#74 (base response `CGR-20260913-007.md`).
+  - The worker stopped once on a `data/` write by `tests/unit/test_graph_integration.py`; the parent excluded that file and the batch resumed.
+  - Parent rerun: 1,087 passed.
+- **F7b:** integrated 2026-09-14.
+  - It answers CGR-007 #80 (`CGR-20260913-007-2.md`) and records the semantic-chunks and FAISS row-read siblings.
+  - The worker broke ORDER (reverted by Edit) and ran non-pytest code twice; both are recorded in the packet.
+  - Parent rerun: 1,262 passed.
+- **F7c:** integrated 2026-09-14.
+  - It answers CGR-007 #75–#79 and #81–#84 (`CGR-20260913-007-3.md`).
+  - An API session limit interrupted it at about 14:32, before any source edit. The parent verified the state and resumed the same worker at 15:01.
+  - No process deviation. Parent rerun: 1,167 passed.
+- **F8a:** integrated 2026-09-14.
+  - It answers CGR-007 #87, #88, #90 and #91 with code, and #85, #86 and #89 with off-path evidence (`CGR-20260913-007-4.md`).
+  - No process deviation. Parent rerun: 413 passed.
+- **F8b:** integrated 2026-09-14.
+  - It answers CGR-007 #92 (`CGR-20260913-007-5.md`): web search now returns typed failed or unavailable results for an exception, a provider error and a budget refusal. Two FIXTURE RULE test edits.
+  - No process deviation; one disclosed note (the reconstructed pre-edit digest of an untracked test, confirmed by `manifest_post_F8a`).
+  - Parent rerun: 339 passed.
+- **F9a:** integrated 2026-09-14.
+  - It answers CGR-009 #139 (base response `CGR-20260913-009.md`): `get_by_id` raises `RetrievalError` on a failed read.
+  - The claim tracker needed no code; a retention test shows a failed read no longer deletes the index entry.
+  - No process deviation. Parent rerun: 352 passed.
+- **F9b:** integrated 2026-09-14.
+  - It answers CGR-009 #122 (`CGR-20260913-009-2.md`).
+  - Both timestamp-range passes raise, the expander returns an explicit `expansion_failed` error that is never cached, and one failed per-id read aborts the whole range fetch.
+  - No process deviation. Parent rerun: 809 passed.
+- **F10a:** integrated 2026-09-14.
+  - It answers CGR-010 #127 and #140 (base response `CGR-20260913-010.md`).
+  - `StoreWriteError` was added to the leaf, and `add_conversation_memory` and `store_interaction` raise it.
+  - The coordinator syncs back in a `finally`, and the background handler still writes the transcript with `db_id=None`.
+  - No process deviation. Parent rerun: 1,347 passed.
+  - The handler store sites moved: `_run_doc_generation` ≈1714, `_save_daemon_note` ≈2608, `_run_action_retry` ≈3509.
+- **F10b:** integrated 2026-09-14.
+  - It answers CGR-010 #128 and #129 (`-2`) and CGR-009 #130 (`-3`).
+  - Parent rerun: 1,132 passed and 1 skipped.
+  - Two recorded deviations:
+    - the worker trimmed an over-cap draft instead of proposing a split;
+    - a flag-then-return restructure hides the `get_recent_memories` degrade from dm18. It was disclosed in the response, and a dm18 blind-spot note is in LANDING_NOTES.
+  - R_common_rules gained the SIZE clarification and SCANNER SHAPE.
+- **F11a-1:** integrated 2026-09-14.
+  - It answers CGR-010 #146 (`-3`) and CGR-009 #121, #147 and #148 (`-4`).
+  - The thread store and coordinator reads now raise, and the shutdown thread pass returns on a typed read failure instead of storing duplicates.
+  - No deviation beyond ruff and the scan running before the test chunks, which is harmless. Parent rerun: 790 passed.
+  - Parent disclosure: one read-only `python -m pip show chromadb` during F11a-2 re-verification.
+- **F11a-2:** integrated 2026-09-14.
+  - It fixes the thread delete-then-store record loss. `_replace_stored_thread` writes first, then deletes, with rollback, and refuses an item with no id.
+  - No anchor. One disclosed test-scoping correction.
+  - Parent rerun: 133 passed.
+  - Privacy sibling recorded: `store_thread`'s kept `{e}` log line.
+- **F10c:** integrated 2026-09-14.
+  - Owner-approved `get_summaries(limit=)` fix: memory_storage now calls `get_summaries(50)` positionally and sorts on normalized timestamps, and `main.py inspect_summaries` calls `get_summaries(10)`.
+  - Narrative regeneration now runs on the `SUMMARIZE_AT_SHUTDOWN_ONLY=0` path.
+  - One self-disclosed `python3 -c` breach (list slicing only).
+  - Parent rerun: 856 passed and 1 skipped.
+  - **New data/ baseline for later batches: `$S/data_baseline_post_F10c.txt`.** It differs from the old baseline only in the `..` line, because the root mtime moved when `main.py` was rewritten atomically.
+- **F11b-1:** integrated 2026-09-14 (Part A only).
+  - It answers CGR-010 #131 (`-4`) and CGR-009 #132–#134 and #136 (`-5`): the ProposalStore write and reads now raise.
+  - Deviation: after exceeding the size cap, the worker applied the brief's split itself and reverted Part B (the two loop callers and the check-proposals CLI) to the exact pre-batch digests; the deferred edits are recorded in `CGR-20260913-010-4.md`.
+  - Interim until F11b-1b lands: a failed proposal write aborts the rest of its loop (logged), and check-proposals shows a traceback on a store read failure.
+  - Parent rerun: 490 passed.
+  - New data/ baseline: `$S/data_baseline_post_F11b-1.txt`, which differs only in the `..` line.
+- **F11b-1b:** integrated 2026-09-14.
+  - Completes F11b-1's Part B: the shutdown `_generate_proposals` and `ingest_survivors` loops count a per-item `StoreWriteError`, and `check-proposals` prints a labelled line and exits 2 on a read failure. The interim loop-abort window is closed.
+  - Response `CGR-20260913-010-5.md`.
+  - No deviation beyond one disclosed test-fixture correction. Parent rerun: 411 passed.
+  - It observed the owner cleanup mid-batch and handled it correctly.
+  - **Data/ baseline for later batches: `$S/data_baseline_post_F11b-1b.txt`.**
+- **F11b-2:** integrated 2026-09-14.
+  - `ProposalStore.update_status` now does a staged replacement through `_replace_stored_proposal` (write first, delete old, rollback; a missing collection handle is refused).
+  - `update_tracking_metadata` returns the real `update_metadata` result.
+  - No anchor and no deviation. Parent rerun: 85 passed.
+  - The delete-then-store class (CM-07) is closed in production code.
+- **F12a:** integrated 2026-09-14.
+  - It answers CGR-009 #117–#120 (`-6`). The consolidator's status facts and Obsidian readers raise; `generate_narrative_context` returns "" on a typed read failure, so nothing is persisted. The `refresh-narrative` CLI prints one labelled line.
+  - Deviations: a second stray `python -c` (no-op), and packet section timestamps that were estimated rather than real. ORDER was verified from digests and file mtimes.
+  - Parent rerun: 187 passed.
+  - **Data/ baseline for later batches: `$S/data_baseline_post_F12a.txt`.**
+- **F12b:** integrated 2026-09-14.
+  - No anchor. The daily-notes copy of `_current_status_facts` raises `RetrievalError(source="status_facts")`. `generate_for_date` catches that typed failure and returns `error="status_guard_unavailable"` before any LLM call, note write or narrative refresh.
+  - `tests/unit/test_daily_notes_auto_update.py` is now hermetic: its fixture stubs `_trigger_narrative_refresh`. R_common_rules now lists it as runnable, with a check that the stub is still there.
+  - One self-disclosed deviation: a placeholder packet timestamp, corrected in-flight from file mtimes. Every other timestamp was taken from `date`.
+  - Parent rerun: 94 + 23 + 84 = 201 passed. data/ is unchanged against `$S/data_baseline_post_F12a.txt`, which is still the baseline.
+- **F12c:** integrated 2026-09-14.
+  - It answers CGR-009 #123, #125 and #126 (`-7`): `_metadata_fallback_search`, `get_recent_facts` and `get_skills` raise `RetrievalError`. The knowledge gatherer records `("failed", "RetrievalError")`, and shutdown's per-task catch gives `[]`.
+  - No rule breach. Packet notes: the pre-edit scan ran before the recorded manifest check (both read-only); one data-check section is mislabelled "pre-test"; one response sentence overstates which callers catch.
+  - Parent rerun: 193 + 214 = 407 passed. dm18 is now 26/79/0/53. The data/ baseline is still `$S/data_baseline_post_F12a.txt`.
+- **F12d:** integrated 2026-09-14 (synthesis reads only).
+  - It answers CGR-009 #141–#143 (`-8`): `find_similar`, `get_recurring` and `get_all_results` raise `RetrievalError`. `store_result` can no longer store a duplicate after a failed similarity read, and the synthesis filter rejects the candidate. **CGR-009 is fully answered.**
+  - Deviations:
+    - ORDER breach: both sources were edited before tests and failing-first, then reverted by Edit to the exact starting digests. Self-disclosed and verified.
+    - The worker applied the brief's split itself after measuring ≈475 lines, so the owner's fail-closed audit check moves to **F12d-2**.
+    - The response wrongly says a failed audit read now reaches the outer except. The inner broad except still catches it, and dreaming proceeds as before F12d.
+  - Parent rerun: 138 + 170 + 154 = 462 passed. dm18 is now 23/79/0/56, and dm17 covers 643 files. The data/ baseline is still `$S/data_baseline_post_F12a.txt`.
+- **F12d-2:** integrated 2026-09-14.
+  - Owner decision 2 is implemented. `_run_synthesis_dreaming`'s audit check catches the typed `RetrievalError`, logs one labelled warning and skips dreaming. Any other audit failure now reaches the outer non-fatal except. Dreaming never runs without a readable audit.
+  - No deviation; ORDER was followed.
+    - Size 313 against a 250 target.
+    - The parent's brief wrongly listed `test_codex_followups.py` as a shutdown importer; the worker caught it.
+  - Parent rerun: 137 + 177 + 154 = 468 passed. dm18 is unchanged at 23/79/0/56 (the rows are identical), and dm17 covers 644 files.
+- **F13a:** integrated 2026-09-14.
+  - The four orchestrator store sites record `debug_info["storage_failed"]` with a labels-only receipt (helper `core/orchestrator.py:_storage_failure_label`). `_store_interaction` also carries the label into the turn record's telemetry and no longer raises `AttributeError` when `self.logger` is None.
+  - No user-visible change. The sites are reached only by the CLI and tests.
+  - No real breach. The worker disclosed a `python -m ruff --version`, which R_common_rules line 42 already allowed; the rules now say so explicitly.
+  - Parent rerun: 145 + 144 + 284 = 573 passed. dm18 is unchanged at 23/79/0/56, and dm17 covers 645 files.
+- **F13b:** integrated 2026-09-14.
+  - The three GUI inline store sites (doc generation, self-note, action retry) record `storage_failed` in `ctx.telemetry` and the debug record, with a labels-only warning log. The label comes from F13a's helper.
+  - The background store adds `storage_failed` to the transcript metadata; the text log prints it.
+  - Chat content is byte-for-byte unchanged.
+  - No breach. Size 426 against a 350 target.
+    - The worker's sweep grep missed three consumers that patch `gui.handlers.*`. The parent ran them, and R_common_rules now requires importer greps to cover every import form and dotted patch strings.
+  - Parent rerun over the union of both greps: 1,566 passed, 1 skipped (pre-existing). dm18 is unchanged at 23/79/0/56, and dm17 covers 646 files.
+- **F13c-1:** integrated 2026-09-14.
+  - A background save failure now reaches the delivered debug record (updated in place) and the turn record. The turn row is deferred through one combined waiter over the store and grounding tasks, and only for real `asyncio.Task`s. Hooks still run immediately.
+  - It also fixes today's grounding-only deferral: `telemetry or {}` had swapped out an empty dict.
+  - Recorded deviations:
+    - Size was measured only after the source edits; the worker then deleted a test class to get under 450 instead of stopping. That breaches the EXISTING SIZE rule (the F10b clarification). R_common_rules now also says that deleting whole tests counts as trimming, and that the estimate must include source lines.
+    - One 10-file chunk (re-run).
+    - A minor ORDER slip.
+  - The worker found and fixed a real MagicMock-ctx bug.
+  - Parent rerun: 1,957 passed, 1 skipped. dm18 is unchanged at 23/79/0/56, and dm17 covers 647 files.
+- **F13c-2a:** integrated 2026-09-14.
+  - The React SPA shows a fixed "Memory save failed" status line after a turn whose save failed.
+    - It shows immediately when the `complete` debug record carries `storage_failed` (inline failures).
+    - Otherwise one `/api/debug` read 2.5 s later catches a background failure.
+    - The notice clears after 4 s or on the next send. Nothing appears in chat.
+  - A one-time SIZE exception by the parent (hard stop 500; final size 492, mostly tests). Two correct worker stops. The split was not viable, because tests type-check across files.
+  - Parent rerun: focused vitest 25 passed, full suite 42 passed, `tsc` clean. `web/` changed only in the four owned files; `web/dist` is untouched.
+  - The owner must rebuild the SPA before landing for it to show (LANDING_NOTES).
+  - Web baseline for later batches: `$S/web_status_post_F13c-2a.txt`.
+- **F13c-2b:** integrated 2026-09-14.
+  - Duel and insight-assembly set `ctx.debug_record` before their final yield, so a background save failure reaches their delivered record and the SPA notice. Four source lines.
+  - No deviation. The parent verified the exact 4-line own diff by hash.
+  - Parent rerun: 131 + 1,454 = 1,585 passed, 1 skipped. dm18 is unchanged at 23/79/0/56, and dm17 covers 648 files.
+  - **The F-series is complete.**
+- **Legacy Gradio:** logs-only for failed saves (parent decision).
+- **H03:** integrated 2026-09-15.
+  - Real school names in 28 comment and docstring lines across utils/institution_resolver.py, utils/location_resolver.py, utils/web_search_trigger.py, memory/entity_resolver.py and core/agentic/gate.py were replaced with synthetic names: "Vermont Wrenfield", "University of Tarnwick-Hollow", "Quellmoor University", "vermont_wrenfield", "XW". No code change.
+  - Parent privacy check (counts only): 0 hits in lane docs. The remaining source hits are a state-name code table and a generic word.
+  - The worker self-corrected a slip that briefly put the real state word into its own packet; verified clean.
+  - Minor typed-timestamp slip in headers.
+  - Parent rerun: 183 + 2,183 = 2,366 passed, 1 skipped. The scan is identical.
+- **H03b-1:** integrated 2026-09-15.
+  - The two real-school Wikipedia seeds were removed from scripts/build_wiki_subset.py (80 → 78 education seeds; "Statistics" kept).
+  - Real school fixture names in 5 core identity/institution test files were replaced with the synthetic mapping ("Vermont Wrenfield", "Marrowby", "Quellmoor University", "University of Tarnwick-Hollow", "Wrenfield Institute of Science", XQT, St. Veldmoor College, University of Dunmere, Brightwater Kestrel, "ABC 1234", the `SCHOOL_ANCHORS` variable).
+  - Per-file test counts are identical.
+  - Parent privacy check (broader token set, counts only): clean. Remaining hits are pre-existing geography seeds, a public-newspaper fixture and the synthetic meetup placeholder.
+  - A minor typed-timestamp slip repeated.
+  - Parent rerun: 156 + 1,971 = 2,127 passed, 1 skipped. The scan is identical.
+- **H03b-2:** integrated 2026-09-15.
+  - Real school, domain, city, suburb, advisor, staff, owner-first-name (in the mapped files), program, course and registration-system names in 12 unit files plus tests/test_citation_system.py were replaced with the synthetic mapping. T was not regex-coupled, so it was replaced everywhere.
+  - Per-file counts are identical.
+  - Parent privacy check: clean. Remaining token hits are pre-existing unchanged lines (the owner's first name in 2 other test files) and a common-first-name coincidence in a synthetic email.
+  - Parent rerun: 240 + 110 + 32 = 382 passed. The scan is identical.
+- **QUEUE COMPLETE (2026-09-15):** every batch in the plan and every parent-added follow-up (F10c, F11b-1b, F12d-2, F13c-1, F13c-2a/2b, H03b-1/2) is integrated. The deliverable is the uncommitted tree plus `docs/execution/generalization/`. Final manifest: `$S/manifest_post_H03b-2.txt`.
+- **OWNER DECISIONS 2026-09-15 (answered one by one, ≈01:15) → new batch series H03c:**
+  1. **Friend's first name with a health detail (label P):** REPLACE with a made-up name everywhere: memory code comments, the curator docstring and code string, and 2 tests. Map the curator code string (`memory/curation/curators/profile_junk_facts.py:42`) first, so the junk-fact filter keeps working.
+  2. **Owner's own first name in test files (label O):** REPLACE with the made-up first name ("Alex", as in H03b-2) in all test fixtures. A read-only search lists every file first. Production code is out of scope (report counts only).
+  3. **Advisor's full name (label L):** REPLACE in the 4 more tests AND the production comments ("Morgan Ashdown").
+  4. **Program abbreviation (label T):** REPLACE in the 2 more tests and the gatherer comment ("MXS"). KEEP the code word in `memory/fact_source.py`'s cue list, so fact detection is unchanged.
+  5. **Course codes (label V, plus the second code V2 in test_ingest_turn_misfires.py):** REPLACE in tests and comments. Any code string that affects behaviour is mapped and left unless the change is proven safe.
+  6. **School A's city (label R):** REPLACE in the other files. KEEP it in the wiki geography seeds in `scripts/build_wiki_subset.py` (one public city among many).
+  7. **`docs/GENERALIZATION_AUDIT_20260901.md`:** EDIT the one line with School A's state word ("Vermont").
+  - **Process:** read-only map (labels only) → drafts split under SIZE → batches run sequentially with the same privacy self-check and parent verification as H03b.
+  - **Map:** `$S/H03c_map.md` (labels only). Batches: H03c-1 (P plus co-owned memory files), H03c-2 (O in tests), H03c-3 (L/T/V/V2/R in tests, comments and docs), and a residual batch (H03c-4, or merged into H03c-2/3 per file).
+  - **Settled by the map:** the curator string at profile_junk_facts.py:42 is a sentinel self-check input, so a name-only swap does not change real purges. Only the name changes; the health clause text stays, because tests depend on shared tokens.
+- **OWNER DECISIONS 2026-09-15, second round (asked one by one after the map):**
+  - **N1 — guard tests:** swap O in tests but KEEP the two real-name guard checks, so they still catch real-name leaks. That means tests/test_system_prompt_placeholders.py:48–72 (including its test name) and tests/unit/test_user_identity.py:209/224/231. Also add a short note to docs/generalization/02-owner-neutral-runtime.md next to its "no bulk replace" rule, recording this owner decision.
+  - **N2 — username paths:** swap the O-derived `/home/<user>` paths in the 4 test files for a made-up username. test_visual_memory_gating.py needs it to begin with the made-up first name.
+  - **N3 — docs:** swap the 5 L/T doc lines (PROMPT_BUILDING_PIPELINE.md:111; BUG_RETROSPECTIVE_20260715_20260904.md:232; PROJECT_SKELETON.md 2401/4475/4479).
+  - **N4 — residuals:** the professor surname, V's real course title, the syllabus title, the second course token in the T title fixture, the lyric companion name, V's bare subject prefix (≈40 test lines) and the student-ID prefix get made-up versions in TESTS and DOCS. KEEP the redaction rule code in utils/privacy_redaction.py (52/83).
+    - Tests that exercise that rule keep the real prefix where the rule requires it; record them.
+    - The synthetic first name used for M in test_ingest_turn_misfires.py:64 coincides with the lyric companion's real first name, so it gets a different invented name.
+- **H03c-1:** integrated 2026-09-15.
+  - P (the friend's first name) → "Ellery" in memory/fact_source.py, memory/fact_extractor.py, the curator sentinel string and its docstring, and 2 tests. The co-owned R/V/V2/O swaps in those files: R → "Marrowby", V → "ABC 1234", V2 → "QRS 7310", O → "Alex" (tests only).
+  - Name tokens only. The care-team clause and the T cue word at fact_source.py:262 are unchanged, which the parent verified with a word-level diff.
+  - Parent rerun: 236 + 380 = 616 passed. The scan is identical. Privacy: 0 packet or lane-doc hits.
+  - The owner's O remains in 3 fact_extractor.py production comments (out of decision scope).
+  - The worker self-corrected a brief packet slip that spelled out real forms.
+- **OWNER DECISIONS 2026-09-15, third round (after the residual map `$S/H03c_residual_map.md`):**
+  - **R1 — companion first name CN** (the same real person as H03b-2's Q): swap to "Tamsin" EVERYWHERE — tests (≈70 lines in 11 stance/insight files plus the H03c-2/3 files), docs, and the 19 production comment lines. Code strings stay (llm_fact_extractor.py 448–449 prompt example).
+  - **R2 — residual production comments:** PS, ST, V3 and bare SP in production comments and docstrings (≈18 lines: gui/handlers.py:2971, core/grounding_check.py:766, knowledge/obsidian_manager.py:865, and 15 bare-SP lines in 11 modules) are SWAPPED. Comment and docstring text only; no code strings.
+  - **R3 — another real-looking first name used as a calendar event title** (label EN; tests/unit/test_sep10_probe_dump_actions.py:1906, ≈61 lines repo-wide): MAP FIRST (read-only), then ask the owner once more.
+  - **Batch plan:**
+    - H03c-2: O in tests, plus merged residuals in the same files; guards kept; username paths.
+    - H03c-3: L/T/V/V2/R, merged residuals, docs, production comments; split 3a/3b if over 300.
+    - H03c-4: CN stance/insight tests and CN production comments, the SP/V3/IDP files in neither batch, 2 docs.
+    - EN after its map.
+- **H03c-2:** integrated 2026-09-15.
+  - O → "Alex" in 31 edited tests/unit files, 8 top-level tests and `tests/fixtures/retrieval_benchmarks.yaml`. It is "Avery" in test_entity_facts and test_sep03_live_probe_fixes, where "Alex" is already another person.
+  - UN → "alexh". The merged residual swaps (L, R, V, SP, V3, CT, ST, CN, IDP) were made in the same files.
+  - The two guard tests are byte-identical (N1). A 3-line note in `docs/generalization/02-owner-neutral-runtime.md` records N1.
+  - Parent rerun: 950 passed. ruff is clean on 39 files, and the scan is identical.
+  - Recorded: the tests/unit post-edit runs came before the top-level, fixture and doc edits. None of those files may run, and the fixture is read only by tests/benchmarks and scripts. The privacy self-check ran after the post-edit runs.
+  - Privacy:
+    - The synthetic M first name in `briefs/H03b-2.md:72` matched CN's real first name; the parent put in a placeholder.
+    - CN-lower remains in a `memory/fact_extractor.py:372` comment; it is now in the H03c-4 draft.
+    - UN remains in lane-doc infrastructure lines (recorded for LANDING_NOTES).
+- **H03c-3a:** integrated 2026-09-15.
+  - V, SP, PS, ST, CT, CN and EN were swapped in the 10 calendar-family test files (88 lines).
+  - Parent rerun: 496 + 28 = 524 passed (the 28 include the importer test_grounding_log_only). ruff is clean, and the scan is identical.
+  - ORDER was correct: all edits were finished before the privacy check and the post-edit runs.
+  - The worker self-corrected two packet-prose privacy slips before return. Privacy: 0 packet or edited-file hits.
+- **H03c-3b:** integrated 2026-09-15.
+  - L/T/V/V2/V3/R/CN/EN/IDP/PS/A-frag were swapped in 9 tests, 17 production comment/docstring files and 7 docs (110 lines).
+  - Parent rerun: 242 + 444 = 686 passed. ruff is clean on 26 files, and the scan is identical.
+  - **ORDER breach, recovered:** the worker edited before the baseline, then reverted the tests, ran the baseline and re-applied the edits, with digests verified. Later briefs say STOP instead.
+  - **Synthetic course codes are not one-to-one:** "ABC 1234" means the calendar-test code in some files and V2 in others. H03c-1 and H03c-3b used the inverse of the H03c-3a mapping, and test_ingest_turn_misfires now shows both codes as "ABC 1234". No privacy or test impact. Recorded; not re-edited.
+  - **New parent check:** removed-only short tokens (2–3 letters) and numbers, across all H03 pre-copies. It found and queued into H03c-4:
+    - SP-lower in a `memory/fact_source.py:188` comment;
+    - V4 (a third course code) at test_narrative_status_claims.py 47/50 and a `utils/status_claims.py:55` comment;
+    - A-short (School A's short form) at `docs/BUG_RETROSPECTIVE_20260715_20260904.md:257`.
+  - **Recorded, not edited:**
+    - the V3 code in two dev-script tuples (`scripts/reflection_domain_clustering.py:47`, `scripts/reflection_validation_harness.py:100`);
+    - UN in `core/prompt/gatherer_knowledge.py` comments and in 4 docs (line list in the H03c-3b parent section);
+    - A-short in `docs/BUG_CLASSES.md:562` and `hooks/pre-commit-privacy` (class-guard).
+- **H03c-4:** integrated 2026-09-15.
+  - CN → Tamsin in 11 stance/insight tests, 8 production comment/docstring files and the feature_registry notes. SP/V3/V4/IDP/A-short leftovers were swapped too (107 lines).
+  - ORDER was correct: the baseline ran before the first edit.
+  - Parent rerun: 189 + 365 + 99 = 653 passed. The 99 include 3 importer files the worker had not run. ruff is clean on 28 files, and the scan is identical.
+  - **Breach (disclosed):** the worker grep-read `docs/BUG_CLASSES.md` (class-guard). Nothing was copied or edited.
+  - **Parent privacy fixes:**
+    - T's real lowercase form, which the worker wrote in the H03c-4 packet §16 (a KEEP word, so the removed-token self-check could not see it);
+    - T's real form at `batches/H03c-1.md:67`, found by the new case-insensitive lane-doc sweep.
+  - **Parent process note:** the parent's repo-wide greps during the H03c-3b review did not exclude class-guard paths (masked output only; nothing copied). Parent greps now always exclude them.
+- **H03c-5:** integrated 2026-09-15.
+  - EN → Maren in the contacts, gmail, sep08_ops and agentic_gate tests, the `core/agentic/types.py:1167` tool-schema example (the one prompt-text change, R3-final) and `tests/test_agentic_search.py` 421/426 (read-verified). 58 lines.
+  - ORDER was correct: the baseline ran before the first edit. No breach, and no class-guard file was read.
+  - Parent rerun: 107 passed (including the importer test_tool_wiring_parity). ruff is clean, and the scan is identical.
+  - EN has 0 hits repo-wide outside lane docs (case-insensitive).
+- **OWNER DECISION R3-final (2026-09-15 ≈10:30, after the EN map `$S/H03c_EN_map.md`):** swap EN → "Maren" EVERYWHERE. That includes the `core/agentic/types.py:1167` tool-schema example, the `core/agentic/gate.py` comment, the ARCHITECTURE_GUIDE line and all tests. Emails become `maren@…` / `maren.<surname>@…`.
+- **Class-guard path excluded from the scrub:** `docs/BUG_CLASSES.md` is class-guard-owned and is never edited. Its R line and SP line stay, recorded for the owner.
+- **Final H03c batch plan (each file edited whole in exactly one batch):**
+  - **H03c-3a:** the 10 calendar-family tests (V, SP, PS, ST, CT, CN, EN).
+  - **H03c-3b:** the remaining L/T/V/V2/R/CN/IDP/EN tests, production comments and docstrings (R2 included), and docs. The CN-email local part at test_ingest_turn_misfires.py:64 → "odile".
+  - **H03c-4:** CN in the stance/insight tests, CN production comments not in 3b (plus `memory/fact_extractor.py:372`), the SP/V3/IDP files in neither batch, and 2 docs.
+  - **H03c-5:** EN in the contacts/email tests, the types.py prompt example, and `tests/test_agentic_search.py` 421/426 (verified by reading).
+  - **Then:** a parent repo-wide privacy sweep (counts only) across every H03/H03b/H03c token set, and LANDING_NOTES "Still in the tree".
+  - **KEEPs:**
+    - the two guard tests;
+    - O in production comments and planning docs;
+    - the `utils/privacy_redaction.py` rule and test_privacy_redaction 111–112;
+    - the fact_source.py:262 T cue word;
+    - the wiki geography R seed;
+    - the location_resolver state table;
+    - docs/BUG_CLASSES.md;
+    - the llm_fact_extractor.py 448–449 CN prompt example.
+- **Item inventory for H03c (formerly the open owner question; additional items 2026-09-15):**
+  - the owner's first name in more test files (test_knowledge_graph.py 117/118/954/959; test_sep05_evening_turn_audit.py 359/361/377 with a mood/streak narrative; likely others);
+  - a second real course code in test_ingest_turn_misfires.py's paste fixture;
+  - a real friend's first name with a health detail in production memory code and tests: memory/fact_source.py 169/979 (comments), memory/fact_extractor.py 213 (comment), memory/curation/curators/profile_junk_facts.py 7 (docstring) and 42 (a code string literal; map it before any edit), tests/unit/test_sep05_curation_wave2.py, tests/unit/test_sep05_evening_turn_audit.py.
+  - The earlier items follow.
+  - **Owner question asked 2026-09-14 ≈23:53, awaiting an answer:** whether to also scrub names outside the H03b files, as an extra H03c batch:
+    - the advisor name L in 4 more tests and production comments;
+    - the program abbreviation T in 2 more tests, a comment and a code regex;
+    - the course code V in 12 more tests and 4 production files;
+    - the city R in 6 files;
+    - also `docs/GENERALIZATION_AUDIT_20260901.md` (tracked, unchanged since HEAD), which mentions School A's state word once.
+  - Drafts: `$S/H03b-1_draft.md`, `$S/H03b-2_draft.md`; map `$S/H03b_map.md`.
+  - Ask the owner at H03b launch about L/T/V/R outside the H03b files. F13b (receipts and logs only, no chat text; owner revision below) → F13c-1 (debug record updated in place, deferred turn record; draft `F13c-1_draft.md`) → F13c-2 (GUI status-bar message; needs a lane-rule decision on `npm run typecheck`/`npm test`, and `web/node_modules` exists) → H03 (plus the `core/agentic/gate.py:519` docstring sibling) → H03b-1 / H03b-2 (read-only map done, `H03b_map.md`; the replacement uses a different state word from School A's).
+  - Everything from F12d-2 on is staged as drafts and map notes in the parent scratchpad.
+  - The F11b-1, F11b-2, F12a–F12d, F13a, F13b and H03 drafts are in the parent scratchpad. Re-verify each on the tree left by the batch before it.
+  - Every remaining draft that has a contract-required degrade must say to catch the TYPED failure, never a broad `except Exception` followed by a return. Check this when moving each draft into briefs/.
+  - F9a, F9b and F10 share `memory/storage/multi_collection_chroma_store.py` and must stay sequential.
+  - H03's brief was drafted in the lost scratchpad and must be re-derived from `owner_hardcoding_review_20260913.md` §H03:
+    - scope: comment and docstring examples in `utils/institution_resolver.py` and `utils/location_resolver.py`, plus the same-kind siblings in `utils/web_search_trigger.py` and `memory/entity_resolver.py`;
+    - reported only, as owner decisions: `scripts/build_wiki_subset.py:107` and the test fixtures.
+    - Recompute the per-line `file:line` anchors (never the names) at H03 launch, because the F-series and earlier batches changed those files.
+    - **H03 anchor map done (2026-09-14, read-only, no names in its output); draft in the parent scratchpad as `H03_draft.md`.** If the scratchpad is lost, re-derive it from these facts:
+      - **Digests:** institution_resolver `2c70393a…`, location_resolver `5392e2ad…`, web_search_trigger `8bb20c4f…`, entity_resolver `f6b0b0d7…`.
+      - **In scope, 23 comment/docstring lines:**
+        - institution_resolver: 10, 24–25, 54, 123, 328–329, 408, 410, 411, 459;
+        - location_resolver: 310–311, 313–314, 343, 523, 567–568. At 313–314 the synthetic name must contain a US state word.
+        - web_search_trigger: 1420–1421, 1461, 1572, 1578 (two-letter short form), 1591–1592, 1739;
+        - entity_resolver: 299, including the snake_case form.
+      - **Out of scope, record only:** institution_resolver 77, a program name; location_resolver 359/361/452–456/543–544, public newspaper, company and person examples; vendor-name incident comments.
+      - **Owner decisions:** `scripts/build_wiki_subset.py` 103 and 107 are code-string Wikipedia seeds (103 was missed by the review). The School A test fixture appears 139 times in 12 unit files plus `tests/test_citation_system.py`.
+      - **No behaviour change:** there are no doctests or runtime `__doc__` use, and no test reads these comment lines.
+      - **Privacy:** the packet uses the labels "School A/B/University C" and `file:line` only, and never pastes the diff.
+  - **F10 map done (2026-09-14, read-only); drafts are in the parent scratchpad as `F10a_draft.md` and `F10b_draft.md`.** If the scratchpad is lost, re-derive them from these decisions:
+    - **Split:**
+      - F10a, turn write: #140 `add_conversation_memory` and #127 `store_interaction`; response `CGR-20260913-010.md`.
+      - F10b, skill write plus summaries read: #128 and #129 `store_skill`, and CGR-009 #130 `_get_recent_summaries_by_timespan` plus `_maybe_regenerate_narrative`; responses `CGR-20260913-010-2.md` and `CGR-20260913-009-3.md`.
+      - Both halves edit `memory/memory_storage.py`, so they run in sequence after F9b.
+    - **Write error type:** a new `StoreWriteError(RuntimeError)` in `utils/retrieval_outcome.py`, with keyword-only `source` and `reason`, next to `RetrievalError`. None stays the deliberate skip only.
+    - **F10a caller continuity:**
+      - `MemoryCoordinator.store_interaction` syncs `conversation_context` and `interactions_since_consolidation` back in a `finally`, so a failed write does not drop the turn from in-session context.
+      - `gui/handlers.py` `_background_store_interaction` still writes the transcript `log_interaction` with `db_id=None` on failure.
+      - The orchestrator is unchanged: the "CRITICAL … data loss" log at ≈2497 becomes live, and `self.logger` is always set at 491.
+      - The five `except: pass` sites stay with F13. Until then a raise is ignored there silently, as the None is today.
+    - **F10b:**
+      - `store_skill`: disabled and dedup stay None; a collection-unavailable or write failure raises.
+      - `_extract_procedural_skills` counts per-skill `StoreWriteError`s and keeps going.
+      - The narrative is never regenerated when a summaries or `get_recent_memories` read failed.
+    - **Owner decision to raise (not fixed):** `_get_recent_summaries_by_timespan` calls `corpus_manager.get_summaries(limit=50)`, but `CorpusManager.get_summaries(self, count=5)` has no `limit`. So it raises `TypeError` on every call and has always returned `[]`. Fixing the call would turn on narrative regeneration (an LLM call plus a persisted narrative) on the non-default `SUMMARIZE_AT_SHUTDOWN_ONLY=0` path.
+  - **F11a map done (2026-09-14, read-only); drafts are in the parent scratchpad as `F11a-1_draft.md` and `F11a-2_draft.md`.** If the scratchpad is lost, re-derive them from these decisions:
+    - **F11a-1** answers #146 `store_thread`, #147 `list_open_threads`, #148 `query_threads` and #121 coordinator `get_unresolved_threads`; responses `CGR-20260913-009-4.md` and `CGR-20260913-010-3.md`.
+      - `store_thread` raises `StoreWriteError`; the `_ensure_collection` skip stays None.
+      - `list_open_threads` raises `RetrievalError`.
+      - `query_threads` has no production caller and returns `OutcomeList.failed` or `unavailable`.
+      - The coordinator removes its swallow and raises. The F7c gatherer then records failed with no gatherer change, because `threads or []` would flatten a typed list.
+      - `_process_open_threads` returns before extraction when the open-threads read fails. Today it goes on to store duplicates.
+      - The write loop counts a `StoreWriteError` per thread and continues; `enforce_cap` still runs.
+      - One FIXTURE RULE edit: `test_thread_store.py::test_returns_none_when_add_raises`.
+    - **F11a-2** (no anchor; the design doc's "[verified] Delete-then-store loses the record" item):
+      - `resolve_thread` and `_update_thread` write the new version first. `add_to_collection` assigns a fresh `uuid4`, so ids cannot clash.
+      - The old document is deleted only after a confirmed write, and the new one is rolled back if that delete fails.
+      - An item without an id returns False instead of storing a duplicate.
+      - No response file.
+    - **Map facts:** no api/ or gui/ caller reads or resolves threads; `list_all` and `add_to_collection` have no `try` and raise.
+  - **F11b map done (2026-09-14, read-only); drafts are in the parent scratchpad as `F11b-1_draft.md` and `F11b-2_draft.md`.** If the scratchpad is lost, re-derive them from these decisions:
+    - **F11b-1** answers #131 `store_proposal`, #132 `query_proposals`, #133 `get_proposal`, #134 `get_pending` and #136 `get_pending_and_approved`; responses `CGR-20260913-009-5.md` and `CGR-20260913-010-4.md`.
+      - All five raise, and the skip, genuine-empty and not-found paths are unchanged.
+      - `query_proposals` must RAISE: `ProposalFilter.get_proposals` flattens a typed list to `[]`, while a raise reaches F7c's gatherer except.
+      - `_generate_proposals` (shutdown) and `agent_branch/proposal_bridge.py` `ingest_survivors` count a per-item `StoreWriteError` and continue.
+      - No change to gui/tabs/proposals.py, where every callback already catches and shows a failure message.
+      - No change to main.py either. Its `check-proposals` path prints "Startup failed" plus a traceback on a store read failure, which is recorded as an owner-facing limitation.
+    - **F11b-2** (no anchor):
+      - `update_status` becomes a staged replacement: write first (fresh `uuid4`), then delete the old version, with rollback. A missing collection handle returns False instead of storing a duplicate.
+      - `update_tracking_metadata` returns `update_metadata`'s bool instead of True.
+      - No response file.
+  - **F12 map done (2026-09-14, read-only); drafts are in the parent scratchpad as `F12a_draft.md` … `F12d_draft.md`.** If the scratchpad is lost, re-derive them from these decisions:
+    - **F12a** (#117–#120; response `CGR-20260913-009-6.md`):
+      - `_current_status_facts` raises: a None profile gives `profile_unavailable`, and a `get_current_view` failure gives the exception class name.
+      - The three Obsidian readers raise.
+      - `generate_narrative_context` catches `RetrievalError` explicitly and returns "" before any LLM call, so no caller persists a guard-less or partial narrative.
+      - The `main.py` `refresh_narrative_context` reader calls print one labeled line and exit 1.
+    - **F12b** (no anchor):
+      - The daily_notes_generator status-guard copy raises.
+      - `generate_for_date` returns a "not generated: status_guard_unavailable" result before any LLM call or note write.
+      - `tests/unit/test_daily_notes_auto_update.py` is made hermetic. It is excluded until then because it reaches the real default-path `UserProfile()` and `OBSIDIAN_VAULT_PATH` through `_trigger_narrative_refresh`.
+    - **F12c** (#123, #125, #126; response `-7`):
+      - `_metadata_fallback_search`, `get_recent_facts` and `get_skills` raise, not typed lists: the gatherer's `skills or []` and the hybrid merge would flatten a typed list, while the gatherer and shutdown already catch a raise.
+    - **F12d** (#141–#143; response `-8`, which completes CGR-009):
+      - `find_similar`, `get_recurring` and `get_all_results` raise.
+      - `store_result` then never inserts a duplicate after a failed similarity read, and the synthesis filter rejects the candidate.
+      - Recorded as owner decisions and limitations: the shutdown audit auto-halt stays fail-open; the Gradio synthesis tab shows an error; `scripts/synthesis_validation.py` prints a traceback.
+  - **F13 map done (2026-09-14, read-only); drafts are in the parent scratchpad as `F13a_draft.md` and `F13b_draft.md`.** If the scratchpad is lost, re-derive them from these decisions:
+    - **Finding:** none of the four orchestrator store sites is reachable from the GUI or API, which use raw mode.
+      - Only the `main.py` CLI and tests reach them.
+      - The live failures are the three gui/handlers.py inline `pass` sites and the background store task. That task runs after the turn record and debug record have been emitted.
+    - **F13a (orchestrator):**
+      - The labeled receipt `storage_failed = "<source>: <reason>"` goes into `debug_info` at all four sites, and into the turn-record `telemetry` dict for `_store_interaction`.
+      - The CRITICAL log must not raise when `self.logger` is None, since test fixtures set it to None.
+      - Receipt code never raises, because a raise would take the fallback path and produce a second answer.
+      - Guard constraints: nothing goes into `phase_timings`, and nothing is inserted between `debug_info["section_outcomes"]` and `task_timings`, which the F6b proximity test checks.
+    - **F13b (handlers):**
+      - The same receipt goes into `ctx.telemetry` (guarded when `ctx` has no `telemetry` attribute) and into the debug record `extra=` at the three inline sites.
+      - The background store adds `storage_failed` to transcript metadata only when a write failed. `_log_text` may print it.
+      - `_dispatch_storage` is not changed. A deferred turn record waiting on the store task is rejected: tests mock `_dispatch_storage`, so it would never complete.
+      - Recorded as limitations and owner options: the background failure does not reach the turn record or the already-delivered debug record, and no user-visible "not saved" notice is shown.
+    - **Recorded map-agent slip:** the F13 map agent disclosed that one caller grep ran over the whole repository, including `data/` and `.agent_snapshots/`. The results from those paths were dropped, not shown or used, and the search was read-only. Future map prompts must say to pass `--exclude-dir=data --exclude-dir=.agent_snapshots` on every grep.
+  - **CGR-010 anchors:**
+    - #127, #140: F10a;
+    - #128, #129: F10b;
+    - #146 `store_thread`: F11a;
+    - #131 `store_proposal`: F11b;
+    - receipts and the five `pass` sites: F13.
+
+## Owner decisions received 2026-09-14 ("on 6 qs: yes to all fixes")
+
+The owner approved a fix for all six open questions from the parent's F11a-1 report. The parent's implementation plan follows; the owner can veto any item before its batch runs.
+
+1. **`get_summaries(limit=50)` signature defect:** FIX.
+   - New batch **F10c**, run right after F11a-2. It is a small `memory/memory_storage.py` edit plus updating the F10b pin test `test_production_signature_raises_type_error_reason`.
+   - Effect: narrative regeneration after consolidation now actually runs (an LLM call plus a persisted narrative) on the non-default `SUMMARIZE_AT_SHUTDOWN_ONLY=0` path.
+2. **Synthesis audit auto-halt fail-open:** FIX to fail-closed. When the audit stats cannot be read at shutdown, synthesis dreaming is skipped with a warning. Folded into **F12d**, whose ownership gains the shutdown audit-check region.
+3. **`main.py check-proposals` "Startup failed" on a store read failure:** FIX. It catches the typed `RetrievalError`, prints one labelled line and exits non-zero. Folded into **F11b-1**, whose ownership gains the two `check-proposals` read sites in `main.py`.
+4. **Where a failed memory save is reported:** FIX.
+   - **Inline handler paths** (doc generation, daemon note, action retry): the save happens before the reply is sent, so F13b also appends a short user-visible "not saved to memory" notice to that reply.
+   - **Background save** (main chat path): it runs after the reply and turn record, so a new **F13c** (after F13b):
+     - updates the delivered debug record in place (grounding precedent, visible at /debug);
+     - defers the turn-record write until the store task finishes, only when `_dispatch_storage` returns a real asyncio task, so tests that mock it are unaffected;
+     - carries a one-time notice into the next reply.
+   - The next-turn notice is the most visible choice; the owner can veto it before F13c runs.
+   - **REVISED by the owner 2026-09-14 (≈20:45, while F12c ran):** "just in the logs or a lil gui message in thr status bar where like generating...shows up. not actually in chat itself. lets do both".
+     - A failed memory save is NEVER reported inside the chat reply text, on the same turn or the next one. It is reported in the logs, and as a small transient GUI status message where "generating…" appears.
+     - The parent applies this to the inline sites too, and told the owner in one line. So F13b does receipts and logs only, with no chat text.
+     - F13c map (2026-09-14, scratchpad `F13c_map.md`):
+       - The default UI is the React SPA, whose status indicator (`web/src/components/ProgressIndicator.tsx`) is hidden once the stream ends.
+       - A background save failure can only reach the UI on the next turn.
+       - The status message needs a `complete` payload field plus SPA changes.
+     - F13c therefore splits:
+       - **F13c-1:** the debug record is updated in place, and the turn-record row is deferred through one combined waiter over the store and grounding tasks (handlers.py plus an orchestrator prefix filter).
+       - **F13c-2:** the status-bar message for the inline and background sources (Python, SPA TypeScript, legacy Gradio `typing_md`). It needs a lane-rule decision on `npm run typecheck`/`npm test`, and a check that `web/node_modules` exists (no installs), before launch.
+5. **`scripts/build_wiki_subset.py:103/107` real-school seeds and the School A test fixture:** FIX.
+   - New **H03b** batches after H03.
+   - The two real-school seed titles are removed from the education seeds. Synthetic titles would match no Wikipedia article, so the subset simply stops force-including those two pages.
+   - School A/B and the other real-sounding fixture names across the 12 unit files plus `tests/test_citation_system.py` are replaced with synthetic names that keep each test's structure (state word, short form).
+   - Split by file under the size cap after a read-only map; never write the real names anywhere.
+6. **`data/` leftovers (`data/chroma_multi`, `data/web_search_credits.json`, `data/user_profile.json`) and `scan_pre.stderr`:** DELETE.
+   - The owner's earlier instruction limits `/usr/bin/rm` to one file, and the shell guard blocks `rm`.
+   - So the parent does not delete them. It hands the owner exact guarded commands to run with `!`, and updates LANDING_NOTES once the owner confirms.
+
+## Open owner decisions
+
+- **RESOLVED 2026-09-14 19:30:21:** the owner deleted `data/chroma_multi`, `data/web_search_credits.json`, `data/user_profile.json` and `scan_pre.stderr` with the parent's guarded script `~/daemon_checkpoints/gen_cleanup.sh`, after the parent verified with `--check`.
+  - The parent confirmed that exactly those four entries are gone and nothing else changed.
+  - **The data/ baseline for all later batches is `$S/data_baseline_post_cleanup.txt`.** Its entries: `benchmark_per_case.csv`, `chroma_db_v4`, `embedding_migration_manifest.json`, `pipeline`.
+  - `tests/unit/test_graph_integration.py` and `tests/test_web_search_manager.py` stay excluded, because they would recreate those files.
+- **RESOLVED 2026-09-14 (≈20:45):** the next-turn "not saved" notice question. The owner chose no chat text: logs plus a GUI status-bar message (see owner decision 4, REVISED).
+- **Still open for the owner, none blocking:**
+  - the H03b details are shown at its launch;
+  - before F13c-2, the parent will raise the SPA status-message shape and the `npm` test commands, if needed.
+
+## Class-guard requests
+
+- **CGR-008:** fully answered by F2, F3a, F3b and F4.
+- **CGR-007:** fully answered (#71–#92, responses base and `-2` to `-5`). #85, #86 and #89 are answered with evidence only and stay live in dm18; the class-guard owner decides between a detector change and accepted debt.
+- **CGR-009:** FULLY ANSWERED 2026-09-14 (responses base and `-2` … `-8`; the last was F12d). The anchor-to-batch map:
+  - F9a: #139 (base response);
+  - F9b: #122 (`-2`);
+  - F10: #130;
+  - F11a: #121, #147, #148;
+  - F11b: #132, #133, #134, #136;
+  - F12: #117–#120, #123, #125, #126, #141–#143.
+- **CGR-010:** every anchor is answered: #127 and #140 (F10a), #128 and #129 (F10b), #146 (F11a-1), #131 (F11b-1). The remaining work (receipts in F13a, F13b, F13c-1 and F13c-2) has no anchors and no response files.

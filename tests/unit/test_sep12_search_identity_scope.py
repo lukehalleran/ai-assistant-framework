@@ -4,7 +4,7 @@ user's OWN query gives a reason for it.
 
 Live incident: during a weighted-voting thought experiment the user wrote
 "I am referring to voting". The trigger LLM invented the search terms
-"current voting issues Illinois" and "Georgia Tech voting information" — a
+"current voting issues Illinois" and "Vermont Wrenfield voting information" — a
 BARE state name (no city to anchor the existing location backstop on) and an
 unprompted school name, neither justified by anything in the query.
 
@@ -131,21 +131,21 @@ class TestLiveVotingIncidentTrigger:
     def test_neither_state_nor_school_survives(self, monkeypatch, query):
         parsed, prompts = classify(
             monkeypatch, query,
-            ["current voting issues Illinois", "Georgia Tech voting information"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            ["current voting issues Illinois", "Vermont Wrenfield voting information"],
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
         assert parsed is not None
         joined_lower = _joined(parsed.search_terms).lower()
         assert "illinois" not in joined_lower
-        assert "georgia" not in joined_lower
-        assert "tech" not in joined_lower
+        assert "vermont" not in joined_lower
+        assert "wrenfield" not in joined_lower
 
     @pytest.mark.parametrize("query", [CLEAN_VOTING_QUERY, WRAPPED_VOTING_QUERY])
     def test_prompt_carries_no_school_line(self, monkeypatch, query):
         _, prompts = classify(
             monkeypatch, query,
-            ["current voting issues Illinois", "Georgia Tech voting information"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            ["current voting issues Illinois", "Vermont Wrenfield voting information"],
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
         assert prompts, "the trigger must have been called"
         assert "User's school:" not in prompts[0]
@@ -157,20 +157,20 @@ class TestLiveVotingIncidentDecompose:
     def test_neither_state_nor_school_survives(self, monkeypatch, query):
         decomposition, prompts = decompose(
             monkeypatch, query,
-            ["current voting issues Illinois", "Georgia Tech voting information"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            ["current voting issues Illinois", "Vermont Wrenfield voting information"],
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
         joined_lower = _joined(decomposition.sub_queries).lower()
         assert "illinois" not in joined_lower
-        assert "georgia" not in joined_lower
-        assert "tech" not in joined_lower
+        assert "vermont" not in joined_lower
+        assert "wrenfield" not in joined_lower
 
     @pytest.mark.parametrize("query", [CLEAN_VOTING_QUERY, WRAPPED_VOTING_QUERY])
     def test_prompt_carries_no_school_line(self, monkeypatch, query):
         _, prompts = decompose(
             monkeypatch, query,
-            ["current voting issues Illinois", "Georgia Tech voting information"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            ["current voting issues Illinois", "Vermont Wrenfield voting information"],
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
         assert prompts, "decompose_query must have called the model"
         assert "User's school:" not in prompts[0]
@@ -242,55 +242,55 @@ class TestInstitutionJustificationTrigger:
 
     def test_own_school_named_non_logistics_kept_and_prompted(self, monkeypatch):
         parsed, prompts = classify(
-            monkeypatch, "What is Georgia Tech's policy on student voting?",
-            ["Georgia Tech policy on student voting 2026"],
-            institution="Georgia Tech",
+            monkeypatch, "What is Vermont Wrenfield's policy on student voting?",
+            ["Vermont Wrenfield policy on student voting 2026"],
+            institution="Vermont Wrenfield",
         )
-        assert "georgia tech" in _joined(parsed.search_terms).lower()
-        assert "User's school: Georgia Tech" in prompts[0]
+        assert "vermont wrenfield" in _joined(parsed.search_terms).lower()
+        assert "User's school: Vermont Wrenfield" in prompts[0]
 
     def test_different_named_school_kept_users_own_removed(self, monkeypatch):
         parsed, _ = classify(
-            monkeypatch, "How does Harvard University handle student voting?",
-            ["Harvard University student voting", "Georgia Tech student voting"],
-            institution="Georgia Tech",
+            monkeypatch, "How does Quellmoor University handle student voting?",
+            ["Quellmoor University student voting", "Vermont Wrenfield student voting"],
+            institution="Vermont Wrenfield",
         )
         joined_lower = _joined(parsed.search_terms).lower()
-        assert "harvard university" in joined_lower
-        assert "georgia tech" not in joined_lower
+        assert "quellmoor university" in joined_lower
+        assert "vermont wrenfield" not in joined_lower
 
     def test_remote_school_deadline_gains_school_loses_location(self, monkeypatch):
         parsed, prompts = classify(
             monkeypatch, "when is the drop deadline",
             ["drop deadline Springfield Illinois"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
-        assert parsed.search_terms == ["Georgia Tech drop deadline"]
-        assert "User's school: Georgia Tech" in prompts[0]
+        assert parsed.search_terms == ["Vermont Wrenfield drop deadline"]
+        assert "User's school: Vermont Wrenfield" in prompts[0]
 
     def test_overlap_location_equals_institution_city(self, monkeypatch):
-        """location='Atlanta, Georgia' + institution='Georgia Tech': the
-        bare-state strip must not amputate 'Georgia Tech' into 'Tech'."""
+        """location='Marrowby, Vermont' + institution='Vermont Wrenfield': the
+        bare-state strip must not amputate 'Vermont Wrenfield' into 'Wrenfield'."""
         parsed, _ = classify(
             monkeypatch, "I am referring to voting",
-            ["Georgia Tech voting information", "Georgia voting issues"],
-            location="Atlanta, Georgia", institution="Georgia Tech",
+            ["Vermont Wrenfield voting information", "Vermont voting issues"],
+            location="Marrowby, Vermont", institution="Vermont Wrenfield",
         )
         assert parsed.search_terms == ["voting information", "voting issues"]
 
     def test_overlap_own_school_deadline_drops_trailing_city_state(self, monkeypatch):
         parsed, _ = classify(
-            monkeypatch, "when is the Georgia Tech drop deadline",
-            ["Georgia Tech drop deadline Atlanta, Georgia"],
-            location="Atlanta, Georgia", institution="Georgia Tech",
+            monkeypatch, "when is the Vermont Wrenfield drop deadline",
+            ["Vermont Wrenfield drop deadline Marrowby, Vermont"],
+            location="Marrowby, Vermont", institution="Vermont Wrenfield",
         )
-        assert parsed.search_terms == ["Georgia Tech drop deadline"]
+        assert parsed.search_terms == ["Vermont Wrenfield drop deadline"]
 
     def test_weather_still_localizes(self, monkeypatch):
         parsed, _ = classify(
             monkeypatch, "what's the weather tomorrow",
             ["weather tomorrow Springfield, Illinois"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
         assert parsed.search_terms == ["weather tomorrow Springfield, Illinois"]
 
@@ -299,37 +299,37 @@ class TestInstitutionJustificationDecompose:
 
     def test_own_school_named_non_logistics_kept_and_prompted(self, monkeypatch):
         decomposition, prompts = decompose(
-            monkeypatch, "What is Georgia Tech's policy on student voting?",
-            ["Georgia Tech policy on student voting 2026"],
-            institution="Georgia Tech",
+            monkeypatch, "What is Vermont Wrenfield's policy on student voting?",
+            ["Vermont Wrenfield policy on student voting 2026"],
+            institution="Vermont Wrenfield",
         )
-        assert "georgia tech" in _joined(decomposition.sub_queries).lower()
-        assert "User's school: Georgia Tech" in prompts[0]
+        assert "vermont wrenfield" in _joined(decomposition.sub_queries).lower()
+        assert "User's school: Vermont Wrenfield" in prompts[0]
 
     def test_different_named_school_kept_users_own_removed(self, monkeypatch):
         decomposition, _ = decompose(
-            monkeypatch, "How does Harvard University handle student voting?",
-            ["Harvard University student voting", "Georgia Tech student voting"],
-            institution="Georgia Tech",
+            monkeypatch, "How does Quellmoor University handle student voting?",
+            ["Quellmoor University student voting", "Vermont Wrenfield student voting"],
+            institution="Vermont Wrenfield",
         )
         joined_lower = _joined(decomposition.sub_queries).lower()
-        assert "harvard university" in joined_lower
-        assert "georgia tech" not in joined_lower
+        assert "quellmoor university" in joined_lower
+        assert "vermont wrenfield" not in joined_lower
 
     def test_remote_school_deadline_gains_school_loses_location(self, monkeypatch):
         decomposition, prompts = decompose(
             monkeypatch, "when is the drop deadline",
             ["drop deadline Springfield Illinois"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
-        assert decomposition.sub_queries == ["Georgia Tech drop deadline"]
-        assert "User's school: Georgia Tech" in prompts[0]
+        assert decomposition.sub_queries == ["Vermont Wrenfield drop deadline"]
+        assert "User's school: Vermont Wrenfield" in prompts[0]
 
     def test_overlap_location_equals_institution_city(self, monkeypatch):
         decomposition, _ = decompose(
             monkeypatch, "I am referring to voting",
-            ["Georgia Tech voting information", "Georgia voting issues"],
-            location="Atlanta, Georgia", institution="Georgia Tech",
+            ["Vermont Wrenfield voting information", "Vermont voting issues"],
+            location="Marrowby, Vermont", institution="Vermont Wrenfield",
         )
         assert decomposition.sub_queries == ["voting information", "voting issues"]
 
@@ -337,7 +337,7 @@ class TestInstitutionJustificationDecompose:
         decomposition, _ = decompose(
             monkeypatch, "what's the weather tomorrow",
             ["weather tomorrow Springfield, Illinois"],
-            location="Springfield, Illinois", institution="Georgia Tech",
+            location="Springfield, Illinois", institution="Vermont Wrenfield",
         )
         assert decomposition.sub_queries == ["weather tomorrow Springfield, Illinois"]
 
@@ -352,47 +352,47 @@ class TestHelperLevelExtras:
     def test_query_justifies_institution_academic_cue(self):
         from utils.institution_resolver import query_justifies_institution
         assert query_justifies_institution(
-            "when is the class withdrawal deadline", "Georgia Tech")
+            "when is the class withdrawal deadline", "Vermont Wrenfield")
 
     def test_query_justifies_institution_own_school_possessive(self):
         from utils.institution_resolver import query_justifies_institution
         assert query_justifies_institution(
-            "What is Georgia Tech's policy on voting?", "Georgia Tech")
+            "What is Vermont Wrenfield's policy on voting?", "Vermont Wrenfield")
 
     def test_query_justifies_institution_my_school_generic(self):
         from utils.institution_resolver import query_justifies_institution
         assert query_justifies_institution(
-            "can you look up my school's policy on this", "Georgia Tech")
+            "can you look up my school's policy on this", "Vermont Wrenfield")
 
     def test_query_justifies_institution_false_for_unrelated_query(self):
         from utils.institution_resolver import query_justifies_institution
         assert not query_justifies_institution(
-            "I am referring to voting", "Georgia Tech")
+            "I am referring to voting", "Vermont Wrenfield")
 
     def test_query_justifies_institution_false_for_different_school(self):
         from utils.institution_resolver import query_justifies_institution
         assert not query_justifies_institution(
-            "How does Harvard University handle student voting?", "Georgia Tech")
+            "How does Quellmoor University handle student voting?", "Vermont Wrenfield")
 
     def test_strip_unjustified_institution_removes_unprompted_school(self):
         from utils.institution_resolver import strip_unjustified_institution
         out = strip_unjustified_institution(
-            ["Georgia Tech voting information"], "I am referring to voting",
-            "Georgia Tech")
+            ["Vermont Wrenfield voting information"], "I am referring to voting",
+            "Vermont Wrenfield")
         assert out == ["voting information"]
 
     def test_strip_unjustified_institution_noop_when_justified(self):
         from utils.institution_resolver import strip_unjustified_institution
-        terms = ["Georgia Tech withdrawal deadline"]
+        terms = ["Vermont Wrenfield withdrawal deadline"]
         out = strip_unjustified_institution(
-            terms, "when is the class withdrawal deadline", "Georgia Tech")
+            terms, "when is the class withdrawal deadline", "Vermont Wrenfield")
         assert out == terms
 
     def test_strip_unjustified_institution_never_touches_other_school(self):
         from utils.institution_resolver import strip_unjustified_institution
-        terms = ["Harvard University student voting"]
+        terms = ["Quellmoor University student voting"]
         out = strip_unjustified_institution(
-            terms, "I am referring to voting", "Georgia Tech")
+            terms, "I am referring to voting", "Vermont Wrenfield")
         assert out == terms
 
     def test_query_justifies_location_bare_state_full_name(self):
@@ -410,8 +410,8 @@ class TestHelperLevelExtras:
     def test_query_justifies_location_state_inside_institution_span_excluded(self):
         from utils.location_resolver import query_justifies_location
         assert not query_justifies_location(
-            "when is the Georgia Tech drop deadline", "Atlanta, Georgia",
-            institution="Georgia Tech")
+            "when is the Vermont Wrenfield drop deadline", "Marrowby, Vermont",
+            institution="Vermont Wrenfield")
 
     def test_strip_unjustified_location_bare_state_no_city(self):
         from utils.location_resolver import strip_unjustified_location
@@ -423,19 +423,19 @@ class TestHelperLevelExtras:
     def test_strip_unjustified_location_protects_institution_span(self):
         from utils.location_resolver import strip_unjustified_location
         out = strip_unjustified_location(
-            ["Georgia Tech drop deadline Atlanta, Georgia"],
-            "when is the Georgia Tech drop deadline",
-            "Atlanta, Georgia", institution="Georgia Tech")
-        assert out == ["Georgia Tech drop deadline"]
+            ["Vermont Wrenfield drop deadline Marrowby, Vermont"],
+            "when is the Vermont Wrenfield drop deadline",
+            "Marrowby, Vermont", institution="Vermont Wrenfield")
+        assert out == ["Vermont Wrenfield drop deadline"]
 
     def test_scope_identity_terms_full_policy(self):
         from utils.institution_resolver import scope_identity_terms
         out = scope_identity_terms(
-            ["current voting issues Illinois", "Georgia Tech voting information"],
-            "I am referring to voting", "Springfield, Illinois", "Georgia Tech")
+            ["current voting issues Illinois", "Vermont Wrenfield voting information"],
+            "I am referring to voting", "Springfield, Illinois", "Vermont Wrenfield")
         joined_lower = " ".join(out).lower()
         assert "illinois" not in joined_lower
-        assert "georgia" not in joined_lower
+        assert "vermont" not in joined_lower
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +445,7 @@ class TestHelperLevelExtras:
 # Found while refereeing this batch: a bare "withdrawal" / "registration" /
 # "enrollment" / "transcript" made ANY query "academic logistics". Probed
 # through the deployed scope_identity_terms before the fix, every one of these
-# came back prefixed with the user's school ("Georgia Tech benzodiazepine
+# came back prefixed with the user's school ("Vermont Wrenfield benzodiazepine
 # withdrawal symptoms") and the trigger prompt carried the school line — the
 # owner's identity attached to a medical, civic or legal query sent to a
 # third-party search provider. Present since 2026-08-27 (apply_institution);
@@ -464,7 +464,7 @@ class TestCrossDomainCuesNeverCarryTheSchool:
     @pytest.mark.parametrize("query,term", CROSS_DOMAIN_CASES)
     def test_trigger_producer(self, monkeypatch, query, term):
         parsed, prompts = classify(
-            monkeypatch, query, [term], institution="Georgia Tech")
+            monkeypatch, query, [term], institution="Vermont Wrenfield")
         assert parsed.search_terms == [term]
         assert "User's school:" not in prompts[0]
 
@@ -472,15 +472,15 @@ class TestCrossDomainCuesNeverCarryTheSchool:
     def test_decompose_producer(self, monkeypatch, query, term):
         decomposition, prompts = decompose(
             monkeypatch, query, [term, f"{term} explained"],
-            institution="Georgia Tech")
+            institution="Vermont Wrenfield")
         assert decomposition.sub_queries == [term, f"{term} explained"]
         assert "User's school:" not in prompts[0]
 
     def test_llm_slip_on_a_civic_query_is_stripped(self, monkeypatch):
         parsed, _ = classify(
             monkeypatch, "when is the voter registration deadline",
-            ["Georgia Tech voter registration deadline"],
-            institution="Georgia Tech")
+            ["Vermont Wrenfield voter registration deadline"],
+            institution="Vermont Wrenfield")
         assert parsed.search_terms == ["voter registration deadline"]
 
     @pytest.mark.parametrize("query", [
@@ -490,9 +490,9 @@ class TestCrossDomainCuesNeverCarryTheSchool:
     def test_anchored_cross_domain_cue_still_names_the_school(self, monkeypatch, query):
         parsed, prompts = classify(
             monkeypatch, query, ["class withdrawal deadline fall 2026"],
-            institution="Georgia Tech")
-        assert parsed.search_terms == ["Georgia Tech class withdrawal deadline fall 2026"]
-        assert "User's school: Georgia Tech" in prompts[0]
+            institution="Vermont Wrenfield")
+        assert parsed.search_terms == ["Vermont Wrenfield class withdrawal deadline fall 2026"]
+        assert "User's school: Vermont Wrenfield" in prompts[0]
 
 
 SCHOOL_EXCHANGE = (
@@ -514,36 +514,36 @@ class TestReferentialFollowUpContext:
     @pytest.mark.parametrize("query", ["is it this Friday?", "is it\n  this Friday?"])
     def test_referential_follow_up_keeps_the_school(self, monkeypatch, query):
         parsed, prompts = classify(
-            monkeypatch, query, ["Georgia Tech drop deadline Friday"],
-            institution="Georgia Tech", conversation_context=SCHOOL_EXCHANGE)
-        assert parsed.search_terms == ["Georgia Tech drop deadline Friday"]
-        assert "User's school: Georgia Tech" in prompts[0]
+            monkeypatch, query, ["Vermont Wrenfield drop deadline Friday"],
+            institution="Vermont Wrenfield", conversation_context=SCHOOL_EXCHANGE)
+        assert parsed.search_terms == ["Vermont Wrenfield drop deadline Friday"]
+        assert "User's school: Vermont Wrenfield" in prompts[0]
 
     def test_referential_follow_up_gains_the_school_for_generic_terms(self, monkeypatch):
         parsed, _ = classify(
             monkeypatch, "is it this Friday?", ["drop deadline Friday 2026"],
-            institution="Georgia Tech", conversation_context=SCHOOL_EXCHANGE)
-        assert parsed.search_terms == ["Georgia Tech drop deadline Friday 2026"]
+            institution="Vermont Wrenfield", conversation_context=SCHOOL_EXCHANGE)
+        assert parsed.search_terms == ["Vermont Wrenfield drop deadline Friday 2026"]
 
     def test_non_referential_query_does_not_inherit_the_school(self, monkeypatch):
         parsed, prompts = classify(
             monkeypatch, "what is the latest election news",
-            ["Georgia Tech election news"],
-            institution="Georgia Tech", conversation_context=SCHOOL_EXCHANGE)
+            ["Vermont Wrenfield election news"],
+            institution="Vermont Wrenfield", conversation_context=SCHOOL_EXCHANGE)
         assert parsed.search_terms == ["election news"]
         assert "User's school:" not in prompts[0]
 
     def test_referential_follow_up_without_school_context_strips(self, monkeypatch):
         parsed, prompts = classify(
-            monkeypatch, "is that fair?", ["Georgia Tech weighted voting fairness"],
-            institution="Georgia Tech", conversation_context=UNRELATED_EXCHANGE)
+            monkeypatch, "is that fair?", ["Vermont Wrenfield weighted voting fairness"],
+            institution="Vermont Wrenfield", conversation_context=UNRELATED_EXCHANGE)
         assert parsed.search_terms == ["weighted voting fairness"]
         assert "User's school:" not in prompts[0]
 
     def test_school_merely_named_earlier_does_not_rejustify(self, monkeypatch):
-        named_only = ("User: my Georgia Tech homework is done\n"
+        named_only = ("User: my Vermont Wrenfield homework is done\n"
                       "Assistant: Nice work finishing it.")
         parsed, _ = classify(
-            monkeypatch, "is that fair?", ["Georgia Tech voting fairness"],
-            institution="Georgia Tech", conversation_context=named_only)
+            monkeypatch, "is that fair?", ["Vermont Wrenfield voting fairness"],
+            institution="Vermont Wrenfield", conversation_context=named_only)
         assert parsed.search_terms == ["voting fairness"]

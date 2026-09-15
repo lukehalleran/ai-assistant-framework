@@ -48,7 +48,7 @@ _FACTS = [
     {"fact_id": "f_today", "relation": "time_off_work", "value": "today", "is_current": True},
     {"fact_id": "f_weekday", "relation": "texted", "value": "on thursday", "is_current": True},
     {"fact_id": "f_clause", "relation": "has_doctor",
-     "value": "Rowan is cautious about drinking due to past accident", "is_current": True},
+     "value": "Ellery is cautious about drinking due to past accident", "is_current": True},
     {"fact_id": "f_demo", "relation": "works_on", "value": "this assistant", "is_current": True},
     {"fact_id": "f_real", "relation": "likes", "value": "pizza", "is_current": True},
     {"fact_id": "f_portal", "relation": "doctor_communication", "value": "no patient portal", "is_current": True},
@@ -104,12 +104,12 @@ def _graph(tmp_path) -> GraphMemory:
     gm = GraphMemory(persist_path=str(tmp_path / "graph.json"))
     for eid, name, etype in (("user", "User", "person"), ("today", "today", "other"),
                              ("on_thursday", "on Thursday", "other"), ("biscuit", "Biscuit", "pet"),
-                             ("rowan", "Rowan", "person")):
+                             ("ellery", "Ellery", "person")):
         gm.add_entity(GraphNode(entity_id=eid, display_name=name, entity_type=etype))
     gm.add_relation(GraphEdge(source_id="user", target_id="today", relation="dad", weight=1.0))
-    gm.add_relation(GraphEdge(source_id="rowan", target_id="on_thursday", relation="texted", weight=1.0))
+    gm.add_relation(GraphEdge(source_id="ellery", target_id="on_thursday", relation="texted", weight=1.0))
     gm.add_relation(GraphEdge(source_id="user", target_id="biscuit", relation="has_cat", weight=1.0))
-    gm.add_relation(GraphEdge(source_id="user", target_id="rowan", relation="friend_of", weight=1.0))
+    gm.add_relation(GraphEdge(source_id="user", target_id="ellery", relation="friend_of", weight=1.0))
     gm.save()
     return gm
 

@@ -42,6 +42,7 @@ import sys
 import os
 import shutil
 import json
+import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -158,6 +159,57 @@ def get_external_data_dir() -> Optional[str]:
         return default_path
 
     return None
+
+
+_profile_path_logger = logging.getLogger("daemon.bootstrap")
+
+
+def get_user_profile_path() -> str:
+    """
+    Resolve the single authoritative user-profile path, at call time (F02,
+    BC-10, BC-58: four resolvers and UserProfile each hardcoded their own
+    cwd-relative default; this is the one place all of them now defer to).
+
+    Resolution order:
+      1. `USER_PROFILE_PATH` from the environment, if set and non-empty.
+      2. The authoritative default: <get_user_data_dir()>/user_profile.json.
+      3. Compatibility read: if the authoritative default does not exist but
+         a legacy location does, return the legacy path (no copy, move, or
+         write) and log one warning naming both paths.
+
+    Legacy candidates, in order: when frozen, the old UserProfile default
+    under %APPDATA%/Daemon; in every mode, the old cwd-relative
+    "data/user_profile.json". A legacy candidate identical to the
+    authoritative path is never treated as a legacy hit, and an explicitly
+    set USER_PROFILE_PATH is never overridden by a legacy file.
+    """
+    env_path = os.environ.get('USER_PROFILE_PATH', '').strip()
+    if env_path:
+        return env_path
+
+    authoritative = os.path.join(get_user_data_dir(), 'user_profile.json')
+    if os.path.exists(authoritative):
+        return authoritative
+
+    legacy_candidates = []
+    if IS_FROZEN:
+        appdata = os.environ.get('APPDATA', '')
+        legacy_candidates.append(os.path.join(appdata, 'Daemon', 'user_profile.json'))
+    legacy_candidates.append(os.path.join('data', 'user_profile.json'))
+
+    for legacy in legacy_candidates:
+        if legacy == authoritative:
+            continue
+        if os.path.exists(legacy):
+            _profile_path_logger.warning(
+                "[Bootstrap] Authoritative profile path %s does not exist; "
+                "using legacy profile at %s instead (compatibility read, no "
+                "copy/move/write performed).",
+                authoritative, legacy,
+            )
+            return legacy
+
+    return authoritative
 
 
 # =============================================================================

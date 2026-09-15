@@ -77,7 +77,7 @@ class TestCalendarWeakWordDoesNotShadowNote:
         # The exact live 2026-09-10 shape this pattern was added FOR must
         # keep working: a named recurring session/office-hours slot with no
         # "calendar"/"event" word, and no NOTE word either.
-        r14 = ("Queuing it now: **MGT 6203 TA Session — Saturdays 11:00 AM–12:00 PM CT, "
+        r14 = ("Queuing it now: **ABC 1234 TA Session — Saturdays 11:00 AM–12:00 PM CT, "
                "weekly through December 12**, Zoom link https://example.zoom.us/j/000 "
                "attached. You should see the approval card pop up — if it doesn't show "
                "this time either, tell me.")

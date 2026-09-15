@@ -64,7 +64,7 @@ def mock_memory_coordinator():
 @pytest.fixture
 def mock_user_profile():
     up = MagicMock()
-    up.get_context_injection = MagicMock(return_value="Name: Luke | Interests: AI, Python")
+    up.get_context_injection = MagicMock(return_value="Name: Alex | Interests: AI, Python")
     return up
 
 
@@ -144,7 +144,7 @@ class TestGatherProposalContext:
     async def test_includes_user_profile(self, shutdown_processor):
         result = await shutdown_processor._gather_proposal_context(_make_session_items())
         assert "User Profile" in result
-        assert "Luke" in result
+        assert "Alex" in result
 
     @pytest.mark.asyncio
     async def test_includes_conversation(self, shutdown_processor):

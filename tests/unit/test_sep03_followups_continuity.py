@@ -29,7 +29,7 @@
    proper nouns always; sentence-initial names only via a graph-backed
    person/pet allow-gate) and the formatter names the missing entities.
 
-All fixtures use synthetic vocabulary (pets Biscuit/Mochi, people Casey/Morgan).
+All fixtures use synthetic vocabulary (pets Biscuit/Mochi, people Tamsin/Morgan).
 """
 import asyncio
 import json

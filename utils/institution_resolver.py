@@ -7,7 +7,7 @@ August 2026" / "school withdrawal deadline August 2026" — the trigger LLM
 first attached the user's CITY ("Springfield, Illinois college drop date",
 the wrong-college class; correctly stripped by strip_unjustified_location)
 and then had nothing to name the school with, even though the profile knows
-`school = Georgia Tech` (confidence 1.0). Generic academic-logistics queries
+`school = Vermont Wrenfield` (confidence 1.0). Generic academic-logistics queries
 return generic pages; the institution is the discriminating term.
 
 Resolution order:
@@ -21,8 +21,8 @@ Scope guards (the wrong-college doctrine, inverted):
   - The institution attaches ONLY to academic-logistics queries (drop/
     withdrawal deadlines, registrar, enrollment, tuition, academic calendar,
     transcripts...). Never to generic queries.
-  - Never when the query names a DIFFERENT institution — "when is Harvard's
-    drop deadline" must stay Harvard's.
+  - Never when the query names a DIFFERENT institution — "when is Quellmoor
+    University's drop deadline" must stay Quellmoor University's.
   - Values must look like an institution name (short TitleCase phrase), not
     profile sentence junk ("in third best grad program in nation").
 
@@ -41,6 +41,7 @@ import re
 import threading
 from typing import List, Optional
 
+from utils.bootstrap import get_user_profile_path
 from utils.logging_utils import get_logger
 
 logger = get_logger("institution_resolver")
@@ -48,11 +49,9 @@ logger = get_logger("institution_resolver")
 INSTITUTION_ENABLED = os.getenv("INSTITUTION_SEARCH_ENABLED", "1") == "1"
 INSTITUTION_OVERRIDE = os.getenv("DAEMON_USER_INSTITUTION", "")
 
-_DEFAULT_PROFILE_PATH = os.path.join("data", "user_profile.json")
-
 # Relations that name the user's school, in preference order. `university`
 # last: the profile can carry a PAST school under it (a stored
-# "University of Wisconsin-Madison" alongside the current "Georgia Tech").
+# "University of Tarnwick-Hollow" alongside the current "Vermont Wrenfield").
 _SCHOOL_RELATIONS = ("school", "attends_school", "attends", "university")
 
 # Relations that name the user's employer, in preference order.
@@ -121,7 +120,7 @@ _NAMED_INSTITUTION_RE = re.compile(
 )
 
 # Generic school words inside a search term that the institution name should
-# REPLACE ("college drop date" → "Georgia Tech drop date"). Longest first.
+# REPLACE ("college drop date" → "Vermont Wrenfield drop date"). Longest first.
 _GENERIC_SCHOOL_RE = re.compile(
     r"\b(?:my\s+(?:school|college|university|program)|grad\s+school|"
     r"college|university|school)\b",
@@ -133,7 +132,7 @@ class InstitutionResolver:
     """Profile-backed institution lookup with mtime caching. Never blocks."""
 
     def __init__(self, profile_path: Optional[str] = None):
-        self.profile_path = profile_path or _DEFAULT_PROFILE_PATH
+        self.profile_path = profile_path or get_user_profile_path()
         self._cached: Optional[str] = None
         self._mtime: Optional[float] = None
         self._cached_anchors: Optional[List[str]] = None
@@ -326,8 +325,8 @@ def query_justifies_institution(
     names the user's OWN school, or when it refers to "my school/college/
     university/program" generically. Otherwise False — an unrelated query
     carrying no school-relevant cue at all must not have the school attached
-    (2026-09-12: "I am referring to voting" produced the search term "Georgia
-    Tech voting information" with nothing in the query pointing at school
+    (2026-09-12: "I am referring to voting" produced the search term "Vermont
+    Wrenfield voting information" with nothing in the query pointing at school
     logistics or the school itself).
 
     `context` is the bounded prior-turn digest, passed ONLY for a referential
@@ -406,10 +405,10 @@ def strip_unjustified_institution(
     name — plus a trailing possessive — from every generated search term.
     Terms that were nothing but the institution are dropped. Only ever
     touches the resolved institution STRING itself; a DIFFERENT institution
-    the query or terms name is never removed (2026-09-12: "Georgia Tech
+    the query or terms name is never removed (2026-09-12: "Vermont Wrenfield
     voting information" needed the school stripped from a query with no
-    school cue at all; "Harvard University student voting" must stay
-    untouched when the user's own school is Georgia Tech). Returns the
+    school cue at all; "Quellmoor University student voting" must stay
+    untouched when the user's own school is Vermont Wrenfield). Returns the
     (possibly unchanged) list; logs when it fires."""
     if not terms or not institution or not (institution := institution.strip()):
         return terms
@@ -457,7 +456,7 @@ def scope_identity_terms(
     unjustified institution, then run the deterministic institution backstop
     (which can re-introduce the institution into a term that stayed
     academic-logistics-generic once its location was removed, e.g. "drop
-    deadline" -> "Georgia Tech drop deadline")."""
+    deadline" -> "Vermont Wrenfield drop deadline")."""
     from utils.location_resolver import strip_unjustified_location
 
     if terms and location:

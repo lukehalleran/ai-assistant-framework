@@ -156,7 +156,7 @@ LIVE_HOMEWORK_PASTE = (
 )
 
 LIVE_HEAVY_PROSE_ROWS = [
-    "Hang on. I dropped cse 6040 today before the deadline which I believe",
+    "Hang on. I dropped abc 1234 today before the deadline which I believe",
     "Water. I don't understand why my doctor didn't warn me about this",
     "Yeah that's like a warning sign I watch for. If I get itchy",
     "I need to finish this before the deadline tonight and I am tired",

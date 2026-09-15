@@ -32,6 +32,7 @@ Integration:
 from enum import Enum
 from typing import List, Optional, Dict, Any
 from utils.logging_utils import get_logger
+from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
 import re
 
 logger = get_logger("escalation_tracker")
@@ -217,7 +218,15 @@ class EscalationTracker:
         # Floor-produced levels hold the counter without incrementing it:
         # only ORGANIC distress turns may advance toward the threshold.
         if is_distress:
-            if (tone_trigger or "") != "distress_sticky_floor":
+            # T03 (2026-09-13, owner-confirmed "hold, not reset"): a negated
+            # crisis phrase under news framing is CONCERN for this turn only
+            # and holds the counter exactly like distress_sticky_floor —
+            # neither trigger is fresh ORGANIC evidence of the user's own
+            # distress.
+            if (tone_trigger or "") not in (
+                "distress_sticky_floor",
+                OBSERVATIONAL_NEGATED_CRISIS_TRIGGER,
+            ):
                 self.consecutive_distress_count += 1
         else:
             self.consecutive_distress_count = 0

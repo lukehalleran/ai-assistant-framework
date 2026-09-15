@@ -166,7 +166,7 @@ def _looks_like_lyrics(text: str) -> bool:
         return False
 
     # 2026-08-29: terminal-wrapped prose guard. A single wrapped sentence
-    # ("Please search for documents related to the MGT class\n  I am
+    # ("Please search for documents related to the ABC class\n  I am
     # enrolled in, …") is 4 short lines with no '?' and was stored
     # content_type=lyrics. Wrapping indents its continuation lines — verse
     # lines start at column 0. Half or more of the continuation lines

@@ -1978,7 +1978,7 @@ Ties broken by recency.
 ### Contradiction Detection
 
 For facts specifically: group by `(subject, predicate)` and find entries
-with different objects. For example: "user | lives_in | Atlanta" vs
+with different objects. For example: "user | lives_in | Marrowby" vs
 "user | lives_in | Denver".
 
 **Cluster exclusions (2026-08-03 — the live queue had `medication_name=Zelphex`
@@ -2973,7 +2973,7 @@ the agentic context. Email proposals go through
 resolved email address in the confirmation prompt.
 
 The agentic gate in `gate.py` includes email-by-name patterns in its
-Tier 1 keyword heuristics (e.g., "email Meagan", "send X an email",
+Tier 1 keyword heuristics (e.g., "email Maren", "send X an email",
 "find email", "'s contact") to ensure contact resolution queries route
 through the agentic loop.
 
@@ -3200,7 +3200,7 @@ propose a stance but the classifier OVERRIDES on lexicon hits.
 Daemon runs (`utils/daemon_guard`), pre-image backups to
 `data/backups/stance_backfill_<ts>/`, classifies all facts + graph edges
 with THE deployed classifier, hard sentinel (exits nonzero unless the
-known casey|is|evil fact classifies appraisal). Dry-run validated on live
+known tamsin|is|evil fact classifies appraisal). Dry-run validated on live
 data 2026-08-23: 3268 facts (20 appraisal), 987 edges; `--apply`
 owner-gated.
 

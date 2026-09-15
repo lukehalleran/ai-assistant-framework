@@ -105,6 +105,7 @@ from .hygiene import ContentHygiene
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
 import hashlib as _hashlib
 from utils.ordered_slice import newest_first as _ordered_newest_first
+from utils.retrieval_outcome import outcome_status
 
 logger = get_logger("prompt_builder")
 
@@ -547,7 +548,7 @@ def _is_action_request_query(query: str) -> bool:
     """True for an explicit write-action request (calendar/email/github/…) —
     detect_action_intent already routes these to tools; encyclopedic wiki
     lookups have no use there. Live 2026-09-10 (A4): "put a recurring
-    calendar event on my google calendar for the MGT study group, Tuesdays
+    calendar event on my google calendar for the ABC study group, Tuesdays
     at 3, through Dec 4" ran a 3.6s wiki FAISS lookup in parallel with the
     gate's own (correct) tools routing."""
     try:
@@ -1062,14 +1063,20 @@ class UnifiedPromptBuilder:
             # Step 2: Gather narrative context (synchronous, cheap file read)
             # Gated by intent override: max_narrative=0 skips entirely
             narrative_state = ""
+            # Per-section retrieval outcome, keyed like task_timings (CGR-007,
+            # F5). Absence means "not attempted" (e.g. a max_*=0 gate).
+            section_outcomes: Dict[str, Dict[str, str]] = {}
             _ro_pre = _ro
             if _ro_pre.get("max_narrative", 1) > 0:
                 try:
                     narrative_state = self.context_gatherer.get_narrative_context()
                     if narrative_state:
                         logger.debug(f"[PromptBuilder] Got narrative context ({len(narrative_state)} chars)")
+                    _n_status, _n_reason = outcome_status(narrative_state)
+                    section_outcomes["narrative"] = {"status": _n_status, "reason": _n_reason}
                 except Exception as e:
                     logger.debug(f"[PromptBuilder] Failed to get narrative context: {e}")
+                    section_outcomes["narrative"] = {"status": "failed", "reason": type(e).__name__}
 
             # Apply intent-driven retrieval count overrides
             eff_max_recent = _ro.get("max_recent", PROMPT_MAX_RECENT)
@@ -1536,17 +1543,29 @@ class UnifiedPromptBuilder:
                 for name, task in tasks.items():
                     if task in done:
                         try:
-                            gathered[name] = task.result() or []
+                            _raw = task.result()
+                            # Read the status BEFORE `or []` — an empty
+                            # OutcomeList is falsy and would otherwise lose
+                            # its status to the flattening (CGR-007 trap).
+                            _status, _reason = outcome_status(_raw)
+                            section_outcomes[name] = {"status": _status, "reason": _reason}
+                            gathered[name] = _raw or []
                             if name == "memories":
                                 logger.debug(f"MEMORIES TASK: Got {len(gathered[name])} memories")
                             if name == "proposed_features":
                                 logger.info(f"[PROPOSED_FEATURES] Task returned {len(gathered[name])} proposals")
                         except (Exception, asyncio.CancelledError) as exc:
+                            _cancelled = isinstance(exc, asyncio.CancelledError)
+                            section_outcomes[name] = {
+                                "status": "unavailable" if _cancelled else "failed",
+                                "reason": "cancelled" if _cancelled else type(exc).__name__,
+                            }
                             logger.warning("Context task %s failed: %s", name, exc)
                             gathered[name] = []
                     else:
                         task.cancel()
                         gathered[name] = []
+                        section_outcomes[name] = {"status": "unavailable", "reason": "timeout"}
                         timed_out_names.append(name)
 
                 if timed_out_names:
@@ -1568,6 +1587,9 @@ class UnifiedPromptBuilder:
             except Exception as _gather_exc:
                 logger.warning("Unexpected error during context gathering: %s", _gather_exc)
                 gathered = {name: [] for name in tasks.keys()}
+                section_outcomes.update(
+                    {name: {"status": "failed", "reason": "gather_error"} for name in tasks.keys()}
+                )
             finally:
                 # asyncio.wait does not cancel its children when this request
                 # is cancelled. Drain them before clearing request-specific
@@ -2097,6 +2119,7 @@ class UnifiedPromptBuilder:
 
             # Attach timing metadata for interpretability (underscore-prefixed to avoid collision)
             prompt_ctx["_task_timings"] = dict(task_timings)
+            prompt_ctx["_section_outcomes"] = dict(section_outcomes)
             prompt_ctx["_gather_elapsed"] = locals().get('_gather_elapsed', 0.0)
             prompt_ctx["_build_time"] = build_time
             prompt_ctx["_phase_timings"] = phase_timings

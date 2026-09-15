@@ -25,6 +25,7 @@ async def run(orch, run_dir, captured):
     import httpx
     import uvicorn
     from api.app import create_app
+    from api.launch_auth import LAUNCH_TOKEN_HEADER, generate_launch_secret
     from api.routes import files
     from gui import handlers
     from memory.corpus_manager import CorpusManager
@@ -33,13 +34,20 @@ async def run(orch, run_dir, captured):
     cm = orch.memory_system.corpus_manager
     cm.add_entry("Audit attachment: " + "large reference text " * 24000,
                  "The earlier attachment was received.", tags=["audit"])
-    app = create_app(orch, start_background=False)
+    # A01 (F01, G06-T02): create_app() now rejects any request that lacks a
+    # matching launch token or a loopback-Host/same-origin match. This is a
+    # real bound socket, so the Host the server sees is "127.0.0.1:<port>"
+    # for whatever port the OS assigned — generate one secret here and send
+    # both the token header and a same-origin Origin on every request.
+    secret = generate_launch_secret()
+    app = create_app(orch, start_background=False, launch_secret=secret)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="on"))
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(16)
     port = listener.getsockname()[1]
     task = asyncio.create_task(server.serve(sockets=[listener]))
+    origin = f"http://127.0.0.1:{port}"
     try:
         async with asyncio.timeout(45):
             while not server.started:
@@ -47,7 +55,8 @@ async def run(orch, run_dir, captured):
                     await task
                     raise RuntimeError("server exited before startup")
                 await asyncio.sleep(0.05)
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=60) as client:
+        headers = {LAUNCH_TOKEN_HEADER: secret, "Origin": origin}
+        async with httpx.AsyncClient(base_url=origin, timeout=60, headers=headers) as client:
             assert (await client.get("/api/session")).json()["history"] == []
             first = await client.post("/api/chat", json={"text": "thanks"})
             assert first.status_code == 200 and "event: complete" in first.text

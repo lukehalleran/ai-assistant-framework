@@ -271,7 +271,7 @@ class TestNeedTeacherSkip:
                 calls.append((a, kw))
 
         code_msg = (
-            "#####MGT HW 1 PT 1 #QUESTION 1 #read csv data file into data "
+            "#####ABC HW 1 PT 1 #QUESTION 1 #read csv data file into data "
             'frame used_car_data <- read.csv("UsedCars.csv")'
         )
         with patch.object(nd, "_keyword_need_detection", return_value=strong), \

@@ -106,7 +106,7 @@ TEST_CASES = [
         "message": "I'm really anxious about these insurance costs",
         "expected": CrisisLevel.CONCERN,
         "category": "moderate_concern",
-        "description": "Financial anxiety - from Luke's log"
+        "description": "Financial anxiety - from Alex's log"
     },
     {
         "message": "I'm freaking out a bit about this deadline",
@@ -128,7 +128,7 @@ TEST_CASES = [
         "message": "Woke up at 10",
         "expected": CrisisLevel.CONVERSATIONAL,
         "category": "status_update",
-        "description": "Simple status - from Luke's log"
+        "description": "Simple status - from Alex's log"
     },
     {
         "message": "Work at 4:30",
@@ -148,7 +148,7 @@ TEST_CASES = [
         "message": "42 million people are losing food aid due to SNAP cuts. That 3.5% threshold is brutal.",
         "expected": CrisisLevel.CONVERSATIONAL,
         "category": "world_observation",
-        "description": "SNAP cuts concern - from Luke's log"
+        "description": "SNAP cuts concern - from Alex's log"
     },
     {
         "message": "People are really struggling with these deportation raids. ICE arrested hundreds in Chicago.",
@@ -195,7 +195,7 @@ TEST_CASES = [
         "description": "Hobby/interest"
     },
 
-    # Circadian rhythm discussion (from Luke's log - was over-therapized)
+    # Circadian rhythm discussion (from Alex's log - was over-therapized)
     {
         "message": "Being synced with daylight makes a huge difference for productivity",
         "expected": CrisisLevel.CONVERSATIONAL,

@@ -468,7 +468,7 @@ class TestTemporalStalenessCurator:
              "value": "self-service W deadline Sat Oct 31, 2026 11:59 PM ET",
              "is_current": True},
             {"fact_id": "f3", "relation": "program",
-             "value": "OMSA at Georgia Tech since 2026-01-05",
+             "value": "MXS at Vermont Wrenfield since 2026-01-05",
              "is_current": True},
         ])
         cur = TemporalStalenessCurator()

@@ -2,8 +2,8 @@
 
 Live misfire (16:52 turn): asked whether his first assignment "is just a quiz
 on lectures or is there deliverable", the trigger LLM said search at conf 0.8
-with terms ['Georgia Tech assignment due September 13 2026', ...] — 6 Tavily
-credits returned GT football schedules while the answer sat in his own
+with terms ['Vermont Wrenfield assignment due September 13 2026', ...] — 6 Tavily
+credits returned XW football schedules while the answer sat in his own
 syllabus/schedule docs. The guard suppresses searches whose EVERY term is a
 personal-context anchor + private-sphere-generic nouns + time tokens — one
 categorized vocabulary spanning school / work / appointments / hobby domains
@@ -17,34 +17,34 @@ import pytest
 from utils.web_search_trigger import terms_are_private_sphere_generic
 
 
-GT = ["Georgia Tech"]
+SCHOOL_ANCHORS = ["Vermont Wrenfield"]
 
 LIVE_TERMS = [
-    "Georgia Tech assignment due September 13 2026",
-    "Georgia Tech first assignment details September 2026",
-    "Georgia Tech course quiz or deliverable September 2026",
+    "Vermont Wrenfield assignment due September 13 2026",
+    "Vermont Wrenfield first assignment details September 2026",
+    "Vermont Wrenfield course quiz or deliverable September 2026",
 ]
 
 
 class TestSchoolDomain:
     def test_live_terms_suppressed(self):
-        assert terms_are_private_sphere_generic(LIVE_TERMS, GT)
+        assert terms_are_private_sphere_generic(LIVE_TERMS, SCHOOL_ANCHORS)
 
     def test_registrar_public_query_rescued(self):
         # The institution feature's flagship query — "drop" is not
         # private-sphere vocabulary, registrar facts ARE on the web.
         assert not terms_are_private_sphere_generic(
-            ["Georgia Tech drop date August 2026"], GT)
+            ["Vermont Wrenfield drop date August 2026"], SCHOOL_ANCHORS)
 
     def test_course_code_rescued(self):
         assert not terms_are_private_sphere_generic(
-            ["Georgia Tech MGT 6203 first assignment"], GT)
+            ["Vermont Wrenfield ABC 1234 first assignment"], SCHOOL_ANCHORS)
 
     def test_public_event_word_rescued(self):
         # "game" is deliberately not in the vocabulary (public-event
         # polysemy) and the term has no private-sphere noun at all.
         assert not terms_are_private_sphere_generic(
-            ["Georgia Tech game September 2026"], GT)
+            ["Vermont Wrenfield game September 2026"], SCHOOL_ANCHORS)
 
 
 class TestWorkDomain:
@@ -60,7 +60,7 @@ class TestWorkDomain:
         # An org we have no anchor for: its name is a content word — the
         # search might legitimately find something. Under-fires by design.
         assert not terms_are_private_sphere_generic(
-            ["Acme standup meeting time"], GT)
+            ["Acme standup meeting time"], SCHOOL_ANCHORS)
 
 
 class TestOtherDomains:
@@ -79,17 +79,17 @@ class TestOtherDomains:
 
 class TestGuardShape:
     def test_empty_terms_never_fire(self):
-        assert not terms_are_private_sphere_generic([], GT)
-        assert not terms_are_private_sphere_generic(None, GT)
+        assert not terms_are_private_sphere_generic([], SCHOOL_ANCHORS)
+        assert not terms_are_private_sphere_generic(None, SCHOOL_ANCHORS)
 
     def test_requires_a_private_sphere_noun(self):
         # Pure anchor+time junk is the gate's temporal-generic guard's job.
         assert not terms_are_private_sphere_generic(
-            ["Georgia Tech September 2026"], GT)
+            ["Vermont Wrenfield September 2026"], SCHOOL_ANCHORS)
 
     def test_one_specific_term_rescues_the_batch(self):
         assert not terms_are_private_sphere_generic(
-            LIVE_TERMS + ["MGT 6203 homework 1 R linear regression"], GT)
+            LIVE_TERMS + ["ABC 1234 homework 1 R linear regression"], SCHOOL_ANCHORS)
 
     def test_anchor_none_entries_tolerated(self):
         assert terms_are_private_sphere_generic(
@@ -119,7 +119,7 @@ class TestTriggerWiring:
     LLM output — the suppression must flip should_search at the parse
     layer so BOTH consumers (agentic gate + builder web path) inherit."""
 
-    def _classify(self, raw, institution="Georgia Tech"):
+    def _classify(self, raw, institution="Vermont Wrenfield"):
         import utils.institution_resolver as ir
         import utils.location_resolver as lr
         import utils.web_search_trigger as wst
@@ -153,7 +153,7 @@ class TestTriggerWiring:
         raw = json.dumps({
             "should_search": True,
             "confidence": 0.8,
-            "search_terms": ["Georgia Tech fall 2026 drop deadline"],
+            "search_terms": ["Vermont Wrenfield fall 2026 drop deadline"],
             "search_depth": "quick",
             "num_searches": 1,
             "reasoning": "registrar logistics",

@@ -356,7 +356,7 @@ class TestFallbackTermsFromQuery:
         assert "web search" not in out.lower()
 
     def test_plain_query_unchanged(self):
-        q = "Georgia Tech fall 2026 withdrawal deadline"
+        q = "Vermont Wrenfield fall 2026 withdrawal deadline"
         assert AgenticSearchController._fallback_terms_from_query(q) == q
 
     def test_short_remainder_falls_back_to_query(self):

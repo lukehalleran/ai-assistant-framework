@@ -9,9 +9,9 @@ from utils.privacy_redaction import (
 
 def test_redact_text_removes_structured_pii_and_credentials():
     source = (
-        "Email student@example.edu; phone (404) 555-0123; GTID 900123456; "
+        "Email student@example.edu; phone (404) 555-0123; Student ID 900123456; "
         "SSN 123-45-6789; DOB: January 2, 2000\n"
-        "Home address: 100 Example Street, Atlanta, GA\n"
+        "Home address: 100 Example Street, Marrowby, GA\n"
         "api_key=sk-example000000000000000000"
     )
 
@@ -45,14 +45,14 @@ def test_redact_text_preserves_debug_numbers_and_is_idempotent():
 def test_redact_data_does_not_mutate_nested_record():
     source = {
         "query": "email me at student@example.edu",
-        "provenance": {"snippets": ["GTID: 900123456"]},
+        "provenance": {"snippets": ["Student ID: 900123456"]},
         "count": 2,
     }
 
     result = redact_data(source)
 
     assert result["query"] == "email me at [REDACTED EMAIL]"
-    assert result["provenance"]["snippets"] == ["GTID: [REDACTED ID]"]
+    assert result["provenance"]["snippets"] == ["Student ID: [REDACTED ID]"]
     assert result["count"] == 2
     assert source["query"] == "email me at student@example.edu"
 

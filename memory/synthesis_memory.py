@@ -40,6 +40,7 @@ from knowledge.synthesis_models import (
     SynthesisResult,
 )
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import RetrievalError
 
 logger = get_logger(__name__)
 
@@ -96,7 +97,9 @@ class SynthesisMemory:
             return sorted(matches, key=lambda x: x[1], reverse=True)
         except Exception as e:
             logger.error(f"Error finding similar synthesis results: {e}")
-            return []
+            raise RetrievalError(
+                source="synthesis_memory", reason=f"find_similar:{type(e).__name__}"
+            ) from e
 
     def store_result(self, result: SynthesisResult) -> str:
         """Store a new synthesis result. Returns the document ID.
@@ -205,7 +208,9 @@ class SynthesisMemory:
             return sorted(converging, key=lambda r: r.convergence_strength, reverse=True)
         except Exception as e:
             logger.error(f"Error fetching recurring results: {e}")
-            return []
+            raise RetrievalError(
+                source="synthesis_memory", reason=f"recurring:{type(e).__name__}"
+            ) from e
 
     def create_bridge_edge(
         self,
@@ -432,7 +437,9 @@ class SynthesisMemory:
             return items
         except Exception as e:
             logger.error(f"Error fetching all synthesis results: {e}")
-            return []
+            raise RetrievalError(
+                source="synthesis_memory", reason=f"all_results:{type(e).__name__}"
+            ) from e
 
     def get_ungraded(
         self,

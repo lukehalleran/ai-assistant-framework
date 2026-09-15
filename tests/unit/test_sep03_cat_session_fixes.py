@@ -14,10 +14,10 @@ wrong species is pinned here:
 3. The planner turned a "Dog Behavior" topic label into "common in dogs".
    Fix: entity-attribute rule in the prompt + derived-section labels in the
    digest.
-4. Song lyrics pasted on 08-29 minted lived_in=Atlanta + a partner name.
+4. Song lyrics pasted on 08-29 minted lived_in=Marrowby + a partner name.
    Fix: lyrics/poem/quote turns yield no facts on either extractor path.
 5. A pasted Aug-27 email ("I'm … enrolled in two courses") superseded the
-   curated enrolled_in=MGT 6203 fact on Sep 2. Fix: pasted correspondence is
+   curated enrolled_in=QRS 7310 fact on Sep 2. Fix: pasted correspondence is
    never a claim span; the regex path sees the message with the block removed.
 """
 from datetime import datetime
@@ -169,17 +169,17 @@ class TestPlannerEntityAttributes:
 LYRICS = "\n".join([
     "[Verse 1]",
     "Lately, I think I was over Time am I just beaten so",
-    "Like the clouds, see color, I moved to Atlanta with Casey",
+    "Like the clouds, see color, I moved to Marrowby with Tamsin",
     "[Chorus]",
-    "And I live in Atlanta now, oh Atlanta now",
-    "And I live in Atlanta now, oh Atlanta now",
+    "And I live in Marrowby now, oh Marrowby now",
+    "And I live in Marrowby now, oh Marrowby now",
 ])
 
 
 class TestSharedContentYieldsNoFacts:
     def test_per_turn_skip_reason(self):
         assert fact_extraction_skip_reason(LYRICS).startswith("shared content (lyrics")
-        assert fact_extraction_skip_reason("I moved to Atlanta with Casey last week.") == ""
+        assert fact_extraction_skip_reason("I moved to Marrowby with Tamsin last week.") == ""
 
     def test_llm_path_drops_lyrics_entries(self):
         assert _entry_is_shared_content("User: " + LYRICS) is True
@@ -194,7 +194,7 @@ class TestSharedContentYieldsNoFacts:
             {"query": LYRICS},
         ])
         assert "Mochi stole my phone" in prompt
-        assert "I live in Atlanta now" not in prompt
+        assert "I live in Marrowby now" not in prompt
 
 
 # ── 5. pasted correspondence is not a claim ───────────────────────────────
@@ -202,13 +202,13 @@ PASTED_EMAIL_TURN = "\n".join([
     "Ok on a roll so might as well do this one",
     "Hi Morgan and Robin,",
     "",
-    "I'm doing meaningfully better and am enrolled in two courses this fall (CSE 6040 and MGT 6203).",
+    "I'm doing meaningfully better and am enrolled in two courses this fall (ABC 1234 and QRS 7310).",
     "The drop deadline is tomorrow.",
     "",
     "Thank you so much.",
     "",
     "Alex Rivers",
-    "GTID: 000000000",
+    "WFID: 0000-0000",
     "",
     "Hi Alex,",
     "",
@@ -216,11 +216,11 @@ PASTED_EMAIL_TURN = "\n".join([
     "",
     "Best,",
     "",
-    "Morgan Reeves",
+    "Morgan Ashdown",
     "Academic Advising Manager, College of Continuing Studies",
     "Springfield Institute of Technology",
     "",
-    "need to make sure I'm not missing anything, I dropped CSE 6040 and kept MGT 6203",
+    "need to make sure I'm not missing anything, I dropped ABC 1234 and kept QRS 7310",
 ])
 
 
@@ -236,22 +236,22 @@ class TestPastedCorrespondenceNotEvidence:
         assert lines[-1] not in covered
 
     def test_bare_chat_greeting_is_not_a_block(self):
-        assert quoted_correspondence_lines("Hi,\nI moved to Atlanta in June.") == set()
-        assert strip_quoted_correspondence("Hi,\nI moved to Atlanta in June.") == "Hi,\nI moved to Atlanta in June."
+        assert quoted_correspondence_lines("Hi,\nI moved to Marrowby in June.") == set()
+        assert strip_quoted_correspondence("Hi,\nI moved to Marrowby in June.") == "Hi,\nI moved to Marrowby in June."
 
     def test_claim_spans_skip_the_quoted_enrollment(self):
         spans = list(_claim_spans(PASTED_EMAIL_TURN))
         assert not any("enrolled in two courses" in s for s in spans)
-        assert any("dropped CSE 6040" in s for s in spans)
+        assert any("dropped ABC 1234" in s for s in spans)
 
     def test_stale_enrollment_triple_finds_no_support(self):
-        triple = {"subject": "user", "relation": "enrolled_in", "object": "CSE 6040 and MGT 6203"}
+        triple = {"subject": "user", "relation": "enrolled_in", "object": "ABC 1234 and QRS 7310"}
         assert find_supporting_user_span(triple, [PASTED_EMAIL_TURN]) is None
-        live = {"subject": "user", "relation": "dropped", "object": "CSE 6040"}
+        live = {"subject": "user", "relation": "dropped", "object": "ABC 1234"}
         span = find_supporting_user_span(live, [PASTED_EMAIL_TURN])
-        assert span is not None and "dropped CSE 6040" in span.text
+        assert span is not None and "dropped ABC 1234" in span.text
 
     def test_regex_path_source_text_has_block_removed(self):
         src = fact_extraction_source_text(PASTED_EMAIL_TURN)
         assert "enrolled in two courses" not in src
-        assert "dropped CSE 6040" in src
+        assert "dropped ABC 1234" in src

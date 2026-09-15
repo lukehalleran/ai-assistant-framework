@@ -744,6 +744,7 @@ class ApiSection(BaseModel):
     cors_origins: List[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     serve_frontend: bool = True
     frontend_dist_dir: str = "web/dist"
+    allowed_hosts: List[str] = Field(default_factory=list)
 
 
 class EntityFactsSection(BaseModel):
@@ -804,7 +805,8 @@ class GroundingCheckSection(BaseModel):
     # 2026-09-04: LOG-ONLY by default (same class as the review-gate LOG-ONLY
     # fix, 2026-08-28) — telemetry over the window showed 42 verifier fires ->
     # 27 flags -> 25 shipped corrections, >=9 documented false, 0 documented
-    # true. "correct" restores the pre-09-04 integrate/suffix behavior.
+    # true. "correct" buffers and delivers the integrated rewrite, or the
+    # spliced/standalone fallback on integrator failure.
     mode: Literal["log_only", "correct"] = "log_only"
     model: Optional[str] = None  # None → falls back to response_planning.review_model
     confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
@@ -813,12 +815,18 @@ class GroundingCheckSection(BaseModel):
     min_response_chars: int = Field(default=40, ge=0)
     # 2026-08-29: integrate=True weaves the correction INTO the response via
     # a bounded rewrite (final-yield replacement, display==storage); the
-    # appended suffix is the fallback.
+    # spliced/standalone fallback below runs on any integrator failure.
     integrate: bool = True
     integrate_timeout_s: float = Field(default=6.0, gt=0.0)
     integrate_max_response_chars: int = Field(default=4000, ge=200)
     integrate_min_ratio: float = Field(default=0.75, gt=0.0)  # min (rewritten / original) length ratio
     integrate_max_ratio: float = Field(default=1.30, gt=0.0)  # max (rewritten / original) length ratio
+    # Claim-location thresholds for build_integrated_fallback's token-overlap
+    # match (core/grounding_check.py): min content-token overlap fraction to
+    # locate a reworded claim, and the content-token floor below which only
+    # exact containment (never overlap) may locate it.
+    fallback_claim_overlap_threshold: float = Field(default=0.8, gt=0.0, le=1.0)
+    fallback_min_claim_tokens: int = Field(default=3, ge=1)
 
 
 class EmailIntegrationSection(BaseModel):

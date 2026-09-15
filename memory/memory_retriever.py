@@ -13,8 +13,8 @@ Module Contract
       drops facts marked is_current=False / superseded_by, and ages out transient relations past their
       per-relation TTL via memory/relation_classifier.py (health-transient illness/recovery vs ~24h ephemeral);
       2026-08-23: EXPLICIT-appraisal/inferred fact content is rewritten at this
-      boundary via _present_fact_content ("casey | is | evil" → "you described
-      casey as 'evil' (your words at the time, DATE)") — objective/legacy
+      boundary via _present_fact_content ("tamsin | is | evil" → "you described
+      tamsin as 'evil' (your words at the time, DATE)") — objective/legacy
       content stays byte-identical, every downstream renderer inherits it]
   - get_recent_facts(limit) -> List[Dict]
   - get_reflections(limit) -> List[Dict]  [corpus-first, semantic fallback]
@@ -68,6 +68,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import RetrievalError
+from utils.trigger_match import compile_keyword_matcher
 from config.app_config import (
     DEICTIC_THRESHOLD,
     NORMAL_THRESHOLD,
@@ -306,8 +308,8 @@ def _present_fact_content(content: str, metadata: dict | None) -> str:
     """Stance-aware fact presentation (2026-08-23).
 
     An EXPLICIT-appraisal fact never surfaces as a bare ``s | r | o`` triple —
-    "casey | is | evil" reads as an asserted world-fact to the model. Rewritten
-    to attributed, dated form: "you described casey as 'evil' (your words at
+    "tamsin | is | evil" reads as an asserted world-fact to the model. Rewritten
+    to attributed, dated form: "you described tamsin as 'evil' (your words at
     the time, 2026-08-18)". Objective/legacy-untagged facts return the content
     BYTE-IDENTICAL. Applied at the retrieval boundary so every downstream
     renderer inherits it.
@@ -404,7 +406,9 @@ def _metadata_fallback_search(
 
     except Exception as e:
         logger.debug(f"[ReflectionMetadataFallback] Failed: {e}")
-        return []
+        raise RetrievalError(
+            source="reflection_metadata_fallback", reason=type(e).__name__
+        ) from e
 
 
 class MemoryRetriever:
@@ -643,7 +647,7 @@ class MemoryRetriever:
             return recent or []
         except Exception as e:
             logger.debug(f"[MemoryRetriever][RecentFacts] retrieval failed: {e}")
-            return []
+            raise RetrievalError(source="recent_facts", reason=type(e).__name__) from e
 
     async def get_facts(self, query: str, limit: int = 8) -> List[Dict]:
         """Retrieve semantic facts relevant to query.
@@ -1181,7 +1185,7 @@ class MemoryRetriever:
 
         except Exception as e:
             logger.warning(f"[MemoryRetriever] Failed to retrieve skills: {e}")
-            return []
+            raise RetrievalError(source="procedural_skills", reason=type(e).__name__) from e
 
     async def search_by_type(self, type_name: str, query: str = "", limit: int = 5) -> List[Dict]:
         """Search memories by type."""
@@ -1668,6 +1672,11 @@ class MemoryRetriever:
     # ------------------------------------------------------------------
 
     _RETROSPECTIVE_MARKERS = frozenset(["yesterday", "last night"])
+    # Word-boundary matched via utils.trigger_match (dm01_raw_substring /
+    # CGR-20260913-005, anchor #21): a bare marker like 'yesterday' must not
+    # fire on containment inside an unrelated token ("yesterdayfilter").
+    # Built from the SAME frozenset above — no vocabulary duplication (BC-76).
+    _RETROSPECTIVE_MARKERS_MATCHER = compile_keyword_matcher(sorted(_RETROSPECTIVE_MARKERS))
 
     def _maybe_temporal_window_rerank(
         self, ranked: List[Dict], query: str
@@ -1679,6 +1688,11 @@ class MemoryRetriever:
         Only triggers when:
           - A temporal anchor ≤ 48h exists (small-window query)
           - The query contains a clearly retrospective marker
+
+        Negation-INSENSITIVE by design (CGR-20260913-005 contract): a
+        negated retrospective mention ("I didn't sleep last night") still
+        refers to that time window and must still trigger the rerank, so
+        this calls the plain (non-negation) matcher.
         """
         if not self.scorer or not getattr(self.scorer, '_intent_weight_overrides', None):
             return ranked
@@ -1690,7 +1704,7 @@ class MemoryRetriever:
             return ranked
 
         query_lower = query.lower()
-        if not any(m in query_lower for m in self._RETROSPECTIVE_MARKERS):
+        if not self._RETROSPECTIVE_MARKERS_MATCHER(query_lower):
             return ranked
 
         # Reference time (must match scorer)

@@ -14,13 +14,15 @@ Module Contract
      so there is no circularity).
   2. has_checkable_claims() (deterministic pre-filter, word-boundary
      discipline, under-fires by design) → verify_grounding() (small guarded
-     LLM call, fail-open) → build_grounding_correction() (visible suffix,
-     action-guard idiom, gentler wording on elevated tones).
+     LLM call, fail-open) → integrate_grounding_correction() (bounded
+     rewrite) or, on fallback, build_integrated_fallback() (spliced or
+     standalone correction).
 - Key functions:
   - has_checkable_claims(response_text, query="") -> bool
   - verify_grounding(query, response, model_manager, *, model_name, ...)
       -> Optional[GroundingVerdict]   (None = fail-open, take no action)
-  - build_grounding_correction(correction, *, elevated=False) -> str
+  - build_integrated_fallback(response, verdict, *, elevated=False)
+      -> Optional[IntegratedFallback]
 - Dependencies: pydantic, model_manager.generate_once (passed in). Stateless.
 - Wiring: gui/handlers._apply_grounding_check (enhanced + agentic paths).
 """
@@ -29,14 +31,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from datetime import datetime
 from time import perf_counter
-from typing import Optional
+from typing import Literal, NamedTuple, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
 from utils.logging_utils import get_logger
+from utils.trigger_match import normalize_ws
 
 logger = get_logger("grounding_check")
 
@@ -194,7 +198,7 @@ _RESPONSE_TRUNC = 1200
 # Long queries are usually PASTED SOURCE MATERIAL (a syllabus, an article) that
 # the response's dates/numbers came from. At the old 500-char cap the verifier
 # never saw the source and flagged a correct due date as unverifiable
-# (live 2026-08-29 MGT-6203 turn). Head+tail slices keep the tables that tend
+# (live 2026-08-29 QRS-7310 turn). Head+tail slices keep the tables that tend
 # to sit mid/end of a paste.
 _QUERY_LONG_HEAD = 2500
 _QUERY_LONG_TAIL = 2500
@@ -292,7 +296,7 @@ def _build_verifier_prompt(query: str, response: str,
 # due date read straight from the user's own pasted syllabus got a "please
 # verify" appended at confidence 0.9; live #2, SAME DAY post-fix: "The course
 # date should reflect the current academic calendar. Please verify the
-# correct semester for MGT 6203." survived because the old regex anchored
+# correct semester for QRS 7310." survived because the old regex anchored
 # "Please verify" at STRING start only and it opened sentence TWO).
 # Deterministic backstop; classification is per-SENTENCE now: strip every
 # advice/hedge sentence, then demote unless something substantive remains
@@ -315,7 +319,7 @@ _HEDGE_SENTENCE_RE = re.compile(
 _CORRECTION_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 # A substantive correction states a concrete replacement fact: a number,
-# a date-word, or an explicit falsehood assertion. "MGT 6203" digits inside
+# a date-word, or an explicit falsehood assertion. "QRS 7310" digits inside
 # an advice sentence never reach this test — advice sentences are stripped
 # before it runs.
 _CONCRETE_FACT_RE = re.compile(
@@ -511,8 +515,53 @@ def _asserts_falsehood(why_false: str) -> bool:
     ))
 
 
+# G12 strict boolean contract (F03 / BC-21): the five fields the verifier
+# prompt teaches (lines ~277-283). A verdict is valid only when every one is
+# present with its taught JSON type — never coerced from a differently-typed
+# or missing value.
+_REQUIRED_VERDICT_FIELDS = (
+    "false_claim_present", "claim", "why_false", "confidence", "correction",
+)
+_VERDICT_STR_FIELDS = ("claim", "why_false", "correction")
+
+
+def _invalid_verdict_reason(data: dict) -> Optional[str]:
+    """None when `data` satisfies the strict verdict contract; otherwise the
+    failing field name and reason, for exactly one WARNING (never the claim
+    or correction text itself — only field names/types).
+
+    No truthiness coercion anywhere: a wrong-typed or out-of-range field is
+    a rejection (abstain), never bool()/str()/float() coerced into shape."""
+    for field in _REQUIRED_VERDICT_FIELDS:
+        if field not in data:
+            return f"{field} missing"
+    false_claim_present = data["false_claim_present"]
+    if not isinstance(false_claim_present, bool):
+        return f"false_claim_present not bool (got {type(false_claim_present).__name__})"
+    for field in _VERDICT_STR_FIELDS:
+        value = data[field]
+        if not isinstance(value, str):
+            return f"{field} not str (got {type(value).__name__})"
+    confidence = data["confidence"]
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return f"confidence not numeric (got {type(confidence).__name__})"
+    if isinstance(confidence, float) and not math.isfinite(confidence):
+        return "confidence not finite"
+    if not (0.0 <= confidence <= 1.0):
+        return "confidence out of range"
+    return None
+
+
 def _parse_verdict(raw: str) -> Optional[GroundingVerdict]:
-    """Parse LLM output into GroundingVerdict, None on any failure."""
+    """Parse LLM output into GroundingVerdict, None on any failure.
+
+    Strict G12 contract (F03 / BC-21): every taught field must be present
+    with its taught JSON type — false_claim_present a real JSON boolean,
+    confidence a finite number in [0.0, 1.0], and the three text fields
+    strings (None rejected). Extra keys are ignored. Any violation abstains
+    (returns None) with one WARNING naming the failing field and reason;
+    it never coerces the model's own output into shape.
+    """
     if not raw or not raw.strip():
         return None
     text = raw.strip()
@@ -522,13 +571,21 @@ def _parse_verdict(raw: str) -> Optional[GroundingVerdict]:
     try:
         data = json.loads(text)
         if not isinstance(data, dict):
+            logger.warning(
+                "[GroundingCheck] Rejected verdict JSON: top level not object "
+                f"(got {type(data).__name__})"
+            )
+            return None
+        reason = _invalid_verdict_reason(data)
+        if reason is not None:
+            logger.warning(f"[GroundingCheck] Rejected verdict JSON: {reason}")
             return None
         verdict = GroundingVerdict(
-            false_claim_present=bool(data.get("false_claim_present", False)),
-            claim=str(data.get("claim", "") or ""),
-            why_false=str(data.get("why_false", "") or ""),
-            confidence=float(data.get("confidence", 0.0)),
-            correction=str(data.get("correction", "") or ""),
+            false_claim_present=data["false_claim_present"],
+            claim=data["claim"],
+            why_false=data["why_false"],
+            confidence=data["confidence"],
+            correction=data["correction"],
         )
         if _is_advice_shaped(verdict):
             logger.info(
@@ -706,7 +763,7 @@ def claim_date_in_source(claim: str, source: str) -> bool:
     """True when a date in the flagged claim appears in the source material
     on a line that shares at least one content word with the claim (the
     schedule row "HW 1 due on Sep 13" shares "due"/"hw" with the claim; the
-    adjacent week row "Aug 31-Sep 6 | Linear Models (1)" shares nothing with
+    adjacent week row "Aug 31-Sep 6 | Fitted Curves (1)" shares nothing with
     a due-date claim, so a genuinely wrong date is still catchable)."""
     dates = _claim_dates(claim)
     if not dates or not source:
@@ -813,7 +870,8 @@ async def verify_grounding(
 
 
 # ---------------------------------------------------------------------------
-# Correction suffix (action-guard idiom: appended to display AND storage)
+# Correction truncation (shared by the integrated-fallback builders below:
+# caps the correction text before it is spliced or shipped standalone)
 # ---------------------------------------------------------------------------
 
 _MAX_CORRECTION_CHARS = 300
@@ -835,28 +893,352 @@ def _truncate_correction(correction: str) -> str:
     return text
 
 
-def build_grounding_correction(correction: str, *, elevated: bool = False) -> str:
-    """Build the visible correction suffix. Empty correction → "" (no-op)."""
-    text = _truncate_correction(correction)
+# ---------------------------------------------------------------------------
+# Integrated fallback (A05a, F04 / G12 acceptance 3-6) — the live fallback
+# for `_apply_grounding_check` since A05b-1, for when
+# `integrate_grounding_correction` returns None (timeout, error, guard
+# rejection) or integration is disabled. It never appends to a flawed
+# draft: it either splices a visible correction into the one sentence that
+# carries the claim, or drops the whole draft for a short standalone
+# corrective reply. Pure and deterministic — no model call, no I/O, and no
+# logging anywhere in this section; the only thing ever returned besides
+# the final text is a short constant reason label, never claim or
+# correction text.
+# (Literal/NamedTuple and normalize_ws are imported at the top of the file.)
+# ---------------------------------------------------------------------------
+
+
+class IntegratedFallback(NamedTuple):
+    """Result of `build_integrated_fallback`. `reason` is a short constant
+    label meant for a telemetry/debug receipt — it never carries claim or
+    correction text."""
+
+    text: str
+    kind: Literal["spliced", "standalone"]
+    reason: str
+
+
+# The claim-overlap threshold and the min-content-tokens-for-overlap floor
+# are config.yaml grounding_check: fallback_claim_overlap_threshold /
+# fallback_min_claim_tokens (config/app_config.py GROUNDING_FALLBACK_*;
+# rationale lives there and on config/schema.py's GroundingCheckSection) —
+# build_integrated_fallback reads them at call time and passes them into
+# _locate_claim_sentence below, which stays pure over explicit values.
+
+# Short function words excluded from the overlap count so the comparison is
+# driven by CONTENT words only — a claim and an unrelated sentence sharing
+# only "the", "is", "to" would otherwise inflate the overlap regardless of
+# topic. Fixed and conservative: adding a word here can only make matching
+# STRICTER (fewer tokens survive on either side of the ratio), never make an
+# unrelated sentence look more like the claim.
+_OVERLAP_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "to", "of", "in", "on", "and", "or", "that", "this", "it", "its", "for",
+    "as", "at", "by", "from", "than", "then", "with", "i", "you", "he",
+    "she", "they", "we", "not", "no", "so", "but", "if", "do", "does",
+    "did", "will", "would", "can", "could", "should", "shall", "may",
+    "might", "have", "has", "had", "much", "very", "really", "just",
+    "also", "too", "what", "about", "their", "all",
+})
+
+_CONTENT_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _normalize_for_match(text: str) -> str:
+    """Casefold + collapse whitespace so client line-wrapping/indentation
+    (BC-64) never changes whether a claim is found inside a sentence."""
+    return normalize_ws(text or "").casefold()
+
+
+def _overlap_content_tokens(text: str) -> frozenset:
+    """Distinct lowercase content words used only by the conservative
+    token-overlap fallback below. Named distinctly from the existing
+    module-level `_content_tokens` (used by `claim_date_in_source`, line
+    709) — a same-named later definition would silently shadow it for every
+    caller at runtime, changing an existing, untouched function's behavior
+    without editing a line of it.
+
+    Digit tokens ALWAYS count, regardless of length; the len>=2 filter
+    applies to alphabetic tokens only (parent review round 1, F2b): dropping
+    single-digit tokens let "1 AM" reduce to the single stray word {"am"},
+    which then matched an unrelated "11 AM" sentence at 1/1 overlap."""
+    normalized = _normalize_for_match(text)
+    tokens = set()
+    for tok in _CONTENT_TOKEN_RE.findall(normalized):
+        if tok.isdigit() or (len(tok) >= 2 and tok not in _OVERLAP_STOPWORDS):
+            tokens.add(tok)
+    return frozenset(tokens)
+
+
+def _split_trailing_card(response: str) -> tuple:
+    """Split a trailing action-proposal card off the response, using the
+    same `_PROPOSAL_CARD_RE` the integrator uses. The card is authoritative
+    backend state: it is never rewritten and never treated as a
+    "sentence" for claim-location purposes."""
+    match = _PROPOSAL_CARD_RE.search(response or "")
+    if not match:
+        return response or "", ""
+    return response[:match.start()], response[match.start():]
+
+
+# Splits prose into contiguous chunks that concatenate back to the input
+# EXACTLY (parent review round 1, F1): a naive "split on every [.!?]" (the
+# original version of this function) fragmented "$2.50", "3 p.m. on Monday"
+# and abbreviations mid-word/number, and IGNORED line breaks, so a heading
+# ("Here's the plan:") or a bullet line got merged into an adjacent sentence
+# and silently deleted on splice. Two structural (not vocabulary, BC-76)
+# rules replace it:
+#   (a) any whitespace run containing a newline is a HARD boundary — a
+#       heading, a bullet/numbered item, or an unpunctuated line is always
+#       its own chunk, and the newline run becomes the leading whitespace of
+#       the chunk that follows it (never trailing on the chunk before it).
+#   (b) WITHIN one line, `[.!?]+` (+ optional closing quote/bracket) ends a
+#       sentence only when it is followed by end-of-line, or by whitespace
+#       then a character that is NOT a lowercase letter. "$2.50" (digit
+#       right after the period, no whitespace at all) and "p.m. on Monday"
+#       (whitespace then lowercase "on") both fail this test and stay
+#       glued — conservative toward UNDER-splitting (the rare sentence that
+#       starts with a lowercase word stays merged with its neighbor) rather
+#       than ever fragmenting mid-token.
+_LINE_BREAK_RUN_RE = re.compile(r"(\s*\n\s*)")
+_TERMINAL_PUNCT_RE = re.compile(r"[.!?]+[\'\")\]]*")
+
+
+def _split_line_segment(seg: str) -> list:
+    """Sub-split one newline-free segment on rule (b) above."""
+    if not seg:
+        return []
+    bounds = []
+    for m in _TERMINAL_PUNCT_RE.finditer(seg):
+        end = m.end()
+        if end >= len(seg):
+            bounds.append(end)
+            continue
+        rest = seg[end:]
+        ws_len = len(rest) - len(rest.lstrip(" \t"))
+        if ws_len == 0:
+            continue  # e.g. "$2.50" — no whitespace right after the period
+        after = rest[ws_len:]
+        if not after or not after[0].islower():
+            bounds.append(end)
+    pieces, start = [], 0
+    for b in bounds:
+        pieces.append(seg[start:b])
+        start = b
+    if start < len(seg):
+        pieces.append(seg[start:])
+    return pieces
+
+
+def _sentence_chunks(text: str) -> list:
     if not text:
-        return ""
-    if elevated:
-        return (
-            "\n\n> ⚠️ One thing I want to gently set straight, because it "
-            f"matters: {text}"
-        )
-    return f"\n\n> ⚠️ Correction: {text}"
+        return []
+    atoms = _LINE_BREAK_RUN_RE.split(text)  # [seg, gap, seg, gap, ..., seg]
+    chunks, pending_prefix = [], ""
+    for i, atom in enumerate(atoms):
+        if i % 2:  # captured newline-run gap: carries to the NEXT chunk
+            pending_prefix += atom
+            continue
+        pieces = _split_line_segment(atom)
+        if not pieces:
+            continue
+        pieces[0] = pending_prefix + pieces[0]
+        pending_prefix = ""
+        chunks.extend(pieces)
+    if pending_prefix:
+        chunks.append(pending_prefix)
+    return chunks
+
+
+def _claim_spans_same_line_split(chunks: list, index: int, claim_tokens: frozenset) -> bool:
+    """True when an overlap-located chunk lacks some claim tokens that a
+    neighbour on the SAME line carries (parent review round 2). Rule (b)
+    still splits one written sentence at an abbreviation followed by a
+    capital or digit ("Sept. 15", "U.S. Army"); splicing only one side of
+    that split would leave the rest of the flawed claim — e.g. its date —
+    in the delivered text, so the location counts as ambiguous instead."""
+    missing = claim_tokens - _overlap_content_tokens(chunks[index])
+    if not missing:
+        return False
+    for left, right in ((index - 1, index), (index, index + 1)):
+        if left < 0 or right >= len(chunks):
+            continue
+        gap = chunks[right][: len(chunks[right]) - len(chunks[right].lstrip())]
+        neighbour = chunks[left] if right == index else chunks[right]
+        if "\n" not in gap and missing & _overlap_content_tokens(neighbour):
+            return True
+    return False
+
+
+def _locate_claim_sentence(chunks: list, claim: str, *, overlap_threshold: float,
+                            min_claim_tokens: int) -> tuple:
+    """Return (index, reason). `index` is the unique sentence chunk carrying
+    the claim; None means the claim was not located (0 hits) or was located
+    ambiguously (2+ hits) — either case must fall back to a standalone
+    reply, never a guess at which sentence to touch.
+
+    `overlap_threshold` and `min_claim_tokens` are required keyword
+    arguments (no module-level default) so this stays a pure function,
+    directly testable with explicit values; callers read the live config
+    values (see build_integrated_fallback)."""
+    normalized_claim = _normalize_for_match(claim)
+    if not normalized_claim:
+        return None, "claim_not_located"
+    # Word-bounded containment (parent review round 1, F2a / BC-01): a plain
+    # substring test let "may" match inside "maybe" and "1 am" match inside
+    # "11 am" (the extra leading digit gave no boundary to stop at). The
+    # \w-adjacency lookaround requires the claim to stand as its own
+    # word/number span, never a fragment of a longer token.
+    claim_re = re.compile(r"(?<!\w)" + re.escape(normalized_claim) + r"(?!\w)")
+    containment_hits = [
+        i for i, chunk in enumerate(chunks)
+        if chunk.strip() and claim_re.search(_normalize_for_match(chunk))
+    ]
+    if len(containment_hits) == 1:
+        return containment_hits[0], "claim_located_containment"
+    if len(containment_hits) >= 2:
+        return None, "claim_located_ambiguous"
+    claim_tokens = _overlap_content_tokens(claim)
+    if len(claim_tokens) < min_claim_tokens:
+        return None, "claim_not_located"
+    overlap_hits = []
+    for i, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
+        sentence_tokens = _overlap_content_tokens(chunk)
+        if not sentence_tokens:
+            continue
+        overlap = len(claim_tokens & sentence_tokens) / len(claim_tokens)
+        if overlap >= overlap_threshold:
+            overlap_hits.append(i)
+    if len(overlap_hits) == 1:
+        if _claim_spans_same_line_split(chunks, overlap_hits[0], claim_tokens):
+            return None, "claim_located_ambiguous"
+        return overlap_hits[0], "claim_located_overlap"
+    if len(overlap_hits) >= 2:
+        return None, "claim_located_ambiguous"
+    return None, "claim_not_located"
+
+
+_SPLICE_LEAD = "Correction: "
+_SPLICE_LEAD_ELEVATED = (
+    "One thing I want to gently set straight, because it matters: "
+)
+
+# A bullet/numbered-list marker at the front of the located sentence is kept
+# (parent review round 1, F1 decision): "- The deadline is Friday" splices
+# to "- Correction: ...", not a bare correction that loses its list
+# position. Structural (punctuation/digit shape), not a vocabulary list.
+_LIST_MARKER_RE = re.compile(r"^(?:[-*•]\s+|\d+[.)]\s+)")
+
+
+def _build_spliced(chunks: list, index: int, truncated_correction: str,
+                    card: str, *, elevated: bool, reason: str) -> "IntegratedFallback":
+    chunk = chunks[index]
+    core = chunk.lstrip()
+    leading_ws = chunk[: len(chunk) - len(core)]
+    marker_m = _LIST_MARKER_RE.match(core)
+    marker = marker_m.group(0) if marker_m else ""
+    lead = _SPLICE_LEAD_ELEVATED if elevated else _SPLICE_LEAD
+    new_sentence = f"{lead}{truncated_correction}"
+    if not new_sentence.endswith((".", "!", "?")):
+        new_sentence += "."
+    new_chunks = list(chunks)
+    new_chunks[index] = f"{leading_ws}{marker}{new_sentence}"
+    text = "".join(new_chunks)
+    if card:
+        text += card
+    return IntegratedFallback(text=text, kind="spliced", reason=reason)
+
+
+# Reworded (parent review round 1, F5): the original wording ("...instead
+# of repeating it" / "...instead of my last one") implied the user had
+# already SEEN a flawed answer. Under A05_design.md, correct mode buffers
+# the draft so nothing unreviewed is ever shown — this path fires while
+# still preparing the reply, never after delivering one.
+_STANDALONE_LEAD = "Before answering, I found something that needs correcting: "
+_STANDALONE_LEAD_ELEVATED = (
+    "One thing I want to gently set straight, because it matters, before I "
+    "answer: "
+)
+_STANDALONE_TAIL = " Let me know if you'd like me to go ahead and answer."
+
+
+def _build_standalone(truncated_correction: str, card: str, *, elevated: bool,
+                       reason: str) -> "IntegratedFallback":
+    lead = _STANDALONE_LEAD_ELEVATED if elevated else _STANDALONE_LEAD
+    text = f"{lead}{truncated_correction}{_STANDALONE_TAIL}"
+    if card:
+        text += card
+    return IntegratedFallback(text=text, kind="standalone", reason=reason)
+
+
+def build_integrated_fallback(
+    response: str,
+    verdict: "GroundingVerdict",
+    *,
+    elevated: bool = False,
+) -> Optional["IntegratedFallback"]:
+    """Deterministic, pure fallback for when `integrate_grounding_correction`
+    is unavailable, disabled, times out, or fails its own guards (F04/G12):
+    the flawed claim must never reach the user as draft-plus-suffix. Returns
+    None when there is no substantive correction to deliver — A05b then
+    treats the turn as "no correction to deliver" and ships the original
+    draft unmodified, exactly like the existing verifier-failure path.
+
+    Splices a visible correction into the ONE sentence that carries the
+    claim (verbatim, or — failing that — a single sentence whose content-word
+    overlap with the claim is unambiguous and high). If the claim is not
+    located, or is located in two or more sentences, returns one standalone
+    corrective reply that drops the flawed draft prose entirely. A trailing
+    action-proposal card is always reattached verbatim, for both kinds, and
+    is never treated as prose.
+
+    The claim-location thresholds are read from config.app_config at call
+    time (GROUNDING_FALLBACK_CLAIM_OVERLAP_THRESHOLD,
+    GROUNDING_FALLBACK_MIN_CLAIM_TOKENS) and passed into
+    `_locate_claim_sentence` explicitly — a call-time read of already-loaded
+    config constants, so this stays deterministic for a given config.
+    """
+    from config.app_config import (
+        GROUNDING_FALLBACK_CLAIM_OVERLAP_THRESHOLD,
+        GROUNDING_FALLBACK_MIN_CLAIM_TOKENS,
+    )
+    truncated = _truncate_correction(verdict.correction)
+    if not truncated:
+        return None
+    if not _substantive_correction_text(verdict.correction):
+        return None
+
+    prose, card = _split_trailing_card(response or "")
+    if not prose.strip():
+        return _build_standalone(truncated, card, elevated=elevated,
+                                  reason="empty_draft_prose")
+
+    chunks = _sentence_chunks(prose)
+    index, reason = _locate_claim_sentence(
+        chunks, verdict.claim,
+        overlap_threshold=GROUNDING_FALLBACK_CLAIM_OVERLAP_THRESHOLD,
+        min_claim_tokens=GROUNDING_FALLBACK_MIN_CLAIM_TOKENS,
+    )
+    if index is None:
+        return _build_standalone(truncated, card, elevated=elevated, reason=reason)
+    return _build_spliced(chunks, index, truncated, card, elevated=elevated,
+                           reason=reason)
 
 
 # ---------------------------------------------------------------------------
 # Correction integration (2026-08-29): weave the correction INTO the response
-# instead of tacking a ⚠️ blockquote onto the end. Every display path streams,
-# so the user has read the draft by the time the verifier finishes — but every
-# path also ends with a whole-bubble replacement yield, so a revised text
-# lands in display AND storage identically (no stored≠seen divergence — the
-# class that made the review gate log-only). The correction must stay VISIBLE
-# in the prose (never a silent patch); bounded guards fall back to the
-# appended suffix on any doubt.
+# instead of tacking a ⚠️ blockquote onto the end. In log_only mode the
+# display path streams, so the user has read the draft by the time the
+# verifier finishes; correct mode buffers the draft until the review
+# finishes instead — though a verifier failure still ships that draft once,
+# unmodified. Either way every path ends with a whole-bubble replacement
+# yield, so a revised text lands in display AND storage identically (no
+# stored≠seen divergence — the class that made the review gate log-only).
+# The correction must stay VISIBLE in the prose (never a silent patch);
+# bounded guards fall back to build_integrated_fallback's spliced-or-
+# standalone correction on any doubt.
 # ---------------------------------------------------------------------------
 
 _INTEGRATE_SYSTEM_PROMPT = (
@@ -906,9 +1288,10 @@ async def integrate_grounding_correction(
     max_response_chars: int = 4000,
 ) -> Optional[str]:
     """Return the response with the correction woven in, or None (caller
-    falls back to the appended suffix). Guards: response length cap (cheap
-    call), revised/original length ratio bounds, non-empty, actually
-    different, no leaked correction-block idiom."""
+    falls back to build_integrated_fallback's spliced-or-standalone
+    correction). Guards: response length cap (cheap call), revised/original
+    length ratio bounds, non-empty, actually different, no leaked
+    correction-block idiom."""
     if not response or not verdict.correction.strip():
         return None
     # Action-proposal cards are AUTHORITATIVE backend state — the integrator
@@ -938,10 +1321,10 @@ async def integrate_grounding_correction(
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.warning("[GroundingCheck] Integrator timed out — falling back to suffix")
+        logger.warning("[GroundingCheck] Integrator timed out — falling back to build_integrated_fallback")
         return None
     except Exception as e:
-        logger.warning(f"[GroundingCheck] Integrator failed — falling back to suffix: {e}")
+        logger.warning(f"[GroundingCheck] Integrator failed — falling back to build_integrated_fallback: {e}")
         return None
     revised = (raw or "").strip()
     if revised.startswith("```"):
@@ -958,7 +1341,7 @@ async def integrate_grounding_correction(
     if not (GROUNDING_INTEGRATE_MIN_RATIO <= ratio <= GROUNDING_INTEGRATE_MAX_RATIO):
         logger.debug(
             f"[GroundingCheck] Integrator length ratio {ratio:.2f} outside "
-            f"bounds [{GROUNDING_INTEGRATE_MIN_RATIO}, {GROUNDING_INTEGRATE_MAX_RATIO}] — falling back to suffix")
+            f"bounds [{GROUNDING_INTEGRATE_MIN_RATIO}, {GROUNDING_INTEGRATE_MAX_RATIO}] — falling back to build_integrated_fallback")
         return None
     if "⚠️" in revised or revised.lower().startswith(("i cannot", "i can't")):
         return None
@@ -973,13 +1356,13 @@ async def integrate_grounding_correction(
                 rf"\b{_cm}\s+{_cd}(?:st|nd|rd|th)?\b", revised, re.IGNORECASE):
             logger.warning(
                 "[GroundingCheck] Integrator dropped the corrected date "
-                f"({_cm} {_cd}) — falling back to suffix"
+                f"({_cm} {_cd}) — falling back to build_integrated_fallback"
             )
             return None
     if weekday_date_mismatches(revised):
         logger.warning(
             "[GroundingCheck] Integrator introduced an impossible weekday/date "
-            "pair — falling back to suffix"
+            "pair — falling back to build_integrated_fallback"
         )
         return None
     return revised + _card if _card else revised
@@ -990,7 +1373,6 @@ __all__ = [
     "GroundingVerdict",
     "has_checkable_claims",
     "verify_grounding",
-    "build_grounding_correction",
     "integrate_grounding_correction",
     "weekday_date_mismatches",
 ]

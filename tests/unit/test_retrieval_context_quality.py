@@ -70,9 +70,9 @@ class TestReadTimeThinkingStrip:
         # Shape of the Feb-07 doc that surfaced live: leading tagged block,
         # real answer after it.
         text = (
-            "<thinking>\nLuke is in a really dark place tonight. I need to be "
+            "<thinking>\nAlex is in a really dark place tonight. I need to be "
             "careful here and consider safety.\n</thinking>\n\n"
-            "That's a lot in your system at once, Luke."
+            "That's a lot in your system at once, Alex."
         )
         out = _strip_stored_thinking(text)
         assert "<thinking>" not in out

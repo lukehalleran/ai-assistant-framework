@@ -10,6 +10,7 @@ from memory.thread_store import (
     topics_equivalent,
     threads_duplicate,
 )
+from utils.retrieval_outcome import StoreWriteError
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +187,15 @@ class TestStoreThread:
         store = ThreadStore(chroma_store=None)
         assert store.store_thread(_make_thread()) is None
 
-    def test_returns_none_when_add_raises(self):
-        """8. Returns None when add_to_collection raises."""
+    def test_add_raises_raises_store_write_error(self):
+        """8. add_to_collection raising now raises StoreWriteError (F11a-1,
+        anchor #146) instead of returning None. Paired control: the
+        collection-unavailable deliberate skip above still returns None."""
         chroma = MockChromaStore()
         chroma.add_to_collection = MagicMock(side_effect=RuntimeError("write fail"))
         store = ThreadStore(chroma_store=chroma)
-        assert store.store_thread(_make_thread()) is None
+        with pytest.raises(StoreWriteError):
+            store.store_thread(_make_thread())
 
 
 # ===========================================================================

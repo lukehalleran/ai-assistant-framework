@@ -24,7 +24,13 @@ Module Contract
   - should_log_tone_shift(prev_level, new_level) -> bool
   - format_tone_shift_log(prev_level, new_level, query) -> str
 - Detection pipeline (4 stages):
-  1. Observational check — _check_observational_language(): filters world events vs personal crisis
+  1. Observational check — _check_observational_language(): filters world events vs personal crisis.
+     Once it fires, T02 (2026-09-13) tiers the first-person evidence — see
+     _classify_observational_evidence: Tier A (qualifying, non-negated HIGH hit) overrides Stage 0
+     (T01, E-R05-1) and continues to Stage 2 unchanged; Tier B (a qualifying non-negated mild hit, or
+     a qualifying negated HIGH hit) returns CrisisLevel.CONCERN directly, no learning (BC-29), trigger
+     OBSERVATIONAL_FIRST_PERSON_DISTRESS_TRIGGER or OBSERVATIONAL_NEGATED_CRISIS_TRIGGER (the latter
+     does not carry over, T03); otherwise CONVERSATIONAL / "observational_language" as before.
   2. Composite harm scoring — _calculate_harm_score(): 250+ weighted keywords (HIGH=10pts, MEDIUM=5pts,
      CONCERN=2pts), pattern multipliers (1.2x-1.4x), routes: >=20 HIGH, >=10 MEDIUM, >=4 CONCERN
   3. Semantic similarity — _semantic_crisis_detection(): embedding comparison to crisis exemplars
@@ -68,7 +74,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
 from utils.logging_utils import get_logger
-from utils.trigger_match import compile_keyword_matcher
+from utils.trigger_match import compile_keyword_matcher, is_negated
 
 logger = get_logger("tone_detector")
 
@@ -169,147 +175,300 @@ HIGH_CRISIS_KEYWORDS = {
 
 # Medium severity keywords
 # Each keyword contributes 5 points to harm score
-MEDIUM_CRISIS_KEYWORDS = {
-    # Acute mental distress
-    "panic attack", "can't breathe", "spiraling", "losing control",
-    "breaking down", "lose it", "can't handle this",
-    "having a breakdown", "nervous breakdown", "complete breakdown",
-    "mental breakdown", "falling apart", "losing my mind",
-    "going insane", "going crazy", "can't cope",
-    "drowning", "suffocating", "choking on",
-
-    # Dissociation and detachment
-    "dissociating", "dissociated", "out of my body",
-    "not real", "nothing feels real", "floating away",
-    "watching myself", "not in my body",
-
-    # Flashbacks and trauma responses
-    "flashback", "flashbacks", "triggered", "having a trigger",
-    "reliving it", "back there again", "ptsd episode",
-    "trauma response", "in a trauma loop",
-
-    # Abuse and trauma
-    "abusive", "the abusive", "abuser", "gaslighting", "gaslighted",
-    "manipulative", "manipulated me", "toxic relationship",
-    "medical abuse", "forced me off", "denied my illness",
-    "denied i was", "made me feel", "blamed me for",
-    "emotionally abusive", "verbally abusive", "physically abusive",
-    "narcissist", "narcissistic abuse", "controlling",
-
-    # Substance abuse crisis
-    "relapsed", "using again", "drinking again",
-    "can't stay sober", "want to drink", "need a drink",
-    "craving badly",
-    # "want to use" / "need to use" moved to _SUBSTANCE_USE_RE (2026-09-08):
-    # bare substring matched "…id just need to use CDF to find vals…" in a
-    # homework message, scoring MEDIUM-keyword CONCERN via harm score. The
-    # regex requires clause-final placement or an "again"/"so bad(ly)" tail
-    # so "need to use the pt() function" no longer scores while "I really
-    # need to use again" still does.
-
-    # Severe anxiety states
-    "heart racing", "chest tight", "hyperventilating",
-    "shaking uncontrollably", "trembling", "can't calm down",
-    "panic mode", "full panic", "anxiety attack",
-
-    # Depressive episodes
-    "depressive episode", "major depression", "in a dark place",
-    "deep depression", "severely depressed", "can't get out of bed",
-    "no energy", "complete exhaustion", "drained completely",
-
-    # Sleep crisis
-    "haven't slept in days", "can't sleep at all",
-    "insomnia", "sleep deprived", "no sleep",
-
-    # Relationship crisis
-    "left me", "abandoned me", "walked out",
-    "breakup", "divorce", "ended it",
-
-    # Violent ideation toward others (2026-08-02: "I would hurt them terribly
-    # if legal" scored harm 0.0 and semantic high=0.298 — a live miss).
-    # Negation-scoped deliberately: bare "deserve to be alive" must NOT match,
-    # or the user's own repair "I deserve to be alive" would floor to distress.
-    "i would hurt them", "i would hurt him", "i would hurt her",
-    "want to hurt them", "want to hurt him", "want to hurt her",
-    "want to hurt someone", "want to hurt people", "could hurt someone",
-    "not everyone deserves to be alive", "doesn't deserve to be alive",
-    "don't deserve to be alive", "doesn't deserve to live",
-    "don't deserve to live",
+# Categorized 2026-09-14 (H02a, no behaviour change — BC-76): MEDIUM_CRISIS_
+# KEYWORDS is flattened back out of this dict, byte-for-byte unchanged (digest
+# pin: test_tone_keyword_categories.py; table: batches/H02a.md).
+MEDIUM_KEYWORD_CATEGORIES: dict[str, dict[str, frozenset[str]]] = {
+    "affect": {
+        # Dissociation and detachment
+        "dissociation_and_detachment": frozenset({
+            "dissociating", "dissociated", "out of my body",
+            "not real", "nothing feels real", "floating away",
+            "watching myself", "not in my body",
+        }),
+        # Flashbacks and trauma responses
+        "flashbacks_and_trauma": frozenset({
+            "flashback", "flashbacks", "triggered", "having a trigger",
+            "reliving it", "back there again", "ptsd episode",
+            "trauma response", "in a trauma loop",
+        }),
+        # Depressive episodes
+        "depressive_episodes": frozenset({
+            "depressive episode", "major depression", "in a dark place",
+            "deep depression", "severely depressed", "can't get out of bed",
+            "no energy", "complete exhaustion", "drained completely",
+        }),
+    },
+    "strain": {
+        # Acute mental distress
+        "acute_mental_distress": frozenset({
+            "panic attack", "can't breathe", "spiraling", "losing control",
+            "breaking down", "lose it", "can't handle this",
+            "having a breakdown", "nervous breakdown", "complete breakdown",
+            "mental breakdown", "falling apart", "losing my mind",
+            "going insane", "going crazy", "can't cope",
+            "drowning", "suffocating", "choking on",
+        }),
+        # Abuse and trauma
+        "abuse_and_trauma": frozenset({
+            "abusive", "the abusive", "abuser", "gaslighting", "gaslighted",
+            "manipulative", "manipulated me", "toxic relationship",
+            "medical abuse", "forced me off", "denied my illness",
+            "denied i was", "made me feel", "blamed me for",
+            "emotionally abusive", "verbally abusive", "physically abusive",
+            "narcissist", "narcissistic abuse", "controlling",
+        }),
+        # Substance abuse crisis
+        "substance_abuse_crisis": frozenset({
+            "relapsed", "using again", "drinking again",
+            "can't stay sober", "want to drink", "need a drink",
+            "craving badly",
+            # "want to use" / "need to use" moved to _SUBSTANCE_USE_RE (2026-09-08):
+            # bare substring matched "…id just need to use CDF to find vals…" in a
+            # homework message, scoring MEDIUM-keyword CONCERN via harm score. The
+            # regex requires clause-final placement or an "again"/"so bad(ly)" tail
+            # so "need to use the pt() function" no longer scores while "I really
+            # need to use again" still does.
+        }),
+        # Severe anxiety states
+        "severe_anxiety_states": frozenset({
+            "heart racing", "chest tight", "hyperventilating",
+            "shaking uncontrollably", "trembling", "can't calm down",
+            "panic mode", "full panic", "anxiety attack",
+        }),
+        # Sleep crisis
+        "sleep_crisis": frozenset({
+            "haven't slept in days", "can't sleep at all",
+            "sleep deprived", "no sleep",
+        }),
+        # Relationship crisis
+        "relationship_crisis": frozenset({
+            "left me", "abandoned me", "walked out", "ended it",
+        }),
+        # Violent ideation toward others (2026-08-02: "I would hurt them terribly
+        # if legal" scored harm 0.0 and semantic high=0.298 — a live miss).
+        # Negation-scoped deliberately: bare "deserve to be alive" must NOT match,
+        # or the user's own repair "I deserve to be alive" would floor to distress.
+        "violent_ideation": frozenset({
+            "i would hurt them", "i would hurt him", "i would hurt her",
+            "want to hurt them", "want to hurt him", "want to hurt her",
+            "want to hurt someone", "want to hurt people", "could hurt someone",
+            "not everyone deserves to be alive", "doesn't deserve to be alive",
+            "don't deserve to be alive", "doesn't deserve to live",
+            "don't deserve to live",
+        }),
+    },
+    "stressor_topic": {
+        "family": frozenset({"breakup", "divorce"}),
+        "health": frozenset({"insomnia"}),
+    },
 }
+
+
+def _flatten_keyword_categories(categories: dict[str, dict[str, frozenset[str]]]) -> set[str]:
+    """Flatten affect/strain/stressor_topic categories into one keyword set."""
+    flat: set[str] = set()
+    for subgroups in categories.values():
+        for entries in subgroups.values():
+            flat |= entries
+    return flat
+
+
+MEDIUM_CRISIS_KEYWORDS = _flatten_keyword_categories(MEDIUM_KEYWORD_CATEGORIES)
 
 # Concern-level keywords (distress but not crisis)
 # Each keyword contributes 2 points to harm score
 # Note: "overwhelmed" is handled separately due to context ambiguity
-CONCERN_KEYWORDS = {
-    # Anxiety and worry
-    "really anxious", "freaking out", "scared", "terrified",
-    "worried sick", "can't sleep", "anxious about",
-    "nervous about", "stressed out", "stressing",
-    "so anxious", "very anxious", "super anxious",
-    "worried about", "worrying about", "worry about",
-
-    # Emotional state expressions
-    "lonely", "i am lonely", "i'm lonely", "i feel lonely",
-    "vulnerable", "i feel vulnerable", "feeling vulnerable",
-    "i'm scared", "i feel scared", "feeling scared",
-    "isolated", "i feel isolated", "feeling isolated",
-    "empty", "i feel empty", "feeling empty",
-    "hopeless", "i feel hopeless", "feeling hopeless",
-    "lost", "i feel lost", "feeling lost",
-    "alone", "i feel alone", "feeling alone",
-    "abandoned", "i feel abandoned", "feeling abandoned",
-    "worthless", "i feel worthless", "feeling worthless",
-    "numb", "i feel numb", "feeling numb",
-    "sad", "i feel sad", "feeling sad", "so sad",
-    "depressed", "i feel depressed", "feeling depressed",
-    "down", "feeling down", "really down",
-
-    # Helplessness and struggle
-    "helpless", "feel helpless", "feeling helpless",
-    "stuck", "feel stuck", "feeling stuck",
-    "trapped", "feel trapped", "feeling trapped",
-    "powerless", "feel powerless",
-    "struggling", "really struggling", "struggling with",
-
-    # Physical anxiety symptoms
-    "heart pounding", "sweating", "nauseous",
-    "stomach in knots", "tense", "on edge",
-
-    # Sleep issues
-    "can't sleep", "trouble sleeping", "bad dreams",
-    "nightmares", "woke up anxious", "restless",
-
-    # Social anxiety
-    "don't want to go", "can't face", "avoiding",
-    "hiding", "withdrawing", "shutting down",
-
-    # Self-doubt and negative self-talk
-    "hate myself", "disgusted with myself",
-    "disappointed in myself", "failing",
-    "not good enough", "can't do anything right",
-
-    # Grief and loss
-    "grieving", "mourning", "miss them", "miss her", "miss him",
-    "can't believe they're gone", "still hurts",
-
-    # Financial stress
-    "broke", "can't afford", "financial stress",
-    "money problems", "debt", "bills",
-
-    # Work/school stress
-    "work stress", "job stress", "school stress",
-    "deadline", "pressure", "performance anxiety",
-    "burnout", "burned out", "exhausted",
-
-    # Health anxiety
-    "health anxiety", "worried about my health",
-    "scared of being sick", "medical anxiety",
-    "afraid of dying", "death anxiety",
-
-    # Financial hardship (2026-09-01)
-    "can't afford", "behind on rent", "behind on bills",
-    "drowning in debt", "no days off", "running on empty",
+# Categorized 2026-09-14 (H02a, no behaviour change — BC-76); see the
+# MEDIUM_KEYWORD_CATEGORIES comment above.
+CONCERN_KEYWORD_CATEGORIES: dict[str, dict[str, frozenset[str]]] = {
+    "affect": {
+        # Anxiety and worry
+        "anxiety_and_worry": frozenset({
+            "really anxious", "freaking out", "scared", "terrified",
+            "worried sick", "anxious about",
+            "nervous about", "stressed out", "stressing",
+            "so anxious", "very anxious", "super anxious",
+            "worried about", "worrying about", "worry about",
+        }),
+        # Emotional state expressions
+        "emotional_state_expressions": frozenset({
+            "lonely", "i am lonely", "i'm lonely", "i feel lonely",
+            "vulnerable", "i feel vulnerable", "feeling vulnerable",
+            "i'm scared", "i feel scared", "feeling scared",
+            "isolated", "i feel isolated", "feeling isolated",
+            "empty", "i feel empty", "feeling empty",
+            "hopeless", "i feel hopeless", "feeling hopeless",
+            "lost", "i feel lost", "feeling lost",
+            "alone", "i feel alone", "feeling alone",
+            "abandoned", "i feel abandoned", "feeling abandoned",
+            "worthless", "i feel worthless", "feeling worthless",
+            "numb", "i feel numb", "feeling numb",
+            "sad", "i feel sad", "feeling sad", "so sad",
+            "depressed", "i feel depressed", "feeling depressed",
+            "down", "feeling down", "really down",
+        }),
+        # Self-doubt and negative self-talk
+        "self_doubt_and_negative_self_talk": frozenset({
+            "hate myself", "disgusted with myself",
+            "disappointed in myself", "failing",
+            "not good enough", "can't do anything right",
+        }),
+        # Grief and loss
+        "grief_and_loss": frozenset({
+            "grieving", "mourning", "miss them", "miss her", "miss him",
+            "can't believe they're gone", "still hurts",
+        }),
+        # Health anxiety
+        "health_anxiety": frozenset({
+            "health anxiety", "worried about my health",
+            "scared of being sick", "medical anxiety",
+            "afraid of dying", "death anxiety",
+        }),
+    },
+    "strain": {
+        # Helplessness and struggle
+        "helplessness_and_struggle": frozenset({
+            "helpless", "feel helpless", "feeling helpless",
+            "stuck", "feel stuck", "feeling stuck",
+            "trapped", "feel trapped", "feeling trapped",
+            "powerless", "feel powerless",
+            "struggling", "really struggling", "struggling with",
+        }),
+        # Physical anxiety symptoms
+        "physical_anxiety_symptoms": frozenset({
+            "heart pounding", "sweating", "nauseous",
+            "stomach in knots", "tense", "on edge",
+        }),
+        # Sleep issues
+        "sleep_issues": frozenset({
+            "can't sleep", "trouble sleeping", "bad dreams",
+            "nightmares", "woke up anxious", "restless",
+        }),
+        # Social anxiety
+        "social_anxiety": frozenset({
+            "don't want to go", "can't face", "avoiding",
+            "hiding", "withdrawing", "shutting down",
+        }),
+        # Resource strain (non-topic remainder of financial stress/hardship)
+        "resource_strain": frozenset({
+            "can't afford", "running on empty",
+        }),
+        # Burnout and exhaustion (non-topic remainder of work/school stress)
+        "burnout_and_exhaustion": frozenset({
+            "performance anxiety", "burnout", "burned out", "exhausted",
+        }),
+    },
+    "stressor_topic": {
+        "money": frozenset({
+            "broke", "financial stress", "money problems", "debt", "bills",
+            "behind on rent", "behind on bills", "drowning in debt",
+        }),
+        "work": frozenset({
+            "work stress", "job stress", "deadline", "pressure",
+            "no days off",
+        }),
+        "school": frozenset({"school stress"}),
+    },
 }
+
+CONCERN_KEYWORDS = _flatten_keyword_categories(CONCERN_KEYWORD_CATEGORIES)
+
+# ===== H02b domain-strain tables (H02_design.md, contract 1-2): life-domain
+# nouns (never scoring alone) and strain shapes, verbatim from the probe. =====
+def _stressor_topic_union(domain: str) -> frozenset[str]:
+    """H02a's `stressor_topic` entries for `domain` (both levels), unioned
+    into DOMAIN_ANCHORS (design item 2) — reads H02a's tables, never edits."""
+    entries: set[str] = set()
+    for categories in (MEDIUM_KEYWORD_CATEGORIES, CONCERN_KEYWORD_CATEGORIES):
+        entries |= categories.get("stressor_topic", {}).get(domain, frozenset())
+    return frozenset(entries)
+
+DOMAIN_ANCHORS: dict[str, frozenset[str]] = {
+    "family": frozenset({
+        "kids", "kid", "child", "children", "son", "daughter", "mom", "mother",
+        "dad", "father", "parents", "partner", "husband", "wife", "spouse",
+        "family", "sister", "brother", "baby",
+    }) | _stressor_topic_union("family"),
+    "caregiving": frozenset({
+        "caring for", "taking care of", "care of", "caregiver", "looking after",
+    }),
+    "health": frozenset({
+        "pain", "diagnosis", "biopsy", "results", "symptoms", "migraines",
+        "treatment", "surgery", "illness", "flare", "flared", "doctor", "hospital",
+    }) | _stressor_topic_union("health"),
+    "money": frozenset({
+        "rent", "bills", "payroll", "savings", "cash flow", "paycheck", "debt",
+        "money", "mortgage", "loan",
+    }) | _stressor_topic_union("money"),
+    "housing": frozenset({
+        "landlord", "evict", "eviction", "apartment", "house", "lease",
+        "homeless", "home", "place",
+    }),
+    "work": frozenset({
+        "boss", "job", "laid off", "layoff", "fired", "shifts", "clients",
+        "business", "manager", "novel", "project",
+    }) | _stressor_topic_union("work"),
+    "school": frozenset({
+        "classes", "class", "exam", "thesis", "grades", "professor", "defense",
+        "course", "chemistry", "school",
+    }) | _stressor_topic_union("school"),
+}
+
+STRAIN_SHAPES: dict[str, frozenset[str]] = {
+    "exhaustion": frozenset({
+        "wearing me out", "wearing me down", "exhausting me",
+        "running on nothing", "worn out", "wiped out",
+    }),
+    "overload": frozenset({
+        "can't keep up", "piling on", "barely keeping", "falling behind",
+        "can't do anything",
+    }),
+    "threat_loss": frozenset({
+        "might lose", "about to lose", "don't know how we'll",
+        "don't know how i'll", "can't make", "wiped out our",
+        "about to get laid off", "can't afford",
+    }),
+    "fear": frozenset({
+        "panicking", "eating me alive", "crushing me", "keeps me up",
+        "terrifies me", "freaking out",
+    }),
+}
+
+# D-H02-2: "us" is never a subject; it qualifies only as this composed
+# shape's object. Past/resolved/negated leads ("tried to", "they'd", "won't")
+# are absent from THREAT_LEADS so they cannot compose.
+THREAT_LEADS: frozenset[str] = frozenset({
+    "trying to", "going to", "gonna", "about to", "threatening to",
+    "might", "may", "could", "will", "wants to", "want to", "planning to",
+})
+DISPLACEMENT_SHAPES: frozenset[str] = frozenset({
+    "evict us", "kick us out", "throw us out", "foreclose on us",
+    "cut us off", "force us out",
+})
+
+_DOMAIN_ANCHOR_MATCHER = compile_keyword_matcher(
+    sorted({w for entries in DOMAIN_ANCHORS.values() for w in entries})
+)
+
+def _strain_evidence_keywords() -> frozenset[str]:
+    """STRAIN_SHAPES + H02a's affect/strain entries, both levels — NEVER
+    stressor_topic (A2's false positive: anchor "bills" + topic "bills")."""
+    evidence: set[str] = set()
+    for entries in STRAIN_SHAPES.values():
+        evidence |= entries
+    for categories in (MEDIUM_KEYWORD_CATEGORIES, CONCERN_KEYWORD_CATEGORIES):
+        for top_key in ("affect", "strain"):
+            for entries in categories.get(top_key, {}).values():
+                evidence |= entries
+    return frozenset(evidence)
+
+
+_STRAIN_EVIDENCE_MATCHER = compile_keyword_matcher(sorted(_strain_evidence_keywords()))
+_THREAT_US_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in sorted(THREAT_LEADS)) + r")"
+    r"\s+(?:" + "|".join(re.escape(w) for w in sorted(DISPLACEMENT_SHAPES)) + r")\b"
+)
 
 # Event distress keywords (strong reactions to upsetting world events)
 # These indicate emotional distress about external events that deserve validation/support
@@ -352,6 +511,16 @@ _MEDIUM_MATCHER = compile_keyword_matcher(sorted(MEDIUM_CRISIS_KEYWORDS))
 _CONCERN_MATCHER = compile_keyword_matcher(sorted(CONCERN_KEYWORDS))
 _EVENT_MATCHER = compile_keyword_matcher(sorted(EVENT_DISTRESS_KEYWORDS))
 
+# 'overwhelmed' and its positive-marker exemptions, same infra (2026-09-13,
+# CGR-20260913-003 anchor #30): boundary-matched so 'happy' no longer counts
+# inside "unhappy" ("unhappy and overwhelmed" now adds the +2 concern that
+# "overwhelmed by all the birthday gifts" still avoids). Negation-blind, like
+# every other harm-score vocabulary scan (see the call site below).
+_OVERWHELMED_MATCHER = compile_keyword_matcher(["overwhelmed"])
+_OVERWHELMED_POSITIVE_MATCHER = compile_keyword_matcher(
+    sorted(["gift", "birthday", "excited", "happy", "amazing", "wonderful", "options", "choices"])
+)
+
 # "I need to use CDF to find vals" (a homework message) scored a MEDIUM hit
 # via bare substring on "need to use" — the substance-abuse-crisis phrase is
 # only real distress evidence when it stands alone at clause end, or is
@@ -374,6 +543,14 @@ OBSERVATIONAL_MARKERS = {
     "cracking down", "protests", "protesters", "authorities", "officials",
     "struggling with", "policies", "regulations", "legislation",
 }
+
+# Compiled once, same infra as the harm-score matchers above (2026-09-13,
+# CGR-20260913-003 anchor #29): word-boundary for bare single-word markers,
+# substring for multi-word phrases. Fixes containment ('residents' no
+# longer counts inside "presidents", 'news' no longer counts inside
+# "newsletter"); iter_hits() yields at most one hit per keyword, matching
+# the "distinct marker" count the raw membership sum used to approximate.
+_OBSERVATIONAL_MATCHER = compile_keyword_matcher(sorted(OBSERVATIONAL_MARKERS))
 
 
 # ===== Crisis Exemplars (for semantic detection) =====
@@ -790,6 +967,25 @@ def _heavy_row_is_distress_evidence(turn: dict) -> bool:
     text = turn.get("query") or turn.get("user") or turn.get("content")
     if not text:
         return True  # fail-closed: no text field to inspect
+    text = str(text)
+
+    # T03 (2026-09-13, T03_design.md "Hold, not reset"): re-classify the
+    # row's OWN text with T02's deterministic tier classifier. When the
+    # only first-person evidence in the row is a negated HIGH crisis phrase
+    # under news/observational framing ("people are suffering but I don't
+    # want to die"), it is not distress evidence — same read-time re-check
+    # doctrine as the 2026-09-05 first-person-only check and the 2026-09-08
+    # pasted-code check below. Any other classifier outcome (Tier A, the
+    # mild Tier B trigger, or None) falls through to the existing logic
+    # unchanged.
+    if _classify_observational_evidence(text) == OBSERVATIONAL_NEGATED_CRISIS_TRIGGER:
+        logger.debug(
+            "[ToneDetector] heavy history row's only first-person evidence "
+            "is a negated crisis phrase under news framing — not distress "
+            "evidence"
+        )
+        return False
+
     # lazy import: call-time patch point — tests monkeypatch
     # utils.query_checker.heavy_keyword_hits/strip_code_shaped_lines
     from utils.query_checker import (
@@ -798,7 +994,6 @@ def _heavy_row_is_distress_evidence(turn: dict) -> bool:
         strip_code_shaped_lines,
     )
 
-    text = str(text)
     stripped = strip_code_shaped_lines(text)
     if stripped != text:
         # Code-shaped content was present — the specific false-positive
@@ -937,8 +1132,9 @@ def _check_observational_language(message: str) -> bool:
     """
     message_lower = message.lower()
 
-    # Count observational markers
-    marker_count = sum(1 for marker in OBSERVATIONAL_MARKERS if marker in message_lower)
+    # Count DISTINCT observational markers with a boundary-respecting hit
+    # (2026-09-13, CGR-20260913-003 anchor #29 — was a raw membership sum).
+    marker_count = sum(1 for _ in _OBSERVATIONAL_MATCHER.iter_hits(message_lower))
 
     # If multiple observational markers, likely discussing external events
     if marker_count >= 2:
@@ -956,6 +1152,188 @@ def _check_observational_language(message: str) -> bool:
         return True
 
     return False
+
+
+# T01 (2026-09-13, E-R05-1): Stage 0's observational check above must not
+# mask a first-person HIGH-crisis hit as CONVERSATIONAL — "people are
+# suffering and I want to die" was reaching CONVERSATIONAL before Stage 1's
+# keyword check ever ran. The window is deliberately short: wide enough for
+# "and I really just want to die" but not for a first-person subject many
+# clauses away ("I think the news coverage of suicide is irresponsible").
+FIRST_PERSON_CRISIS_WINDOW_TOKENS = 3
+
+# T02 (2026-09-13, T02_design.md "Qualifying a hit"): subject-form partition
+# of the SAME closed set as _HISTORY_FIRST_PERSON_RE above — no new words
+# (BC-76), same doctrine as utils/query_checker.py's _FIRST_PERSON_OPENERS
+# (2026-09-06). Possessive/object/reflexive forms (me, my, mine, myself,
+# our, ours) no longer qualify rule (b) for either tier: "my students want
+# to die" is someone else's distress. "we" qualifies the crisis tier only —
+# in news talk it usually reads as collective ("we are failing as a
+# country"), so it does not by itself qualify the milder Tier B evidence.
+_CRISIS_SUBJECT_RE = re.compile(r"\b(?:i|i'm|im|i've|ive|i'd|we)\b")
+_MILD_SUBJECT_RE = re.compile(r"\b(?:i|i'm|im|i've|ive|i'd)\b")
+
+# T02 Tier B trigger values (T02_design.md "Tiers", owner decision
+# 2026-09-13). Exported — T03 imports OBSERVATIONAL_NEGATED_CRISIS_TRIGGER to
+# exclude that turn from carry-over (T03_design.md); call sites import the
+# constant rather than repeating the string.
+OBSERVATIONAL_FIRST_PERSON_DISTRESS_TRIGGER = "observational_first_person_distress"
+OBSERVATIONAL_NEGATED_CRISIS_TRIGGER = "observational_negated_crisis"
+
+_OBSERVATIONAL_TIER_B_EXPLANATION = (
+    "First-person distress evidence under observational framing"
+)
+
+# Internal sentinel for Tier A (not exported — Tier A stays Stage 1 exactly
+# as T01, no new trigger vocabulary; _has_first_person_high_crisis_hit below
+# is the public boolean).
+_TIER_A = "tier_a"
+
+
+def _qualifying_first_person_hit(keyword: str, start: int, message_lower: str,
+                                  subject_re) -> Tuple[bool, bool]:
+    """Whether the hit at `start` (matched text `keyword`) carries
+    first-person evidence under `subject_re`'s subject-form partition, and
+    whether it is negated (T02_design.md "Qualifying a hit").
+
+    Rule (a), unchanged from T01: `keyword` itself is first-person
+    (_HISTORY_FIRST_PERSON_RE). Rule (b): a `subject_re` token sits among
+    the last FIRST_PERSON_CRISIS_WINDOW_TOKENS tokens of the sentence
+    prefix before `start` (T01's sentence-boundary rule, tokens stripped of
+    leading/trailing non-word characters).
+
+    Negation is scoped to AFTER the pronoun (R05: cues invert on affective
+    statements — "I can't stop thinking I want to die" must not read as
+    negated, since "I" sits directly before the phrase): `is_negated` runs
+    over the tokens strictly after the LAST first-person token in the
+    prefix, capped at the same window (or the prefix's own last window,
+    with none). Returns (qualifies, negated); negated is only meaningful
+    when qualifies is True.
+    """
+    sentence_start = max(
+        message_lower.rfind(ch, 0, start) for ch in ".!?\n"
+    ) + 1
+    prefix_tokens = [
+        re.sub(r"^\W+|\W+$", "", token)
+        for token in message_lower[sentence_start:start].split()
+    ]
+    window = prefix_tokens[-FIRST_PERSON_CRISIS_WINDOW_TOKENS:]
+    if not (
+        _HISTORY_FIRST_PERSON_RE.search(keyword)
+        or any(subject_re.fullmatch(token) for token in window)
+    ):
+        return False, False
+    last_fp = None
+    for i, token in enumerate(prefix_tokens):
+        if _HISTORY_FIRST_PERSON_RE.fullmatch(token):
+            last_fp = i
+    span_tokens = prefix_tokens[last_fp + 1:] if last_fp is not None else prefix_tokens
+    span = " ".join(span_tokens[-FIRST_PERSON_CRISIS_WINDOW_TOKENS:])
+    negated = is_negated(span, len(span), window_tokens=FIRST_PERSON_CRISIS_WINDOW_TOKENS)
+    return True, negated
+
+
+def _has_first_person_high_crisis_hit(message: str) -> bool:
+    """Whether `message` contains Tier A evidence (T02_design.md): a
+    qualifying, non-negated HIGH-crisis hit under the crisis tier's
+    subject-form partition (_CRISIS_SUBJECT_RE, includes "we"). True exactly
+    for Tier A — a qualifying hit that IS negated is Tier B evidence instead
+    (OBSERVATIONAL_NEGATED_CRISIS_TRIGGER), not Tier A.
+
+    HIGH vocabulary only (scope: T01_design.md, refined by T02_design.md).
+    No new vocabulary (BC-76).
+    """
+    message_lower = message.lower()
+    for hit in _HIGH_MATCHER.iter_hits(message_lower):
+        qualifies, negated = _qualifying_first_person_hit(
+            hit.keyword, hit.start, message_lower, _CRISIS_SUBJECT_RE
+        )
+        if qualifies and not negated:
+            return True
+    return False
+
+
+# H02b (2026-09-14, H02_design.md "Domain-strain rule", contract items 3-4):
+# the rule fires when a domain anchor and strain evidence share ONE clause.
+DOMAIN_STRAIN_TRIGGER = "domain_strain"
+_DOMAIN_STRAIN_EXPLANATION = "Domain-anchored strain evidence in the user's own voice"
+
+def _domain_strain_hit(message: str) -> Optional[str]:
+    """A domain anchor co-occurring with strain evidence in ONE clause —
+    (a) a qualifying, non-negated strain-evidence hit under the crisis
+    subject partition (includes "we"), or (b) a non-negated composed
+    THREAT_LEADS+DISPLACEMENT_SHAPES "us" shape (D-H02-2: "us" is never a
+    subject). Returns a constant category label, never the matched keyword
+    or message text (contract item 9), or None. Clauses split on the SAME
+    boundary `_qualifying_first_person_hit` uses (".!?\\n"), then on
+    ",?\\s+but\\s+" — a wrap between anchor and strain hides the pair
+    (inherited limitation, contract item 4)."""
+    message_lower = message.lower()
+    for sentence in re.split(r"[.!?\n]", message_lower):
+        for clause in re.split(r",?\s+but\s+", sentence):
+            if not any(True for _ in _DOMAIN_ANCHOR_MATCHER.iter_hits(clause)):
+                continue
+            for m in _THREAT_US_RE.finditer(clause):
+                if not is_negated(
+                    clause, m.start(), window_tokens=FIRST_PERSON_CRISIS_WINDOW_TOKENS
+                ):
+                    return "threat_loss"
+            for hit in _STRAIN_EVIDENCE_MATCHER.iter_hits(clause):
+                qualifies, negated = _qualifying_first_person_hit(
+                    hit.keyword, hit.start, clause, _CRISIS_SUBJECT_RE
+                )
+                if qualifies and not negated:
+                    return "first_person_strain"
+    return None
+
+
+def _classify_observational_evidence(message: str) -> Optional[str]:
+    """T02's deterministic tier classifier (T02_design.md "Tiers"). Re-
+    verifies `_check_observational_language` so it can be called standalone
+    on arbitrary text (e.g. T03's heavy-history row re-check, T03_design.md)
+    with the exact semantics `detect_crisis_level` uses.
+
+    Returns _TIER_A (qualifying, non-negated HIGH hit — continue to Stage 1
+    as T01); OBSERVATIONAL_FIRST_PERSON_DISTRESS_TRIGGER (qualifying,
+    non-negated mild hit, with or without a negated HIGH hit);
+    OBSERVATIONAL_NEGATED_CRISIS_TRIGGER (only evidence is a negated HIGH
+    hit); or None (not observational, or no qualifying evidence).
+    EVENT_DISTRESS vocabulary is excluded (T02_design.md): reactions to
+    world events are exactly what Stage 0 exists to keep conversational.
+    """
+    if not _check_observational_language(message):
+        return None
+    message_lower = message.lower()
+
+    negated_high = False
+    for hit in _HIGH_MATCHER.iter_hits(message_lower):
+        qualifies, negated = _qualifying_first_person_hit(
+            hit.keyword, hit.start, message_lower, _CRISIS_SUBJECT_RE
+        )
+        if qualifies:
+            if not negated:
+                return _TIER_A
+            negated_high = True
+
+    mild_hits = [(h.keyword, h.start) for h in _MEDIUM_MATCHER.iter_hits(message_lower)]
+    mild_hits += [(h.keyword, h.start) for h in _CONCERN_MATCHER.iter_hits(message_lower)]
+    if not _OVERWHELMED_POSITIVE_MATCHER(message_lower):
+        mild_hits += [(h.keyword, h.start) for h in _OVERWHELMED_MATCHER.iter_hits(message_lower)]
+    mild_hits += [
+        (m.group(0), m.start()) for m in _SUBSTANCE_USE_RE.finditer(message_lower)
+    ]
+    for keyword, start in mild_hits:
+        qualifies, negated = _qualifying_first_person_hit(
+            keyword, start, message_lower, _MILD_SUBJECT_RE
+        )
+        if qualifies and not negated:
+            return OBSERVATIONAL_FIRST_PERSON_DISTRESS_TRIGGER
+
+    # H02b (BC-58): the rule's "we" support the mild-hit loop above lacks.
+    if _domain_strain_hit(message) is not None:
+        return OBSERVATIONAL_FIRST_PERSON_DISTRESS_TRIGGER
+
+    return OBSERVATIONAL_NEGATED_CRISIS_TRIGGER if negated_high else None
 
 
 def _calculate_harm_score(message: str) -> Tuple[float, List[str], Dict[str, int]]:
@@ -1019,14 +1397,19 @@ def _calculate_harm_score(message: str) -> Tuple[float, List[str], Dict[str, int
         category_counts["event"] += 1
         logger.debug(f"[HarmScore] EVENT_DISTRESS: '{hit.keyword}' (+2)")
 
-    # Handle "overwhelmed" specially
-    if "overwhelmed" in message_lower:
-        positive_markers = ["gift", "birthday", "excited", "happy", "amazing", "wonderful", "options", "choices"]
-        if not any(marker in message_lower for marker in positive_markers):
+    # Handle "overwhelmed" specially — keyword and positive-marker exemptions
+    # boundary-matched through the chokepoint (2026-09-13 anchor #30):
+    # "unhappy and overwhelmed" now adds the +2 ('happy' no longer counts
+    # inside "unhappy"). Deliberately negation-blind, like the HIGH/MEDIUM/
+    # CONCERN/EVENT scans above: the chokepoint's request-scoping cues
+    # ("stop", "never", "without") invert on affective statements — "I can't
+    # stop feeling overwhelmed" is intensified distress (CGR-20260913-003-2).
+    if _OVERWHELMED_MATCHER(message_lower):
+        if not _OVERWHELMED_POSITIVE_MATCHER(message_lower):
             score += 2
-            matched.append(f"CONCERN: overwhelmed")
+            matched.append("CONCERN: overwhelmed")
             category_counts["concern"] += 1
-            logger.debug(f"[HarmScore] CONCERN keyword: 'overwhelmed' (+2)")
+            logger.debug("[HarmScore] CONCERN keyword: 'overwhelmed' (+2)")
 
     base_score = score
     multiplier = 1.0
@@ -1371,18 +1754,75 @@ async def detect_crisis_level(
 
     Returns:
         ToneAnalysis with detected crisis level and metadata
+
+    H02b final floor (contract item 5): a thin wrapper around
+    `_detect_crisis_level_impl` below — a CONVERSATIONAL result with a
+    `_domain_strain_hit` on `message` is raised to CONCERN (trigger
+    DOMAIN_STRAIN_TRIGGER, confidence max'd with threshold_concern, that
+    result's raw_scores, the constant explanation). Covers every
+    CONVERSATIONAL path; never lowers a level, touches CONCERN+, or learns
+    (BC-29). "observational_language" can never carry a hit here: the BC-58
+    producer hook in `_classify_observational_evidence` already tries the
+    same rule on the same message first (tested).
     """
-    session_distress = _session_in_distress(previous_tone, conversation_history)
-    # Stage 0: Check if discussing world events (not personal crisis)
-    if _check_observational_language(message):
-        logger.debug("[ToneDetector] Detected observational/world event language - defaulting to conversational")
+    result = await _detect_crisis_level_impl(
+        message, conversation_history, model_manager, previous_tone, allow_sticky_floor
+    )
+    if result.level == CrisisLevel.CONVERSATIONAL and _domain_strain_hit(message):
         return ToneAnalysis(
-            level=CrisisLevel.CONVERSATIONAL,
-            confidence=1.0,
-            trigger="observational_language",
-            raw_scores={},
-            explanation="Discussing external events, not personal distress"
+            level=CrisisLevel.CONCERN,
+            confidence=max(result.confidence, TONE_CONFIG["threshold_concern"]),
+            trigger=DOMAIN_STRAIN_TRIGGER,
+            raw_scores=result.raw_scores,
+            explanation=_DOMAIN_STRAIN_EXPLANATION,
         )
+    return result
+
+async def _detect_crisis_level_impl(
+    message: str,
+    conversation_history: Optional[List[dict]] = None,
+    model_manager=None,
+    previous_tone: Optional[object] = None,
+    allow_sticky_floor: bool = True,
+) -> ToneAnalysis:
+    """Implementation body for `detect_crisis_level`, pre-H02b-floor — see
+    the public wrapper's docstring above for the floor semantics."""
+    session_distress = _session_in_distress(previous_tone, conversation_history)
+    # Stage 0: Check if discussing world events (not personal crisis).
+    # T01 (2026-09-13, E-R05-1): a first-person HIGH-crisis hit (Tier A)
+    # overrides this — Stage 0 must not mask "people are suffering and I
+    # want to die" as CONVERSATIONAL. Detection continues to Stage 1
+    # unchanged; only the exemplar-learning guard below differs for an
+    # overridden turn (BC-29).
+    # T02 (2026-09-13, T02_design.md): Tier B — a qualifying non-negated
+    # mild hit, or a qualifying negated HIGH hit — returns CONCERN directly
+    # (no learning, BC-29) instead of falling through to CONVERSATIONAL.
+    first_person_override = False
+    if _check_observational_language(message):
+        tier = _classify_observational_evidence(message)
+        if tier == _TIER_A:
+            first_person_override = True
+        elif tier is not None:
+            logger.debug(
+                "[ToneDetector] Tier B first-person evidence under "
+                "observational framing (trigger=%s)", tier,
+            )
+            return ToneAnalysis(
+                level=CrisisLevel.CONCERN,
+                confidence=1.0,
+                trigger=tier,
+                raw_scores={},
+                explanation=_OBSERVATIONAL_TIER_B_EXPLANATION,
+            )
+        else:
+            logger.debug("[ToneDetector] Detected observational/world event language - defaulting to conversational")
+            return ToneAnalysis(
+                level=CrisisLevel.CONVERSATIONAL,
+                confidence=1.0,
+                trigger="observational_language",
+                raw_scores={},
+                explanation="Discussing external events, not personal distress"
+            )
 
     # Stage 1: Fast keyword check (high confidence)
     keyword_result = _check_keyword_crisis(message)
@@ -1390,19 +1830,25 @@ async def detect_crisis_level(
         level, trigger = keyword_result
         # Deterministic confirmation → teach the semantic channel, so future
         # PARAPHRASES of this user's distress phrasing match without keywords.
+        # Not for an overridden turn (T01, BC-29): a message that mixed news
+        # framing with first-person crisis language is not a clean exemplar
+        # — teaching it could make future news discussion score as crisis.
         _LEVEL_KEYS = {
             CrisisLevel.HIGH: "high",
             CrisisLevel.MEDIUM: "medium",
             CrisisLevel.CONCERN: "concern",
         }
-        if level in _LEVEL_KEYS:
+        if level in _LEVEL_KEYS and not first_person_override:
             _learn_tone_exemplar(message, _LEVEL_KEYS[level], "keyword", model_manager)
+        explanation = f"Explicit crisis language detected: {trigger}"
+        if first_person_override:
+            explanation += " (first-person crisis language overrode observational framing)"
         return ToneAnalysis(
             level=level,
             confidence=1.0,
             trigger=trigger,
             raw_scores={},
-            explanation=f"Explicit crisis language detected: {trigger}"
+            explanation=explanation
         )
 
     # Stage 1.5: Fast-path exit for RECOGNIZABLY CASUAL short messages only.

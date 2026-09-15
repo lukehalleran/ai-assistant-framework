@@ -418,12 +418,12 @@ class TestAnthropicInvokeRecovery:
         """Existing contact routing must be unaffected by the else-branch change."""
         resp = (
             '<invoke name="lookup_contact">'
-            '<parameter name="name">Meagan</parameter>'
+            '<parameter name="name">Maren</parameter>'
             '</invoke>'
         )
         decisions = self._handler().parse_response(resp)
         assert decisions[0].wants_lookup_contact is True
-        assert decisions[0].lookup_contact_name == "Meagan"
+        assert decisions[0].lookup_contact_name == "Maren"
 
     def test_unknown_invoke_tool_falls_back_to_answer(self):
         """An unrecognized tool name must degrade gracefully, not crash or
@@ -955,7 +955,7 @@ class TestContextInventory:
     def test_full_context_inventory(self, controller):
         """Test inventory with a fully populated context dict."""
         context = {
-            'user_profile': "identity:\n- name: Luke\n- age: 33\nhealth:\n- has condition X",
+            'user_profile': "identity:\n- name: Alex\n- age: 33\nhealth:\n- has condition X",
             'recent_summaries': [{'content': 'sum1'}, {'content': 'sum2'}],
             'semantic_summaries': [{'content': 'sem1'}],
             'recent_reflections': [{'content': 'ref1'}, {'content': 'ref2'}, {'content': 'ref3'}],
@@ -988,7 +988,7 @@ class TestContextInventory:
     def test_partial_context(self, controller):
         """Test with only some sections populated."""
         context = {
-            'user_profile': "name: Luke",
+            'user_profile': "name: Alex",
             'memories': [{'content': 'm1'}],
         }
 
@@ -1659,7 +1659,7 @@ class TestLiteralReasoningTagRecovery:
     @pytest.mark.asyncio
     async def test_reasoning_tag_only_content_triggers_recovery(self, controller):
         async def _stream():
-            yield "<reasoning>\nLuke is asking about a chemical. "
+            yield "<reasoning>\nAlex is asking about a chemical. "
             yield "Let me think about what to say.\n</reasoning>"
 
         controller.model_manager.generate_async = AsyncMock(return_value=_stream())

@@ -44,10 +44,10 @@ class TestEnrollmentConflict:
 
     def test_specific_course_drop_is_kept_not_a_conflict(self):
         text = (
-            "The user dropped CSE 6200 this term to reduce course load and "
+            "The user dropped QRS 7420 this term to reduce course load and "
             "feels relieved about the change."
         )
-        facts = [{"relation": "dropped", "value": "CSE 6200", "is_current": True}]
+        facts = [{"relation": "dropped", "value": "QRS 7420", "is_current": True}]
 
         conflicts = status_claim_conflicts(text, facts)
         assert conflicts == []

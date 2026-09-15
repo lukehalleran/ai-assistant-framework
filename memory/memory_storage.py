@@ -6,6 +6,7 @@ Module Contract
 - Purpose: Implements the MemoryStorageProtocol contract for persisting memories. Handles storage of conversations, facts, reflections, and summaries to both corpus and ChromaDB.
 - Inputs:
   - store_interaction(query, response, tags=?, session_id=?, provenance=?) -> Optional[str]
+    (None only for a deliberate skip; raises StoreWriteError on a failed write [F10a])
     - session_id: optional session identifier for audit trail [NEW 2026-03-26]
     - provenance: optional dict with response_mode, thinking_block (truncated to PROVENANCE_THINKING_MAX_CHARS), cited_ids, model_name, prompt_hash, agentic_summary [NEW 2026-03-26]
   - store_fact(fact_dict) -> bool
@@ -59,6 +60,7 @@ from typing import List, Dict, Optional
 from collections import deque
 
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import RetrievalError, StoreWriteError
 from models.model_manager import API_ERROR_PREFIXES
 from datetime import timedelta
 
@@ -99,7 +101,7 @@ def _paste_guard_filter(query: str, facts: list) -> list:
 
 # Shared content guard (2026-09-03): a lyrics/poem/quote paste yields no
 # facts at all — first-person lyrics ("I was over Time…") are not the user's
-# claims (lived_in=Atlanta + a partner name were mined from a song on 08-29).
+# claims (lived_in=Marrowby + a partner name were mined from a song on 08-29).
 # Uses THE deployed content_type_detector; under-fires by design (message
 # type, code, dreams still extract).
 _FACT_EXTRACT_SKIP_CONTENT_TYPES = frozenset({"lyrics", "poem", "quote"})
@@ -813,7 +815,9 @@ class MemoryStorage:
                         thinking_block, cited_ids, agentic_rounds, model_name, etc.)
 
         Returns:
-            str: Database ID (UUID) of the stored memory, or None if storage failed
+            str: Database ID (UUID) of the stored memory. None only for a
+                 deliberate skip; raises StoreWriteError if a write was
+                 attempted and failed [F10a].
         """
         try:
             # THINKING-LEAK GUARD (final defense layer): never persist reasoning
@@ -1017,11 +1021,13 @@ class MemoryStorage:
             logger.debug(f"[MemoryStorage] Stored memory {memory_id} (topic={primary_topic}, truth={truth_score:.2f})")
             return memory_id
 
+        except StoreWriteError:
+            raise  # a typed write failure propagates unchanged, not re-wrapped
         except Exception as e:
             logger.error(f"Error storing interaction: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            raise StoreWriteError(source="store_interaction", reason=type(e).__name__) from e
 
     async def add_reflection(
         self,
@@ -1160,7 +1166,7 @@ class MemoryStorage:
                 src = md.get("source", "conversation")
 
                 # Stance + capture tone (2026-08-23): every stored fact carries
-                # an epistemic tag (casey|is|evil is the user's APPRAISAL, not a
+                # an epistemic tag (tamsin|is|evil is the user's APPRAISAL, not a
                 # world-fact) and the tone regime it was captured under. The
                 # deterministic classifier is authoritative; an extractor-
                 # provided stance only fills lexicon gaps.
@@ -1335,7 +1341,7 @@ class MemoryStorage:
         Resolves entities via EntityResolver and normalizes relations.
         Filters out non-entity objects (durations, phrases, generic words).
         stance/capture_tone (2026-08-23) ride into GraphEdge.metadata so
-        read-time consumers can tell an appraisal edge (casey--is-->evil) from
+        read-time consumers can tell an appraisal edge (tamsin--is-->evil) from
         a world-fact edge. User-scoped role subjects ("user's last partner")
         become verbatim ``entity_type="role"`` nodes and are NEVER passed
         through the alias resolver — a possessive alias could fuzzy-bind the
@@ -1499,7 +1505,8 @@ class MemoryStorage:
             skill: ProceduralSkill instance
 
         Returns:
-            str: Document ID if stored, None if duplicate or failed
+            str: Document ID if stored. None only for a deliberate skip
+                (disabled/dedup); raises StoreWriteError on a failed write [F10b].
         """
         try:
             from config.app_config import PROCEDURAL_SKILLS_ENABLED, SKILL_DEDUP_THRESHOLD
@@ -1513,7 +1520,9 @@ class MemoryStorage:
                 coll = self.chroma_store._get_collection(collection_name)
             except (ValueError, Exception) as e:
                 logger.warning(f"[MemoryStorage] procedural_skills collection not available: {e}")
-                return None
+                raise StoreWriteError(
+                    source="procedural_skills", reason=f"collection:{type(e).__name__}"
+                ) from e
 
             embedding_text = skill.to_embedding_text()
 
@@ -1545,15 +1554,20 @@ class MemoryStorage:
             )
             return doc_id
 
+        except StoreWriteError:
+            raise
         except Exception as e:
             logger.error(f"[MemoryStorage] Failed to store skill: {e}")
-            return None
+            raise StoreWriteError(source="procedural_skills", reason=type(e).__name__) from e
 
     async def _maybe_regenerate_narrative(self) -> None:
         """
         Regenerate the narrative context after summary creation.
 
-        This is a non-critical operation - failures are logged and swallowed.
+        Non-critical, but degrades EXPLICITLY [F10b]: a failed summaries or
+        recent-memories read logs one warning and returns WITHOUT generating
+        or saving -- never treated as an empty corpus. Genuinely empty/no
+        consolidator still return quietly, as before.
         """
         try:
             from config.app_config import NARRATIVE_CONTEXT_ENABLED
@@ -1561,8 +1575,12 @@ class MemoryStorage:
                 return
 
             # Retrieve recent summaries for synthesis
-            recent_weeklies = self._get_recent_summaries_by_timespan("weekly", limit=4)
-            recent_monthlies = self._get_recent_summaries_by_timespan("monthly", limit=2)
+            try:
+                recent_weeklies = self._get_recent_summaries_by_timespan("weekly", limit=4)
+                recent_monthlies = self._get_recent_summaries_by_timespan("monthly", limit=2)
+            except RetrievalError as e:
+                logger.warning(f"[MemoryStorage] Narrative synthesis skipped: summaries unavailable: {e}")
+                return
 
             if not recent_weeklies and not recent_monthlies:
                 logger.debug("[MemoryStorage] No summaries available for narrative synthesis")
@@ -1572,13 +1590,21 @@ class MemoryStorage:
                 logger.debug("[MemoryStorage] No consolidator available for narrative synthesis")
                 return
 
-            # Recent user statements feed the streak ledger (2026-09-05);
-            # best-effort — an unavailable corpus just means no ledger.
+            # Recent user statements feed the streak ledger; a failed read
+            # must degrade explicitly, not synthesize from an empty ledger
+            # [F10b] -- the except only detects/logs, the check below acts.
             user_statements = []
+            _recent_memories_failed = False
             try:
                 user_statements = self.corpus_manager.get_recent_memories(60)
             except Exception as e:
-                logger.debug(f"[MemoryStorage] No user statements for the streak ledger: {e}")
+                _recent_memories_failed = True
+                logger.warning(
+                    f"[MemoryStorage] Narrative synthesis skipped: recent memories unavailable: {type(e).__name__}"
+                )
+
+            if _recent_memories_failed:
+                return
 
             # Generate narrative via consolidator
             narrative = await self.consolidator.generate_narrative_context(
@@ -1604,12 +1630,24 @@ class MemoryStorage:
             limit: Maximum number of summaries to return
 
         Returns:
-            List of summary dicts sorted by timestamp (most recent first)
+            List of summary dicts, most recent first; [] if genuinely empty
+            or span_type is unknown; raises RetrievalError on a failed read [F10b].
+
+        [F10c] The count is now passed POSITIONALLY to
+        ``corpus_manager.get_summaries(50)``, matching the production
+        ``CorpusManager.get_summaries(self, count=5)`` signature (the
+        ``limit=50`` keyword call always raised ``TypeError`` against every
+        production ``CorpusManager`` -- owner-approved fix of the F10b-pinned
+        defect). The final sort now reuses the SAME normalized naive-UTC
+        timestamp already computed while filtering rows into the span
+        window, instead of the raw stored value, so mixed
+        str/datetime/tz-aware/naive timestamps sort without raising.
         """
 
         try:
-            # Get all recent summaries
-            all_summaries = self.corpus_manager.get_summaries(limit=50)
+            # Get all recent summaries [F10c]: positional, matches the
+            # production CorpusManager.get_summaries(count) signature.
+            all_summaries = self.corpus_manager.get_summaries(50)
 
             if not all_summaries:
                 return []
@@ -1639,12 +1677,16 @@ class MemoryStorage:
                     if ts.tzinfo is not None:
                         ts = ts.replace(tzinfo=None)
                     if ts >= cutoff:
-                        filtered.append(s)
+                        # [F10c] Keep the already-normalized `ts` alongside
+                        # the row so the sort below reuses it instead of
+                        # re-reading the raw (possibly mixed-type) stored
+                        # value.
+                        filtered.append((ts, s))
 
-            # Sort by timestamp (most recent first) and limit
-            filtered.sort(key=lambda x: x.get("timestamp", datetime.min), reverse=True)
-            return filtered[:limit]
+            # Sort by the normalized timestamp (most recent first) and limit
+            filtered.sort(key=lambda pair: pair[0], reverse=True)
+            return [s for _, s in filtered[:limit]]
 
         except Exception as e:
             logger.debug(f"[MemoryStorage] Error getting {span_type} summaries: {e}")
-            return []
+            raise RetrievalError(source="corpus_summaries", reason=type(e).__name__) from e

@@ -12,13 +12,13 @@ def fact_extractor():
 @pytest.mark.asyncio
 async def test_extract_facts_from_conversation(fact_extractor):
     """Test extracting facts from a realistic conversation."""
-    query = "My name is Luke and I live in Seattle. I work as a software engineer at Microsoft."
-    response = "Nice to meet you, Luke! Seattle is a beautiful city and Microsoft is a major tech company."
+    query = "My name is Alex and I live in Seattle. I work as a software engineer at Microsoft."
+    response = "Nice to meet you, Alex! Seattle is a beautiful city and Microsoft is a major tech company."
 
     facts = await fact_extractor.extract_facts(query, response)
 
     assert isinstance(facts, list)
-    # Should extract some facts about Luke
+    # Should extract some facts about Alex
     assert len(facts) >= 0  # May be 0 if extraction fails, but shouldn't crash
 
 

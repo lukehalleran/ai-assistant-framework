@@ -10,7 +10,7 @@ Covers:
   * memory_storage._ingest_fact_to_graph: stance/capture_tone ride into
     GraphEdge.metadata; role subjects become verbatim entity_type="role" nodes
     bypassing the alias resolver even when a possessive alias points at a
-    registered person (the casey/she incident class).
+    registered person (the tamsin/she incident class).
   * shutdown_processor._capture_tone_for_triple: corpus-join tone mapping.
 """
 
@@ -27,7 +27,7 @@ from memory.shutdown_processor import ShutdownProcessor
 
 class TestLLMNormalizeStance:
     def test_appraisal_overrides_llm_objective(self):
-        t = _normalize_triple({"subject": "casey", "relation": "is",
+        t = _normalize_triple({"subject": "tamsin", "relation": "is",
                                "object": "evil", "stance": "objective"})
         assert t is not None
         assert t["stance"] == "appraisal"  # deterministic lexicon hit wins
@@ -56,9 +56,9 @@ class TestLLMNormalizeStance:
         assert t["fact_scope"] == "entity"
 
     def test_named_subject_not_rescoped(self):
-        t = _normalize_triple({"subject": "casey", "relation": "is",
+        t = _normalize_triple({"subject": "tamsin", "relation": "is",
                                "object": "evil"})
-        assert t["subject"] == "casey"
+        assert t["subject"] == "tamsin"
 
 
 class TestRegexCleanTripleScoping:
@@ -84,8 +84,8 @@ class TestRegexCleanTripleScoping:
 def graph_env(tmp_path):
     gm = GraphMemory(persist_path=str(tmp_path / "graph.json"))
     resolver = EntityResolver(gm, aliases_path="")
-    # Register casey WITH the possessive alias the fuzzy-bind hazard needs.
-    gm.add_entity(GraphNode(entity_id="casey", display_name="Casey",
+    # Register tamsin WITH the possessive alias the fuzzy-bind hazard needs.
+    gm.add_entity(GraphNode(entity_id="tamsin", display_name="Tamsin",
                             entity_type="person", aliases=["user's last partner"]))
     ms = MemoryStorage.__new__(MemoryStorage)
     ms.graph_memory = gm
@@ -98,27 +98,27 @@ class TestGraphIngestStance:
         ms, gm, resolver = graph_env
         gm.add_entity(GraphNode(entity_id="evil", display_name="evil"))
         ms._ingest_fact_to_graph(
-            subj="casey", rel="is", obj="evil", fact_id="f1",
+            subj="tamsin", rel="is", obj="evil", fact_id="f1",
             confidence=0.9, stance="appraisal", capture_tone="elevated",
         )
-        edges = gm.get_relations("casey")
+        edges = gm.get_relations("tamsin")
         edge = next(e for e in edges if e.target_id == "evil")
         assert edge.metadata.get("stance") == "appraisal"
         assert edge.metadata.get("capture_tone") == "elevated"
 
     def test_role_subject_never_binds_to_registered_person(self, graph_env):
         ms, gm, resolver = graph_env
-        # sanity: the resolver WOULD bind this alias to casey
-        assert resolver.resolve("user's last partner") == "casey"
+        # sanity: the resolver WOULD bind this alias to tamsin
+        assert resolver.resolve("user's last partner") == "tamsin"
         gm.add_entity(GraphNode(entity_id="abusive", display_name="abusive"))
         ms._ingest_fact_to_graph(
             subj="user's last partner", rel="is", obj="abusive",
             fact_id="f2", confidence=0.9, stance="appraisal",
             capture_tone="elevated",
         )
-        # the appraisal edge hangs off a verbatim role node, NOT casey
-        casey_edges = gm.get_relations("casey")
-        assert not any(e.target_id == "abusive" for e in casey_edges)
+        # the appraisal edge hangs off a verbatim role node, NOT tamsin
+        tamsin_edges = gm.get_relations("tamsin")
+        assert not any(e.target_id == "abusive" for e in tamsin_edges)
         role_node = gm.get_entity("user_s_last_partner")
         assert role_node is not None
         assert role_node.entity_type == "role"
@@ -133,8 +133,8 @@ class TestGraphIngestStance:
             obj="stopped answering messages for weeks at a time",
             fact_id="f3", confidence=0.9, stance="appraisal",
         )
-        casey = gm.get_entity("casey")
-        assert "communication_style" not in (casey.metadata or {})
+        tamsin = gm.get_entity("tamsin")
+        assert "communication_style" not in (tamsin.metadata or {})
 
 
 class TestCaptureToneJoin:
@@ -142,13 +142,13 @@ class TestCaptureToneJoin:
         return [
             {"query": "casual chat about the gym", "response": "",
              "is_heavy_topic": False},
-            {"query": "casey was evil to me", "response": "that sounds heavy",
+            {"query": "tamsin was evil to me", "response": "that sounds heavy",
              "is_heavy_topic": True},
         ]
 
     def test_matched_heavy_entry_elevated(self):
         tone = ShutdownProcessor._capture_tone_for_triple(
-            {"subject": "casey", "relation": "is", "object": "evil"},
+            {"subject": "tamsin", "relation": "is", "object": "evil"},
             self._items(),
         )
         assert tone == "elevated"
@@ -169,7 +169,7 @@ class TestCaptureToneJoin:
 
     def test_missing_flag_unknown(self):
         tone = ShutdownProcessor._capture_tone_for_triple(
-            {"subject": "casey", "relation": "is", "object": "evil"},
-            [{"query": "casey was evil to me", "response": ""}],
+            {"subject": "tamsin", "relation": "is", "object": "evil"},
+            [{"query": "tamsin was evil to me", "response": ""}],
         )
         assert tone == "unknown"

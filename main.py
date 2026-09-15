@@ -466,7 +466,7 @@ async def inspect_summaries():
     orchestrator = build_orchestrator()
     memory_system = orchestrator.memory_system
     corpus_manager = orchestrator.memory_system.corpus_manager
-    summaries = memory_system.corpus_manager.get_summaries(limit=10)
+    summaries = memory_system.corpus_manager.get_summaries(10)  # [F10c] positional, matches CorpusManager.get_summaries(count)
 
     print("\n" + "=" * 60)
     print("SUMMARY INSPECTION")
@@ -1334,9 +1334,14 @@ if __name__ == "__main__":
                 from config.app_config import NARRATIVE_MONTHLIES_COUNT, NARRATIVE_WEEKLIES_COUNT, NARRATIVE_DAILIES_COUNT
 
                 print("Checking Obsidian vault...")
-                obsidian_monthlies = consolidator._read_obsidian_monthly_summaries(limit=NARRATIVE_MONTHLIES_COUNT)
-                obsidian_weeklies = consolidator._read_obsidian_weekly_summaries(limit=NARRATIVE_WEEKLIES_COUNT)
-                obsidian_dailies = consolidator._read_obsidian_daily_notes(limit=NARRATIVE_DAILIES_COUNT)
+                from utils.retrieval_outcome import RetrievalError
+                try:
+                    obsidian_monthlies = consolidator._read_obsidian_monthly_summaries(limit=NARRATIVE_MONTHLIES_COUNT)
+                    obsidian_weeklies = consolidator._read_obsidian_weekly_summaries(limit=NARRATIVE_WEEKLIES_COUNT)
+                    obsidian_dailies = consolidator._read_obsidian_daily_notes(limit=NARRATIVE_DAILIES_COUNT)
+                except RetrievalError as e:
+                    print(f"\n✗ Could not read Obsidian notes ({e.source}: {e.reason})")
+                    return False
                 print(f"  - Obsidian monthly summaries: {len(obsidian_monthlies)}")
                 print(f"  - Obsidian weekly summaries: {len(obsidian_weeklies)}")
                 print(f"  - Obsidian daily notes: {len(obsidian_dailies)}")
@@ -1560,14 +1565,19 @@ if __name__ == "__main__":
                 model_manager=mm,
             )
 
-            if specific_id:
-                proposal = store.get_proposal(specific_id)
-                if not proposal:
-                    print(f"Proposal {specific_id} not found.")
-                    sys.exit(1)
-                proposals = [proposal]
-            else:
-                proposals = store.get_pending_and_approved()
+            from utils.retrieval_outcome import RetrievalError
+            try:
+                if specific_id:
+                    proposal = store.get_proposal(specific_id)
+                    if not proposal:
+                        print(f"Proposal {specific_id} not found.")
+                        sys.exit(1)
+                    proposals = [proposal]
+                else:
+                    proposals = store.get_pending_and_approved()
+            except RetrievalError as e:
+                print(f"Could not read proposals: {e}")
+                sys.exit(2)
 
             if not proposals:
                 print("No pending/approved proposals to check.")

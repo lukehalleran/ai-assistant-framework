@@ -47,7 +47,7 @@ class TestLLMExtractorSourceExcerpt:
 
     def test_empty_messages(self):
         """No messages = no evidence: every proposal is dropped, nothing crashes."""
-        triples = [{"relation": "name", "object": "Luke", "subject": "user"}]
+        triples = [{"relation": "name", "object": "Alex", "subject": "user"}]
         LLMFactExtractor._attach_source_excerpts(triples, [])
         assert triples == []
 
@@ -107,10 +107,10 @@ class TestLLMExtractorSourceExcerpt:
 
     def test_strips_role_prefix(self):
         """Messages with 'user:' prefix are cleaned before matching."""
-        triples = [{"relation": "name", "object": "Luke", "subject": "user"}]
-        messages = ["user: My name is Luke"]
+        triples = [{"relation": "name", "object": "Alex", "subject": "user"}]
+        messages = ["user: My name is Alex"]
         LLMFactExtractor._attach_source_excerpts(triples, messages)
-        assert triples[0]["source_excerpt"] == "My name is Luke"
+        assert triples[0]["source_excerpt"] == "My name is Alex"
 
     @pytest.mark.asyncio
     async def test_extract_triples_includes_source_excerpt(self):
@@ -282,7 +282,7 @@ class TestHelloTalkRegression:
         from memory.user_profile import UserProfile
         profile = UserProfile.__new__(UserProfile)
         profile.profile = {
-            "name": "Luke",
+            "name": "Alex",
             "updated_at": "2026-04-30T12:00:00",
             "categories": {
                 "preferences": [{

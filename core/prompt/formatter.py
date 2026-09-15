@@ -750,11 +750,25 @@ class PromptFormatter:
         Reads config flags and counts results from the context dict.
         No retrieval needed — purely reads config flags and context dict counts.
 
+        A section is NOT CHECKED (renders "(could not check)" instead of a
+        count, or its name in the trailing summary line) when
+        context["_section_outcomes"][name]["status"] is "failed" or
+        "unavailable" (see utils/retrieval_outcome.py's RETRIEVAL_STATES,
+        attached by the builder's gather loop next to "_task_timings"). No
+        outcomes key, or every section succeeded/no_results, renders exactly
+        as before — except obsidian=, which now reads OBSIDIAN_ENABLED
+        instead of "did any notes come back", so an enabled vault with no
+        matching notes reads ON, not OFF. See
+        docs/execution/generalization/failure_outcome_design.md, CGR-007.
+
         Returns:
             Compact multi-line string grouped by category, or empty string.
         """
         try:
             from config import app_config as cfg
+
+            outcomes = context.get("_section_outcomes") or {}
+            shown_names = set()
 
             def _on_off(flag: bool) -> str:
                 return "ON" if flag else "OFF"
@@ -773,13 +787,29 @@ class PromptFormatter:
                     return f"({total})" if total else "(0)"
                 return ""
 
+            def _not_checked(name: str) -> bool:
+                info = outcomes.get(name)
+                return isinstance(info, dict) and info.get("status") in ("failed", "unavailable")
+
+            def _suffix(name: str, items, unit: str = "") -> str:
+                """Count suffix, e.g. '(3)' or '(3 open)' — REPLACED by
+                '(could not check)' when `name` is NOT CHECKED. Also marks
+                `name` as already itemized, so it is excluded from the
+                trailing "Could not check this turn:" line."""
+                shown_names.add(name)
+                if _not_checked(name):
+                    return "(could not check)"
+                if items:
+                    return f"({len(items)}{f' {unit}' if unit else ''})"
+                return ""
+
             lines = []
 
             # Memory category
             mem_parts = []
             kg_enabled = getattr(cfg, 'KNOWLEDGE_GRAPH_ENABLED', False)
             kg_ctx = context.get("graph_context", []) or []
-            mem_parts.append(f"knowledge_graph={_on_off(kg_enabled)}{f'({len(kg_ctx)} edges)' if kg_ctx else ''}")
+            mem_parts.append(f"knowledge_graph={_on_off(kg_enabled)}{_suffix('graph_context', kg_ctx, 'edges')}")
             mem_parts.append(f"fact_verification={_on_off(getattr(cfg, 'FACT_VERIFICATION_ENABLED', False))}")
             mem_parts.append(f"truth_scorer={_on_off(getattr(cfg, 'TRUTH_SCORER_ENABLED', True))}")
             mem_parts.append(f"dedup={_on_off(getattr(cfg, 'CROSS_DEDUP_ENABLED', False))}")
@@ -788,11 +818,18 @@ class PromptFormatter:
             # Knowledge category
             know_parts = []
             git = context.get("git_commits", []) or []
-            know_parts.append(f"git_commits={_on_off(getattr(cfg, 'GIT_MEMORY_ENABLED', False))}{f'({len(git)})' if git else ''}")
+            know_parts.append(f"git_commits={_on_off(getattr(cfg, 'GIT_MEMORY_ENABLED', False))}{_suffix('git_commits', git)}")
             notes = context.get("personal_notes", []) or []
-            know_parts.append(f"obsidian={_on_off(bool(notes))}{f'({len(notes)} notes)' if notes else ''}")
+            shown_names.add("personal_notes")
+            if _not_checked("personal_notes"):
+                obs_suffix = "(could not check)"
+            elif notes:
+                obs_suffix = f"({len(notes)} notes)"
+            else:
+                obs_suffix = ""
+            know_parts.append(f"obsidian={_on_off(getattr(cfg, 'OBSIDIAN_ENABLED', False))}{obs_suffix}")
             ref_docs = context.get("reference_docs", []) or []
-            know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{f'({len(ref_docs)})' if ref_docs else ''}")
+            know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{_suffix('reference_docs', ref_docs)}")
             web_enabled = bool(getattr(cfg, "WEB_SEARCH_ENABLED", False))
             web_label = _on_off(web_enabled)
             if web_enabled:
@@ -811,15 +848,18 @@ class PromptFormatter:
                 else:
                     web_label += "(no search this turn)"
             know_parts.append(f"web_search={web_label}")
+            shown_names.add("web_search")  # tri-state label unchanged; never in the catch-all line
             lines.append("Knowledge: " + " | ".join(know_parts))
 
             # Proactive category
             pro_parts = []
             threads = context.get("unresolved_threads", []) or []
-            pro_parts.append(f"threads={_on_off(getattr(cfg, 'THREAD_SURFACING_ENABLED', False))}{f'({len(threads)} open)' if threads else ''}")
+            pro_parts.append(f"threads={_on_off(getattr(cfg, 'THREAD_SURFACING_ENABLED', False))}{_suffix('unresolved_threads', threads, 'open')}")
             insights = context.get("proactive_insights", []) or []
-            pro_parts.append(f"insights={_on_off(getattr(cfg, 'PROACTIVE_SURFACING_ENABLED', False))}{f'({len(insights)})' if insights else ''}")
-            pro_parts.append(f"narrative={_on_off(getattr(cfg, 'NARRATIVE_CONTEXT_ENABLED', True) if hasattr(cfg, 'NARRATIVE_CONTEXT_ENABLED') else bool(context.get('narrative_state')))}")
+            pro_parts.append(f"insights={_on_off(getattr(cfg, 'PROACTIVE_SURFACING_ENABLED', False))}{_suffix('proactive_insights', insights)}")
+            narrative_flag = _on_off(getattr(cfg, 'NARRATIVE_CONTEXT_ENABLED', True) if hasattr(cfg, 'NARRATIVE_CONTEXT_ENABLED') else bool(context.get('narrative_state')))
+            shown_names.add("narrative")
+            pro_parts.append(f"narrative={narrative_flag}{'(could not check)' if _not_checked('narrative') else ''}")
             lines.append("Proactive: " + " | ".join(pro_parts))
 
             # Analysis category
@@ -827,8 +867,19 @@ class PromptFormatter:
             ana_parts.append(f"intent={_on_off(getattr(cfg, 'INTENT_ENABLED', False))}")
             ana_parts.append(f"escalation={_on_off(getattr(cfg, 'ESCALATION_ENABLED', False))}")
             skills = context.get("procedural_skills", []) or []
-            ana_parts.append(f"skills={_on_off(getattr(cfg, 'PROCEDURAL_SKILLS_ENABLED', False))}{f'({len(skills)})' if skills else ''}")
+            ana_parts.append(f"skills={_on_off(getattr(cfg, 'PROCEDURAL_SKILLS_ENABLED', False))}{_suffix('procedural_skills', skills)}")
             lines.append("Analysis: " + " | ".join(ana_parts))
+
+            # Any other NOT CHECKED section not already itemized above (and
+            # never web_search, which keeps its own tri-state label).
+            not_checked_others = sorted(
+                name for name, info in outcomes.items()
+                if name not in shown_names
+                and isinstance(info, dict)
+                and info.get("status") in ("failed", "unavailable")
+            )
+            if not_checked_others:
+                lines.append("Could not check this turn: " + ", ".join(not_checked_others))
 
             return "\n".join(lines)
 

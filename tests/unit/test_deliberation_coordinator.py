@@ -42,7 +42,7 @@ def test_generated_daily_note_is_assistant_summary_not_user_observation():
     event = _event_from_row({
         "id": "daily-1", "timestamp": "2026-07-14",
         "title": "7 14 26 Daily Note",
-        "text": "Luke seemed agitated today.",
+        "text": "Alex seemed agitated today.",
         "metadata": {"author": "daemon", "source_type": "daemon_daily_summary",
                      "derived_from": "conversation_corpus"},
     }, "notes")

@@ -8,7 +8,7 @@ these. Hi Morgan and Robin, ... ugh") misfired four independent systems:
    on file" in the prior turns → "File retrieval continuation" → 106s
    agentic loop on a message that requested nothing.
 2. Visual gate — bare "see" ("the two options I see are...") in a 700-word
-   paste counted as visual intent; entity 'luke' matched the email SIGNATURE;
+   paste counted as visual intent; entity 'alex' matched the email SIGNATURE;
    two cat photos were attached to the final synthesis and narrated.
 3. Intent — bare \\bcommit\\b matched "Before I commit to that" →
    project_work@0.80.
@@ -44,7 +44,7 @@ PASTED_EMAIL = (
     "withdrawal for that term. Do you have a recommendation between them, "
     "and can you point me to the right process for each? Given the Friday "
     "deadline, could we speak by phone today or tomorrow morning? "
-    "Thank you so much. Luke U_handle GTID 000000000 ugh"
+    "Thank you so much. Alex U_handle WFID 0000-0000 ugh"
 )
 
 # The prior turns from the live session — full of medical-admin vocabulary
@@ -194,7 +194,7 @@ class TestVisualGate:
 
     def test_plain_message_still_blocked(self):
         assert not _query_wants_visual("how are you today", None)
-        assert not _query_wants_visual("the file is at /home/lukeh/main.py",
+        assert not _query_wants_visual("the file is at /home/alexh/main.py",
                                        "technical_help")
 
 

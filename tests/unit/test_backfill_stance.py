@@ -31,7 +31,7 @@ SENTINEL = bf.SENTINEL_FACT_ID
 class TestPlanFactUpdates:
     def test_sentinel_classifies_appraisal(self):
         updates, stats, sentinel_ok = bf.plan_fact_updates([
-            _doc(SENTINEL, "casey | is | evil"),
+            _doc(SENTINEL, "tamsin | is | evil"),
         ])
         assert sentinel_ok is True
         assert (SENTINEL, "appraisal") in updates
@@ -44,7 +44,7 @@ class TestPlanFactUpdates:
 
     def test_already_tagged_skipped_idempotent(self):
         updates, stats, sentinel_ok = bf.plan_fact_updates([
-            _doc(SENTINEL, "casey | is | evil", {"stance": "appraisal"}),
+            _doc(SENTINEL, "tamsin | is | evil", {"stance": "appraisal"}),
             _doc("f1", "user | lives_in | chicago", {"stance": "objective"}),
         ])
         assert updates == []
@@ -69,15 +69,15 @@ class TestPlanFactUpdates:
 class TestPlanGraphUpdates:
     def test_appraisal_edge_planned(self, tmp_path):
         gm = GraphMemory(persist_path=str(tmp_path / "g.json"))
-        gm.add_entity(GraphNode(entity_id="casey", display_name="Casey"))
+        gm.add_entity(GraphNode(entity_id="tamsin", display_name="Tamsin"))
         gm.add_entity(GraphNode(entity_id="evil", display_name="evil"))
-        gm.add_relation(GraphEdge(source_id="casey", relation="is", target_id="evil"))
+        gm.add_relation(GraphEdge(source_id="tamsin", relation="is", target_id="evil"))
         updates = bf.plan_graph_updates(gm)
-        assert ("casey|is|evil", "appraisal") in updates
+        assert ("tamsin|is|evil", "appraisal") in updates
 
     def test_tagged_edges_skipped(self, tmp_path):
         gm = GraphMemory(persist_path=str(tmp_path / "g.json"))
-        gm.add_relation(GraphEdge(source_id="casey", relation="is",
+        gm.add_relation(GraphEdge(source_id="tamsin", relation="is",
                                   target_id="evil",
                                   metadata={"stance": "appraisal"}))
         assert bf.plan_graph_updates(gm) == []
@@ -107,7 +107,7 @@ class TestSafetyContract:
 
         class FakeStore:
             def list_all(self, name):
-                return [_doc(SENTINEL, "casey | is | evil")]
+                return [_doc(SENTINEL, "tamsin | is | evil")]
 
             def update_metadata(self, coll, doc_id, md):
                 written.append(doc_id)

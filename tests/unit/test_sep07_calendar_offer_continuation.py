@@ -1,7 +1,7 @@
 """2026-09-07 office-hours calendar turn (four turns, no proposal ever created).
 
 Live sequence (15:39–15:42, kimi-3):
-  T3 "can we check the sylubus and add the mgt office hours sessions to my
+  T3 "can we check the sylubus and add the abc office hours sessions to my
       google calander in one batch…"  → gate: web_search (no action arm)
   T4 "yeah lets do that, here are the two links: https://…zoom…" → web_search
   T5 "lets just do the first one now" → casual/short skip → enhanced
@@ -41,7 +41,7 @@ from core.actions.registry import (
 from core.actions.types import ActionType
 from core.pending_proposal import is_decline
 
-T3 = ("can we check the sylubus and add the mgt office hours sessions to my "
+T3 = ("can we check the sylubus and add the abc office hours sessions to my "
       "google calander in one batch in the approriate slots?")
 T4 = ("yeah lets do that, here are the two links for the office hours:       "
       "Professor Office Hours Zoom Link:  https://example-univ.zoom.us/j/00000000001Links "
@@ -56,10 +56,10 @@ R3 = ("Checked the syllabus — office hours are every Friday 9:00–10:00 PM Ea
 R4 = ("Got both links — the Zoom URLs don't resolve to anything readable, so I'll "
       "just embed them in the event descriptions.\n\nWant me to create just the "
       "professor one now and add the TA's once you find the time, or hold both?")
-R5 = ("Here's the proposal for the professor's office hours:\n- **Event**: MGT 6203 "
+R5 = ("Here's the proposal for the professor's office hours:\n- **Event**: ABC 1234 "
       "Professor Office Hours\n\nConfirm and I'll create it — and whenever you find "
       "the TA schedule, we'll add that one separately.")
-R6 = ("Confirmed — creating the recurring event now:\n\n- **MGT 6203 Professor Office "
+R6 = ("Confirmed — creating the recurring event now:\n\n- **ABC 1234 Professor Office "
       "Hours (Prof — Zoom)**\n- Fridays, 8:00–9:00 PM CT, weekly from Sept 11 "
       "through Dec 4\n\nOnce it's on the calendar, this Friday's session is the one "
       "to actually keep in mind.")
@@ -305,7 +305,7 @@ class TestRecurrence:
 
     def test_event_body_carries_recurrence(self):
         items, err = _event_items({
-            "summary": "MGT 6203 Office Hours", "start_time": "2026-09-11T20:00:00",
+            "summary": "ABC 1234 Office Hours", "start_time": "2026-09-11T20:00:00",
             "end_time": "2026-09-11T21:00:00", "time_zone": "America/Chicago",
             "recurrence": "FREQ=WEEKLY;UNTIL=20261204",
         }, 10)
@@ -360,10 +360,10 @@ def _failed_store(error="Google token refresh failed."):
     store = PendingActionsStore(ttl_seconds=300, max_pending=5, persist=False)
     p = ActionProposal(
         action_type=ActionType.CALENDAR_CREATE_EVENT,
-        params={"summary": "MGT 6203 Professor Office Hours", "start_time": "2026-09-11T20:00:00",
+        params={"summary": "ABC 1234 Professor Office Hours", "start_time": "2026-09-11T20:00:00",
                 "end_time": "2026-09-11T21:00:00", "time_zone": "America/Chicago",
                 "recurrence": "RRULE:FREQ=WEEKLY;UNTIL=20261204"},
-        summary="calendar_create_event: MGT 6203 Professor Office Hours",
+        summary="calendar_create_event: ABC 1234 Professor Office Hours",
     )
     assert store.propose(p)
     store.approve(p.action_id)
@@ -473,7 +473,7 @@ class TestRetryTurn:
 
 class TestNoCardBackstop:
     LIVE = ("Reauth makes sense — that'd explain the first failure. Firing it again:\n\n"
-            "- **MGT 6203 Professor Office Hours (Prof — Zoom)**\n- Fridays, 8:00–9:00 PM CT\n"
+            "- **ABC 1234 Professor Office Hours (Prof — Zoom)**\n- Fridays, 8:00–9:00 PM CT\n"
             "- Zoom link + Piazza-first note in the description\n\n"
             "Approve it and it should land this time.")
 

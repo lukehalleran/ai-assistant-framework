@@ -1117,11 +1117,11 @@ R4_T1_NOTE_SAVE_WRAPPED = (
     "jot down a note for this session: TA sessions are\n  Saturdays at 11 CT"
 )
 R4_T2_CALENDAR = (
-    "put a recurring calendar event on my google calendar for the MGT study "
+    "put a recurring calendar event on my google calendar for the ABC study "
     "group, Tuesdays at 3, through Dec 4"
 )
 R4_T2_CALENDAR_WRAPPED = (
-    "put a recurring calendar event on my google calendar for the MGT study "
+    "put a recurring calendar event on my google calendar for the ABC study "
     "group, Tuesdays at\n  3, through Dec 4"
 )
 R4_MEDS_QUESTION = (

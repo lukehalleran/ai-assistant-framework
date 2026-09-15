@@ -43,6 +43,7 @@ from memory.code_proposal import (
 )
 from memory.proposal_risk import classify_proposal
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import StoreWriteError
 
 if TYPE_CHECKING:  # annotation only — no runtime import / no podman dependency
     from agent_branch.scoring import RankedPortfolio
@@ -239,7 +240,11 @@ def ingest_survivors(
         if sig and sig in seen:
             logger.info("ingest: skipped identical-content survivor %s (%s)", sig, sb.branch_id)
             continue
-        doc_id = store.store_proposal(proposal)
+        try:
+            doc_id = store.store_proposal(proposal)
+        except StoreWriteError as e:
+            logger.warning("ingest: store failed for survivor %s (%s)", sb.branch_id, e.reason)
+            continue
         if doc_id:
             if sig:
                 seen.add(sig)  # also dedup within this run

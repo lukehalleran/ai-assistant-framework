@@ -81,7 +81,7 @@ class TestClauseLevelOwnershipRegression:
         # "I moved ... and my partner Sarah came too" — the object's own
         # clause ("my partner Sarah came too") is ambiguous on its own, but
         # the sentence's explicit "I" rescues it (existing regression guard).
-        turn = "I moved to Atlanta last spring and my partner Sarah came too."
+        turn = "I moved to Marrowby last spring and my partner Sarah came too."
         ev = find_supporting_user_span(_t("user", "relationship", "Sarah"), [turn])
         assert ev is not None and "Sarah" in ev.text
 

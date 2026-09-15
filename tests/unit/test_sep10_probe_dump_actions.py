@@ -64,12 +64,12 @@ from utils.web_search_trigger import (
 Q2 = ("Took 30 mg focus supplement at like 1115. Took the extra 5 or maybe less idk "
       "about an hour later than caffeine maybe an hour after that. What "
       "time should I take meds melatonin etc tn to get to bed")
-Q6 = ("put a recurring calendar event on my google calendar for the MGT "
+Q6 = ("put a recurring calendar event on my google calendar for the ABC "
       "study group, Tuesdays at 3, through Dec 4")
 T5 = "jot down a note for this session: TA sessions are Saturdays at 11 CT,"
 
 R5_CALENDAR_OFFER = (
-    "Here's the proposal for the professor's office hours:\n- **Event**: MGT 6203 "
+    "Here's the proposal for the professor's office hours:\n- **Event**: ABC 1234 "
     "Professor Office Hours\n\nConfirm and I'll create it — and whenever you find "
     "the TA schedule, we'll add that one separately."
 )
@@ -198,7 +198,7 @@ class TestA1IsOfferAffirmation:
 class TestA2CalendarDatetimeShapeErrors:
     def test_bare_clock_time_is_flagged(self):
         bad = calendar_datetime_shape_errors({
-            "summary": "MGT Study Group", "start_time": "15:00:00", "end_time": "16:00:00",
+            "summary": "ABC Study Group", "start_time": "15:00:00", "end_time": "16:00:00",
         })
         assert bad == ["start_time=15:00:00", "end_time=16:00:00"]
 
@@ -227,7 +227,7 @@ class TestA2ResolveForcedActionShapeGate:
     def test_bare_clock_time_rejected_with_a_reason(self):
         resolved_type, params, reason = resolve_forced_action(
             "calendar_create_event",
-            {"summary": "MGT Study Group", "start_time": "15:00:00", "end_time": "16:00:00"},
+            {"summary": "ABC Study Group", "start_time": "15:00:00", "end_time": "16:00:00"},
             forced_action_type=None,
         )
         assert resolved_type is None and params is None
@@ -238,7 +238,7 @@ class TestA2ResolveForcedActionShapeGate:
     def test_bare_clock_time_rejected_even_in_a_forced_round(self):
         resolved_type, params, reason = resolve_forced_action(
             "calendar_create_event",
-            {"summary": "MGT Study Group", "start_time": "15:00:00", "end_time": "16:00:00"},
+            {"summary": "ABC Study Group", "start_time": "15:00:00", "end_time": "16:00:00"},
             forced_action_type="calendar_create_event",
         )
         assert resolved_type is None
@@ -412,7 +412,7 @@ class TestBackfillReplacesShapeInvalidTime:
 
     def test_shape_invalid_start_end_are_fillable(self):
         from core.agentic.controller import _backfill_fill_keys
-        params = {"summary": "MGT Study Group", "start_time": "15:00:00", "end_time": "16:00:00"}
+        params = {"summary": "ABC Study Group", "start_time": "15:00:00", "end_time": "16:00:00"}
         wd = {"start_time": "2026-09-15T15:00:00", "end_time": "2026-09-15T16:00:00",
               "recurrence": "RRULE:FREQ=WEEKLY;UNTIL=20261204"}
         bf = dict(wd)
@@ -427,7 +427,7 @@ class TestBackfillReplacesShapeInvalidTime:
     def test_no_weekday_backfill_never_touches_supplied_values(self):
         from core.agentic.controller import _backfill_fill_keys
         params = {"start_time": "15:00:00", "title": ""}
-        bf = {"title": "MGT Study Group"}
+        bf = {"title": "ABC Study Group"}
         assert _backfill_fill_keys(params, bf, {}) == ["title"]
 
 
@@ -681,12 +681,12 @@ def _make_action_guard_ctx(*, user_text="x", raw_context=None, active_documents=
 
 # Synthetic 4-event calendar list ("the live 4-event calendar list") — none
 # of these is the TA session R2_CALENDAR_STATE_CLAIM narrates, except the
-# dedicated Dr. Xu entry used by the "no notice" positive-match test below.
+# dedicated Dr. Varnum entry used by the "no notice" positive-match test below.
 _FOUR_EVENT_CALENDAR = [
-    {"summary": "MGT 6203 Lecture", "start": "2026-09-11T10:00:00", "end": "2026-09-11T11:00:00"},
+    {"summary": "ABC 1234 Lecture", "start": "2026-09-11T10:00:00", "end": "2026-09-11T11:00:00"},
     {"summary": "Group Project Meeting", "start": "2026-09-12T14:00:00", "end": "2026-09-12T15:00:00"},
     {"summary": "Career Fair", "start": "2026-09-13T09:00:00", "end": "2026-09-13T12:00:00"},
-    {"summary": "Dr. Xu Office Hours", "start": "2026-09-11T15:00:00", "end": "2026-09-11T16:00:00"},
+    {"summary": "Dr. Varnum Office Hours", "start": "2026-09-11T15:00:00", "end": "2026-09-11T16:00:00"},
 ]
 
 
@@ -725,7 +725,7 @@ class TestA8HandlerCalendarStateBackstop:
     async def test_reply_naming_a_matching_event_gets_no_notice(self):
         from gui.handlers import _apply_action_guard
         ctx = _make_action_guard_ctx(raw_context={"google_calendar": _FOUR_EVENT_CALENDAR})
-        reply = "Dr. Xu's office hours Friday is already on your calendar, no need to add it again."
+        reply = "Dr. Varnum's office hours Friday is already on your calendar, no need to add it again."
         suffix = await _apply_action_guard(
             ctx, reply, executed_kinds=set(), proposed_kinds=set(), self_repair=False,
         )
@@ -811,7 +811,7 @@ R3_WRAPPED_NOTE = (
 )
 R3_CLEAN_Q6 = Q6
 R3_WRAPPED_Q6 = (
-    "put a recurring calendar event on my google calendar for the MGT\n  "
+    "put a recurring calendar event on my google calendar for the ABC\n  "
     "study group, Tuesdays at 3, through Dec 4"
 )
 R3_RETRY_OFFER_REPLY = (
@@ -831,11 +831,11 @@ R3_WRAPPED_CARD_SHOULD_BE_UP_REPLY = (
     "Re-queued it for you. The card should be\n  up now for you to approve."
 )
 R3_CLEAN_IN_PLACE_CLAIM = (
-    "The recurring Saturday 11:00 AM CT calendar event for the MGT 6203 TA "
+    "The recurring Saturday 11:00 AM CT calendar event for the ABC 1234 TA "
     "sessions is already in place from earlier today."
 )
 R3_WRAPPED_IN_PLACE_CLAIM = (
-    "The recurring Saturday 11:00 AM CT calendar event for the MGT 6203 TA "
+    "The recurring Saturday 11:00 AM CT calendar event for the ABC 1234 TA "
     "sessions\n  is already in place from earlier today."
 )
 
@@ -984,7 +984,7 @@ class TestA11PendingCardsPromptLine:
         store = PendingActionsStore(ttl_seconds=300, max_pending=5, persist=False)
         store.propose(ActionProposal(
             action_type=ActionType.CALENDAR_CREATE_EVENT,
-            params={}, summary="MGT 6203 TA Session",
+            params={}, summary="ABC 1234 TA Session",
         ))
         from core.agentic.tools import ToolExecutor
         with patch.object(ToolExecutor, "_get_pending_actions_store", return_value=store):
@@ -992,12 +992,12 @@ class TestA11PendingCardsPromptLine:
                 Q6, ActionType.CALENDAR_CREATE_EVENT)
         assert "[PENDING CARDS]" in text
         assert "none" not in text.split("[PENDING CARDS]")[1].split("\n")[0]
-        assert "MGT 6203 TA Session" in text
+        assert "ABC 1234 TA Session" in text
 
 
 class TestA11ExtractCalendarTitle:
     def test_for_the_x_pattern(self):
-        assert extract_calendar_title(Q6) == "MGT study group"
+        assert extract_calendar_title(Q6) == "ABC study group"
 
     def test_bare_noun_phrase_pattern(self):
         assert extract_calendar_title("the professor office hours") == "professor office hours"
@@ -1074,7 +1074,7 @@ class TestA11DeterministicFallbackMint:
             await ctrl._dispatch_single(_fb_decision, 2, session, None, None)
         assert fired
         assert captured["decision"].action_type == "calendar_create_event"
-        assert captured["decision"].action_params["summary"] == "MGT study group"
+        assert captured["decision"].action_params["summary"] == "ABC study group"
         assert captured["decision"].action_params["start_time"] == "2026-09-15T15:00:00"
         assert "deterministic fallback" in captured["decision"].action_reason
 
@@ -1648,10 +1648,10 @@ class TestA15DispatchCreateDaemonNoteReceiptEvent:
 # this test only.
 # ---------------------------------------------------------------------------
 _FOUR_EVENT_CALENDAR_NO_SATURDAY = [
-    {"summary": "MGT 6203 Lecture", "start": "2026-09-11T10:00:00", "end": "2026-09-11T11:00:00"},
+    {"summary": "ABC 1234 Lecture", "start": "2026-09-11T10:00:00", "end": "2026-09-11T11:00:00"},
     {"summary": "Group Project Meeting", "start": "2026-09-14T14:00:00", "end": "2026-09-14T15:00:00"},
     {"summary": "Career Fair", "start": "2026-09-13T09:00:00", "end": "2026-09-13T12:00:00"},
-    {"summary": "Dr. Xu Office Hours", "start": "2026-09-11T15:00:00", "end": "2026-09-11T16:00:00"},
+    {"summary": "Dr. Varnum Office Hours", "start": "2026-09-11T15:00:00", "end": "2026-09-11T16:00:00"},
 ]
 
 
@@ -1805,7 +1805,7 @@ class TestA17PurgeDaemonSelfNotes:
 
     # -----------------------------------------------------------------
     # A17b (2026-09-11, round 5 addendum): daemon_notes/index.json left
-    # two stale entries ("TA Sessions Schedule — MGT Course" / "TA
+    # two stale entries ("TA Sessions Schedule — ABC Course" / "TA
     # Sessions Schedule") behind after the owner's earlier --apply — the
     # index is append-only (DaemonNotesManager._update_index) and nothing
     # reads it at retrieval time today, but a stale index is a lie for
@@ -1815,7 +1815,7 @@ class TestA17PurgeDaemonSelfNotes:
         return [
             {"id": "ta-sessions-schedule-2026-09-10",
              "path": "daemon_notes/ta-sessions-schedule-2026-09-10.md",
-             "title": "TA Sessions Schedule — MGT Course", "category": "research",
+             "title": "TA Sessions Schedule — ABC Course", "category": "research",
              "confidence": 0.5, "created": "2026-09-10T10:00:00",
              "status": "active", "tags": []},
             {"id": "ta-sessions-schedule-2026-09-10b",
@@ -1892,19 +1892,19 @@ class TestA17PurgeDaemonSelfNotes:
 # ---------------------------------------------------------------------------
 # Round-4 referee — gui.handlers._calendar_claim_matches_event agreement rules.
 # The sub's A16 handler test used a calendar with no Saturday event and no
-# shared generic token; the LIVE turn-1 calendar (Fri office hours "(Dr. Xu —
+# shared generic token; the LIVE turn-1 calendar (Fri office hours "(Dr. Varnum —
 # Zoom)", Sun HW due, a Tue study group) shared "zoom" with the claim, and the
 # _FOUR_EVENT_CALENDAR fixture has a Saturday "Group Project Meeting" — either
 # alone made the matcher stand down on a false Saturday-TA-session claim.
 # ---------------------------------------------------------------------------
 _LIVE_R1_CALENDAR = [
-    {"summary": "MGT 6203 Professor Office Hours (Dr. Xu — Zoom)",
+    {"summary": "ABC 1234 Professor Office Hours (Dr. Varnum — Zoom)",
      "start": "2026-09-11T20:00:00", "end": "2026-09-11T21:00:00"},
-    {"summary": "MGT 6203 HW 1 Due — Linear Models (2): Beyond Linearity",
+    {"summary": "ABC 1234 HW 1 Due — Fitted Curves (2): Past the Straight Line",
      "start": "2026-09-13", "end": "2026-09-14"},
-    {"summary": "MGT 6203 Professor Office Hours (Dr. Xu — Zoom)",
+    {"summary": "ABC 1234 Professor Office Hours (Dr. Varnum — Zoom)",
      "start": "2026-09-18T20:00:00", "end": "2026-09-18T21:00:00"},
-    {"summary": "Meagan appointment", "start": "2026-09-22T12:00:00", "end": "2026-09-22T13:00:00"},
+    {"summary": "Maren appointment", "start": "2026-09-22T12:00:00", "end": "2026-09-22T13:00:00"},
 ]
 _R1_SATURDAY_CLAIM = (
     "Already covered, actually — you had me save that exact note yesterday "
@@ -1924,18 +1924,18 @@ class TestRefereeCalendarClaimMatcherAgreement:
 
     def test_true_claim_with_title_and_weekday_matches(self):
         from gui.handlers import _calendar_claim_matches_event
-        ev = {"summary": "MGT 6203 TA Session", "start": "2026-09-12T11:00:00", "end": "2026-09-12T12:00:00"}
+        ev = {"summary": "ABC 1234 TA Session", "start": "2026-09-12T11:00:00", "end": "2026-09-12T12:00:00"}
         assert _calendar_claim_matches_event("The TA session is already on your calendar for Saturday.", ev)
 
     def test_true_claim_with_only_a_weekday_matches_that_weekday(self):
         from gui.handlers import _calendar_claim_matches_event
-        ev = {"summary": "MGT 6203 TA Session", "start": "2026-09-12T11:00:00", "end": "2026-09-12T12:00:00"}
+        ev = {"summary": "ABC 1234 TA Session", "start": "2026-09-12T11:00:00", "end": "2026-09-12T12:00:00"}
         assert _calendar_claim_matches_event("It's already on your calendar for Saturday.", ev)
         assert not _calendar_claim_matches_event("It's already on your calendar for Friday.", ev)
 
     def test_no_weekday_stated_needs_a_title_token(self):
         from gui.handlers import _calendar_claim_matches_event
-        ev = {"summary": "MGT 6203 TA Session", "start": "2026-09-12T11:00:00", "end": "2026-09-12T12:00:00"}
+        ev = {"summary": "ABC 1234 TA Session", "start": "2026-09-12T11:00:00", "end": "2026-09-12T12:00:00"}
         assert _calendar_claim_matches_event("The TA session is already on your calendar.", ev)
         assert not _calendar_claim_matches_event("The study group is already on your calendar.", ev)
 
@@ -2318,9 +2318,9 @@ class TestA21HandlerCalendarStateBackstop:
         # unit check, run here through the full handler path.
         from gui.handlers import _apply_action_guard
         from core.action_claim_guard import claims_calendar_state
-        clause = "The recurring MGT 6203 TA session calendar event, Saturdays at 11 AM."
+        clause = "The recurring ABC 1234 TA session calendar event, Saturdays at 11 AM."
         assert claims_calendar_state(clause) == [clause]  # A21 catches it (no verb/modal)
-        ev = {"summary": "MGT 6203 TA Session", "start": "2026-09-12T11:00:00",
+        ev = {"summary": "ABC 1234 TA Session", "start": "2026-09-12T11:00:00",
               "end": "2026-09-12T12:00:00"}
         ctx = _make_action_guard_ctx(raw_context={"google_calendar": [ev]})
         suffix = await _apply_action_guard(
@@ -2338,17 +2338,17 @@ class TestA21HandlerCalendarStateBackstop:
 class TestA21GenericMediumTokenGuard:
     def test_zoom_alone_does_not_match_an_unrelated_event(self):
         from gui.handlers import _calendar_claim_matches_event
-        ev = {"summary": "MGT 6203 Professor Office Hours (Dr. Xu — Zoom)",
+        ev = {"summary": "ABC 1234 Professor Office Hours (Dr. Varnum — Zoom)",
               "start": "2026-09-11T20:00:00", "end": "2026-09-11T21:00:00"}
         assert not _calendar_claim_matches_event(R6A_ZOOM_SENTENCE, ev)
 
     def test_office_hours_title_tokens_still_match(self):
         # The generalization must not blunt genuine title-token agreement.
         from gui.handlers import _calendar_claim_matches_event
-        ev = {"summary": "MGT 6203 Professor Office Hours (Dr. Xu — Zoom)",
+        ev = {"summary": "ABC 1234 Professor Office Hours (Dr. Varnum — Zoom)",
               "start": "2026-09-11T20:00:00", "end": "2026-09-11T21:00:00"}
         assert _calendar_claim_matches_event(
-            "Dr. Xu's office hours Friday is already on your calendar, no need to add it again.",
+            "Dr. Varnum's office hours Friday is already on your calendar, no need to add it again.",
             ev,
         )
 
@@ -2367,7 +2367,7 @@ class TestA22GroundCalendarParamsByResolution:
     def test_both_fields_already_equal_resolution_nothing_declined(self, monkeypatch):
         self._clock(monkeypatch)
         import core.actions.registry as registry
-        params = {"summary": "MGT Study Group",
+        params = {"summary": "ABC Study Group",
                    "start_time": "2026-09-15T15:00:00", "end_time": "2026-09-15T16:00:00"}
         # A pool with NO "4 pm"/"16:00" token beyond Q6 itself.
         grounded, replaced, still_bad = registry.ground_calendar_params_by_resolution(
@@ -2380,7 +2380,7 @@ class TestA22GroundCalendarParamsByResolution:
     def test_wrong_end_time_replaced_by_resolution(self, monkeypatch):
         self._clock(monkeypatch)
         import core.actions.registry as registry
-        params = {"summary": "MGT Study Group",
+        params = {"summary": "ABC Study Group",
                    "start_time": "2026-09-15T15:00:00", "end_time": "2026-09-15T17:00:00"}
         grounded, replaced, still_bad = registry.ground_calendar_params_by_resolution(
             params, Q6, Q6)
@@ -2503,7 +2503,7 @@ class TestA22ControllerGroundingBlock:
         session.action_context_digest = "some digest"
         ad = SearchDecision(
             wants_action=True, action_type="calendar_create_event",
-            action_params={"summary": "MGT Study Group",
+            action_params={"summary": "ABC Study Group",
                             "start_time": "2026-09-15T15:00:00",
                             "end_time": "2026-09-15T16:00:00"},
         )
@@ -2523,7 +2523,7 @@ class TestA22ControllerGroundingBlock:
         session.action_context_digest = "some digest"
         ad = SearchDecision(
             wants_action=True, action_type="calendar_create_event",
-            action_params={"summary": "MGT Study Group",
+            action_params={"summary": "ABC Study Group",
                             "start_time": "2026-09-15T15:00:00",
                             "end_time": "2026-09-15T17:00:00"},
         )
@@ -2579,7 +2579,7 @@ _R7_NOTE_REPLY = (
     "hold the fact: confirmed, locked in, tomorrow at 11."
 )
 _R7_CARD_REPLY = (
-    "Fifth time asking, and this time the card actually fired — **MGT Study Group, Tuesdays 3:00–4:00 PM CT, "
+    "Fifth time asking, and this time the card actually fired — **ABC Study Group, Tuesdays 3:00–4:00 PM CT, "
     "weekly through December 4** is sitting there waiting on your approval right now. Approve it and it's on your "
     "calendar.\n\nFor the record, this exact event was already queued yesterday evening, re-queued after you said "
     "it failed, and queued again this morning at 10:12. So if you keep re-asking because the cards aren't showing "
@@ -2617,7 +2617,7 @@ class TestRound7GuardFamilyPrecedence:
         from core.action_claim_guard import ActionKind
         from gui.handlers import _apply_action_guard
         cal = _LIVE_R1_CALENDAR + [
-            {"summary": "MGT Study Group", "start": "2026-09-15T15:00:00", "end": "2026-09-15T16:00:00"}]
+            {"summary": "ABC Study Group", "start": "2026-09-15T15:00:00", "end": "2026-09-15T16:00:00"}]
         for text in (_R7_CARD_REPLY, _R7_CARD_REPLY.replace("queued again this", "queued again\n  this")):
             ctx = _make_action_guard_ctx(raw_context={"google_calendar": cal})
             suffix = await _apply_action_guard(

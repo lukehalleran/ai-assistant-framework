@@ -34,23 +34,23 @@ from memory.storage.multi_collection_chroma_store import MultiCollectionChromaSt
 
 class TestClaimKey:
     def test_creation_with_auto_hash(self):
-        ck = ClaimKey(subject="luke", relation="lives_in")
-        assert ck.subject == "luke"
+        ck = ClaimKey(subject="alex", relation="lives_in")
+        assert ck.subject == "alex"
         assert ck.relation == "lives_in"
         assert len(ck.claim_hash) == 12
 
     def test_creation_with_explicit_hash(self):
-        ck = ClaimKey(subject="luke", relation="lives_in", claim_hash="custom123456")
+        ck = ClaimKey(subject="alex", relation="lives_in", claim_hash="custom123456")
         assert ck.claim_hash == "custom123456"
 
     def test_same_inputs_produce_same_hash(self):
-        ck1 = ClaimKey(subject="luke", relation="lives_in")
-        ck2 = ClaimKey(subject="luke", relation="lives_in")
+        ck1 = ClaimKey(subject="alex", relation="lives_in")
+        ck2 = ClaimKey(subject="alex", relation="lives_in")
         assert ck1.claim_hash == ck2.claim_hash
 
     def test_different_inputs_produce_different_hashes(self):
-        ck1 = ClaimKey(subject="luke", relation="lives_in")
-        ck2 = ClaimKey(subject="luke", relation="works_at")
+        ck1 = ClaimKey(subject="alex", relation="lives_in")
+        ck2 = ClaimKey(subject="alex", relation="works_at")
         assert ck1.claim_hash != ck2.claim_hash
 
 
@@ -59,18 +59,18 @@ class TestClaimKey:
 
 class TestComputeHash:
     def test_deterministic(self):
-        h1 = _compute_hash("luke", "lives_in")
-        h2 = _compute_hash("luke", "lives_in")
+        h1 = _compute_hash("alex", "lives_in")
+        h2 = _compute_hash("alex", "lives_in")
         assert h1 == h2
 
     def test_case_insensitive(self):
-        h1 = _compute_hash("Luke", "Lives_In")
-        h2 = _compute_hash("luke", "lives_in")
+        h1 = _compute_hash("Alex", "Lives_In")
+        h2 = _compute_hash("alex", "lives_in")
         assert h1 == h2
 
     def test_strips_whitespace(self):
-        h1 = _compute_hash("  luke  ", "  lives_in  ")
-        h2 = _compute_hash("luke", "lives_in")
+        h1 = _compute_hash("  alex  ", "  lives_in  ")
+        h2 = _compute_hash("alex", "lives_in")
         assert h1 == h2
 
     def test_length_is_12(self):
@@ -78,7 +78,7 @@ class TestComputeHash:
         assert len(h) == 12
 
     def test_different_pairs_differ(self):
-        h1 = _compute_hash("luke", "lives_in")
+        h1 = _compute_hash("alex", "lives_in")
         h2 = _compute_hash("sam", "lives_in")
         assert h1 != h2
 
@@ -88,16 +88,16 @@ class TestComputeHash:
 
 class TestCanonicalizeClaim:
     def test_basic_normalization(self):
-        ck = canonicalize_claim("Luke", "lives in")
-        assert ck.subject == "luke"
+        ck = canonicalize_claim("Alex", "lives in")
+        assert ck.subject == "alex"
         assert ck.relation == "lives_in"
 
     def test_with_entity_resolver(self):
         """EntityResolver should resolve aliases to canonical IDs."""
         mock_resolver = MagicMock()
-        mock_resolver.resolve.return_value = "luke_h"
-        ck = canonicalize_claim("Luke", "lives in", entity_resolver=mock_resolver)
-        assert ck.subject == "luke_h"
+        mock_resolver.resolve.return_value = "alex_h"
+        ck = canonicalize_claim("Alex", "lives in", entity_resolver=mock_resolver)
+        assert ck.subject == "alex_h"
         assert ck.relation == "lives_in"  # uses normalize_relation
 
     def test_entity_resolver_returns_none(self):
@@ -127,14 +127,14 @@ class TestCanonicalizeClaim:
 
 class TestExtractClaims:
     def test_separator_pattern_pipe(self):
-        text = "Luke | lives in | Atlanta"
+        text = "Alex | lives in | Marrowby"
         claims = extract_claims_from_text(text)
         assert len(claims) >= 1
         subjects = [c.subject for c in claims]
-        assert "luke" in subjects
+        assert "alex" in subjects
 
     def test_separator_pattern_dash(self):
-        text = "Luke - works at - Google"
+        text = "Alex - works at - Google"
         claims = extract_claims_from_text(text)
         assert len(claims) >= 1
 
@@ -144,7 +144,7 @@ class TestExtractClaims:
         assert len(claims) >= 1
 
     def test_declarative_pattern(self):
-        text = "Luke lives in Atlanta and works at a tech company."
+        text = "Alex lives in Marrowby and works at a tech company."
         claims = extract_claims_from_text(text)
         relations = [c.relation for c in claims]
         assert any("lives" in r for r in relations)
@@ -156,7 +156,7 @@ class TestExtractClaims:
 
     def test_multiple_claims_in_summary(self):
         text = (
-            "Luke lives in Atlanta. He works at Google. "
+            "Alex lives in Marrowby. He works at Google. "
             "His cat Biscuit is an orange tabby."
         )
         claims = extract_claims_from_text(text)
@@ -165,7 +165,7 @@ class TestExtractClaims:
 
     def test_deduplication(self):
         """Same claim appearing twice should be deduplicated."""
-        text = "Luke lives in Atlanta. Luke lives in Atlanta."
+        text = "Alex lives in Marrowby. Alex lives in Marrowby."
         claims = extract_claims_from_text(text)
         hashes = [c.claim_hash for c in claims]
         assert len(hashes) == len(set(hashes))
@@ -184,16 +184,16 @@ class TestExtractClaims:
     def test_with_entity_resolver(self):
         """Resolver should normalize subjects in extracted claims."""
         mock_resolver = MagicMock()
-        mock_resolver.resolve.return_value = "luke_h"
-        text = "Luke | lives in | Atlanta"
+        mock_resolver.resolve.return_value = "alex_h"
+        text = "Alex | lives in | Marrowby"
         claims = extract_claims_from_text(text, entity_resolver=mock_resolver)
-        assert any(c.subject == "luke_h" for c in claims)
+        assert any(c.subject == "alex_h" for c in claims)
 
     def test_multiline_summary(self):
         text = """Summary of conversations from Feb 15-20:
-Luke | has | a cat named Biscuit
-Luke | lives in | Atlanta
-Luke | works on | Daemon project
+Alex | has | a cat named Biscuit
+Alex | lives in | Marrowby
+Alex | works on | Daemon project
 The user has been discussing memory architecture improvements."""
         claims = extract_claims_from_text(text)
         assert len(claims) >= 3
@@ -210,8 +210,8 @@ class TestClaimIndex:
     @pytest.fixture
     def sample_claims(self):
         return [
-            ClaimKey(subject="luke", relation="lives_in"),
-            ClaimKey(subject="luke", relation="works_at"),
+            ClaimKey(subject="alex", relation="lives_in"),
+            ClaimKey(subject="alex", relation="works_at"),
             ClaimKey(subject="biscuit", relation="is_a"),
         ]
 
@@ -283,7 +283,7 @@ class TestClaimIndexPersistence:
     def test_save_and_load(self, tmp_path):
         path = str(tmp_path / "claim_index.json")
         claims = [
-            ClaimKey(subject="luke", relation="lives_in"),
+            ClaimKey(subject="alex", relation="lives_in"),
             ClaimKey(subject="biscuit", relation="is_a"),
         ]
 
@@ -344,13 +344,13 @@ class TestCascadeStaleness:
     def populated_index(self):
         idx = ClaimIndex()
         claims_doc1 = [
-            ClaimKey(subject="luke", relation="lives_in"),
-            ClaimKey(subject="luke", relation="works_at"),
+            ClaimKey(subject="alex", relation="lives_in"),
+            ClaimKey(subject="alex", relation="works_at"),
         ]
         claims_doc2 = [
-            ClaimKey(subject="luke", relation="lives_in"),
+            ClaimKey(subject="alex", relation="lives_in"),
             ClaimKey(subject="biscuit", relation="is_a"),
-            ClaimKey(subject="luke", relation="favorite_language"),
+            ClaimKey(subject="alex", relation="favorite_language"),
         ]
         idx.add_claims("doc_1", "summaries", claims_doc1)
         idx.add_claims("doc_2", "summaries", claims_doc2)
@@ -358,7 +358,7 @@ class TestCascadeStaleness:
 
     def test_cascade_without_chroma(self, populated_index):
         """Without chroma_store, returns affected docs with estimated ratios."""
-        ck = ClaimKey(subject="luke", relation="lives_in")
+        ck = ClaimKey(subject="alex", relation="lives_in")
         results = populated_index.cascade_staleness(ck)
         assert len(results) == 2
         doc_ids = {r["doc_id"] for r in results}
@@ -366,7 +366,7 @@ class TestCascadeStaleness:
 
     def test_cascade_staleness_ratio_computation(self, populated_index):
         """doc_1 has 2 claims, 1 stale → ratio 0.5. doc_2 has 3 claims, 1 stale → ratio 0.333."""
-        ck = ClaimKey(subject="luke", relation="lives_in")
+        ck = ClaimKey(subject="alex", relation="lives_in")
         results = populated_index.cascade_staleness(ck)
         ratios = {r["doc_id"]: r["staleness_ratio"] for r in results}
         assert ratios["doc_1"] == round(1 / 2, 3)
@@ -384,7 +384,7 @@ class TestCascadeStaleness:
             "id": "doc_1", "content": "x", "metadata": {"staleness_ratio": 0.0, "stale_claims": ""},
         }
 
-        ck = ClaimKey(subject="luke", relation="lives_in")
+        ck = ClaimKey(subject="alex", relation="lives_in")
         results = populated_index.cascade_staleness(ck, chroma_store=mock_chroma)
         assert len(results) == 2
         assert mock_chroma.update_metadata.call_count == 2
@@ -397,7 +397,7 @@ class TestCascadeStaleness:
             "id": "doc_1", "content": "x", "metadata": {"staleness_ratio": 0.0, "stale_claims": ""},
         }
 
-        ck1 = ClaimKey(subject="luke", relation="lives_in")
+        ck1 = ClaimKey(subject="alex", relation="lives_in")
         populated_index.cascade_staleness(ck1, chroma_store=mock_chroma)
 
         # Verify update_metadata was called with stale_claims containing the hash
@@ -417,7 +417,7 @@ class TestCascadeStaleness:
         mock_chroma = MagicMock(spec=MultiCollectionChromaStore)
         mock_chroma.get_by_id.return_value = None  # doc deleted
 
-        ck = ClaimKey(subject="luke", relation="lives_in")
+        ck = ClaimKey(subject="alex", relation="lives_in")
         results = populated_index.cascade_staleness(ck, chroma_store=mock_chroma)
         # Should clean up the missing doc from the index
         # Results won't include docs that were cleaned up
@@ -435,7 +435,7 @@ class TestCascadeStaleness:
         mock_chroma.get_by_id.return_value = {
             "id": "doc_1", "content": "x", "metadata": {"stale_claims": ""},
         }
-        ck = ClaimKey(subject="luke", relation="lives_in")
+        ck = ClaimKey(subject="alex", relation="lives_in")
         results = populated_index.cascade_staleness(ck, chroma_store=mock_chroma)
         assert mock_chroma.get_by_id.called
         assert mock_chroma.update_metadata.called

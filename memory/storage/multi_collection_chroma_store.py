@@ -67,6 +67,8 @@ from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunct
 from chromadb.utils import embedding_functions
 from datetime import datetime as _dt
 
+from utils.retrieval_outcome import RetrievalError, StoreWriteError
+
 logger = logging.getLogger(__name__)
 
 
@@ -316,6 +318,13 @@ class MultiCollectionChromaStore:
              `timestamp` string in Python. This pass always runs, even
              when the numeric query already returned rows, because a real
              collection holds a mix of both.
+
+        F9b (2026-09-14): unknown collection and malformed bounds still
+        return `[]` (not a failure). A failed numeric query or a failed
+        legacy page now RAISES `RetrievalError` (`reason` is
+        `"numeric:<exc class>"` or `"legacy_page:<exc class>"`) instead of
+        silently unioning a partial result and reporting it as complete;
+        `count()` stays advisory-only (unchanged).
         """
         if collection_name not in self.collections:
             return []
@@ -344,6 +353,7 @@ class MultiCollectionChromaStore:
             numeric_ids = set(numeric_results.get("ids", []) or [])
         except Exception as e:
             logger.warning(f"[ChromaStore] get_ids_by_timestamp_range numeric query failed: {e}")
+            raise RetrievalError(source="timestamp_range", reason=f"numeric:{type(e).__name__}") from e
 
         legacy_ids: set = set()
         malformed_skipped = 0
@@ -363,7 +373,7 @@ class MultiCollectionChromaStore:
                 )
             except Exception as e:
                 logger.warning(f"[ChromaStore] get_ids_by_timestamp_range legacy page failed: {e}")
-                break
+                raise RetrievalError(source="timestamp_range", reason=f"legacy_page:{type(e).__name__}") from e
             pages += 1
             page_ids = page.get("ids", []) or []
             page_metas = page.get("metadatas", []) or []
@@ -490,7 +500,13 @@ class MultiCollectionChromaStore:
         """Fetch a single document by its ID.
 
         Returns:
-            Dict with {id, content, metadata} or None if not found.
+            Dict with {id, content, metadata}, or None if the collection is
+            unknown or the read genuinely found no matching document.
+
+        Raises:
+            RetrievalError: the underlying Chroma read failed. ``reason`` is
+            the exception's class name only — never the exception text (see
+            utils.retrieval_outcome.RetrievalError's privacy contract).
         """
         if collection_name not in self.collections:
             return None
@@ -506,8 +522,8 @@ class MultiCollectionChromaStore:
                 "content": docs[0] or "",
                 "metadata": metas[0] if metas else {},
             }
-        except Exception:
-            return None
+        except Exception as e:
+            raise RetrievalError(source="chroma_get_by_id", reason=type(e).__name__) from e
 
     def _generate_id(self, content: str, collection_type: str) -> str:
         """Generate a unique ID for a document"""
@@ -557,7 +573,7 @@ class MultiCollectionChromaStore:
             logger.error(f"Error adding conversation memory: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            raise StoreWriteError(source="chroma_conversations", reason=type(e).__name__) from e
 
 
     # Methods for summaries

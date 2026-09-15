@@ -34,6 +34,7 @@ from datetime import datetime
 
 from .formatter import _as_summary_dict, _parse_bool
 from utils.ordered_slice import newest_first as _ordered_newest_first
+from utils.retrieval_outcome import OutcomeList
 from core.action_claim_guard import (
     annotate_conversation_content,
     annotate_unverified_action_claim,
@@ -226,7 +227,7 @@ class MemoryRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"Error getting recent conversations: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def _get_summaries_separated(self, query: str = "", limit: int = PROMPT_MAX_SUMMARIES) -> Dict[str, List[Dict[str, Any]]]:
         """Get conversation summaries separated into recent and semantic hits."""
@@ -508,6 +509,10 @@ class MemoryRetrievalMixin:
 
             # Get semantic memories with filtering
             semantic_memories = []
+            # F8a (#88): tracks the inner coordinator-read swallow below so
+            # the success return can report it instead of a bare, confident
+            # empty list.
+            retrieval_err = None
             try:
                 # Retrieve memories for semantic search (use expanded query)
                 search_query = expanded_query
@@ -592,6 +597,7 @@ class MemoryRetrievalMixin:
 
             except Exception as e:
                 logger.warning(f"Semantic memory retrieval failed: {e}")
+                retrieval_err = type(e).__name__
 
             # Apply enhanced deduplication
             result = self._deduplicate_memories(semantic_memories)
@@ -625,13 +631,18 @@ class MemoryRetrievalMixin:
             logger.debug(f"[CONTEXT_GATHERER] Final result: {len(result)} semantic memories (limit was {limit})")
             if len(result) > 0:
                 logger.debug(f"[CONTEXT_GATHERER] Sample result memory: {list(result[0].keys()) if result[0] else 'empty'}")
+            if retrieval_err:
+                # The inner coordinator-read swallow above fired; the items
+                # (if any survived a partial pool) are kept, but the section
+                # is reported failed rather than a confident empty/partial.
+                return OutcomeList(result, status="failed", reason=f"retrieval:{retrieval_err}")
             return result
 
         except Exception as e:
             logger.error(f"[CONTEXT_GATHERER] Semantic memory retrieval failed: {e}")
             import traceback
             logger.debug(f"[CONTEXT_GATHERER] Exception traceback: {traceback.format_exc()}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     def _deduplicate_memories(self, memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Enhanced deduplication using memory IDs and content."""
@@ -961,7 +972,13 @@ class MemoryRetrievalMixin:
             return profile_context
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get profile context: {e}")
-            return ""
+            # F8a (#90): this method returns str, so a typed empty
+            # (OutcomeList) doesn't fit -- re-raise instead (mirrors F7c's
+            # get_narrative_context). The builder's gather loop (F5) already
+            # records this as _section_outcomes["user_profile"] =
+            # failed/<class>, and the gathered value becomes [], which every
+            # consumer already treats as "no profile" (formatter.py:1708-1709).
+            raise
 
     async def get_upcoming_schedule(self, query: str = "", limit: int = 10) -> list:
         """Retrieve upcoming schedule events from facts collection.
@@ -1067,4 +1084,4 @@ class MemoryRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get upcoming schedule: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)

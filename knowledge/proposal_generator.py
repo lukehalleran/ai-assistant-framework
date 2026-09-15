@@ -51,6 +51,47 @@ from utils.logging_utils import get_logger
 logger = get_logger("proposal_generator")
 
 
+# S03 strict proposal-JSON contract (BC-21 sibling of F03/A04's
+# core.grounding_check._parse_verdict, S01's
+# utils.web_search_trigger.LLMSearchTriggerResponse.parse, and S02's
+# core.response_planner.ResponsePlanner._parse_review). Every field
+# _parse_proposal reads from the model's raw JSON is OPTIONAL — absent
+# keeps its documented default — but a PRESENT field must have its taught
+# type, or the whole proposal is rejected (never silently coerced or
+# truncated): e.g. a bool priority can no longer become 1/0, a numeric-
+# string priority can no longer become an int, and a string tags/
+# affected_files value can no longer be split into single-character
+# entries. This runs BEFORE any coercion, including the `touched_paths`
+# build that feeds the risk classifier, so a wrong-typed field can never
+# reach `classify_proposal` or the CodeProposal it would build.
+# Supervision fields (risk_level, touches_core_system) are never read from
+# the model's JSON — classify_proposal always computes them — so this
+# contract does not touch them. A violation is reported by field name and
+# Python type only — never title/description/tags/reasoning text (privacy
+# contract; those may quote model-authored or user-derived prose).
+_PROPOSAL_STR_LIST_FIELDS = ("tags", "affected_files")
+
+
+def _invalid_proposal_reason(data: dict) -> Optional[str]:
+    """None when `data` satisfies the strict proposal contract; otherwise
+    the first failing field name and received Python type — never its
+    value."""
+    if "requires_tests" in data and not isinstance(data["requires_tests"], bool):
+        return f"requires_tests {type(data['requires_tests']).__name__}"
+    if "priority" in data:
+        priority = data["priority"]
+        if isinstance(priority, bool) or not isinstance(priority, int):
+            return f"priority {type(priority).__name__}"
+    for field in _PROPOSAL_STR_LIST_FIELDS:
+        if field in data:
+            value = data[field]
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                return f"{field} {type(value).__name__}"
+    if "estimated_complexity" in data and not isinstance(data["estimated_complexity"], str):
+        return f"estimated_complexity {type(data['estimated_complexity']).__name__}"
+    return None
+
+
 class GoalDirectedGenerator:
     """
     Generates code proposals by analyzing project context and goals.
@@ -308,8 +349,19 @@ class GoalDirectedGenerator:
         """
         Parse a raw dict into a validated CodeProposal.
         Returns None if the data is invalid.
+
+        Strict contract (S03, BC-21 sibling): requires_tests/priority/tags/
+        affected_files/estimated_complexity are OPTIONAL but, if present,
+        must have their taught type, or the whole proposal is rejected
+        with one WARNING naming only the field and its Python type. See
+        `_invalid_proposal_reason`.
         """
         try:
+            reason = _invalid_proposal_reason(data)
+            if reason is not None:
+                logger.warning(f"[ProposalGenerator] Rejected proposal JSON: {reason}")
+                return None
+
             title = data.get("title", "").strip()
             if not title or len(title) < 3:
                 return None

@@ -1,0 +1,23 @@
+[sandbox] adaptive store -> /tmp/probe_store_il8b6mr8/adaptive_exemplars.json; TONE_EXEMPLAR_LEARNING=0
+853ff419985686f5  core/context_pipeline.py
+8d612937be003e3c  core/escalation_tracker.py
+3d65d1a46401af8a  utils/tone_detector.py
+
+| Turn 1 | Turn 1 result | Follow-up | history row for turn 1 | Follow-up result |
+|---|---|---|---|---|
+| people are suffering but I don't want to die | CONCERN/observational_negated_crisis | the weather was grey this morning | not heavy | CONVERSATIONAL/semantic |
+| people are suffering but I don't want to die | CONCERN/observational_negated_crisis | the weather was grey this morning | heavy | CONVERSATIONAL/semantic |
+| people are suffering but I don't want to die | CONCERN/observational_negated_crisis | I watched a documentary about whales last night | not heavy | CONVERSATIONAL/semantic |
+| people are suffering but I don't want to die | CONCERN/observational_negated_crisis | I watched a documentary about whales last night | heavy | CONVERSATIONAL/semantic |
+| people are suffering but I don't want to die | CONCERN/observational_negated_crisis | my sister is visiting next week | not heavy | CONVERSATIONAL/semantic |
+| people are suffering but I don't want to die | CONCERN/observational_negated_crisis | my sister is visiting next week | heavy | CONVERSATIONAL/semantic |
+| people are suffering and I feel hopeless | CONCERN/observational_first_person_distress | the weather was grey this morning | not heavy | CONCERN/distress_sticky_floor |
+| people are suffering and I feel hopeless | CONCERN/observational_first_person_distress | the weather was grey this morning | heavy | CONCERN/distress_sticky_floor |
+| people are suffering and I feel hopeless | CONCERN/observational_first_person_distress | I watched a documentary about whales last night | not heavy | CONCERN/distress_sticky_floor |
+| people are suffering and I feel hopeless | CONCERN/observational_first_person_distress | I watched a documentary about whales last night | heavy | CONCERN/distress_sticky_floor |
+| people are suffering and I feel hopeless | CONCERN/observational_first_person_distress | my sister is visiting next week | not heavy | CONCERN/distress_sticky_floor |
+| people are suffering and I feel hopeless | CONCERN/observational_first_person_distress | my sister is visiting next week | heavy | CONCERN/distress_sticky_floor |
+
+Hold row: N-1 'people are suffering and I feel hopeless' -> CONCERN/observational_first_person_distress; N "people are suffering but I don't want to die" -> CONCERN/observational_negated_crisis; N+1 'the weather was grey this morning' -> CONCERN/distress_sticky_floor
+Tracker: organic-mild then negated-news -> consecutive_distress_count=1 (held at 1)
+[sandbox] store file exists after run: False

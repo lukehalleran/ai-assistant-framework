@@ -44,7 +44,7 @@ MIN_CLUSTER_SIZE = int(sys.argv[1]) if (len(sys.argv) > 1 and sys.argv[1].isdigi
 GOLD_ENTITY_ANCHORS = [
     ("REAL", "dad", "kavarin"),         # family <-> health
     ("REAL", "dad", "gym"),            # family <-> fitness
-    ("REAL", "brother", "isye 6501"),  # family <-> grad school
+    ("REAL", "brother", "KTR 5520"),  # family <-> grad school
     ("THIN", "brother", "sister"),     # both family
     ("THIN", "kavarin", "dexivar"),     # both health/meds
     ("THIN", "gym", "lift"),           # both fitness

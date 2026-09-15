@@ -466,9 +466,8 @@ def test_auto_apply_does_not_swallow_journal_failure(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_api_exposes_and_undoes_recovered_interrupted_proposal(tmp_path, monkeypatch):
-    import httpx
     import memory.curation.service as service
-    from api.app import create_app
+    from tests.unit.api_launch_auth_client import authed_client, make_test_app as create_app
     from tests.unit.helpers_orchestrator import _make_orchestrator
 
     engine, profile, p = profile_engine(tmp_path)
@@ -486,7 +485,7 @@ async def test_api_exposes_and_undoes_recovered_interrupted_proposal(tmp_path, m
     restarted = engine_at(tmp_path, StoreBundle(user_profile=UserProfile(profile.profile_path)))
     monkeypatch.setattr(service, "_engine", restarted)
     app = create_app(_make_orchestrator(), start_background=False)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with authed_client(app) as client:
         queued = (await client.get("/api/curation/queue")).json()["proposals"]
         assert queued[0]["status"] == "interrupted"
         for route in ("apply", "dismiss"):
@@ -499,10 +498,9 @@ async def test_api_exposes_and_undoes_recovered_interrupted_proposal(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_api_timeout_keeps_worker_busy_until_actual_completion(tmp_path, monkeypatch):
-    import httpx
     import config.app_config as config
     import memory.curation.service as service
-    from api.app import create_app
+    from tests.unit.api_launch_auth_client import authed_client, make_test_app as create_app
     from tests.unit.helpers_orchestrator import _make_orchestrator
 
     engine, profile, p = profile_engine(tmp_path)
@@ -528,7 +526,7 @@ async def test_api_timeout_keeps_worker_busy_until_actual_completion(tmp_path, m
     monkeypatch.setattr(service, "_engine", engine)
     monkeypatch.setattr(config, "CURATION_SCAN_TIMEOUT_S", 0.1)
     app = create_app(_make_orchestrator(), start_background=False)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with authed_client(app) as client:
         first = asyncio.create_task(client.post("/api/curation/scan"))
         try:
             assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 2), 3)

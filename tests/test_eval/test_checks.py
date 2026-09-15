@@ -153,12 +153,12 @@ class TestExtractProfileFacts:
     def test_basic_extraction(self):
         prompt = """[USER PROFILE] n=5
 Stored facts
-User: name=Luke, age=33
+User: name=Alex, age=33
 identity: brother_name=Drew [2026-01-14]; boss_name=Oliver
 
 [ACTIVE FEATURES]"""
         facts = _extract_profile_facts(prompt)
-        assert facts["name"] == "Luke"
+        assert facts["name"] == "Alex"
         assert facts["brother_name"] == "Drew"
         assert facts["boss_name"] == "Oliver"
 

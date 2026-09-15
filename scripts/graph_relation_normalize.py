@@ -115,12 +115,30 @@ def _sync_nx_edge(gm: GraphMemory, edge) -> None:
         data["source_fact_ids"] = edge.source_fact_ids
 
 
-def main():
+def _daemon_running() -> bool:
+    try:
+        from utils.daemon_guard import daemon_running
+        return daemon_running()
+    except Exception:
+        return False
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Canonicalize graph edge relations.")
     ap.add_argument("--graph", default=DEFAULT_GRAPH, help="graph JSON path")
     ap.add_argument("--apply", action="store_true",
                     help="rewrite relations (backs up the graph JSON first)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+
+    # A live Daemon holds the graph IN MEMORY and re-saves it on its own
+    # cadence — a write made here while it runs would be clobbered or
+    # resurrected on its next save. Same guard as add_profile_fact.py /
+    # backfill_stance.py.
+    if args.apply and _daemon_running():
+        print("REFUSED: a live Daemon main.py is running. Its in-memory "
+              "graph would clobber this rewrite on the next save. Shut it "
+              "down first.")
+        return 1
 
     gm = GraphMemory(persist_path=args.graph)
     print(f"[graph] {gm.node_count()} nodes, {gm.edge_count()} edges @ {args.graph}")
@@ -151,4 +169,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

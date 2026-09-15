@@ -93,10 +93,10 @@ class TestXmlActionProtocol:
 
     def test_f20_action_attr_single_quotes_with_double_inside(self):
         d = self.h.parse_response(
-            "<action type='send_telegram' recipient='@luke'>say \"hi\"</action>"
+            "<action type='send_telegram' recipient='@alex'>say \"hi\"</action>"
         )
         p = d[0].action_params
-        assert p["recipient"] == "@luke"
+        assert p["recipient"] == "@alex"
         assert p["message"] == 'say "hi"'
 
 
@@ -325,6 +325,7 @@ class TestRuntimeActionHealth:
 FIRING_VERDICT = json.dumps({
     "false_claim_present": True,
     "claim": "The deadline is Friday",
+    "why_false": "",
     "correction": "The correct deadline is Saturday 2026-09-05.",
     "confidence": 0.95,
 })
@@ -367,41 +368,49 @@ class TestGroundingFixes:
     )
 
     @pytest.mark.asyncio
-    async def test_f24_no_corrected_flag_when_nothing_ships(self, monkeypatch):
-        """Verifier flags but neither integration nor suffix produces output:
-        grounding_corrected must NOT be set."""
+    async def test_f24_no_corrected_flag_when_builder_returns_none(self, monkeypatch):
+        """Verifier flags but build_integrated_fallback finds nothing
+        substantive to deliver: grounding_corrected must NOT be set, and the
+        draft ships unmodified (A05b-1 — the retired suffix builder is no
+        longer called from _apply_grounding_check, so faking it no longer
+        reaches this branch; the builder itself is faked instead)."""
         import config.app_config as ac
         import core.grounding_check as gc
         from gui import handlers
         monkeypatch.setattr(ac, "GROUNDING_CHECK_ENABLED", True, raising=False)
         monkeypatch.setattr(ac, "GROUNDING_INTEGRATE_ENABLED", False, raising=False)
         # 2026-09-04: default is log_only (which short-circuits before this
-        # test's suffix/integration path even runs) — pin 'correct' so this
+        # test's fallback/integration path even runs) — pin 'correct' so this
         # stays a test of the shipped-correction telemetry contract.
         monkeypatch.setattr(ac, "GROUNDING_MODE", "correct", raising=False)
-        monkeypatch.setattr(gc, "build_grounding_correction", lambda *a, **k: "")
+        monkeypatch.setattr(gc, "build_integrated_fallback", lambda *a, **k: None)
         ctx = _gctx(_StubMM(FIRING_VERDICT))
         revised, suffix = await handlers._apply_grounding_check(
             ctx, self.FIRING_RESPONSE)
         assert ctx.telemetry.get("grounding_verifier_fired") is True  # not vacuous
         assert revised is None and suffix == ""
         assert "grounding_corrected" not in ctx.telemetry
+        assert ctx.telemetry.get("grounding_fallback") == "none"
 
     @pytest.mark.asyncio
-    async def test_f24_corrected_flag_set_on_suffix(self, monkeypatch):
+    async def test_f24_corrected_flag_set_on_integrated_fallback(self, monkeypatch):
         import config.app_config as ac
         from gui import handlers
         monkeypatch.setattr(ac, "GROUNDING_CHECK_ENABLED", True, raising=False)
         monkeypatch.setattr(ac, "GROUNDING_INTEGRATE_ENABLED", False, raising=False)
         # 2026-09-04: default is log_only — pin 'correct' to exercise the
-        # shipped-correction (suffix) path this test asserts.
+        # shipped-correction (integrated fallback) path this test asserts.
         monkeypatch.setattr(ac, "GROUNDING_MODE", "correct", raising=False)
         ctx = _gctx(_StubMM(FIRING_VERDICT))
         revised, suffix = await handlers._apply_grounding_check(
             ctx, self.FIRING_RESPONSE)
         assert ctx.telemetry.get("grounding_verifier_fired") is True
-        assert suffix  # real correction shipped
+        assert suffix == ""
+        assert revised  # real correction shipped, through the revised path
+        assert "> ⚠️ Correction:" not in revised  # retired suffix marker
         assert ctx.telemetry.get("grounding_corrected") is True
+        assert ctx.telemetry.get("grounding_status") == "fallback"
+        assert ctx.telemetry.get("grounding_fallback") == "standalone:claim_not_located"
 
 
 # ===========================================================================
@@ -468,7 +477,7 @@ class TestQueryCheckerFixes:
     def test_f27_live_positive_still_detects(self):
         from utils.query_checker import is_personal_doc_search
         assert is_personal_doc_search(
-            "please search for documents related to the MGT class I am currently enrolled in"
+            "please search for documents related to the ABC class I am currently enrolled in"
         )
 
     def test_f27_possessive_product_notes_still_personal(self):

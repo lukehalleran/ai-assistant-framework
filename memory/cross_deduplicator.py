@@ -26,7 +26,7 @@ bug class).
 
 Appraisal skip [2026-08-23]: facts whose metadata carries an EXPLICIT
 "appraisal" stance never enter contradiction clustering — perspectives
-coexist ("casey is evil" vs "casey was kind at first" is the user's evolving
+coexist ("tamsin is evil" vs "tamsin was kind at first" is the user's evolving
 take, not a conflict to resolve). Legacy untagged facts unchanged.
 """
 
@@ -456,7 +456,7 @@ class CrossCollectionDeduplicator:
             if md.get("is_current") is False or str(md.get("is_current", "")).lower() == "false":
                 continue
             # Skip EXPLICIT-appraisal facts (2026-08-23): perspectives coexist —
-            # "casey is evil" vs "casey was kind at first" is the user's evolving
+            # "tamsin is evil" vs "tamsin was kind at first" is the user's evolving
             # take, not a conflict to resolve. Extends the MULTI_VALUED
             # carve-out; legacy untagged facts unchanged (conservative).
             try:

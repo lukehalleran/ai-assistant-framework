@@ -37,6 +37,7 @@ Config (config/app_config.py):
 import asyncio
 import hashlib
 import json
+import math
 import re
 from typing import List, Optional
 
@@ -106,6 +107,48 @@ class ReviewResult(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Review confidence")
     issues: List[str] = Field(default_factory=list, description="Specific problems found")
     suggestion: str = Field(default="", description="How to improve")
+
+
+# S02 strict review-JSON contract (BC-21 sibling of F03/A04's
+# core.grounding_check._parse_verdict and S01's
+# utils.web_search_trigger.LLMSearchTriggerResponse.parse). The review
+# prompt (review_answer, ~654-659) teaches all four fields unconditionally,
+# but only `passes` and `confidence` are load-bearing downstream: the
+# review gate's own log-only branch in gui/handlers.py (~4658-4673) reads
+# `not _review.passes and _review.confidence >= RESPONSE_REVIEW_
+# CONFIDENCE_THRESHOLD`, and both values are recorded verbatim into turn
+# telemetry (`review_passed`/`review_confidence`, ~4653-4657) — so those two
+# are REQUIRED, with no default-to-pass. `issues` is read only for a log
+# message and `suggestion` is never read by the caller at all, so both stay
+# OPTIONAL: absent keeps the documented empty default, present must still
+# have its taught type.
+_REQUIRED_REVIEW_FIELDS = ("passes", "confidence")
+
+
+def _invalid_review_reason(data: dict) -> Optional[str]:
+    """None when `data` satisfies the strict review contract; otherwise the
+    first failing field name and received Python type — never its value,
+    since `issues`/`suggestion` may quote response text."""
+    for field in _REQUIRED_REVIEW_FIELDS:
+        if field not in data:
+            return f"{field} missing"
+    passes = data["passes"]
+    if not isinstance(passes, bool):
+        return f"passes {type(passes).__name__}"
+    confidence = data["confidence"]
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return f"confidence {type(confidence).__name__}"
+    if not math.isfinite(confidence):
+        return "confidence non-finite"
+    if not (0.0 <= confidence <= 1.0):
+        return "confidence out of range"
+    if "issues" in data:
+        issues = data["issues"]
+        if not isinstance(issues, list) or not all(isinstance(i, str) for i in issues):
+            return f"issues {type(issues).__name__}"
+    if "suggestion" in data and not isinstance(data["suggestion"], str):
+        return f"suggestion {type(data['suggestion']).__name__}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -965,7 +1008,15 @@ class ResponsePlanner:
 
     @staticmethod
     def _parse_review(raw: str) -> Optional[ReviewResult]:
-        """Parse LLM output into ReviewResult, returning None on failure."""
+        """Parse LLM output into ReviewResult, returning None on failure.
+
+        Strict contract (S02, BC-21 sibling): the top level must be a JSON
+        object; `passes` (bool) and `confidence` (finite non-bool number in
+        [0,1]) are REQUIRED — no default-to-pass; `issues`/`suggestion`, if
+        present, must have their taught type, else the whole payload is
+        rejected. Any violation abstains (None) with one WARNING naming
+        only the field and its Python type, never the model's own text.
+        """
         text = raw.strip()
         if text.startswith("```"):
             lines = text.split("\n")
@@ -974,9 +1025,19 @@ class ResponsePlanner:
 
         try:
             data = json.loads(text)
+            if not isinstance(data, dict):
+                logger.warning(
+                    "[REVIEW GATE] Rejected review JSON: top level "
+                    f"{type(data).__name__}, not an object"
+                )
+                return None
+            reason = _invalid_review_reason(data)
+            if reason is not None:
+                logger.warning(f"[REVIEW GATE] Rejected review JSON: {reason}")
+                return None
             return ReviewResult(
-                passes=bool(data.get("passes", True)),
-                confidence=float(data.get("confidence", 0.0)),
+                passes=data["passes"],
+                confidence=float(data["confidence"]),
                 issues=data.get("issues", []),
                 suggestion=data.get("suggestion", ""),
             )

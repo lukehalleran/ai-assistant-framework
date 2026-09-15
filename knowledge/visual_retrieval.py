@@ -29,6 +29,7 @@ import os
 from typing import Any, Dict, List
 
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import outcome_status
 
 logger = get_logger("knowledge.visual_retrieval")
 
@@ -78,6 +79,7 @@ class VisualRetriever:
 
         # ChromaDB text search (fallback/complement)
         text_results = self._store.search_by_text(query, k=k)
+        ts_status, ts_reason = outcome_status(text_results)
 
         # Merge + deduplicate by image_path, boost entity matches
         merged = self._merge_results(clip_results, text_results, query=query)
@@ -137,7 +139,12 @@ class VisualRetriever:
                 f"{len(text_section)} results, {len(images)} images loaded"
             )
 
-        return {"text_results": text_section, "images": images}
+        return {
+            "text_results": text_section,
+            "images": images,
+            "text_search_status": ts_status,
+            "text_search_reason": ts_reason,
+        }
 
     def _search_clip(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """CLIP text→image search."""

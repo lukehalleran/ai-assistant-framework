@@ -45,7 +45,7 @@ class TestIsSelfReport:
         assert is_self_report(text) is False
 
     def test_paste_excluded_by_lines_and_length(self):
-        assert is_self_report("Hi Morgan,\nThanks for the note.\nBest,\nLuke") is False
+        assert is_self_report("Hi Morgan,\nThanks for the note.\nBest,\nAlex") is False
         assert is_self_report("I " + "walked and walked " * 30) is False
 
     def test_max_words_is_a_parameter(self):
@@ -90,4 +90,4 @@ def test_soft_wrapped_self_report_is_one_message():
                "afternoon, feels good honestly even\n  though I got nothing done")
     assert is_self_report(wrapped) is True
     assert is_self_report("I went out.\n\nThen I came home.\n\nIt was fine.") is False
-    assert is_self_report("Hi Morgan,\nThanks for the note.\nBest,\nLuke") is False
+    assert is_self_report("Hi Morgan,\nThanks for the note.\nBest,\nAlex") is False

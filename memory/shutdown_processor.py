@@ -1133,6 +1133,7 @@ JSON:"""
         from memory.procedural_skill import ProceduralSkill, SkillCategory
 
         kept = 0
+        failed = 0  # StoreWriteError count [F10b] -- distinct from a dedup skip
         session_id = self.session_start.isoformat() if isinstance(self.session_start, datetime) else str(self.session_start)
 
         for line in raw.strip().splitlines():
@@ -1158,12 +1159,17 @@ JSON:"""
                 logger.debug(f"[Shutdown] Skipping invalid skill: {e}")
                 continue
 
-            doc_id = await self._storage.store_skill(skill)
+            from utils.retrieval_outcome import StoreWriteError
+            try:
+                doc_id = await self._storage.store_skill(skill)
+            except StoreWriteError:
+                failed += 1
+                continue
             if doc_id:
                 kept += 1
 
-        if kept:
-            logger.info(f"[Shutdown] Extracted {kept} procedural skill(s)")
+        if kept or failed:
+            logger.info(f"[Shutdown] Extracted {kept} procedural skill(s), {failed} failed")
 
     # ------------------------------------------------------------------
     # Code proposal generation
@@ -1245,17 +1251,23 @@ JSON:"""
                 )
 
             kept = 0
+            failed = 0  # StoreWriteError count [F11b-1b] -- distinct from a dedup skip
             for proposal in proposals:
                 existing_id = proposal_store.check_similarity(proposal)
                 if existing_id:
                     logger.debug(f"[Shutdown] Proposal skipped (duplicate of {existing_id}): {proposal.title}")
                     continue
-                doc_id = proposal_store.store_proposal(proposal)
+                from utils.retrieval_outcome import StoreWriteError
+                try:
+                    doc_id = proposal_store.store_proposal(proposal)
+                except StoreWriteError:
+                    failed += 1
+                    continue
                 if doc_id:
                     kept += 1
 
-            if kept:
-                logger.info(f"[Shutdown] Generated {kept} proposal(s)")
+            if kept or failed:
+                logger.info(f"[Shutdown] Generated {kept} proposal(s), {failed} failed")
 
         except Exception as e:
             logger.warning(f"[Shutdown] Proposal generation failed: {e}")
@@ -1541,10 +1553,15 @@ JSON:"""
         # make an independent LLM call with no dependency on the other — run them
         # concurrently, then apply their ChromaDB writes sequentially afterward.
         existing_open = []
+        from utils.retrieval_outcome import RetrievalError
         try:
             existing_open = self.thread_store.list_open_threads()
-        except Exception as e:
+        except RetrievalError as e:
+            # Typed degrade (not a broad except): a failed read must not
+            # fall through to extraction, or every extracted thread gets
+            # stored again as a duplicate (nothing here to de-dup against).
             logger.warning(f"[Shutdown] Listing open threads failed: {e}")
+            return
 
         async def _detect_resolutions():
             if not existing_open:
@@ -1604,6 +1621,7 @@ JSON:"""
         elif new_threads:
             still_open = [t for t in existing_open if t.thread_id not in resolved_ids]
             stored = 0
+            failed = 0
             for thread in new_threads:
                 twin = next(
                     (r for r in resolved_threads if threads_duplicate(thread, r)),
@@ -1626,11 +1644,16 @@ JSON:"""
                         f"already tracked as '{twin.topic}' (refreshed)"
                     )
                     continue
-                doc_id = self.thread_store.store_thread(thread)
+                from utils.retrieval_outcome import StoreWriteError
+                try:
+                    doc_id = self.thread_store.store_thread(thread)
+                except StoreWriteError:
+                    failed += 1
+                    continue
                 if doc_id:
                     stored += 1
-            if stored:
-                logger.info(f"[Shutdown] Stored {stored} new thread(s)")
+            if stored or failed:
+                logger.info(f"[Shutdown] Stored {stored} new thread(s), {failed} failed")
 
         # Phase 3: Enforce cap
         try:
@@ -1661,6 +1684,9 @@ JSON:"""
 
         Auto-halt: if audit queue FP rate exceeds threshold with sufficient
         graded data, synthesis is skipped until FP rate is addressed.
+
+        The audit check is fail-closed: a typed audit-read failure skips
+        dreaming instead of proceeding as if the audit were healthy.
         """
         try:
             from config.app_config import (
@@ -1681,8 +1707,14 @@ JSON:"""
             if not (SYNTHESIS_GENERATOR_ENABLED or SYNTHESIS_POOLED_ENABLED):
                 return
 
-            # Auto-halt check: skip synthesis if FP rate too high
+            # Auto-halt check: skip synthesis if FP rate too high. Fail-closed:
+            # a typed RetrievalError (audit stats unreadable) skips dreaming
+            # with one labels-only warning. Any OTHER failure here is no
+            # longer swallowed -- it propagates to this method's outer
+            # except below, which ends dreaming non-fatally. Dreaming never
+            # runs without a readable audit.
             if SYNTHESIS_AUDIT_ENABLED:
+                from utils.retrieval_outcome import RetrievalError
                 try:
                     from memory.synthesis_memory import SynthesisMemory
                     audit_mem = SynthesisMemory(self.chroma_store)
@@ -1698,8 +1730,12 @@ JSON:"""
                             audit_stats["min_graded_for_halt"],
                         )
                         return
-                except Exception as e:
-                    logger.debug(f"[Shutdown] Audit check skipped: {e}")
+                except RetrievalError as e:
+                    logger.warning(
+                        "[Shutdown] Synthesis dreaming skipped: audit stats unavailable (%s: %s)",
+                        e.source, e.reason,
+                    )
+                    return
 
             from knowledge.synthesis_filter import SynthesisFilter
             from memory.synthesis_memory import SynthesisMemory

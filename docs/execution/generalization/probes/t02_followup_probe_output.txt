@@ -1,0 +1,37 @@
+tone_detector sha256: 98adfca7f4065fb1
+
+== turn 1: "people are suffering but I don't want to die" -> T02 candidate tier B_negated_only (CONCERN); Stage 0 fires: True
+  follow-up 'the weather was grey this morning'
+     carry via previous_tone (today's rule): CONCERN/distress_sticky_floor
+     carry via heavy history row (today's rule): CONCERN/distress_sticky_floor
+     DESIGNED: CONVERSATIONAL/semantic
+  follow-up 'I watched a documentary about whales last night'
+     carry via previous_tone (today's rule): CONCERN/distress_sticky_floor
+     carry via heavy history row (today's rule): CONCERN/distress_sticky_floor
+     DESIGNED: CONVERSATIONAL/semantic
+  follow-up 'my sister is visiting next week'
+     carry via previous_tone (today's rule): CONCERN/distress_sticky_floor
+     carry via heavy history row (today's rule): CONCERN/distress_sticky_floor
+     DESIGNED: CONVERSATIONAL/semantic
+
+== turn 1: 'people are suffering and I feel hopeless' -> T02 candidate tier B_mild (CONCERN); Stage 0 fires: True
+  follow-up 'the weather was grey this morning'
+     carry via previous_tone (today's rule): CONCERN/distress_sticky_floor
+     carry via heavy history row (today's rule): CONCERN/distress_sticky_floor
+     DESIGNED: CONCERN/distress_sticky_floor
+  follow-up 'I watched a documentary about whales last night'
+     carry via previous_tone (today's rule): CONCERN/distress_sticky_floor
+     carry via heavy history row (today's rule): CONCERN/distress_sticky_floor
+     DESIGNED: CONCERN/distress_sticky_floor
+  follow-up 'my sister is visiting next week'
+     carry via previous_tone (today's rule): CONCERN/distress_sticky_floor
+     carry via heavy history row (today's rule): CONCERN/distress_sticky_floor
+     DESIGNED: CONCERN/distress_sticky_floor
+
+== hold semantics: genuine CONCERN at N-1, negated-news at N (held), neutral at N+1
+  N+1 with N-1 carry preserved: CONCERN/distress_sticky_floor
+
+== EscalationTracker today (real class): consecutive_distress_count after one CONCERN turn
+  trigger='harm_score: 4.0 (0H, 0M, 2C)'       -> count=1
+  trigger='distress_sticky_floor'              -> count=0
+  trigger='observational_negated_crisis'       -> count=1

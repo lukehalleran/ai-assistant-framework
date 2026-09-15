@@ -150,13 +150,31 @@ def scan_chroma(chroma_path, min_age_hours):
     return col, targets
 
 
-def main():
+def _daemon_running() -> bool:
+    try:
+        from utils.daemon_guard import daemon_running
+        return daemon_running()
+    except Exception:
+        return False
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="apply changes (default: dry-run)")
     ap.add_argument("--chroma-path", default=CHROMA_PATH_DEFAULT)
     ap.add_argument("--min-age-hours", type=float, default=MIN_AGE_HOURS_DEFAULT,
                     help="skip facts younger than this (may be genuinely current)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+
+    # A live Daemon holds the profile and facts collection IN MEMORY and
+    # re-saves them (shutdown, reflection cycles) — any write made here while
+    # it runs gets clobbered. Same guard as add_profile_fact.py /
+    # backfill_stance.py (2026-08-05 profile-clobber incident).
+    if args.apply and _daemon_running():
+        print("REFUSED: a live Daemon main.py is running. Its in-memory "
+              "profile and facts collection would clobber these writes on "
+              "the next save. Shut it down first.")
+        return 1
 
     now_iso = datetime.now().isoformat()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -228,4 +246,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

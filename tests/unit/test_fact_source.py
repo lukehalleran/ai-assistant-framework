@@ -3,7 +3,7 @@
 Four live contamination classes drove this module:
   - WHOOP: a user turn QUOTING another model's profile comparison.
   - Mochi/Waffles as dogs: relation name asserted a species never stated.
-  - lived_in=Atlanta evidence = first 200 chars of a long turn (lyrics).
+  - lived_in=Marrowby evidence = first 200 chars of a long turn (lyrics).
   - Facts sourced from Daemon's own responses.
 """
 
@@ -31,8 +31,8 @@ class TestSpeakerBoundary:
         assert find_supporting_user_span(_t("user", "plays", "D&D"), msgs) is None
 
     def test_role_prefixed_assistant_string_skipped(self):
-        turns = list(iter_user_messages(["assistant: I live in Paris", "user: I live in Atlanta"]))
-        assert turns == [(1, "I live in Atlanta", "")]
+        turns = list(iter_user_messages(["assistant: I live in Paris", "user: I live in Marrowby"]))
+        assert turns == [(1, "I live in Marrowby", "")]
 
     def test_quoted_other_model_claim_is_not_testimony(self):
         # The live WHOOP fact: the user pasted another model's description.
@@ -49,16 +49,16 @@ class TestSpeakerBoundary:
         assert ev.role == "user"
 
     def test_blockquote_and_code_fence_ignored(self):
-        text = "> I live in Paris\n```\nI live in Denver\n```\nI live in Atlanta now."
+        text = "> I live in Paris\n```\nI live in Denver\n```\nI live in Marrowby now."
         assert find_supporting_user_span(_t("user", "lives_in", "Paris"), [text]) is None
         assert find_supporting_user_span(_t("user", "lives_in", "Denver"), [text]) is None
-        ev = find_supporting_user_span(_t("user", "lives_in", "Atlanta"), [text])
-        assert ev is not None and ev.text == "I live in Atlanta now."
+        ev = find_supporting_user_span(_t("user", "lives_in", "Marrowby"), [text])
+        assert ev is not None and ev.text == "I live in Marrowby now."
 
     def test_pasted_transcript_inside_user_turn(self):
-        text = "here is what it wrote\nAssistant: you live in Denver\nanyway I live in Atlanta"
+        text = "here is what it wrote\nAssistant: you live in Denver\nanyway I live in Marrowby"
         assert find_supporting_user_span(_t("user", "lives_in", "Denver"), [text]) is None
-        assert find_supporting_user_span(_t("user", "lives_in", "Atlanta"), [text]) is not None
+        assert find_supporting_user_span(_t("user", "lives_in", "Marrowby"), [text]) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +84,8 @@ class TestRelationClaims:
         assert ev is not None and ev.anchor == "entity"
 
     def test_residence_needs_a_residence_cue(self):
-        assert find_supporting_user_span(_t("user", "lives_in", "Atlanta"), ["I visited Atlanta for a concert"]) is None
-        assert find_supporting_user_span(_t("user", "lives_in", "Atlanta"), ["Moved to Atlanta in June"]) is not None
+        assert find_supporting_user_span(_t("user", "lives_in", "Marrowby"), ["I visited Marrowby for a concert"]) is None
+        assert find_supporting_user_span(_t("user", "lives_in", "Marrowby"), ["Moved to Marrowby in June"]) is not None
 
     def test_preference_needs_a_preference_cue(self):
         assert find_supporting_user_span(_t("user", "likes", "Python"), ["I wrote some Python today"]) is None
@@ -143,23 +143,23 @@ class TestEvidenceWindow:
     LYRICS = "Like the clouds, see color, drifting over the water, " * 12
 
     def test_excerpt_is_the_claim_sentence_not_the_head_of_the_turn(self):
-        turn = self.LYRICS + " Anyway. I moved to Atlanta last spring and my partner Sarah came too."
-        ev = find_supporting_user_span(_t("user", "lives_in", "Atlanta"), [turn])
+        turn = self.LYRICS + " Anyway. I moved to Marrowby last spring and my partner Sarah came too."
+        ev = find_supporting_user_span(_t("user", "lives_in", "Marrowby"), [turn])
         assert ev is not None
-        assert "Atlanta" in ev.text
+        assert "Marrowby" in ev.text
         assert len(ev.text) <= 200
         assert "clouds" not in ev.text
         ev = find_supporting_user_span(_t("user", "relationship", "Sarah"), [turn])
         assert ev is not None and "Sarah" in ev.text and "clouds" not in ev.text
 
     def test_regex_path_helper_crops_to_claim_span(self):
-        turn = self.LYRICS + " Anyway. I moved to Atlanta last spring."
-        excerpt = supporting_excerpt(turn, "Atlanta", limit=200)
-        assert excerpt == "I moved to Atlanta last spring."
+        turn = self.LYRICS + " Anyway. I moved to Marrowby last spring."
+        excerpt = supporting_excerpt(turn, "Marrowby", limit=200)
+        assert excerpt == "I moved to Marrowby last spring."
         # A run-on with no sentence punctuation: the window is anchored on the
         # claim (tail of the turn), never the head.
-        excerpt = supporting_excerpt(self.LYRICS + " I moved to Atlanta last spring.", "Atlanta", limit=200)
-        assert excerpt.endswith("I moved to Atlanta last spring.") and len(excerpt) <= 200
+        excerpt = supporting_excerpt(self.LYRICS + " I moved to Marrowby last spring.", "Marrowby", limit=200)
+        assert excerpt.endswith("I moved to Marrowby last spring.") and len(excerpt) <= 200
         # Object absent from any span: still bounded, never crashes.
         assert len(supporting_excerpt(turn, "Zanzibar", limit=120)) <= 120
         assert supporting_excerpt("", "x") == ""

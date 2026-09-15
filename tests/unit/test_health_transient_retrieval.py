@@ -64,9 +64,9 @@ def test_profile_expires_stale_health_transient(temp_profile):
 def test_profile_keeps_durable_fact_regardless_of_age(temp_profile):
     profile = UserProfile(temp_profile)
     very_old = datetime.now() - timedelta(days=400)
-    profile.add_fact("name", "Luke", confidence=0.9,
+    profile.add_fact("name", "Alex", confidence=0.9,
                      category=ProfileCategory.IDENTITY, timestamp=very_old)
-    assert "Luke" in _current_values(profile)
+    assert "Alex" in _current_values(profile)
 
 
 def test_profile_standard_ephemeral_uses_short_ttl(temp_profile):
@@ -129,10 +129,10 @@ def test_retriever_drops_explicitly_superseded():
     rows = [
         _row("user | post_illness_recovery | still recovering", ts=now, is_current=False),
         _row("user | post_illness_recovery | fighting a virus", ts=now, superseded_by="x"),
-        _row("user | name | Luke", ts=now),
+        _row("user | name | Alex", ts=now),
     ]
     out = _contents(_get_facts(rows))
-    assert "user | name | Luke" in out
+    assert "user | name | Alex" in out
     assert not any("recovering" in c or "virus" in c for c in out)
 
 
@@ -162,7 +162,7 @@ def test_fact_ephemeral_ttl_helper():
     )
     assert _fact_ephemeral_ttl("user | post_illness_recovery | x") == float(H)
     assert _fact_ephemeral_ttl("user | current_activity | x") == float(E)
-    assert _fact_ephemeral_ttl("user | name | Luke") is None
+    assert _fact_ephemeral_ttl("user | name | Alex") is None
     assert _fact_ephemeral_ttl("no pipes here") is None
 
 
@@ -226,9 +226,9 @@ def test_durable_condition_narrative_not_penalized():
     """Chronic/permanent condition language never ages out, even old and in a
     scoped collection (a disability is not an illness episode)."""
     from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
-    durable = _mem("Luke has a chronic autoimmune condition he manages daily",
+    durable = _mem("Alex has a chronic autoimmune condition he manages daily",
                    "obsidian_notes", H + 400)
-    transient = _mem("Luke is recovering from illness and feeling wiped",
+    transient = _mem("Alex is recovering from illness and feeling wiped",
                      "obsidian_notes", H + 400)
     assert _score_one(durable) > _score_one(transient)
 

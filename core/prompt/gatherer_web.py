@@ -20,6 +20,8 @@ import logging
 from typing import Optional, Any
 from datetime import datetime
 
+from utils.retrieval_outcome import OutcomeList
+
 logger = logging.getLogger("prompt_context_gatherer")
 
 # Web search configuration
@@ -296,12 +298,28 @@ class WebSearchMixin:
                 if getattr(result, "error", None):
                     self.last_web_decision["error"] = str(result.error)
                 logger.debug(f"[ContextGatherer] Web search returned no results: {result.error}")
+                # CGR-20260913-007 #92 siblings (F8b): the receipt above
+                # already distinguishes a budget refusal (`blocked`) from a
+                # provider error (`error`) from a genuine empty search — the
+                # return value now does too, instead of collapsing all three
+                # into the same `None`. A budget refusal sets BOTH `error`
+                # and `blocked="budget"` (knowledge/web_search_manager.py
+                # `search()` 1317-1322, 1401-1406), so `blocked` is checked
+                # FIRST.
+                if getattr(result, "blocked", None) == "budget":
+                    return OutcomeList.unavailable("budget")
+                if getattr(result, "error", None):
+                    return OutcomeList.failed("provider_error")
                 return None
 
         except Exception as e:
+            # ANCHOR #92 (CGR-20260913-007, dm18_except_returns_empty): a
+            # typed failure instead of an empty section, so a real
+            # exception is never indistinguishable from "nothing to
+            # search" — the receipt write and log are unchanged.
             self.last_web_decision["error"] = type(e).__name__
             logger.warning(f"[ContextGatherer] Web search failed: {e}")
-            return None
+            return OutcomeList.failed(type(e).__name__)
 
     @staticmethod
     def _cached_web_evidence(manager: Any, decision: Any, query: str) -> Optional[Any]:

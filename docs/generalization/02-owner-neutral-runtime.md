@@ -197,6 +197,9 @@ Acceptance:
 - Never rewrite live owner data in place without backup and dry-run output.
 - Preserve source excerpts and provenance when replacing subject identity.
 - Do not bulk-replace the string `Luke` across tests or history.
+  - Note (2026-09-15, H03c-2, Decision 2): fixtures now use a synthetic first
+    name, swapped per-assertion rather than by bulk replace. The two
+    real-name guard tests keep the real name on purpose.
 - Do not turn owner incidents into generic language rules without counterexamples.
 - Do not make optional profile fields required merely because owner data has them.
 
