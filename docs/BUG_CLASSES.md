@@ -88,7 +88,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-45 | Shown ≠ stored ≠ recorded | E | partial |
 | BC-46 | Prompt instruction loses to a structural input or model prior | E | recurs |
 | BC-47 | Failure or not-run collapsed into a valid empty result | E | partial |
-| BC-48 | Confabulated action-completion claim | E | recurs |
+| BC-48 | Confabulated action-completion claim | E | partial |
 | BC-49 | Mid-loop narration shipped as the answer | E | partial |
 | BC-50 | Verifier's own false corrections | E | partial |
 | BC-51 | Attribute or count inferred from a label, not the user's words | E | recurs |
@@ -481,11 +481,11 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Status: partial.
 
 ### BC-48 Confabulated action-completion claim
-- Mechanism: the reply asserts it sent/created/queued when nothing executed.
-- Incidents: 2026-09-01 "Re-queuing… Approve that one" with nothing queued; 2026-09-07 "Confirmed — creating the recurring event now"; expired proposal re-served as "Queued"; 2026-09-10 "Queued up" / "Queuing it now … approval card pop up" shipped with no backing card.
-- Find: `claims_pending_card()`/`_COMPLETION_PATTERNS` match with empty `proposed_kinds` and `executed_kinds` for the turn.
-- Closure: `core/action_claim_guard.py`, `NO_CARD_NOTICE` backstop.
-- Status: recurs — each new phrasing found individually.
+- Mechanism: the reply asserts an action completed without supporting execution evidence or a user completion report; suggestions and intentions can be promoted to completed events.
+- Incidents: 2026-09-01 "Re-queuing… Approve that one" with nothing queued; 2026-09-07 "Confirmed — creating the recurring event now"; expired proposal re-served as "Queued"; 2026-09-10 "Queued up" / "Queuing it now … approval card pop up" shipped with no backing card; 2026-09-15 the enhanced reply claimed the user finished and uploaded a résumé from a contemplated upload and the assistant's own advice (audit: `docs/AUDIT_20260915_personal_event_grounding.md`; also BC-46/58, with a BC-70 receipt gap).
+- Find: `claims_pending_card()`/`_COMPLETION_PATTERNS` match with empty `proposed_kinds` and `executed_kinds` for assistant actions; replay user-event claims through the deployed guards and compare against role-preserved reports (09-15 exact and wrapped replies bypass all four checked guards). General user-event entailment checker remains proposed.
+- Closure: `core/action_claim_guard.py`, `NO_CARD_NOTICE` backstop for assistant tool claims. Personal-event completions (2026-09-15): `core/personal_claim_check.py` — role-preserved evidence + a semantic auditor whose claim/source spans are validated exactly and whose supported user completions need USER-role evidence; `omit_unsupported_claims` in `correct` mode; receipts persisted and marked at retrieval by `utils/personal_claim_provenance.py`. Runs on both routes regardless of tone/planning/prefilter; default `log_only`.
+- Status: partial — assistant tool claims per-incident; the general user-event boundary is deployed in shadow (log_only) pending precision measurement and a live canary before `correct`.
 
 ### BC-49 Mid-loop narration shipped as the answer
 - Mechanism: decision-answer reuse or the synthesis call ships "let me aim at…" as the final response.

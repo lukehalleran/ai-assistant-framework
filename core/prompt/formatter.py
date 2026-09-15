@@ -61,6 +61,7 @@ from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime
 from pathlib import Path
 from utils.logging_utils import get_logger
+from utils.personal_claim_provenance import annotate_personal_claim_memory
 from core.response_parser import ResponseParser
 from core.action_claim_guard import annotate_unverified_action_claim
 
@@ -552,6 +553,7 @@ class PromptFormatter:
 
     def _format_memory(self, mem: Dict[str, Any]) -> str:
         """Format a single memory for display."""
+        mem = annotate_personal_claim_memory(mem)
         try:
             # Debug: Log what we're getting
             logger.debug(f"[FORMATTING] Formatting memory with keys: {list(mem.keys()) if isinstance(mem, dict) else type(mem)}")
@@ -920,6 +922,7 @@ class PromptFormatter:
         logger.debug(f"PROMPT ASSEMBLY START: stm_summary present = {context.get('stm_summary') is not None}")
 
         def mem_parts(mem: Dict[str, Any]) -> tuple[str, str]:
+            mem = annotate_personal_claim_memory(mem)
             try:
                 # Memory field structure varies by source:
                 # - Hybrid retriever uses 'content' field

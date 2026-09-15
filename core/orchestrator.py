@@ -381,9 +381,11 @@ def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
         try:
             # F13c-1: also copy storage_-prefixed keys (the deferred
             # background-store receipt), same in-place-update shape as the
-            # pre-existing grounding_ prefix.
+            # pre-existing grounding_ prefix. 2026-09-15: the deferred
+            # personal-claim receipt (log-only shadow check) lands the same
+            # way -- without this prefix the row froze at "pending".
             rec.update({k: v for k, v in ctx.telemetry.items()
-                        if k.startswith(("grounding_", "storage_"))})
+                        if k.startswith(("grounding_", "storage_", "personal_claim_"))})
             record_turn(rec)
         except Exception as exc:
             logger.debug(f"[TurnTelemetry] deferred write skipped: {exc}")

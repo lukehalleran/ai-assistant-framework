@@ -34,6 +34,7 @@ from datetime import datetime
 
 from .formatter import _as_summary_dict, _parse_bool
 from utils.ordered_slice import newest_first as _ordered_newest_first
+from utils.personal_claim_provenance import annotate_personal_claim_memory
 from utils.retrieval_outcome import OutcomeList
 from core.action_claim_guard import (
     annotate_conversation_content,
@@ -71,6 +72,7 @@ def _annotate_memory_item_claim(mem: Dict[str, Any]) -> Dict[str, Any]:
     """
     if not isinstance(mem, dict):
         return mem
+    mem = annotate_personal_claim_memory(mem)
     try:
         content = mem.get("content")
         if content:

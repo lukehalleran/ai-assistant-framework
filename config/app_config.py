@@ -1517,6 +1517,37 @@ GROUNDING_FALLBACK_MIN_CLAIM_TOKENS: int = int(
     GROUNDING_CHECK_CFG.get("fallback_min_claim_tokens", 3))
 
 # --------------------------------------------------------------------
+# Personal-claim support check (post-generation provenance boundary).
+# This check is intentionally independent of tone, planning, and the factual
+# claim-shape prefilter.  It starts in shadow mode so support precision can be
+# measured before enabling omission in delivery.
+# --------------------------------------------------------------------
+PERSONAL_CLAIM_CFG = config.get("personal_claim_check", {})
+PERSONAL_CLAIM_CHECK_ENABLED: bool = bool(
+    PERSONAL_CLAIM_CFG.get("enabled", True)
+)
+PERSONAL_CLAIM_MODE: str = str(
+    PERSONAL_CLAIM_CFG.get("mode", "log_only") or "log_only"
+).strip().lower()
+if PERSONAL_CLAIM_MODE not in ("log_only", "correct"):
+    PERSONAL_CLAIM_MODE = "log_only"
+PERSONAL_CLAIM_MODE = os.getenv("PERSONAL_CLAIM_MODE", PERSONAL_CLAIM_MODE).strip().lower()
+if PERSONAL_CLAIM_MODE not in ("log_only", "correct"):
+    PERSONAL_CLAIM_MODE = "log_only"
+PERSONAL_CLAIM_CHECK_MODEL: Optional[str] = (
+    PERSONAL_CLAIM_CFG.get("model") or RESPONSE_REVIEW_MODEL
+)
+PERSONAL_CLAIM_TIMEOUT_S: float = float(PERSONAL_CLAIM_CFG.get("timeout_s", 5.0))
+PERSONAL_CLAIM_MAX_TOKENS: int = int(PERSONAL_CLAIM_CFG.get("max_tokens", 900))
+PERSONAL_CLAIM_MAX_EVIDENCE_CHARS: int = int(
+    PERSONAL_CLAIM_CFG.get("max_evidence_chars", 12000)
+)
+PERSONAL_CLAIM_CHECK_ENABLED = bool(int(os.getenv(
+    "PERSONAL_CLAIM_CHECK_ENABLED",
+    "1" if PERSONAL_CLAIM_CHECK_ENABLED else "0",
+)))
+
+# --------------------------------------------------------------------
 # Email Integration (Gmail, Outlook metadata read-only; 2026-09-01)
 # Doctrine: metadata-first, live-fetch-only, 5-min TTL in-memory cache
 # Consumers: agentic email_search tool, passive [RELEVANT EMAILS] gatherer,

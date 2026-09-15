@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
 from utils.completed_plan_claims import remove_completed_plan_claims
+from utils.personal_claim_provenance import MARKER as PERSONAL_CLAIM_MARKER, annotate_personal_claim_memory
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
 from utils.streak_claims import remove_stale_streak_claims, streak_ledger, streak_ledger_block
 from utils.retrieval_outcome import RetrievalError
@@ -89,6 +90,7 @@ def _format_recent_for_summary(recent: List[Dict[str, Any]],
         return out
     for e in recent:
         try:
+            marked = annotate_personal_claim_memory(e)
             q = (e.get("query") or "").strip()
             a = (e.get("response") or "").strip()
             if not (q or a):
@@ -97,6 +99,8 @@ def _format_recent_for_summary(recent: List[Dict[str, Any]],
                 q = q[:q_max]
             if len(a) > a_max:
                 a = a[:a_max]
+            if marked.get("response") != e.get("response"):
+                a += "\n" + PERSONAL_CLAIM_MARKER
             out.append(f"User: {q}\nAssistant: {a}")
         except Exception:
             # best-effort; skip malformed entries
@@ -255,12 +259,16 @@ class MemoryConsolidator:
         for m in memories:
             if not isinstance(m, dict):
                 continue
+            marked = annotate_personal_claim_memory(m)
             q = (m.get("query") or m.get("q") or "").strip()
             a = (m.get("response") or m.get("a") or "").strip()
             if q or a:
-                out.append(f"User: {q[:240]}\nAssistant: {a[:300]}")
+                rendered = a[:300]
+                if marked.get("response", marked.get("a")) != m.get("response", m.get("a")):
+                    rendered += "\n" + PERSONAL_CLAIM_MARKER
+                out.append(f"User: {q[:240]}\nAssistant: {rendered}")
                 continue
-            c = (m.get("content") or "").strip()
+            c = (marked.get("content") or "").strip()
             if c:
                 out.append(c)
         return out

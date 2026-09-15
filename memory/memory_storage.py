@@ -54,6 +54,7 @@ Module Contract
 
 import os
 import re
+import json
 import logging
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -61,6 +62,7 @@ from collections import deque
 
 from utils.logging_utils import get_logger
 from utils.retrieval_outcome import RetrievalError, StoreWriteError
+from utils.personal_claim_provenance import clean_personal_claim_receipt
 from models.model_manager import API_ERROR_PREFIXES
 from datetime import timedelta
 
@@ -882,7 +884,11 @@ class MemoryStorage:
                     query, is_heavy, current_topic=self.current_topic
                 )
 
-            # Add to corpus (JSON) with stable timestamp and thread metadata
+            # Add to corpus (JSON) with stable timestamp and thread metadata.
+            # The support receipt is bound to THIS stored response text by digest.
+            personal_receipt = clean_personal_claim_receipt(
+                (provenance or {}).get("personal_claim_support"), response=response,
+            )
             self.corpus_manager.add_entry(
                 query, response, tags, timestamp=self._now(),
                 thread_id=thread_info.get("thread_id"),
@@ -893,6 +899,7 @@ class MemoryStorage:
                 topic=self.current_topic,
                 response_mode=(provenance or {}).get("response_mode"),
                 user_text=user_text,
+                **({"personal_claim_support": personal_receipt} if personal_receipt else {}),
             )
 
             # Update conversation context
@@ -936,6 +943,8 @@ class MemoryStorage:
                 # Preserve the authored/attachment boundary for semantic
                 # evidence retrieval, including attachment-only turns.
                 raw_metadata["user_text"] = user_text.strip()
+            if personal_receipt:
+                raw_metadata["personal_claim_support"] = json.dumps(personal_receipt)
 
             # B3 (2026-09-06): a [test]...[/test]-marked turn carries its
             # provenance forward — new key only when present.

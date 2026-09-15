@@ -829,6 +829,23 @@ class GroundingCheckSection(BaseModel):
     fallback_min_claim_tokens: int = Field(default=3, ge=1)
 
 
+class PersonalClaimCheckSection(BaseModel):
+    """Personal-claim support check (2026-09-15): an independent post-generation
+    boundary for claims about what the USER did (résumé "reworked … uploaded it"
+    from a contemplated upload + the assistant's own advice). Runs on every
+    enhanced/agentic answer regardless of tone/planning/the factual prefilter.
+    Evaluation rollout: enabled + log_only (receipts only); "correct" buffers
+    delivery and omits the exact unsupported/contradicted sentences from
+    display AND storage (never invents a negation)."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    mode: Literal["log_only", "correct"] = "log_only"
+    model: Optional[str] = None  # None → falls back to response_planning.review_model
+    timeout_s: float = Field(default=5.0, gt=0.0)
+    max_tokens: int = Field(default=900, ge=1)
+    max_evidence_chars: int = Field(default=12000, ge=500)
+
+
 class EmailIntegrationSection(BaseModel):
     """Email integration (2026-09-01): metadata-only read access to Gmail and Outlook
     via adapters conforming to EmailProvider protocol. Results cached in-memory (TTL).
@@ -1136,6 +1153,7 @@ class DaemonConfig(BaseModel):
     uncertainty_fallback: UncertaintyFallbackSection = Field(default_factory=UncertaintyFallbackSection)
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     grounding_check: GroundingCheckSection = Field(default_factory=GroundingCheckSection)
+    personal_claim_check: PersonalClaimCheckSection = Field(default_factory=PersonalClaimCheckSection)
     email_integration: EmailIntegrationSection = Field(default_factory=EmailIntegrationSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
     light_prompt: LightPromptSection = Field(default_factory=LightPromptSection)

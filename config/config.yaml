@@ -224,9 +224,19 @@ grounding_check:
   integrate_min_ratio: 0.75   # min (rewritten / original) length ratio
   integrate_max_ratio: 1.30   # max (rewritten / original) length ratio
   fallback_claim_overlap_threshold: 0.8  # min fraction of a claim's content tokens that must
-                                          # reappear in one sentence to locate a reworded claim
+                                        # reappear in one sentence to locate a reworded claim
   fallback_min_claim_tokens: 3           # below this many content tokens, claims are located by
-                                          # exact containment only, never overlap
+                                         # exact containment only, never overlap
+personal_claim_check:      # 2026-09-15: post-generation support check for claims about what the USER did
+                           # (résumé "uploaded it" confabulation). Independent of tone/planning/the factual
+                           # prefilter; one extra review-model call per enhanced/agentic answer. Evaluation
+                           # rollout: log_only until precision is measured + a live canary passes (BC-48).
+  enabled: true
+  mode: log_only          # log_only records support; correct buffers delivery and omits unsupported claim sentences
+  model: null             # null -> response_planning.review_model
+  timeout_s: 5.0
+  max_tokens: 900
+  max_evidence_chars: 12000
 email_integration:
   enabled: true
   gmail_enabled: true
