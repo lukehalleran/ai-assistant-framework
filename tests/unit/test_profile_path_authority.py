@@ -110,6 +110,10 @@ class TestFrozenSimulation:
         monkeypatch.setattr(bootstrap, "IS_WINDOWS", True)
         monkeypatch.setenv("APPDATA", str(tmp_path))
         monkeypatch.delenv("USER_PROFILE_PATH", raising=False)
+        # The compatibility read falls back to the cwd-relative legacy
+        # data/user_profile.json when the authoritative path is absent; a
+        # checkout with a live profile would otherwise fail this test.
+        monkeypatch.chdir(tmp_path)
 
         expected = os.path.join(str(tmp_path), "Daemon", "user_profile.json")
         assert get_user_profile_path() == expected

@@ -62,6 +62,11 @@ class TestPriorityOrderCoversRenderedKeys:
         # Structured metadata can affect a compact rendered label without
         # itself being text content that belongs in the token budget.
         exceptions.update(UNRENDERED_CONTEXT_KEYS)
+        # Mirror the deployed rule in TokenManager's true-total loop: a
+        # "_"-prefixed key is per-turn metadata (e.g. _section_outcomes, which
+        # only flips "(could not check)" labels in [ACTIVE FEATURES]) and is
+        # never metered, so the guard must not demand a PRIORITY_ORDER row.
+        rendered_keys = {k for k in rendered_keys if not k.startswith("_")}
         unmetered = rendered_keys - _PRIORITY_NAMES - exceptions
         assert not unmetered, (
             f"Formatter renders unmetered context keys: {sorted(unmetered)} — "
