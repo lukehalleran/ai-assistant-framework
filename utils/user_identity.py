@@ -21,13 +21,12 @@ import re
 import threading
 from typing import Optional
 
+from utils.bootstrap import get_user_profile_path
 from utils.logging_utils import get_logger
 
 logger = get_logger("user_identity")
 
 USER_NAME_OVERRIDE = os.getenv("DAEMON_USER_NAME", "").strip()
-
-_DEFAULT_PROFILE_PATH = os.path.join("data", "user_profile.json")
 
 # A plausible user name: 1-3 tokens, alphabetic/apostrophe/hyphen, opens uppercase.
 _PLAUSIBLE_NAME_RE = re.compile(
@@ -39,7 +38,7 @@ class UserIdentityResolver:
     """Profile-backed display name lookup with mtime caching. Never blocks."""
 
     def __init__(self, profile_path: Optional[str] = None):
-        self.profile_path = profile_path or _DEFAULT_PROFILE_PATH
+        self.profile_path = profile_path or get_user_profile_path()
         self._cached: Optional[str] = None
         self._mtime: Optional[float] = None
         self._lock = threading.Lock()

@@ -114,8 +114,8 @@ class TestGraphEdge:
 
     def test_to_natural_language(self):
         edge = GraphEdge(source_id="user", relation="lives_in", target_id="spain")
-        text = edge.to_natural_language("Luke", "Spain")
-        assert text == "Luke lives in Spain"
+        text = edge.to_natural_language("Alex", "Spain")
+        assert text == "Alex lives in Spain"
 
     def test_to_natural_language_defaults(self):
         edge = GraphEdge(source_id="user", relation="works_on", target_id="daemon")
@@ -666,7 +666,7 @@ class TestEntityResolver:
         assert "the project" in data.get("daemon", [])
 
     def test_normalize_id(self):
-        assert _normalize_id("Georgia Tech") == "georgia_tech"
+        assert _normalize_id("Vermont Wrenfield") == "vermont_wrenfield"
         assert _normalize_id("My Cat") == "my_cat"
         assert _normalize_id("  hello world  ") == "hello_world"
         assert _normalize_id("It's complicated!") == "its_complicated"
@@ -951,11 +951,11 @@ class TestContextSentences:
         assert sentences == []
 
     def test_sentences_are_strings(self, graph):
-        graph.add_entity(GraphNode(entity_id="user", display_name="Luke"))
+        graph.add_entity(GraphNode(entity_id="user", display_name="Alex"))
         graph.add_entity(GraphNode(entity_id="spain", display_name="Spain"))
         graph.add_relation(GraphEdge(source_id="user", relation="wants_to_move_to", target_id="spain"))
         sentences = graph.get_context_sentences("user")
         assert len(sentences) == 1
-        assert "Luke" in sentences[0]
+        assert "Alex" in sentences[0]
         assert "Spain" in sentences[0]
         assert "wants to move to" in sentences[0]

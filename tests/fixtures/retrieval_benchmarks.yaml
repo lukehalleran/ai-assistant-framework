@@ -687,7 +687,7 @@ seed_memories:
   - id: mem_sum_week1
     marker: "gym routine and work stress"
     collection: summaries
-    content: "This week Luke discussed Python programming for data science, his gym routine including bench press and squats, work stress about project deadlines, and his golden retriever Biscuit."
+    content: "This week Alex discussed Python programming for data science, his gym routine including bench press and squats, work stress about project deadlines, and his golden retriever Biscuit."
     timestamp_offset_hours: -168
     truth_score: 0.8
     importance_score: 0.6
@@ -707,7 +707,7 @@ seed_memories:
   - id: mem_sum_pets
     marker: "adopted Mochi the tabby cat"
     collection: summaries
-    content: "Luke adopted Mochi the tabby cat from a local shelter. He also took Biscuit the golden retriever for her annual vet checkup. Both pets are adjusting well to living together."
+    content: "Alex adopted Mochi the tabby cat from a local shelter. He also took Biscuit the golden retriever for her annual vet checkup. Both pets are adjusting well to living together."
     timestamp_offset_hours: -36
     truth_score: 0.8
     importance_score: 0.6
@@ -716,7 +716,7 @@ seed_memories:
   - id: mem_sum_emotional_week
     marker: "burnout from long work hours"
     collection: summaries
-    content: "Luke experienced burnout from long work hours and considered quitting. He attended a therapy session and started journaling. His therapist recommended strategies for managing insomnia and racing thoughts."
+    content: "Alex experienced burnout from long work hours and considered quitting. He attended a therapy session and started journaling. His therapist recommended strategies for managing insomnia and racing thoughts."
     timestamp_offset_hours: -30
     truth_score: 0.75
     importance_score: 0.7
@@ -734,7 +734,7 @@ seed_memories:
   - id: mem_sum_health_focus
     marker: "standing desk and sleep tracking"
     collection: summaries
-    content: "Luke focused on health improvements this week: ordered a standing desk for back pain, began cutting processed sugar from his diet, and started sleep tracking showing 6.2 hours average."
+    content: "Alex focused on health improvements this week: ordered a standing desk for back pain, began cutting processed sugar from his diet, and started sleep tracking showing 6.2 hours average."
     timestamp_offset_hours: -20
     truth_score: 0.75
     importance_score: 0.5
@@ -743,7 +743,7 @@ seed_memories:
   - id: mem_sum_family_updates
     marker: "brother Mike works as ER nurse"
     collection: summaries
-    content: "Family updates: Luke's brother Mike works as an ER nurse, sister Sarah is turning 30 with a surprise party planned, mom is visiting from Portland on the 20th, and dad retired from the school district."
+    content: "Family updates: Alex's brother Mike works as an ER nurse, sister Sarah is turning 30 with a surprise party planned, mom is visiting from Portland on the 20th, and dad retired from the school district."
     timestamp_offset_hours: -180
     truth_score: 0.8
     importance_score: 0.6
@@ -752,7 +752,7 @@ seed_memories:
   - id: mem_sum_hobbies
     marker: "Miles Davis and fingerpicking guitar"
     collection: summaries
-    content: "Luke's hobbies this month included listening to Miles Davis and Kamasi Washington jazz albums, learning fingerpicking guitar patterns, reading Dune by Frank Herbert, and cooking risotto from scratch."
+    content: "Alex's hobbies this month included listening to Miles Davis and Kamasi Washington jazz albums, learning fingerpicking guitar patterns, reading Dune by Frank Herbert, and cooking risotto from scratch."
     timestamp_offset_hours: -100
     truth_score: 0.7
     importance_score: 0.4
@@ -765,7 +765,7 @@ seed_memories:
   - id: mem_refl_growth
     marker: "growing confidence"
     collection: reflections
-    content: "Luke shows growing confidence in Python programming and has been consistently exercising at the gym. His technical skills are developing rapidly."
+    content: "Alex shows growing confidence in Python programming and has been consistently exercising at the gym. His technical skills are developing rapidly."
     timestamp_offset_hours: -168
     truth_score: 0.7
     importance_score: 0.6
@@ -774,7 +774,7 @@ seed_memories:
   - id: mem_refl_stress
     marker: "managing work stress better"
     collection: reflections
-    content: "Luke has been managing work stress better lately. He finds jazz music helpful for focus and seems more balanced overall."
+    content: "Alex has been managing work stress better lately. He finds jazz music helpful for focus and seems more balanced overall."
     timestamp_offset_hours: -72
     truth_score: 0.7
     importance_score: 0.6
@@ -785,7 +785,7 @@ seed_memories:
   - id: mem_refl_relationships
     marker: "investing more energy in personal relationships"
     collection: reflections
-    content: "Luke has been investing more energy in personal relationships recently. The tension with his girlfriend and the coworker disagreement suggest he is navigating complex interpersonal dynamics alongside technical work."
+    content: "Alex has been investing more energy in personal relationships recently. The tension with his girlfriend and the coworker disagreement suggest he is navigating complex interpersonal dynamics alongside technical work."
     timestamp_offset_hours: -40
     truth_score: 0.7
     importance_score: 0.6
@@ -794,7 +794,7 @@ seed_memories:
   - id: mem_refl_health_awareness
     marker: "proactive approach to physical health"
     collection: reflections
-    content: "Luke is taking a more proactive approach to physical health. Between the standing desk for back pain, diet changes, sleep tracking, and regular gym sessions, he is building sustainable health habits."
+    content: "Alex is taking a more proactive approach to physical health. Between the standing desk for back pain, diet changes, sleep tracking, and regular gym sessions, he is building sustainable health habits."
     timestamp_offset_hours: -15
     truth_score: 0.7
     importance_score: 0.5
@@ -807,7 +807,7 @@ seed_memories:
   - id: mem_fact_dog
     marker: "golden retriever named Biscuit"
     collection: facts
-    content: "Luke owns a golden retriever named Biscuit"
+    content: "Alex owns a golden retriever named Biscuit"
     timestamp_offset_hours: -2
     truth_score: 0.95
     importance_score: 0.7
@@ -816,7 +816,7 @@ seed_memories:
   - id: mem_fact_python
     marker: "prefers Python for data science"
     collection: facts
-    content: "Luke prefers Python for data science and machine learning work"
+    content: "Alex prefers Python for data science and machine learning work"
     timestamp_offset_hours: -4
     truth_score: 0.90
     importance_score: 0.6
@@ -825,7 +825,7 @@ seed_memories:
   - id: mem_fact_sister
     marker: "sister Sarah turning 30"
     collection: facts
-    content: "Luke has a sister named Sarah who is turning 30 next month"
+    content: "Alex has a sister named Sarah who is turning 30 next month"
     timestamp_offset_hours: -168
     truth_score: 0.85
     importance_score: 0.5
@@ -834,7 +834,7 @@ seed_memories:
   - id: mem_fact_lowtruth
     marker: "favorite color is blue"
     collection: facts
-    content: "Luke said his favorite color is blue"
+    content: "Alex said his favorite color is blue"
     timestamp_offset_hours: -720
     truth_score: 0.40
     importance_score: 0.3
@@ -845,7 +845,7 @@ seed_memories:
   - id: mem_fact_cat
     marker: "tabby cat named Mochi"
     collection: facts
-    content: "Luke adopted a tabby cat named Mochi from the shelter"
+    content: "Alex adopted a tabby cat named Mochi from the shelter"
     timestamp_offset_hours: -30
     truth_score: 0.90
     importance_score: 0.6
@@ -854,16 +854,16 @@ seed_memories:
   - id: mem_fact_brother
     marker: "brother Mike is an ER nurse"
     collection: facts
-    content: "Luke's brother Mike is an emergency room nurse at the hospital"
+    content: "Alex's brother Mike is an emergency room nurse at the hospital"
     timestamp_offset_hours: -50
     truth_score: 0.90
     importance_score: 0.5
     tags: "fact,family,brother"
 
   - id: mem_fact_girlfriend
-    marker: "girlfriend's name is Casey"
+    marker: "girlfriend's name is Tamsin"
     collection: facts
-    content: "Luke's girlfriend is named Casey"
+    content: "Alex's girlfriend is named Tamsin"
     timestamp_offset_hours: -35
     truth_score: 0.85
     importance_score: 0.5
@@ -872,7 +872,7 @@ seed_memories:
   - id: mem_fact_apartment_june
     marker: "lease expires in June"
     collection: facts
-    content: "Luke's apartment lease expires in June with a 15 percent rent increase"
+    content: "Alex's apartment lease expires in June with a 15 percent rent increase"
     timestamp_offset_hours: -180
     truth_score: 0.80
     importance_score: 0.5
@@ -881,7 +881,7 @@ seed_memories:
   - id: mem_fact_web_framework
     marker: "uses FastAPI for backend"
     collection: facts
-    content: "Luke uses FastAPI for the backend web framework"
+    content: "Alex uses FastAPI for the backend web framework"
     timestamp_offset_hours: -80
     truth_score: 0.90
     importance_score: 0.5
@@ -890,7 +890,7 @@ seed_memories:
   - id: mem_fact_promotion_march
     marker: "promotion review in March"
     collection: facts
-    content: "Luke has a senior engineer promotion review scheduled for March"
+    content: "Alex has a senior engineer promotion review scheduled for March"
     timestamp_offset_hours: -170
     truth_score: 0.80
     importance_score: 0.6
@@ -899,7 +899,7 @@ seed_memories:
   - id: mem_fact_reads_dune
     marker: "currently reading Dune"
     collection: facts
-    content: "Luke is currently reading Dune by Frank Herbert"
+    content: "Alex is currently reading Dune by Frank Herbert"
     timestamp_offset_hours: -130
     truth_score: 0.75
     importance_score: 0.3
@@ -908,7 +908,7 @@ seed_memories:
   - id: mem_fact_sleep_hours
     marker: "averages 6.2 hours of sleep"
     collection: facts
-    content: "Luke averages 6.2 hours of sleep per night based on his sleep tracker"
+    content: "Alex averages 6.2 hours of sleep per night based on his sleep tracker"
     timestamp_offset_hours: -9
     truth_score: 0.80
     importance_score: 0.5
@@ -917,7 +917,7 @@ seed_memories:
   - id: mem_fact_therapist
     marker: "sees a therapist regularly"
     collection: facts
-    content: "Luke sees a therapist and was recommended journaling for insomnia"
+    content: "Alex sees a therapist and was recommended journaling for insomnia"
     timestamp_offset_hours: -8
     truth_score: 0.80
     importance_score: 0.5
@@ -926,7 +926,7 @@ seed_memories:
   - id: mem_fact_gym_frequency
     marker: "goes to the gym three times a week"
     collection: facts
-    content: "Luke goes to the gym three times a week doing bench press, squats, and deadlifts"
+    content: "Alex goes to the gym three times a week doing bench press, squats, and deadlifts"
     timestamp_offset_hours: -24
     truth_score: 0.85
     importance_score: 0.5
@@ -935,7 +935,7 @@ seed_memories:
   - id: mem_fact_coworker_james
     marker: "coworker James prefers monorepo"
     collection: facts
-    content: "Luke's coworker James advocates for a monorepo architecture"
+    content: "Alex's coworker James advocates for a monorepo architecture"
     timestamp_offset_hours: -32
     truth_score: 0.75
     importance_score: 0.4

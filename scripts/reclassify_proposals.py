@@ -107,13 +107,31 @@ def _registry_depends_on(touched_paths: list) -> list:
     return deps
 
 
-def main():
+def _daemon_running() -> bool:
+    try:
+        from utils.daemon_guard import daemon_running
+        return daemon_running()
+    except Exception:
+        return False
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Re-classify supervision fields on stored proposals"
     )
     parser.add_argument("--apply", action="store_true",
                         help="Write metadata (default: dry-run preview only)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    # A live Daemon holds the proposals collection IN MEMORY — a write made
+    # here while it runs would be clobbered on its next save. The guard runs
+    # before the store is constructed so a refused run never opens Chroma.
+    if args.apply and _daemon_running():
+        print("REFUSED: a live Daemon main.py is running. Its in-memory "
+              "proposals collection would clobber this write on the next "
+              "save. Shut it down first.")
+        return 1
+
     dry_run = not args.apply
 
     print(f"{'DRY RUN — ' if dry_run else ''}Re-classifying proposal supervision fields")
@@ -196,4 +214,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

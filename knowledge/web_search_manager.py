@@ -71,6 +71,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 import re as _re
 
+from utils.retrieval_outcome import OutcomeList, RetrievalError
+
 log = logging.getLogger(__name__)
 
 
@@ -261,6 +263,13 @@ class WebSearchResult:
     # ``error`` only, this field is reserved for the one case a receipt must
     # never lose track of even when other pages/results came back fine.
     blocked: Optional[str] = None
+    # CGR-20260913-008/F2: set when a STANDARD/DEEP extract call raised
+    # RetrievalError AFTER the base search already returned pages — the
+    # search pages are kept (``error`` stays None so ``has_results``/caching
+    # treat this as a partial success) and this field carries
+    # ``f"tavily_extract:{reason}"`` instead. Additive, default None; no
+    # consumer reads it in F2 (F6 surfaces it in a receipt).
+    extract_error: Optional[str] = None
 
     @property
     def has_results(self) -> bool:
@@ -1395,10 +1404,27 @@ class WebSearchManager:
                 error=f"Daily credit limit reached. Remaining: {remaining}",
                 blocked="budget",
             )
-        search_pages = await self._tavily_search(
-            query, max_results, topic=topic, days=days,
-            include_domains=include_domains, exclude_domains=exclude_domains,
-        )
+        try:
+            search_pages = await self._tavily_search(
+                query, max_results, topic=topic, days=days,
+                include_domains=include_domains, exclude_domains=exclude_domains,
+            )
+        except RetrievalError as e:
+            # The base call was already dispatched (charged via the
+            # reservation's spend() above, folded in by search()'s finally
+            # settle()) — this return skips record_usage exactly like
+            # today's invalid-key branch immediately below.
+            if self._api_key_invalid:
+                return WebSearchResult(
+                    query=query,
+                    search_depth=depth,
+                    error="Tavily API key is invalid",
+                )
+            return WebSearchResult(
+                query=query,
+                search_depth=depth,
+                error=f"Web search provider failed ({e.reason})",
+            )
         session.search_results = search_pages
         session.credits_used += 1.0  # Base search cost
 
@@ -1410,14 +1436,23 @@ class WebSearchManager:
                 error="Tavily API key is invalid"
             )
 
-        # Step 2: Extract content for STANDARD and DEEP
+        # Step 2: Extract content for STANDARD and DEEP. A RetrievalError here
+        # keeps the already-fetched search pages — the extract call was
+        # already dispatched (and billed) before it failed — and records the
+        # failure on `extract_error` instead of `error`, so `has_results`/
+        # caching still treat this as a partial success (CGR-008/F2, #110/#111).
+        extract_error: Optional[str] = None
         if depth in (WebSearchDepth.STANDARD, WebSearchDepth.DEEP) and search_pages:
             urls_to_extract = [p.url for p in search_pages[:2]]  # Top 2 results
             extract_cost = len(urls_to_extract) * 0.5
             if reservation is None or reservation.spend(extract_cost):
-                extracted = await self._tavily_extract(urls_to_extract)
-                session.extracted_pages = extracted
-                session.credits_used += extract_cost  # Extract costs
+                try:
+                    extracted = await self._tavily_extract(urls_to_extract)
+                    session.extracted_pages = extracted
+                except RetrievalError as e:
+                    log.warning("[WebSearch] Extract failed after search succeeded; keeping search pages")
+                    extract_error = f"tavily_extract:{e.reason}"
+                session.credits_used += extract_cost  # Extract costs (dispatched either way)
             else:
                 log.debug("[WebSearch] Skipping extract: reservation budget exhausted")
 
@@ -1439,8 +1474,12 @@ class WebSearchManager:
                 additional_urls = affordable_urls
             if additional_urls:
                 session.followed_links = additional_urls
-                more_extracted = await self._tavily_extract(additional_urls)
-                session.extracted_pages.extend(more_extracted)
+                try:
+                    more_extracted = await self._tavily_extract(additional_urls)
+                    session.extracted_pages.extend(more_extracted)
+                except RetrievalError as e:
+                    log.warning("[WebSearch] Extract failed after search succeeded; keeping search pages")
+                    extract_error = extract_error or f"tavily_extract:{e.reason}"
                 session.credits_used += len(additional_urls) * 0.5
 
         # Record credit usage — only for a direct caller with no reservation;
@@ -1454,7 +1493,8 @@ class WebSearchManager:
             total_credits_used=session.credits_used,
             search_depth=depth,
             from_cache=False,
-            timestamp=time.time()
+            timestamp=time.time(),
+            extract_error=extract_error,
         )
 
     async def _tavily_search(
@@ -1478,7 +1518,7 @@ class WebSearchManager:
             exclude_domains: Exclude results from these domains
         """
         if not self._tavily_client:
-            return []
+            raise RetrievalError(source="tavily_search", reason="client_unavailable")
 
         try:
             # Tavily rejects queries over ~400 chars with 400 Bad Request
@@ -1533,9 +1573,11 @@ class WebSearchManager:
             if "invalid" in error_str and ("api" in error_str or "key" in error_str) or "401" in error_str:
                 log.error(f"[WebSearch] Tavily API key is invalid — disabling web search for this session: {e}")
                 self._api_key_invalid = True
+                reason = "invalid_api_key"
             else:
                 log.error(f"[WebSearch] Tavily search failed: {e}")
-            return []
+                reason = type(e).__name__
+            raise RetrievalError(source="tavily_search", reason=reason) from e
 
     # Direct local fetch below this many extracted chars is a shell/failure —
     # fall through to Tavily extract.
@@ -1594,14 +1636,25 @@ class WebSearchManager:
             # Unaffordable: skip the billed Tavily fallback, keep whatever
             # the free direct layer already produced (possibly nothing).
             return direct if direct else FetchedPages(blocked="budget")
+        tavily: List[WebPage] = []
+        extract_failed_reason: Optional[str] = None
         try:
             if reservation is not None and not reservation.spend(0.5):
                 # Refused at spend time: never dispatch the billed call.
                 return direct if direct else FetchedPages(blocked="budget")
-            tavily = await self._tavily_extract([url])
+            try:
+                tavily = await self._tavily_extract([url])
+            except RetrievalError as e:
+                log.warning("[WebSearch] Extract failed fetching URL content")
+                extract_failed_reason = f"tavily_extract:{e.reason}"
         finally:
             if reservation is not None:
                 reservation.settle()
+        if extract_failed_reason is not None:
+            # Keep whatever the free direct layer already produced; otherwise
+            # a typed failed outcome (still falsy, still no `blocked`) instead
+            # of a bare `[]` (CGR-008/F2, #111).
+            return direct if direct else OutcomeList.failed(extract_failed_reason)
         if tavily and (tavily[0].content or "").strip():
             # Prefer whichever layer extracted more actual content.
             if direct and len(direct[0].content) > len(tavily[0].content):
@@ -1707,8 +1760,10 @@ class WebSearchManager:
 
     async def _tavily_extract(self, urls: List[str]) -> List[WebPage]:
         """Extract full content from URLs using Tavily Extract API."""
-        if not self._tavily_client or not urls:
+        if not urls:
             return []
+        if not self._tavily_client:
+            raise RetrievalError(source="tavily_extract", reason="client_unavailable")
 
         try:
             loop = asyncio.get_event_loop()
@@ -1739,9 +1794,11 @@ class WebSearchManager:
             if "invalid" in error_str and ("api" in error_str or "key" in error_str) or "401" in error_str:
                 log.error(f"[WebSearch] Tavily API key is invalid — disabling web search for this session: {e}")
                 self._api_key_invalid = True
+                reason = "invalid_api_key"
             else:
                 log.error(f"[WebSearch] Tavily extract failed: {e}")
-            return []
+                reason = type(e).__name__
+            raise RetrievalError(source="tavily_extract", reason=reason) from e
 
     async def _select_links_for_following(
         self,

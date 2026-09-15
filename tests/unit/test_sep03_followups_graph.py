@@ -109,9 +109,9 @@ class TestMultiRelationPairs:
 
     def test_get_relations_insertion_ordered(self, tmp_path):
         gm = _gm(tmp_path)
-        _node(gm, "casey", "person"); _node(gm, "evil", "other")
-        _edge(gm, "casey", "is", "evil"); _edge(gm, "casey", "lives_in", "evil")
-        assert [e.relation for e in gm.get_relations("casey")] == ["is", "lives_in"]
+        _node(gm, "tamsin", "person"); _node(gm, "evil", "other")
+        _edge(gm, "tamsin", "is", "evil"); _edge(gm, "tamsin", "lives_in", "evil")
+        assert [e.relation for e in gm.get_relations("tamsin")] == ["is", "lives_in"]
 
 
 # ── prompt-path hub barrier + ordering ────────────────────────────────────

@@ -45,7 +45,7 @@ LIVE_NARRATION = (
 )
 
 WRAPPED_QUERY = (
-    "Please search for documents related to the MGT class\n"
+    "Please search for documents related to the ABC class\n"
     "  I am enrolled in, catalog all the dates and\n"
     "  deadlines, and place each in the appropriate time\n"
     "  slot on my Google calendar"
@@ -70,7 +70,7 @@ class TestGenericActionAttrs:
 
     def test_calendar_event_marker_carries_all_fields(self):
         text = (
-            '<action type="calendar_create_event" summary="MGT 6203 HW 1 due" '
+            '<action type="calendar_create_event" summary="ABC 1234 HW 1 due" '
             'start_time="2026-09-13T23:59:00" end_time="2026-09-13T23:59:59" '
             'reason="user asked">HW 1 deadline</action>'
         )
@@ -78,7 +78,7 @@ class TestGenericActionAttrs:
         assert len(ds) == 1
         d = ds[0]
         assert d.action_type == "calendar_create_event"
-        assert d.action_params["summary"] == "MGT 6203 HW 1 due"
+        assert d.action_params["summary"] == "ABC 1234 HW 1 due"
         assert d.action_params["start_time"] == "2026-09-13T23:59:00"
         assert d.action_params["end_time"] == "2026-09-13T23:59:59"
         assert d.action_params["message"] == "HW 1 deadline"
@@ -108,14 +108,14 @@ class TestGenericActionAttrs:
             "HW 1 due", "HW 2 due", "HW 3 due"]
 
     def test_legacy_message_shape_unchanged(self):
-        text = '<action type="send_telegram" recipient="@luke" reason="asked">ping me at 5</action>'
+        text = '<action type="send_telegram" recipient="@alex" reason="asked">ping me at 5</action>'
         ds = self._parse(text)
         assert len(ds) == 1
         d = ds[0]
         assert d.action_type == "send_telegram"
-        assert d.action_params["recipient"] == "@luke"
+        assert d.action_params["recipient"] == "@alex"
         assert d.action_params["message"] == "ping me at 5"
-        assert "@luke" in d.action_summary
+        assert "@alex" in d.action_summary
 
     def test_typeless_or_paramless_markers_ignored(self):
         assert self._parse('<action reason="x">body</action>') == []
@@ -189,7 +189,7 @@ class _MM:
 
 
 GOOD_RECOVERY = (
-    "Here is the full catalog for MGT 6203: HW 1 due Sep 13, HW 2 due Sep 27, "
+    "Here is the full catalog for ABC 1234: HW 1 due Sep 13, HW 2 due Sep 27, "
     "HW 3 due Oct 11, HW 4 due Oct 25, HW 5 due Nov 8, HW 6 due Nov 22, and "
     "HW 7 due Dec 8, all at 11:59 PM Eastern. I could not create the calendar "
     "events this round, so tell me and I will queue the proposals."

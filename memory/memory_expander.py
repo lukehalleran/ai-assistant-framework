@@ -42,6 +42,7 @@ from typing import Dict, List, Optional, Tuple
 
 from config import app_config as cfg
 from memory.utils import is_junk_conversation_doc, is_junk_summary, is_quarantined
+from utils.retrieval_outcome import RetrievalError
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,22 @@ class MemoryExpander:
             # recompute rather than serve a possibly-wrong cached result.
             self._cache.pop(cache_key, None)
 
-        result = self._do_expand(memory_id, window, collection)
+        try:
+            result = self._do_expand(memory_id, window, collection)
+        except RetrievalError as e:
+            # A failed store read (not-found stays None/[] elsewhere) — an
+            # explicit, uncached error rather than caching the anchor's
+            # last-known-good result under this failure (design doc: "the
+            # expander caches its wrong error"). Any other exception still
+            # propagates untouched.
+            return {
+                "anchor_id": memory_id,
+                "collection": collection,
+                "expansion_method": "timestamp_window",
+                "turns": [],
+                "total_in_collection": 0,
+                "error": f"expansion_failed: {e.source}: {e.reason}",
+            }
         fingerprint = self._anchor_fingerprint(memory_id, result.get("collection") or collection)
         self._cache[cache_key] = (fingerprint, result, time.time())
         return result
@@ -355,19 +371,29 @@ class MemoryExpander:
         `list_all()` — the prior implementation pulled the ENTIRE
         conversations collection into memory on every summary expansion
         that fell back to the temporal-anchor strategy.
+
+        F9b (2026-09-14): a failed range read or a failed per-id read is no
+        longer swallowed into `[]` (indistinguishable from a genuinely empty
+        window) — both propagate as `RetrievalError` so `expand()` can
+        report an explicit, uncached error instead. Only a genuine empty id
+        list or a genuine per-id not-found still yields `[]`/skip.
         """
         try:
             doc_ids = self._store.get_ids_by_timestamp_range(
                 "conversations", ts_start, ts_end
             )
+        except RetrievalError:
+            raise
         except Exception as e:
             logger.warning("[MemoryExpander] get_ids_by_timestamp_range failed: %s", e)
-            return []
+            raise RetrievalError(source="timestamp_range", reason=type(e).__name__) from e
         if not doc_ids:
             return []
 
         matched = []
         for doc_id in doc_ids:
+            # No per-id guard: one failed read aborts the whole range fetch
+            # rather than silently returning a partial turn list.
             doc = self._store.get_by_id("conversations", doc_id)
             if not doc:
                 continue

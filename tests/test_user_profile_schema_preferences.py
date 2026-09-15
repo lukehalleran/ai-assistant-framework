@@ -129,10 +129,10 @@ class TestBackwardCompatibility:
         """ProfileFact should still function correctly after schema additions."""
         fact = ProfileFact(
             relation="name",
-            value="Luke",
+            value="Alex",
             category=ProfileCategory.IDENTITY,
             confidence=1.0,
-            source_excerpt="My name is Luke",
+            source_excerpt="My name is Alex",
             timestamp=datetime.now(),
             supersedes=None,
         )
@@ -140,7 +140,7 @@ class TestBackwardCompatibility:
         # Test to_dict
         data = fact.to_dict()
         assert data["relation"] == "name"
-        assert data["value"] == "Luke"
+        assert data["value"] == "Alex"
         assert data["category"] == "identity"
 
         # Test from_dict

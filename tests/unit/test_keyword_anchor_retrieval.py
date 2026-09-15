@@ -6,7 +6,7 @@ mentions — a rare name contributes almost nothing to a bge query embedding
 and the live memory path had no keyword channel (the corpus keyword scan
 existed only inside insight mode). The Obsidian keyword search had the twin
 failure: whole-query word-set scoring weighed "Morgan" the same as "not", so
-the "Advisor: Morgan Reeves" note lost to date-titled daily notes.
+the "Advisor: Morgan Ashdown" note lost to date-titled daily notes.
 
 Covers:
   - utils.query_checker.extract_rare_proper_nouns (detector)
@@ -237,8 +237,8 @@ class TestObsidianProperNounFloor:
 
     def test_advisor_note_outranks_generic_overlap(self, tmp_path):
         advisor_doc = (
-            "Advisor: Morgan Reeves\nqs: do my summer courses sat reqs -> YES "
-            "only hard req is ISYE 6740"
+            "Advisor: Morgan Ashdown\nqs: do my summer courses sat reqs -> YES "
+            "only hard req is KTR 5740"
         )
         daily_doc = (
             "Had a doctor appointment scheduled. Not sure I should really try "
@@ -253,7 +253,7 @@ class TestObsidianProperNounFloor:
         results = mgr._keyword_search(Morgan_QUERY, limit=2)
         assert results, "expected keyword results"
         top = results[0]
-        assert "Morgan Reeves" in top["content"]
+        assert "Morgan Ashdown" in top["content"]
         assert top["relevance_score"] >= 0.75
 
     def test_no_floor_without_proper_noun(self, tmp_path):

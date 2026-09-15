@@ -73,13 +73,13 @@ class TestQuickResolutions:
         assert out == []
 
     def test_existing_signal_path_unchanged(self):
-        hw = _thread("t-hw", "Homework 6 submission", "ISyE homework 6 due Wednesday")
+        hw = _thread("t-hw", "Homework 6 submission", "Ktr homework 6 due Wednesday")
         out = check_quick_resolutions(
             "just submitted homework 6 finally", [hw, EMAIL_THREAD]
         )
         assert out == ["t-hw"]
 
     def test_numbered_task_still_distinguished(self):
-        hw7 = _thread("t-hw7", "Homework 7 submission", "ISyE hw7 due next week")
+        hw7 = _thread("t-hw7", "Homework 7 submission", "Ktr hw7 due next week")
         out = check_quick_resolutions("just submitted homework 6", [hw7])
         assert out == []

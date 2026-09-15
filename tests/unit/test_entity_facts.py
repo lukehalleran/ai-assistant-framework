@@ -206,7 +206,7 @@ class TestEntityFactExtraction:
         """User facts should be capped at USER_FACTS_PER_TURN_CAP."""
         with patch("config.app_config.USER_FACTS_PER_TURN_CAP", 2):
             facts = await extractor.extract_facts(
-                "I live in Portland. I am 32. I work at Google. My name is Luke. I like beer.",
+                "I live in Portland. I am 32. I work at Google. My name is Avery. I like beer.",
                 "",
             )
             user_facts = [f for f in facts if f.metadata.get("fact_scope") == "user"]

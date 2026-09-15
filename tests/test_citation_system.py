@@ -17,12 +17,12 @@ def test_extract_citations_basic():
     orchestrator._web_source_map = {}
     orchestrator.logger = Mock()
 
-    response = "You mentioned [MEM_RECENT_3] that you're starting OMSA and [PROFILE_CONTEXT] you like Python"
+    response = "You mentioned [MEM_RECENT_3] that you're starting MXS and [PROFILE_CONTEXT] you like Python"
     memory_map = {
         'MEM_RECENT_3': {
             'type': 'episodic_recent',
             'timestamp': '2024-01-15T10:30:00',
-            'content': 'Starting Georgia Tech OMSA in January...',
+            'content': 'Starting Vermont Wrenfield MXS in January...',
             'relevance_score': 1.0
         },
         'PROFILE_CONTEXT': {
@@ -54,7 +54,7 @@ def test_extract_citations_basic():
     # Verify clean response has citations removed
     assert '[MEM_RECENT_3]' not in clean
     assert '[PROFILE_CONTEXT]' not in clean
-    assert "you're starting OMSA" in clean
+    assert "you're starting MXS" in clean
     assert "you like Python" in clean
 
 

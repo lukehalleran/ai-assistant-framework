@@ -208,19 +208,25 @@ response_planning:
 grounding_check:
   enabled: true
   mode: log_only          # log_only = run the full pipeline and record the verdict to telemetry but
-                           # never touch the shown/stored response; correct = ship the integrated/suffix
-                           # correction as before. LOG-ONLY default (2026-09-04): 42 fires -> 27 flags
-                           # -> 25 shipped corrections, >=9 documented false, 0 documented true
+                           # never touch the shown/stored response; correct = buffer and deliver the
+                           # integrated rewrite, or the spliced/standalone fallback on integrator
+                           # failure. LOG-ONLY default (2026-09-04): 42 fires -> 27 flags -> 25 shipped
+                           # corrections, >=9 documented false, 0 documented true
   model: null            # null -> falls back to response_planning.review_model
   confidence_threshold: 0.85
   timeout_s: 5.0
   max_tokens: 250
   min_response_chars: 40 # LOW on purpose - the live false endorsement was ~300 chars
-  integrate: true        # weave the correction INTO the response (final-yield replacement); append is the fallback
+  integrate: true        # weave the correction INTO the response (final-yield replacement); the
+                          # spliced/standalone fallback below runs on any integrator failure
   integrate_timeout_s: 6.0
   integrate_max_response_chars: 4000
   integrate_min_ratio: 0.75   # min (rewritten / original) length ratio
   integrate_max_ratio: 1.30   # max (rewritten / original) length ratio
+  fallback_claim_overlap_threshold: 0.8  # min fraction of a claim's content tokens that must
+                                          # reappear in one sentence to locate a reworded claim
+  fallback_min_claim_tokens: 3           # below this many content tokens, claims are located by
+                                          # exact containment only, never overlap
 email_integration:
   enabled: true
   gmail_enabled: true
@@ -345,6 +351,10 @@ api:
   - http://localhost:5173
   serve_frontend: true
   frontend_dist_dir: web/dist
+  # Exact hostnames/IPs trusted as a Host header beyond loopback (e.g. a
+  # Tailscale address); api.host is trusted automatically when it is a
+  # specific non-wildcard address. No suffix/wildcard matching.
+  allowed_hosts: []
 entity_facts:
   enabled: true
   per_turn_cap: 4

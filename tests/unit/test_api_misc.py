@@ -5,18 +5,13 @@ import json
 from types import SimpleNamespace
 
 import pytest
-import httpx
 from unittest.mock import MagicMock
 
-from api.app import create_app
+from tests.unit.api_launch_auth_client import authed_client as _client
+from tests.unit.api_launch_auth_client import make_test_app as create_app
 from tests.unit.helpers_orchestrator import _make_orchestrator
 from memory.graph_memory import GraphMemory
 from memory.graph_models import GraphEdge, GraphNode
-
-
-def _client(app):
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://t")
 
 
 def _write_graph_fixture(path, entities, relations):

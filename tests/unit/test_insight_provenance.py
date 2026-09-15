@@ -35,7 +35,7 @@ class TestLabeling:
             assert item.stance_label == "assistant-inferred", coll
 
     def test_fact_triple_appraisal(self):
-        item = _item(collection="facts", text="casey | is | evil")
+        item = _item(collection="facts", text="tamsin | is | evil")
         label_evidence([item])
         assert item.stance_label == "extracted-fact"
         assert item.is_appraisal is True
@@ -46,7 +46,7 @@ class TestLabeling:
         assert item.is_appraisal is False
 
     def test_graph_edge_label(self):
-        item = _item(collection="graph", text="Casey is evil", is_appraisal=True)
+        item = _item(collection="graph", text="Tamsin is evil", is_appraisal=True)
         label_evidence([item])
         assert item.stance_label == "graph-edge"
         assert item.is_appraisal is True
@@ -57,12 +57,12 @@ class TestLabeling:
         assert item.stance_label == "assistant-inferred"
 
     def test_conversation_doc_with_user_side(self):
-        item = _item(text="User: Casey was evil.\nAssistant: That sounds heavy.")
+        item = _item(text="User: Tamsin was evil.\nAssistant: That sounds heavy.")
         label_evidence([item])
         assert item.stance_label == "user-stated"
 
     def test_evaluative_user_text_flagged_appraisal(self):
-        item = _item(collection="corpus", speaker="user", text="Casey was evil.")
+        item = _item(collection="corpus", speaker="user", text="Tamsin was evil.")
         label_evidence([item])
         assert item.is_appraisal is True
 
@@ -71,7 +71,7 @@ class TestRendering:
     def test_every_line_dated_and_attributed(self):
         items = label_evidence([
             _item(collection="corpus", speaker="user", text="she wasn't abusive"),
-            _item(doc_id="d2", collection="facts", text="casey | is | evil"),
+            _item(doc_id="d2", collection="facts", text="tamsin | is | evil"),
         ])
         block = render_evidence_block(items)
         lines = block.splitlines()
@@ -86,7 +86,7 @@ class TestRendering:
         assert "[assistant's interpretation, not your words]" in block
 
     def test_appraisal_marker_present(self):
-        items = label_evidence([_item(collection="facts", text="casey | is | evil")])
+        items = label_evidence([_item(collection="facts", text="tamsin | is | evil")])
         block = render_evidence_block(items)
         assert "appraisal, not an objective fact" in block
 

@@ -32,6 +32,7 @@ from typing import Dict, List, Optional
 
 from memory.code_proposal import CodeProposal, ProposalStatus
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import RetrievalError, StoreWriteError
 
 logger = get_logger("proposal_store")
 
@@ -78,7 +79,11 @@ class ProposalStore:
             proposal: CodeProposal to store
 
         Returns:
-            Document ID if stored, None if failed
+            Document ID if stored, None if the store is unavailable (the
+            deliberate "not configured" skip).
+
+        Raises:
+            StoreWriteError: the write was attempted and failed.
         """
         if not self._ensure_collection():
             logger.warning("[ProposalStore] ChromaDB not available, cannot store")
@@ -100,7 +105,7 @@ class ProposalStore:
 
         except Exception as e:
             logger.error(f"[ProposalStore] Failed to store proposal: {e}")
-            return None
+            raise StoreWriteError(source="proposal_store", reason=type(e).__name__) from e
 
     def query_proposals(
         self,
@@ -118,7 +123,11 @@ class ProposalStore:
                 (e.g., ["pending", "approved"])
 
         Returns:
-            List of CodeProposal objects, ranked by relevance
+            List of CodeProposal objects, ranked by relevance. Empty for the
+            deliberate "not configured" skip or a genuinely empty collection.
+
+        Raises:
+            RetrievalError: the query was attempted and failed.
         """
         if not self._ensure_collection():
             return []
@@ -160,7 +169,7 @@ class ProposalStore:
 
         except Exception as e:
             logger.error(f"[ProposalStore] Query failed: {e}")
-            return []
+            raise RetrievalError(source="proposal_store", reason=f"query:{type(e).__name__}") from e
 
     def get_proposal(self, proposal_id: str) -> Optional[CodeProposal]:
         """
@@ -168,6 +177,15 @@ class ProposalStore:
 
         Since ChromaDB doesn't have a direct get-by-metadata-field,
         we list all and filter. For small collections this is acceptable.
+
+        Returns:
+            The proposal if found; None for the deliberate "not configured"
+            skip or a genuine miss (no item has this proposal_id).
+
+        Raises:
+            RetrievalError: the list failed, or a matching item's metadata
+                could not be deserialized (a corrupt record, which would
+                otherwise look exactly like a genuine miss).
         """
         if not self._ensure_collection():
             return None
@@ -181,10 +199,19 @@ class ProposalStore:
             return None
         except Exception as e:
             logger.error(f"[ProposalStore] get_proposal failed: {e}")
-            return None
+            raise RetrievalError(source="proposal_store", reason=f"get:{type(e).__name__}") from e
 
     def get_pending(self) -> List[CodeProposal]:
-        """Get all proposals with PENDING status."""
+        """Get all proposals with PENDING status.
+
+        Returns:
+            The matching proposals. Empty for the deliberate "not
+            configured" skip or a genuinely empty result; a malformed item
+            is individually skipped (not a failure).
+
+        Raises:
+            RetrievalError: the list itself failed.
+        """
         if not self._ensure_collection():
             return []
 
@@ -201,7 +228,56 @@ class ProposalStore:
             return proposals
         except Exception as e:
             logger.error(f"[ProposalStore] get_pending failed: {e}")
-            return []
+            raise RetrievalError(source="proposal_store", reason=f"pending:{type(e).__name__}") from e
+
+    def _replace_stored_proposal(self, proposal: CodeProposal, old_doc_id: str) -> bool:
+        """
+        Staged replacement (CM-07): write the new version of `proposal` first,
+        and delete the document named by `old_doc_id` only after that write is
+        confirmed — so a failed re-store never loses the existing record (the
+        old delete-then-store order lost it once the store's write failed).
+
+        Args:
+            proposal: The proposal to persist, already mutated by the caller
+                (mark_approved(), mark_rejected(), mark_completed(),
+                mark_failed(), or a raw status assignment).
+            old_doc_id: The id of the document being replaced. Deleted only
+                once the new document is safely stored.
+
+        Returns:
+            True once the new document is stored AND the old one is deleted.
+            False otherwise, leaving the old document as the sole surviving
+            copy — unless the post-write delete itself fails, in which case
+            the new document is rolled back (best-effort) to restore that
+            same single-old-copy state; if the rollback also fails, both
+            documents may remain (logged, never silently dropped).
+        """
+        coll = self.chroma_store.collections.get(COLLECTION_NAME)
+        if coll is None:
+            logger.warning("[ProposalStore] Cannot replace proposal: missing collection handle")
+            return False
+
+        try:
+            new_id = self.store_proposal(proposal)
+        except StoreWriteError as e:
+            logger.error(f"[ProposalStore] Staged replacement write failed: {type(e).__name__}")
+            return False
+        if new_id is None:
+            return False
+
+        try:
+            coll.delete(ids=[old_doc_id])
+        except Exception as e:
+            logger.error(f"[ProposalStore] Staged replacement delete failed: {type(e).__name__}")
+            try:
+                coll.delete(ids=[new_id])
+            except Exception as e2:
+                logger.error(
+                    f"[ProposalStore] Staged replacement rollback failed: {type(e2).__name__}"
+                )
+            return False
+
+        return True
 
     def update_status(
         self,
@@ -213,7 +289,9 @@ class ProposalStore:
         """
         Update a proposal's status.
 
-        Uses delete-then-re-add since ChromaDB lacks native update.
+        Staged replacement (CM-07): writes the new version before deleting
+        the old document (see _replace_stored_proposal()), so a failed
+        re-store never loses the existing record.
 
         Args:
             proposal_id: ID of the proposal to update
@@ -258,13 +336,8 @@ class ProposalStore:
             else:
                 proposal.status = status
 
-            # Delete old entry
-            coll = self.chroma_store.collections.get(COLLECTION_NAME)
-            if coll:
-                coll.delete(ids=[target_doc_id])
-
-            # Re-store with updated metadata
-            self.store_proposal(proposal)
+            if not self._replace_stored_proposal(proposal, target_doc_id):
+                return False
 
             logger.info(f"[ProposalStore] Updated proposal {proposal_id} to {status.value}")
             return True
@@ -356,7 +429,11 @@ class ProposalStore:
             detection_result: DetectionResult with confidence/status/evidence
 
         Returns:
-            True if updated successfully
+            True only if the metadata merge itself reported success. False
+            for the deliberate "not configured" skip, a proposal not found,
+            a missing document id, or a merge that update_metadata() itself
+            reported as failed (this used to return True unconditionally
+            once a matching item was found, even when that merge failed).
         """
         if not self._ensure_collection():
             return False
@@ -377,7 +454,13 @@ class ProposalStore:
                         "implementation_evidence": (detection_result.evidence or "")[:500],
                         "last_tracked_at": _time.time(),
                     }
-                    self.chroma_store.update_metadata(COLLECTION_NAME, doc_id, updates)
+                    updated = self.chroma_store.update_metadata(COLLECTION_NAME, doc_id, updates)
+                    if not updated:
+                        logger.warning(
+                            f"[ProposalStore] Tracking update for {proposal_id} did not persist"
+                        )
+                        return False
+
                     logger.info(
                         f"[ProposalStore] Updated tracking for {proposal_id}: "
                         f"{detection_result.status} ({detection_result.confidence:.0%})"
@@ -392,7 +475,16 @@ class ProposalStore:
             return False
 
     def get_pending_and_approved(self) -> List[CodeProposal]:
-        """Get all proposals with PENDING or APPROVED status."""
+        """Get all proposals with PENDING or APPROVED status.
+
+        Returns:
+            The matching proposals. Empty for the deliberate "not
+            configured" skip or a genuinely empty result; a malformed item
+            is individually skipped (not a failure).
+
+        Raises:
+            RetrievalError: the list itself failed.
+        """
         if not self._ensure_collection():
             return []
 
@@ -410,7 +502,9 @@ class ProposalStore:
             return proposals
         except Exception as e:
             logger.error(f"[ProposalStore] get_pending_and_approved failed: {e}")
-            return []
+            raise RetrievalError(
+                source="proposal_store", reason=f"pending_approved:{type(e).__name__}"
+            ) from e
 
     def get_for_dedup(self, limit: int = 25) -> str:
         """

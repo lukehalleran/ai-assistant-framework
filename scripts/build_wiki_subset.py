@@ -100,11 +100,10 @@ DOMAIN_MAP: Dict[str, Dict[str, List[str]]] = {
 
     "education_statistics": {
         "seeds": [
-            "Georgia Institute of Technology", "Statistics",
+            "Statistics",
             "Principal component analysis", "Regression analysis",
             "Machine learning", "Data science", "Generalized linear model",
             "Bayesian statistics", "Cross-validation",
-            "University of Wisconsin-Madison",
             "Analysis of variance", "Chi-squared test",
             "Student's t-test", "P-value", "Confidence interval",
             "Maximum likelihood estimation", "Expectation-maximization",

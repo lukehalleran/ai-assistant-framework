@@ -1216,6 +1216,8 @@ API_PORT: int = int(os.getenv("DAEMON_API_PORT", API_CFG.get("port", 8000)))
 API_CORS_ORIGINS: list = list(API_CFG.get("cors_origins", ["http://localhost:5173"]))
 API_SERVE_FRONTEND: bool = bool(API_CFG.get("serve_frontend", True))
 FRONTEND_DIST_DIR: str = str(API_CFG.get("frontend_dist_dir", "web/dist"))
+# A01b: exact hostnames/IPs trusted as a Host header beyond loopback (e.g. a Tailscale address).
+API_ALLOWED_HOSTS: list = list(API_CFG.get("allowed_hosts", []) or [])
 
 # --------------------------------------------------------------------
 # Entity Facts Configuration
@@ -1506,6 +1508,13 @@ GROUNDING_INTEGRATE_MIN_RATIO: float = float(
     GROUNDING_CHECK_CFG.get("integrate_min_ratio", 0.75))
 GROUNDING_INTEGRATE_MAX_RATIO: float = float(
     GROUNDING_CHECK_CFG.get("integrate_max_ratio", 1.30))
+# Claim-location thresholds for build_integrated_fallback's token-overlap
+# match (core/grounding_check.py) — see config.yaml grounding_check: for the
+# rationale.
+GROUNDING_FALLBACK_CLAIM_OVERLAP_THRESHOLD: float = float(
+    GROUNDING_CHECK_CFG.get("fallback_claim_overlap_threshold", 0.8))
+GROUNDING_FALLBACK_MIN_CLAIM_TOKENS: int = int(
+    GROUNDING_CHECK_CFG.get("fallback_min_claim_tokens", 3))
 
 # --------------------------------------------------------------------
 # Email Integration (Gmail, Outlook metadata read-only; 2026-09-01)

@@ -1,4 +1,4 @@
-"""2026-09-05 evening two-turn audit (16:06 "haven't heard from Rowan" /
+"""2026-09-05 evening two-turn audit (16:06 "haven't heard from Ellery" /
 16:27 "functional but lower energy") — regression tests for every code fix.
 
 Fixture text is either synthetic or the assigned topic/relation strings from
@@ -100,10 +100,10 @@ class TestSessionStartNeverCarriesHeavyFlag:
 class TestFirstPersonContractionsAreNotNames:
     def test_i_contractions_excluded(self):
         from utils.query_checker import extract_rare_proper_nouns
-        q = ("Well haven't heard from Rowan yet which is a bummer. Might be worth it to call "
+        q = ("Well haven't heard from Ellery yet which is a bummer. Might be worth it to call "
              "but I'm pretty sure if he is not available today he'll get at me tomorrow. "
              "I'll text again; I've got time and I'd rather wait.")
-        assert extract_rare_proper_nouns(q) == ["Rowan"]
+        assert extract_rare_proper_nouns(q) == ["Ellery"]
 
     def test_curly_apostrophe(self):
         from utils.query_checker import extract_rare_proper_nouns
@@ -130,20 +130,20 @@ class TestTemporalDeicticsNeverEntities:
         assert is_temporal_deictic(name)
         assert is_junk_entity(name)
 
-    @pytest.mark.parametrize("name", ["rowan", "biscuit", "planet fitness", "georgia tech", "sun", "march madness"])
+    @pytest.mark.parametrize("name", ["ellery", "biscuit", "planet fitness", "vermont wrenfield", "sun", "march madness"])
     def test_real_entities_untouched(self, name):
         from memory.graph_utils import is_temporal_deictic
         assert not is_temporal_deictic(name)
 
     def test_extract_graph_entities_drops_temporal_seeds(self):
         from memory.graph_utils import extract_graph_entities
-        known = {"today": "today", "tomorrow": "tomorrow", "rowan": "rowan", "gym": "gym"}
+        known = {"today": "today", "tomorrow": "tomorrow", "ellery": "ellery", "gym": "gym"}
         resolver = MagicMock()
         resolver.resolve = lambda phrase: known.get(phrase)
-        q = "haven't heard from Rowan yet; if he is not available today he'll get at me tomorrow, walking to the gym"
+        q = "haven't heard from Ellery yet; if he is not available today he'll get at me tomorrow, walking to the gym"
         seeds = extract_graph_entities(q, resolver)
         assert "today" not in seeds and "tomorrow" not in seeds
-        assert "rowan" in seeds
+        assert "ellery" in seeds
 
     def test_temporal_seed_yields_no_context(self, tmp_path):
         from memory.graph_memory import GraphMemory
@@ -163,8 +163,8 @@ class TestTemporalDeicticsNeverEntities:
         from memory.graph_models import GraphEdge
         gm = GraphMemory(persist_path=str(tmp_path / "g.json"))
         bad = GraphEdge(source_id="user", target_id="today", relation="dad", weight=1.0)
-        bad2 = GraphEdge(source_id="rowan", target_id="on_thursday", relation="texted", weight=1.0)
-        good = GraphEdge(source_id="user", target_id="rowan", relation="friend_of", weight=1.0)
+        bad2 = GraphEdge(source_id="ellery", target_id="on_thursday", relation="texted", weight=1.0)
+        good = GraphEdge(source_id="user", target_id="ellery", relation="friend_of", weight=1.0)
         assert gm.edge_is_suppressed(bad)
         assert gm.edge_is_suppressed(bad2)
         assert not gm.edge_is_suppressed(good)
@@ -189,7 +189,7 @@ class TestJunkObjectRules:
 
     def test_care_team_has_relation_rejects_clause_objects(self):
         from memory.fact_extractor import _is_junk_object
-        assert _is_junk_object("Rowan is cautious about drinking due to past accident", "has_doctor")
+        assert _is_junk_object("Ellery is cautious about drinking due to past accident", "has_doctor")
         assert not _is_junk_object("no patient portal", "has_doctor")   # status object stays allowed
         assert not _is_junk_object("Dr. Patel", "has_doctor")
         assert not _is_junk_object("not responsive", "doctor_communication")
@@ -201,7 +201,7 @@ class TestJunkObjectRules:
 
 _MEDS_TURN = ("It's on the news. Ok so I guess I took meds at 9, but I recall being up til 5, "
               "despite zero drinking at all yesterday, and normal meds amt at like 1015.")
-_FRIEND_TURN = ("And well so I don't have a car right now. Rowan got in a dangerous accident in "
+_FRIEND_TURN = ("And well so I don't have a car right now. Ellery got in a dangerous accident in "
                 "like 2014 due to drinking and driving and he is understandably very cautious about "
                 "drinking literally anything if driving involved")
 _ADVISOR_TURN = ("I got an email from my advisor in my outlook inbox a couple of days ago about the "
@@ -215,7 +215,7 @@ class TestProvenanceBoundary:
     def test_has_doctor_needs_a_clinician_cue(self):
         from memory.fact_source import find_supporting_user_span
         triple = {"subject": "user", "relation": "has_doctor",
-                  "object": "Rowan is cautious about drinking due to past accident"}
+                  "object": "Ellery is cautious about drinking due to past accident"}
         assert find_supporting_user_span(triple, self._msgs(_MEDS_TURN, _FRIEND_TURN)) is None
         ok = {"subject": "user", "relation": "has_doctor", "object": "Dr. Patel"}
         assert find_supporting_user_span(ok, self._msgs("My doctor Dr. Patel finally called back")) is not None
@@ -356,9 +356,9 @@ class TestStreakClaims:
         from utils.streak_claims import remove_stale_streak_claims, streak_ledger
         led = streak_ledger([{"query": "Today is day 6 in a row", "timestamp": "2026-09-02T16:00:00"}], as_of=date(2026, 9, 5))
         narrative = (
-            "Luke is now six days into his longest stable functional streak since June.\n\n"
+            "Alex is now six days into his longest stable functional streak since June.\n\n"
             "## Emotional Trajectory\n"
-            "Luke has maintained stable mood for six consecutive days (August 31–September 5). "
+            "Alex has maintained stable mood for six consecutive days (August 31–September 5). "
             "On September 2 he counted day 6. He was sick for 3 days in July. "
             "Nine days into the streak now, he feels steadier."
         )
@@ -374,7 +374,7 @@ class TestStreakClaims:
 
     def test_no_ledger_never_touches_text(self):
         from utils.streak_claims import remove_stale_streak_claims
-        text = "Luke is six days into a streak."
+        text = "Alex is six days into a streak."
         assert remove_stale_streak_claims(text, [], date(2026, 9, 5)) == (text, [])
 
 

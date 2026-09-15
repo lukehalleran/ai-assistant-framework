@@ -294,7 +294,7 @@ class TestProtocolParsing:
         mock_tool_call.function.name = "propose_action"
         mock_tool_call.function.arguments = json.dumps({
             "action_type": "send_telegram",
-            "recipient": "@luke",
+            "recipient": "@alex",
             "message": "Reminder about deadline",
             "reason": "User mentioned deadline",
         })
@@ -307,20 +307,20 @@ class TestProtocolParsing:
         assert d.wants_action is True
         assert d.action_type == "send_telegram"
         assert d.action_params["message"] == "Reminder about deadline"
-        assert d.action_params["recipient"] == "@luke"
-        assert "send_telegram to @luke" in d.action_summary
+        assert d.action_params["recipient"] == "@alex"
+        assert "send_telegram to @alex" in d.action_summary
 
     def test_parse_propose_action_xml(self):
         from core.agentic.protocols import XMLMarkerHandler
         handler = XMLMarkerHandler()
-        text = '<action type="send_telegram" recipient="@luke" reason="deadline reminder">Don\'t forget your ISYE deadline!</action>'
+        text = '<action type="send_telegram" recipient="@alex" reason="deadline reminder">Don\'t forget your KTR deadline!</action>'
         decisions = handler.parse_response(text)
         assert len(decisions) == 1
         d = decisions[0]
         assert d.wants_action is True
         assert d.action_type == "send_telegram"
-        assert d.action_params["message"] == "Don't forget your ISYE deadline!"
-        assert d.action_params["recipient"] == "@luke"
+        assert d.action_params["message"] == "Don't forget your KTR deadline!"
+        assert d.action_params["recipient"] == "@alex"
 
 
 # ---------------------------------------------------------------------------

@@ -36,7 +36,6 @@ Module Contract
   - Writes to data/user_profile.json on save()
   - Thread-safe with lock for concurrent access
 """
-import sys
 import os
 import uuid
 
@@ -46,8 +45,10 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 import threading
 
+from utils.bootstrap import get_user_profile_path
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json, corrupt_store, load_critical_json
+from utils.trigger_match import compile_keyword_matcher
 from memory.user_profile_schema import (
     ProfileCategory, ProfileFact, categorize_relation,
     ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
@@ -105,16 +106,14 @@ class UserProfile:
     }
     """
 
-    if getattr(sys, 'frozen', False):
-    
-        DEFAULT_PATH = os.path.join(os.environ.get('APPDATA', ''), 'Daemon', 'user_profile.json')
-
-    else:
-        DEFAULT_PATH = "data/user_profile.json"
+    # None means "resolve via utils.bootstrap.get_user_profile_path()" (the
+    # single profile-path authority; F02 / BC-10 / BC-58). A caller or test
+    # that sets DEFAULT_PATH to a string still wins over the authority.
+    DEFAULT_PATH = None
 
     def __init__(self, profile_path: str = None):
 
-        self.profile_path = profile_path or self.DEFAULT_PATH
+        self.profile_path = profile_path or self.DEFAULT_PATH or get_user_profile_path()
         self._lock = threading.Lock()
         self.profile = self._load_or_init()
 
@@ -679,11 +678,23 @@ class UserProfile:
         "before", "previously", "last month", "last week", "timeline",
         "changed", "evolution", "pattern", "how has", "how have",
     }
+    # Word-boundary matched via utils.trigger_match (dm01_raw_substring /
+    # CGR-20260913-005, anchor #23): a bare keyword like 'changed' or
+    # 'history' must not fire on containment inside an unrelated word
+    # ("unchanged", "prehistory"). Built from the SAME set above — no
+    # vocabulary duplication (BC-76).
+    _TEMPORAL_KEYWORDS_MATCHER = compile_keyword_matcher(sorted(TEMPORAL_KEYWORDS))
 
     def _is_temporal_query(self, query: str) -> bool:
-        """Check if query contains temporal keywords requesting historical data."""
+        """Check if query contains temporal keywords requesting historical data.
+
+        Negation-INSENSITIVE by design (CGR-20260913-005 contract): a
+        negated temporal mention ("it hasn't changed over time") still
+        refers to that time and must still count, so this calls the plain
+        (non-negation) matcher.
+        """
         query_lower = query.lower()
-        return any(kw in query_lower for kw in self.TEMPORAL_KEYWORDS)
+        return self._TEMPORAL_KEYWORDS_MATCHER(query_lower)
 
     def get_relevant_facts(self, query: str, category: ProfileCategory, limit: int = 3) -> List[Dict]:
         """

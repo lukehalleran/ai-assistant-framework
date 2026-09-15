@@ -1,15 +1,10 @@
 """Tests for the debug/provenance/settings API routes (Gradio tabs → SPA, 2026-07-14)."""
 
 import pytest
-import httpx
 
-from api.app import create_app
+from tests.unit.api_launch_auth_client import authed_client as _client
+from tests.unit.api_launch_auth_client import make_test_app as create_app
 from tests.unit.helpers_orchestrator import _make_orchestrator
-
-
-def _client(app):
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://t")
 
 
 def _record(**overrides):
@@ -67,7 +62,7 @@ class TestDebugRoutes:
         app = create_app(_make_orchestrator(), start_background=False)
         app.state.daemon.session.debug_records.append(_record(
             query="Email student@example.edu or call 404-555-0123",
-            prompt="Recent conversation contains GTID 900123456",
+            prompt="Recent conversation contains Student ID 900123456",
             provenance={"source": "student@example.edu"},
         ))
         async with _client(app) as client:
@@ -110,7 +105,7 @@ class TestDebugRoutes:
         app = create_app(_make_orchestrator(), start_background=False)
         app.state.daemon.session.debug_records.append(_record(
             query="Call 404-555-0123",
-            prompt="Recent conversation: student@example.edu, GTID 900123456",
+            prompt="Recent conversation: student@example.edu, Student ID 900123456",
             system_prompt="SSN 123-45-6789",
         ))
         async with _client(app) as client:

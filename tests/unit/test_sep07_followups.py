@@ -64,8 +64,8 @@ class TestCatchupLogsToOwnFile:
 #    the agentic loop never SAW the roster (context inventory omitted the
 #    uploads section; the final synthesis prompt never rendered it; a
 #    reference_docs memory search returns syllabus chunks, not the homework),
-#    and the gate never fired on "Can we look in the user uploads for the MGT
-#    6203 homework…" (no first-person anchor; "can we" not request-shaped).
+#    and the gate never fired on "Can we look in the user uploads for the ABC
+#    1234 homework…" (no first-person anchor; "can we" not request-shaped).
 # ===========================================================================
 
 from unittest.mock import MagicMock
@@ -77,7 +77,7 @@ from core.agentic.tools import ToolExecutor
 from core.agentic.types import AgenticSearchSession
 from utils.query_checker import is_personal_doc_search
 
-Q2 = ("Can we look in the user uploads for the MGT 6203\n  homework, read it in full, "
+Q2 = ("Can we look in the user uploads for the ABC 1234\n  homework, read it in full, "
       "and tell me what the\n  first task asks for?")
 
 ROSTER_ITEM = {
@@ -88,7 +88,7 @@ ROSTER_ITEM = {
     "relevance_score": 0.0, "match_type": "roster",
 }
 CHUNK_ITEM = {
-    "content": "MGT 6203 - Data Analytics for Business. Homework needs to be submitted as Canvas quizzes.",
+    "content": "ABC 1234 - Predictive Modeling for Operations. Homework needs to be submitted as Canvas quizzes.",
     "metadata": {"type": "user_upload", "title": "upload:tmpjvq8cdj4.pdf"},
     "relevance_score": 0.65, "match_type": "semantic",
 }
@@ -184,7 +184,7 @@ class TestMemorySearchListsUploadTitles:
     async def test_reference_docs_search_appends_exact_titles(self):
         ex, coll = _executor(self.METAS, [{"id": "a", "content": "syllabus text", "relevance_score": 0.6,
                                            "metadata": {"title": "upload:tmp.pdf", "section": ""}}])
-        out = await ex._execute_memory_search("MGT 6203 first assignment", "reference_docs")
+        out = await ex._execute_memory_search("ABC 1234 first assignment", "reference_docs")
         assert "syllabus text" in out
         assert '"upload:Homework1-2.pdf" (2026-09-05)' in out
         assert "get_full_document" in out

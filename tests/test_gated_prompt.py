@@ -8,7 +8,7 @@ from core.prompt import UnifiedPromptBuilder
 # Set up dummy memory data
 dummy_memories = [
     {"content": "The mitochondria is the powerhouse of the cell.", "metadata": {"source": "test"}},
-    {"content": "Luke's project uses cosine similarity and reranking for filtering memories.", "metadata": {"source": "test"}},
+    {"content": "Alex's project uses cosine similarity and reranking for filtering memories.", "metadata": {"source": "test"}},
     {"content": "Bananas are yellow and contain potassium.", "metadata": {"source": "test"}},
 ]
 

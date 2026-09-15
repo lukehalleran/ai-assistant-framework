@@ -181,8 +181,8 @@ class GraphEdge(BaseModel):
         rel = self.relation.replace("_", " ")
 
         # Stance-aware rendering (2026-08-23): an EXPLICIT appraisal/inferred
-        # edge is never asserted in system voice — "casey is evil" renders as
-        # "you described Casey as 'evil'". Legacy (no stance tag) and objective
+        # edge is never asserted in system voice — "tamsin is evil" renders as
+        # "you described Tamsin as 'evil'". Legacy (no stance tag) and objective
         # edges render byte-identically to before.
         _stance = (self.metadata or {}).get("stance")
         if _stance in ("appraisal", "inferred"):

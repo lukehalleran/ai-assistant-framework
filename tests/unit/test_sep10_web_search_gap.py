@@ -13,6 +13,7 @@ import utils.web_search_trigger as trigger
 from core.agentic.gate import _is_info_seeking
 from core.prompt.formatter import PromptFormatter
 from core.prompt.gatherer_web import WebSearchMixin
+from utils.retrieval_outcome import outcome_status
 
 
 T1 = "The president says he will pay everyone 5000 if his party wins midterm. Oh boy"
@@ -226,7 +227,11 @@ async def test_gatherer_exposes_search_exception():
         source="llm",
     )
     gatherer = _gatherer(decision, error=TimeoutError("synthetic timeout"))
-    assert await gatherer._get_web_search_results(T1) is None
+    result = await gatherer._get_web_search_results(T1)
+    # CGR-20260913-007 #92 (F8b): a typed failure, not the bare `None` a
+    # genuine empty search returns -- the receipt below is unchanged.
+    assert outcome_status(result) == ("failed", "TimeoutError")
+    assert result == []
     assert gatherer.last_web_decision["triggered"] is True
     assert gatherer.last_web_decision["source"] == "llm"
     assert gatherer.last_web_decision["results"] is None

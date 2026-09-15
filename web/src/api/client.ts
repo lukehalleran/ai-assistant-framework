@@ -16,6 +16,7 @@ import type {
   UploadedFileInfo,
   WebSearchSettings,
 } from './types'
+import { authorizedFetch, downloadViaAuthorizedFetch } from './launchAuth'
 
 async function json<T>(resp: Response): Promise<T> {
   if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`)
@@ -23,50 +24,60 @@ async function json<T>(resp: Response): Promise<T> {
 }
 
 export const api = {
-  getSession: () => fetch('/api/session').then((r) => json<SessionState>(r)),
+  getSession: () => authorizedFetch('/api/session').then((r) => json<SessionState>(r)),
 
-  clearSession: () => fetch('/api/session', { method: 'DELETE' }),
+  // F01/G06-T02 (A02): every /api/* request needs the launch token, including
+  // this one — throw on a non-ok response instead of resolving with it, so a
+  // rejected/unauthorized clear never looks like silent success.
+  clearSession: () =>
+    authorizedFetch('/api/session', { method: 'DELETE' }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+      return r
+    }),
 
-  getModels: () => fetch('/api/models').then((r) => json<ModelListResponse>(r)),
+  getModels: () => authorizedFetch('/api/models').then((r) => json<ModelListResponse>(r)),
 
   setActiveModel: (name: string) =>
-    fetch('/api/models/active', {
+    authorizedFetch('/api/models/active', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     }).then((r) => json<ModelListResponse>(r)),
 
   approveAction: (actionId: string) =>
-    fetch(`/api/actions/${actionId}/approve`, { method: 'POST' }).then((r) =>
+    authorizedFetch(`/api/actions/${actionId}/approve`, { method: 'POST' }).then((r) =>
       json<ActionDecisionResponse>(r),
     ),
 
   rejectAction: (actionId: string) =>
-    fetch(`/api/actions/${actionId}/reject`, { method: 'POST' }).then((r) =>
+    authorizedFetch(`/api/actions/${actionId}/reject`, { method: 'POST' }).then((r) =>
       json<ActionDecisionResponse>(r),
     ),
 
   syncNotes: () =>
-    fetch('/api/sync-notes', { method: 'POST' }).then((r) =>
+    authorizedFetch('/api/sync-notes', { method: 'POST' }).then((r) =>
       json<{ message: string }>(r),
     ),
 
   // ---- Debug / Provenance (server-held per-turn records) ----
 
-  getDebugRecords: () => fetch('/api/debug').then((r) => json<DebugRecordsResponse>(r)),
+  getDebugRecords: () => authorizedFetch('/api/debug').then((r) => json<DebugRecordsResponse>(r)),
 
   getProvenance: (index = -1) =>
-    fetch(`/api/provenance?index=${index}`).then((r) =>
+    authorizedFetch(`/api/provenance?index=${index}`).then((r) =>
       json<Record<string, unknown>>(r),
     ),
 
-  // Full-prompt TXT export — served with Content-Disposition: attachment,
-  // so navigating to it triggers a native download.
-  promptExportUrl: (index = -1) => `/api/debug/prompt?index=${index}`,
+  // Full-prompt TXT export. A native `<a href>` cannot carry the launch-token
+  // header, so this drives an authorized fetch -> Blob -> object URL ->
+  // temporary anchor click -> revoke instead (see launchAuth.ts). Renamed
+  // from `promptExportUrl`; DebugPage.tsx is its only consumer.
+  downloadPromptExport: (index = -1) =>
+    downloadViaAuthorizedFetch(`/api/debug/prompt?index=${index}`, `daemon_prompt_${index}.txt`),
 
   // ---- Settings ----
 
-  getSettings: () => fetch('/api/settings').then((r) => json<SettingsSnapshot>(r)),
+  getSettings: () => authorizedFetch('/api/settings').then((r) => json<SettingsSnapshot>(r)),
 
   putSettings: (
     section:
@@ -88,7 +99,7 @@ export const api = {
       | SynthesisSettings
       | ProposalsSettings,
   ) =>
-    fetch(`/api/settings/${section}`, {
+    authorizedFetch(`/api/settings/${section}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -104,7 +115,7 @@ export const api = {
   uploadFiles: async (files: File[]): Promise<UploadedFileInfo[]> => {
     const form = new FormData()
     files.forEach((f) => form.append('files', f))
-    const resp = await fetch('/api/uploads', { method: 'POST', body: form })
+    const resp = await authorizedFetch('/api/uploads', { method: 'POST', body: form })
     const body = await json<{ files: UploadedFileInfo[] }>(resp)
     return body.files
   },
@@ -112,15 +123,15 @@ export const api = {
   // ---- Curation Center (docs/AUTONOMOUS_CURATION_DESIGN.md) ----
 
   getCurationQueue: () =>
-    fetch('/api/curation/queue').then((r) => json<CurationQueueResponse>(r)),
+    authorizedFetch('/api/curation/queue').then((r) => json<CurationQueueResponse>(r)),
 
   runCurationScan: () =>
-    fetch('/api/curation/scan', { method: 'POST' }).then((r) =>
+    authorizedFetch('/api/curation/scan', { method: 'POST' }).then((r) =>
       json<CurationScanReport>(r),
     ),
 
   applyCurationProposal: (id: string) =>
-    fetch(`/api/curation/${id}/apply`, { method: 'POST' }).then(async (r) => {
+    authorizedFetch(`/api/curation/${id}/apply`, { method: 'POST' }).then(async (r) => {
       if (!r.ok) {
         const detail = await r.json().then((b) => b.detail).catch(() => null)
         throw new Error(detail || `${r.status} ${r.statusText}`)
@@ -129,14 +140,14 @@ export const api = {
     }),
 
   dismissCurationProposal: (id: string, reason = '') =>
-    fetch(`/api/curation/${id}/dismiss`, {
+    authorizedFetch(`/api/curation/${id}/dismiss`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
     }).then((r) => json<CurationProposal>(r)),
 
   undoCurationProposal: (id: string) =>
-    fetch(`/api/curation/${id}/undo`, { method: 'POST' }).then(async (r) => {
+    authorizedFetch(`/api/curation/${id}/undo`, { method: 'POST' }).then(async (r) => {
       if (!r.ok) {
         const detail = await r.json().then((b) => b.detail).catch(() => null)
         throw new Error(detail || `${r.status} ${r.statusText}`)
@@ -145,7 +156,7 @@ export const api = {
     }),
 
   getCurationActivity: (limit = 100) =>
-    fetch(`/api/curation/activity?limit=${limit}`).then((r) =>
+    authorizedFetch(`/api/curation/activity?limit=${limit}`).then((r) =>
       json<{ events: Record<string, unknown>[] }>(r),
     ),
 }

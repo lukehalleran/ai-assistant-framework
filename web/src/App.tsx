@@ -250,6 +250,7 @@ export default function App() {
             progressText={chat.progressText}
             thinkingText={chat.thinkingText}
             startedAt={chat.startedAt}
+            storageNotice={chat.storageNotice}
           />
           <ChatInput
             streaming={chat.streaming}

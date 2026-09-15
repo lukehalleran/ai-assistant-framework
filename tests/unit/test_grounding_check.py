@@ -19,11 +19,11 @@ import pytest
 from core.grounding_check import (
     GROUNDING_ACCURACY_CLAUSE,
     GroundingVerdict,
-    build_grounding_correction,
     has_checkable_claims,
     verify_grounding,
 )
 from core.grounding_check import _parse_verdict
+from core.grounding_check import _MAX_CORRECTION_CHARS, _truncate_correction
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ LIVE_TURN_6_RESPONSE = (
     "version that brands the problem as your essential self."
 )
 LIVE_TURN_5_RESPONSE = (
-    "I hear you, Luke. It's a real disorientation — the thing that explains "
+    "I hear you, Alex. It's a real disorientation — the thing that explains "
     "your entire life is treated as settled fact here and as nonexistent "
     "elsewhere, and you're left holding both of those truths while grieving."
 )
@@ -152,8 +152,26 @@ class TestParseVerdict:
         assert _parse_verdict("") is None
         assert _parse_verdict("[1, 2, 3]") is None
 
-    def test_missing_fields_default(self):
-        v = _parse_verdict("{}")
+    def test_missing_fields_returns_none(self):
+        # F03/G12 replaces the pre-fix `test_missing_fields_default`, which
+        # ENCODED the coercion defect: it asserted `_parse_verdict("{}")`
+        # returned a default GroundingVerdict (i.e. missing fields silently
+        # became false/0.0/""). The strict contract requires every taught
+        # field to be present; "{}" has none, so the deployed parser must
+        # abstain (None), not default a verdict.
+        assert _parse_verdict("{}") is None
+
+    def test_valid_minimal_all_fields_present_is_a_control(self):
+        # Paired control for the rejection above: once every field is
+        # present with its taught type, a minimal (all-empty/false) verdict
+        # is valid and is NOT an abstention.
+        v = _parse_verdict(json.dumps({
+            "false_claim_present": False,
+            "claim": "",
+            "why_false": "",
+            "confidence": 0.0,
+            "correction": "",
+        }))
         assert v is not None
         assert v.false_claim_present is False
         assert v.confidence == 0.0
@@ -162,6 +180,109 @@ class TestParseVerdict:
     def test_out_of_range_confidence_returns_none(self):
         bad = dict(VALID_VERDICT, confidence=1.7)
         assert _parse_verdict(json.dumps(bad)) is None
+
+
+# ---------------------------------------------------------------------------
+# Strict G12 boolean contract (F03 / BC-21): no truthiness/str/float coercion
+# of the verifier's own JSON output. A verdict is valid only when all five
+# taught fields are present with their taught JSON type; any violation
+# abstains (None) rather than guessing a value.
+# ---------------------------------------------------------------------------
+
+class TestParseVerdictStrictContract:
+    # -- Failing-before proof (F03) -----------------------------------
+    def test_string_false_is_no_longer_coerced_true(self):
+        # This is the live defect: `bool(data.get("false_claim_present"))`
+        # made the JSON string "false" (a non-empty Python str) coerce to
+        # Python True. On the unpatched source this assertion FAILS —
+        # `_parse_verdict` returned a verdict with false_claim_present=True.
+        # The strict contract rejects the wrong-typed field outright.
+        bad = dict(VALID_VERDICT, false_claim_present="false")
+        assert _parse_verdict(json.dumps(bad)) is None
+
+    # -- Rejections: each required field missing in turn ---------------
+    @pytest.mark.parametrize("missing", [
+        "false_claim_present", "claim", "why_false", "confidence", "correction",
+    ])
+    def test_each_required_field_missing_rejected(self, missing):
+        data = dict(VALID_VERDICT)
+        del data[missing]
+        assert _parse_verdict(json.dumps(data)) is None
+
+    # -- Rejections: false_claim_present wrong type ---------------------
+    @pytest.mark.parametrize("bad_value", ["false", "true", 0, 1, None])
+    def test_false_claim_present_wrong_type_rejected(self, bad_value):
+        bad = dict(VALID_VERDICT, false_claim_present=bad_value)
+        assert _parse_verdict(json.dumps(bad)) is None
+
+    # -- Rejections: confidence wrong type / non-finite / out of range --
+    @pytest.mark.parametrize("bad_value", [
+        "0.9", True, None, -0.1, 1.5, float("nan"), float("inf"),
+    ])
+    def test_confidence_wrong_type_or_out_of_range_rejected(self, bad_value):
+        bad = dict(VALID_VERDICT, confidence=bad_value)
+        assert _parse_verdict(json.dumps(bad)) is None
+
+    # -- Rejections: each text field wrong type --------------------------
+    @pytest.mark.parametrize("field", ["claim", "why_false", "correction"])
+    @pytest.mark.parametrize("bad_value", [None, 7, ["a", "list"]])
+    def test_text_field_wrong_type_rejected(self, field, bad_value):
+        bad = dict(VALID_VERDICT, **{field: bad_value})
+        assert _parse_verdict(json.dumps(bad)) is None
+
+    # -- Rejections: top level wrong type --------------------------------
+    def test_top_level_list_rejected(self):
+        assert _parse_verdict(json.dumps([VALID_VERDICT])) is None
+
+    def test_top_level_string_rejected(self):
+        assert _parse_verdict(json.dumps("just a string")) is None
+
+    def test_top_level_number_rejected(self):
+        assert _parse_verdict(json.dumps(42)) is None
+
+    # -- Rejections: malformed JSON ---------------------------------------
+    def test_malformed_json_rejected(self):
+        assert _parse_verdict("{not valid json") is None
+
+    # -- Controls: valid verdicts ------------------------------------------
+    def test_valid_actual_false_with_empty_strings(self):
+        v = _parse_verdict(json.dumps({
+            "false_claim_present": False,
+            "claim": "",
+            "why_false": "",
+            "confidence": 0.0,
+            "correction": "",
+        }))
+        assert v is not None
+        assert v.false_claim_present is False
+
+    def test_valid_actual_true_substantive_error(self):
+        # The existing VALID_VERDICT fixture: real JSON booleans/numbers.
+        v = _parse_verdict(json.dumps(VALID_VERDICT))
+        assert v is not None
+        assert v.false_claim_present is True
+        assert v.confidence == 0.95
+
+    @pytest.mark.parametrize("boundary", [0.0, 1.0])
+    def test_valid_confidence_boundaries(self, boundary):
+        v = _parse_verdict(json.dumps(dict(VALID_VERDICT, confidence=boundary)))
+        assert v is not None
+        assert v.confidence == boundary
+
+    def test_valid_int_confidence_accepted_as_number(self):
+        v = _parse_verdict(json.dumps(dict(VALID_VERDICT, confidence=1)))
+        assert v is not None
+        assert v.confidence == 1.0
+
+    def test_valid_code_fenced_json(self):
+        raw = "```json\n" + json.dumps(VALID_VERDICT) + "\n```"
+        v = _parse_verdict(raw)
+        assert v is not None and v.false_claim_present is True
+
+    def test_valid_extra_keys_ignored(self):
+        v = _parse_verdict(json.dumps(dict(VALID_VERDICT, unexpected_field="x", another=123)))
+        assert v is not None
+        assert v.false_claim_present is True
 
 
 # ---------------------------------------------------------------------------
@@ -221,33 +342,59 @@ class TestVerifyGrounding:
 
 
 # ---------------------------------------------------------------------------
-# Correction suffix
+# Deployed entry point: verify_grounding must abstain (fail-open) on a
+# wrong-typed verdict, with the same telemetry as any other invalid_verdict
+# outcome (F03 / Q13). Same fake model_manager seam as TestVerifyGrounding
+# above — no network/provider.
 # ---------------------------------------------------------------------------
 
-class TestCorrectionSuffix:
-    def test_normal_wording(self):
-        s = build_grounding_correction("Autism is neurodevelopmental.")
-        assert s.startswith("\n\n> ⚠️ Correction:")
-        assert "neurodevelopmental" in s
+class TestVerifyGroundingStrictContract:
+    @pytest.mark.asyncio
+    async def test_string_false_claim_present_abstains_with_telemetry(self):
+        # Q13: cassette verifier emits string "false" for false_claim_present.
+        bad = dict(VALID_VERDICT, false_claim_present="false")
+        mm = _StubModelManager(raw=json.dumps(bad))
+        telemetry: dict = {}
+        v = await verify_grounding("q", "r", mm, telemetry=telemetry)
+        assert v is None
+        assert telemetry["grounding_status"] == "failed"
+        assert telemetry["grounding_failure_reason"] == "invalid_verdict"
 
-    def test_elevated_wording(self):
-        s = build_grounding_correction("Autism is neurodevelopmental.", elevated=True)
-        assert "gently set straight" in s
-        assert "Correction:" not in s
+    @pytest.mark.asyncio
+    async def test_paired_control_real_true_verdict_reaches_flagged_path(self):
+        # Paired control: a real JSON boolean true substantive verdict is
+        # unaffected by the strict contract and still reaches the existing
+        # flagged return shape.
+        mm = _StubModelManager(raw=json.dumps(VALID_VERDICT))
+        telemetry: dict = {}
+        v = await verify_grounding("q", "r", mm, telemetry=telemetry)
+        assert v is not None
+        assert v.false_claim_present is True
+        assert telemetry["grounding_status"] == "complete"
+        assert "grounding_failure_reason" not in telemetry
 
+
+# ---------------------------------------------------------------------------
+# Truncation: _truncate_correction's own two-sentence cap, char cap, and
+# empty/whitespace handling (ported from the retired suffix builder's tests
+# — TestTruncation in test_grounding_integrated_fallback.py uses
+# _truncate_correction as its oracle, so it does not cover the helper itself)
+# ---------------------------------------------------------------------------
+
+class TestTruncateCorrection:
     def test_two_sentence_cap(self):
         long = "One. Two. Three. Four."
-        s = build_grounding_correction(long)
+        s = _truncate_correction(long)
         assert "Three" not in s and "Two." in s
 
     def test_char_cap(self):
-        s = build_grounding_correction("word " * 200)
-        # suffix prefix + capped text stays bounded
-        assert len(s) < 400
+        s = _truncate_correction("word " * 200)
+        # bound the helper's own output, not the old suffix-length "< 400"
+        assert len(s) <= _MAX_CORRECTION_CHARS + 1
 
-    def test_empty_correction_noop(self):
-        assert build_grounding_correction("") == ""
-        assert build_grounding_correction("   ") == ""
+    def test_empty_and_whitespace(self):
+        assert _truncate_correction("") == ""
+        assert _truncate_correction("   ") == ""
 
 
 # ---------------------------------------------------------------------------

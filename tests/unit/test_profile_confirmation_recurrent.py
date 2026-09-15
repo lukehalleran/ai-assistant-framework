@@ -82,17 +82,17 @@ def test_quick_profile_updates_regardless_of_category(profile):
 
 def test_quick_profile_school_and_program(profile):
     """school/program are quick keys (2026-08-21): the program fact ('Online
-    Master of Science in Analytics') rode the semantic fact lottery and the
+    Master of Example Studies') rode the semantic fact lottery and the
     model assumed in-person campus classes even with the fact in-prompt —
     durable identity facts belong in the always-rendered Quick Profile."""
-    profile.add_fact(relation="school", value="Georgia Tech", confidence=1.0)
+    profile.add_fact(relation="school", value="Vermont Wrenfield", confidence=1.0)
     profile.add_fact(
         relation="program",
-        value="Online Master of Science in Analytics (fully online)",
+        value="Online Master of Example Studies (fully online)",
         confidence=0.9,
     )
     quick = profile.get_quick_profile()
-    assert quick.get("school") == "Georgia Tech"
+    assert quick.get("school") == "Vermont Wrenfield"
     assert "Online" in quick.get("program", "")
 
 

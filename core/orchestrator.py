@@ -83,6 +83,7 @@ logger = get_logger("orchestrator")
 # disagree (loose here, exact-equality there), so thread depth reset on
 # every classifier relabel while the read side called the topics related.
 from utils.query_checker import topics_related as _topics_related
+from utils.retrieval_outcome import StoreWriteError
 
 
 def _thread_context_is_stale(thread_ctx: dict, now: Optional[datetime] = None) -> bool:
@@ -173,6 +174,19 @@ def _continuity_asserted_by_stm_override(
     if is_fragment_continuation(original_query or ""):
         return False
     return (stm_reference_type or "").strip().lower() in ("recall", "clarification", "correction")
+
+
+def _storage_failure_label(exc: Exception) -> str:
+    """Labels-only receipt for a failed turn-record write (CGR-010).
+
+    A ``StoreWriteError`` (utils/retrieval_outcome.py) already carries a
+    source/reason label pair; any other exception is labelled by its class
+    name under the fixed ``store_interaction`` source, since that call is
+    what every one of these sites makes. Never the exception text (privacy).
+    """
+    if isinstance(exc, StoreWriteError):
+        return f"{exc.source}: {exc.reason}"
+    return f"store_interaction: {type(exc).__name__}"
 
 
 from integrations.wikipedia_api import WikipediaAPI
@@ -281,6 +295,7 @@ class _QueryFlow:
     is_heavy_topic: bool = False
     tone_level: Any = None
     task_timings: Dict[str, Any] = field(default_factory=dict)
+    section_outcomes: Dict[str, Any] = field(default_factory=dict)
     gather_elapsed: float = 0.0
     t_ctx_elapsed: float = 0.0
     t_build_elapsed: float = 0.0
@@ -291,6 +306,7 @@ class _QueryFlow:
     full_response: str = ""
     answer_for_storage: str = ""
     citations: List[Any] = field(default_factory=list)
+    storage_failed: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +379,11 @@ def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
 
     def write_completed(_task):
         try:
+            # F13c-1: also copy storage_-prefixed keys (the deferred
+            # background-store receipt), same in-place-update shape as the
+            # pre-existing grounding_ prefix.
             rec.update({k: v for k, v in ctx.telemetry.items()
-                        if k.startswith("grounding_")})
+                        if k.startswith(("grounding_", "storage_"))})
             record_turn(rec)
         except Exception as exc:
             logger.debug(f"[TurnTelemetry] deferred write skipped: {exc}")
@@ -1700,6 +1719,17 @@ class DaemonOrchestrator:
                     _web_budget = live_remaining_credits()
                 except Exception:
                     _web_budget = None
+            # Compact receipt of the sections this turn could not check
+            # (CGR-007, F6b): read from prompt_ctx BEFORE any pop (the
+            # orchestrator's own pops happen later, in prepare_prompt /
+            # _build_prompt_phase) — status/reason labels only, never
+            # query or exception-message text (F5's own contract).
+            _sec_outcomes = prompt_ctx.get("_section_outcomes") or {}
+            _sections_not_checked = {
+                _name: f"{_info.get('status')}:{_info.get('reason')}"
+                for _name, _info in _sec_outcomes.items()
+                if isinstance(_info, dict) and _info.get("status") in ("failed", "unavailable")
+            }
             self._last_turn_signals = {
                 "intent": getattr(getattr(_intent_obj, "intent", None), "value", None),
                 "intent_confidence": getattr(_intent_obj, "confidence", None),
@@ -1736,6 +1766,7 @@ class DaemonOrchestrator:
                 "response_plan": (
                     _plan_result.audit_record() if _plan_result else None
                 ),
+                "sections_not_checked": _sections_not_checked,
             }
         except Exception as e:
             logger.debug(f"[BUILD_FULL_PROMPT] Turn-signal capture failed (non-fatal): {e}")
@@ -1871,10 +1902,12 @@ class DaemonOrchestrator:
         if return_context and isinstance(result, tuple) and len(result) >= 3:
             _pctx = result[2] or {}
             self._last_task_timings = _pctx.pop("_task_timings", {})
+            self._last_section_outcomes = _pctx.pop("_section_outcomes", {})
             self._last_gather_elapsed = _pctx.pop("_gather_elapsed", 0.0)
             _pctx.pop("_build_time", None)
         else:
             self._last_task_timings = {}
+            self._last_section_outcomes = {}
             self._last_gather_elapsed = 0.0
 
         return result
@@ -2004,7 +2037,9 @@ class DaemonOrchestrator:
                             query=user_input, response=response, tags=["clarification"]
                         )
                     except Exception as e:
-                        logger.warning(f"[Orchestrator] Failed to store clarification interaction: {e}")
+                        label = _storage_failure_label(e)
+                        logger.warning(f"[Orchestrator] Failed to store clarification interaction: {label}")
+                        debug_info["storage_failed"] = label
                     debug_info.update({
                         "response_length": len(response),
                         "end_time": datetime.now(),
@@ -2053,6 +2088,7 @@ class DaemonOrchestrator:
 
         # Extract per-task timings stashed by builder
         _task_timings = prompt_ctx.pop("_task_timings", {}) if prompt_ctx else {}
+        _section_outcomes = prompt_ctx.pop("_section_outcomes", {}) if prompt_ctx else {}
         _gather_elapsed = prompt_ctx.pop("_gather_elapsed", 0.0) if prompt_ctx else 0.0
         _builder_time = prompt_ctx.pop("_build_time", 0.0) if prompt_ctx else 0.0
 
@@ -2096,6 +2132,7 @@ class DaemonOrchestrator:
         flow.t_ctx_elapsed = _t_ctx_elapsed
         flow.t_build_elapsed = _t_build_elapsed
         flow.task_timings = _task_timings
+        flow.section_outcomes = _section_outcomes
         flow.gather_elapsed = _gather_elapsed
         flow.t_gen_start = _t_gen_start
 
@@ -2166,8 +2203,13 @@ class DaemonOrchestrator:
                             response=full_response.strip(),
                             tags=["document_generation"]
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        label = _storage_failure_label(e)
+                        if self.logger:
+                            self.logger.warning(
+                                f"[Orchestrator] Failed to store document_generation interaction: {label}"
+                            )
+                        debug_info["storage_failed"] = label
 
                 debug_info.update({
                     "response_length": len(full_response),
@@ -2199,6 +2241,7 @@ class DaemonOrchestrator:
         _t_ctx_elapsed = flow.t_ctx_elapsed
         _t_build_elapsed = flow.t_build_elapsed
         _task_timings = flow.task_timings
+        _section_outcomes = flow.section_outcomes
         _gather_elapsed = flow.gather_elapsed
         if use_agentic_search and not use_raw_mode and self.agentic_controller:
             try:
@@ -2297,8 +2340,13 @@ class DaemonOrchestrator:
                                 response=full_response.strip(),
                                 tags=["agentic_search"]
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            label = _storage_failure_label(e)
+                            if self.logger:
+                                self.logger.warning(
+                                    f"[Orchestrator] Failed to store agentic_search interaction: {label}"
+                                )
+                            debug_info["storage_failed"] = label
 
                     debug_info.update({
                         "response_length": len(full_response),
@@ -2313,6 +2361,7 @@ class DaemonOrchestrator:
                         "llm_generation": round(debug_info["duration"] - _t_ctx_elapsed - _t_build_elapsed, 3),
                     }
                     debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+                    debug_info["section_outcomes"] = dict(_section_outcomes)
                     debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
 
                     return full_response.strip(), debug_info
@@ -2475,7 +2524,11 @@ class DaemonOrchestrator:
                     session_id=getattr(self.memory_system, 'session_id', None),
                 )
             except Exception as e:
-                self.logger.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {e}")
+                label = _storage_failure_label(e)
+                log = self.logger if self.logger else logger
+                log.error(f"[Orchestrator] CRITICAL: Failed to store interaction - data loss: {label}")
+                flow.storage_failed = label
+                flow.debug_info["storage_failed"] = label
         _t_store_elapsed = _time_mod.perf_counter() - _t_store_start
         # Use instance logger
         if self.logger:
@@ -2499,7 +2552,7 @@ class DaemonOrchestrator:
             session_id=getattr(self.memory_system, "session_id", None) if self.memory_system else None,
             model_name=flow.model_name,
             response_len=len(flow.answer_for_storage or ""),
-            telemetry={},
+            telemetry={"storage_failed": flow.storage_failed} if flow.storage_failed else {},
             t_prepare_elapsed=(flow.t_ctx_elapsed or 0.0) + (flow.t_build_elapsed or 0.0),
         )
         run_post_response_hooks(ctx)
@@ -2603,6 +2656,7 @@ class DaemonOrchestrator:
         _t_gen_elapsed = flow.t_gen_elapsed
         _t_store_elapsed = flow.t_store_elapsed
         _task_timings = flow.task_timings
+        _section_outcomes = flow.section_outcomes
         _gather_elapsed = flow.gather_elapsed
         debug_info.update({
             "response_length": len(answer_for_storage),
@@ -2622,4 +2676,5 @@ class DaemonOrchestrator:
             "memory_store": round(_t_store_elapsed, 3),
         }
         debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+        debug_info["section_outcomes"] = dict(_section_outcomes)
         debug_info["gather_elapsed"] = round(_gather_elapsed, 3)

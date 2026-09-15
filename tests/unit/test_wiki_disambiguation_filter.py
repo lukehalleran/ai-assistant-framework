@@ -39,7 +39,7 @@ class TestLooksLikeDisambiguationText:
 
     def test_disambiguation_title_suffix(self):
         assert looks_like_disambiguation_text(
-            "Some ordinary-looking lead paragraph.", title="Luke (disambiguation)"
+            "Some ordinary-looking lead paragraph.", title="Alex (disambiguation)"
         )
 
     def test_leading_whitespace_and_newlines(self):

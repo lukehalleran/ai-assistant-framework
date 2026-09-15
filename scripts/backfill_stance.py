@@ -3,7 +3,7 @@
 
 2026-08-23 stance/epistemic-tagging layer (Phase B4): historical facts and
 graph edges carry no stance tag, so every read-side consumer treats them as
-"unknown" (conservative but blind — the casey--is-->evil edge still renders
+"unknown" (conservative but blind — the tamsin--is-->evil edge still renders
 as a bare world-fact until tagged). This script classifies EVERY stored fact
 triple and graph edge with THE DEPLOYED deterministic classifier
 (memory/stance_classifier.classify_triple_stance — never a re-derivation)
@@ -14,7 +14,7 @@ deliberately requires explicit non-elevated evidence (absent = never counts).
 Safety model (store-writing script contract):
   * Default is DRY RUN — prints the planned updates table and exits.
   * HARD SENTINEL: the dry run exits nonzero unless the known appraisal fact
-    (fact_e1f5f920_20260818_135210570, `casey | is | evil`) classifies as
+    (fact_e1f5f920_20260818_135210570, `tamsin | is | evil`) classifies as
     "appraisal". If the deployed classifier can't get the sentinel right,
     nothing may be written.
   * --apply refuses while a live Daemon main.py is detected

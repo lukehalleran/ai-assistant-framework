@@ -81,7 +81,7 @@ class TestTier1Keywords:
     @pytest.mark.asyncio
     async def test_contact_lookup_by_possessive_still_triggers(self):
         """Removing 'what is ' must not lose 'what is <name>'s email' coverage."""
-        d = await evaluate_agentic_gate("what is Meagan's email")
+        d = await evaluate_agentic_gate("what is Maren's email")
         assert d.should_trigger
         assert "tools" in d.modes
 

@@ -3,7 +3,7 @@
 Three agentic loops on emotional turns in one session:
 
 Turn 1 (13:05, 151s): a lyrics paste ran the memory loop — Tier 2 matched
-graph entities {'tie','casey','bed','atlanta'} and the "recall signal" was a
+graph entities {'tie','tamsin','bed','marrowby'} and the "recall signal" was a
 '?' INSIDE the pasted lyrics ("am I just beaten so ?"). Fixes: Tier-2 arm
 capped at TIER2_ENTITY_MAX_WORDS, and matched entities must appear TitleCase
 in the raw text (or be multi-word ids) — _entity_mention_is_proper.
@@ -54,9 +54,9 @@ class TestTier2ProperMentionFilter:
         assert _entity_mention_is_proper("tie my shoes", "tie") is False
 
     def test_proper_names_pass(self):
-        text = "this song is making me think of when I moved to Atlanta with Casey"
-        assert _entity_mention_is_proper(text, "casey") is True
-        assert _entity_mention_is_proper(text, "atlanta") is True
+        text = "this song is making me think of when I moved to Marrowby with Tamsin"
+        assert _entity_mention_is_proper(text, "tamsin") is True
+        assert _entity_mention_is_proper(text, "marrowby") is True
 
     def test_multiword_entities_always_pass(self):
         assert _entity_mention_is_proper("the heat exchanger project",
@@ -65,7 +65,7 @@ class TestTier2ProperMentionFilter:
     def test_lowercase_name_underfires(self):
         # deliberate under-fire: lowercase-typed names don't anchor Tier 2
         # (genuine recall queries carry Tier-1 keywords instead)
-        assert _entity_mention_is_proper("do you remember casey", "casey") is False
+        assert _entity_mention_is_proper("do you remember tamsin", "tamsin") is False
 
 
 class TestTier2LengthCap:
@@ -75,7 +75,7 @@ class TestTier2LengthCap:
         assert len(paste.split()) > TIER2_ENTITY_MAX_WORDS
 
     def test_normal_recall_query_within_cap(self):
-        q = "Was it Atlanta where I lived with Casey back then?"
+        q = "Was it Marrowby where I lived with Tamsin back then?"
         assert len(q.split()) <= TIER2_ENTITY_MAX_WORDS
 
 
@@ -84,9 +84,9 @@ class TestTemporalGenericTermGuard:
         assert _terms_are_temporal_generic(LIVE_TURN3_TERMS) is True
 
     @pytest.mark.parametrize("terms", [
-        ["Georgia Tech drop date August 2026"],          # content: georgia/tech/drop/date
-        ["weather Schaumburg IL Monday"],                # content: weather/schaumburg/il
-        ["news updates for Monday", "MGT 6203 syllabus"],  # ONE real term rescues
+        ["Vermont Wrenfield drop date August 2026"],     # content: vermont/tech/drop/date
+        ["weather Lakemont IL Monday"],                  # content: weather/lakemont/il
+        ["news updates for Monday", "ABC 1234 syllabus"],  # ONE real term rescues
         ["kavarin itch benadryl interaction"],
     ])
     def test_real_topics_never_suppressed(self, terms):

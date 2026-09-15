@@ -104,13 +104,13 @@ class TestGraphSweep:
     def _graph(self, degree=3, stale=False):
         from memory.graph_models import GraphEdge, GraphNode
         g = MagicMock()
-        node = GraphNode(entity_id="casey", display_name="Casey")
+        node = GraphNode(entity_id="tamsin", display_name="Tamsin")
         g.get_entity.side_effect = lambda eid: (
-            node if eid == "casey" else GraphNode(entity_id=eid, display_name=eid)
+            node if eid == "tamsin" else GraphNode(entity_id=eid, display_name=eid)
         )
         g.graph.degree.return_value = degree
         edge = GraphEdge(
-            source_id="casey", relation="is", target_id="evil",
+            source_id="tamsin", relation="is", target_id="evil",
             first_seen=datetime(2026, 8, 18), last_seen=datetime(2026, 8, 18),
             metadata={"stance": "appraisal"},
         )
@@ -118,7 +118,7 @@ class TestGraphSweep:
         g._edge_is_stale_transient.return_value = stale
         return g
 
-    def _run(self, graph, entity="casey"):
+    def _run(self, graph, entity="tamsin"):
         store = MagicMock()
         store.query_collection.return_value = []
         resolver = MagicMock()
@@ -135,8 +135,8 @@ class TestGraphSweep:
         assert items[0].collection == "graph"
         assert items[0].is_appraisal is True  # explicit stance metadata honored
         # B3.2 stance-aware rendering: the appraisal edge arrives already
-        # attributed ("you described Casey as ..."), never bare "Casey is evil"
-        assert "Casey" in items[0].text
+        # attributed ("you described Tamsin as ..."), never bare "Tamsin is evil"
+        assert "Tamsin" in items[0].text
         assert "you described" in items[0].text
 
     def test_hub_not_expanded(self):

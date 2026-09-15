@@ -175,7 +175,7 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
 
     # Stance (2026-08-23): read the LLM's tolerantly, but the DETERMINISTIC
     # classifier overrides on lexicon hits — a thick evaluative object
-    # (casey|is|evil) is an appraisal no matter what the model tagged. The LLM
+    # (tamsin|is|evil) is an appraisal no matter what the model tagged. The LLM
     # stance only fills the gaps the lexicon can't see. Unresolved evaluative
     # referents ("she is abusive") are re-scoped to a user-owned subject and
     # NEVER fuzzy-bound to a named entity.
@@ -346,7 +346,7 @@ class LLMFactExtractor:
                     continue
                 entry = "User: " + re.sub(r"^user\s*:\s*", "", entry, flags=re.I)
             # Shared content (lyrics/poems/quotes) is not evidence about the
-            # user even in first person (2026-09-03: lived_in=Atlanta and a
+            # user even in first person (2026-09-03: lived_in=Marrowby and a
             # partner name were mined from pasted song lyrics on 08-29).
             if _entry_is_shared_content(entry):
                 continue

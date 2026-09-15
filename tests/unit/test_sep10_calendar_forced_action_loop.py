@@ -37,13 +37,13 @@ T9 = ("alright, i know there is session on Friday in the evening, but can we che
       "course docs and see if there a weekend back up? I only put professors hours in "
       "calander but there are TA sessions too")
 T12 = "please make repeating through whole course at same time instead"
-R12 = ("Got it — I'll swap that single event for a recurring one: **MGT 6203 TA Session, "
+R12 = ("Got it — I'll swap that single event for a recurring one: **ABC 1234 TA Session, "
        "every Saturday 11:00 AM–12:00 PM CT**, same Zoom link, running through the end of "
        "the course. Want me to queue it up with that end date?")
-R13 = ("Queued up: **MGT 6203 TA Session, every Saturday 11:00 AM–12:00 PM CT, repeating "
+R13 = ("Queued up: **ABC 1234 TA Session, every Saturday 11:00 AM–12:00 PM CT, repeating "
        "weekly through December 12**, with the Zoom link attached. Approve the proposal and "
        "it'll replace the single event with the full series.") + NO_CARD_NOTICE
-R14 = ("Queuing it now: **MGT 6203 TA Session — Saturdays 11:00 AM–12:00 PM CT, weekly "
+R14 = ("Queuing it now: **ABC 1234 TA Session — Saturdays 11:00 AM–12:00 PM CT, weekly "
        "through December 12**, Zoom link https://example.zoom.us/j/000 attached. You should "
        "see the approval card pop up — if it doesn't show this time either, tell me.")
 POOL_T9 = T9 + ("\nZoom at 3:30 your time ... 345 ... before 730A, 845-1100A, 130-230P, "
@@ -67,7 +67,7 @@ class TestNarrationGuard:
         assert detect_action_intent(q) is None
 
     @pytest.mark.parametrize("q", [
-        "can we check the sylubus and add the mgt office hours sessions to my google calander in one batch",
+        "can we check the sylubus and add the abc office hours sessions to my google calander in one batch",
         "I already put the prof hours in my calendar, can you add the TA ones too?",
         "I want you to put the TA sessions on my calendar",
         "add the TA session to my calendar please",
@@ -179,7 +179,7 @@ def _gate(user_text, corpus):
 def _store_with_card(age_seconds):
     store = PendingActionsStore(ttl_seconds=3600, max_pending=5, persist=False)
     card = ActionProposal(action_type=ActionType.CALENDAR_CREATE_EVENT,
-                          params={"summary": "MGT 6203 TA Session", "start_time": "2026-09-12T11:00:00",
+                          params={"summary": "ABC 1234 TA Session", "start_time": "2026-09-12T11:00:00",
                                   "end_time": "2026-09-12T12:00:00"},
                           summary="single", reasoning="", reversible=True)
     store.propose(card)

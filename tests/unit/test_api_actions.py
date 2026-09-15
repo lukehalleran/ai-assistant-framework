@@ -6,11 +6,11 @@ tuple so the /admin buttons and existing wiring stay intact.
 """
 
 import pytest
-import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from api.app import create_app
 from core.actions.types import ActionOutcome
+from tests.unit.api_launch_auth_client import authed_client as _client
+from tests.unit.api_launch_auth_client import make_test_app as create_app
 from tests.unit.helpers_orchestrator import _make_orchestrator
 
 
@@ -198,8 +198,7 @@ class TestActionRoutes:
         for p in patches:
             p.start()
         try:
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            async with _client(app) as client:
                 resp = await client.post("/api/actions/act-1/approve")
         finally:
             patch.stopall()
@@ -223,8 +222,7 @@ class TestActionRoutes:
         for p in patches:
             p.start()
         try:
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            async with _client(app) as client:
                 resp = await client.post("/api/actions/act-1/reject")
         finally:
             patch.stopall()

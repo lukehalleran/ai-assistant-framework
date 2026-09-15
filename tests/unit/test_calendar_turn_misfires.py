@@ -1,5 +1,5 @@
 """2026-08-29 calendar-task turn misfires (14:29, "search for documents
-related to the MGT class ... place each in the appropriate time slot on my
+related to the ABC class ... place each in the appropriate time slot on my
 Google calendar").
 
 Four live misfires, each with a deterministic fix:
@@ -18,7 +18,7 @@ Four live misfires, each with a deterministic fix:
    the explicit request produced a "Want me to?" offer instead of a
    proposal. New placement-verb pattern in ACTION_SPECS.
 
-3. VERIFIER SOURCE-BLINDNESS — the grounding verifier flagged "MGT 6203,
+3. VERIFIER SOURCE-BLINDNESS — the grounding verifier flagged "ABC 1234,
    Fall 2026" at conf 0.9 ("The course date should reflect the current
    academic calendar. Please verify the correct semester...") because the
    syllabus lived in RETRIEVED documents it never saw, and the morning's
@@ -51,7 +51,7 @@ from core.grounding_check import (
 
 LIVE_QUERY = (
     "Ok here's a good task, and if it doesn't work we can fix. Okay so please "
-    "search for documents related to the MGT class I am currently enrolled in. "
+    "search for documents related to the ABC class I am currently enrolled in. "
     "Catalog all dates and deadlines etc and please place each in the "
     "appropriate time slot on my Google calendar"
 )
@@ -60,7 +60,7 @@ LIVE_QUERY = (
 # code — it slipped the string-start-anchored advice regex).
 LIVE_CORRECTION_2 = (
     "The course date should reflect the current academic calendar. "
-    "Please verify the correct semester for MGT 6203."
+    "Please verify the correct semester for ABC 1234."
 )
 
 
@@ -191,7 +191,7 @@ class TestLiveCorrection2Demoted:
 
     def _verdict(self, correction, why_false=""):
         return GroundingVerdict(
-            false_claim_present=True, claim="MGT 6203, Fall 2026",
+            false_claim_present=True, claim="ABC 1234, Fall 2026",
             why_false=why_false, confidence=0.9, correction=correction)
 
     def test_sentence_two_advice_is_stripped(self):
@@ -203,7 +203,7 @@ class TestLiveCorrection2Demoted:
     def test_parse_demotes_live_verdict(self):
         raw = json.dumps({
             "false_claim_present": True,
-            "claim": "MGT 6203, Fall 2026",
+            "claim": "ABC 1234, Fall 2026",
             "why_false": "The semester stated may not reflect the current academic calendar.",
             "confidence": 0.9,
             "correction": LIVE_CORRECTION_2,

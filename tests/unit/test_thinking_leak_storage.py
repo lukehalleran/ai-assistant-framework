@@ -44,7 +44,7 @@ class TestSanitizeForStorage:
         ) == "Answer."
 
     def test_leading_tagged_block_removed_answer_kept(self):
-        text = "<thinking>\nLuke just mentioned a breakthrough.\n</thinking>\nThat's a real result."
+        text = "<thinking>\nAlex just mentioned a breakthrough.\n</thinking>\nThat's a real result."
         assert ResponseParser.sanitize_for_storage(text) == "That's a real result."
 
     def test_unclosed_leading_block_returns_empty(self):
@@ -80,7 +80,7 @@ class TestReasoningTagVariant:
     an agentic-search response was persisted as one raw reasoning block)."""
 
     LEAK = (
-        "<reasoning>\nLuke is starting a conversation about a research chemical.\n"
+        "<reasoning>\nAlex is starting a conversation about a research chemical.\n"
         "Let me search memory for context about what substance this might be.\n</reasoning>"
     )
 

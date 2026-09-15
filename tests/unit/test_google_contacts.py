@@ -49,8 +49,8 @@ SINGLE_CONTACT_RESPONSE = {
     "results": [
         {
             "person": {
-                "names": [{"displayName": "Meagan Smith"}],
-                "emailAddresses": [{"value": "meagan@example.com"}],
+                "names": [{"displayName": "Maren Smith"}],
+                "emailAddresses": [{"value": "maren@example.com"}],
             }
         }
     ]
@@ -60,14 +60,14 @@ MULTIPLE_CONTACTS_RESPONSE = {
     "results": [
         {
             "person": {
-                "names": [{"displayName": "Meagan Smith"}],
-                "emailAddresses": [{"value": "meagan@example.com"}],
+                "names": [{"displayName": "Maren Smith"}],
+                "emailAddresses": [{"value": "maren@example.com"}],
             }
         },
         {
             "person": {
-                "names": [{"displayName": "Meagan Jones"}],
-                "emailAddresses": [{"value": "meagan.jones@work.com"}],
+                "names": [{"displayName": "Maren Jones"}],
+                "emailAddresses": [{"value": "maren.jones@work.com"}],
             }
         },
     ]
@@ -77,7 +77,7 @@ NO_EMAIL_CONTACT_RESPONSE = {
     "results": [
         {
             "person": {
-                "names": [{"displayName": "Meagan NoEmail"}],
+                "names": [{"displayName": "Maren NoEmail"}],
                 "emailAddresses": [],
             }
         }
@@ -93,14 +93,14 @@ class TestContactsConfig:
     @pytest.mark.asyncio
     async def test_returns_empty_when_disabled(self):
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", False):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_auth(self):
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=None):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
         assert result == []
 
     @pytest.mark.asyncio
@@ -110,7 +110,7 @@ class TestContactsConfig:
 
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
         assert result == []
 
     @pytest.mark.asyncio
@@ -119,7 +119,7 @@ class TestContactsConfig:
 
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
         assert result == []
 
     @pytest.mark.asyncio
@@ -129,7 +129,7 @@ class TestContactsConfig:
 
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
         assert result == []
 
 
@@ -139,14 +139,14 @@ class TestOtherContactsConfig:
     @pytest.mark.asyncio
     async def test_returns_empty_when_disabled(self):
         with patch("config.app_config.GOOGLE_OTHER_CONTACTS_ENABLED", False):
-            result = await search_other_contacts("Meagan")
+            result = await search_other_contacts("Maren")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_auth(self):
         with patch("config.app_config.GOOGLE_OTHER_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=None):
-            result = await search_other_contacts("Meagan")
+            result = await search_other_contacts("Maren")
         assert result == []
 
 
@@ -161,11 +161,11 @@ class TestSearchContacts:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
 
         assert len(result) == 1
-        assert result[0]["name"] == "Meagan Smith"
-        assert result[0]["email"] == "meagan@example.com"
+        assert result[0]["name"] == "Maren Smith"
+        assert result[0]["email"] == "maren@example.com"
         assert result[0]["source"] == "contacts"
 
     @pytest.mark.asyncio
@@ -176,11 +176,11 @@ class TestSearchContacts:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
 
         assert len(result) == 2
-        assert result[0]["email"] == "meagan@example.com"
-        assert result[1]["email"] == "meagan.jones@work.com"
+        assert result[0]["email"] == "maren@example.com"
+        assert result[1]["email"] == "maren.jones@work.com"
 
     @pytest.mark.asyncio
     async def test_skips_contact_without_email(self):
@@ -190,7 +190,7 @@ class TestSearchContacts:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
 
         assert result == []
 
@@ -214,7 +214,7 @@ class TestSearchContacts:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
 
         assert result == []
 
@@ -229,7 +229,7 @@ class TestSearchContacts:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
 
         assert result == []
 
@@ -245,7 +245,7 @@ class TestSearchOtherContacts:
         with patch("config.app_config.GOOGLE_OTHER_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_other_contacts("Meagan")
+            result = await search_other_contacts("Maren")
 
         assert len(result) == 1
         assert result[0]["source"] == "other_contacts"
@@ -260,16 +260,16 @@ class TestResolveContact:
         saved_resp = {
             "results": [
                 {"person": {
-                    "names": [{"displayName": "Meagan Saved"}],
-                    "emailAddresses": [{"value": "meagan@saved.com"}],
+                    "names": [{"displayName": "Maren Saved"}],
+                    "emailAddresses": [{"value": "maren@saved.com"}],
                 }}
             ]
         }
         other_resp = {
             "results": [
                 {"person": {
-                    "names": [{"displayName": "Meagan Other"}],
-                    "emailAddresses": [{"value": "meagan@other.com"}],
+                    "names": [{"displayName": "Maren Other"}],
+                    "emailAddresses": [{"value": "maren@other.com"}],
                 }}
             ]
         }
@@ -296,11 +296,11 @@ class TestResolveContact:
              patch("config.app_config.GOOGLE_OTHER_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await resolve_contact("Meagan")
+            result = await resolve_contact("Maren")
 
         assert len(result) == 2
         assert result[0]["source"] == "contacts"
-        assert result[0]["email"] == "meagan@saved.com"
+        assert result[0]["email"] == "maren@saved.com"
         assert result[1]["source"] == "other_contacts"
 
     @pytest.mark.asyncio
@@ -309,8 +309,8 @@ class TestResolveContact:
         same_resp = {
             "results": [
                 {"person": {
-                    "names": [{"displayName": "Meagan"}],
-                    "emailAddresses": [{"value": "meagan@same.com"}],
+                    "names": [{"displayName": "Maren"}],
+                    "emailAddresses": [{"value": "maren@same.com"}],
                 }}
             ]
         }
@@ -328,11 +328,11 @@ class TestResolveContact:
              patch("config.app_config.GOOGLE_OTHER_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await resolve_contact("Meagan")
+            result = await resolve_contact("Maren")
 
         # Should be deduplicated to 1
         assert len(result) == 1
-        assert result[0]["email"] == "meagan@same.com"
+        assert result[0]["email"] == "maren@same.com"
 
     @pytest.mark.asyncio
     async def test_other_contacts_when_saved_empty(self):
@@ -356,7 +356,7 @@ class TestResolveContact:
              patch("config.app_config.GOOGLE_OTHER_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await resolve_contact("Meagan")
+            result = await resolve_contact("Maren")
 
         assert len(result) == 1
         assert result[0]["source"] == "other_contacts"
@@ -395,8 +395,8 @@ class TestCache:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result1 = await search_contacts("Meagan")
-            result2 = await search_contacts("Meagan")
+            result1 = await search_contacts("Maren")
+            result2 = await search_contacts("Maren")
 
         assert result1 == result2
         # warmup + first real call = 2 calls on first invocation, 0 on second (cached)
@@ -410,9 +410,9 @@ class TestCache:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            await search_contacts("Meagan")
+            await search_contacts("Maren")
             clear_cache()
-            await search_contacts("Meagan")
+            await search_contacts("Maren")
 
         # warmup + search + warmup + search = 4 calls
         assert mock_client.get.call_count == 4
@@ -425,10 +425,10 @@ class TestCache:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            await search_contacts("Meagan")
+            await search_contacts("Maren")
             await search_contacts("John")
 
-        # warmup(cached after first) + search_meagan + search_john = 3 calls
+        # warmup(cached after first) + search_maren + search_john = 3 calls
         assert mock_client.get.call_count == 3
 
 
@@ -438,7 +438,7 @@ class TestParseResponse:
     def test_parses_full_contact(self):
         result = _parse_contacts_response(SINGLE_CONTACT_RESPONSE, "contacts")
         assert len(result) == 1
-        assert result[0] == {"name": "Meagan Smith", "email": "meagan@example.com", "source": "contacts"}
+        assert result[0] == {"name": "Maren Smith", "email": "maren@example.com", "source": "contacts"}
 
     def test_skips_contact_without_email(self):
         result = _parse_contacts_response(NO_EMAIL_CONTACT_RESPONSE, "contacts")

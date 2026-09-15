@@ -50,7 +50,7 @@ class TestCrisisUrlVetoPierce:
 
     @pytest.mark.asyncio
     async def test_explicit_url_request_stays_exempt_at_acute(self):
-        q = "go to https://registrar.gatech.edu and check the drop deadline"
+        q = "go to https://registrar.wrenfield.example and check the drop deadline"
         d = await evaluate_agentic_gate(q, None, None, None, intent_info=None)
         assert d.veto_exempt and not d.veto_exempt_url_only
         out = apply_intent_veto(

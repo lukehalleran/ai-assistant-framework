@@ -132,7 +132,7 @@ def extract_claims_from_text(
 
     Tries multiple strategies:
     1. Triple-separator patterns ("|", "—", "-")
-    2. Declarative sentence patterns ("Luke lives in Atlanta")
+    2. Declarative sentence patterns ("Luke lives in Marrowby")
     3. Subject-verb patterns ("the user works at Google")
 
     Returns deduplicated list of ClaimKeys (object intentionally discarded —

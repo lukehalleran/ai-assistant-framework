@@ -1,9 +1,7 @@
 """Curation Center API routes (api/routes/curation.py)."""
 
-import httpx
 import pytest
 
-from api.app import create_app
 from memory.curation.engine import CurationEngine, StoreBundle, new_proposal_id
 from memory.curation.journal import CurationJournal
 from memory.curation.types import (
@@ -12,17 +10,14 @@ from memory.curation.types import (
     Instrument,
     ItemChange,
 )
+from tests.unit.api_launch_auth_client import authed_client as _client
+from tests.unit.api_launch_auth_client import make_test_app as create_app
 from tests.unit.helpers_orchestrator import _make_orchestrator
 from tests.unit.test_curation_engine import (
     FakeChromaStore,
     FakeCollection,
     StubCurator,
 )
-
-
-def _client(app):
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://t")
 
 
 def _install_engine(tmp_path, monkeypatch, proposals=None):

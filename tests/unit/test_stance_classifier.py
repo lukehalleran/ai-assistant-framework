@@ -1,6 +1,6 @@
 """Tests for memory/stance_classifier.py — the single-source stance core.
 
-The casey|is|evil case is the SENTINEL for this whole layer: a one-mention
+The tamsin|is|evil case is the SENTINEL for this whole layer: a one-mention
 crisis-day value judgment must classify as an appraisal, never an objective
 world-fact. If that test breaks, the epistemic layer's reason to exist broke.
 """
@@ -21,8 +21,8 @@ from memory.stance_classifier import (
 
 
 class TestTripleStance:
-    def test_sentinel_casey_is_evil_is_appraisal(self):
-        result = classify_triple_stance("casey", "is", "evil")
+    def test_sentinel_tamsin_is_evil_is_appraisal(self):
+        result = classify_triple_stance("tamsin", "is", "evil")
         assert result.stance == "appraisal"
         assert result.is_appraisal
 
@@ -33,14 +33,14 @@ class TestTripleStance:
 
     def test_assistant_authored_is_inferred(self):
         result = classify_triple_stance(
-            "casey", "trained", "user to doubt perceptions", author="assistant"
+            "tamsin", "trained", "user to doubt perceptions", author="assistant"
         )
         assert result.stance == "inferred"
         assert result.is_inferred
 
     def test_assistant_authored_beats_appraisal(self):
         # assistant-authored evaluative triple: inferred wins (rule order)
-        result = classify_triple_stance("casey", "is", "evil", author="assistant")
+        result = classify_triple_stance("tamsin", "is", "evil", author="assistant")
         assert result.stance == "inferred"
 
     def test_user_self_appraisal(self):
@@ -53,17 +53,17 @@ class TestTripleStance:
         assert result.stance == "appraisal"
 
     def test_reporting_relation_is_reported(self):
-        result = classify_triple_stance("casey", "said", "user is worthless")
+        result = classify_triple_stance("tamsin", "said", "user is worthless")
         assert result.stance == "reported"
 
     def test_reporting_beats_appraisal(self):
-        result = classify_triple_stance("casey", "told_me", "I am pathetic")
+        result = classify_triple_stance("tamsin", "told_me", "I am pathetic")
         assert result.stance == "reported"
 
     def test_nonuser_noncopula_evaluative_object_stays_objective(self):
         # conservative: third-party subject with non-copula relation does not
-        # auto-appraise ("casey has_dog crazy" style noise)
-        result = classify_triple_stance("casey", "owns", "a crazy dog")
+        # auto-appraise ("tamsin has_dog crazy" style noise)
+        result = classify_triple_stance("tamsin", "owns", "a crazy dog")
         assert result.stance == "objective"
 
     def test_positive_thick_terms_are_appraisals_too(self):
@@ -72,11 +72,11 @@ class TestTripleStance:
 
     def test_diagnosis_shaped_relation_stays_objective(self):
         # diagnosed_with is not a copula and subject isn't user-evaluative path
-        result = classify_triple_stance("casey", "diagnosed_with", "depression")
+        result = classify_triple_stance("tamsin", "diagnosed_with", "depression")
         assert result.stance == "objective"
 
     def test_reasons_populated(self):
-        result = classify_triple_stance("casey", "is", "evil")
+        result = classify_triple_stance("tamsin", "is", "evil")
         assert result.reasons and any("copula" in r for r in result.reasons)
 
 
@@ -109,7 +109,7 @@ class TestUtteranceStance:
         assert r.stance == "inferred"
 
     def test_user_evaluative_is_appraisal(self):
-        r = classify_utterance_stance("Casey was evil.", speaker="user")
+        r = classify_utterance_stance("Tamsin was evil.", speaker="user")
         assert r.stance == "appraisal"
 
     def test_user_plain_is_objective(self):
@@ -135,10 +135,10 @@ class TestReferentScoping:
         # named entity even if a resolver is supplied
         class FakeResolver:
             def resolve(self, name):
-                return "casey"  # a fuzzy binder would return this
+                return "tamsin"  # a fuzzy binder would return this
 
         assert scope_unresolved_referent("she", "abusive", entity_resolver=FakeResolver()) == "user's unnamed referent"
-        assert scope_unresolved_referent("casey", "evil") is None
+        assert scope_unresolved_referent("tamsin", "evil") is None
 
     def test_non_evaluative_object_no_scoping(self):
         assert scope_unresolved_referent("she", "a teacher in ohio") is None
@@ -149,7 +149,7 @@ class TestReferentScoping:
 
 class TestStorageAPI:
     def test_classify_for_storage_shape(self):
-        d = classify_for_storage("casey", "is", "evil", tone_level="CrisisLevel.MEDIUM")
+        d = classify_for_storage("tamsin", "is", "evil", tone_level="CrisisLevel.MEDIUM")
         assert d == {"stance": "appraisal", "capture_tone": "elevated"}
 
     def test_capture_tone_mapping(self):

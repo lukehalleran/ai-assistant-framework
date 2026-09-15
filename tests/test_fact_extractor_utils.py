@@ -113,27 +113,27 @@ class TestTripleScoring:
 
     def test_score_triple_basic(self):
         """Test basic triple scoring."""
-        score = _score_triple("Luke", "likes", "pizza")
+        score = _score_triple("Alex", "likes", "pizza")
         assert isinstance(score, float)
         assert 0.0 <= score <= 1.0
 
     def test_score_triple_proper_nouns_higher(self):
         """Test that proper nouns get higher scores."""
         # Note: without nlp, can't fully test, but ensure it doesn't crash
-        score = _score_triple("Luke", "lives_in", "Seattle")
+        score = _score_triple("Alex", "lives_in", "Seattle")
         assert score > 0.0
 
     def test_score_triple_generic_lower(self):
         """Test that generic terms get lower scores."""
         score_generic = _score_triple("thing", "is", "stuff")
-        score_specific = _score_triple("Luke", "likes", "pizza")
+        score_specific = _score_triple("Alex", "likes", "pizza")
         # Specific should score higher than generic
         assert score_specific > score_generic
 
     def test_score_triple_stop_words_penalized(self):
         """Test that stop words are penalized."""
         score_stop = _score_triple("it", "is", "this")
-        score_content = _score_triple("Luke", "likes", "pizza")
+        score_content = _score_triple("Alex", "likes", "pizza")
         assert score_content > score_stop
 
 
@@ -175,7 +175,7 @@ class TestFactExtractor:
         # Test first pattern (copular statements)
         pattern = extractor.fact_patterns[0]
 
-        assert re.search(pattern, "Luke is a developer")
+        assert re.search(pattern, "Alex is a developer")
         assert re.search(pattern, "The sky is blue")
         assert re.search(pattern, "I am happy")
 
@@ -235,26 +235,26 @@ class TestTripleCleaning:
     def test_clean_triple_empty_relation(self):
         """Test that empty relation returns None."""
         from memory.fact_extractor import _clean_triple
-        result = _clean_triple("Luke", "", "pizza")
+        result = _clean_triple("Alex", "", "pizza")
         assert result is None
 
     def test_clean_triple_empty_object(self):
         """Test that empty object returns None."""
         from memory.fact_extractor import _clean_triple
-        result = _clean_triple("Luke", "likes", "")
+        result = _clean_triple("Alex", "likes", "")
         assert result is None
 
     def test_clean_triple_basic(self):
         """Test basic triple cleaning."""
         from memory.fact_extractor import _clean_triple
-        result = _clean_triple("Luke", "likes", "pizza")
+        result = _clean_triple("Alex", "likes", "pizza")
         assert result is not None
         assert len(result) == 3
 
     def test_clean_triple_strips_whitespace(self):
         """Test that whitespace is stripped."""
         from memory.fact_extractor import _clean_triple
-        result = _clean_triple("  Luke  ", "  likes  ", "  pizza  ")
+        result = _clean_triple("  Alex  ", "  likes  ", "  pizza  ")
         if result:
             s, r, o = result
             assert s.strip() == s
@@ -264,7 +264,7 @@ class TestTripleCleaning:
     def test_clean_triple_strips_punctuation(self):
         """Test that punctuation is stripped."""
         from memory.fact_extractor import _clean_triple
-        result = _clean_triple("Luke.", "likes,", "pizza;")
+        result = _clean_triple("Alex.", "likes,", "pizza;")
         if result:
             s, r, o = result
             assert not s.endswith(".")
@@ -278,19 +278,19 @@ class TestNormalization:
     def test_normalize_subject_obj_first_person(self):
         """Test normalization of first-person pronouns."""
         from memory.fact_extractor import _normalize_subject_obj
-        s, r, o = _normalize_subject_obj("I", "like", "pizza", user_name="Luke")
-        assert s == "Luke"  # "I" should be replaced with user name
+        s, r, o = _normalize_subject_obj("I", "like", "pizza", user_name="Alex")
+        assert s == "Alex"  # "I" should be replaced with user name
 
     def test_normalize_subject_obj_possessive(self):
         """Test normalization of possessives."""
         from memory.fact_extractor import _normalize_subject_obj
-        s, r, o = _normalize_subject_obj("my", "favorite", "color", user_name="Luke")
-        assert s == "Luke"  # "my" should be replaced
+        s, r, o = _normalize_subject_obj("my", "favorite", "color", user_name="Alex")
+        assert s == "Alex"  # "my" should be replaced
 
     def test_normalize_subject_obj_no_change(self):
         """Test that proper nouns aren't changed."""
         from memory.fact_extractor import _normalize_subject_obj
-        s, r, o = _normalize_subject_obj("Luke", "likes", "pizza", user_name="Luke")
-        assert s == "Luke"
+        s, r, o = _normalize_subject_obj("Alex", "likes", "pizza", user_name="Alex")
+        assert s == "Alex"
         assert r == "likes"
         assert o == "pizza"

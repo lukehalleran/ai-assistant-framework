@@ -40,7 +40,7 @@ PRIOR_CHOICE = (
 )
 
 INITIAL_REQUEST = (
-    "Please search for documents related to the MGT class I am enrolled in, "
+    "Please search for documents related to the ABC class I am enrolled in, "
     "catalog all dates and deadlines, and place each in the appropriate time "
     "slot on my Google calendar"
 )
@@ -58,15 +58,15 @@ class TestContinuationAndRouting:
     @pytest.mark.asyncio
     async def test_topic_inherits_for_short_option_answer(self):
         topic_manager = MagicMock()
-        topic_manager.last_topic = "Mgt Class Deadlines"
+        topic_manager.last_topic = "Abc Class Deadlines"
         pipeline = object.__new__(ContextPipeline)
         pipeline.topic_manager = topic_manager
         primary, topics = await pipeline._extract_topics(
             "Day of please thank you",
             last_exchange={"response": PRIOR_CHOICE},
         )
-        assert primary == "Mgt Class Deadlines"
-        assert topics == ["Mgt Class Deadlines"]
+        assert primary == "Abc Class Deadlines"
+        assert topics == ["Abc Class Deadlines"]
         topic_manager.get_primary_topic.assert_not_called()
 
     def test_plural_calendar_events_detected(self):
@@ -226,7 +226,7 @@ class TestActionContextAndBatch:
                 wants_action=True,
                 action_type="calendar_create_event",
                 action_params={
-                    "summary": f"MGT 6203 HW {i}",
+                    "summary": f"ABC 1234 HW {i}",
                     "start_time": f"2026-09-{i:02d}T22:59:00-05:00",
                     "end_time": f"2026-09-{i:02d}T23:00:00-05:00",
                 },
@@ -298,15 +298,15 @@ class TestThreeTurnCalendarReplay:
         assert "tools" in first.modes
         assert "web_search" not in first.modes
 
-        topic_manager = MagicMock(last_topic="Mgt Class Deadlines")
+        topic_manager = MagicMock(last_topic="Abc Class Deadlines")
         pipeline = object.__new__(ContextPipeline)
         pipeline.topic_manager = topic_manager
         topic, topics = await pipeline._extract_topics(
             "Day of please thank you",
             last_exchange={"response": PRIOR_CHOICE},
         )
-        assert topic == "Mgt Class Deadlines"
-        assert topics == ["Mgt Class Deadlines"]
+        assert topic == "Abc Class Deadlines"
+        assert topics == ["Abc Class Deadlines"]
 
         approval = "Yes please create the calendar events"
         second = await evaluate_agentic_gate(
@@ -335,7 +335,7 @@ class TestThreeTurnCalendarReplay:
         assert "Use all-day entries" in digest
 
         events = [
-            {"summary": f"MGT 6203 HW {i} due", "start_time": date,
+            {"summary": f"ABC 1234 HW {i} due", "start_time": date,
              "end_time": end, "all_day": True}
             for i, (date, end) in enumerate([
                 ("2026-09-13", "2026-09-14"),
@@ -437,12 +437,12 @@ class TestBatchExecution:
         proposal = ActionProposal(
             action_type=ActionType.CALENDAR_CREATE_EVENT,
             params={
-                "summary": "MGT 6203 HW 1 due",
+                "summary": "ABC 1234 HW 1 due",
                 "start_time": "2026-09-13",
                 "end_time": "2026-09-14",
                 "all_day": True,
             },
-            summary="calendar_create_event: MGT 6203 HW 1 due",
+            summary="calendar_create_event: ABC 1234 HW 1 due",
         )
         response = MagicMock(status_code=200)
         response.json.return_value = {"id": "e1", "htmlLink": ""}
@@ -468,7 +468,7 @@ class TestBatchExecution:
             params={
                 "all_day": True,
                 "events": [{
-                    "summary": "MGT 6203 HW 1 due",
+                    "summary": "ABC 1234 HW 1 due",
                     "start_time": "2026-09-13",
                     "end_time": "2026-09-14",
                 }],

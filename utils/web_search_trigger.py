@@ -68,6 +68,7 @@ Legacy Heuristic Detection (fallback):
 """
 
 import asyncio
+import math
 import os
 import re
 import time
@@ -78,7 +79,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
 from utils.query_checker import is_personal_doc_search, is_note_save_request
-from utils.trigger_match import is_negated as _trigger_is_negated
+from utils.trigger_match import (
+    is_negated as _trigger_is_negated,
+    compile_keyword_matcher,
+    has_non_negated_hit,
+)
 from core.actions.registry import detect_action_intent
 import json
 
@@ -210,6 +215,55 @@ class WebSearchDecision:
             self.blocked_search_terms = []
 
 
+# Strict-contract validation for LLMSearchTriggerResponse.parse (S01, a
+# BC-21 sibling of F03/A04's core.grounding_check._parse_verdict): the two
+# fields the trigger prompt always teaches unconditionally and that this
+# module's own routing logic reads directly (`should_search`, `search_terms`)
+# are REQUIRED — present with the taught type, or the whole payload is
+# rejected. Every other taught field is OPTIONAL: absent keeps its
+# documented default; present, it must still have its taught type. A
+# violation is reported by field name and Python type only — never the
+# field's own text/value, since search_terms/reason may carry the user's
+# private query (privacy contract).
+_REQUIRED_TRIGGER_FIELDS = ("should_search", "search_terms")
+_TRIGGER_BOOL_FIELDS = (
+    "needs_memory_search", "needs_knowledge_search",
+    "needs_document_generation", "needs_pattern_analysis",
+)
+_TRIGGER_STR_FIELDS = ("reason", "document_topic", "document_type")
+_TRIGGER_WHITELIST_STR_FIELDS = ("search_depth", "document_source")
+
+
+def _invalid_trigger_reason(data: dict) -> Optional[str]:
+    """None when `data` satisfies the strict trigger contract; otherwise the
+    first failing field name and received Python type (never its value)."""
+    for field in _REQUIRED_TRIGGER_FIELDS:
+        if field not in data:
+            return f"{field} missing"
+    if not isinstance(data["should_search"], bool):
+        return f"should_search {type(data['should_search']).__name__}"
+    _terms = data["search_terms"]
+    if not isinstance(_terms, list) or not all(isinstance(t, str) for t in _terms):
+        return f"search_terms {type(_terms).__name__}"
+    for field in _TRIGGER_BOOL_FIELDS:
+        if field in data and not isinstance(data[field], bool):
+            return f"{field} {type(data[field]).__name__}"
+    for field in _TRIGGER_STR_FIELDS + _TRIGGER_WHITELIST_STR_FIELDS:
+        if field in data and not isinstance(data[field], str):
+            return f"{field} {type(data[field]).__name__}"
+    if "confidence" in data:
+        _c = data["confidence"]
+        if isinstance(_c, bool) or not isinstance(_c, (int, float)):
+            return f"confidence {type(_c).__name__}"
+        if not math.isfinite(_c):
+            return "confidence non-finite"
+    if "num_searches" in data:
+        _n = data["num_searches"]
+        if isinstance(_n, bool) or not isinstance(_n, int):
+            return f"num_searches {type(_n).__name__}"
+    return None
+
+
 @dataclass
 class LLMSearchTriggerResponse:
     """
@@ -244,18 +298,24 @@ class LLMSearchTriggerResponse:
     @classmethod
     def parse(cls, json_str: str) -> Optional['LLMSearchTriggerResponse']:
         """
-        Parse LLM JSON response with error handling.
+        Parse LLM JSON response with strict type validation (BC-21 sibling of
+        F03/A04's `_parse_verdict`: validate the model's own JSON TYPES,
+        never coerce them — `bool("false")` is `True` in Python, which used
+        to silently turn a declined search into a triggered one).
 
         Handles common issues:
         - Markdown code blocks (```json...```)
-        - Missing fields (uses safe defaults)
-        - Invalid JSON (returns None for fallback to heuristics)
+        - Missing OPTIONAL fields (uses documented defaults)
+        - Invalid JSON, a non-object top level, a missing required field, or
+          any present field with the wrong taught type (returns None so the
+          caller falls back to heuristics — see `_analyze_for_web_search_llm`)
 
         Args:
             json_str: Raw JSON string from LLM response
 
         Returns:
-            LLMSearchTriggerResponse if parsing succeeds, None otherwise
+            LLMSearchTriggerResponse if the strict contract is satisfied,
+            None otherwise.
         """
 
         if not json_str:
@@ -273,40 +333,52 @@ class LLMSearchTriggerResponse:
 
         try:
             data = json.loads(text)
-
-            # Validate and clamp values
-            confidence = float(data.get("confidence", 0.0))
-            confidence = max(0.0, min(1.0, confidence))
-
-            num_searches = int(data.get("num_searches", 1))
-            num_searches = max(1, min(4, num_searches))
-
-            search_depth = str(data.get("search_depth", "quick")).lower()
-            if search_depth not in ("quick", "standard", "deep"):
-                search_depth = "quick"
-
-            document_source = str(data.get("document_source", "")).strip().lower()
-            if document_source not in ("research", "conversation"):
-                document_source = ""
-
-            return cls(
-                should_search=bool(data.get("should_search", False)),
-                confidence=confidence,
-                reason=str(data.get("reason", "")),
-                search_terms=list(data.get("search_terms", [])),
-                search_depth=search_depth,
-                num_searches=num_searches,
-                needs_memory_search=bool(data.get("needs_memory_search", False)),
-                needs_knowledge_search=bool(data.get("needs_knowledge_search", False)),
-                needs_document_generation=bool(data.get("needs_document_generation", False)),
-                needs_pattern_analysis=bool(data.get("needs_pattern_analysis", False)),
-                document_topic=str(data.get("document_topic", "")),
-                document_type=str(data.get("document_type", "")),
-                document_source=document_source,
-            )
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.debug(f"[LLMSearchTriggerResponse] JSON parse error: {e}")
             return None
+
+        if not isinstance(data, dict):
+            logger.warning(
+                "[LLMSearchTriggerResponse] Rejected trigger JSON: "
+                f"top-level {type(data).__name__}"
+            )
+            return None
+
+        _reason = _invalid_trigger_reason(data)
+        if _reason is not None:
+            logger.warning(f"[LLMSearchTriggerResponse] Rejected trigger JSON: {_reason}")
+            return None
+
+        # Validate and clamp values (types already confirmed above)
+        confidence = float(data.get("confidence", 0.0))
+        confidence = max(0.0, min(1.0, confidence))
+
+        num_searches = int(data.get("num_searches", 1))
+        num_searches = max(1, min(4, num_searches))
+
+        search_depth = str(data.get("search_depth", "quick")).lower()
+        if search_depth not in ("quick", "standard", "deep"):
+            search_depth = "quick"
+
+        document_source = str(data.get("document_source", "")).strip().lower()
+        if document_source not in ("research", "conversation"):
+            document_source = ""
+
+        return cls(
+            should_search=data["should_search"],
+            confidence=confidence,
+            reason=str(data.get("reason", "")),
+            search_terms=list(data["search_terms"]),
+            search_depth=search_depth,
+            num_searches=num_searches,
+            needs_memory_search=bool(data.get("needs_memory_search", False)),
+            needs_knowledge_search=bool(data.get("needs_knowledge_search", False)),
+            needs_document_generation=bool(data.get("needs_document_generation", False)),
+            needs_pattern_analysis=bool(data.get("needs_pattern_analysis", False)),
+            document_topic=str(data.get("document_topic", "")),
+            document_type=str(data.get("document_type", "")),
+            document_source=document_source,
+        )
 
 
 # ===== Configuration =====
@@ -353,6 +425,15 @@ EXPLICIT_SEARCH_PHRASES: Tuple[str, ...] = (
     "what's happening with", "what's going on with",
     "check online", "look online",
 )
+# Word-boundary + negation-aware matched via utils.trigger_match
+# (dm01_raw_substring / CGR-20260913-005, anchor #31, long-paste skip only):
+# the one bare word here, 'google', must not fire on containment inside an
+# unrelated token ("googlebot"); a negated phrase ("don't search for this,
+# just summarize") must not stop the skip. BC-58 parity: this must agree on
+# negation with _matches_phrase_non_negated below (same is_negated window) —
+# that sibling function stays untouched (see the R06 response). Built from
+# the SAME tuple above — no vocabulary duplication (BC-76).
+_EXPLICIT_SEARCH_PHRASES_MATCHER = compile_keyword_matcher(EXPLICIT_SEARCH_PHRASES)
 
 # News and event indicators
 NEWS_KEYWORDS: Set[str] = {
@@ -793,7 +874,7 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
         )
 
     # Personal-document search (2026-08-29): "search for documents related to
-    # the MGT class I am currently enrolled in" is an INTERNAL retrieval
+    # the ABC class I am currently enrolled in" is an INTERNAL retrieval
     # request — the search verb made the old heuristic call it an "explicit
     # search request" (conf 0.80) and burn Tavily credits on the user's own
     # corpus (one sub-query was literally "Add dates and deadlines to Google
@@ -1174,8 +1255,10 @@ def quick_prefilter_should_skip(query: str) -> bool:
         return True
 
     # Long pastes (song lyrics, articles, etc.) without explicit search phrases
-    # are almost never search requests — skip LLM to save time and avoid Tavily 400s
-    if len(query_lower) > 500 and not any(p in query_lower for p in EXPLICIT_SEARCH_PHRASES):
+    # are almost never search requests — skip LLM to save time and avoid Tavily 400s.
+    # Word-boundary + negation-aware (dm01_raw_substring / CGR-20260913-005,
+    # anchor #31): see _EXPLICIT_SEARCH_PHRASES_MATCHER above.
+    if len(query_lower) > 500 and not has_non_negated_hit(query_lower, _EXPLICIT_SEARCH_PHRASES_MATCHER):
         logger.debug(f"[WebSearchTrigger] Prefilter: skipping long paste ({len(query)} chars)")
         return True
 
@@ -1334,8 +1417,8 @@ def _build_llm_trigger_prompt(
             When present, location-dependent queries (weather, local news,
             "near me") get the location baked into search_terms instead of
             leaking literal "my area" into the search engine.
-        user_institution: Optional name of the user's school ("Georgia
-            Tech"). When present, the user's OWN academic-logistics queries
+        user_institution: Optional name of the user's school ("Vermont
+            Wrenfield"). When present, the user's OWN academic-logistics queries
             (drop/withdrawal deadlines, registrar, tuition) get the school
             named in search_terms instead of generic "college"/"school" —
             generic academic queries return generic pages (2026-08-27: a
@@ -1375,7 +1458,7 @@ def _build_llm_trigger_prompt(
         # 2026-09-12: only inject the school when the QUERY itself gives a
         # reason to name it (academic-logistics shape, the user naming their
         # own school, or "my school/college/..."). An unrelated query ("I am
-        # referring to voting") got "Georgia Tech voting information" out of
+        # referring to voting") got "Vermont Wrenfield voting information" out of
         # the LLM with this line present on every call regardless of query
         # content; the post-parse backstop below still scrubs a slip-through.
         from utils.institution_resolver import query_justifies_institution
@@ -1486,17 +1569,17 @@ JSON:"""
 # ---------------------------------------------------------------------------
 # Private-sphere generic term guard (2026-09-01): asked whether his first
 # assignment "is just a quiz on lectures or is there deliverable", the trigger
-# LLM said search at conf 0.8 with terms like "Georgia Tech assignment due
+# LLM said search at conf 0.8 with terms like "Vermont Wrenfield assignment due
 # September 13 2026" — institution + generic category nouns + dates. The
 # public web does not know the user's PRIVATE ARRANGEMENTS — their course
 # section's assignments, their job's meetings/shifts, their club's practice
 # schedule, their own appointments; those facts live in their own documents
 # and conversation history (which retrieval already had — 6 Tavily credits
-# returned GT football schedules). Sibling of the gate's temporal-generic
+# returned XW football schedules). Sibling of the gate's temporal-generic
 # guard: if EVERY proposed term reduces to a known personal-context anchor
 # (school/employer name) + private-sphere-generic nouns + time tokens, the
 # search cannot succeed. Any other content word rescues: a course code
-# ("MGT"), a topic, or public-institutional vocabulary ("drop", "tuition" —
+# ("ABC"), a topic, or public-institutional vocabulary ("drop", "tuition" —
 # registrar facts ARE on the web).
 #
 # GENERALITY DOCTRINE: this is ONE categorized vocabulary spanning life
@@ -1505,8 +1588,8 @@ JSON:"""
 # function (the _REQUEST_FRAMING_STOPWORDS lesson). Only include nouns that
 # are overwhelmingly private-sphere when combined with nothing but an
 # institution name and dates; polysemous public-event words ("game", "exam",
-# "calendar", "club", "campaign") stay OUT so real public queries ("Georgia
-# Tech game September", "academic calendar") are always rescued. Under-fires
+# "calendar", "club", "campaign") stay OUT so real public queries ("Vermont
+# Wrenfield game September", "academic calendar") are always rescued. Under-fires
 # by design.
 # ---------------------------------------------------------------------------
 
@@ -1653,7 +1736,7 @@ async def _classify_with_llm_unified(
                 # justifies it, but the LLM sometimes does it anyway
                 # (2026-07-08: "college login" + injected city -> wrong
                 # college asserted as the user's school; 2026-09-12: "I am
-                # referring to voting" -> "Georgia Tech voting information").
+                # referring to voting" -> "Vermont Wrenfield voting information").
                 # One scoping policy for both search-term producers (BC-58):
                 # strip an unjustified location (institution spans
                 # protected), strip an unjustified institution, then apply

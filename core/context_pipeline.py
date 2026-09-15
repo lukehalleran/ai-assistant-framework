@@ -53,6 +53,7 @@ from config.app_config import (
 )
 from core.intent_classifier import IntentClassifier, IntentResult, IntentType
 from utils.turn_progress import emit as _progress_emit
+from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
 
 if TYPE_CHECKING:
     from utils.topic_manager import TopicManager
@@ -761,8 +762,6 @@ class ContextPipeline:
             if emotional_ctx and hasattr(emotional_ctx, 'crisis_level'):
                 level_str = emotional_ctx.crisis_level.value if hasattr(emotional_ctx.crisis_level, 'value') else str(emotional_ctx.crisis_level)
                 tone_level = ToneLevel.from_string(level_str)
-                # Remember this turn's crisis level for the next call's stickiness.
-                self._last_tone_level = emotional_ctx.crisis_level
                 # EmotionalContext's field is `tone_trigger` (ToneAnalysis uses
                 # `trigger`) — reading the wrong name left the chain counter at 0
                 # and persisted trigger="" every turn (dead TONE_FLOOR_CHAIN_MAX
@@ -772,11 +771,24 @@ class ContextPipeline:
                     or getattr(emotional_ctx, 'trigger', '')
                     or ''
                 )
-                if _trigger == "distress_sticky_floor":
-                    self._floor_chain += 1
+                if _trigger == OBSERVATIONAL_NEGATED_CRISIS_TRIGGER:
+                    # T03 (2026-09-13, owner-confirmed "hold, not reset"): a
+                    # negated crisis phrase under news framing is CONCERN for
+                    # THIS turn only. It must not arm the sticky floor for the
+                    # next turn, but it must also not clear genuine distress
+                    # carried from an earlier turn — so leave
+                    # _last_tone_level, _floor_chain and the persisted tone
+                    # state exactly as they were before this turn.
+                    pass
                 else:
-                    self._floor_chain = 0
-                self._persist_tone(level_str, trigger=_trigger)
+                    # Remember this turn's crisis level for the next call's
+                    # stickiness.
+                    self._last_tone_level = emotional_ctx.crisis_level
+                    if _trigger == "distress_sticky_floor":
+                        self._floor_chain += 1
+                    else:
+                        self._floor_chain = 0
+                    self._persist_tone(level_str, trigger=_trigger)
             else:
                 tone_level = ToneLevel.CONVERSATIONAL
 
@@ -824,10 +836,16 @@ class ContextPipeline:
             low = level.lower()
             if not any(m in low for m in self._ELEVATED_TONE_MARKERS):
                 return None
-            if str(state.get("trigger", "") or "") == "distress_sticky_floor":
+            if str(state.get("trigger", "") or "") in (
+                "distress_sticky_floor",
+                OBSERVATIONAL_NEGATED_CRISIS_TRIGGER,
+            ):
                 # Floor-produced tone is the floor's OWN output, not evidence —
                 # seeding it re-latches the self-perpetuating chain across
                 # restarts (2026-08-22: light_support carried all afternoon).
+                # T03 (2026-09-13): _detect_tone no longer persists a
+                # negated-crisis turn at all, but this is a defensive guard
+                # for state written by any other path.
                 return None
             logger.info(
                 f"[ContextPipeline] Carried tone across restart: {level} "

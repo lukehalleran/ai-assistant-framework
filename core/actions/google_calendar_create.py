@@ -20,6 +20,11 @@ logger = logging.getLogger("actions_calendar_create")
 
 CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
+UNKNOWN_TIMEZONE_MESSAGE = (
+    "I don't know your timezone yet — tell me (for example America/Denver) "
+    "or set it in your profile, then try again."
+)
+
 
 _UTC_OFFSET_RE = None  # compiled lazily below
 
@@ -209,6 +214,22 @@ def _event_items(params: Dict[str, Any], max_events: int) -> Tuple[List[Dict[str
     return items, ""
 
 
+def timezone_refusal(events: List[Dict[str, Any]]) -> str:
+    """Return UNKNOWN_TIMEZONE_MESSAGE when any TIMED (non-all-day) event has
+    no valid explicit IANA time_zone AND the resolver cannot supply one,
+    else "". Checked BEFORE any calendar API/service call — including the
+    duplicate-check GET — so an unknown zone never silently becomes Central
+    or UTC (BC-59/BC-47), and a multi-event batch with one zoneless event
+    refuses the WHOLE proposal rather than partially creating the rest."""
+    from utils.timezone_resolver import resolve_event_timezone
+    for event in events:
+        if _truthy(event.get("all_day")):
+            continue
+        if resolve_event_timezone(event.get("time_zone")) is None:
+            return UNKNOWN_TIMEZONE_MESSAGE
+    return ""
+
+
 def _event_body(event: Dict[str, Any]) -> Dict[str, Any]:
     if _truthy(event.get("all_day")):
         body: Dict[str, Any] = {
@@ -224,8 +245,8 @@ def _event_body(event: Dict[str, Any]) -> Dict[str, Any]:
             body["recurrence"] = list(event["recurrence"])
         return body
 
-    from utils.timezone_resolver import get_user_timezone  # lazy import: live-config read
-    time_zone = event.get("time_zone") or get_user_timezone()
+    from utils.timezone_resolver import resolve_event_timezone  # lazy import: live-config read
+    time_zone = resolve_event_timezone(event.get("time_zone"))
     body: Dict[str, Any] = {
         "summary": event["summary"],
         "start": {"dateTime": wall_clock_time(event["start_time"]), "timeZone": time_zone},
@@ -249,7 +270,10 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
         - end_time (str): ISO 8601 datetime for event end.
         - description (str, optional): Event description.
         - calendar_id (str, optional): Calendar ID, defaults to "primary".
-        - time_zone (str, optional): IANA timezone, defaults to the user's local timezone.
+        - time_zone (str, optional): IANA timezone; defaults to the user's
+          local timezone if known. A timed (non all-day) event refuses
+          (success=False, no API call) when neither is known — see
+          UNKNOWN_TIMEZONE_MESSAGE.
         - location (str, optional): Event location.
         - events (list[dict], optional): Multiple events under one approval;
           every item has the same required/optional fields above.
@@ -313,6 +337,16 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
             action_id=proposal.action_id,
             success=False,
             message=validation_error,
+        )
+
+    # Unknown-timezone refusal (BC-59/BC-47): before ANY service call,
+    # including the duplicate-check GET below.
+    tz_error = timezone_refusal(events)
+    if tz_error:
+        return ActionResult(
+            action_id=proposal.action_id,
+            success=False,
+            message=tz_error,
         )
 
     # Check the live calendar before creating approved events.  The window is

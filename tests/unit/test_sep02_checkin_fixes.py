@@ -104,7 +104,7 @@ class TestRepoAuditJunk:
 
     def test_real_career_fact_survives(self):
         assert not _is_repo_audit_junk("user", "role", "data analyst")
-        assert not _is_repo_audit_junk("user", "works_at", "Georgia Tech")
+        assert not _is_repo_audit_junk("user", "works_at", "Vermont Wrenfield")
 
     def test_clean_triple_drops_git_status(self):
         assert _clean_triple(

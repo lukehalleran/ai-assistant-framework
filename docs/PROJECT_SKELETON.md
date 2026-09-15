@@ -1402,13 +1402,13 @@ Drew lives in Portland
 ...
 
 [UNRESOLVED THREADS] n=N [NEW 2026-03-20]
-- [DEADLINE] Exam next Tuesday — ISYE 6501 midterm (urgency: 0.9)
+- [DEADLINE] Exam next Tuesday — KTR 5520 midterm (urgency: 0.9)
 - [COMMITMENT] Call doctor about prescription — mentioned 3 days ago (urgency: 0.6)
 ...
 
 [PROACTIVE INSIGHTS] n=N [NEW 2026-03-25]
 - Your brewery work schedule might be affecting the gym routine you mentioned wanting to improve
-- The Python skills from your Daemon project could help automate the data analysis for your ISYE class
+- The Python skills from your Daemon project could help automate the data analysis for your KTR class
 ...
 
 [USER PROFILE]
@@ -2398,7 +2398,7 @@ Each chunk stores: images specific to that chunk (not whole-note)
 ```
 Query → _keyword_search() → 1/3 results
             ↓ Scoring includes: title + file_path components
-            ↓ e.g., "ISYE 6501 week 2" matches path "Vault/OMSA/Courses/ISYE 6501/Week 2/"
+            ↓ e.g., "KTR 5520 week 2" matches path "Vault/MXS/Courses/KTR 5520/Week 2/"
       → ChromaDB semantic → 2/3 results (vector similarity)
       → Deduplicate by title → Combined results
 ```
@@ -3638,7 +3638,7 @@ class IndexEntry(BaseModel):
 - `canonicalize_claim(subject, relation, entity_resolver=None) -> ClaimKey` — Uses EntityResolver.resolve() + normalize_relation() when available, falls back to lowercasing + underscore normalization
 - `extract_claims_from_text(text, entity_resolver=None) -> List[ClaimKey]` — Multi-strategy extraction:
   1. Triple-separator patterns (`|`, `---`, `---`)
-  2. Declarative sentence patterns ("Luke lives in Atlanta") — 20+ verbs matched
+  2. Declarative sentence patterns ("Luke lives in Marrowby") — 20+ verbs matched
   3. Subject-verb patterns ("the user works at Google") — user-centric fallback
   - Returns deduplicated ClaimKeys (objects intentionally discarded -- hashes on (subject, relation) to catch all value changes)
 
@@ -4472,11 +4472,11 @@ for idx, mem in enumerate(memories):
     }
 
 # Generation phase (if citations enabled)
-raw_response = "You mentioned [MEM_RECENT_2] that you're starting OMSA..."
+raw_response = "You mentioned [MEM_RECENT_2] that you're starting MXS..."
 
 # Extraction phase
 clean, citations = _extract_citations(raw_response, memory_id_map)
-# clean = "You mentioned that you're starting OMSA..."
+# clean = "You mentioned that you're starting MXS..."
 # citations = [{'memory_id': 'MEM_RECENT_2', 'type': 'episodic_recent', 'db_id': 'b9e22f59-f5cb-...', ...}]
 
 # Lookup phase (if needed)

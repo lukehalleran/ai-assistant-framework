@@ -327,5 +327,5 @@ features:
       - tests/unit/test_stance_classifier.py
     outcome:
       accepted: true
-      notes: "Single-source deterministic stance core (objective/appraisal/reported/inferred/unknown). Value judgments (casey|is|evil) tagged as the user's appraisal, never world-fact; unresolved referents never fuzzy-bind to named entities. Write-time wiring + consumers in Phase B."
+      notes: "Single-source deterministic stance core (objective/appraisal/reported/inferred/unknown). Value judgments (tamsin|is|evil) tagged as the user's appraisal, never world-fact; unresolved referents never fuzzy-bind to named entities. Write-time wiring + consumers in Phase B."
       merged_at: "2026-08-23"

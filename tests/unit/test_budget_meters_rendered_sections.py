@@ -39,6 +39,11 @@ METERING_EXCEPTIONS = {
     "visual_memories": "image references rendered as attachments, not budgeted text",
     "stm_summary": "short-term-memory state; also in UNRENDERED_CONTEXT_KEYS",
     "memory_id_map": "citation id map; metadata, never rendered",
+    "_section_outcomes": (
+        "per-section retrieval outcome metadata (utils/retrieval_outcome.py); only "
+        "flips '(could not check)' labels in [ACTIVE FEATURES], and TokenManager's "
+        "true-total loop skips every '_'-prefixed key"
+    ),
     **{key: "structured metadata listed in UNRENDERED_CONTEXT_KEYS" for key in UNRENDERED_CONTEXT_KEYS},
 }
 

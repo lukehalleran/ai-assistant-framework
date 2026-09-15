@@ -774,7 +774,7 @@ def extract_rare_proper_nouns(q: str, max_terms: int = 3) -> List[str]:
 
     Rules (conservative — deliberately UNDER-fires, since a miss costs
     nothing while a false positive injects wrong-topic memories):
-      - TitleCase / interior-capital token ("Morgan", "Reeves"), len >= 3,
+      - TitleCase / interior-capital token ("Morgan", "Ashdown"), len >= 3,
         not ALL-CAPS (emphasis: "SO much evidence")
       - possessives stripped ("Morgan's" -> "Morgan")
       - sentence-initial tokens excluded (no dictionary distinguishes
@@ -842,7 +842,7 @@ def extract_rare_proper_nouns(q: str, max_terms: int = 3) -> List[str]:
 
 
 # ── Personal-document search detection (2026-08-29) ─────────────────────
-# "please search for documents related to the MGT class I am currently
+# "please search for documents related to the ABC class I am currently
 # enrolled in" fired the WEB trigger (heuristic "explicit search request"
 # conf 0.80 → 3 Tavily sub-searches, one literally "Add dates and deadlines
 # to Google Calendar") and the agentic gate's Tier-1 web arm — but the
@@ -1390,6 +1390,16 @@ THREAD_BREAK_MARKERS = {
     "on another note", "anyway,", "by the way,", "moving on",
     "different subject", "new question", "unrelated"
 }
+# Word-boundary matched via utils.trigger_match (dm01_raw_substring /
+# CGR-20260913-005, anchor #28): bare 'unrelated' must not fire on
+# containment inside an unrelated token ("unrelatedid"). Negation-INSENSITIVE
+# (parent fix D5, 2026-09-14): a marker states the topic change itself, and
+# the generic negation cues (never / stop / skip / rather than / instead of)
+# routinely precede a real change ("never mind, moving on"). 'anyway,' /
+# 'by the way,' keep raw-substring (comma) semantics — they fail the
+# chokepoint's bare-word fullmatch, so no structural check is needed at this
+# site. Built from the SAME set above — no vocabulary duplication (BC-76).
+_THREAD_BREAK_MATCHER = compile_keyword_matcher(sorted(THREAD_BREAK_MARKERS))
 
 
 def extract_thread_keywords(text: str) -> Set[str]:
@@ -1425,15 +1435,21 @@ def extract_thread_keywords(text: str) -> Set[str]:
 def has_thread_break_marker(query: str) -> bool:
     """
     Check if query contains explicit thread-breaking phrases.
-    
+
+    Negation-INSENSITIVE (parent fix D5, 2026-09-14): a marker states the
+    topic change itself, and generic negation cues ("never mind", "stop",
+    "skip", "rather than", "instead of") routinely precede a real change,
+    so every word-bounded hit counts. A missed break would keep the
+    previous thread's context attached (calculate_thread_continuity_score).
+
     Args:
         query: User query text
-    
+
     Returns:
         True if query signals a topic switch
     """
     query_lower = query.lower()
-    return any(marker in query_lower for marker in THREAD_BREAK_MARKERS)
+    return _THREAD_BREAK_MATCHER(query_lower)
 
 
 def calculate_thread_continuity_score(

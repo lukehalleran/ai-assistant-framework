@@ -513,7 +513,7 @@ class TestFactContradictions:
     def test_single_fact_no_contradiction(self):
         dedup = self._make_dedup()
         docs = [
-            _make_doc("f1", "x", "facts", {"subject": "user", "predicate": "name", "object": "Luke"}),
+            _make_doc("f1", "x", "facts", {"subject": "user", "predicate": "name", "object": "Alex"}),
         ]
         clusters = dedup._find_fact_contradictions(docs)
         assert len(clusters) == 0
@@ -546,47 +546,47 @@ class TestTripleExtraction:
     def test_extract_from_metadata(self):
         dedup = self._make_dedup()
         doc = _make_doc("f1", "content", "facts", {
-            "subject": "Luke", "predicate": "likes", "object": "Python",
+            "subject": "Alex", "predicate": "likes", "object": "Python",
         })
         s, p, o = dedup._extract_triple(doc)
-        assert s == "Luke"
+        assert s == "Alex"
         assert p == "likes"
         assert o == "Python"
 
     def test_extract_from_entity_relation_metadata(self):
         dedup = self._make_dedup()
         doc = _make_doc("f1", "content", "facts", {
-            "entity": "Luke", "relation": "works_at", "value": "Acme",
+            "entity": "Alex", "relation": "works_at", "value": "Acme",
         })
         s, p, o = dedup._extract_triple(doc)
-        assert s == "Luke"
+        assert s == "Alex"
         assert p == "works_at"
         assert o == "Acme"
 
     def test_extract_from_pipe_content(self):
         dedup = self._make_dedup()
-        doc = _make_doc("f1", "Luke | likes | Python programming", "facts")
+        doc = _make_doc("f1", "Alex | likes | Python programming", "facts")
         doc["metadata"] = {}  # no metadata fields
         s, p, o = dedup._extract_triple(doc)
-        assert s == "Luke"
+        assert s == "Alex"
         assert p == "likes"
         assert o == "Python programming"
 
     def test_extract_from_dash_content(self):
         dedup = self._make_dedup()
-        doc = _make_doc("f1", "Luke - lives_in - NYC", "facts")
+        doc = _make_doc("f1", "Alex - lives_in - NYC", "facts")
         doc["metadata"] = {}
         s, p, o = dedup._extract_triple(doc)
-        assert s == "Luke"
+        assert s == "Alex"
         assert p == "lives_in"
         assert o == "NYC"
 
     def test_extract_from_natural_language(self):
         dedup = self._make_dedup()
-        doc = _make_doc("f1", "Luke is a software engineer", "facts")
+        doc = _make_doc("f1", "Alex is a software engineer", "facts")
         doc["metadata"] = {}
         s, p, o = dedup._extract_triple(doc)
-        assert s == "Luke"
+        assert s == "Alex"
         assert p == "is"
         assert o == "a software engineer"
 

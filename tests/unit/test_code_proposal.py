@@ -343,7 +343,7 @@ class TestProposalOutcome:
             notes="Looks good, expanded scope",
             merged_at=1700000000.0,
             merge_branch="feature/safety-guards",
-            reviewed_by="luke",
+            reviewed_by="alex",
         )
         d = o.to_dict()
         o2 = ProposalOutcome.from_dict(d)
@@ -351,7 +351,7 @@ class TestProposalOutcome:
         assert o2.notes == "Looks good, expanded scope"
         assert o2.merged_at == 1700000000.0
         assert o2.merge_branch == "feature/safety-guards"
-        assert o2.reviewed_by == "luke"
+        assert o2.reviewed_by == "alex"
 
     def test_from_dict_missing_fields(self):
         o = ProposalOutcome.from_dict({})
@@ -486,14 +486,14 @@ class TestSupervisionFields:
             accepted=True,
             notes="LGTM",
             merge_branch="feature/x",
-            reviewed_by="luke",
+            reviewed_by="alex",
         )
         assert p.status == ProposalStatus.COMPLETED
         assert p.outcome is not None
         assert p.outcome.accepted is True
         assert p.outcome.merged_at is not None
         assert p.outcome.merge_branch == "feature/x"
-        assert p.outcome.reviewed_by == "luke"
+        assert p.outcome.reviewed_by == "alex"
 
     def test_record_outcome_rejected(self):
         p = CodeProposal(title="Test")

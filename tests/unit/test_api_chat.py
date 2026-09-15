@@ -9,13 +9,13 @@ import asyncio
 import json
 
 import pytest
-import httpx
 from fastapi import HTTPException
 from unittest.mock import MagicMock, patch
 
-from api.app import create_app
 from api.routes.chat import chat as chat_route
 from api.schemas import ChatRequest
+from tests.unit.api_launch_auth_client import authed_client as _client
+from tests.unit.api_launch_auth_client import make_test_app as create_app
 from tests.unit.helpers_orchestrator import (
     _make_file_processor_mock,
     _make_orchestrator,
@@ -42,11 +42,6 @@ def _parse_sse(body: str):
         if event:
             events.append((event, data))
     return events
-
-
-def _client(app):
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
 def _make_app(orch):
@@ -121,7 +116,7 @@ class TestChatStream:
                 "debug": {
                     "mode": "enhanced",
                     "query": "student@example.edu",
-                    "prompt": "Call 404-555-0123, GTID 900123456",
+                    "prompt": "Call 404-555-0123, Student ID 900123456",
                 },
             }
 

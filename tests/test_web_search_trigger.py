@@ -424,9 +424,25 @@ class TestLLMSearchTriggerResponse:
         assert result.should_search is True
         assert result.confidence == 0.9
 
-    def test_parse_json_missing_fields(self):
-        """Test parsing JSON with missing fields uses defaults."""
+    def test_parse_missing_required_search_terms_returns_none(self):
+        """S01 strict contract (BC-21 sibling of A04's `_parse_verdict`):
+        `search_terms` is a REQUIRED taught field (the prompt always emits
+        it, empty when not searching) — an absent required field rejects
+        the whole payload rather than silently defaulting. Was
+        `test_parse_json_missing_fields`, which asserted the pre-S01
+        default-on-missing behavior; replaced per the routine failure
+        contingency (deployed-function outcome assertion first, paired
+        control below, obsolete expectation removed)."""
         json_str = '{"should_search": false}'
+        result = LLMSearchTriggerResponse.parse(json_str)
+        assert result is None
+
+    def test_parse_valid_minimal_required_fields_is_a_control(self):
+        """Paired non-triggering control for the rejection above: the same
+        shape, with the required `search_terms` field explicitly present,
+        still parses — and the truly OPTIONAL fields keep their documented
+        defaults."""
+        json_str = '{"should_search": false, "search_terms": []}'
         result = LLMSearchTriggerResponse.parse(json_str)
         assert result is not None
         assert result.should_search is False
@@ -446,32 +462,40 @@ class TestLLMSearchTriggerResponse:
         assert result is None
 
     def test_parse_clamps_confidence(self):
-        """Test confidence is clamped to 0.0-1.0."""
+        """Test confidence is clamped to 0.0-1.0.
+
+        S01: `search_terms` is a required taught field (BC-64 fixture
+        repair, mirrors A04's `why_false` repair) — added so this fixture
+        still exercises confidence clamping rather than the (unrelated)
+        required-field rejection.
+        """
         # High confidence clamped
-        json_str = '{"should_search": true, "confidence": 1.5}'
+        json_str = '{"should_search": true, "search_terms": [], "confidence": 1.5}'
         result = LLMSearchTriggerResponse.parse(json_str)
         assert result.confidence == 1.0
 
         # Negative confidence clamped
-        json_str = '{"should_search": false, "confidence": -0.5}'
+        json_str = '{"should_search": false, "search_terms": [], "confidence": -0.5}'
         result = LLMSearchTriggerResponse.parse(json_str)
         assert result.confidence == 0.0
 
     def test_parse_clamps_num_searches(self):
-        """Test num_searches is clamped to 1-4."""
+        """Test num_searches is clamped to 1-4. S01: `search_terms` added
+        (BC-64 fixture repair — see test_parse_clamps_confidence)."""
         # High num_searches clamped
-        json_str = '{"should_search": true, "num_searches": 10}'
+        json_str = '{"should_search": true, "search_terms": [], "num_searches": 10}'
         result = LLMSearchTriggerResponse.parse(json_str)
         assert result.num_searches == 4
 
         # Zero num_searches clamped
-        json_str = '{"should_search": true, "num_searches": 0}'
+        json_str = '{"should_search": true, "search_terms": [], "num_searches": 0}'
         result = LLMSearchTriggerResponse.parse(json_str)
         assert result.num_searches == 1
 
     def test_parse_normalizes_depth(self):
-        """Test invalid depth normalized to quick."""
-        json_str = '{"should_search": true, "search_depth": "INVALID"}'
+        """Test invalid depth normalized to quick. S01: `search_terms`
+        added (BC-64 fixture repair — see test_parse_clamps_confidence)."""
+        json_str = '{"should_search": true, "search_terms": [], "search_depth": "INVALID"}'
         result = LLMSearchTriggerResponse.parse(json_str)
         assert result.search_depth == "quick"
 

@@ -1,0 +1,66 @@
+[sandbox] adaptive store -> /tmp/probe_store_cg20lzmr/adaptive_exemplars.json; TONE_EXEMPLAR_LEARNING=0
+tone_detector sha256: 3d65d1a46401af8a
+| variant | stress >= CONCERN | controls changed vs baseline |
+|---|---|---|
+| baseline | 7/21 | 0/34 |
+| A2 | 19/21 | 1/34 |
+| B | 11/21 | 1/34 |
+| A2+B | 19/21 | 2/34 |
+
+== per-row (baseline / A2 / B / A2+B)
+  stress  CONCERN / CONCERN / CONCERN / CONCERN                      | my kids haven't slept in days and I'm running on nothing
+  stress  MEDIUM / MEDIUM / MEDIUM / MEDIUM                          | my mom and I keep fighting and it's wearing me down
+  stress  CONCERN / CONCERN / CONCERN / CONCERN                      | things with my partner are falling apart and I don't know what to do
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | taking care of my dad after his stroke is wearing me out
+  stress  CONVERSATIONAL / CONCERN / CONCERN / CONCERN               | I'm the only one caring for my grandmother and I can't keep up
+  stress  CONVERSATIONAL / CONCERN / CONCERN / CONCERN               | juggling my sister's medical appointments is exhausting me
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | my back pain flared up again and I can't do anything
+  stress  CONVERSATIONAL / CONCERN / CONCERN / CONCERN               | waiting on the biopsy results is eating me alive
+  stress  CONCERN / CONCERN / CONCERN / CONCERN                      | my migraines keep getting worse and I'm scared
+  stress  CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | cash flow is tight and payroll is due friday
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | I don't know how we'll make rent this month
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | the car repair wiped out our savings
+  stress  CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | our landlord is trying to evict us
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | we might lose the apartment
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | the house has black mold and we can't afford to move
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | my boss keeps piling on more and I'm barely keeping my head up
+  stress  CONCERN / CONCERN / CONCERN / CONCERN                      | I'm about to get laid off and I can't stop thinking about it
+  stress  CONCERN / CONCERN / CONCERN / CONCERN                      | I've been blocked on my novel for weeks and it's crushing me
+  stress  CONCERN / CONCERN / CONCERN / CONCERN                      | I'm failing chemistry and my parents are going to be furious
+  stress  CONVERSATIONAL / CONCERN / CONCERN / CONCERN               | my thesis defense is next week and I'm panicking
+  stress  CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN        | I can't keep up with my classes anymore
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my kids have soccer on saturday
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my mom is visiting next week
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I'm taking care of my neighbor's cat this weekend
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my dad's physical therapy starts monday
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I have a dentist appointment tomorrow
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I started taking a new vitamin
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I paid my rent today
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I'm budgeting for a vacation
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | we're looking at apartments downtown
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | the landlord fixed the sink
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I have a meeting with my boss at 3
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | work was fine today
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my chemistry exam is on friday
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I finished my homework
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | the kids wore me out at the park but it was a great day
+  control CHANGED CONVERSATIONAL / CONVERSATIONAL / CONCERN / CONCERN | I'm not stressed about rent anymore
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my coworker is getting evicted and I'm helping her move
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I can't keep up with all the good shows right now
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my dad's surgery went really well
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my thesis is almost done and I'm excited
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | rent went up a little but we're fine
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | the kids can't keep up with me on hikes anymore haha
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my kids wore me out at the zoo but it was so fun
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my sister is exhausted from her new job
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | our landlord finally fixed the heater
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my partner is panicking about his exam, I'm trying to help
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | we paid off the loan and I feel so relieved
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I don't know how the kids have so much energy
+  control CHANGED CONVERSATIONAL / CONCERN / CONVERSATIONAL / CONCERN | I paid the bills this morning
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | work was busy but good
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | my parents are coming over for dinner
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | we moved into our new place last week
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | the business had a great month
+  control         CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL / CONVERSATIONAL | I'm looking after my nephew this afternoon
+[sandbox] store file exists after run: False

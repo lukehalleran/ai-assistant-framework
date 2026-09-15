@@ -169,5 +169,5 @@ class TestEntityPreservation:
         assert "daemon" in result.lower()
 
     def test_preserves_place_names(self):
-        result = reformulate("Tell me about Georgia Tech")
-        assert "georgia tech" in result.lower()
+        result = reformulate("Tell me about Vermont Wrenfield")
+        assert "vermont wrenfield" in result.lower()

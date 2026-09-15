@@ -2,13 +2,13 @@
 
 Regression coverage for the 2026-06-09 incident: a technical project-update
 message pulled a personal photo (user + cat) because the stored image-entity
-``luke`` matched as a raw substring inside the path ``/home/lukeh/.claude/...``.
+``alex`` matched as a raw substring inside the path ``/home/alexh/.claude/...``.
 
 Two gates are exercised:
   1. Visual-intent gate (_query_wants_visual): a bare name mention does not
      surface a photo — the user must signal visual intent (a "show me" word) or
      the turn must be a recall intent.
-  2. Word-boundary entity match (Step C): "luke" must NOT match "lukeh".
+  2. Word-boundary entity match (Step C): "alex" must NOT match "alexh".
 """
 
 import pytest
@@ -90,7 +90,7 @@ class TestQueryWantsVisual:
     def test_no_visual_word_and_non_recall_intent_fails(self, intent):
         # The exact failure shape from the incident: a technical message that
         # merely contains a name (or a path) and no visual intent.
-        q = "the full revised plan is at /home/lukeh/.claude/plans/x.md"
+        q = "the full revised plan is at /home/alexh/.claude/plans/x.md"
         assert _query_wants_visual(q, intent) is False
 
     def test_punctuation_around_visual_word_still_passes(self):
@@ -104,30 +104,30 @@ class TestQueryWantsVisual:
 @pytest.mark.asyncio
 class TestGetVisualMemoriesGating:
     async def test_path_substring_does_not_pull_photo(self):
-        """The original bug: 'luke' must not match inside '/home/lukeh/...'.
+        """The original bug: 'alex' must not match inside '/home/alexh/...'.
 
         Visual intent is present ('show'), so only the word-boundary fix is
         under test here.
         """
-        g = _Gatherer(["luke", "biscuit"])
+        g = _Gatherer(["alex", "biscuit"])
         out = await g.get_visual_memories(
-            "show me the file at /home/lukeh/.claude/plans/x.md", intent_type=None
+            "show me the file at /home/alexh/.claude/plans/x.md", intent_type=None
         )
         assert out == {"text_results": [], "images": []}
         assert g._visual_retriever.calls == []  # retrieval never reached
 
     async def test_no_visual_intent_short_circuits_even_with_name_word(self):
         """The visual-intent gate fires before any entity work."""
-        g = _Gatherer(["luke", "biscuit"])
-        out = await g.get_visual_memories("luke approved the merge", intent_type="project_work")
+        g = _Gatherer(["alex", "biscuit"])
+        out = await g.get_visual_memories("alex approved the merge", intent_type="project_work")
         assert out == {"text_results": [], "images": []}
         assert g._visual_retriever.calls == []
 
     async def test_visual_word_plus_real_entity_pulls_photo(self):
-        g = _Gatherer(["luke", "biscuit"])
-        out = await g.get_visual_memories("show me luke", intent_type=None)
+        g = _Gatherer(["alex", "biscuit"])
+        out = await g.get_visual_memories("show me alex", intent_type=None)
         assert out["text_results"]
-        assert g._visual_retriever.calls == [{"luke"}]
+        assert g._visual_retriever.calls == [{"alex"}]
 
     async def test_recall_intent_without_visual_word_pulls_photo(self):
         g = _Gatherer(["biscuit"])
@@ -136,7 +136,7 @@ class TestGetVisualMemoriesGating:
         assert g._visual_retriever.calls == [{"biscuit"}]
 
     async def test_word_boundary_matches_standalone_name(self):
-        """'luke' as a real word (not a substring) still matches under visual intent."""
-        g = _Gatherer(["luke"])
-        out = await g.get_visual_memories("show me luke, please", intent_type=None)
-        assert g._visual_retriever.calls == [{"luke"}]
+        """'alex' as a real word (not a substring) still matches under visual intent."""
+        g = _Gatherer(["alex"])
+        out = await g.get_visual_memories("show me alex, please", intent_type=None)
+        assert g._visual_retriever.calls == [{"alex"}]

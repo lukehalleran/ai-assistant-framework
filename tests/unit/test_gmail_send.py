@@ -307,12 +307,12 @@ class TestRecipientResolution:
     async def test_single_match_resolves(self):
         """Name with single contact match resolves to that email."""
         proposal = _make_proposal(params={
-            "recipient": "Meagan",
+            "recipient": "Maren",
             "message": "hi",
         })
 
         with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
-                   return_value=("meagan@example.com", "")), \
+                   return_value=("maren@example.com", "")), \
              patch("config.app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_ID", ""), \
              patch("config.app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET", ""), \
              patch("config.app_config.INTERNET_ACTIONS_SMTP_HOST", ""), \
@@ -329,12 +329,12 @@ class TestRecipientResolution:
     async def test_multiple_matches_returns_options(self):
         """Name with multiple matches returns error listing options."""
         proposal = _make_proposal(params={
-            "recipient": "Meagan",
+            "recipient": "Maren",
             "message": "hi",
         })
 
         with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
-                   return_value=(None, "Multiple contacts found for 'Meagan':\n  - Meagan A <a@test.com>\n  - Meagan B <b@test.com>")):
+                   return_value=(None, "Multiple contacts found for 'Maren':\n  - Maren A <a@test.com>\n  - Maren B <b@test.com>")):
             result = await send_email(proposal)
 
         assert result.success is False
@@ -359,12 +359,12 @@ class TestRecipientResolution:
     async def test_resolution_exception_handled(self):
         """Exception in resolver returns graceful error."""
         proposal = _make_proposal(params={
-            "recipient": "Meagan",
+            "recipient": "Maren",
             "message": "hi",
         })
 
         with patch("core.actions.email._resolve_recipient", new_callable=AsyncMock,
-                   return_value=(None, "Could not resolve 'Meagan' to an email address: API error")):
+                   return_value=(None, "Could not resolve 'Maren' to an email address: API error")):
             result = await send_email(proposal)
 
         assert result.success is False

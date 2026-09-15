@@ -15,7 +15,7 @@ from utils.daily_notes_generator import DailyNotesGenerator, GenerationResult
 
 # A long enough LLM response to pass the 100-char minimum check
 _MOCK_LLM_RESPONSE = (
-    "## Summary\nLuke had a full day of conversations covering health recovery and technical work.\n\n"
+    "## Summary\nAlex had a full day of conversations covering health recovery and technical work.\n\n"
     "## Main Quest: Recovery and Return\n- Recovered from illness\n- Resumed normal routine\n\n"
     "## Side Quests\nNone today.\n\n## Life Events\n- **Health**: Feeling better.\n\n"
     "## Emotional State\nUpbeat and ready to go.\n\n## Key Decisions\nNone.\n\n"
@@ -56,6 +56,12 @@ def generator(vault_path):
     # Benign fake profile (2026-09-04 status-claim guard) — keeps the test
     # hermetic instead of lazy-loading the real on-disk UserProfile.
     gen._user_profile = mock_profile
+    # Hermeticity (F12b): stub the narrative-refresh trigger so the
+    # generate_for_date success path never builds a real MemoryConsolidator,
+    # which would lazy-load a real default-path UserProfile() and read the
+    # real OBSIDIAN_VAULT_PATH. Narrative refresh is not under test here --
+    # only daily-note auto-update logic is.
+    gen._trigger_narrative_refresh = AsyncMock(return_value=None)
     gen.vault_path = vault_path
     gen.output_dir = vault_path / "Daily Notes and To Do's"
     gen.output_dir.mkdir(parents=True)

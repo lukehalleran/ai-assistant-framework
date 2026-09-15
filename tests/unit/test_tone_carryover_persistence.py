@@ -2,7 +2,7 @@
 Regression tests for cross-restart tone carryover (2026-08-02).
 
 `ContextPipeline._last_tone_level` made distress sticky within a process, but
-Luke's sessions are 1-3 turns with restarts minutes apart — CONCERN detected
+Alex's sessions are 1-3 turns with restarts minutes apart — CONCERN detected
 at 12:13 was gone by the 12:33 restart, so a flat-semantic continuation turn
 had no floor. The pipeline now persists each turn's tone level to
 data/tone_state.json (atomic, best-effort) and seeds `_last_tone_level` on

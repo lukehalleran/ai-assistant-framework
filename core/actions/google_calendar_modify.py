@@ -22,7 +22,9 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.actions.types import ActionProposal, ActionResult
-from core.actions.google_calendar_create import CALENDAR_EVENTS_SCOPE, wall_clock_time
+from core.actions.google_calendar_create import (
+    CALENDAR_EVENTS_SCOPE, UNKNOWN_TIMEZONE_MESSAGE, wall_clock_time,
+)
 
 logger = logging.getLogger("actions_calendar_modify")
 
@@ -153,8 +155,14 @@ async def update_calendar_event(proposal: ActionProposal) -> ActionResult:
             changes["start"] = {"date": str(new_start)[:10]}
             changes["end"] = {"date": str(new_end)[:10]}
         else:
-            from utils.timezone_resolver import get_user_timezone  # lazy import: live-config read
-            tz = p.get("time_zone") or get_user_timezone()
+            from utils.timezone_resolver import resolve_event_timezone  # lazy import: live-config read
+            tz = resolve_event_timezone(p.get("time_zone"))
+            if tz is None:
+                # BC-59/BC-47: refuse before any service call rather than
+                # silently defaulting to Central/UTC.
+                return ActionResult(
+                    action_id=proposal.action_id, success=False,
+                    message=UNKNOWN_TIMEZONE_MESSAGE)
             changes["start"] = {"dateTime": wall_clock_time(str(new_start)), "timeZone": tz}
             changes["end"] = {"dateTime": wall_clock_time(str(new_end)), "timeZone": tz}
     if not changes:

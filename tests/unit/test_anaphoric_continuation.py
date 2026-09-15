@@ -256,7 +256,7 @@ class TestPlannerGrounding:
 
     def test_previous_exchange_included_in_prompt(self):
         ctx = _PlanContext(last_exchange={
-            "query": "I'm sometimes scared Casey was right and I never had long covid",
+            "query": "I'm sometimes scared Tamsin was right and I never had long covid",
             "response": "That fear makes sense...",
         })
         prompt = self._run_plan(ctx)

@@ -18,24 +18,24 @@ from memory.graph_models import GraphEdge, GraphNode
 @pytest.fixture
 def graph(tmp_path):
     gm = GraphMemory(persist_path=str(tmp_path / "graph.json"))
-    gm.add_entity(GraphNode(entity_id="casey", display_name="Casey"))
+    gm.add_entity(GraphNode(entity_id="tamsin", display_name="Tamsin"))
     gm.add_entity(GraphNode(entity_id="evil", display_name="evil"))
     return gm
 
 
 def _edge(gm):
-    return gm.get_relations("casey")[0]
+    return gm.get_relations("tamsin")[0]
 
 
 def _mention(gm, tone, day):
     """Simulate a mention on a given day by driving the tracker directly for
     days other than today (add_relation stamps datetime.now())."""
     incoming = {"stance": "appraisal", "capture_tone": tone}
-    edges = gm.get_relations("casey")
+    edges = gm.get_relations("tamsin")
     if not edges:
-        gm.add_relation(GraphEdge(source_id="casey", relation="is",
+        gm.add_relation(GraphEdge(source_id="tamsin", relation="is",
                                   target_id="evil", metadata=dict(incoming)))
-        edges = gm.get_relations("casey")
+        edges = gm.get_relations("tamsin")
         # rewrite today's auto-recorded day to the simulated one
         edge = edges[0]
         edge.metadata["appraisal_days"] = [day]
@@ -81,16 +81,16 @@ class TestSettledness:
         assert _edge(graph).metadata["appraisal_tones"] == ["non_elevated"]
 
     def test_objective_edges_untracked(self, graph):
-        graph.add_relation(GraphEdge(source_id="casey", relation="lives_in",
+        graph.add_relation(GraphEdge(source_id="tamsin", relation="lives_in",
                                      target_id="evil",
                                      metadata={"stance": "objective"}))
-        edge = next(e for e in graph.get_relations("casey")
+        edge = next(e for e in graph.get_relations("tamsin")
                     if e.relation == "lives_in")
         assert "appraisal_days" not in edge.metadata
 
     def test_add_relation_records_today(self, graph):
         graph.add_relation(GraphEdge(
-            source_id="casey", relation="is", target_id="evil",
+            source_id="tamsin", relation="is", target_id="evil",
             metadata={"stance": "appraisal", "capture_tone": "non_elevated"},
         ))
         edge = _edge(graph)

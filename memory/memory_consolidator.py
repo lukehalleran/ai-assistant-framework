@@ -42,6 +42,7 @@ from utils.logging_utils import get_logger
 from utils.completed_plan_claims import remove_completed_plan_claims
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
 from utils.streak_claims import remove_stale_streak_claims, streak_ledger, streak_ledger_block
+from utils.retrieval_outcome import RetrievalError
 from pathlib import Path
 import re
 
@@ -203,17 +204,19 @@ class MemoryConsolidator:
 
     def _current_status_facts(self) -> List[Dict[str, Any]]:
         """Collect CURRENT enrollment/employment/residence facts for the
-        status-claim conflict guard (utils/status_claims.py)."""
+        status-claim conflict guard (utils/status_claims.py). Raises
+        RetrievalError when the profile is unavailable or the read fails;
+        a genuine empty filter result still returns []."""
         from utils.status_claims import STATUS_RELATIONS
 
         profile = self.user_profile
         if profile is None:
-            return []
+            raise RetrievalError(source="status_facts", reason="profile_unavailable")
         try:
             current = profile.get_current_view()
         except Exception as e:
             logger.debug(f"[Consolidator] Could not read profile facts for status guard: {e}")
-            return []
+            raise RetrievalError(source="status_facts", reason=type(e).__name__) from e
 
         facts: List[Dict[str, Any]] = []
         for cat_facts in (current or {}).values():
@@ -427,7 +430,10 @@ Do NOT make up information not present in the summaries."""
         """
         Read recent weekly summaries from Obsidian vault.
 
-        Returns list of dicts with 'content' and 'timestamp' keys.
+        Returns list of dicts with 'content' and 'timestamp' keys. Raises
+        RetrievalError(source="obsidian_weekly", ...) when the notes path
+        exists but the read fails; a missing notes path is the documented
+        skip ([]).
         """
 
         notes_path = self._get_obsidian_notes_path()
@@ -487,7 +493,7 @@ Do NOT make up information not present in the summaries."""
 
         except Exception as e:
             logger.debug(f"[NarrativeSynthesis] Error reading weekly summaries: {e}")
-            return []
+            raise RetrievalError(source="obsidian_weekly", reason=type(e).__name__) from e
 
     def _read_obsidian_monthly_summaries(self, limit: int = 1) -> List[Dict]:
         """
@@ -495,7 +501,10 @@ Do NOT make up information not present in the summaries."""
 
         Looks for files like "February 2026/February 2026 Summary.md" inside
         the daily-notes root. Returns list of dicts with 'content' and
-        'timestamp' keys, sorted by mtime (most recent first).
+        'timestamp' keys, sorted by mtime (most recent first). Raises
+        RetrievalError(source="obsidian_monthly", ...) when the notes path
+        exists but the read fails; a missing notes path is the documented
+        skip ([]).
         """
 
         notes_path = self._get_obsidian_notes_path()
@@ -549,7 +558,7 @@ Do NOT make up information not present in the summaries."""
 
         except Exception as e:
             logger.debug(f"[NarrativeSynthesis] Error reading monthly summaries: {e}")
-            return []
+            raise RetrievalError(source="obsidian_monthly", reason=type(e).__name__) from e
 
     def _read_obsidian_daily_notes(self, limit: int = 7) -> List[Dict]:
         """
@@ -558,7 +567,10 @@ Do NOT make up information not present in the summaries."""
         Only reads from Week * folders (new auto-generated system created 2026-01-15).
         Older notes in root folder are excluded - they're searchable via personal_notes.
 
-        Returns list of dicts with 'content' and 'timestamp' keys.
+        Returns list of dicts with 'content' and 'timestamp' keys. Raises
+        RetrievalError(source="obsidian_daily", ...) when the notes path
+        exists but the read fails; a missing notes path is the documented
+        skip ([]).
         """
 
         notes_path = self._get_obsidian_notes_path()
@@ -615,7 +627,7 @@ Do NOT make up information not present in the summaries."""
 
         except Exception as e:
             logger.debug(f"[NarrativeSynthesis] Error reading daily notes: {e}")
-            return []
+            raise RetrievalError(source="obsidian_daily", reason=type(e).__name__) from e
 
     async def generate_narrative_context(
         self,
@@ -797,6 +809,11 @@ Do NOT make up information not present in the summaries."""
             logger.info(f"[NarrativeSynthesis] Generated narrative ({len(narrative)} chars) from: {', '.join(sources)}")
             return narrative
 
+        except RetrievalError as e:
+            logger.warning(
+                f"[NarrativeSynthesis] Narrative not regenerated: inputs unavailable ({e.source}: {e.reason})"
+            )
+            return ""
         except Exception as e:
             logger.warning(f"[NarrativeSynthesis] Failed to generate narrative: {e}")
             return ""

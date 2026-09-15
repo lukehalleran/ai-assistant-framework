@@ -1,0 +1,55 @@
+[sandbox] adaptive store -> /tmp/probe_store__std5nfn/adaptive_exemplars.json; TONE_EXEMPLAR_LEARNING=0
+tone_detector sha256: 3d65d1a46401af8a
+== stress
+  PASS today=CONCERN        cand=kidxrunning on nothing           final=CONCERN        | my kids haven't slept in days and I'm running on nothing
+  PASS today=MEDIUM         cand=momxwearing me down              final=MEDIUM         | my mom and I keep fighting and it's wearing me down
+  PASS today=CONCERN        cand=None                             final=CONCERN        | things with my partner are falling apart and I don't know what to do
+  PASS today=CONVERSATIONAL cand=dadxwearing me out               final=CONCERN        | taking care of my dad after his stroke is wearing me out
+  PASS today=CONVERSATIONAL cand=caring forxcan't keep up         final=CONCERN        | I'm the only one caring for my grandmother and I can't keep up
+  PASS today=CONVERSATIONAL cand=sisterxexhausting me             final=CONCERN        | juggling my sister's medical appointments is exhausting me
+  PASS today=CONVERSATIONAL cand=flarexcan't do anything          final=CONCERN        | my back pain flared up again and I can't do anything
+  PASS today=CONVERSATIONAL cand=biopsyxeating me alive           final=CONCERN        | waiting on the biopsy results is eating me alive
+  PASS today=CONCERN        cand=migrainesxscared                 final=CONCERN        | my migraines keep getting worse and I'm scared
+  MISS today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | cash flow is tight and payroll is due friday
+  PASS today=CONVERSATIONAL cand=rentxdon't know how we'll        final=CONCERN        | I don't know how we'll make rent this month
+  PASS today=CONVERSATIONAL cand=savingsxwiped out our            final=CONCERN        | the car repair wiped out our savings
+  MISS today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | our landlord is trying to evict us
+  PASS today=CONVERSATIONAL cand=apartmentxmight lose             final=CONCERN        | we might lose the apartment
+  PASS today=CONVERSATIONAL cand=housexcan't afford               final=CONCERN        | the house has black mold and we can't afford to move
+  PASS today=CONVERSATIONAL cand=bossxbarely keeping              final=CONCERN        | my boss keeps piling on more and I'm barely keeping my head up
+  PASS today=CONCERN        cand=laid offxabout to get laid off   final=CONCERN        | I'm about to get laid off and I can't stop thinking about it
+  PASS today=CONCERN        cand=novelxcrushing me                final=CONCERN        | I've been blocked on my novel for weeks and it's crushing me
+  PASS today=CONCERN        cand=chemistryxfailing                final=CONCERN        | I'm failing chemistry and my parents are going to be furious
+  PASS today=CONVERSATIONAL cand=defensexpanicking                final=CONCERN        | my thesis defense is next week and I'm panicking
+  PASS today=CONVERSATIONAL cand=classxcan't keep up              final=CONCERN        | I can't keep up with my classes anymore
+== control
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my kids have soccer on saturday
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my mom is visiting next week
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I'm taking care of my neighbor's cat this weekend
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my dad's physical therapy starts monday
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I have a dentist appointment tomorrow
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I started taking a new vitamin
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I paid my rent today
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I'm budgeting for a vacation
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | we're looking at apartments downtown
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | the landlord fixed the sink
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I have a meeting with my boss at 3
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | work was fine today
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my chemistry exam is on friday
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I finished my homework
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | the kids wore me out at the park but it was a great day
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I'm not stressed about rent anymore
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my coworker is getting evicted and I'm helping her move
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I can't keep up with all the good shows right now
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my dad's surgery went really well
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my thesis is almost done and I'm excited
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | rent went up a little but we're fine
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | the kids can't keep up with me on hikes anymore haha
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my kids wore me out at the zoo but it was so fun
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my sister is exhausted from her new job
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | our landlord finally fixed the heater
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | my partner is panicking about his exam, I'm trying to help
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | we paid off the loan and I feel so relieved
+  ok   today=CONVERSATIONAL cand=None                             final=CONVERSATIONAL | I don't know how the kids have so much energy
+STRESS >= CONCERN: 19/21 (today 10/21); CONTROLS newly escalated: 0/28
+[sandbox] store file exists after run: False

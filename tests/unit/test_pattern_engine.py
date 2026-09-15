@@ -271,7 +271,7 @@ class TestDetectorLiveShapes:
             "Lately, I think I was over Time am I just beaten so ? "
             + "the heavy heart I carried went over your head and over mine "
             * 30
-            + " this song is making me think of when I moved to Atlanta"
+            + " this song is making me think of when I moved to Marrowby"
         )
         assert len(text) >= 1200
         ct = detect_content_type(text)
@@ -338,7 +338,7 @@ class TestEmailDimension:
         )
         return [
             mk(1, "Dr. Smith <smith@clinic.org>", "Appointment follow-up", True),
-            mk(2, "Advisor <Morgan@gatech.edu>", "Registration"),
+            mk(2, "Advisor <Morgan@wrenfield.example>", "Registration"),
             mk(3, "News <digest@clinic.org>", "Weekly digest"),
             mk(40, "Old <old@old.com>", "Outside window"),
             {"provider": "outlook", "message_id": "d1",

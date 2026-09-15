@@ -5,7 +5,7 @@ search terms "college drop date August 2026" / "school withdrawal deadline
 August 2026". The trigger LLM first attached the user's CITY ("Springfield,
 Illinois college drop date" — the wrong-college class, correctly stripped by
 strip_unjustified_location) and then had nothing to name the school with,
-even though the profile knows school=Georgia Tech at confidence 1.0. The
+even though the profile knows school=Vermont Wrenfield at confidence 1.0. The
 generic queries burned Tavily credits on generic pages.
 
 utils/institution_resolver.py mirrors location_resolver: env override →
@@ -52,11 +52,11 @@ def _fact(relation, value, is_current=True, confidence=1.0):
 class TestInstitutionValueShape:
 
     @pytest.mark.parametrize("value", [
-        "Georgia Tech",
-        "MIT",
-        "University of Wisconsin-Madison",
-        "Georgia Institute of Technology",
-        "St. Olaf College",
+        "Vermont Wrenfield",
+        "XQT",
+        "University of Tarnwick-Hollow",
+        "Wrenfield Institute of Science",
+        "St. Veldmoor College",
     ])
     def test_institution_shaped_values_accepted(self, value):
         assert _INSTITUTION_VALUE_RE.match(value)
@@ -80,21 +80,21 @@ class TestProfileExtraction:
 
     def test_school_relation_extracted(self, tmp_path):
         path = _write_profile(tmp_path, {
-            "categories": {"education": [_fact("school", "Georgia Tech")]},
+            "categories": {"education": [_fact("school", "Vermont Wrenfield")]},
         })
-        assert InstitutionResolver(path).get_institution() == "Georgia Tech"
+        assert InstitutionResolver(path).get_institution() == "Vermont Wrenfield"
 
     def test_school_beats_stale_university_fact(self, tmp_path):
         """The live profile carries a past school under `university`
-        (is_current=True, conf 0.85) beside school=Georgia Tech (conf 1.0) —
+        (is_current=True, conf 0.85) beside school=Vermont Wrenfield (conf 1.0) —
         relation rank must win, not insertion order."""
         path = _write_profile(tmp_path, {
             "categories": {"education": [
-                _fact("university", "University of Wisconsin-Madison", confidence=0.85),
-                _fact("school", "Georgia Tech", confidence=1.0),
+                _fact("university", "University of Tarnwick-Hollow", confidence=0.85),
+                _fact("school", "Vermont Wrenfield", confidence=1.0),
             ]},
         })
-        assert InstitutionResolver(path).get_institution() == "Georgia Tech"
+        assert InstitutionResolver(path).get_institution() == "Vermont Wrenfield"
 
     def test_non_current_facts_ignored(self, tmp_path):
         path = _write_profile(tmp_path, {
@@ -115,9 +115,9 @@ class TestProfileExtraction:
     def test_quick_profile_fallback(self, tmp_path):
         path = _write_profile(tmp_path, {
             "categories": {},
-            "quick_profile": {"school": "Georgia Tech"},
+            "quick_profile": {"school": "Vermont Wrenfield"},
         })
-        assert InstitutionResolver(path).get_institution() == "Georgia Tech"
+        assert InstitutionResolver(path).get_institution() == "Vermont Wrenfield"
 
     def test_missing_profile_returns_none(self, tmp_path):
         r = InstitutionResolver(str(tmp_path / "nope.json"))
@@ -130,10 +130,10 @@ class TestProfileExtraction:
 
     def test_mtime_cache_refreshes_on_change(self, tmp_path):
         path = _write_profile(tmp_path, {
-            "categories": {"education": [_fact("school", "Georgia Tech")]},
+            "categories": {"education": [_fact("school", "Vermont Wrenfield")]},
         })
         r = InstitutionResolver(path)
-        assert r.get_institution() == "Georgia Tech"
+        assert r.get_institution() == "Vermont Wrenfield"
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"categories": {"education": [_fact("school", "New College")]}}, f)
         os.utime(path, (1e9, 1e9))  # force a distinct mtime
@@ -144,7 +144,7 @@ class TestProfileExtraction:
             "utils.institution_resolver.INSTITUTION_OVERRIDE", "Override U"
         )
         path = _write_profile(tmp_path, {
-            "categories": {"education": [_fact("school", "Georgia Tech")]},
+            "categories": {"education": [_fact("school", "Vermont Wrenfield")]},
         })
         assert InstitutionResolver(path).get_institution() == "Override U"
 
@@ -153,7 +153,7 @@ class TestProfileExtraction:
             "utils.institution_resolver.INSTITUTION_ENABLED", False
         )
         path = _write_profile(tmp_path, {
-            "categories": {"education": [_fact("school", "Georgia Tech")]},
+            "categories": {"education": [_fact("school", "Vermont Wrenfield")]},
         })
         assert InstitutionResolver(path).get_institution() is None
 
@@ -180,12 +180,12 @@ class TestAcademicCue:
 
     @pytest.mark.parametrize("query", [
         "how does an SVM work",          # coursework, not logistics
-        "what's the weather in Atlanta",
+        "what's the weather in Marrowby",
         "best pizza near me",
         "",
         # 2026-09-12: cross-domain logistics words with no school anchor.
         # Each of these used to attach the user's school to a third-party
-        # search ("Georgia Tech benzodiazepine withdrawal symptoms").
+        # search ("Vermont Wrenfield benzodiazepine withdrawal symptoms").
         "what are benzodiazepine withdrawal symptoms",
         "when is the voter registration deadline",
         "Medicare enrollment period 2026",
@@ -209,59 +209,59 @@ class TestApplyInstitution:
 
     def test_live_turn_reproduction(self):
         """The exact terms from the 2026-08-27 turn gain the user's school."""
-        out = apply_institution(LIVE_TERMS, LIVE_QUERY, "Georgia Tech")
+        out = apply_institution(LIVE_TERMS, LIVE_QUERY, "Vermont Wrenfield")
         assert out == [
-            "Georgia Tech drop date August 2026",
-            "Georgia Tech withdrawal deadline August 2026",
+            "Vermont Wrenfield drop date August 2026",
+            "Vermont Wrenfield withdrawal deadline August 2026",
         ]
 
     def test_academic_term_without_generic_word_prepended(self):
         out = apply_institution(
-            ["withdrawal deadline fall 2026"], LIVE_QUERY, "Georgia Tech"
+            ["withdrawal deadline fall 2026"], LIVE_QUERY, "Vermont Wrenfield"
         )
-        assert out == ["Georgia Tech withdrawal deadline fall 2026"]
+        assert out == ["Vermont Wrenfield withdrawal deadline fall 2026"]
 
     def test_non_academic_query_untouched(self):
         terms = ["college football scores"]
-        assert apply_institution(terms, "who won the game", "Georgia Tech") == terms
+        assert apply_institution(terms, "who won the game", "Vermont Wrenfield") == terms
 
     def test_different_named_school_untouched(self):
-        """'When is Harvard University's drop deadline' must stay Harvard's —
+        """'When is Quellmoor University's drop deadline' must stay Quellmoor's —
         injecting the user's school would misdirect the search (the inverted
         wrong-college incident)."""
-        terms = ["Harvard University drop deadline 2026"]
+        terms = ["Quellmoor University drop deadline 2026"]
         out = apply_institution(
-            terms, "when is Harvard University's drop deadline", "Georgia Tech"
+            terms, "when is Quellmoor University's drop deadline", "Vermont Wrenfield"
         )
         assert out == terms
 
     def test_users_own_named_school_still_applies(self):
         out = apply_institution(
             ["school drop date 2026"],
-            "when is Georgia Tech University drop date",  # names the USER's school
-            "Georgia Tech",
+            "when is Vermont Wrenfield University drop date",  # names the USER's school
+            "Vermont Wrenfield",
         )
-        assert out == ["Georgia Tech drop date 2026"]
+        assert out == ["Vermont Wrenfield drop date 2026"]
 
     def test_term_already_naming_institution_untouched(self):
-        terms = ["Georgia Tech drop date August 2026"]
-        assert apply_institution(terms, LIVE_QUERY, "Georgia Tech") == terms
+        terms = ["Vermont Wrenfield drop date August 2026"]
+        assert apply_institution(terms, LIVE_QUERY, "Vermont Wrenfield") == terms
 
     def test_mixed_terms_only_academic_touched(self):
         """A weather sub-query in a mixed request stays untouched."""
         out = apply_institution(
-            ["college drop date 2026", "weather in Atlanta today"],
+            ["college drop date 2026", "weather in Marrowby today"],
             "what's the drop date and the weather",
-            "Georgia Tech",
+            "Vermont Wrenfield",
         )
-        assert out == ["Georgia Tech drop date 2026", "weather in Atlanta today"]
+        assert out == ["Vermont Wrenfield drop date 2026", "weather in Marrowby today"]
 
     def test_no_institution_is_noop(self):
         assert apply_institution(LIVE_TERMS, LIVE_QUERY, None) == LIVE_TERMS
         assert apply_institution(LIVE_TERMS, LIVE_QUERY, "  ") == LIVE_TERMS
 
     def test_empty_terms_is_noop(self):
-        assert apply_institution([], LIVE_QUERY, "Georgia Tech") == []
+        assert apply_institution([], LIVE_QUERY, "Vermont Wrenfield") == []
 
 
 # ===========================================================================
@@ -279,8 +279,8 @@ class TestTriggerPromptWiring:
         )
 
     def test_prompt_names_school_when_known(self):
-        prompt = self._prompt("Georgia Tech")
-        assert "User's school: Georgia Tech" in prompt
+        prompt = self._prompt("Vermont Wrenfield")
+        assert "User's school: Vermont Wrenfield" in prompt
         assert "SCHOOL-LOGISTICS QUERIES" in prompt
         # The scope guards ride along in the guideline.
         assert "DIFFERENT school" in prompt

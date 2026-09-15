@@ -211,7 +211,7 @@ class TestSpecWiring:
 
     def test_gate_action_arm_routes_delete(self):
         # Same registry the agentic gate consults (detect_action_intent) —
-        # the test phrasing Luke will use routes to a forced tool loop.
+        # the test phrasing Alex will use routes to a forced tool loop.
         assert detect_action_intent(
             "Please remove the psychiatrist appointment event from my Google calendar"
         ) == ActionType.CALENDAR_DELETE_EVENT
@@ -271,7 +271,7 @@ class TestXmlActionValidation:
         assert any(x.wants_action for x in d)
 
     def test_telegram_body_message_satisfies_required(self):
-        d = self._parse('<action type="send_telegram" recipient="@luke">hello</action>')
+        d = self._parse('<action type="send_telegram" recipient="@alex">hello</action>')
         assert any(x.wants_action for x in d)
 
     def test_propose_action_incomplete_dropped(self):

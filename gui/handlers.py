@@ -159,20 +159,37 @@ async def _background_store_interaction(
 
     This runs after the response is fully streamed to the user, so ~1.7s of
     LLM calls (topic extraction, etc.) don't add to perceived latency.
+
+    A StoreWriteError [F10a] is logged and the transcript is still recorded
+    below with db_id=None, as a deliberate-skip None is handled today.
+    Nothing escapes this task. Returns the F13b failure label on a failed
+    store (None on success, on a deliberate skip, or on an unrelated
+    outer-except failure) so `_track_storage_task` [F13c-1] can carry it
+    onto the deferred turn row and the already-delivered debug record.
     """
+    from utils.retrieval_outcome import StoreWriteError
+
+    memory_id = None
+    storage_failed_label = None
     try:
-        memory_id = await orchestrator.memory_system.store_interaction(
-            query=merged_input,
-            response=response_to_store,
-            tags=tags,
-            session_id=session_id,
-            provenance=provenance,
-            # The user's own typed text rides beside the merged blob so fact
-            # extraction / provenance / heavy-topic never read attachment
-            # content as the user's words (2026-09-05).
-            user_text=user_text,
-        )
-        logger.info(f"[HANDLE_SUBMIT] Background storage complete, ID: {memory_id}")
+        try:
+            memory_id = await orchestrator.memory_system.store_interaction(
+                query=merged_input,
+                response=response_to_store,
+                tags=tags,
+                session_id=session_id,
+                provenance=provenance,
+                # The user's own typed text rides beside the merged blob so fact
+                # extraction / provenance / heavy-topic never read attachment
+                # content as the user's words (2026-09-05).
+                user_text=user_text,
+            )
+            logger.info(f"[HANDLE_SUBMIT] Background storage complete, ID: {memory_id}")
+        except StoreWriteError as e:
+            # Failed write [F10a]: log it, still record the transcript below.
+            logger.error(f"[HANDLE_SUBMIT] Background storage failed: {e}")
+            from core.orchestrator import _storage_failure_label
+            storage_failed_label = _storage_failure_label(e)
 
         # Log conversation with db_id
         log_metadata = {
@@ -182,6 +199,8 @@ async def _background_store_interaction(
             'topic': getattr(orchestrator, 'current_topic', None),
             'db_id': memory_id,
         }
+        if storage_failed_label:
+            log_metadata['storage_failed'] = storage_failed_label
         if provenance:
             log_metadata['provenance'] = provenance
         conversation_logger.log_interaction(
@@ -193,6 +212,7 @@ async def _background_store_interaction(
             assistant_response=response_to_store,
             metadata=log_metadata,
         )
+        return storage_failed_label
     except Exception as e:
         logger.error(f"[HANDLE_SUBMIT] Background storage failed: {e}")
 
@@ -629,7 +649,7 @@ def _build_debug_record(
     mode, user_text, prompt, system_prompt, response, model,
     prompt_tokens, system_tokens, total_tokens,
     citations, orchestrator, provenance=None,
-    phase_timings=None, task_timings=None, gather_elapsed=0.0,
+    phase_timings=None, task_timings=None, section_outcomes=None, gather_elapsed=0.0,
     gate_reason=None, extra=None,
 ):
     """Build a debug record dict for the Debug Trace tab.
@@ -686,6 +706,7 @@ def _build_debug_record(
             {k: round(v, 3) for k, v in task_timings.items()}
             if task_timings else {}
         ),
+        'section_outcomes': dict(section_outcomes or {}),
         'gather_elapsed': round(gather_elapsed, 3) if gather_elapsed else 0.0,
         'gate_reason': gate_reason or '',
         'response_plan': plan_audit,
@@ -836,6 +857,40 @@ def _dispatch_storage(
     return task
 
 
+def _track_storage_task(ctx, value):
+    """Track a real background-storage asyncio.Task for the deferred turn
+    row + delivered-debug-record receipt (F13c-1).
+
+    Ignores anything that isn't a real Task -- a MagicMock/None/lambda
+    stand-in (tests that replace `_dispatch_storage`) leaves no
+    `ctx.storage_task` at all. For a real task, the registered done-callback
+    never raises and mutates `ctx.telemetry`/`ctx.debug_record` in place,
+    matching `_start_background_grounding.finished`'s precedent for the
+    delivered debug record.
+    """
+    if not isinstance(value, asyncio.Task):
+        return
+    ctx.storage_task = value
+
+    def _record_receipt(task):
+        try:
+            if task.cancelled():
+                return
+            label = task.result()
+            if not label:
+                return
+            telemetry = getattr(ctx, "telemetry", None)
+            if isinstance(telemetry, dict):
+                telemetry["storage_failed"] = label
+            record = getattr(ctx, "debug_record", None)
+            if isinstance(record, dict):
+                record["storage_failed"] = label
+        except Exception as exc:
+            logger.debug(f"[Telemetry] storage receipt skipped: {exc}")
+
+    value.add_done_callback(_record_receipt)
+
+
 # Friendly display templates for classified API-error payloads (the model
 # layer yields these AS response text instead of raising). Single map for all
 # display paths — enhanced streaming, agentic, and the mid-stream fail-fast.
@@ -904,6 +959,25 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
         # field. The pre-registry code wrapped each ctx.* read in its own
         # try/except; this preserves the same "never raises on a partial
         # ctx" contract in one place.
+        # F13c-1: pass ctx.telemetry itself (identity, even when empty) --
+        # `or {}` on an already-empty dict would silently swap in a new
+        # object, and a storage/grounding receipt written later via a
+        # done-callback would then never reach the row this hook reads.
+        _telemetry = getattr(ctx, "telemetry", None)
+        _grounding_task = getattr(ctx, "grounding_task", None)
+        _storage_task = getattr(ctx, "storage_task", None)
+        # Only combine when BOTH are real Tasks (asyncio.gather rejects a
+        # non-awaitable, e.g. a MagicMock-ctx test's auto-vivified truthy
+        # attribute -- that must fall through to today's plain-passthrough
+        # behaviour below, not raise and skip every hook).
+        if isinstance(_grounding_task, asyncio.Task) and isinstance(_storage_task, asyncio.Task):
+            # Exactly one combined waiter -- two separate callbacks would
+            # write two turn rows.
+            _telemetry_task = asyncio.gather(
+                _grounding_task, _storage_task, return_exceptions=True,
+            )
+        else:
+            _telemetry_task = _storage_task if _storage_task is not None else _grounding_task
         hook_ctx = PostResponseHookContext(
             orchestrator=getattr(ctx, "orchestrator", None),
             user_input=getattr(ctx, "user_text", "") or "",
@@ -912,9 +986,9 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
             session_id=session_id,
             model_name=model_name,
             response_len=response_len,
-            telemetry=getattr(ctx, "telemetry", None) or {},
+            telemetry=_telemetry if isinstance(_telemetry, dict) else {},
             t_prepare_elapsed=getattr(ctx, "t_prepare_elapsed", 0.0) or 0.0,
-            telemetry_task=getattr(ctx, "grounding_task", None),
+            telemetry_task=_telemetry_task,
         )
         run_post_response_hooks(hook_ctx)
     except Exception as e:
@@ -1235,6 +1309,15 @@ class SubmitContext:
     # by _write_turn_telemetry() at each storage-dispatch site.
     telemetry: dict = field(default_factory=dict)
     t_ingress: float = 0.0
+    # Grounding delivery mode captured ONCE at turn start (A05b-2): "correct",
+    # "log_only", or "off" (check disabled). Set right after this ctx is
+    # built, in handle_submit's dispatcher — a GROUNDING_MODE/
+    # GROUNDING_CHECK_ENABLED change mid-turn cannot change an
+    # already-started turn's buffering or delivery in either direction.
+    # Stays None for a bare ctx built directly by a test/caller that never
+    # goes through the dispatcher; _apply_grounding_check_for_delivery falls
+    # back to reading config fresh in that case.
+    grounding_mode: Any = None
     grounding_pending: Any = None
     grounding_task: Any = None
     debug_record: Any = None
@@ -1536,13 +1619,16 @@ async def _run_duel(ctx, gens, sels, features_duel):
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
         )
 
+        # F13c-2b: set before the yield so a later storage-failure receipt can reach it.
+        ctx.debug_record = debug_record
         yield {"role": "assistant", "content": display_output, "debug": debug_record}
 
-        _dispatch_storage(
+        _storage_task = _dispatch_storage(
             orchestrator, ctx.merged_input, final_output, ctx.user_text,
             final_output, ctx.personality, ctx.file_names, ctx.conversation_logger,
             _duel_session_id, _duel_prov, 'best-of-duel',
         )
+        _track_storage_task(ctx, _storage_task)
         _write_turn_telemetry(
             ctx, 'best-of-duel', _duel_session_id, f"{m1} vs {m2}",
             len(final_output or ""),
@@ -1688,6 +1774,7 @@ async def _run_doc_generation(ctx):
         logger.info(f"[Handle Submit] Document generated: {_doc_result.path}")
 
         # Store interaction
+        label = None
         if orchestrator.memory_system:
             try:
                 await orchestrator.memory_system.store_interaction(
@@ -1695,8 +1782,13 @@ async def _run_doc_generation(ctx):
                     response=_doc_response,
                     tags=["document_generation"],
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                from core.orchestrator import _storage_failure_label
+                label = _storage_failure_label(e)
+                logger.warning(f"[Handle Submit] Document-generation storage failed: {label}")
+                _telemetry = getattr(ctx, "telemetry", None)
+                if isinstance(_telemetry, dict):
+                    _telemetry["storage_failed"] = label
 
         # Debug record (2026-09-04): this bypass path used to yield the final
         # chunk with no "debug" key at all, so api/chat_service.py's
@@ -1712,6 +1804,7 @@ async def _run_doc_generation(ctx):
             prompt_tokens=0, system_tokens=0, total_tokens=0,
             citations=[], orchestrator=orchestrator,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            extra={"storage_failed": label} if label else None,
         )
         yield {"role": "assistant", "content": _doc_response, "debug": debug_record}
         _write_turn_telemetry(
@@ -2459,14 +2552,17 @@ async def _run_insight_mode(ctx):
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
             phase_timings={**_insight_timings, "total_wall": _time.monotonic() - _insight_started},
         )
+        # F13c-2b: set before the yield so a later storage-failure receipt can reach it.
+        ctx.debug_record = debug_record
         yield {"role": "assistant", "content": final_text + doc_line,
                "debug": debug_record}
 
-        _dispatch_storage(
+        _storage_task = _dispatch_storage(
             orchestrator, ctx.merged_input, final_text, ctx.user_text,
             final_text, ctx.personality, ctx.file_names, ctx.conversation_logger,
             _insight_session_id, _prov, 'insight-assembly',
         )
+        _track_storage_task(ctx, _storage_task)
         _write_turn_telemetry(
             ctx, 'insight-assembly', _insight_session_id, model_name,
             len(final_text or ""), response_text=final_text,
@@ -2582,13 +2678,19 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
         )
     logger.info(f"[ActionGuard] Note saved: {note.path} (fully_persisted={note.fully_persisted})")
 
+    label = None
     if orchestrator.memory_system:
         try:
             await orchestrator.memory_system.store_interaction(
                 query=ctx.user_text, response=_resp, tags=["daemon_self_note"],
             )
-        except Exception:
-            pass
+        except Exception as e:
+            from core.orchestrator import _storage_failure_label
+            label = _storage_failure_label(e)
+            logger.warning(f"[ActionGuard] Self-note storage failed: {label}")
+            _telemetry = getattr(ctx, "telemetry", None)
+            if isinstance(_telemetry, dict):
+                _telemetry["storage_failed"] = label
 
     # Debug record (2026-09-04): same gap as _run_doc_generation — this
     # bypass path yielded the final chunk with no "debug" key, so a
@@ -2600,6 +2702,7 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
         prompt_tokens=0, system_tokens=0, total_tokens=0,
         citations=[], orchestrator=orchestrator,
         gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+        extra={"storage_failed": label} if label else None,
     )
     yield {"role": "assistant", "content": _resp, "debug": debug_record}
     _write_turn_telemetry(
@@ -2865,7 +2968,7 @@ def _newest_upload_date(ctx):
 # BC-58 sibling (2026-09-11, round 6, A21 companion): once A21 lets a
 # claim sentence carry NO weekday at all ("Tomorrow at 11, Zoom link's on
 # the event." — the live [GOOGLE CALENDAR] office-hours entry is titled
-# "... (Dr. Xu — Zoom)"), the weekday-agreement gate below never engages
+# "... (Dr. Varnum — Zoom)"), the weekday-agreement gate below never engages
 # and the match falls through to title-token overlap alone; "zoom"/"link"
 # are generic video-conferencing/connectivity words that say nothing about
 # WHICH event a claim refers to (most calendar entries could plausibly be
@@ -3062,7 +3165,7 @@ def _capture_delivery(ctx, debug_record):
     ctx.debug_record = debug_record
     if getattr(ctx, "t_ingress", 0.0):
         ctx.telemetry["wall_elapsed_s"] = round(_time_mod.perf_counter() - ctx.t_ingress, 3)
-    for key in ("phase_timings", "task_timings"):
+    for key in ("phase_timings", "task_timings", "section_outcomes"):
         if debug_record.get(key):
             ctx.telemetry[key] = dict(debug_record[key])
     debug_record.update({k: v for k, v in ctx.telemetry.items()
@@ -3071,13 +3174,93 @@ def _capture_delivery(ctx, debug_record):
 
 async def _apply_grounding_check_for_delivery(ctx, response_text, source_material=""):
     from config.app_config import GROUNDING_MODE, GROUNDING_CHECK_ENABLED
-    if not GROUNDING_CHECK_ENABLED:
+    # A05b-2: use the mode captured once at turn start when present (see
+    # SubmitContext.grounding_mode) so a config change mid-turn cannot alter
+    # this turn's delivery. A bare ctx that never went through handle_submit's
+    # dispatcher (existing direct-call tests) has no captured mode — fall
+    # back to reading config fresh, exactly as before this batch.
+    mode = getattr(ctx, "grounding_mode", None)
+    if mode is None:
+        mode = GROUNDING_MODE if GROUNDING_CHECK_ENABLED else "off"
+    if mode == "off":
         return None, ""
-    if GROUNDING_MODE == "log_only":
+    if mode == "log_only":
         ctx.grounding_pending = (response_text, source_material)
         ctx.telemetry.update(grounding_status="pending", grounding_mode="log_only")
         return None, ""
-    return await _apply_grounding_check(ctx, response_text, source_material, mode=GROUNDING_MODE)
+    return await _apply_grounding_check(ctx, response_text, source_material, mode=mode)
+
+
+_GROUNDING_CHECK_PROGRESS_TEXT = "Checking facts…"
+
+
+async def _buffer_grounding_draft(ctx, chunks, flush_on_exhaust=lambda: True):
+    """Correct-mode delivery wrapper (A05b-2): hold the draft so no
+    unreviewed content reaches the wire before review completes.
+
+    Wraps a route's chunk stream (``_run_agentic_search`` /
+    ``_run_enhanced``) at its ``handle_submit`` dispatch site, only when
+    ``ctx.grounding_mode == "correct"``. Semantics:
+
+    - A final chunk (a dict carrying a ``"debug"`` key) is yielded
+      unchanged, and every later chunk (there should be none) is then also
+      passed through unchanged — the turn is over.
+    - A dict with ``is_progress`` truthy, or one carrying a ``"thinking"``
+      key (the duel path's shape; not produced by these two routes), passes
+      through unchanged.
+    - Any other chunk — plain content, an ``is_thinking`` content chunk, or
+      a bare string — is HELD: only the latest one is kept and it is not
+      yielded. The first time this turn holds content, ONE progress chunk
+      (``_GROUNDING_CHECK_PROGRESS_TEXT``) is yielded to keep the UI alive.
+    - If the wrapped generator is exhausted with no final chunk ever seen
+      (an error/friendly/empty early return) AND ``flush_on_exhaust()`` is
+      true, the last held chunk is flushed once so it still reaches the
+      user. ``flush_on_exhaust`` defaults to always-True (the enhanced
+      route's contract: every early return there is a reviewed
+      warning/error, never a draft). A05b-3/F1: the agentic dispatch passes
+      ``flush_on_exhaust=lambda: ctx.handled`` so a route that ends
+      UNHANDLED (an internal exception -> fall through to enhanced) drops
+      its held partial draft instead of leaking it onto the wire ahead of
+      the enhanced route's reviewed answer; a HANDLED early return (the
+      degenerate-watchdog or friendly-API-error exits, which set
+      ``ctx.handled`` before returning) still flushes exactly as before.
+      When not flushing, the held chunk is simply dropped.
+    - If the wrapped generator raises — including ``CancelledError`` or
+      ``GeneratorExit`` — nothing is flushed; the exception re-raises
+      unchanged, so a cancelled or failed turn never ships a draft.
+    - ``chunks`` is closed explicitly (``aclose()``) in a ``finally``, so
+      its own cleanup (e.g. the enhanced route's storage ``finally`` block)
+      still runs when this wrapper is torn down early. ``aclose()`` on an
+      already-exhausted generator is a no-op.
+    """
+    held = None
+    announced = False
+    final_seen = False
+    try:
+        async for chunk in chunks:
+            is_dict = isinstance(chunk, dict)
+            if is_dict and "debug" in chunk:
+                final_seen = True
+                yield chunk
+            elif final_seen:
+                yield chunk
+            elif is_dict and (chunk.get("is_progress") or "thinking" in chunk):
+                yield chunk
+            else:
+                if not announced:
+                    announced = True
+                    yield {
+                        "role": "assistant",
+                        "content": _GROUNDING_CHECK_PROGRESS_TEXT,
+                        "is_progress": True,
+                    }
+                held = chunk
+        if not final_seen and held is not None and flush_on_exhaust():
+            yield held
+    finally:
+        aclose = getattr(chunks, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 def _start_background_grounding(ctx):
@@ -3131,12 +3314,23 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
     blocks the shown response beyond the final-chunk window.
 
     Returns (revised_text, suffix):
-    - (revised, "")  — 2026-08-29 integration path: the correction is woven
-      INTO the response by a bounded rewrite. Caller must replace BOTH the
+    - (revised, "")  — the correction ships through ONE replacement path,
+      never draft-plus-suffix (A05b-1, F04/G12): either the 2026-08-29
+      integrator wove it INTO the response by a bounded rewrite, or — when
+      the integrator is disabled or returns None (timeout/guard rejection)
+      — `build_integrated_fallback` (2026-09-13) built a spliced-in or
+      standalone corrective reply instead. Caller must replace BOTH the
       display text and final_output with `revised` (the final yield is a
       whole-bubble replacement on every path, so display == storage holds).
-    - (None, suffix) — fallback: append suffix to display AND final_output.
-    - (None, "")     — no action.
+      Telemetry `grounding_status`/`grounding_fallback` distinguish the two;
+      `grounding_fallback` is a constant `kind:reason` label, never claim or
+      correction text.
+    - (None, "")     — no action: no substantive correction to deliver
+      (`build_integrated_fallback` returned None — same contract as a
+      verifier-failure verdict) or the verdict was absent/suppressed.
+      `suffix` is always "" as of A05b-1; the second tuple slot stays only
+      because both call sites unpack it (`_ag_gc_revised, _ag_gc_suffix`;
+      `_gc_revised, _gc_suffix`).
     - (response_text, "") — 2026-09-04 GROUNDING_MODE=="log_only" (the
       default): the full prefilter+verifier+demotion pipeline ran and a
       flagged verdict was recorded to telemetry (grounding_mode,
@@ -3169,8 +3363,8 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
                 or len(response_text.strip()) < GROUNDING_MIN_RESPONSE_CHARS):
             return _no_action
         from core.grounding_check import (
-            has_checkable_claims, verify_grounding, build_grounding_correction,
-            integrate_grounding_correction,
+            has_checkable_claims, verify_grounding, integrate_grounding_correction,
+            build_integrated_fallback,
         )
         if not has_checkable_claims(response_text, ctx.user_text or ""):
             return _no_action
@@ -3247,8 +3441,8 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
             f"{verdict.claim[:120]!r}"
         )
         # Audit F24 (2026-08-31): grounding_corrected records what SHIPPED —
-        # it is set only once a correction (integrated or suffix) is actually
-        # returned, never before the integrate attempt.
+        # it is set only once a correction (integrated or fallback) is
+        # actually returned, never before the integrate attempt.
         if GROUNDING_INTEGRATE_ENABLED:
             revised = await integrate_grounding_correction(
                 response_text, verdict, mm,
@@ -3260,10 +3454,22 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
                 ctx.telemetry["grounding_integrated"] = True
                 ctx.telemetry["grounding_corrected"] = True
                 return (revised, "")
-        _suffix = build_grounding_correction(verdict.correction, elevated=elevated)
-        if _suffix:
+        # A05b-1 (F04/G12): the integrator is disabled or unavailable — the
+        # ONE integrated fallback (spliced-in or standalone) ships through
+        # this same revised path. Never draft-plus-suffix (BC-45, BC-71).
+        fb = build_integrated_fallback(response_text, verdict, elevated=elevated)
+        if fb is not None:
+            ctx.telemetry["grounding_status"] = "fallback"
+            # Constant kind:reason label only — never claim or correction
+            # text (contract: docs/execution/generalization/batches/A05a.md
+            # "Contract for A05b").
+            ctx.telemetry["grounding_fallback"] = f"{fb.kind}:{fb.reason}"
             ctx.telemetry["grounding_corrected"] = True
-        return (None, _suffix)
+            return (fb.text, "")
+        # No substantive correction to deliver — same contract as a
+        # verifier-failure verdict: ship the draft unmodified, no marker.
+        ctx.telemetry["grounding_fallback"] = "none"
+        return _no_action
     except Exception as e:
         ctx.telemetry.update(grounding_status="failed", grounding_failure_reason="check_error")
         logger.warning(f"[GroundingCheck] failed (non-fatal): {e}")
@@ -3380,13 +3586,19 @@ async def _run_action_retry(ctx, failed):
             f"identical details, nothing changed.{_why_line} Approve the card and it runs again."
             + _format_action_proposal_card(new)
         )
+        label = None
         if orchestrator.memory_system:
             try:
                 await orchestrator.memory_system.store_interaction(
                     query=ctx.user_text, response=_resp, tags=["action_retry"],
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                from core.orchestrator import _storage_failure_label
+                label = _storage_failure_label(e)
+                logger.warning(f"[Actions] Retry storage failed: {label}")
+                _telemetry = getattr(ctx, "telemetry", None)
+                if isinstance(_telemetry, dict):
+                    _telemetry["storage_failed"] = label
         _model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
         debug_record = _build_debug_record(
             mode='action-retry', user_text=ctx.user_text, prompt="",
@@ -3394,6 +3606,7 @@ async def _run_action_retry(ctx, failed):
             prompt_tokens=0, system_tokens=0, total_tokens=0,
             citations=[], orchestrator=orchestrator,
             gate_reason=f"retry of failed {failed.action_type.value} ({failed.action_id[:8]})",
+            extra={"storage_failed": label} if label else None,
         )
         yield {"role": "assistant", "content": _resp, "debug": debug_record,
                "pending_action_id": new.action_id}
@@ -3475,6 +3688,96 @@ async def _run_agentic_search(ctx):
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
     logger.warning("[Handle Submit] AGENTIC SEARCH MODE - routing through agentic controller")
+    # A05b-4 (closes the A05b-3 parent review's D2 gap): whether the
+    # reviewed final chunk was actually yielded (set immediately before
+    # that yield, never after) and whether a BaseException
+    # (CancelledError/GeneratorExit -- a cancellation) is unwinding through
+    # this frame (set by the `except BaseException` clause below). Together
+    # they drive the correct-mode cancel-before-review receipt in
+    # `finally:`, mirroring `_run_enhanced`'s gate (A05b-3).
+    review_delivered = False
+    _base_exc_active = False
+    # A05b-5 (closes the A05b-4 §6 finding / BC-45): whether the post-yield
+    # storage + telemetry work below has actually run. A GeneratorExit
+    # thrown into this generator while it is suspended at `yield
+    # _final_chunk` (the consumer closes handle_submit right after the
+    # reviewed final chunk; the event loop's async-generator finalizer then
+    # closes this still-suspended generator) never resumes the sequential
+    # code after that yield -- so the normal-path call below never runs.
+    # `finally:` calls the same closure when that happened, guarded by this
+    # flag so the reviewed answer is stored exactly once either way.
+    _agentic_storage_dispatched = False
+
+    def _dispatch_agentic_review_storage():
+        """Store the reviewed agentic answer and write its turn telemetry
+        exactly once. Called on the normal path immediately after `yield
+        _final_chunk`, and from `finally:` when a teardown skipped that
+        normal-path call after review was already delivered. No awaits --
+        `_dispatch_storage` is fire-and-forget (asyncio.create_task), same
+        as `_write_turn_telemetry` (never raises)."""
+        nonlocal _agentic_storage_dispatched
+        # Store interaction in background (fire-and-forget, same as enhanced path).
+        # Avoids a ~5s blocking await after the final yield that kept the
+        # Gradio generator open and could prevent the response from rendering.
+        # Full sanitization (thinking blocks + synthetic <thinking></thinking>
+        # stream markers + XML leaks + spurious turns) — final_output is the RAW
+        # accumulated stream, which historically persisted thinking artifacts
+        # into the conversations collection (752 polluted docs as of 2026-06-10).
+        try:
+            final_output_sanitized = _sanitize_response_text(final_output)
+        except Exception as e:
+            logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
+            final_output_sanitized = final_output
+
+        if len(final_output_sanitized.strip()) < 20 and display_output.strip():
+            final_output_sanitized = display_output
+
+        # Display/storage parity check (2026-09-08, B1) — log-only, never
+        # mutates either text. Catches the F1 class where a display-side
+        # cleanup pass silently diverges from what actually gets persisted.
+        if not _answer_bodies_agree(display_output, final_output_sanitized):
+            logger.warning(
+                "[Handle Submit] Agentic display/storage body mismatch — "
+                "the text the user saw and the text being stored diverge."
+            )
+
+        # Parent review D3 (A05b-5): mark dispatched immediately BEFORE the
+        # dispatch. If a later step in this closure raises, `finally:` must not
+        # call it again and store the answer twice.
+        _agentic_storage_dispatched = True
+        _storage_task = _dispatch_storage(
+            orchestrator, merged_input, final_output_sanitized, user_text,
+            final_output_sanitized, personality, file_names, conversation_logger,
+            _agentic_session_id, _agentic_prov, 'agentic-search',
+        )
+        _track_storage_task(ctx, _storage_task)
+        logger.info("[Handle Submit] Agentic storage dispatched to background")
+        if _agentic_session is not None:
+            ctx.telemetry["agentic_rounds"] = list(
+                getattr(_agentic_session, "round_telemetry", [])
+            )
+            ctx.telemetry["agentic_reuse_fired"] = bool(
+                getattr(_agentic_session, "decision_answer_reuse_fired", False)
+            )
+            ctx.telemetry["agentic_fastpath"] = bool(
+                getattr(_agentic_session, "fetch_fastpath_fired", False)
+            )
+            # 2026-09-06, A5: which call actually produced the answer
+            # ("decision_reuse" | "final_synthesis" | "error_fallback").
+            ctx.telemetry["agentic_answer_call"] = str(
+                getattr(_agentic_session, "answer_call", "") or ""
+            )
+        _write_turn_telemetry(
+            ctx, 'agentic-search', _agentic_session_id,
+            model_name if 'model_name' in dir() else None,
+            len(final_output_sanitized or ""),
+            response_text=final_output_sanitized,
+        )
+
+        ctx.handled = True
+        ctx.storage_dispatched = True
+        _agentic_storage_dispatched = True
+
     try:
         from core.agentic import AgenticSearchController, ProgressEvent
 
@@ -3819,6 +4122,7 @@ async def _run_agentic_search(ctx):
 
         _agentic_phase = getattr(orchestrator, '_last_phase_timings', {})
         _agentic_tasks = getattr(orchestrator, '_last_task_timings', {})
+        _agentic_sections = getattr(orchestrator, '_last_section_outcomes', {})
         _agentic_gather = getattr(orchestrator, '_last_gather_elapsed', 0.0)
         _agentic_handler_timings = {
             "prepare_prompt": round(_t_prepare_elapsed, 3),
@@ -3838,6 +4142,7 @@ async def _run_agentic_search(ctx):
             provenance=_agentic_prov,
             phase_timings=_agentic_handler_timings,
             task_timings=_agentic_tasks,
+            section_outcomes=_agentic_sections,
             gather_elapsed=_agentic_gather,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
             extra=_build_agentic_answer_call_extra(orchestrator, model_name),
@@ -3900,8 +4205,10 @@ async def _run_agentic_search(ctx):
         # the response's facts come from retrieved documents the verifier
         # otherwise never sees (it flagged a correct "Fall 2026" against its
         # own date prior, live 2026-08-29). Integration path replaces the
-        # whole text (final yield is a bubble replacement); suffix append is
-        # the fallback. Either way display AND final_output stay identical.
+        # whole text (final yield is a bubble replacement); when the
+        # integrator is disabled or fails, build_integrated_fallback (A05b-1)
+        # ships one spliced-or-standalone correction the same way. Either way
+        # display AND final_output stay identical.
         try:
             _ag_source_parts = []
             for _gc_round in (getattr(_agentic_session, 'rounds', None) or []):
@@ -3916,9 +4223,6 @@ async def _run_agentic_search(ctx):
             if _ag_gc_revised:
                 display_output = _ag_gc_revised
                 final_output = _ag_gc_revised
-            elif _ag_gc_suffix:
-                display_output = display_output.rstrip() + _ag_gc_suffix
-                final_output = (final_output or "").rstrip() + _ag_gc_suffix
         except Exception as _ag_gc_err:
             logger.warning(f"[Handle Submit] Agentic grounding check failed (non-fatal): {_ag_gc_err}")
 
@@ -3956,70 +4260,86 @@ async def _run_agentic_search(ctx):
         if _pending_action_id:
             _final_chunk["pending_action_id"] = _pending_action_id
         _capture_delivery(ctx, debug_record)
+        # A05b-4: the reviewed text is final at this point -- set the flag
+        # immediately before the yield that delivers it.
+        review_delivered = True
         yield _final_chunk
+        # Parent review D3 (A05b-5): the user already holds the reviewed
+        # answer. A failure in the post-review storage/telemetry block below
+        # must never make the dispatcher fall back to the enhanced route and
+        # produce a second answer, so mark the turn handled now.
+        ctx.handled = True
         logger.debug("[Handle Submit] Agentic final response yielded")
 
-        # Store interaction in background (fire-and-forget, same as enhanced path).
-        # Avoids a ~5s blocking await after the final yield that kept the
-        # Gradio generator open and could prevent the response from rendering.
-        # Full sanitization (thinking blocks + synthetic <thinking></thinking>
-        # stream markers + XML leaks + spurious turns) — final_output is the RAW
-        # accumulated stream, which historically persisted thinking artifacts
-        # into the conversations collection (752 polluted docs as of 2026-06-10).
-        try:
-            final_output_sanitized = _sanitize_response_text(final_output)
-        except Exception as e:
-            logger.warning(f"[Handle Submit] Failed to sanitize agentic response: {e}")
-            final_output_sanitized = final_output
-
-        if len(final_output_sanitized.strip()) < 20 and display_output.strip():
-            final_output_sanitized = display_output
-
-        # Display/storage parity check (2026-09-08, B1) — log-only, never
-        # mutates either text. Catches the F1 class where a display-side
-        # cleanup pass silently diverges from what actually gets persisted.
-        if not _answer_bodies_agree(display_output, final_output_sanitized):
-            logger.warning(
-                "[Handle Submit] Agentic display/storage body mismatch — "
-                "the text the user saw and the text being stored diverge."
-            )
-
-        _dispatch_storage(
-            orchestrator, merged_input, final_output_sanitized, user_text,
-            final_output_sanitized, personality, file_names, conversation_logger,
-            _agentic_session_id, _agentic_prov, 'agentic-search',
-        )
-        logger.info("[Handle Submit] Agentic storage dispatched to background")
-        if _agentic_session is not None:
-            ctx.telemetry["agentic_rounds"] = list(
-                getattr(_agentic_session, "round_telemetry", [])
-            )
-            ctx.telemetry["agentic_reuse_fired"] = bool(
-                getattr(_agentic_session, "decision_answer_reuse_fired", False)
-            )
-            ctx.telemetry["agentic_fastpath"] = bool(
-                getattr(_agentic_session, "fetch_fastpath_fired", False)
-            )
-            # 2026-09-06, A5: which call actually produced the answer
-            # ("decision_reuse" | "final_synthesis" | "error_fallback").
-            ctx.telemetry["agentic_answer_call"] = str(
-                getattr(_agentic_session, "answer_call", "") or ""
-            )
-        _write_turn_telemetry(
-            ctx, 'agentic-search', _agentic_session_id,
-            model_name if 'model_name' in dir() else None,
-            len(final_output_sanitized or ""),
-            response_text=final_output_sanitized,
-        )
-
-        ctx.handled = True
-        ctx.storage_dispatched = True
+        # A05b-5: dispatch storage + telemetry via the closure above (the
+        # normal-path call). `finally:` below calls the same closure, once,
+        # if a teardown skips this call.
+        _dispatch_agentic_review_storage()
         return  # Exit after agentic search completes
 
     except Exception as e:
         logger.error(f"[Handle Submit] Agentic search failed, falling back to standard: {e}")
         import traceback
         logger.debug(f"[Agentic] Exception traceback:\n{traceback.format_exc()}")
+
+    except BaseException:
+        # A05b-4: CancelledError / GeneratorExit (a client disconnect, or
+        # the A05b-2 buffer wrapper's aclose() on a still-suspended
+        # generator) unwinding through this frame -- by design a
+        # BaseException bypasses `except Exception` above. Record that one
+        # is actively unwinding so `finally:` can gate the correct-mode
+        # cancel-before-review receipt on it, then re-raise unchanged: this
+        # clause never suppresses or alters the cancellation, and (unlike
+        # `except Exception` above) never falls through to the enhanced
+        # route -- the cancellation propagates straight out of
+        # `handle_submit`, so exactly one receipt is ever written for the
+        # turn.
+        _base_exc_active = True
+        raise
+
+    finally:
+        # A05b-4 (A05_design.md "Cancel before review completes"; closes
+        # the A05b-3 parent review's D2 gap): a cancellation unwound
+        # through this frame in correct mode BEFORE the reviewed final
+        # chunk was delivered. No assistant text is stored for this turn
+        # (the storage dispatch above never ran -- already true today), but
+        # leave one turn-telemetry receipt so the cancellation itself is
+        # traceable, mirroring `_run_enhanced`'s gate (A05b-3). A teardown
+        # AT OR AFTER the reviewed final chunk (review_delivered True)
+        # falls through here with no receipt.
+        if (
+            getattr(ctx, "grounding_mode", None) == "correct"
+            and _base_exc_active and not review_delivered
+        ):
+            try:
+                ctx.telemetry["delivery"] = "cancelled_before_review"
+                _write_turn_telemetry(
+                    ctx, "agentic-search",
+                    _agentic_session_id if "_agentic_session_id" in dir() else _get_session_id(orchestrator),
+                    model_name if "model_name" in dir() else None,
+                    0, response_text="",
+                )
+            except Exception as _receipt_err:
+                logger.error(f"[Handle Submit] Failed to write agentic cancel receipt: {_receipt_err}")
+        elif review_delivered and not _agentic_storage_dispatched:
+            # A05b-5 (closes the A05b-4 §6 finding / BC-45): a teardown AT
+            # OR AFTER the reviewed final chunk (GeneratorExit thrown into
+            # this generator's suspended `yield _final_chunk` -- see the
+            # closure's docstring above) skipped the normal-path dispatch
+            # call. Run it here instead, exactly once. Mutually exclusive
+            # with the cancel-receipt branch above by construction (that
+            # branch requires `not review_delivered`): never both a cancel
+            # receipt and storage. Applies in every mode (log_only/off
+            # included) -- nothing between the final yield and this point
+            # is gated on `ctx.grounding_mode`, so the same gap existed
+            # there too.
+            try:
+                _dispatch_agentic_review_storage()
+            except Exception as _late_dispatch_err:
+                logger.error(
+                    "[Handle Submit] Failed to dispatch agentic post-review "
+                    f"storage in teardown: {_late_dispatch_err}"
+                )
 
 
 async def _run_enhanced(ctx):
@@ -4089,6 +4409,14 @@ async def _run_enhanced(ctx):
     final_output = ""
     display_output = ""
     debug_emitted = False
+    # A05b-3: whether the reviewed final chunk was actually yielded (set
+    # immediately before that yield, never after) and whether a
+    # BaseException (CancelledError/GeneratorExit -- a cancellation) is
+    # unwinding through this frame (set by the `except BaseException` clause
+    # below). Together they drive the correct-mode storage gate in
+    # `finally:`.
+    review_delivered = False
+    _base_exc_active = False
     try:
         logger.debug(
             "[🔍 FINAL MESSAGE PAYLOAD TO OPENAI]:\n" +
@@ -4482,6 +4810,7 @@ async def _run_enhanced(ctx):
 
         _phase_timings = getattr(orchestrator, '_last_phase_timings', {})
         _task_timings = getattr(orchestrator, '_last_task_timings', {})
+        _section_outcomes = getattr(orchestrator, '_last_section_outcomes', {})
         _gather_elapsed = getattr(orchestrator, '_last_gather_elapsed', 0.0)
         _handler_timings = {
             "prepare_prompt": round(_t_prepare_elapsed, 3),
@@ -4565,15 +4894,14 @@ async def _run_enhanced(ctx):
         # (after uncertainty/review retries + action guard) so the verifier
         # sees exactly what ships. Integration path (2026-08-29) replaces the
         # text — the final chunk below is a whole-bubble replacement yield, so
-        # display and storage stay identical; suffix append is the fallback.
+        # display and storage stay identical; when the integrator is disabled
+        # or fails, build_integrated_fallback (A05b-1) ships one spliced-or-
+        # standalone correction through the same replacement path.
         try:
             _gc_revised, _gc_suffix = await _apply_grounding_check_for_delivery(ctx, _resp_for_debug)
             if _gc_revised:
                 _resp_for_debug = _gc_revised
                 final_output = _gc_revised
-            elif _gc_suffix:
-                _resp_for_debug = (_resp_for_debug or "").rstrip() + _gc_suffix
-                final_output = (final_output or "").rstrip() + _gc_suffix
         except Exception as e:
             logger.warning(f"[Handle Submit] Grounding check failed (non-fatal): {e}")
 
@@ -4609,13 +4937,17 @@ async def _run_enhanced(ctx):
             system_tokens=system_tokens2, total_tokens=total_tokens2,
             citations=citations, orchestrator=orchestrator,
             provenance=_enh_prov, phase_timings=_handler_timings,
-            task_timings=_task_timings, gather_elapsed=_gather_elapsed,
+            task_timings=_task_timings, section_outcomes=_section_outcomes,
+            gather_elapsed=_gather_elapsed,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
         )
         _enh_final_chunk = {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
         if _enh_pending_action_id:
             _enh_final_chunk["pending_action_id"] = _enh_pending_action_id
         _capture_delivery(ctx, debug_record)
+        # A05b-3: the reviewed text is final at this point -- set the flag
+        # immediately before the yield that delivers it.
+        review_delivered = True
         yield _enh_final_chunk
         debug_emitted = True
 
@@ -4658,6 +4990,17 @@ async def _run_enhanced(ctx):
 
         yield {"role": "assistant", "content": error_message, "debug": debug_record if debug_emitted else {}}
 
+    except BaseException:
+        # A05b-3: CancelledError / GeneratorExit (a client disconnect, or the
+        # A05b-2 buffer wrapper's aclose() on a still-suspended generator)
+        # bypass `except Exception` above by design -- they are
+        # BaseException, not Exception. Record that one is actively
+        # unwinding through this frame so `finally:` can gate correct-mode
+        # storage on it, then re-raise unchanged: this clause never
+        # suppresses or alters the cancellation itself.
+        _base_exc_active = True
+        raise
+
     finally:
         # Clean up fast mode flags (defensive try/except to never interfere with streaming)
         if fast_mode:
@@ -4676,7 +5019,34 @@ async def _run_enhanced(ctx):
         # assistant content here (avoid overwriting the last streamed UI state).
         # Skip storage if response is an error message (starts with error indicators)
         is_error_response = final_output.strip().startswith(('[Error:', '⚠️')) if final_output else True
-        if final_output and len(user_text.strip()) > 0 and not is_error_response:
+        _correct_mode = getattr(ctx, "grounding_mode", None) == "correct"
+        if _correct_mode and _base_exc_active and not review_delivered:
+            # A05b-3 (A05_design.md "Cancel before review completes"): a
+            # cancellation unwound through this frame while in correct mode
+            # -- store NO assistant text for the turn (a draft never enters
+            # retrieval), but still leave one turn-telemetry receipt so the
+            # cancellation itself is traceable.
+            # Parent review D1: only BEFORE review completes. A teardown at
+            # or after the reviewed final chunk's yield (review_delivered)
+            # falls through to normal storage below, with no cancel receipt.
+            try:
+                ctx.telemetry["delivery"] = "cancelled_before_review"
+                _write_turn_telemetry(
+                    ctx, "enhanced", _get_session_id(orchestrator),
+                    model_name if 'model_name' in dir() else None,
+                    0, response_text="",
+                )
+            except Exception as e:
+                logger.error(f"[HANDLE_SUBMIT] Failed to write cancel receipt: {e}")
+        elif (
+            final_output and len(user_text.strip()) > 0 and not is_error_response
+            # A05b-3: in correct mode, the reviewed final chunk must actually
+            # have been delivered before anything is stored -- an early
+            # return/exception that never reached that yield leaves an
+            # unreviewed `final_output` that must not reach storage either
+            # (A05_design.md gap #3).
+            and not (_correct_mode and not review_delivered)
+        ):
             # Store in memory system FIRST to get the db_id
             memory_id = None
             try:
@@ -4713,11 +5083,23 @@ async def _run_enhanced(ctx):
                         "thinking_block": "",
                     }
 
-                _dispatch_storage(
+                # A05b-3 enhanced parity guard (log-only, mirrors the
+                # agentic one at ~4082): never mutates either text. Displayed
+                # text is `_resp_for_debug` when the try body reached it,
+                # else the running `final_output`.
+                _displayed_for_parity = _resp_for_debug if '_resp_for_debug' in dir() else final_output
+                if not _answer_bodies_agree(_displayed_for_parity, response_to_store):
+                    logger.warning(
+                        "[HANDLE_SUBMIT] Enhanced display/storage body mismatch — "
+                        "the text the user saw and the text being stored diverge."
+                    )
+
+                _storage_task = _dispatch_storage(
                     orchestrator, merged_input, response_to_store, user_text,
                     final_output, personality, file_names, conversation_logger,
                     _store_session_id, _store_prov, _store_mode,
                 )
+                _track_storage_task(ctx, _storage_task)
                 logger.info("[HANDLE_SUBMIT] Storage dispatched to background")
                 _write_turn_telemetry(
                     ctx, _store_mode, _store_session_id,
@@ -5169,6 +5551,11 @@ async def _handle_submit_inner(
         user_text_ws=user_text_ws,
         t_ingress=t_ingress,
     )
+    # A05b-2: capture the grounding delivery mode ONCE for this turn (see
+    # SubmitContext.grounding_mode) — read here, not re-read later, so a
+    # config change mid-turn cannot flip this turn's buffering/delivery.
+    from config.app_config import GROUNDING_CHECK_ENABLED as _gc_enabled, GROUNDING_MODE as _gc_mode
+    ctx.grounding_mode = _gc_mode if _gc_enabled else "off"
     ctx.telemetry["has_images"] = bool(files_result.images)
     if _active_doc_telemetry:
         ctx.telemetry["active_document"] = _active_doc_telemetry
@@ -5402,13 +5789,29 @@ async def _handle_submit_inner(
                 return
 
         if should_use_agentic:
-            async for _c in _run_agentic_search(ctx):
+            # A05b-2: buffer draft chunks in correct mode so no unreviewed
+            # content reaches the wire; log_only/off pass through unchanged.
+            # A05b-3/F1: flush the held draft on exhaustion only when the
+            # route ends HANDLED -- an unhandled internal exception falls
+            # through to the enhanced route below, and its partial agentic
+            # draft must never leak onto the wire ahead of the reviewed
+            # enhanced answer (A05_design.md, Revision 2026-09-13, F1).
+            _agentic_stream = _run_agentic_search(ctx)
+            if ctx.grounding_mode == "correct":
+                _agentic_stream = _buffer_grounding_draft(
+                    ctx, _agentic_stream, flush_on_exhaust=lambda: ctx.handled,
+                )
+            async for _c in _agentic_stream:
                 yield _c
             if ctx.handled:
                 return
             # else agentic failed — fall through to enhanced
 
-    async for _c in _run_enhanced(ctx):
+    # A05b-2: same buffering as the agentic dispatch above.
+    _enhanced_stream = _run_enhanced(ctx)
+    if ctx.grounding_mode == "correct":
+        _enhanced_stream = _buffer_grounding_draft(ctx, _enhanced_stream)
+    async for _c in _enhanced_stream:
         yield _c
 
 

@@ -18,6 +18,7 @@ Module Contract
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import List, Optional
 
 from utils.logging_utils import get_logger
@@ -45,8 +46,15 @@ class SafetyCanary:
     @staticmethod
     def _is_conversational(tone) -> bool:
         # Accept any tone encoding: CrisisLevel ("conversational"),
-        # ToneLevel ("CONVERSATIONAL"), or a plain string.
-        return "conversational" in str(tone).lower()
+        # ToneLevel ("CONVERSATIONAL"), or a plain string. Compare the
+        # normalized VALUE for EQUALITY — never substring membership
+        # (CGR-20260913-004 / BC-01: `"conversational" in str(tone).lower()`
+        # let a string that merely CONTAINS the word, e.g. "not conversational"
+        # or "conversational_extra", count as conversational — the same
+        # mechanism that let `"crisis" in str(CrisisLevel.CONVERSATIONAL)`
+        # float every session).
+        normalized = tone.value if isinstance(tone, Enum) else tone
+        return str(normalized).strip().lower() == "conversational"
 
     def observe(self, user_message: str, tone) -> Optional[dict]:
         """

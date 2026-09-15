@@ -108,7 +108,7 @@ default to `[]` without affecting other sections.
 | semantic | `_get_semantic_chunks()` | 8 (dedicated 2-worker executor + non-blocking in-flight semaphore [2026-07-15] — a USB-stalled search that outlives SEM_TIMEOUT_S can't starve the shared default executor, and a saturated pool makes the turn SKIP wiki chunks instead of queuing; warmup touch at startup via `_run_model_warmup`) |
 | reflections | `_get_reflections_separate()` | 5 recent + 5 semantic |
 | wiki | `_get_wiki_content()` | 3 |
-| personal_notes | `get_personal_notes()` | 5 (chunks with < `PERSONAL_NOTES_MIN_CHARS`=60 chars of real prose after stripping image embeds are dropped — image-only vault chunks embed as noise [2026-07-25]); obsidian `_keyword_search` floors a word-boundary proper-noun hit at 0.75 [2026-08-26] — whole-query word-set scoring weighed "Morgan" the same as "not", so the "Advisor: Morgan Reeves" note lost to date-titled daily notes) |
+| personal_notes | `get_personal_notes()` | 5 (chunks with < `PERSONAL_NOTES_MIN_CHARS`=60 chars of real prose after stripping image embeds are dropped — image-only vault chunks embed as noise [2026-07-25]); obsidian `_keyword_search` floors a word-boundary proper-noun hit at 0.75 [2026-08-26] — whole-query word-set scoring weighed "Morgan" the same as "not", so the "Advisor: Morgan Ashdown" note lost to date-titled daily notes) |
 | reference_docs | `get_reference_docs()` | 5 (ALLOW-gated [2026-08-05]: `builder._should_include_reference_docs` — self-docs surface only on meta_conversational/technical_help/project_work intents or a self-referential query cue ("daemon", "your memory", "how do you score"…); a conversational-tone personal pain turn had pulled 15 doc chunks incl. a lecture transcript. The 2026-07-25 suppressions still always win: distress/emotional_support turns and file-upload turns drop the task entirely — Daemon's own tone docs semantically match distress language) |
 | user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session; staleness gate [2026-08-05]: `_upload_is_live` keeps an upload only if fresh (≤ `USER_UPLOADS_MAX_AGE_DAYS`=3 (7→3 on 2026-09-03)) OR relevance ≥ `USER_UPLOADS_MIN_RELEVANCE`=0.62 — months-old homework docs/photos were injected every turn, undated legacy docs must clear the relevance bar; bar recalibrated 0.5→0.62 on 2026-08-14: store rel=1/(1+2(1−cos)) in bge space, so 0.5 ≈ cosine 0.5 = any-text, 0.62 ≈ cosine 0.69, above the memory gate's 0.60) |
 | git_commits | `get_git_commits()` | varies |
@@ -414,7 +414,7 @@ both traversal and scoring. Nothing is deleted — a fresh mention refreshes
 `rank_expansion_candidates()` also excludes edges whose
 `GraphEdge.metadata` carries an EXPLICIT `appraisal` or `inferred` stance
 (`memory/stance_classifier.py`) from query expansion — a stored value
-judgment ("casey is evil") must not seed retrieval terms for unrelated
+judgment ("tamsin is evil") must not seed retrieval terms for unrelated
 queries (the "evil" expansion leak). Legacy untagged edges
 (`stance="unknown"`) are NOT suppressed. Rendering is also stance-aware:
 `GraphEdge.to_natural_language` (feeding `[KNOWLEDGE GRAPH]`) presents

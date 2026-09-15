@@ -68,7 +68,7 @@ def _github_issue_backfill(query: str) -> Dict[str, str]:
 
 
 # Calendar noun spelled tolerant of the two common transpositions
-# ("calander", "calender", "calandar"). 2026-09-07 live: "add the mgt office
+# ("calander", "calender", "calandar"). 2026-09-07 live: "add the abc office
 # hours sessions to my google calander in one batch" was an explicit calendar
 # request that no calendar pattern saw; the gate ran the turn as a WEB search,
 # the model answered with an OFFER, and the affirmation turns that followed
@@ -222,7 +222,7 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
             # proposal. Bare "calendar" only counts as the object of a
             # placement verb (this pattern), never of "make"/"schedule" alone.
             # 2026-09-07: the noun is spelled through _CALENDAR_WORD — the
-            # live "add the mgt office hours sessions to my google calander"
+            # live "add the abc office hours sessions to my google calander"
             # missed on the typo alone and the turn ran as a web search.
             r'\b(add|put|place|drop|slot)\b[^.?!]{0,60}\b(?:google\s+)?' + _CALENDAR_WORD + r'\b',
         ),
@@ -677,6 +677,17 @@ def resolve_forced_action(
             "before proposing."
         )
 
+    # Unknown-timezone rejection (2026-09-13, A03b-1 / F02 / BC-59 / BC-47):
+    # ask the user for their timezone at PROPOSAL time, beside the shape
+    # check above, so a forced retry surfaces the question before a card is
+    # minted. Mirrors calendar_datetime_shape_errors: a no-op for all-day
+    # and non-calendar (no start_time/end_time) payloads.
+    if calendar_timezone_unknown(params):
+        return None, None, (
+            "I don't know your timezone yet — tell me (for example "
+            "America/Denver) or set it in your profile, then try again."
+        )
+
     # Referee tightening (Fable, 2026-09-09): inside a forced round a
     # DIFFERENT action_type is never accepted as-is, even when its own spec
     # is satisfied — a well-formed calendar_create_event in a forced
@@ -917,14 +928,38 @@ def calendar_datetime_shape_errors(params: Dict[str, Any]) -> list:
     return bad
 
 
+def calendar_timezone_unknown(params: Dict[str, Any]) -> bool:
+    """True when a TIMED calendar event in `params` (or its events[] batch)
+    states a start/end time but has no valid explicit IANA time_zone and the
+    resolver cannot supply one either (BC-59: never silently assume Central
+    or UTC). All-day events and non-calendar payloads (no start_time/
+    end_time) are exempt, mirroring calendar_datetime_shape_errors."""
+    from utils.timezone_resolver import resolve_event_timezone
+    items = params.get("events") if isinstance(params.get("events"), list) else [params]
+    for ev in items:
+        if not isinstance(ev, dict) or ev.get("all_day") in (True, "true", "True"):
+            continue
+        if not any(str(ev.get(key) or "").strip() for key in ("start_time", "end_time")):
+            continue
+        if resolve_event_timezone(ev.get("time_zone")) is None:
+            return True
+    return False
+
+
 def _current_wall_clock() -> datetime:
     """Now(), in the user's configured timezone — a dedicated function so
     tests can pin the clock deterministically (monkeypatch THIS, never
-    datetime.now directly)."""
+    datetime.now directly). An unknown user timezone (resolver returns None,
+    2026-09-13 A03b-1) is an explicit branch, not an exception path: falls
+    back to naive datetime.now() (system local time) rather than guessing a
+    zone (BC-59)."""
+    from utils.timezone_resolver import get_user_timezone
+    tz_name = get_user_timezone()
+    if tz_name is None:
+        return datetime.now()
     try:
-        from utils.timezone_resolver import get_user_timezone
         from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo(get_user_timezone()))
+        return datetime.now(ZoneInfo(tz_name))
     except Exception:
         return datetime.now()
 
@@ -1135,7 +1170,7 @@ def ground_calendar_params_by_resolution(
 # Deterministic calendar-title extraction (2026-09-10, round 3, A11)
 # ---------------------------------------------------------------------------
 # Live: a forced calendar_create_event round AND its one retry both produced
-# no action marker for "put a recurring calendar event ... for the MGT study
+# no action marker for "put a recurring calendar event ... for the ABC study
 # group, Tuesdays at 3, through Dec 4" — the loop silently gave up and the
 # final synthesis narrated a queue that never happened. When the request's
 # own weekday+clock-time is resolvable (resolve_weekday_time) AND a title is
@@ -1164,7 +1199,7 @@ _CALENDAR_TITLE_MAX_WORDS = 8
 
 def extract_calendar_title(query: str) -> str:
     """Deterministic (title-)extraction: prefers the "for (the) X" clause
-    ("for the MGT study group" -> "MGT study group"); falls back to
+    ("for the ABC study group" -> "ABC study group"); falls back to
     stripping known leading verb/filler tokens from the request and taking
     what remains ("the professor office hours" -> "professor office hours").
     A trailing schedule clause (a comma, or a weekday/at/every/through/
@@ -1320,9 +1355,9 @@ _HEAD_FILLER_RE = re.compile(
 
 # Self-contained-request guard (2026-09-10, A1): a clause longer than a
 # terse go-ahead that ALSO names something concrete ("a recurring calendar
-# event … for the MGT study group") is a fully-specified request in its own
+# event … for the ABC study group") is a fully-specified request in its own
 # right, not an accept of whatever the prior turn already offered — live:
-# "put a recurring calendar event on my google calendar for the MGT study
+# "put a recurring calendar event on my google calendar for the ABC study
 # group, Tuesdays at 3, through Dec 4" matched the go-ahead directive shape
 # (head-anchored "put") and forced whatever action type the PRIOR reply's
 # narration implied, right only by coincidence. Words below length 4 and

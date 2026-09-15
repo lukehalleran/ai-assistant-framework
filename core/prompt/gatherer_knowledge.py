@@ -62,6 +62,7 @@ from datetime import datetime, timedelta
 from core.wiki_util import get_wiki_snippet, clean_query, looks_like_disambiguation_text
 from knowledge.semantic_search import semantic_search_with_neighbors
 from utils.trigger_match import is_negated as _trigger_is_negated
+from utils.retrieval_outcome import OutcomeList, outcome_status
 from .formatter import _parse_bool
 import time as _t
 
@@ -342,7 +343,7 @@ _VISUAL_JUNK_IDS = frozenset({
 # Nouns that name imagery — sufficient on their own in a SHORT message.
 # NOT sufficient at any length: a long paste mentions imagery incidentally —
 # the 2026-08-28 memory-ingest turn contained "Screenshot saved." (narration
-# of an OSCAR drop confirmation) and a literal "image" placeholder from a
+# of a RegPortal drop confirmation) and a literal "image" placeholder from a
 # pasted email client, fired this gate, and a handwritten-notes photo was
 # attached to the final synthesis and narrated ("those SVM notes are real
 # work") in a crisis-logistics reply. In a long message the noun must sit in
@@ -645,6 +646,9 @@ class KnowledgeRetrievalMixin:
                 include_images=include_images,
                 max_images_per_note=max_images_per_note
             )
+            # Read the status BEFORE any transform (the substance/rollup/mood
+            # filters below rebuild the list and would drop it) — CGR-007 #71.
+            leg_status, leg_reason = outcome_status(notes)
             # Debug: check what we got back
             if notes:
                 total_images = sum(len(n.get('image_data', [])) for n in notes)
@@ -714,11 +718,13 @@ class KnowledgeRetrievalMixin:
                 image_count = sum(len(n.get('image_data', [])) for n in notes)
                 logger.debug(f"[ContextGatherer] Retrieved {len(notes)} personal notes with {image_count} images")
 
+            if leg_status in ("failed", "unavailable"):
+                return OutcomeList(notes, status=leg_status, reason=leg_reason)
             return notes or []
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get personal notes: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_reference_docs(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -739,6 +745,9 @@ class KnowledgeRetrievalMixin:
         try:
             # Retrieve documents via hybrid search (fetch extra to allow filtering)
             docs = await manager.get_documents(query, limit=limit * 2)
+            # Read the status BEFORE any transform (the filters below rebuild
+            # the list and would drop it) — CGR-007 #72.
+            leg_status, leg_reason = outcome_status(docs)
 
             # Filter OUT user uploads -- they appear in [USER UPLOADED ITEMS] instead
             docs = [d for d in docs if d.get('metadata', {}).get('type') != 'user_upload']
@@ -746,7 +755,7 @@ class KnowledgeRetrievalMixin:
             # Positive origin gate (2026-08-28): [DAEMON DOCUMENTATION]
             # instructs the model these are docs about ITS OWN architecture,
             # but the collection also holds legacy user material ingested
-            # WITHOUT type='user_upload' (54 OMSA course-transcript titles /
+            # WITHOUT type='user_upload' (54 MXS course-transcript titles /
             # 206 chunks) — survival-models lecture transcripts rendered as
             # self-knowledge on a health-research turn. Self-docs are
             # auto-seeded exclusively from the repo docs/ tree, so require
@@ -782,11 +791,13 @@ class KnowledgeRetrievalMixin:
 
                 logger.debug(f"[ContextGatherer] Retrieved {len(docs)} reference docs for query")
 
+            if leg_status in ("failed", "unavailable"):
+                return OutcomeList(docs, status=leg_status, reason=leg_reason)
             return docs or []
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get reference docs: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     # user_uploads existence cache: the full hybrid retrieval below costs
     # ~0.9s EVERY turn even when the user has never uploaded anything. A
@@ -819,7 +830,7 @@ class KnowledgeRetrievalMixin:
             got = coll.get(where={"type": "user_upload"}, include=["metadatas"])
         except Exception as e:
             logger.debug(f"[ContextGatherer] upload roster metadata fetch failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
         metas = (got or {}).get("metadatas", []) or []
         by_title: Dict[str, Dict[str, Any]] = {}
@@ -895,6 +906,9 @@ class KnowledgeRetrievalMixin:
             # chunks, 242 uploads) and hoping an upload survives the top-N —
             # a fresh upload used to lose outright to unrelated doc chunks.
             docs = await manager.get_documents(query, limit=limit * 2, doc_type="user_upload")
+            # Read the status BEFORE any transform (the filters below rebuild
+            # the list and would drop it) — CGR-007 #74.
+            leg_status, leg_reason = outcome_status(docs)
 
             # Filter to only user uploads (belt-and-suspenders no-op now that
             # doc_type already restricts both legs; kept in case a caller's
@@ -982,7 +996,14 @@ class KnowledgeRetrievalMixin:
                 _DOCUMENT_CONTEXT_RE.search(query) or _UPLOAD_FILENAME_TOKEN_RE.search(query)
             ) if query else False
             roster: List[Dict[str, str]] = self._fetch_upload_roster() if wants_roster else []
+            # Roster-only failure (CGR-007 #74 contract point 3): a raising
+            # roster fetch marks the whole section failed, reason prefixed so
+            # it is distinguishable from a documents-leg failure. A documents
+            # leg that is already failed/unavailable wins over the roster.
+            r_status, r_reason = outcome_status(roster)
             self._last_upload_roster = roster
+            if wants_roster and r_status == "failed" and leg_status not in ("failed", "unavailable"):
+                leg_status, leg_reason = "failed", f"roster:{r_reason}"
             if roster:
                 uploads.insert(0, {
                     "content": "",
@@ -991,11 +1012,13 @@ class KnowledgeRetrievalMixin:
                     "match_type": "roster",
                 })
 
+            if leg_status in ("failed", "unavailable"):
+                return OutcomeList(uploads, status=leg_status, reason=leg_reason)
             return uploads or []
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get user uploads: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_git_commits(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -1090,7 +1113,7 @@ class KnowledgeRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get git commits: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_proposed_features(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
         """
@@ -1145,7 +1168,7 @@ class KnowledgeRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get proposed features: {e}", exc_info=True)
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_procedural_skills(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """
@@ -1188,7 +1211,7 @@ class KnowledgeRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get procedural skills: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_graph_context(self, query: str, max_sentences: int = 12) -> List[str]:
         """Retrieve knowledge graph context for entities mentioned in the query.
@@ -1250,7 +1273,7 @@ class KnowledgeRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Graph context retrieval failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_unresolved_threads(self, max_results: int = 3) -> List[Dict[str, Any]]:
         """Get top priority unresolved threads for session surfacing.
@@ -1277,7 +1300,7 @@ class KnowledgeRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to get unresolved threads: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_proactive_insights(self, query: str, max_insights: int = 2) -> List[str]:
         """Get cross-domain proactive insights from the knowledge graph.
@@ -1713,6 +1736,7 @@ class KnowledgeRetrievalMixin:
 
         # --- Try local ChromaDB wiki_knowledge first ---
         chroma = getattr(self.memory_coordinator, 'chroma_store', None)
+        chroma_err = None
         if chroma:
             # In-flight guard (audit F26 2026-08-31, same zombie-thread class
             # as _WIKI_SEM_INFLIGHT): a timed-out chroma query keeps running
@@ -1723,7 +1747,7 @@ class KnowledgeRetrievalMixin:
                     "[ContextGatherer] Wiki chroma query still running from a "
                     "previous turn — skipping wiki this turn"
                 )
-                return []
+                return OutcomeList.unavailable("in_flight")
             try:
                 coll = chroma.collections.get('wiki_knowledge')
                 def _query_wiki_chroma():
@@ -1794,9 +1818,10 @@ class KnowledgeRetrievalMixin:
                     "[Wiki] ChromaDB wiki query timed out (>%ss) — skipping wiki this turn",
                     WIKI_CHROMA_TIMEOUT_S,
                 )
-                return []
+                return OutcomeList.unavailable("timeout")
             except Exception as e:
                 logger.debug(f"[ContextGatherer] wiki_knowledge query failed, falling back to API: {e}")
+                chroma_err = type(e).__name__
 
         # --- Fallback: live Wikipedia API ---
         started = _t.perf_counter()
@@ -1819,11 +1844,14 @@ class KnowledgeRetrievalMixin:
                 if snippet:
                     wiki_results.append(snippet)
 
+            if chroma_err and not wiki_results:
+                # Primary source errored; an empty fallback isn't confident no_results.
+                return OutcomeList.failed(f"chroma:{chroma_err}")
             return wiki_results
 
         except Exception as e:
             logger.warning(f"Error getting wiki content: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
         finally:
             timings["fallback_ms"] = round((_t.perf_counter() - started) * 1000, 3)
 
@@ -1852,7 +1880,7 @@ class KnowledgeRetrievalMixin:
                 "[ContextGatherer] Wiki semantic search still running from a "
                 "previous turn — skipping wiki chunks this turn"
             )
-            return []
+            return OutcomeList.unavailable("in_flight")
 
         def _search_and_release():
             try:
@@ -1877,6 +1905,12 @@ class KnowledgeRetrievalMixin:
                 )
             finally:
                 timings["faiss_ms"] = round((_t.perf_counter() - started) * 1000, 3)
+
+            # Read status before the falsy check: an empty failed/unavailable
+            # OutcomeList is falsy too (CGR-007 trap).
+            sem_status, sem_reason = outcome_status(results)
+            if sem_status in ("failed", "unavailable"):
+                return OutcomeList(status=sem_status, reason=sem_reason)
 
             if not results:
                 return []
@@ -1948,8 +1982,10 @@ class KnowledgeRetrievalMixin:
         except asyncio.TimeoutError:
             timings["timed_out"] = True
             logger.warning(f"Semantic search timeout after {SEM_TIMEOUT_S}s")
+            return OutcomeList.unavailable("timeout")
         except Exception as e:
             logger.warning(f"Semantic search error: {e}")
+            return OutcomeList.failed(type(e).__name__)
 
         return []
 
@@ -1997,7 +2033,12 @@ class KnowledgeRetrievalMixin:
 
         except Exception as e:
             logger.warning(f"[ContextGatherer] Failed to retrieve narrative context: {e}")
-            return ""
+            # Re-raise (do not swallow to ""): the only caller,
+            # core/prompt/builder.py's narrative block, already wraps this
+            # call in a try/except that records the section outcome as
+            # failed (F5, CGR-007). Swallowing here made a real read
+            # failure indistinguishable from "no narrative available".
+            raise
 
     async def get_daemon_self_notes(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
         """Retrieve daemon self-notes relevant to the query.
@@ -2062,7 +2103,7 @@ class KnowledgeRetrievalMixin:
 
         except Exception as e:
             logger.debug(f"[ContextGatherer] daemon_self_notes retrieval failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_google_calendar_events(self, max_events: int = 10) -> List[Dict[str, Any]]:
         """Fetch upcoming Google Calendar events for prompt injection.
@@ -2254,8 +2295,8 @@ class KnowledgeRetrievalMixin:
                 logger.debug(f"[ContextGatherer] Email relevance filtering failed: {e}")
                 # Relevance could not be established. Fail closed rather than
                 # injecting arbitrary inbox content into the prompt.
-                return []
+                return OutcomeList.failed("relevance_unavailable")
 
         except Exception as e:
             logger.debug(f"[ContextGatherer] Email retrieval failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)

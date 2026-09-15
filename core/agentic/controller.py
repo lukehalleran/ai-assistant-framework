@@ -1545,7 +1545,7 @@ class AgenticSearchController:
                     # A11 deterministic fallback (2026-09-10, round 3): the
                     # forced round AND its one retry (above) BOTH produced no
                     # calendar decision — live: "put a recurring calendar
-                    # event ... for the MGT study group, Tuesdays at 3,
+                    # event ... for the ABC study group, Tuesdays at 3,
                     # through Dec 4" silently fell through to "ready to
                     # answer" twice, and the final synthesis narrated a
                     # queue that never happened. When the request's own

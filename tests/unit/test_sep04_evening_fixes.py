@@ -96,7 +96,7 @@ LIVE_OUTLOOK_QUERY = (
     "figure out what to do about that, both are useful probably? Also, there is both a "
     "virtual career fair, but I also feel like I remember an in person AI focused one at "
     "the end of this month as well, and that could be a good use of time/money, even "
-    "though I would have to fly to atlanta"
+    "though I would have to fly to marrowby"
 )
 
 
@@ -111,14 +111,14 @@ class TestEmailReadRequestClause:
         assert _email_read_request_clause("I emailed the form to them yesterday and then went to the gym.") is False
         long_narration = " ".join(["I sent the email this morning"] + ["word"] * 40)
         assert _email_read_request_clause(long_narration) is False
-        sig = "Thanks,\nLuke\nEmail: someone@example.com\nPhone: 555-0100"
+        sig = "Thanks,\nAlex\nEmail: someone@example.com\nPhone: 555-0100"
         assert _email_read_request_clause(sig) is False
 
     def test_helper_ignores_request_inside_pasted_correspondence(self):
         from core.agentic.gate import _email_read_request_clause
         pasted = (
             "Here is what she sent me, I did not reply yet.\n\n"
-            "Hi Luke,\n\n"
+            "Hi Alex,\n\n"
             "Can you check the attached email and confirm the dates?\n\n"
             "Best,\nMorgan\n"
             "Advisor, Example University\n"
@@ -225,7 +225,7 @@ class TestAuditFalsePositives:
         ]
         docs = [
             SimpleNamespace(filename="UsedCars.csv", content_text="[UsedCars.csv: 1,264 rows × 12 columns (Id, Model, …)]\nId,Model\n"),
-            SimpleNamespace(filename="Homework1-1.pdf", content_text="Data Analytics for Business\nHomework 1 – Part 1\nLinear Models\n"),
+            SimpleNamespace(filename="Homework1-1.pdf", content_text="Predictive Modeling for Operations\nHomework 1 – Part 1\nFitted Curves\n"),
             SimpleNamespace(filename="lecture1.txt", content_text=transcript),
         ]
         note = audit_attachments(user_text, files, docs)

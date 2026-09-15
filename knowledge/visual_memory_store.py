@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import OutcomeList
 from utils.safe_json import atomic_write_json
 
 logger = get_logger("knowledge.visual_memory_store")
@@ -257,7 +258,7 @@ class VisualMemoryStore:
     def search_by_text(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """Search by text query via ChromaDB (SentenceTransformer embeddings on captions)."""
         if self._chroma is None:
-            return []
+            return OutcomeList.unavailable("chroma_unavailable")
 
         try:
             raw = self._chroma.query_collection(COLLECTION_NAME, query, n_results=k)
@@ -275,10 +276,10 @@ class VisualMemoryStore:
                     "timestamp": meta.get("timestamp", ""),
                     "score": item.get("relevance_score", 0.0),
                 })
-            return results
+            return OutcomeList(results)
         except Exception as e:
             logger.warning(f"[VisualStore] ChromaDB text search failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     def has_hash(self, image_hash: str) -> bool:
         """Check if an image with this hash already exists."""

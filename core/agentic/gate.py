@@ -427,6 +427,16 @@ _TOOL_HIT = _compile_keyword_matcher(TOOL_KEYWORDS)
 _MEMORY_HIT = _compile_keyword_matcher(MEMORY_KEYWORDS)
 _KNOWLEDGE_HIT = _compile_keyword_matcher(KNOWLEDGE_KEYWORDS)
 _FILE_ACCESS_KEYWORD_HIT = _compile_keyword_matcher(FILE_ACCESS_KEYWORDS)
+
+# 2026-09-13 (CGR-20260913-002, dm01_raw_substring anchors #3/#4/#7/#8): the
+# four CONTINUATION_PHRASES call sites matched with raw `in` against `_lower`
+# — 'yes' ⊂ "yesterday" and 'sure' ⊂ "measure"/"pressure" all counted as an
+# affirmation. Boundary matching only (negation is deliberately NOT added
+# here — see the response packet's "siblings"). Anchor #6's SEARCH_SIGNAL_WORDS
+# casual-skip check had the same defect ('search' ⊂ "research", 'look' ⊂
+# "outlook" — the family of the 'how' ⊂ "shower" incident).
+_CONTINUATION_PHRASE_HIT = _compile_keyword_matcher(CONTINUATION_PHRASES)
+_SEARCH_SIGNAL_HIT = _compile_keyword_matcher(SEARCH_SIGNAL_WORDS)
 # Tier-2's recall-signal test used bare substring — 'how' ⊂ "sHOWer" fired
 # memory mode on "I am in bathroom with shower running…" (live 2026-08-29;
 # 4th occurrence of the substring class after 'solve'⊂"resolution",
@@ -506,7 +516,7 @@ _TEMPORAL_GENERIC_TOKENS = frozenset({
 def _terms_are_temporal_generic(terms) -> bool:
     """True when EVERY proposed search term reduces to time words + generic
     filler (no content-bearing token survives). Never fires on real topics:
-    'GT drop date August 2026' keeps 'gt'/'drop'/'date'."""
+    'XW drop date August 2026' keeps 'xw'/'drop'/'date'."""
     if not terms:
         return False
     for term in terms:
@@ -551,6 +561,16 @@ def _email_intent_negated(text: str) -> bool:
         return False
     return all(_trigger_is_negated(text, m.start()) for m in hits)
 
+# 2026-09-13 (CGR-20260913-002 anchor #5): the "email as a verb anywhere"
+# arm below matched 'email'/the verb list with raw `in _lower` — 'send' ⊂
+# "sender" and 'write' ⊂ "rewrite" both granted the arm. Routed through the
+# chokepoint, negation-aware (`_hit_non_negated`, BC-02): "don't send that
+# email" must not count either.
+EMAIL_INTENT_CUE_WORDS = ('email',)
+EMAIL_INTENT_VERB_WORDS = ('send', 'draft', 'write', 'compose', 'fire off')
+_EMAIL_INTENT_CUE_HIT = _compile_keyword_matcher(EMAIL_INTENT_CUE_WORDS)
+_EMAIL_INTENT_VERB_HIT = _compile_keyword_matcher(EMAIL_INTENT_VERB_WORDS)
+
 # A genuine continuation/affirmation is terse ("yes please", "ok try again").
 # Longer messages that merely CONTAIN one of the phrases above are new
 # statements, not continuations — "Yeah they seem like the worst drug to get
@@ -592,6 +612,11 @@ _PREV_AGENTIC_QUERY_PATTERN = re.compile(
 EXPLICIT_SEARCH_KEYWORDS = [
     'search', 'look up', 'fetch', 'check out', 'go to', 'visit', 'pull up',
 ]
+# 2026-09-13 (CGR-20260913-002 anchor #9): the intent-veto exemption matched
+# with raw `in _lower` — 'search' ⊂ "research" granted the exemption.
+# Negation-aware (BC-02): a negated explicit keyword ("don't search for it")
+# must not grant it either.
+_EXPLICIT_SEARCH_HIT = _compile_keyword_matcher(EXPLICIT_SEARCH_KEYWORDS)
 
 VETO_INTENTS = {'meta_conversational', 'casual_social'}
 
@@ -721,7 +746,7 @@ async def evaluate_agentic_gate(
     if _deferred_query:
         _is_affirm = (
             len(_words) <= CONTINUATION_MAX_WORDS
-            and any(p in _lower for p in CONTINUATION_PHRASES)
+            and _CONTINUATION_PHRASE_HIT(_lower)
         )
         if _is_affirm:
             logger.info(
@@ -767,7 +792,7 @@ async def evaluate_agentic_gate(
     if _offered_insight:
         _is_affirm = (
             len(_words) <= CONTINUATION_MAX_WORDS
-            and any(p in _lower for p in CONTINUATION_PHRASES)
+            and _CONTINUATION_PHRASE_HIT(_lower)
         )
         if _is_affirm:
             logger.info(
@@ -790,7 +815,7 @@ async def evaluate_agentic_gate(
     # ── Explicit action intent from the CURRENT text (2026-09-10, A1) ──
     # Computed here — before the prior-turn offer-affirmation arm below —
     # so a fully-specified request ("put a recurring calendar event on my
-    # google calendar for the MGT study group, Tuesdays at 3, through Dec
+    # google calendar for the ABC study group, Tuesdays at 3, through Dec
     # 4") is never misread as a terse go-ahead accepting whatever the PRIOR
     # reply narrated/offered. Live: is_offer_affirmation(q6) matched the
     # go-ahead directive shape on "put a recurring calendar event…" itself,
@@ -880,7 +905,7 @@ async def evaluate_agentic_gate(
     needs_computation = _hit_non_negated(_lower, _COMPUTATION_HIT)
 
     # Personal-document search (2026-08-29): "please search for documents
-    # related to the MGT class I am currently enrolled in" hit the WEB
+    # related to the ABC class I am currently enrolled in" hit the WEB
     # keyword arm ("search") and ran the whole turn in web_search mode —
     # but the search target is the user's own corpus. Route to tools
     # (file/doc retrieval + memory) and stand the web arm down. A bare URL
@@ -961,7 +986,7 @@ async def evaluate_agentic_gate(
         if _has_email_addr and any(w in _lower for w in ('email', 'send', 'message', 'write', 'mail', 'contact')):
             needs_tools = True
 
-    # Email-by-name patterns: "email Meagan", "send Meagan an email", "email her about X"
+    # Email-by-name patterns: "email Maren", "send Maren an email", "email her about X"
     if not needs_tools and _email_action_plausible:
         # "email <name>" at start of message
         if _re_gate2.match(r'^email\s+[a-z]', _lower):
@@ -970,7 +995,8 @@ async def evaluate_agentic_gate(
         elif _re_gate2.search(r'\bsend\b.*\b(email|message)\b', _lower):
             needs_tools = True
         # "email" as a verb anywhere + action-like context
-        elif 'email' in _lower and any(w in _lower for w in ('send', 'draft', 'write', 'compose', 'fire off')):
+        elif (_hit_non_negated(_lower, _EMAIL_INTENT_CUE_HIT)
+              and _hit_non_negated(_lower, _EMAIL_INTENT_VERB_HIT)):
             needs_tools = True
         if needs_tools:
             logger.debug("[Agentic Gate] Tier 1: email-by-name intent detected")
@@ -1077,7 +1103,7 @@ async def evaluate_agentic_gate(
 
     # ── Casual skip filter ────────────────────────────────────────────
     _has_search_signal = (
-        any(w in _lower for w in SEARCH_SIGNAL_WORDS)
+        _SEARCH_SIGNAL_HIT(_lower)
         or '?' in user_text
         or _has_url
     )
@@ -1104,7 +1130,7 @@ async def evaluate_agentic_gate(
         )
         _is_continuation = (
             len(_words) <= CONTINUATION_MAX_WORDS
-            and any(p in _lower for p in CONTINUATION_PHRASES)
+            and _CONTINUATION_PHRASE_HIT(_lower)
         ) or _request_continuation
         if _is_continuation and corpus_manager is not None:
             try:
@@ -1182,7 +1208,7 @@ async def evaluate_agentic_gate(
             )
         )
         _is_affirmation = len(_words) <= CONTINUATION_MAX_WORDS and (
-            any(p in _lower for p in CONTINUATION_PHRASES)
+            _CONTINUATION_PHRASE_HIT(_lower)
             or (bool(_words) and all(w in FILLER_WORDS for w in _words))
         )
         if _is_pronoun_retrieval or _is_affirmation:
@@ -1511,7 +1537,7 @@ async def evaluate_agentic_gate(
             logger.debug(f"[Agentic Gate] Triggered — modes: {', '.join(triggered)}")
 
     # ── Intent-veto exemption (explicit requests are never vetoed) ────
-    _explicit_kw = any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS)
+    _explicit_kw = _hit_non_negated(_lower, _EXPLICIT_SEARCH_HIT)
     _veto_exempt = (
         _explicit_kw or _has_url or needs_files
         or bool(doc_gen_intent) or bool(self_note_intent)

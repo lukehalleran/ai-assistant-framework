@@ -123,7 +123,7 @@ class TestContactsErrorDetail:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
 
         assert result == []
         err = get_last_error()
@@ -142,7 +142,7 @@ class TestContactsErrorDetail:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            await search_contacts("Meagan")
+            await search_contacts("Maren")
 
         err = get_last_error()
         assert err is not None
@@ -163,7 +163,7 @@ class TestContactsErrorDetail:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            result = await search_contacts("Meagan")
+            result = await search_contacts("Maren")
 
         assert result == []
         assert get_last_error() is not None  # still records SOMETHING, never raises
@@ -175,14 +175,14 @@ class TestContactsErrorDetail:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=bad_client):
-            await search_contacts("Meagan")
+            await search_contacts("Maren")
         assert get_last_error() is not None
 
         good_client = _mock_httpx_client({"results": []}, status_code=200)
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=good_client):
-            await search_contacts("Meagan")
+            await search_contacts("Maren")
         assert get_last_error() is None
 
     def test_no_error_yet_get_last_error_is_none(self):
@@ -203,7 +203,7 @@ class TestRuntimeActionHealthContacts:
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=mock_client):
-            await search_contacts("Meagan")
+            await search_contacts("Maren")
 
         with patch("config.app_config.INTERNET_ACTIONS_ENABLED", True), \
              patch("config.app_config.GOOGLE_CALENDAR_ENABLED", False):

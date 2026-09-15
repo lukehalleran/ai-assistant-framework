@@ -80,6 +80,7 @@ def backup_targets(*, existing_only: bool = True) -> List[str]:
     from memory.user_profile import UserProfile
     from utils.adaptive_exemplars import _STORE_PATH as adaptive_exemplars_path
     from memory.learned_relations import _STORE_PATH as learned_relations_path
+    from utils.bootstrap import get_user_profile_path
 
     # Narrative staleness flag path — resolved at call time for test sandboxing
     narrative_stale_path = os.getenv("NARRATIVE_STALE_FLAG_PATH", os.path.join("data", "narrative_stale.json"))
@@ -87,7 +88,8 @@ def backup_targets(*, existing_only: bool = True) -> List[str]:
     candidates = [
         KNOWLEDGE_GRAPH_PERSIST_PATH,
         KNOWLEDGE_GRAPH_ALIASES_PATH,
-        UserProfile.DEFAULT_PATH,
+        # DEFAULT_PATH is None unless overridden; the same authority UserProfile() uses.
+        UserProfile.DEFAULT_PATH or get_user_profile_path(),
         CORPUS_FILE,
         STALENESS_INDEX_PATH,
         PROACTIVE_SURFACING_HISTORY_PATH,

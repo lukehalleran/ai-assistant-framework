@@ -1222,7 +1222,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
     # params aren't message-shaped inexpressible on the XML path —
     # calendar_create_event needs summary/start_time/end_time, so a forced
     # calendar proposal could never carry its fields and the round fell
-    # through to "implicit ready" (live 2026-08-29 MGT-calendar turn).
+    # through to "implicit ready" (live 2026-08-29 ABC-calendar turn).
     ACTION_PATTERN = re.compile(
         r'<action\s+([^>]*?)>(.*?)</action>',
         re.DOTALL | re.IGNORECASE

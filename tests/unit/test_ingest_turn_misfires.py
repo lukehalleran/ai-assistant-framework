@@ -8,7 +8,7 @@ two systems the day after the 08-27 paste-turn fixes shipped:
    SIGNATURE plus incidental "email"/"write" narration → modes
    [computation, tools] → 49s agentic loop on a turn that requested nothing.
 2. Visual gate — the 08-27 "visual nouns suffice at any length" rule was the
-   new hole: "Screenshot saved." (narration of an OSCAR drop confirmation) and
+   new hole: "Screenshot saved." (narration of a RegPortal drop confirmation) and
    a literal "image" placeholder from the pasted email client fired the gate;
    the generic auto-learned alias "project" (bound to
    phase_change_heat_exchanger_project via a possessive mention) resolved from
@@ -48,33 +48,33 @@ from memory.graph_utils import extract_graph_entities
 # client, "group project", "Emailed re:", "write that this issue", and a
 # terse first-person tail. No question marks, no send imperative.
 INGEST_PASTE = (
-    "DAEMON MEMORY INGEST — 2026-08-28 — OMSA/Fall 2026 crisis resolution\n\n"
+    "DAEMON MEMORY INGEST — 2026-08-28 — MXS/Fall 2026 crisis resolution\n\n"
     "STATUS: Fall 2026 enrollment finalized. Crisis-mode decisions complete.\n\n"
     "DECISIONS MADE\n"
-    "- Dropped CSE 6040 (clean drop, no W, no charge) via OSCAR 2026-08-28. "
+    "- Dropped ABC 1234 (clean drop, no W, no charge) via RegPortal 2026-08-28. "
     "Screenshot saved.\n"
-    "- Enrolled in MGT 6203 only (3 hrs, part-time). Per advisor recommendation.\n\n"
+    "- Enrolled in ABC 1234 only (3 hrs, part-time). Per advisor recommendation.\n\n"
     "KEY FACTS\n"
-    "- Advisor: Morgan Reeves, Academic Advising Manager "
-    "(morgan.reeves@lifetimelearning.gatech.edu). Authoritative on deadlines.\n"
+    "- Advisor: Morgan Ashdown, Academic Advising Manager "
+    "(morgan.ashdown@extension.wrenfield.example). Authoritative on deadlines.\n"
     "- Incomplete from last term: unresolved. AWAITING REPLY.\n"
-    "- MGT 6203: light course. Check syllabus for group project and the "
+    "- ABC 1234: light course. Check syllabus for group project and the "
     "percent of grade after Oct 31.\n\n"
     "FINANCIAL\n"
-    "- Dean of Students contact: sheree.gibson@gatech.edu, CC "
-    "april.glover@gatech.edu. Emailed re: retro medical W and petition "
+    "- Dean of Students contact: odile.fenwright@wrenfield.example, CC "
+    "jordan.pellow@wrenfield.example. Emailed re: retro medical W and petition "
     "standards.\n\n"
     "HEALTH\n"
     "- New provider appointment Monday. My provider will likely be willing to "
     "write that this issue was caused by improper prescribing.\n\n"
-    "I received this from Morgan. Hi Luke, I would like to correct your "
+    "I received this from Morgan. Hi Alex, I would like to correct your "
     "understanding of the registration deadline for Fall 2026. Best, Morgan "
-    "Reeves, Georgia Institute of Technology, "
-    "morgan.reeves@lifetimelearning.gatech.edu\n"
+    "Ashdown, Wrenfield Institute of Science, "
+    "morgan.ashdown@extension.wrenfield.example\n"
     "image\n"
     "Book time to meet with me\n"
-    "I woke up at maybe 1015 and took 5 mg extra Dexivar today. I dropped cse "
-    "6040 before the deadline so that's done. Ugh"
+    "I woke up at maybe 1015 and took 5 mg extra Dexivar today. I dropped abc "
+    "1234 before the deadline so that's done. Ugh"
 )
 
 
@@ -85,7 +85,7 @@ INGEST_PASTE = (
 class TestKeywordWordBounding:
 
     def test_solve_does_not_match_resolution(self):
-        assert not _COMPUTATION_HIT("omsa fall 2026 crisis resolution")
+        assert not _COMPUTATION_HIT("mxs fall 2026 crisis resolution")
         assert not _COMPUTATION_HIT("the incomplete from last term is unresolved")
         assert not _COMPUTATION_HIT("we reached a resolution yesterday")
 
@@ -114,8 +114,8 @@ class TestKeywordWordBounding:
 class TestEmailArmGating:
 
     def test_head_anchored_send_command_matches(self):
-        assert _EMAIL_COMMAND_RE.search("Send this to morgan@gatech.edu: draft below")
-        assert _EMAIL_COMMAND_RE.search("ok, email Meagan the update")
+        assert _EMAIL_COMMAND_RE.search("Send this to morgan@wrenfield.example: draft below")
+        assert _EMAIL_COMMAND_RE.search("ok, email Maren the update")
         assert _EMAIL_COMMAND_RE.search("please draft an email to the bursar")
 
     def test_mid_paste_verbs_do_not_match(self):
@@ -135,7 +135,7 @@ class TestEmailArmGating:
     @pytest.mark.asyncio
     async def test_long_anchored_draft_still_routes_to_tools(self):
         d = await evaluate_agentic_gate(
-            user_text="Send this to morgan.reeves@lifetimelearning.gatech.edu: "
+            user_text="Send this to morgan.ashdown@extension.wrenfield.example: "
                       + ("thank you for your guidance " * 20)
         )
         assert d.should_trigger is True
@@ -196,7 +196,7 @@ class _FakeResolver:
         self.aliases = {
             "project": "phase_change_heat_exchanger_project",
             "notes": "phase_change_heat_exchanger_project",
-            "morgan": "morgan_reeves",
+            "morgan": "morgan_ashdown",
             "phase change project": "phase_change_heat_exchanger_project",
         }
 
@@ -216,7 +216,7 @@ class TestGenericAliasStoplist:
         ents = extract_graph_entities(
             "did Morgan reply about the deadline", _FakeResolver()
         )
-        assert "morgan_reeves" in ents
+        assert "morgan_ashdown" in ents
 
     def test_multiword_mention_still_resolves(self):
         # The stoplist only guards SINGLE-word matches — a real multi-word
@@ -258,11 +258,11 @@ class TestGenericAliasBindingGuard:
     def test_named_alias_still_binds(self, tmp_path):
         from memory.graph_models import GraphNode
         g = self._graph(tmp_path)
-        g.add_entity(GraphNode(entity_id="morgan_reeves",
-                               display_name="Morgan Reeves",
+        g.add_entity(GraphNode(entity_id="morgan_ashdown",
+                               display_name="Morgan Ashdown",
                                entity_type="person"))
-        g.register_alias("morgan", "morgan_reeves")
-        assert g.resolve_entity("morgan") == "morgan_reeves"
+        g.register_alias("morgan", "morgan_ashdown")
+        assert g.resolve_entity("morgan") == "morgan_ashdown"
 
     def test_add_entity_drops_generic_alias(self, tmp_path):
         from memory.graph_models import GraphNode

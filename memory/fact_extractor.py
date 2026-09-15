@@ -185,7 +185,7 @@ _JUNK_OBJECT_PATTERNS = [
     re.compile(r"\b(?:fucking|fuckin|goddamn|damn)\b"),
     # Bare weekday/weekend names, optionally prefixed ("on thursday", "next
     # monday") — a when-word is not a fact object outside the schedule
-    # relations exempted above (2026-09-05: `rowan | texted | on thursday`,
+    # relations exempted above (2026-09-05: `ellery | texted | on thursday`,
     # `user | had_off_day_on | tuesday` were live graph edges).
     re.compile(r"^(?:(?:on|this|next|last|every)\s+)?"
                r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|weekday)s?$"),
@@ -210,7 +210,7 @@ _FAMILY_HAS_RE = re.compile(
     r"boyfriend|wife|husband|spouse|son|daughter|kid|friend|roommate|cousin|aunt|uncle|"
     r"grandma|grandpa|grandmother|grandfather)$"
 )
-# Care-team `has_<role>` names a PERSON/role, so a clause object ("Rowan is
+# Care-team `has_<role>` names a PERSON/role, so a clause object ("Ellery is
 # cautious about drinking due to past accident" was stored as has_doctor on
 # 2026-09-05 — a friend's history mined into the doctor slot) is the wrong
 # relation. Only the clause arm applies: short status objects ("no portal")
@@ -369,7 +369,7 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
     # re-scopes to a user-owned subject string instead of being dropped as a
     # stop-subject. It must NEVER fuzzy-bind to a named entity — the appraisal
     # belongs to the user's unresolved referent, not to whoever a resolver
-    # would guess (memory/stance_classifier.py; the casey/she incident class).
+    # would guess (memory/stance_classifier.py; the tamsin/she incident class).
     try:
         from memory.stance_classifier import scope_unresolved_referent
         _scoped = scope_unresolved_referent(s, o)
@@ -1948,7 +1948,7 @@ class FactExtractor:
             "confidence": float(confidence),
             "method": method,
             # Claim-bearing sentence, not the head of the turn (2026-09-02:
-            # lived_in=Atlanta cited 200 chars of song lyrics from a long turn).
+            # lived_in=Marrowby cited 200 chars of song lyrics from a long turn).
             "source_excerpt": excerpt,
             "source_support": "regex_span",
             # B2 (2026-09-06): claim kind + resolved event date/observation

@@ -1,0 +1,70 @@
+[sandbox] adaptive store -> /tmp/probe_store_selirq5x/adaptive_exemplars.json; TONE_EXEMPLAR_LEARNING=0
+tone_detector sha256: 76c521f702200015
+== stress (deployed)
+  PASS before=CONCERN        now=CONCERN        trigger=harm_score: 5.0 (0H, 1M, 0C)         | my kids haven't slept in days and I'm running on nothing
+  PASS before=MEDIUM         now=MEDIUM         trigger=semantic                             | my mom and I keep fighting and it's wearing me down
+  PASS before=CONCERN        now=CONCERN        trigger=harm_score: 5.0 (0H, 1M, 0C)         | things with my partner are falling apart and I don't know what to do
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | taking care of my dad after his stroke is wearing me out
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | I'm the only one caring for my grandmother and I can't keep up
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | juggling my sister's medical appointments is exhausting me
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | my back pain flared up again and I can't do anything
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | waiting on the biopsy results is eating me alive
+  PASS before=CONCERN        now=CONCERN        trigger=harm_score: 4.0 (0H, 0M, 2C)         | my migraines keep getting worse and I'm scared
+  MISS before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | cash flow is tight and payroll is due friday
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | I don't know how we'll make rent this month
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | the car repair wiped out our savings
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | our landlord is trying to evict us
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | we might lose the apartment
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | the house has black mold and we can't afford to move
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | my boss keeps piling on more and I'm barely keeping my head up
+  PASS before=CONCERN        now=CONCERN        trigger=semantic                             | I'm about to get laid off and I can't stop thinking about it
+  PASS before=CONCERN        now=CONCERN        trigger=borderline_backstop                  | I've been blocked on my novel for weeks and it's crushing me
+  PASS before=CONCERN        now=CONCERN        trigger=semantic                             | I'm failing chemistry and my parents are going to be furious
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | my thesis defense is next week and I'm panicking
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | I can't keep up with my classes anymore
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | the landlord says he's going to kick us out of the apartment next month
+  PASS before=CONVERSATIONAL now=CONCERN        trigger=domain_strain                        | the bank is threatening to foreclose on us and the house is all we have
+== controls (deployed)
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my kids have soccer on saturday
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my mom is visiting next week
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I'm taking care of my neighbor's cat this weekend
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my dad's physical therapy starts monday
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I have a dentist appointment tomorrow
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I started taking a new vitamin
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I paid my rent today
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I'm budgeting for a vacation
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | we're looking at apartments downtown
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | the landlord fixed the sink
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I have a meeting with my boss at 3
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | work was fine today
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my chemistry exam is on friday
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I finished my homework
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | the kids wore me out at the park but it was a great day
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I'm not stressed about rent anymore
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my coworker is getting evicted and I'm helping her move
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I can't keep up with all the good shows right now
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my dad's surgery went really well
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my thesis is almost done and I'm excited
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | rent went up a little but we're fine
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | the kids can't keep up with me on hikes anymore haha
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my kids wore me out at the zoo but it was so fun
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my sister is exhausted from her new job
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | our landlord finally fixed the heater
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my partner is panicking about his exam, I'm trying to help
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | we paid off the loan and I feel so relieved
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I don't know how the kids have so much energy
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I paid the bills this morning
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | work was busy but good
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my parents are coming over for dinner
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | we moved into our new place last week
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | the business had a great month
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | I'm looking after my nephew this afternoon
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | our landlord promised he won't evict us
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | they tried to evict us years ago but we're doing fine now
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | we were worried they'd kick us out but the lease got renewed
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | the bouncer is going to kick us out of the bar lol
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | the game keeps trying to kick us out of the lobby haha
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | the landlord is trying to evict the tenants downstairs, not us
+  ok   before=CONVERSATIONAL now=CONVERSATIONAL trigger=semantic                             | my landlord would never evict us, he's like family
+STRESS >= CONCERN: 22/23 (unexpected misses: 0); CONTROLS changed vs round-3 today: 0/41
+[sandbox] store file exists after run: False

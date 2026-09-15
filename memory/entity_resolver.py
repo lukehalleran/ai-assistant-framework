@@ -296,7 +296,7 @@ class EntityResolver:
 def _normalize_id(mention: str) -> str:
     """Normalize a mention string into a valid entity ID.
 
-    "Georgia Tech" -> "georgia_tech"
+    "Vermont Wrenfield" -> "vermont_wrenfield"
     "My Cat" -> "my_cat"
     """
     s = mention.lower().strip()

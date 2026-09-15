@@ -1,0 +1,45 @@
+[sandbox] adaptive store -> /tmp/probe_store__pvid_20/adaptive_exemplars.json; TONE_EXEMPLAR_LEARNING=0
+tone_detector sha256: 3d65d1a46401af8a
+== family
+  stress  CONCERN        harm_score: 5.0 (0H, 1M, 0C)       harm= 5.0 | my kids haven't slept in days and I'm running on nothing
+  stress  MEDIUM         semantic                           harm= 2.0 | my mom and I keep fighting and it's wearing me down
+  stress  CONCERN        harm_score: 5.0 (0H, 1M, 0C)       harm= 5.0 | things with my partner are falling apart and I don't know what to do
+  control CONVERSATIONAL semantic                           harm= 0.0 | my kids have soccer on saturday
+  control CONVERSATIONAL semantic                           harm= 0.0 | my mom is visiting next week
+== caregiving
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | taking care of my dad after his stroke is wearing me out
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | I'm the only one caring for my grandmother and I can't keep up
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | juggling my sister's medical appointments is exhausting me
+  control CONVERSATIONAL semantic                           harm= 0.0 | I'm taking care of my neighbor's cat this weekend
+  control CONVERSATIONAL semantic                           harm= 0.0 | my dad's physical therapy starts monday
+== health
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | my back pain flared up again and I can't do anything
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | waiting on the biopsy results is eating me alive
+  stress  CONCERN        harm_score: 4.0 (0H, 0M, 2C)       harm= 4.0 | my migraines keep getting worse and I'm scared
+  control CONVERSATIONAL semantic                           harm= 0.0 | I have a dentist appointment tomorrow
+  control CONVERSATIONAL semantic                           harm= 0.0 | I started taking a new vitamin
+== money
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | cash flow is tight and payroll is due friday
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | I don't know how we'll make rent this month
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | the car repair wiped out our savings
+  control CONVERSATIONAL semantic                           harm= 0.0 | I paid my rent today
+  control CONVERSATIONAL semantic                           harm= 0.0 | I'm budgeting for a vacation
+== housing
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | our landlord is trying to evict us
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | we might lose the apartment
+  stress  CONVERSATIONAL semantic                           harm= 2.0 | the house has black mold and we can't afford to move
+  control CONVERSATIONAL semantic                           harm= 0.0 | we're looking at apartments downtown
+  control CONVERSATIONAL semantic                           harm= 0.0 | the landlord fixed the sink
+== work
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | my boss keeps piling on more and I'm barely keeping my head up
+  stress  CONCERN        semantic                           harm= 0.0 | I'm about to get laid off and I can't stop thinking about it
+  stress  CONCERN        borderline_backstop                harm= 0.0 | I've been blocked on my novel for weeks and it's crushing me
+  control CONVERSATIONAL semantic                           harm= 0.0 | I have a meeting with my boss at 3
+  control CONVERSATIONAL semantic                           harm= 0.0 | work was fine today
+== school
+  stress  CONCERN        semantic                           harm= 2.0 | I'm failing chemistry and my parents are going to be furious
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | my thesis defense is next week and I'm panicking
+  stress  CONVERSATIONAL semantic                           harm= 0.0 | I can't keep up with my classes anymore
+  control CONVERSATIONAL semantic                           harm= 0.0 | my chemistry exam is on friday
+  control CONVERSATIONAL semantic                           harm= 0.0 | I finished my homework
+[sandbox] store file exists after run: False

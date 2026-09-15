@@ -4,7 +4,7 @@ The chroma-side JunkFactCurator quarantines `facts` docs, but the quick
 profile — the [USER PROFILE] section every prompt renders — kept its own
 copies, and the only path to clean it was the terminal
 (scripts/purge_profile_facts.py + a curated id file). 2026-09-05: the
-owner had to purge `has_doctor="Rowan is cautious about drinking…"` and
+owner had to purge `has_doctor="Ellery is cautious about drinking…"` and
 `works_on="this assistant"` by hand; a read-only scan of the live profile
 found 45 more current facts the deployed guard rejects (`time_off_work=
 today`, `job_fair_date=Thursday`, `food_status=in the oven`…).
@@ -39,7 +39,7 @@ class ProfileJunkFactCurator:
                            passed=_is_junk_object("on thursday", "texted")),
             SentinelResult(name="care_team_clause_flags",
                            passed=_is_junk_object(
-                               "Rowan is cautious about drinking due to past accident",
+                               "Ellery is cautious about drinking due to past accident",
                                "has_doctor")),
             SentinelResult(name="demonstrative_flags",
                            passed=_is_junk_object("this assistant", "works_on")),

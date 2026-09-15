@@ -41,6 +41,7 @@ import threading
 import time
 from typing import Optional
 
+from utils.bootstrap import get_user_profile_path
 from utils.logging_utils import get_logger
 from utils.trigger_match import normalize_ws
 
@@ -66,8 +67,6 @@ except ImportError:
     LOCATION_IP_LOOKUP_TIMEOUT_S = 3.0
     LOCATION_OVERRIDE = os.getenv("DAEMON_USER_LOCATION", "")
 
-_DEFAULT_PROFILE_PATH = os.path.join("data", "user_profile.json")
-
 # A stored lives_in value must look like "City, Region" to be trusted as a
 # place — the profile accumulates sarcasm ("joke state") and mood junk
 # ("a bad mood") under lives_in, and none of that should reach a search query.
@@ -81,7 +80,7 @@ class LocationResolver:
     """Non-blocking user-location resolution with layered fallbacks."""
 
     def __init__(self, profile_path: Optional[str] = None):
-        self.profile_path = profile_path or _DEFAULT_PROFILE_PATH
+        self.profile_path = profile_path or get_user_profile_path()
         self._ip_location: Optional[str] = None
         self._ip_fetched_at: float = 0.0
         self._ip_failed_at: float = 0.0
@@ -308,11 +307,11 @@ def _canonical_state_forms(state: str):
 
 def _institution_protected_spans(text: str, institution: Optional[str]) -> list:
     """Character spans in `text` that name an institution — the resolved one
-    (if given) plus any generally institution-shaped phrase ("Harvard
+    (if given) plus any generally institution-shaped phrase ("Quellmoor
     University"). A location mention lying inside one of these spans is part
     of a SCHOOL'S name, not a reference to the place itself (2026-09-12:
-    "Georgia Tech drop deadline" must not read as the user naming the state
-    of Georgia just because their school's name happens to contain it)."""
+    "Vermont Wrenfield drop deadline" must not read as the user naming the
+    state of Vermont just because their school's name happens to contain it)."""
     spans = []
     if institution and institution.strip():
         inst = institution.strip()
@@ -341,7 +340,7 @@ def _overlaps_any(start: int, end: int, spans: list) -> bool:
 def _sub_outside_spans(pattern, text: str, spans: list) -> str:
     """Like `pattern.sub("", text)`, but a match overlapping any of `spans`
     is left untouched instead of removed — the strip must never leave a
-    fragment like "Tech" behind by amputating half of "Georgia Tech"."""
+    fragment like "Wrenfield" behind by amputating half of "Vermont Wrenfield"."""
     if not spans:
         return pattern.sub("", text)
     out = []
@@ -521,7 +520,7 @@ def query_justifies_location(
     abbreviation), or Account, login, school, employer, product, etc. queries
     do NOT justify localization — the user's institutions are not determined
     by where they are sitting. A state mention that lies INSIDE an
-    institution-name span ("Georgia Tech drop deadline") does not count —
+    institution-name span ("Vermont Wrenfield drop deadline") does not count —
     that names the school, not the state; pass `institution` to protect it."""
     if not query:
         return False
@@ -565,8 +564,8 @@ def strip_unjustified_location(
     (city and, 2026-09-12, the bare state name/abbreviation) from every
     generated search term. An institution-name span inside a term (the
     resolved `institution`, or any institution-shaped phrase) is protected
-    from the state removal — "Georgia Tech drop deadline" must never become
-    "Tech drop deadline". Terms that were nothing but the location are
+    from the state removal — "Vermont Wrenfield drop deadline" must never
+    become "Wrenfield drop deadline". Terms that were nothing but the location are
     dropped. Returns the (possibly unchanged) list; logs when it fires."""
     if not terms or not location:
         return terms

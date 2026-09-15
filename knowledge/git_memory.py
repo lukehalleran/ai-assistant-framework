@@ -37,10 +37,25 @@ from typing import List, Dict, Optional
 from datetime import datetime
 import logging
 
+from utils.trigger_match import compile_keyword_matcher
+
 logger = logging.getLogger(__name__)
 
 # Separator unlikely to appear in commit messages
 _SEP = "|||"
+
+# CGR-20260913-006 (BC-01, dm01_raw_substring anchors #15/#16/#17): these three
+# commit-subject tags were bare-substring `"wip"/"breaking"/"hotfix" in
+# subject_lower` checks, so each fired inside an unrelated longer word
+# ('wip' <- "swipe", 'breaking' <- "groundbreaking"). Routed through the single
+# BC-01 chokepoint (utils.trigger_match.compile_keyword_matcher): a bare word
+# now matches only itself or a sense-preserving inflection, bounded at both
+# ends. Deliberately no negation semantics (utils.trigger_match.is_negated /
+# find_hits) — this classifies commit metadata, not a live request, so a
+# negated-looking subject still carries the tag. Deliberately no new
+# conventional-commit `!:` breaking-marker semantics; "BREAKING" inside the
+# subject text still tags via the bare word alone, same as before.
+_TAG_KEYWORD_MATCHER = compile_keyword_matcher(["wip", "breaking", "hotfix"])
 
 
 class GitMemoryExtractor:
@@ -361,11 +376,12 @@ class GitMemoryExtractor:
                 tags.append(tag)
                 break
 
-        if "wip" in subject_lower:
+        tag_hits = {hit.keyword for hit in _TAG_KEYWORD_MATCHER.iter_hits(subject_lower)}
+        if "wip" in tag_hits:
             tags.append("work-in-progress")
-        if "breaking" in subject_lower:
+        if "breaking" in tag_hits:
             tags.append("breaking-change")
-        if "hotfix" in subject_lower:
+        if "hotfix" in tag_hits:
             tags.append("hotfix")
 
         return tags

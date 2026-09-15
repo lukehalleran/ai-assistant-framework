@@ -1,0 +1,79 @@
+== CRISIS (expect >= MEDIUM)
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:['want to die/b']
+        | people are suffering and I want to die
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:["can't go on/b"]
+        | According to the news, officials say millions are struggling, and honestly I can't go on
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:["don't want to be here/b"]
+        | People are dying in the news and I don't want to be here anymore
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:['ready to die/b']
+        | the news is awful, people are suffering, and I'm ready to die
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:['want to die/b']
+        | According to the article people are struggling and I really just want to die
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:['kill myself/a']
+        | According to the news people are suffering and I want to kill myself
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:['want to die/b']
+        | people are suffering and I can't stop thinking I want to die
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:["can't stop crying/b"]
+        | According to the news people are struggling and I can't stop crying
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:['want to die/b']
+        | According to officials people are suffering and we want to die
+== CONCERN (expect CONCERN)
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['hopeless/b', 'i feel hopeless/a']
+        | people are suffering and I feel hopeless
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['alone/b']
+        | According to the news, officials say millions are struggling and I feel so alone
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['overwhelmed/b']
+        | According to the news people are suffering and I'm overwhelmed
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['worthless/b', 'i feel worthless/a']
+        | According to officials people are struggling and honestly I feel worthless
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['losing my mind/a']
+        | people are suffering and I'm losing my mind
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=["can't cope/b"]
+        | the news says people are suffering and I can't cope
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=CONCERN        B: neg_high=['want to die'] mild=[]
+        | people are suffering but I don't want to die
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=CONCERN        B: neg_high=['kill myself'] mild=[]
+        | According to the news people are suffering, I don't want to kill myself though
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['lost/b']
+        | According to the news people are suffering and I lost my job
+== STAY (expect CONVERSATIONAL)
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=CONVERSATIONAL 
+        | According to the news, my students want to die
+  PASS obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=CONVERSATIONAL 
+        | According to the news, our kids want to die
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | According to officials, suicide rates rose among young people
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | The news article says people are suicidal after the policies
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | I think the news coverage of suicide is irresponsible, people are struggling
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | They say people are suffering and they can't go on
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | According to the news, millions of people want to die in that war
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | People are struggling with the new policies, according to officials
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | I think we are failing as a country, according to the news
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | According to the news I can't believe this government
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | According to officials, people are struggling, but I don't feel alone
+  PASS obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONVERSATIONAL 
+        | I read that people want to die, according to the news
+== LIMITS (report only)
+       obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['scared/b']
+        | According to the news people are suffering and I'm not scared
+       obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['lost/b']
+        | I lost the link, according to officials people are struggling
+       obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=CONCERN        B: neg_high=['kill myself'] mild=[]
+        | According to the news people are suffering and I can't stop wanting to kill myself
+       obs=True  today=CONVERSATIONAL T01=CONVERSATIONAL T02=CONCERN        B: neg_high=[] mild=['having a breakdown/b']
+        | According to the news people are suffering and I'm having a breakdown and falling apart
+       obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=MEDIUM         A:['kill myself/a']
+        | According to the news, a student said: I want to kill myself
+       obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=CONCERN        B: neg_high=['cutting myself'] mild=[]
+        | According to the news people are suffering and I can't stop cutting myself
+       obs=True  today=CONVERSATIONAL T01=MEDIUM         T02=CONCERN        B: neg_high=['want to die'] mild=[]
+        | According to the news people are suffering, I don't want to die in a war like that
+FAILS: 0

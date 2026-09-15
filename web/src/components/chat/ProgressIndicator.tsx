@@ -6,9 +6,18 @@ interface Props {
   progressText: string
   thinkingText: string
   startedAt: number | null
+  // F13c-2a: a failed memory save, shown only once streaming has stopped —
+  // never during it, and never in the chat itself.
+  storageNotice?: boolean
 }
 
-export default function ProgressIndicator({ streaming, progressText, thinkingText, startedAt }: Props) {
+export default function ProgressIndicator({
+  streaming,
+  progressText,
+  thinkingText,
+  startedAt,
+  storageNotice,
+}: Props) {
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -17,7 +26,16 @@ export default function ProgressIndicator({ streaming, progressText, thinkingTex
     return () => clearInterval(id)
   }, [streaming, startedAt])
 
-  if (!streaming) return null
+  if (!streaming) {
+    if (!storageNotice) return null
+    return (
+      <Group gap="xs" px="md" pb={4} justify="flex-end" wrap="nowrap" maw="100%">
+        <Text size="xs" c="dimmed" role="status">
+          Memory save failed
+        </Text>
+      </Group>
+    )
+  }
 
   const label = thinkingText ? `💭 ${thinkingText}` : progressText || 'Assistant is typing…'
 

@@ -105,16 +105,23 @@ async def test_log_only_skips_below_confidence_threshold(log_only_mode):
 
 
 @pytest.mark.asyncio
-async def test_correct_mode_still_ships_suffix_correction(correct_mode, monkeypatch):
+async def test_correct_mode_still_ships_integrated_fallback_correction(correct_mode, monkeypatch):
+    # A05b-1: the integrator-disabled fallback is the integrated
+    # spliced/standalone reply, delivered through the revised path — never
+    # the retired draft-plus-suffix shape.
     import config.app_config as ac
     monkeypatch.setattr(ac, "GROUNDING_INTEGRATE_ENABLED", False)
     ctx = _ctx()
     revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
 
-    assert revised is None
-    assert suffix.startswith("\n\n> ⚠️ Correction:")
+    assert suffix == ""
+    assert revised is not None
+    assert "> ⚠️ Correction:" not in revised
+    assert "discredited" in revised
     assert ctx.telemetry["grounding_corrected"] is True
     assert ctx.telemetry["grounding_mode"] == "correct"
+    assert ctx.telemetry["grounding_status"] == "fallback"
+    assert ctx.telemetry["grounding_fallback"] == "spliced:claim_located_overlap"
 
 
 @pytest.mark.asyncio

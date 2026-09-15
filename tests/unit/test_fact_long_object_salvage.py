@@ -27,7 +27,7 @@ JUNE_EMAIL = (
     "for ADHD, which cost me roughly 7 working days total. Carrying two "
     "classes has made it hard to recover the lost ground. I'm trying to "
     "understand my options before the late drop deadline. Thanks for your "
-    "help, Luke"
+    "help, Alex"
 )
 
 LONG_RANT = "so basically what happened was " + "really long text " * 30
@@ -38,8 +38,8 @@ class TestSalvage:
         assert _salvage_long_object(JUNE_EMAIL) == "Morgan"
 
     def test_two_word_name(self):
-        assert _salvage_long_object("Dear Morgan Reeves,\nlong body here") == (
-            "Morgan Reeves"
+        assert _salvage_long_object("Dear Morgan Ashdown,\nlong body here") == (
+            "Morgan Ashdown"
         )
 
     def test_no_salutation_returns_none(self):
@@ -62,8 +62,8 @@ class TestRegexPath:
         assert _clean_triple("user", "said", LONG_RANT) is None
 
     def test_normal_object_untouched(self):
-        assert _clean_triple("user", "has_advisor", "Morgan Reeves") == (
-            "user", "has_advisor", "morgan reeves"
+        assert _clean_triple("user", "has_advisor", "Morgan Ashdown") == (
+            "user", "has_advisor", "morgan ashdown"
         )
 
     def test_env_cap_override(self, monkeypatch):

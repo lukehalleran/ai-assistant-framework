@@ -56,6 +56,7 @@ from typing import List, Dict, Any, Optional
 import re
 
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
+from utils.retrieval_outcome import RetrievalError
 
 logger = logging.getLogger(__name__)
 
@@ -439,17 +440,19 @@ class DailyNotesGenerator:
 
     def _current_status_facts(self) -> List[Dict[str, Any]]:
         """Collect CURRENT enrollment/employment/residence facts for the
-        status-claim conflict guard (utils/status_claims.py)."""
+        status-claim conflict guard (utils/status_claims.py). Raises
+        RetrievalError when the profile is unavailable or the read fails;
+        a genuine empty filter result still returns []."""
         from utils.status_claims import STATUS_RELATIONS
 
         profile = self.user_profile
         if profile is None:
-            return []
+            raise RetrievalError(source="status_facts", reason="profile_unavailable")
         try:
             current = profile.get_current_view()
         except Exception as e:
             logger.debug(f"[DailyNotes] Could not read profile facts for status guard: {e}")
-            return []
+            raise RetrievalError(source="status_facts", reason=type(e).__name__) from e
 
         facts: List[Dict[str, Any]] = []
         for cat_facts in (current or {}).values():
@@ -797,8 +800,16 @@ generated: {datetime.now().isoformat()}
 
         # Status-claim conflict guard (2026-09-04): current enrollment/
         # employment/residence facts, injected as an authoritative block
-        # AND used as a post-generation contradiction check below.
-        status_facts = self._current_status_facts()
+        # AND used as a post-generation contradiction check below. A failed
+        # read is a hard stop (F12b): a guard-less note is never written.
+        try:
+            status_facts = self._current_status_facts()
+        except RetrievalError as e:
+            logger.warning(
+                f"[DailyNotes] Note not generated for {target_date}: status guard unavailable ({e.source}: {e.reason})"
+            )
+            result.error = "status_guard_unavailable"
+            return result
         status_block = authoritative_facts_block(status_facts)
 
         # Build prompt with user display name substitution

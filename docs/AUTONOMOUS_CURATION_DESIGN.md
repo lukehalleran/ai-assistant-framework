@@ -103,7 +103,7 @@ pre-image. The engine — not the curator — decides disposition:
 Engine-level guards (all curators inherit, none can opt out):
 
 - **Sentinel abort**: each curator ships sentinel cases (the `backfill_stance`
-  casey-evil pattern — known items that must classify a specific way). Any
+  tamsin-evil pattern — known items that must classify a specific way). Any
   sentinel violation aborts the curator's ENTIRE batch for that run and
   raises a UI notice. Sentinels are also run in CI.
 - **Rate cap**: max auto-actions per run (default 25); exceeding the cap

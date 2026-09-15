@@ -142,7 +142,7 @@ _CALENDAR_STRONG_RE = re.compile(
 # the corrected date … Approve that one" carried no "calendar" word and
 # the confabulated re-queue claim went kind-less. The downstream
 # expected-to-act gate still suppresses no-context narration.
-# 2026-09-10: "Queuing it now: **MGT 6203 TA Session — Saturdays 11:00
+# 2026-09-10: "Queuing it now: **QRS 7310 TA Session — Saturdays 11:00
 # AM–12:00 PM CT, weekly through December 12**" was kind-less (no
 # calendar/event word) so the narrated queue claim went unguarded —
 # recurrence words and a named session/office-hours slot are calendar.

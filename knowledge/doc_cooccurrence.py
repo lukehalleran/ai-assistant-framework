@@ -35,6 +35,7 @@ import re
 from typing import List, NamedTuple
 
 from knowledge.semantic_search import semantic_search_with_neighbors
+from utils.retrieval_outcome import RetrievalError, outcome_status
 
 # Generic tokens that shouldn't count as a distinctive cross-mention (too common to
 # imply A and B are actually discussed together).
@@ -86,6 +87,16 @@ def doc_cooccurrence(a: str, b: str, depth: int = 40, min_shared: int = 1,
     """
     ra = semantic_search_with_neighbors(a, k=depth)
     rb = semantic_search_with_neighbors(b, k=depth)
+
+    # A failed/unavailable leg used to read silently as "no results" -> known=False
+    # (CGR-008 #107-#109 propagated here). Distinguish it: raise instead of
+    # guessing. "no_results" (a genuine empty read) is unaffected below.
+    a_status, _ = outcome_status(ra)
+    b_status, _ = outcome_status(rb)
+    bad = {a_status, b_status} & {"failed", "unavailable"}
+    if bad:
+        worse = "failed" if "failed" in bad else "unavailable"
+        raise RetrievalError(source="doc_cooccurrence", reason=f"semantic_{worse}")
 
     ta = {_norm(r.get("title")) for r in ra if r.get("title")}; ta.discard("")
     tb = {_norm(r.get("title")) for r in rb if r.get("title")}; tb.discard("")

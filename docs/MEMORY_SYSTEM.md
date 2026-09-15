@@ -684,7 +684,7 @@ Time decay:   -0.02 per week since last confirmation
 When a fact is corrected, staleness cascades to summaries that embedded it:
 
 ```
-1. User says "Actually I moved to Denver" (correction of "lives in Atlanta")
+1. User says "Actually I moved to Denver" (correction of "lives in Marrowby")
 2. Correction event → claim_key = ClaimKey(subject="user", relation="lives_in")
 3. ClaimIndex.cascade_staleness(claim_key):
    a. Find all docs containing this claim hash
@@ -788,7 +788,7 @@ worthless, ...) drives the deterministic classification.
 Daemon runs (`utils/daemon_guard`), pre-image backups to
 `data/backups/stance_backfill_<ts>/`, classifies all facts + graph edges
 with THE deployed classifier. Hard sentinel: exits nonzero unless
-`fact_e1f5f920_20260818_135210570` (casey|is|evil) classifies appraisal.
+`fact_e1f5f920_20260818_135210570` (tamsin|is|evil) classifies appraisal.
 Dry-run validated on live data 2026-08-23 (3268 facts, 20 appraisal; 987
 edges); `--apply` owner-gated.
 

@@ -8,7 +8,7 @@ source: for a user in Washington,
 
     scope_identity_terms(["Washington Post election coverage"],
                          "summarize the election story",
-                         "Seattle, Washington", "Georgia Tech")
+                         "Seattle, Washington", "Vermont Wrenfield")
 
 returned ``["Post election coverage"]`` — a different search target. A US
 state name is also the leading word of newspapers, companies, characters and
@@ -41,7 +41,7 @@ from tests.unit.test_sep12_search_identity_scope import classify, decompose
 from utils.institution_resolver import scope_identity_terms
 from utils.location_resolver import query_justifies_location, strip_unjustified_location
 
-SCHOOL = "Georgia Tech"
+SCHOOL = "Vermont Wrenfield"
 
 # (term, user query, resolved location) — each term names something whose
 # first word is the owner's state or city; the query gives no local cue.
@@ -119,7 +119,7 @@ class TestQueryJustification:
 
     def test_school_span_still_excluded(self):
         assert not query_justifies_location(
-            "when is the Georgia Tech drop deadline", "Atlanta, Georgia", institution=SCHOOL)
+            "when is the Vermont Wrenfield drop deadline", "Marrowby, Vermont", institution=SCHOOL)
 
 
 class TestBothProducers:

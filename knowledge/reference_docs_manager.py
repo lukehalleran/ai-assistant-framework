@@ -51,6 +51,7 @@ from pathlib import Path
 
 from utils.text_chunking import chunk_by_headers
 from utils.query_checker import keyword_tokens
+from utils.retrieval_outcome import OutcomeList, outcome_status
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -62,6 +63,14 @@ logger = logging.getLogger(__name__)
 # Configuration defaults (can be overridden via app_config)
 DEFAULT_CHUNK_THRESHOLD = 2000  # Slightly larger than Obsidian notes
 DEFAULT_MAX_DOCS_PROMPT = 15
+
+# CGR-20260913-008 / F3a (CM-07): the one user-facing sentence for a refused
+# upload — see the snapshot checks in upload_document/upload_text. Constant
+# text only, never interpolated with the title, query or exception message.
+UPLOAD_REFUSAL_ERROR = (
+    "Could not read the existing version of this document, so the upload "
+    "was refused to avoid keeping two versions. Please try again."
+)
 
 
 @dataclass
@@ -236,6 +245,20 @@ class ReferenceDocsManager:
         # called here.
         existing = self._get_document_chunks(result.title)
 
+        # CM-07: failed/unavailable is NOT "no prior version" — proceeding
+        # would insert the new version while the old one is never found for
+        # replacement, leaving both retrievable. Refuse before any
+        # chunk/embed/insert/replace; a "no_results" snapshot proceeds below.
+        if existing.status in ("failed", "unavailable"):
+            result.errors.append(UPLOAD_REFUSAL_ERROR)
+            result.success = False
+            result.duration_seconds = time.time() - start_time
+            logger.warning(
+                "[RefDocs] Upload refused: could not read the existing "
+                f"version before replacement (snapshot status={existing.status})."
+            )
+            return result
+
         # Extract section headers for metadata
         sections = self._extract_sections(content)
 
@@ -338,6 +361,17 @@ class ReferenceDocsManager:
         # the full rationale. `delete_document(title)` is no longer called
         # here.
         existing = self._get_document_chunks(title)
+
+        # CM-07: see the identical check in upload_document() for rationale.
+        if existing.status in ("failed", "unavailable"):
+            result.errors.append(UPLOAD_REFUSAL_ERROR)
+            result.success = False
+            result.duration_seconds = time.time() - start_time
+            logger.warning(
+                "[RefDocs] Upload refused: could not read the existing "
+                f"version before replacement (snapshot status={existing.status})."
+            )
+            return result
 
         # Extract section headers for metadata
         sections = self._extract_sections(content)
@@ -481,12 +515,18 @@ class ReferenceDocsManager:
                 f"retrievable until the next successful replacement or an explicit delete."
             )
 
-    def _get_document_chunks(self, title: str) -> List[Dict[str, Any]]:
-        """Get all chunks for a specific document by title."""
+    def _get_document_chunks(self, title: str) -> OutcomeList:
+        """Get all chunks for a specific document by title.
+
+        Returns an ``OutcomeList`` (CGR-20260913-008 #103), still equal to
+        ``[]`` and falsy either way; ``.status``/``.reason`` distinguish a
+        normal read from ``unavailable``/``failed``. ``reason`` is a
+        constant label or exception class name only, never title/exc text.
+        """
         try:
             collection = self._collection()
             if not collection:
-                return []
+                return OutcomeList.unavailable("collection_unavailable")
 
             all_docs = collection.get(include=['documents', 'metadatas'])
             documents = all_docs.get('documents', []) or []
@@ -502,11 +542,11 @@ class ReferenceDocsManager:
                         'metadata': meta,
                     })
 
-            return chunks
+            return OutcomeList(chunks)
 
         except Exception as e:
             logger.warning(f"[RefDocs] Failed to get document chunks: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     def get_full_document(self, title: str) -> Optional[str]:
         """Fetch all chunks for a document by title, reassemble in order.
@@ -557,10 +597,15 @@ class ReferenceDocsManager:
         # Require at least 1 meaningful word match
         return best_title if best_score >= 1 else None
 
-    def list_document_titles(self) -> List[str]:
-        """Return sorted list of distinct document titles in reference_docs."""
+    def list_document_titles(self) -> OutcomeList:
+        """Sorted distinct document titles; propagates `list_documents()`'s
+        status/reason on failure instead of reading as "no documents"."""
         docs = self.list_documents()
-        return sorted(d['title'] for d in docs)
+        sorted_titles = sorted(d['title'] for d in docs)
+        status, reason = outcome_status(docs)
+        if status in ("failed", "unavailable"):
+            return OutcomeList(sorted_titles, status=status, reason=reason)
+        return OutcomeList(sorted_titles)
 
     def _get_stored_content_hash(self, title: str) -> Optional[str]:
         """Get stored content_hash for a document by title. Returns None if not found."""
@@ -632,7 +677,7 @@ class ReferenceDocsManager:
 
     async def get_documents(
         self, query: str, limit: int = 10, *, doc_type: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> OutcomeList:
         """
         Retrieve relevant document chunks using hybrid search: 1/3 keyword + 2/3 semantic.
 
@@ -648,7 +693,11 @@ class ReferenceDocsManager:
                 upload could lose to 1,000+ unrelated doc chunks).
 
         Returns:
-            List of chunk dicts with content, metadata, and relevance_score
+            OutcomeList (CGR-20260913-008 #104) of chunk dicts. A failed or
+            unavailable keyword leg sets status/reason even though the
+            semantic leg's items are still kept (a partial read); the outer
+            except covers a semantic-leg raise (query_collection does not
+            swallow its own failures). Equal to ``[]``/falsy when empty.
         """
         try:
             # Calculate split: 1/3 keyword, 2/3 semantic
@@ -657,6 +706,9 @@ class ReferenceDocsManager:
 
             # 1. KEYWORD SEARCH
             keyword_results = self._keyword_search(query, keyword_limit * 3, doc_type=doc_type)
+            # Read status IMMEDIATELY: slicing keyword_results below (for the
+            # combine step) drops it, same as any other list-subclass op.
+            kw_status, kw_reason = outcome_status(keyword_results)
 
             # 2. SEMANTIC SEARCH
             semantic_results = self.chroma_store.query_collection(
@@ -711,11 +763,18 @@ class ReferenceDocsManager:
 
             logger.debug(f"[RefDocs] Hybrid retrieval: {len(keyword_results[:keyword_limit])} keyword + "
                         f"{len(combined) - len(keyword_results[:keyword_limit])} semantic = {len(combined)} total")
-            return combined[:limit]
+
+            if kw_status in ("failed", "unavailable"):
+                # The keyword leg's own failure is already privacy-safe
+                # (a constant label or exception class name); prefixing it
+                # with "keyword:" never adds title/query/exception text.
+                reason = f"keyword:{kw_status}" + (f":{kw_reason}" if kw_reason else "")
+                return OutcomeList(combined[:limit], status=kw_status, reason=reason)
+            return OutcomeList(combined[:limit])
 
         except Exception as e:
             logger.warning(f"[RefDocs] Failed to retrieve documents: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     @staticmethod
     def _containment_match(a: str, b: str) -> bool:
@@ -743,18 +802,21 @@ class ReferenceDocsManager:
 
     def _keyword_search(
         self, query: str, limit: int = 10, *, doc_type: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> OutcomeList:
         """Search documents by keyword matching on title, section, content.
 
         `doc_type` (2026-09-07 upload-roster contract A2), when given,
         restricts matches to chunks whose stored metadata `type` equals it —
         the keyword-leg counterpart to `get_documents`' semantic `where`
         filter. Default None keeps every existing caller byte-identical.
+
+        Returns an ``OutcomeList`` (CGR-20260913-008 #105); see
+        `_get_document_chunks` for the status/reason contract.
         """
         try:
             collection = self._collection()
             if not collection:
-                return []
+                return OutcomeList.unavailable("collection_unavailable")
 
             all_docs = collection.get(include=['documents', 'metadatas'])
             documents = all_docs.get('documents', []) or []
@@ -811,23 +873,26 @@ class ReferenceDocsManager:
                     })
 
             scored.sort(key=lambda x: x['relevance_score'], reverse=True)
-            return scored[:limit]
+            return OutcomeList(scored[:limit])
 
         except Exception as e:
             logger.warning(f"[RefDocs] Keyword search failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
-    def list_documents(self) -> List[Dict[str, Any]]:
+    def list_documents(self) -> OutcomeList:
         """
         List all uploaded documents.
 
         Returns:
-            List of dicts with title, file_type, chunk_count, upload_time
+            OutcomeList (CGR-20260913-008 #106) of dicts with title,
+            file_type, chunk_count, upload_time. A failed read used to
+            render identically to "no documents uploaded"; see
+            `_get_document_chunks` for the status/reason contract.
         """
         try:
             collection = self._collection()
             if not collection:
-                return []
+                return OutcomeList.unavailable("collection_unavailable")
 
             all_docs = collection.get(include=['metadatas'])
             metadatas = all_docs.get('metadatas', []) or []
@@ -848,11 +913,11 @@ class ReferenceDocsManager:
                     }
                 docs_by_title[title]['chunk_count'] += 1
 
-            return list(docs_by_title.values())
+            return OutcomeList(list(docs_by_title.values()))
 
         except Exception as e:
             logger.warning(f"[RefDocs] Failed to list documents: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     def delete_document(self, title: str) -> bool:
         """

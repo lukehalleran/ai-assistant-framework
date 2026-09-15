@@ -92,33 +92,40 @@ def correct_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_firing_text_high_confidence_appends_and_records(no_integrate):
+async def test_firing_text_high_confidence_delivers_spliced_fallback(no_integrate):
+    # A05b-1: integrator disabled -> the ONE integrated fallback ships
+    # through the revised path, never draft-plus-suffix (BC-45/BC-71).
     ctx = _ctx()
     revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
-    assert revised is None
-    assert suffix.startswith("\n\n> ⚠️ Correction:")
-    assert "discredited" in suffix
+    assert suffix == ""
+    assert revised is not None
+    assert "> ⚠️ Correction:" not in revised  # retired suffix marker
+    assert "discredited" in revised
     assert ctx.telemetry["grounding_prefilter_fired"] is True
     assert ctx.telemetry["grounding_verifier_fired"] is True
     assert ctx.telemetry["grounding_flagged"] is True
     assert ctx.telemetry["grounding_confidence"] == 0.95
     assert ctx.telemetry["grounding_corrected"] is True
+    assert ctx.telemetry["grounding_status"] == "fallback"
+    assert ctx.telemetry["grounding_fallback"] == "spliced:claim_located_overlap"
 
 
 @pytest.mark.asyncio
 async def test_elevated_tone_gets_gentle_wording(no_integrate):
     ctx = _ctx(response_tone="CrisisLevel.MEDIUM")
-    _, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
-    assert "gently set straight" in suffix
-    assert "Correction:" not in suffix
+    revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
+    assert suffix == ""
+    assert "gently set straight" in revised
+    assert "Correction:" not in revised
 
 
 @pytest.mark.asyncio
 async def test_concern_tone_counts_as_elevated(no_integrate):
     # The live failure happened at CONCERN (LIGHT SUPPORT tier).
     ctx = _ctx(response_tone="CrisisLevel.CONCERN")
-    _, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
-    assert "gently set straight" in suffix
+    revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
+    assert suffix == ""
+    assert "gently set straight" in revised
 
 
 @pytest.mark.asyncio
@@ -207,15 +214,72 @@ async def test_integration_returns_revised_text_no_suffix(correct_mode):
 
 
 @pytest.mark.asyncio
-async def test_integration_failure_falls_back_to_suffix(correct_mode):
+async def test_integration_failure_falls_back_to_integrated_fallback(correct_mode):
     # Integrator returns something wildly out of length bounds → guard trips
-    # → the appended-suffix fallback ships instead of a bad rewrite.
+    # → the integrated fallback (spliced/standalone) ships, never the old
+    # draft-plus-suffix shape.
     mm = _StubModelManager(responses=[VERDICT_JSON, "Nope."])
     ctx = _ctx(mm=mm)
     revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
-    assert revised is None
-    assert suffix.startswith("\n\n> ⚠️ Correction:")
+    assert suffix == ""
+    assert revised is not None
+    assert "> ⚠️ Correction:" not in revised
+    assert "discredited" in revised
     assert "grounding_integrated" not in ctx.telemetry
+    assert ctx.telemetry["grounding_status"] == "fallback"
+    assert ctx.telemetry["grounding_fallback"] == "spliced:claim_located_overlap"
+
+
+@pytest.mark.asyncio
+async def test_builder_none_ships_draft_unchanged(no_integrate, monkeypatch):
+    """A verdict clears _apply_grounding_check's own gate (flagged, non-empty
+    correction, confidence above threshold) but build_integrated_fallback
+    finds nothing substantive to deliver. Same contract as a verifier-failure
+    verdict: ship the draft unmodified, no marker, never the retired suffix.
+    (build_integrated_fallback is faked here because a verdict that clears
+    verify_grounding's own advice/PSA/date demotions always yields a
+    non-None result from the real builder — see A05b-1 packet.)"""
+    import core.grounding_check as gc
+    monkeypatch.setattr(gc, "build_integrated_fallback", lambda *a, **k: None)
+    ctx = _ctx()
+    revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
+    assert (revised, suffix) == (None, "")
+    assert ctx.telemetry["grounding_status"] == "complete"  # set by verify_grounding
+    assert ctx.telemetry["grounding_fallback"] == "none"
+    assert "grounding_corrected" not in ctx.telemetry
+
+
+@pytest.mark.asyncio
+async def test_claim_not_located_delivers_standalone_without_draft_prose(no_integrate):
+    """Claim absent from the draft -> a standalone corrective reply, never
+    the flawed prose. A distinctive draft-only phrase must be absent from
+    the delivered text, and the receipt's grounding_fallback stays a
+    constant label (no claim/correction text)."""
+    unrelated = json.loads(VERDICT_JSON)
+    unrelated["claim"] = "the meeting moved to next Tuesday at noon"
+    unrelated["correction"] = "The meeting is still on Thursday at 3pm."
+    ctx = _ctx(mm=_StubModelManager(raw=json.dumps(unrelated)))
+    revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
+    assert suffix == ""
+    assert revised is not None
+    assert "refrigerator mother" not in revised  # distinctive draft token
+    assert "Thursday at 3pm" in revised
+    assert ctx.telemetry["grounding_status"] == "fallback"
+    assert ctx.telemetry["grounding_fallback"] == "standalone:claim_not_located"
+
+
+@pytest.mark.asyncio
+async def test_fallback_reattaches_trailing_proposal_card(no_integrate):
+    """A trailing action-proposal card survives verbatim in the delivered
+    fallback (A05a contract) — the card is authoritative backend state, not
+    prose, and A05b-1 must not special-case it at the call sites."""
+    card = "\n\n---\n**calendar_create**\nSummary: Team sync\n"
+    ctx = _ctx()
+    revised, suffix = await handlers._apply_grounding_check(
+        ctx, FIRING_RESPONSE + card)
+    assert suffix == ""
+    assert revised is not None
+    assert revised.endswith(card)
 
 
 @pytest.mark.asyncio
@@ -225,9 +289,9 @@ async def test_source_material_reaches_verifier_prompt():
         "confidence": 0.9, "correction": ""})])
     ctx = _ctx(mm=mm)
     await handlers._apply_grounding_check(
-        ctx, FIRING_RESPONSE, source_material="MGT 6203 Fall 2026 syllabus: HW1 due 9/13")
+        ctx, FIRING_RESPONSE, source_material="ABC 1234 Fall 2026 syllabus: HW1 due 9/13")
     assert mm.calls == 1
-    assert "MGT 6203 Fall 2026 syllabus" in mm.prompts[0]
+    assert "ABC 1234 Fall 2026 syllabus" in mm.prompts[0]
     assert "AUTHORITATIVE" in mm.prompts[0]
 
 
@@ -244,7 +308,8 @@ def test_enhanced_path_wired():
     assert "_apply_grounding_check" in src
     assert "_gc_revised, _gc_suffix" in src
     assert "final_output = _gc_revised" in src
-    assert 'final_output = (final_output or "").rstrip() + _gc_suffix' in src
+    # A05b-1: the suffix-append branch is retired — no dead code left behind.
+    assert '.rstrip() + _gc_suffix' not in src
 
 
 def test_agentic_path_wired():
@@ -252,16 +317,40 @@ def test_agentic_path_wired():
     assert "_apply_grounding_check" in src
     assert "_ag_gc_revised, _ag_gc_suffix" in src
     assert "final_output = _ag_gc_revised" in src
-    assert 'final_output = (final_output or "").rstrip() + _ag_gc_suffix' in src
     assert "source_material=_ag_source" in src
+    # A05b-1: the suffix-append branch is retired — no dead code left behind.
+    assert '.rstrip() + _ag_gc_suffix' not in src
 
 
-def test_correction_survives_storage_sanitize():
+def test_integrated_fallback_survives_storage_sanitize():
     # The stored copy must keep the correction: _sanitize_response_text is the
-    # storage boundary transform applied to final_output.
-    from core.grounding_check import build_grounding_correction
-    body = "Here is the answer to your question about the theory."
-    suffix = build_grounding_correction("The theory was discredited long ago.")
-    sanitized = handlers._sanitize_response_text(body + suffix)
-    assert "> ⚠️" in sanitized
-    assert "discredited" in sanitized
+    # storage boundary transform applied to final_output. Drive the ACTUAL
+    # live fallback (build_integrated_fallback), not the retired suffix
+    # builder — one spliced result and one standalone result.
+    from core.grounding_check import build_integrated_fallback
+
+    draft = "Here is the answer to your question about the theory."
+    verdict = GroundingVerdict(
+        claim="the theory holds up",
+        why_false="It is well established to be false.",
+        correction="The theory was discredited long ago.",
+        confidence=0.9,
+        false_claim_present=True,
+    )
+    # Negative control: the original draft does NOT contain the correction
+    # text, so its presence after sanitizing must come from the fallback.
+    assert "discredited" not in draft
+
+    spliced = build_integrated_fallback(
+        "I hear you. The theory holds up under scrutiny. Take care.", verdict)
+    standalone = build_integrated_fallback(draft, verdict)
+    assert spliced is not None and standalone is not None
+    assert spliced.kind == "spliced" and standalone.kind == "standalone"
+
+    sanitized_spliced = handlers._sanitize_response_text(spliced.text)
+    sanitized_standalone = handlers._sanitize_response_text(standalone.text)
+    assert "discredited" in sanitized_spliced
+    assert "Correction:" in sanitized_spliced  # spliced lead survives
+    assert "discredited" in sanitized_standalone
+    # standalone lead survives
+    assert "found something that needs correcting" in sanitized_standalone

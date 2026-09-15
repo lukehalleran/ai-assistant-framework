@@ -128,6 +128,8 @@ class ConversationLogger:
                     f.write(f"Mode: {metadata['mode']}\n")
                 if metadata.get('db_id'):
                     f.write(f"Memory ID: {metadata['db_id']}\n")
+                if metadata.get('storage_failed'):
+                    f.write(f"Storage failed: {metadata['storage_failed']}\n")
 
             # Write the conversation
             f.write("\nUSER:\n")

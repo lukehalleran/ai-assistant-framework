@@ -48,7 +48,7 @@ class TestInsightRouting:
     @pytest.mark.asyncio
     async def test_personal_doc_beats_doc_gen(self):
         d = await evaluate_agentic_gate(
-            user_text="write a summary of my pattern with casey for my therapist"
+            user_text="write a summary of my pattern with tamsin for my therapist"
         )
         assert d.modes == ["insight"]
         assert d.insight_intent["wants_document"] is True
@@ -179,7 +179,7 @@ class TestInsightStatementShape:
         # must still route (explicit requests always work, even mid-distress).
         intent = detect_insight_request(
             "I feel like garbage and I keep falling into the same hole — "
-            "am I right that this is the same pattern as with casey"
+            "am I right that this is the same pattern as with tamsin"
         )
         assert intent is not None
         assert intent.kind == "insight_assessment"

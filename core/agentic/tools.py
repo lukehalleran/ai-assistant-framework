@@ -1893,7 +1893,7 @@ Provide a focused summary with the most important information."""
                     return faiss_warning + self.formatter.format_memory_results(results, collection)
 
             # reference_docs also holds the user's uploads (2026-09-07): a
-            # semantic search for "MGT 6203 first assignment" returns syllabus
+            # semantic search for "QRS 7310 first assignment" returns syllabus
             # chunks, never the homework PDF, so every reference_docs result
             # carries the exact stored upload titles the model can hand to
             # get_full_document — the title is the only reliable key.

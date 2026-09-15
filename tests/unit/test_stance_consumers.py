@@ -26,7 +26,7 @@ from memory.memory_retriever import _present_fact_content
 @pytest.fixture
 def graph(tmp_path):
     gm = GraphMemory(persist_path=str(tmp_path / "graph.json"))
-    for eid, name in (("casey", "Casey"), ("evil", "evil"), ("chicago", "Chicago"),
+    for eid, name in (("tamsin", "Tamsin"), ("evil", "evil"), ("chicago", "Chicago"),
                       ("seed", "Seed")):
         gm.add_entity(GraphNode(entity_id=eid, display_name=name))
     return gm
@@ -34,33 +34,33 @@ def graph(tmp_path):
 
 class TestExpansionFilter:
     def test_appraisal_edge_never_routes_expansion(self, graph):
-        graph.add_relation(GraphEdge(source_id="casey", relation="is",
+        graph.add_relation(GraphEdge(source_id="tamsin", relation="is",
                                      target_id="evil",
                                      metadata={"stance": "appraisal"}))
-        graph.add_relation(GraphEdge(source_id="casey", relation="lives_in",
+        graph.add_relation(GraphEdge(source_id="tamsin", relation="lives_in",
                                      target_id="chicago"))
-        names = rank_expansion_candidates({"casey"}, graph, depth=1, min_mentions=0)
+        names = rank_expansion_candidates({"tamsin"}, graph, depth=1, min_mentions=0)
         assert "evil" not in [n.lower() for n in names]
         assert "chicago" in [n.lower() for n in names]
 
     def test_inferred_edge_excluded(self, graph):
-        graph.add_relation(GraphEdge(source_id="casey", relation="is",
+        graph.add_relation(GraphEdge(source_id="tamsin", relation="is",
                                      target_id="evil",
                                      metadata={"stance": "inferred"}))
-        names = rank_expansion_candidates({"casey"}, graph, depth=1, min_mentions=0)
+        names = rank_expansion_candidates({"tamsin"}, graph, depth=1, min_mentions=0)
         assert "evil" not in [n.lower() for n in names]
 
     def test_legacy_untagged_edge_unchanged(self, graph):
         # conservative missing-field semantics: suppression only on EXPLICIT tags
-        graph.add_relation(GraphEdge(source_id="casey", relation="is",
+        graph.add_relation(GraphEdge(source_id="tamsin", relation="is",
                                      target_id="evil"))
-        names = rank_expansion_candidates({"casey"}, graph, depth=1, min_mentions=0)
+        names = rank_expansion_candidates({"tamsin"}, graph, depth=1, min_mentions=0)
         assert "evil" in [n.lower() for n in names]
 
 
 class TestEdgeRendering:
     def _edge(self, **md):
-        return GraphEdge(source_id="casey", relation="is", target_id="evil",
+        return GraphEdge(source_id="tamsin", relation="is", target_id="evil",
                          last_seen=datetime(2026, 8, 18), metadata=md)
 
     def test_objective_byte_identical(self):
@@ -70,27 +70,27 @@ class TestEdgeRendering:
             == "User lives in Chicago (from relationship data)"
 
     def test_appraisal_attributed_and_dated(self):
-        out = self._edge(stance="appraisal").to_natural_language("Casey", "evil")
-        assert out.startswith("you described Casey as ")
+        out = self._edge(stance="appraisal").to_natural_language("Tamsin", "evil")
+        assert out.startswith("you described Tamsin as ")
         assert "2026-08-18" in out
-        assert "Casey is evil" not in out  # never asserted in system voice
+        assert "Tamsin is evil" not in out  # never asserted in system voice
 
     def test_settled_appraisal_wording(self):
-        out = self._edge(stance="appraisal", settled=True).to_natural_language("Casey", "evil")
-        assert out.startswith("you've consistently described Casey")
+        out = self._edge(stance="appraisal", settled=True).to_natural_language("Tamsin", "evil")
+        assert out.startswith("you've consistently described Tamsin")
 
     def test_inferred_marked(self):
-        out = self._edge(stance="inferred").to_natural_language("Casey", "evil")
+        out = self._edge(stance="inferred").to_natural_language("Tamsin", "evil")
         assert "assistant inference" in out
 
 
 class TestFactPresentation:
     def test_appraisal_rewritten(self):
         out = _present_fact_content(
-            "casey | is | evil",
+            "tamsin | is | evil",
             {"stance": "appraisal", "timestamp": "2026-08-18T13:52:10"},
         )
-        assert out == "you described casey as 'evil' (your words at the time, 2026-08-18)"
+        assert out == "you described tamsin as 'evil' (your words at the time, 2026-08-18)"
 
     def test_self_appraisal_uses_yourself(self):
         out = _present_fact_content(
@@ -103,7 +103,7 @@ class TestFactPresentation:
         assert _present_fact_content(content, {"stance": "objective"}) == content
 
     def test_legacy_untagged_byte_identical(self):
-        content = "casey | is | evil"
+        content = "tamsin | is | evil"
         assert _present_fact_content(content, {}) == content
         assert _present_fact_content(content, None) == content
 
@@ -120,11 +120,11 @@ class TestDedupAppraisalSkip:
         return CrossCollectionDeduplicator.__new__(CrossCollectionDeduplicator)
 
     def _doc(self, i, obj, stance=None):
-        md = {"subject": "casey", "relation": "described_as", "object": obj,
+        md = {"subject": "tamsin", "relation": "described_as", "object": obj,
               "timestamp": f"2026-08-{10 + i}T12:00:00"}
         if stance:
             md["stance"] = stance
-        return {"id": f"f{i}", "content": f"casey | described_as | {obj}",
+        return {"id": f"f{i}", "content": f"tamsin | described_as | {obj}",
                 "metadata": md, "collection": "facts"}
 
     def test_appraisal_pair_never_clusters(self):
@@ -147,8 +147,8 @@ class TestProfileQuickPromotion:
 
     def test_objective_promotes(self, tmp_path):
         p = self._profile(tmp_path)
-        assert p.add_fact("name", "Luke", confidence=0.9)
-        assert p.profile["quick_profile"].get("name") == "Luke"
+        assert p.add_fact("name", "Alex", confidence=0.9)
+        assert p.profile["quick_profile"].get("name") == "Alex"
 
     def test_explicit_appraisal_never_promotes(self, tmp_path):
         p = self._profile(tmp_path)

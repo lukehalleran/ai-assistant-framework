@@ -20,62 +20,6 @@
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "4a720fec20a104bc21b96aac57c663422efae743f623ecb2bbda291afb054298",
-      "excerpt": "any(w in _lower for w in SEARCH_SIGNAL_WORDS)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "bc595068cda174dc0167c0d796cacd53c59fbcaa4495b485f710ac9e825203b7",
-      "excerpt": "elif 'email' in _lower and any(w in _lower for w in ('send', 'draft', 'write', 'compose', 'fire off')):"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "bd46f63251b2a19f90450974e5679d57c2d24982a6fa8b8626c9cdb038aaaa31",
-      "excerpt": "_explicit_kw = any(kw in _lower for kw in EXPLICIT_SEARCH_KEYWORDS)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
-      "excerpt": "and any(p in _lower for p in CONTINUATION_PHRASES)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
-      "excerpt": "and any(p in _lower for p in CONTINUATION_PHRASES)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
-      "excerpt": "and any(p in _lower for p in CONTINUATION_PHRASES)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "c73ff08563691b1b21228cff68366b238f74ec19993cba6bf0f77e6725a68ee4",
-      "excerpt": "and any(p in _lower for p in CONTINUATION_PHRASES)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "core/insight/coordinator.py",
       "symbol": "_event_from_row",
       "kind": "raw_membership",
@@ -108,38 +52,6 @@
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "core/safety_canary.py",
-      "symbol": "SafetyCanary._is_conversational",
-      "kind": "raw_membership",
-      "digest": "61868d586a02511e14675b3b00f3dd0a72b91a5d7ce938a7c58571079c28c7af",
-      "excerpt": "return \"conversational\" in str(tone).lower()"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "knowledge/git_memory.py",
-      "symbol": "GitMemoryExtractor._extract_tags",
-      "kind": "raw_membership",
-      "digest": "535a7846dd33be61249414bace96ccdb67b4ae7cd3c035984954c4263e43a823",
-      "excerpt": "if \"wip\" in subject_lower:"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "knowledge/git_memory.py",
-      "symbol": "GitMemoryExtractor._extract_tags",
-      "kind": "raw_membership",
-      "digest": "5a705170c0d30f7eeb9f2b7a824347576064d82f971d2e19c3ebcf97199f8dba",
-      "excerpt": "if \"breaking\" in subject_lower:"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "knowledge/git_memory.py",
-      "symbol": "GitMemoryExtractor._extract_tags",
-      "kind": "raw_membership",
-      "digest": "b2b6e9cc4bfa3a775a11fc52a526c854a1684a7caf3d99d543412d85889267a3",
-      "excerpt": "if \"hotfix\" in subject_lower:"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "knowledge/sandbox_manager.py",
       "symbol": "_kill_sandbox_quietly",
       "kind": "raw_membership",
@@ -164,27 +76,11 @@
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "memory/memory_retriever.py",
-      "symbol": "MemoryRetriever._maybe_temporal_window_rerank",
-      "kind": "raw_membership",
-      "digest": "1ed687b5c34c26ee0c15f19b28e242a1eb1df13e4dc23acaed7d41f20e44845c",
-      "excerpt": "if not any(m in query_lower for m in self._RETROSPECTIVE_MARKERS):"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "memory/memory_scorer.py",
       "symbol": "MemoryScorer.rank_memories",
       "kind": "raw_membership",
       "digest": "806b5a858f14f6bf638eb40ba3c3cd52aa16c542cc0f36054df592927207cb69",
       "excerpt": "if cq_density > 0.08 and _analogy_markers(blob) > 0 and \"analogy\" not in current_query.lower():"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "memory/user_profile.py",
-      "symbol": "UserProfile._is_temporal_query",
-      "kind": "raw_membership",
-      "digest": "031e1c0068a017f75df0c3c4de84c37c2f3b7fb27d4e12b891128d2a8a42a90e",
-      "excerpt": "return any(kw in query_lower for kw in self.TEMPORAL_KEYWORDS)"
     },
     {
       "scanner": "dm01_raw_substring",
@@ -217,62 +113,6 @@
       "kind": "raw_membership",
       "digest": "fc9f694ac1a2e875a84633cfd2652a3176fe65a6b4ed464bb8ce602b6874466b",
       "excerpt": "ctrl = next((r for r in out_rows if \"kavarin\" in r[\"pair\"].lower() or \"stimul\" in r[\"pair\"].lower() or \"Dosing\" in r[\"pair\"]), None)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "utils/query_checker.py",
-      "symbol": "has_thread_break_marker",
-      "kind": "raw_membership",
-      "digest": "6eec6b756d470457f347e268d18936f9c5d1096a8f8cbfc756c0abd409986393",
-      "excerpt": "return any(marker in query_lower for marker in THREAD_BREAK_MARKERS)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "utils/tone_detector.py",
-      "symbol": "_calculate_harm_score",
-      "kind": "raw_membership",
-      "digest": "fcc1e1114001238aa6e72318dca7ea9022fdb193e2572ff4d05c83bf3d990d9e",
-      "excerpt": "if \"overwhelmed\" in message_lower:"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "utils/tone_detector.py",
-      "symbol": "_check_observational_language",
-      "kind": "raw_membership",
-      "digest": "f35eed657914639b29ab3543e44302a8b792b92822acbefd7891f70744fc5d9f",
-      "excerpt": "marker_count = sum(1 for marker in OBSERVATIONAL_MARKERS if marker in message_lower)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "utils/web_search_trigger.py",
-      "symbol": "quick_prefilter_should_skip",
-      "kind": "raw_membership",
-      "digest": "f50b50809eecfa19791adb461723e9c0c80206bb82c02afb8e613ee6e0696795",
-      "excerpt": "if len(query_lower) > 500 and not any(p in query_lower for p in EXPLICIT_SEARCH_PHRASES):"
-    },
-    {
-      "scanner": "dm17_apply_without_guard",
-      "path": "scripts/cleanup_stale_illness.py",
-      "symbol": "<module>",
-      "kind": "apply_without_guard",
-      "digest": "c56e533e7ca5cb119e63134378e389a9841f0e5e46182b2c0de5068de459535c",
-      "excerpt": "ap.add_argument(\"--apply\", action=\"store_true\", help=\"apply changes (default: dry-run)\")"
-    },
-    {
-      "scanner": "dm17_apply_without_guard",
-      "path": "scripts/graph_relation_normalize.py",
-      "symbol": "<module>",
-      "kind": "apply_without_guard",
-      "digest": "900dc03ef0933610a6a18727e5913c3b8aeeadcd9b1511fc1b473ce9ead6b699",
-      "excerpt": "ap.add_argument(\"--apply\", action=\"store_true\","
-    },
-    {
-      "scanner": "dm17_apply_without_guard",
-      "path": "scripts/reclassify_proposals.py",
-      "symbol": "<module>",
-      "kind": "apply_without_guard",
-      "digest": "4bc72ea01f237677f830d8607cd8e984f320d52b544caa23f9bb745e49b8566b",
-      "excerpt": "parser.add_argument(\"--apply\", action=\"store_true\","
     },
     {
       "scanner": "dm17_apply_without_guard",
@@ -564,138 +404,10 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin._fetch_upload_roster",
-      "kind": "broad_except_returns_empty",
-      "digest": "65dc7fab931b5ed711facd0aa1fe081656dda447477ad177f27f0e2dbb71b3c1",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin._get_wiki_content_timed",
-      "kind": "broad_except_returns_empty",
-      "digest": "1f054e9dd502ee3ef2f75a3f4fd776a6110395633f6d2b6253d36225b9468408",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_daemon_self_notes",
-      "kind": "broad_except_returns_empty",
-      "digest": "9c485c8e097e325e7586b0dcdbbbd85dd7ec981a9fcca96aca5607bc8d1b72c9",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_git_commits",
-      "kind": "broad_except_returns_empty",
-      "digest": "080e350f58e7eb365b38d63452ca02839ff4ce92dc801cceb9ac3788d7a15540",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_graph_context",
-      "kind": "broad_except_returns_empty",
-      "digest": "90846424a576806884ee0a3a35cf20c62e15d437b21c5b54a238ba50443ffd8c",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_narrative_context",
-      "kind": "broad_except_returns_empty",
-      "digest": "b970de35eff0a8b56cc14cec74566b09fc54bed850e54d6826e17f0587e9d89a",
-      "excerpt": "return \"\""
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_personal_notes",
-      "kind": "broad_except_returns_empty",
-      "digest": "0aceb2a32d20d96b3f952140e18f16fc65faa393fd87a3e7d5babd2f106b6f56",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_procedural_skills",
-      "kind": "broad_except_returns_empty",
-      "digest": "a2a5682bc70718f05558ac2dafc51e7ed320aa4884553e5e85e7b298ac870695",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_proposed_features",
-      "kind": "broad_except_returns_empty",
-      "digest": "f569c8b02c03431b8ca6341c44c7adb667e778353d00da794e8faad64d375722",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_reference_docs",
-      "kind": "broad_except_returns_empty",
-      "digest": "1bf445bf8ac584fecf11bc10fab6ba943dec72d8f5102cad1461dabf0ab3b841",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
-      "kind": "broad_except_returns_empty",
-      "digest": "285fb945553669b4b64a2ee20d6af1946dfb6a2d4d6bb1857c7a1e0991105979",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
-      "kind": "broad_except_returns_empty",
-      "digest": "fb824ccfe79cdefe40272841218f9bf964ff2c87a330c6c27349eeaa3f1f3d53",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_unresolved_threads",
-      "kind": "broad_except_returns_empty",
-      "digest": "54b28ae2d6aef293bebe6e14fcd99cc54100c01e2e26347b3d9f6f51a502a587",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_user_uploads",
-      "kind": "broad_except_returns_empty",
-      "digest": "0f7e8beca882221f12d6a04e3efc02149e378088dc8136c577745908ca3c0a80",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin._get_recent_conversations",
-      "kind": "broad_except_returns_empty",
-      "digest": "ee96452023c17fc50b7edea5fde7c2427a4c595a4b1e88c7afb562bbe7122e67",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "core/prompt/gatherer_memory.py",
       "symbol": "MemoryRetrievalMixin._get_reflections",
       "kind": "broad_except_returns_empty",
       "digest": "6c27f1f6f29661b5aa11106e60ea855129624a6cd8882bc08de1f50d368b3a94",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin._get_semantic_memories",
-      "kind": "broad_except_returns_empty",
-      "digest": "b0785fd88c036db69d23cd397ea90e93dfafe4ba8472e6592e1b70833a9d45eb",
       "excerpt": "return []"
     },
     {
@@ -713,30 +425,6 @@
       "kind": "broad_except_returns_empty",
       "digest": "11ecd20abdf93022a8ae20f33a1ccff3799dc82967350717aa17fe7e868ce0c3",
       "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin.get_upcoming_schedule",
-      "kind": "broad_except_returns_empty",
-      "digest": "1b8a2bd0a42513d840c54e927cb5ee91b4f37447a89cd0ae4879d1e0441d8022",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin.get_user_profile_context",
-      "kind": "broad_except_returns_empty",
-      "digest": "7aad109e494dab00561ce841e28afa5e2527aa6943f819f3448e4d0982c31eb7",
-      "excerpt": "return \"\""
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_web.py",
-      "symbol": "WebSearchMixin._get_web_search_results",
-      "kind": "broad_except_returns_empty",
-      "digest": "495fad3f30ea6b68d0995ed52f4298461e85f1cbb87f601d4ed174b4d8326230",
-      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
@@ -804,98 +492,10 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/obsidian_manager.py",
-      "symbol": "ObsidianManager._keyword_search",
-      "kind": "broad_except_returns_empty",
-      "digest": "361ac0cb653948fd48ccf314235e6171a4d31cbaa0122bd6bac5084ae6dcbb1a",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/obsidian_manager.py",
-      "symbol": "ObsidianManager.get_notes",
-      "kind": "broad_except_returns_empty",
-      "digest": "aae847842dee50f6babe5410317977c72b612417bbf3bcd7d93371ee2ce88785",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager._get_document_chunks",
-      "kind": "broad_except_returns_empty",
-      "digest": "22cdf79574628955d522f50bc43239a1c4eed611b2b24c0e974db49bd2facec0",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager._keyword_search",
-      "kind": "broad_except_returns_empty",
-      "digest": "bb870d88384750cdcb0e2f6855c92af1de04096bd857dd4f79804aec0d8b74cc",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager.get_documents",
-      "kind": "broad_except_returns_empty",
-      "digest": "281aa17cae55f7812992afcc4f7959f5524dae8e4a64e70b59e9b35cc45eee94",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager.list_documents",
-      "kind": "broad_except_returns_empty",
-      "digest": "160602899170f9625d26246ef810dc6fd15d891911e7135c4af3b14ffd6e110e",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/semantic_search.py",
-      "symbol": "SemanticSearchIndex.search",
-      "kind": "broad_except_returns_empty",
-      "digest": "24af3eabcf4dcffb1eb244276ea13e833104936c5d217301014145ce9907546b",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/semantic_search.py",
-      "symbol": "SemanticSearchIndex.search",
-      "kind": "broad_except_returns_empty",
-      "digest": "acecd33f773abb40e36129150317906836ddeeaaf0cd62e7ad4a794c061be551",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/visual_memory_store.py",
-      "symbol": "VisualMemoryStore.search_by_text",
-      "kind": "broad_except_returns_empty",
-      "digest": "d56840dd4b313d1d06455f35dd43099c9688c8d7e744ed0716da75f68aa5d358",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "knowledge/web_search_manager.py",
       "symbol": "WebSearchManager._select_links_for_following",
       "kind": "broad_except_returns_empty",
       "digest": "af4f65e1faf3e1e058ba514041973bc2a5289a83e7d3b9b246723122cead5c4a",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/web_search_manager.py",
-      "symbol": "WebSearchManager._tavily_extract",
-      "kind": "broad_except_returns_empty",
-      "digest": "e7408f555aeb903179a8801f07b8859ba775fc433e29a0f02288b353d0f8c99b",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/web_search_manager.py",
-      "symbol": "WebSearchManager._tavily_search",
-      "kind": "broad_except_returns_empty",
-      "digest": "b3d096f91950c57d701e433031de7e5a38f34f1adc25bb1d76b8b710787584b9",
       "excerpt": "return []"
     },
     {
@@ -932,115 +532,11 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._current_status_facts",
-      "kind": "broad_except_returns_empty",
-      "digest": "1151b107e66b5661dde387d919388ef2a24049dcebcd9924473e9e36738a0508",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._read_obsidian_daily_notes",
-      "kind": "broad_except_returns_empty",
-      "digest": "f7d0ec66bac7fe31ab2ac3fc1a91f8e244c463a7698f4eb7acc7538ff6d6269d",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._read_obsidian_monthly_summaries",
-      "kind": "broad_except_returns_empty",
-      "digest": "fdecc0e254dfe029093f0c73bb7fa892049234f0aa17e167157018f98d0f3cda",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._read_obsidian_weekly_summaries",
-      "kind": "broad_except_returns_empty",
-      "digest": "a699b4ede0dc19c456639da072be955a8d7687bf21af27eda8b190c18d67b8f9",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_coordinator.py",
-      "symbol": "MemoryCoordinator.get_unresolved_threads",
-      "kind": "broad_except_returns_empty",
-      "digest": "0f191e1ee4c908cb99b998aa23b790f7612091d8e823d2901361082c54065016",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_expander.py",
-      "symbol": "MemoryExpander._fetch_conversations_in_range",
-      "kind": "broad_except_returns_empty",
-      "digest": "9b408d15cb41dda058d698059a95d26ca697b37f8d9d5f35e75f107050530439",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "memory/memory_retriever.py",
       "symbol": "MemoryRetriever._keyword_anchor_memories",
       "kind": "broad_except_returns_empty",
       "digest": "ca03b03b3a469401aeb3ed7a02d40e30ee6e99b358403ab69ec0c8999088a013",
       "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_retriever.py",
-      "symbol": "MemoryRetriever.get_recent_facts",
-      "kind": "broad_except_returns_empty",
-      "digest": "7188f287c0d59a01e2968b8079dd8bc99b670033ca7279beb545e9ad1c9623ae",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_retriever.py",
-      "symbol": "MemoryRetriever.get_skills",
-      "kind": "broad_except_returns_empty",
-      "digest": "fe0317e81c782c33bb59b0b6afc46adf03b85c362a99f9857e113223179165a2",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_retriever.py",
-      "symbol": "_metadata_fallback_search",
-      "kind": "broad_except_returns_empty",
-      "digest": "4f0488a09ecb8de2f9279b8bca94d7728f26d3c9608bd563a73aa402977165cd",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage._get_recent_summaries_by_timespan",
-      "kind": "broad_except_returns_empty",
-      "digest": "7bede00056b9726dcbd1f515fe7640c9d7b797c3c096151deab16cbca1f83025",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage.store_interaction",
-      "kind": "broad_except_returns_empty",
-      "digest": "e0ee8b4e4bf7aad356a48aebec7bf640788237ce94555792a298888f180d3b8e",
-      "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage.store_skill",
-      "kind": "broad_except_returns_empty",
-      "digest": "56dcad07c9dd541050fab4d2c4cc846e5e4c0adea12b7b32262eb5c4d0b2e3eb",
-      "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage.store_skill",
-      "kind": "broad_except_returns_empty",
-      "digest": "741ef36f9c287571895b57c33d5b25d6a16ec394adb22b435240fc9ac28e61b5",
-      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
@@ -1060,91 +556,11 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.get_pending",
-      "kind": "broad_except_returns_empty",
-      "digest": "55053de7790297e9c5fe80981195af3a9969ded9f128603edf7e6812c3471723",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.get_pending_and_approved",
-      "kind": "broad_except_returns_empty",
-      "digest": "3b129b9bc0ba590c291c7339bd9b69fa27ee7258b52d2b3babfc36ac5cb4ff14",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.get_proposal",
-      "kind": "broad_except_returns_empty",
-      "digest": "ca4b6597701ce5862c1933849e361041d0b68c897932d8b4f2de4d1282a084ef",
-      "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.query_proposals",
-      "kind": "broad_except_returns_empty",
-      "digest": "9ccced1ec50248d7c68e93dda451bdcd3f20649144949ad536f07f1d299f7a67",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.store_proposal",
-      "kind": "broad_except_returns_empty",
-      "digest": "5b5f1d2297c93ca6310335e1aa09c3724aa4147ad9a3ea963f1e52d3b9f5679b",
-      "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "memory/shutdown_processor.py",
       "symbol": "ShutdownProcessor._extract_procedural_skills",
       "kind": "broad_except_returns_empty",
       "digest": "64099756bd189df7f58e14fb31ede395ad9cf12bb3bdf52440e4bfa47b77be91",
       "excerpt": "return"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/storage/multi_collection_chroma_store.py",
-      "symbol": "MultiCollectionChromaStore.add_conversation_memory",
-      "kind": "broad_except_returns_empty",
-      "digest": "c2aa1370af500131fcbe4aba5af1ea1f0a068dca076fa52c4a923f010c064796",
-      "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/storage/multi_collection_chroma_store.py",
-      "symbol": "MultiCollectionChromaStore.get_by_id",
-      "kind": "broad_except_returns_empty",
-      "digest": "06b14c5d38043759254a0256e6857143b53219fd5923344c4c4fe186504cba8c",
-      "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/synthesis_memory.py",
-      "symbol": "SynthesisMemory.find_similar",
-      "kind": "broad_except_returns_empty",
-      "digest": "cacb9917f5db5a4b4a89d3ad6d8722d7f02a903c09d2c484db10f071b43a49ff",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/synthesis_memory.py",
-      "symbol": "SynthesisMemory.get_all_results",
-      "kind": "broad_except_returns_empty",
-      "digest": "fe6c2edd0ea4db2b0ef5d40abf897ff0887b52b9a90e19890972001fd90a5430",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/synthesis_memory.py",
-      "symbol": "SynthesisMemory.get_recurring",
-      "kind": "broad_except_returns_empty",
-      "digest": "16b4483f4db588cdda1d0e723aa88d23b348e356a1dee47d6a1ca19205bcaa5c",
-      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
@@ -1161,30 +577,6 @@
       "kind": "broad_except_returns_empty",
       "digest": "a4bf7da64cf429c973e82021e5d301c712292dc4b1431da278046e67ec7a0cc5",
       "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_store.py",
-      "symbol": "ThreadStore.list_open_threads",
-      "kind": "broad_except_returns_empty",
-      "digest": "5bd9d94c58e496a49d0357d11562f366a20e1aff78b73f5dab592c0d9d414fcb",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_store.py",
-      "symbol": "ThreadStore.query_threads",
-      "kind": "broad_except_returns_empty",
-      "digest": "54188071ef722713fd4b969c58473c0a063fff91dde4bb5f3f0e537476beb105",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_store.py",
-      "symbol": "ThreadStore.store_thread",
-      "kind": "broad_except_returns_empty",
-      "digest": "9ab58b725d85b2003d7fcd1635f417c8116e99454b95ca94a3f9a3b23a3ae54a",
-      "excerpt": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",

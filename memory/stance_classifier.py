@@ -2,7 +2,7 @@
 Shared stance / epistemic classifier — single source of truth for whether a
 stored claim is a world-fact or somebody's take on the world.
 
-Motivation (2026-08-23): the graph held ``casey | is | evil`` with weight 1.0 and
+Motivation (2026-08-23): the graph held ``tamsin | is | evil`` with weight 1.0 and
 truth_score 1.0 — a one-mention crisis-day value judgment stored with exactly
 the same epistemic status as ``user | lives_in | chicago``. Nothing in the
 pipeline could represent "this is the user's appraisal, not an objective fact",
@@ -15,10 +15,10 @@ Stances
 -------
   objective   ordinary world-fact shape ("user lives_in chicago")
   appraisal   a value judgment by its author — thick evaluative terms about a
-              person/thing ("casey is evil", "user is a failure"). True *as an
+              person/thing ("tamsin is evil", "user is a failure"). True *as an
               appraisal held by the author*; never assertable in system voice.
   reported    second-hand content: the triple relays what someone else said
-              ("casey said user is worthless") — the reporting is the fact.
+              ("tamsin said user is worthless") — the reporting is the fact.
   inferred    authored by the assistant, not stated by the user (model
               elaborations must never launder into user-stated facts).
   unknown     no stance recorded (legacy data). Consumers must treat unknown
