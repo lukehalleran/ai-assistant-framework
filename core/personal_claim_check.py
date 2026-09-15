@@ -17,10 +17,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Iterable, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 
 _VALID_STATUSES = frozenset({"supported", "contradicted", "insufficient"})
@@ -314,7 +317,53 @@ def _is_completion_kind(kind: str) -> bool:
     )
 
 
-def _validate_claims(response: str, payload: dict, evidence: Sequence[Mapping[str, Any]]) -> list[dict]:
+class _DropClaim(ValueError):
+    """This claim cannot be used; the rest of the audit still can."""
+
+
+def _checked_references(
+    refs: Any, sources: Mapping[str, list[Mapping[str, Any]]], drops: list[str],
+) -> list[dict]:
+    """Keep only references whose quote is an exact span of the cited source.
+
+    A bad reference is DROPPED, never repaired -- dropping evidence can only
+    move a claim toward ``insufficient``, so this is the conservative
+    direction (BC-84: one invalid element must not discard the valid ones).
+    """
+    if not isinstance(refs, list):
+        drops.append("evidence is not a list")
+        return []
+    checked: list[dict] = []
+    for ref in refs:
+        if not isinstance(ref, dict) or set(ref) != {"source_id", "quote"}:
+            drops.append("unexpected evidence shape")
+            continue
+        source_id, quote = ref["source_id"], ref["quote"]
+        if not isinstance(source_id, str) or not isinstance(quote, str) or not quote:
+            drops.append("invalid source reference")
+            continue
+        rows = sources.get(source_id)
+        if not rows:
+            drops.append("unknown source id")
+            continue
+        if not any(quote in _as_text(row.get("text")) for row in rows):
+            drops.append("source quote is not exact")
+            continue
+        checked.append({"source_id": source_id, "quote": quote})
+    return checked
+
+
+def _validate_claims(
+    response: str, payload: dict, evidence: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict], dict[str, int], list[str]]:
+    """Validate the model's claims one at a time.
+
+    Returns ``(claims, counts, drop_reasons)``. A claim that is not an exact
+    response span (or is malformed/duplicated) is dropped and counted; a bad
+    evidence reference is dropped and counted; a ``supported`` claim left
+    without evidence -- or a completion-kind claim without USER-role evidence
+    -- is demoted to ``insufficient`` and counted. Nothing is ever promoted.
+    """
     sources: dict[str, list[Mapping[str, Any]]] = {}
     for row in evidence:
         source_id = row.get("source_id")
@@ -322,36 +371,32 @@ def _validate_claims(response: str, payload: dict, evidence: Sequence[Mapping[st
             sources.setdefault(source_id, []).append(row)
     claims: list[dict] = []
     spans: set[str] = set()
+    counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0}
+    drops: list[str] = []
     for raw_claim in payload["claims"]:
-        if not isinstance(raw_claim, dict) or set(raw_claim) != {"text", "status", "kind", "evidence"}:
-            raise ValueError("unexpected claim shape")
-        text = raw_claim["text"]
-        status = raw_claim["status"]
-        kind = raw_claim["kind"]
-        refs = raw_claim["evidence"]
-        if not isinstance(text, str) or not text or text not in response:
-            raise ValueError("claim is not an exact response span")
-        if text in spans:
-            raise ValueError("duplicate claim span")
+        try:
+            if not isinstance(raw_claim, dict) or set(raw_claim) != {"text", "status", "kind", "evidence"}:
+                raise _DropClaim("unexpected claim shape")
+            text, status, kind = raw_claim["text"], raw_claim["status"], raw_claim["kind"]
+            if not isinstance(text, str) or not text or text not in response:
+                raise _DropClaim("claim is not an exact response span")
+            if text in spans:
+                raise _DropClaim("duplicate claim span")
+            if status not in _VALID_STATUSES or not isinstance(kind, str) or not kind.strip():
+                raise _DropClaim("invalid claim enum")
+        except _DropClaim as exc:
+            counts["dropped_claims"] += 1
+            drops.append(str(exc))
+            continue
         spans.add(text)
-        if status not in _VALID_STATUSES or not isinstance(kind, str) or not kind.strip():
-            raise ValueError("invalid claim enum")
-        if not isinstance(refs, list):
-            raise ValueError("evidence is not a list")
-        checked_refs: list[dict] = []
-        for ref in refs:
-            if not isinstance(ref, dict) or set(ref) != {"source_id", "quote"}:
-                raise ValueError("unexpected evidence shape")
-            source_id, quote = ref["source_id"], ref["quote"]
-            if not isinstance(source_id, str) or not isinstance(quote, str) or not quote:
-                raise ValueError("invalid source reference")
-            rows = sources.get(source_id)
-            if not rows or not any(quote in _as_text(row.get("text")) for row in rows):
-                raise ValueError("source quote is not exact")
-            checked_refs.append({"source_id": source_id, "quote": quote})
+        ref_drops: list[str] = []
+        checked_refs = _checked_references(raw_claim["evidence"], sources, ref_drops)
+        counts["dropped_evidence"] += len(ref_drops)
+        drops.extend(ref_drops)
         if status == "supported" and not checked_refs:
-            raise ValueError("supported claim lacks evidence")
-        if status == "supported" and _is_completion_kind(kind):
+            status = "insufficient"
+            counts["demoted"] += 1
+        elif status == "supported" and _is_completion_kind(kind):
             user_sources = {
                 ref["source_id"]
                 for ref in checked_refs
@@ -360,8 +405,9 @@ def _validate_claims(response: str, payload: dict, evidence: Sequence[Mapping[st
             if not user_sources:
                 # Assistant discussion/advice cannot corroborate a user event.
                 status = "insufficient"
+                counts["demoted"] += 1
         claims.append({"text": text, "status": status, "kind": kind.strip(), "evidence": checked_refs})
-    return claims
+    return claims, counts, drops
 
 
 @dataclass
@@ -371,6 +417,9 @@ class PersonalClaimResult:
     claims: list[dict] = field(default_factory=list)
     elapsed_s: float = 0.0
     evidence_truncated: bool = False
+    dropped_claim_count: int = 0
+    dropped_evidence_count: int = 0
+    demoted_count: int = 0
 
     def __post_init__(self) -> None:
         if self.status not in _RESULT_STATUSES:
@@ -395,6 +444,9 @@ class PersonalClaimResult:
             "insufficient_count": counts["insufficient"],
             "source_ids": referenced,
             "elapsed_s": round(float(self.elapsed_s), 3),
+            "dropped_claim_count": int(self.dropped_claim_count),
+            "dropped_evidence_count": int(self.dropped_evidence_count),
+            "demoted_count": int(self.demoted_count),
         }
         if self.evidence_truncated:
             result["evidence_truncated"] = True
@@ -442,12 +494,26 @@ async def audit_personal_claims(
                                    evidence_truncated=truncated)
     try:
         payload = _strict_json(raw)
-        claims = _validate_claims(response, payload, evidence)
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        # Constant-string reason only; the raw output is never logged.
+        logger.debug(f"[PersonalClaim] invalid_json: {exc}")
         return PersonalClaimResult("failed", "invalid_json", elapsed_s=perf_counter() - started,
                                    evidence_truncated=truncated)
+    claims, counts, drops = _validate_claims(response, payload, evidence)
+    if drops:
+        logger.debug(f"[PersonalClaim] dropped {counts['dropped_claims']} claim(s), "
+                     f"{counts['dropped_evidence']} reference(s): {sorted(set(drops))}")
+    if payload["claims"] and not claims:
+        # Every claim the model produced was unusable: nothing was checked.
+        return PersonalClaimResult("failed", "invalid_verdict", elapsed_s=perf_counter() - started,
+                                   evidence_truncated=truncated,
+                                   dropped_claim_count=counts["dropped_claims"],
+                                   dropped_evidence_count=counts["dropped_evidence"])
     return PersonalClaimResult("checked", "ok", claims=claims, elapsed_s=perf_counter() - started,
-                               evidence_truncated=truncated)
+                               evidence_truncated=truncated,
+                               dropped_claim_count=counts["dropped_claims"],
+                               dropped_evidence_count=counts["dropped_evidence"],
+                               demoted_count=counts["demoted"])
 
 
 _SENTENCE_END_RE = re.compile(r"[.!?]+(?:[\"'”’»\)\]]+)?(?:\s+|$)|\n{2,}")

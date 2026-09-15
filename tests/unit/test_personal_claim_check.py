@@ -159,24 +159,62 @@ async def test_no_claims_is_a_checked_clean_result():
 
 
 @pytest.mark.asyncio
-async def test_invalid_json_and_invalid_exact_source_span_fail_closed_to_unchanged():
+async def test_unparseable_output_is_invalid_json_and_preserves_text():
     evidence = _evidence()
     bad_json = ScriptedModel({"claims": [{"text": "uploaded it"}]})
     invalid = await audit_personal_claims("You uploaded it.", evidence, bad_json)
     assert invalid.status == "failed"
-    assert invalid.reason == "invalid_json"
+    assert invalid.reason == "invalid_verdict"  # parsed, but no usable claim survived
+    assert invalid.dropped_claim_count == 1
     assert omit_unsupported_claims("You uploaded it.", invalid) == "You uploaded it."
 
-    # A real source ID with a quote that is not an exact span of that source.
+    class Fenced(ScriptedModel):
+        async def generate_once(self, prompt, **kwargs):
+            return "```json\n{\"claims\": []}\n```"
+
+    fenced = await audit_personal_claims("You uploaded it.", evidence, Fenced())
+    assert (fenced.status, fenced.reason) == ("failed", "invalid_json")
+
+
+@pytest.mark.asyncio
+async def test_bad_reference_is_dropped_not_fatal_and_only_demotes():
+    """BC-84: one inexact quote must not discard the whole audit. A dropped
+    reference can only move a claim toward insufficient."""
+    evidence = _evidence()
     real_source = _ref(evidence, "I could just upload")["source_id"]
-    bad_quote = ScriptedModel({"claims": [{"text": "uploaded it", "status": "contradicted", "kind": "completion", "evidence": [{"source_id": real_source, "quote": "not present"}]}]})
-    invalid = await audit_personal_claims("You uploaded it.", evidence, bad_quote)
-    assert invalid.status == "failed"
-    assert invalid.reason == "invalid_json"
-    # An unknown source ID fails the same way.
-    unknown_source = ScriptedModel({"claims": [{"text": "uploaded it", "status": "contradicted", "kind": "completion", "evidence": [{"source_id": "src_nope", "quote": "uploaded"}]}]})
-    invalid = await audit_personal_claims("You uploaded it.", evidence, unknown_source)
-    assert invalid.status == "failed"
+    inexact = {"source_id": real_source, "quote": "not present"}
+    unknown = {"source_id": "src_nope", "quote": "uploaded"}
+    model = ScriptedModel({"claims": [
+        # contradicted needs no evidence: survives with its bad refs dropped
+        {"text": "uploaded it", "status": "contradicted", "kind": "completion", "evidence": [inexact, unknown]},
+        # supported with ONLY bad evidence: demoted, never kept as supported
+        {"text": "You", "status": "supported", "kind": "discussion", "evidence": [inexact]},
+    ]})
+    result = await audit_personal_claims("You uploaded it.", evidence, model)
+    assert result.status == "checked" and result.reason == "ok"
+    assert [c["status"] for c in result.claims] == ["contradicted", "insufficient"]
+    assert result.claims[0]["evidence"] == []
+    assert result.dropped_evidence_count == 3
+    assert result.demoted_count == 1
+    receipt = result.receipt()
+    assert receipt["dropped_evidence_count"] == 3 and receipt["demoted_count"] == 1
+    assert receipt["source_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_non_span_claim_is_dropped_while_the_rest_survive():
+    evidence = _evidence()
+    model = ScriptedModel({"claims": [
+        {"text": "you paraphrased this", "status": "insufficient", "kind": "other", "evidence": []},
+        {"text": "uploaded it", "status": "insufficient", "kind": "completion", "evidence": []},
+        {"text": "uploaded it", "status": "insufficient", "kind": "completion", "evidence": []},  # duplicate
+        {"text": "uploaded it", "status": "maybe", "kind": "completion"},  # bad shape
+    ]})
+    result = await audit_personal_claims("You uploaded it.", evidence, model)
+    assert result.status == "checked"
+    assert [c["text"] for c in result.claims] == ["uploaded it"]
+    assert result.dropped_claim_count == 3
+    assert omit_unsupported_claims("You uploaded it.", result) == "I don't have enough context to verify those personal details."
 
 
 @pytest.mark.asyncio

@@ -123,6 +123,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-81 | Private instance of a process-wide heavyweight resource | D | open |
 | BC-82 | Change validated only under the committed default configuration | G | open |
 | BC-83 | Sandbox or probe resolves live code or live paths through the inherited environment | H | open |
+| BC-84 | One invalid element discards a whole multi-item verdict | E | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -243,7 +244,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-17 Sentinel/prefix registered in one list, not all
 - Mechanism: an error prefix is added to `API_ERROR_PREFIXES` but not the display map or junk filter (or vice versa).
-- Incidents: 2026-08-14 `[Streaming Error` missing everywhere; 2026-09-03/04 `[OpenAI unavailable` registered but no display entry → CI red (CHANGELOG 08-14, 09-04 item 3).
+- Incidents: 2026-08-14 `[Streaming Error` missing everywhere; 2026-09-03/04 `[OpenAI unavailable` registered but no display entry → CI red (CHANGELOG 08-14, 09-04 item 3); 2026-09-15 the `personal_claim_` telemetry prefix was registered at the debug-record copy sites but not in the deferred turn-row merge (`grounding_`/`storage_` only) nor the telemetry writer's task gather — every log-only row would have frozen at `pending` (caught by the delivery tests before the first live turn).
 - Find: diff `API_ERROR_PREFIXES` against `_API_ERROR_DISPLAY`; `tests/unit/test_api_error_fail_fast.py`.
 - Closure: parity test exists; no single registry ties prefix→display→filter.
 - Status: partial.
@@ -657,7 +658,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 ### BC-72 Unobservable decision (no receipt in telemetry or debug)
 - Mechanism: a routing/verification decision is made inside a function and dies there; nothing in `turn_records.jsonl` or the debug record says what was decided or why, so the defect is found only when the owner pastes a dump.
 - Incidents: gate reason invisible until 09-02; `tone_trigger` absent until 07-25 (the latch went unmeasured for weeks); grounding failures labeled `complete` (09-10); web-trigger decision has no field at all (09-10); 2026-09-12 the `web_trigger_*` fields added on 09-10 record the GATHERER's verdict even when the GATE's separate verdict routed the turn — five 2026-09-11 turns are recorded `should_search=False` while an agentic web search actually ran, so the receipt contradicted the behaviour, and no field carried the credit budget that explained six "triggered, 0 results" turns.
-- Find: for each decision function, does its verdict + source + reason reach `_last_turn_signals`/the debug record? DM-26 rollups exist only for fields that exist.
+- Find: for each decision function, does its verdict + source + reason reach `_last_turn_signals`/the debug record? DM-26 rollups exist only for fields that exist. 2026-09-15: a receipt that EXISTS but folds N distinct failure causes into one label (`personal_claim_reason=invalid_json` for thirteen validator conditions) is the same class — the first live turn failed and nothing said which check tripped; now `invalid_json` (unparseable) vs `invalid_verdict` (no usable claim) plus dropped/demoted counts and a debug line of the constant-string drop reasons.
 - Closure: CM-12 receipts (`gate_reason`, `tone_trigger`, `grounding_status`, `answer_call`, timings); `web_trigger_*`, result count and error fields added 09-10; `web_budget_remaining` added 09-12 so a "triggered, 0 results" row is distinguishable from a search that ran. Still open for the divergence half: the receipt records the GATHERER's verdict, and only the credit/toggle resolution (which makes the two agree) keeps it honest — nothing asserts that the recorded decision is the one that routed the turn. 2026-09-12 (evening, adversarial review F4): `web_evidence` (requested / blocked / acquired / fetched), built at delivery from the gate decision, the gatherer receipt and THIS turn's loop rounds, is on the turn record for both answer routes; `web_budget_remaining` is the budget frozen at the decision rather than a later limiter reading; and the agentic controller names `_last_session` at session creation — it had been set only after a successful synthesis, so an error-fallback turn's provenance, grounding source and receipt read the PREVIOUS turn's rounds.
 - Status: partial.
 
@@ -752,6 +753,13 @@ next free number at their own merge.
 - Closure: none — CM-11 isolation covers store paths only for code that honours `DAEMON_TEST_MODE`; "probes run `python -s` and assert `__file__`" is not yet adopted, and `hooks/pre-push` still calls plain `python` (interim manual workaround for a push from a clone: `env -u PYTHONPATH git push`).
 - Status: open.
 
+### BC-84 One invalid element discards a whole multi-item verdict
+- Mechanism: a validator over a multi-item model output (claims, phases, events, proposals) raises on the first bad element, so one imprecise quote or one malformed row turns N-1 valid verdicts into a single "failed" — a fail-closed check becomes data-blind, and in shadow mode it produces no measurement at all. The safe shape is per-item: drop the bad element, count it in the receipt, and let a lost element only move a verdict in the conservative direction (evidence dropped → less supported, never more).
+- Incidents: 2026-09-06 the insight planner's string `"null"` survived freeze and killed the WHOLE pattern channel (closed per-phase, filed under BC-57 for the sentinel half); 2026-09-15 the first live personal-claim audit returned `failed/invalid_json` although an offline replay of the same prompt validated and caught the recurring "resume uploaded" confabulation — `_validate_claims` raised on any one of thirteen conditions across six claims.
+- Find: grep validators for `raise` inside a `for item in payload[...]` loop; a receipt with a single failure reason and no per-item counts; a shadow-mode feature whose rows are mostly `failed`.
+- Closure: `core/personal_claim_check._validate_claims` is per-claim (drop + count + demote-only) with `dropped_claim_count`/`dropped_evidence_count`/`demoted_count` on the receipt; `core/insight/coordinator` per-phase drop. No shared helper yet; other multi-item validators (calendar `events[]` — deliberately atomic, actions must not half-create) are exempt by design and should say so.
+- Status: partial.
+
 ## Detection methods (DM) — find instances without a full read
 
 | ID | Method | Runs as | Classes |
@@ -790,7 +798,7 @@ next free number at their own merge.
 
 The `check_bug_classes.py scan` rows above are pinned by
 `config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
-Together they are a scoped structural lane. 11 of the 82 classes have a
+Together they are a scoped structural lane. 11 of the 83 classes have a
 scanner (9 gated, 2 report-only), and every scan report lists the classes no
 scanner covers. A green scan is not a behavioral guarantee for any class.
 Baseline candidates and their per-occurrence reviews live in

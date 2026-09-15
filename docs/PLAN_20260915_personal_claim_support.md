@@ -96,3 +96,13 @@ integration review finished. Picked up from the working tree:
   anchored symbols.
 - Open: acceptance 6 (labeled-set precision + live canary before `correct`),
   post-restart live probe, owner commit. Nothing committed, applied or restarted.
+
+### Live probe (committed d0232a5, relaunched 18:27)
+
+The turn row carried a final status (no `pending` freeze). The checker itself
+returned `failed/invalid_json`; an offline replay validated and caught the
+repeated "resume uploaded" claim, so the all-or-nothing validator was the
+defect (BC-84). Second commit: per-claim validation, `invalid_json` vs
+`invalid_verdict`, dropped/demoted counts on the receipt. Replay through the
+deployed audit afterwards: checked, 6 candidates, 1 supported, 5 insufficient,
+1 demotion. Still open: acceptance 6 and a second live probe after the relaunch.

@@ -376,6 +376,7 @@ async def test_assistant_advice_cannot_support_the_upload_through_the_handler(mo
     assert receipt["status"] == "checked"
     assert UNSUPPORTED_SPANS[1] not in revised  # demoted to insufficient, then omitted
     assert receipt["contradicted_count"] == 0 and receipt["insufficient_count"] == 3
+    assert receipt["demoted_count"] == 1  # the precision signal: model tried to support a user event with advice
 
 
 @pytest.mark.parametrize("behaviour,status,reason", [
