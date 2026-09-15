@@ -21,24 +21,6 @@
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "knowledge/git_memory.py",
-      "symbol": "GitMemoryExtractor._extract_tags",
-      "text": "if \"breaking\" in subject_lower:"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "knowledge/git_memory.py",
-      "symbol": "GitMemoryExtractor._extract_tags",
-      "text": "if \"hotfix\" in subject_lower:"
-    },
-    {
-      "scanner": "dm01_raw_substring",
-      "path": "knowledge/git_memory.py",
-      "symbol": "GitMemoryExtractor._extract_tags",
-      "text": "if \"wip\" in subject_lower:"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "knowledge/sandbox_manager.py",
       "symbol": "_kill_sandbox_quietly",
       "text": "if name == \"NotFoundException\" or \"404\" in text or \"not found\" in text.lower():"
@@ -51,45 +33,15 @@
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "memory/memory_retriever.py",
-      "symbol": "MemoryRetriever._maybe_temporal_window_rerank",
-      "text": "if not any(m in query_lower for m in self._RETROSPECTIVE_MARKERS):"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "memory/memory_scorer.py",
       "symbol": "MemoryScorer.rank_memories",
       "text": "if cq_density > 0.08 and _analogy_markers(blob) > 0 and \"analogy\" not in current_query.lower():"
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "memory/user_profile.py",
-      "symbol": "UserProfile._is_temporal_query",
-      "text": "return any(kw in query_lower for kw in self.TEMPORAL_KEYWORDS)"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "scripts/migrate_proposals_supervision.py",
       "symbol": "infer_test_files",
       "text": "return [f for f in affected if \"test\" in f.lower()]"
-    },
-    {
-      "scanner": "dm17_apply_without_guard",
-      "path": "scripts/cleanup_stale_illness.py",
-      "symbol": "",
-      "text": "python scripts/cleanup_stale_illness.py --apply # back up + apply"
-    },
-    {
-      "scanner": "dm17_apply_without_guard",
-      "path": "scripts/graph_relation_normalize.py",
-      "symbol": "",
-      "text": "* --apply backs up the graph JSON first (timestamped byte-copy)."
-    },
-    {
-      "scanner": "dm17_apply_without_guard",
-      "path": "scripts/reclassify_proposals.py",
-      "symbol": "",
-      "text": "with ``--apply`` to persist."
     },
     {
       "scanner": "dm17_apply_without_guard",
@@ -309,104 +261,8 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin._fetch_upload_roster",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin._get_wiki_content_timed",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_daemon_self_notes",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_git_commits",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_graph_context",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_narrative_context",
-      "text": "return \"\""
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_personal_notes",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_procedural_skills",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_proposed_features",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_reference_docs",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_relevant_emails",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_unresolved_threads",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_knowledge.py",
-      "symbol": "KnowledgeRetrievalMixin.get_user_uploads",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin._get_recent_conversations",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "core/prompt/gatherer_memory.py",
       "symbol": "MemoryRetrievalMixin._get_reflections",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin._get_semantic_memories",
       "text": "return []"
     },
     {
@@ -420,24 +276,6 @@
       "path": "core/prompt/gatherer_memory.py",
       "symbol": "MemoryRetrievalMixin.get_recent_facts",
       "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin.get_upcoming_schedule",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_memory.py",
-      "symbol": "MemoryRetrievalMixin.get_user_profile_context",
-      "text": "return \"\""
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "core/prompt/gatherer_web.py",
-      "symbol": "WebSearchMixin._get_web_search_results",
-      "text": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
@@ -489,74 +327,8 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/obsidian_manager.py",
-      "symbol": "ObsidianManager._keyword_search",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/obsidian_manager.py",
-      "symbol": "ObsidianManager.get_notes",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager._get_document_chunks",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager._keyword_search",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager.get_documents",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/reference_docs_manager.py",
-      "symbol": "ReferenceDocsManager.list_documents",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/semantic_search.py",
-      "symbol": "SemanticSearchIndex.search",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/semantic_search.py",
-      "symbol": "SemanticSearchIndex.search",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/visual_memory_store.py",
-      "symbol": "VisualMemoryStore.search_by_text",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "knowledge/web_search_manager.py",
       "symbol": "WebSearchManager._select_links_for_following",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/web_search_manager.py",
-      "symbol": "WebSearchManager._tavily_extract",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/web_search_manager.py",
-      "symbol": "WebSearchManager._tavily_search",
       "text": "return []"
     },
     {
@@ -585,87 +357,9 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._current_status_facts",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._read_obsidian_daily_notes",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._read_obsidian_monthly_summaries",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_consolidator.py",
-      "symbol": "MemoryConsolidator._read_obsidian_weekly_summaries",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_coordinator.py",
-      "symbol": "MemoryCoordinator.get_unresolved_threads",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_expander.py",
-      "symbol": "MemoryExpander._fetch_conversations_in_range",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "memory/memory_retriever.py",
       "symbol": "MemoryRetriever._keyword_anchor_memories",
       "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_retriever.py",
-      "symbol": "MemoryRetriever.get_recent_facts",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_retriever.py",
-      "symbol": "MemoryRetriever.get_skills",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_retriever.py",
-      "symbol": "_metadata_fallback_search",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage._get_recent_summaries_by_timespan",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage.store_interaction",
-      "text": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage.store_skill",
-      "text": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/memory_storage.py",
-      "symbol": "MemoryStorage.store_skill",
-      "text": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
@@ -681,69 +375,9 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.get_pending",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.get_pending_and_approved",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.get_proposal",
-      "text": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.query_proposals",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.store_proposal",
-      "text": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "memory/shutdown_processor.py",
       "symbol": "ShutdownProcessor._extract_procedural_skills",
       "text": "return"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/storage/multi_collection_chroma_store.py",
-      "symbol": "MultiCollectionChromaStore.add_conversation_memory",
-      "text": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/storage/multi_collection_chroma_store.py",
-      "symbol": "MultiCollectionChromaStore.get_by_id",
-      "text": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/synthesis_memory.py",
-      "symbol": "SynthesisMemory.find_similar",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/synthesis_memory.py",
-      "symbol": "SynthesisMemory.get_all_results",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/synthesis_memory.py",
-      "symbol": "SynthesisMemory.get_recurring",
-      "text": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",
@@ -756,24 +390,6 @@
       "path": "memory/thread_extractor.py",
       "symbol": "ThreadExtractor.extract_new_threads",
       "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_store.py",
-      "symbol": "ThreadStore.list_open_threads",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_store.py",
-      "symbol": "ThreadStore.query_threads",
-      "text": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_store.py",
-      "symbol": "ThreadStore.store_thread",
-      "text": "return None"
     },
     {
       "scanner": "dm18_except_returns_empty",
