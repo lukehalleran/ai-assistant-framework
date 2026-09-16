@@ -34,6 +34,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from utils.logging_utils import get_logger
 from utils.ordered_slice import head as _ordered_head
+from .base import _parse_bool
 
 logger = get_logger("prompt_summarizer")
 
@@ -50,12 +51,6 @@ def _cfg_int(key: str, default_val: int) -> int:
         return int(v) if v is not None else int(default_val)
     except (ValueError, TypeError):
         return int(default_val)
-
-def _parse_bool(s: Optional[str], default: bool = False) -> bool:
-    """Parse boolean from string, with fallback."""
-    if not s:
-        return default
-    return s.strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
 
 # Summary configuration
 FORCE_LLM_SUMMARIES = _parse_bool(os.getenv("FORCE_LLM_SUMMARIES", "0"))

@@ -55,6 +55,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils.logging_utils import get_logger
 from utils.text_budget import fit_text_to_tokens
+from .base import _parse_bool
 
 # Module-level import verified cycle-free (2026-09-06): knowledge.web_search_manager
 # does not import core.prompt.* (or anything that does) at module level, so this
@@ -128,12 +129,6 @@ def _cfg_int(key: str, default_val: int) -> int:
         return int(v) if v is not None else int(default_val)
     except (ValueError, TypeError):
         return int(default_val)
-
-def _parse_bool(s: str, default: bool = False) -> bool:
-    """Parse boolean from string, with fallback."""
-    if not s:
-        return default
-    return s.strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
 
 # Token limits and configuration
 ENABLE_MIDDLE_OUT = _parse_bool(os.getenv("ENABLE_MIDDLE_OUT", "1"))
