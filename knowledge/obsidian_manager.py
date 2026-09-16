@@ -59,6 +59,7 @@ class EmbedResult:
     """Result of vault embedding operation."""
     total_files: int = 0
     embedded_files: int = 0
+    processed_files: int = 0  # every file the loop finished with: embedded, updated, skipped or errored
     updated_files: int = 0
     total_chunks: int = 0
     skipped_files: int = 0
@@ -643,14 +644,22 @@ class ObsidianManager:
                 else:
                     result.embedded_files += 1
 
-                # Progress logging
-                if result.embedded_files % 50 == 0:
-                    logger.info(f"[Obsidian] Embedded {result.embedded_files}/{result.total_files} files...")
-
             except Exception as e:
                 error_msg = f"Error processing {md_file}: {str(e)}"
                 result.errors.append(error_msg)
                 logger.warning(f"[Obsidian] {error_msg}")
+            finally:
+                # Progress by PROCESSED files (runs on the skip `continue`s and
+                # the error path too). The old `embedded_files % 50 == 0` test
+                # was true for every updated note while embedded_files stayed
+                # 0, logging "Embedded 0/810 files..." once per update.
+                result.processed_files += 1
+                if result.processed_files % 50 == 0 or result.processed_files == result.total_files:
+                    logger.info(
+                        f"[Obsidian] Processed {result.processed_files}/{result.total_files} files "
+                        f"({result.embedded_files} new, {result.updated_files} updated, "
+                        f"{result.skipped_files} skipped)..."
+                    )
 
         result.duration_seconds = time.time() - start_time
         logger.info(

@@ -55,6 +55,7 @@ const REPRESENTATIVE_ARGS: Record<string, unknown[]> = {
   approveAction: ['act-1'],
   rejectAction: ['act-1'],
   syncNotes: [],
+  getNotesSyncStatus: [],
   getDebugRecords: [],
   getProvenance: [3],
   downloadPromptExport: [3],

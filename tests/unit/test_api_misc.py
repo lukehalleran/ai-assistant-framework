@@ -335,26 +335,178 @@ class TestGraphEndpoint:
 
 
 class TestSyncNotes:
-    @pytest.mark.asyncio
-    async def test_sync_notes_returns_helper_message(self, monkeypatch):
-        result = MagicMock(
-            errors=[], embedded_files=2, updated_files=1,
-            skipped_files=5, total_chunks=12, duration_seconds=1.5,
-        )
-        manager = MagicMock()
-        manager.embed_vault.return_value = result
+    """BC-80 / BC-81 (docs/BUG_CLASSES.md): the sync is a retained background
+    job. The POST returns at once (still carrying ``message``), a second tap
+    joins the running job, and the outcome is read from
+    ``GET /api/sync-notes/status`` — so a client whose response dropped
+    (2026-09-14 and 2026-09-16: server succeeded, SPA showed "failed") can
+    read the truth after a reload. The worker uses the orchestrator's LIVE
+    Chroma store, never a bare ObsidianManager().
+    """
 
+    @staticmethod
+    def _result(**over):
+        base = dict(errors=[], embedded_files=2, updated_files=1, skipped_files=5,
+                    processed_files=8, total_files=8, total_chunks=12, duration_seconds=1.5)
+        base.update(over)
+        return MagicMock(**base)
+
+    @staticmethod
+    def _install_manager(monkeypatch, manager):
         import knowledge.obsidian_manager as om
-        monkeypatch.setattr(om, "ObsidianManager", MagicMock(return_value=manager))
+        factory = MagicMock(return_value=manager)
+        monkeypatch.setattr(om, "ObsidianManager", factory)
+        return factory
 
-        app = create_app(_make_orchestrator(), start_background=False)
+    @staticmethod
+    def _join(app, timeout=5.0):
+        worker = app.state.daemon.notes_sync.worker
+        assert worker is not None
+        worker.join(timeout=timeout)
+        assert not worker.is_alive(), "notes-sync worker did not finish"
+
+    @pytest.mark.asyncio
+    async def test_start_returns_immediately_and_status_reads_the_outcome(self, monkeypatch):
+        manager = MagicMock()
+        manager.embed_vault.return_value = self._result()
+        factory = self._install_manager(monkeypatch, manager)
+        orch = _make_orchestrator()
+        app = create_app(orch, start_background=False)
         async with _client(app) as client:
             resp = await client.post("/api/sync-notes")
-
-        assert resp.status_code == 200
-        msg = resp.json()["message"]
-        assert "2 new" in msg and "1 updated" in msg
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "running" and body["task_id"]
+            assert "message" in body  # contract kept for the SPA toast + Gradio parity
+            self._join(app)
+            status = (await client.get("/api/sync-notes/status")).json()
+        assert status["status"] == "succeeded"
+        assert status["task_id"] == body["task_id"]
+        assert "2 new" in status["message"] and "1 updated" in status["message"]
+        assert status["error"] is None
+        assert status["finished_at"] >= status["started_at"]
+        assert isinstance(status["server_time"], float)
+        last = status["last_result"]
+        assert last["status"] == "succeeded" and last["task_id"] == body["task_id"]
+        assert last["result"]["embedded_files"] == 2 and last["result"]["processed_files"] == 8
         manager.embed_vault.assert_called_once_with(force_reindex=False)
+        # BC-81: the LIVE store is injected, not a lazily-built second one.
+        factory.assert_called_once_with(chroma_store=orch.memory_system.chroma_store)
+
+    @pytest.mark.asyncio
+    async def test_status_is_idle_before_any_sync(self):
+        app = create_app(_make_orchestrator(), start_background=False)
+        async with _client(app) as client:
+            status = (await client.get("/api/sync-notes/status")).json()
+        assert status["status"] == "idle" and status["last_result"] is None
+        assert status["task_id"] is None and status["started_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_single_flight_while_running_then_outcome_survives_the_request(self, monkeypatch):
+        import threading
+        release = threading.Event()
+        entered = threading.Event()
+
+        def _slow_embed(force_reindex=False):
+            entered.set()
+            assert release.wait(timeout=5), "test never released the worker"
+            return self._result()
+
+        manager = MagicMock()
+        manager.embed_vault.side_effect = _slow_embed
+        self._install_manager(monkeypatch, manager)
+        app = create_app(_make_orchestrator(), start_background=False)
+        async with _client(app) as client:
+            first = (await client.post("/api/sync-notes")).json()
+            assert first["status"] == "running"
+            assert entered.wait(timeout=5)
+            # The POST returned while the work is still in flight (the BC-80 shape).
+            mid = (await client.get("/api/sync-notes/status")).json()
+            assert mid["status"] == "running" and mid["task_id"] == first["task_id"]
+            second = (await client.post("/api/sync-notes")).json()
+            assert second["status"] == "running"
+            assert second["task_id"] == first["task_id"]
+            assert "already running" in second["message"]
+            release.set()
+            self._join(app)
+            final = (await client.get("/api/sync-notes/status")).json()
+        assert final["status"] == "succeeded" and final["task_id"] == first["task_id"]
+        assert manager.embed_vault.call_count == 1  # the second tap did not start a second job
+
+    @pytest.mark.asyncio
+    async def test_embed_exception_is_a_failed_outcome_with_the_error(self, monkeypatch):
+        manager = MagicMock()
+        manager.embed_vault.side_effect = RuntimeError("vault missing")
+        self._install_manager(monkeypatch, manager)
+        app = create_app(_make_orchestrator(), start_background=False)
+        async with _client(app) as client:
+            await client.post("/api/sync-notes")
+            self._join(app)
+            status = (await client.get("/api/sync-notes/status")).json()
+        assert status["status"] == "failed"
+        assert status["error"] == "vault missing"
+        assert "Sync failed" in status["message"]
+        assert status["last_result"]["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_per_file_errors_are_reported_as_failed_with_counts(self, monkeypatch):
+        manager = MagicMock()
+        manager.embed_vault.return_value = self._result(errors=["Error processing a.md: bad"])
+        self._install_manager(monkeypatch, manager)
+        app = create_app(_make_orchestrator(), start_background=False)
+        async with _client(app) as client:
+            await client.post("/api/sync-notes")
+            self._join(app)
+            status = (await client.get("/api/sync-notes/status")).json()
+        assert status["status"] == "failed"
+        assert "completed with errors" in status["message"]
+        assert status["last_result"]["result"]["errors"] == ["Error processing a.md: bad"]
+
+    @pytest.mark.asyncio
+    async def test_missing_live_store_fails_instead_of_building_a_private_one(self, monkeypatch):
+        factory = self._install_manager(monkeypatch, MagicMock())
+        orch = _make_orchestrator()
+        orch.memory_system.chroma_store = None
+        app = create_app(orch, start_background=False)
+        async with _client(app) as client:
+            await client.post("/api/sync-notes")
+            self._join(app)
+            status = (await client.get("/api/sync-notes/status")).json()
+        assert status["status"] == "failed"
+        assert "live Chroma store is unavailable" in status["error"]
+        factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_worker_start_failure_is_recorded_not_left_running(self, monkeypatch):
+        import threading
+        self._install_manager(monkeypatch, MagicMock())
+
+        def _no_start(self_thread):
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(threading.Thread, "start", _no_start)
+        app = create_app(_make_orchestrator(), start_background=False)
+        async with _client(app) as client:
+            body = (await client.post("/api/sync-notes")).json()
+            status = (await client.get("/api/sync-notes/status")).json()
+        assert body["status"] == "failed" and "failed to start" in body["message"]
+        assert status["status"] == "failed"
+        assert "can't start new thread" in status["error"]
+        # A later tap is not blocked by a phantom "running" job.
+        assert status["task_id"] == body["task_id"]
+
+    def test_notes_sync_state_ignores_a_stale_task_outcome(self):
+        from api.state import NotesSyncState
+        state = NotesSyncState()
+        assert state.try_start("a")
+        assert not state.try_start("b")  # single flight
+        state.finish("b", "failed", "stale")  # a job that never owned the slot
+        assert state.snapshot()["status"] == "running"
+        state.finish("a", "succeeded", "ok", result={"embedded_files": 1})
+        snap = state.snapshot()
+        assert snap["status"] == "succeeded" and snap["last_result"]["result"] == {"embedded_files": 1}
+        assert state.try_start("c")  # a new job may start after a terminal state
+        assert state.snapshot()["last_result"]["task_id"] == "a"  # retained across the new start
 
 
 class TestApiConfigSchema:
