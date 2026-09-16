@@ -6,6 +6,92 @@ organised, the rules that keep it safe, and the changes recommended after
 reviewing that run. It is the canonical description; CLAUDE.md carries the
 per-session doctrine and points here._
 
+## 0. Start here — the map (added 2026-09-16)
+
+Point a model at this file and it should be able to find everything else without the owner
+re-explaining. The rules of the road are in §3–§5; this section is the index.
+
+### 0.1 What you may and may not do
+
+- **Never** commit, amend, push, delete or overwrite `data/`, restart the Daemon, or apply a
+  store script. Draft the commit message and a runner (§3a.7); the owner types the two lines.
+- Work in a clone under `~/daemon_exec/` (never the live checkout `~/Daemon_v1` — the running
+  Daemon deploys whatever is on disk there), with the push URL disabled until the owner enables it.
+- Every python invocation from a clone is `env -u PYTHONPATH DISABLE_FS_GUARD=1 DAEMON_TEST_MODE=1
+  PYTHONDONTWRITEBYTECODE=1 python -s …` and prints `module.__file__` once — the login shell's
+  `usercustomize.py` otherwise imports the LIVE repo's `utils` into every interpreter.
+- pytest only under `systemd-run --user --scope -p MemoryMax=4G` (unit) / `8G` (the non-unit
+  remainder, Daemon DOWN); never `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` on a pytest line (it kills
+  pytest-asyncio); never traverse `data/` (41M-row parquet); `rm` is a no-op wrapper — use
+  `/usr/bin/rm` only for your own clone-local files.
+- A live probe is wrapped `[test]…[/test]` or it becomes a profile fact.
+
+### 0.2 Reading order by task
+
+| You are asked to… | Read, in order | Then |
+|---|---|---|
+| Understand the system | `ARCHITECTURE_GUIDE.md` (concepts, request lifecycle, memory tiers) → `PROJECT_SKELETON.md` (every module, one line each) → `QUICK_REFERENCE.md` (API + constants lookup) → `FORMAL_MODEL.md` (the scoring/gating math) | the subsystem doc for the area (0.3) |
+| Fix a bug / audit a turn dump | `BUG_CLASSES.md` — run the DM detectors for the families in scope BEFORE reading code → `BUG_RETROSPECTIVE_20260715_20260904.md` (the narrative behind the classes) → `TEST_LANES.md` (which tests to run, memory caps) | the loop in §3; every fix names `class: BC-nn` |
+| Add or change a feature | `GOALS.md` → `WORKPLAN_2_hardening_executable_beta.md` (priorities: no-bugs over features) → `generalization/README.md` + `generalization/01-product-contract.md` (what must stay owner-neutral) → `FORMAL_MODEL.md` if it touches scoring | `PROMPT_BUILDING_PIPELINE.md` if it touches the prompt |
+| Verify behaviour live | `PROBE_HARNESS_DESIGN.md` (probe set + expected response shapes, the planned third prong) → `test_live_system.md` (manual CLI plan) → `eval/corpus.py` (27 labelled seed queries with expected-behaviour tags) → `tests/benchmarks/` | relay a turn (§2) and audit its debug record |
+| Ship (test, commit, push, PR) | §3a (commit discipline, runners, hooks, branch protection) → `TEST_LANES.md` | `hooks/pre-push` runs the guards + full unit pass; CI's `bug-class-gate` blocks the merge |
+| Run/build/deploy | `BUILD_GUIDE.md`, `DOCKER_README.md`, `WEB_FRONTEND.md`, `AGENT_SAFETY.md` | — |
+| Pick up open work | `FOLLOWUPS.md` (repo root, untracked — one line per open item, newest first) → the owner-local `CLAUDE.md` (doctrine + dated one-liners) and `CLAUDE_CHANGELOG.md` (full narratives) → `docs/HANDOFF_*.md` (owner-local, gitignored) | §5 handoff format when you stop |
+
+### 0.3 Subsystem documents (contracts per area)
+
+| Area | Document | Code |
+|---|---|---|
+| Memory tiers, collections, retrieval, TTL | `MEMORY_SYSTEM.md` | `memory/`, `memory/storage/` |
+| Prompt assembly, gating, budget | `PROMPT_BUILDING_PIPELINE.md` | `core/prompt/`, `processing/gate_system.py` |
+| Agentic loop, tools, actions | `AGENTIC_SEARCH.md`, `EMAIL_INTEGRATION_DESIGN.md` | `core/agentic/`, `core/actions/` |
+| Tone / crisis detection, anti-amplification | `TONE_DETECTION_SUMMARY.md`, `postmortems/2026-07-tone-flatline.md`, `ADAPTIVE_LEARNING.md` | `utils/tone_detector.py`, `utils/adaptive_exemplars.py` |
+| Pattern / insight mode | `PATTERN_ANALYSIS.md` | `memory/pattern_engine.py`, `core/insight/` |
+| Curation (never-delete engine) | `AUTONOMOUS_CURATION_DESIGN.md` | `memory/curation/`, `api/routes/curation.py` |
+| Self-improvement proposals | `PROPOSAL_SYSTEM.md` | `knowledge/proposal_generator.py`, `agent_branch/` |
+| Synthesis (frozen line of work) | `SYNTHESIS_FILTER.md`, `SYNTHESIS_VALIDATION.md`, `SYNTHESIS_CALIBRATION_PLAN.md`, `LITERATURE_ORACLE.md`, `grading_plan.md` | `knowledge/synthesis_*` |
+| Thinking blocks, tags, web UI | `THINKING_BLOCKS_IMPLEMENTATION.md`, `TAG_GENERATION.md`, `WEB_FRONTEND.md` | `core/response_parser.py`, `utils/tag_generator.py`, `api/`, `web/` |
+| Evaluation & metrics | `BENCHMARK_METRICS.md`, `METRICS_SNAPSHOT.md` (generated — `scripts/generate_doc_metrics.py`), `eval/README.md` | `eval/`, `tests/benchmarks/` |
+| Dated audits and plans | `AUDIT_*.md`, `INDEPENDENT_AUDIT_*.md`, `PLAN_*.md`, `GENERALIZATION_*.md`, `docs/execution/` (batch records, briefs, class-guard requests/responses) | historical evidence; read when a class or batch is cited |
+
+Three of these are **runtime inputs**, not just prose: `PROJECT_SKELETON.md`, `QUICK_REFERENCE.md`
+and the root `CLAUDE.md` are read in full by the proposal generator, `GOALS.md` is sliced for
+ranking queries, and every top-level `docs/*.md` is chunked into the `reference_docs` collection at
+startup. Reformatting them changes model behaviour (`docs/execution/compaction_20260915/PLAN.md`).
+
+### 0.4 How work is organised (the credit pattern)
+
+Frontier plans → cheap subagents execute in parallel on disjoint files → frontier referees (§4).
+A plan is fool-proof or it is not a plan: verified `file:line` facts, exact commands, acceptance
+checks, stop conditions, contingencies. Executors get a filled copy of
+`docs/templates/EXECUTOR_BRIEF.md`; they escalate on a stop condition and never improvise. The
+referee reads the diff, re-runs a check, greps the BC-58 siblings, and only then writes the combined
+commit message. At the 20 % weekly-credit warning the frontier stops implementing; near the limit it
+emits a §5 handoff so Codex can continue.
+
+### 0.5 The bug-class discipline in one paragraph
+
+Every audit starts by running the detectors (`DM-nn`) of `BUG_CLASSES.md` for the families in scope;
+every fix ends by naming its class in the commit body and changelog line; a mechanism with no entry
+gets one (checklist at the end of that file — two incidents or a strong reason, a runnable Find, an
+honest Status). The structural lane is `python scripts/check_bug_classes.py scan --root .` +
+`tests/bug_class_guards/` + the accepted-debt ledger `config/bug_class_dispositions.json` (whole-file
+SHA — any edit to a debt file needs the class-guard owner's re-review before push). Repo-wide guard
+tests (`tests/unit/test_*_guard.py`, the wiring/metering parity tests, `test_import_hygiene_guard.py`)
+run in `hooks/pre-push` and CI; a guard is lowered by a batch, never raised.
+
+### 0.6 Where things live
+
+| What | Where |
+|---|---|
+| Live checkout (the Daemon runs from it) | `~/Daemon_v1` — read it, never edit it from an agent |
+| Working clones and per-batch run artifacts | `~/daemon_exec/<name>/`, handoffs in `~/daemon_exec/<lane>_runs/` |
+| Owner runners (commit / PR), read-only for agents | `~/daemon_checkpoints/` |
+| Owner-local doctrine and history (gitignored) | `~/Daemon_v1/CLAUDE.md`, `CLAUDE_CHANGELOG.md`, `docs/HANDOFF_*.md`, `FOLLOWUPS.md` |
+| Stores (never write from a script while the Daemon runs) | `data/` (`chroma_db_v4`, `corpus_v4.json`, `user_profile.json`, `knowledge_graph.json`, backups) |
+| Logs and receipts | `daemon_debug.log` (live) + rotated archives, `logs/turn_records.jsonl`, `logs/actions_audit.jsonl`, `logs/curation_audit.jsonl` |
+| Tests | `tests/unit/` (unit lane), `tests/` (non-unit remainder — Daemon down), `tests/bug_class_guards/` (stdlib-only), `tests/benchmarks/` |
+
 ## 1. The three prongs
 
 | Prong | What it is | Strengths | Cost model | Typical role |

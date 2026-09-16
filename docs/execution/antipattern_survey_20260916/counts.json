@@ -1,0 +1,895 @@
+{
+  "file_universe": {
+    "app_files": 313,
+    "test_files": 553,
+    "script_files": 131,
+    "other_uncategorized": 20,
+    "total_git_tracked_py": 1017,
+    "note": "app = core memory knowledge utils gui api models processing config agent_branch eval + main.py"
+  },
+  "1_function_body_imports": {
+    "func_imports_total": {
+      "app": 1269,
+      "tests": 2106,
+      "scripts": 290
+    },
+    "by_category": {
+      "stdlib": {
+        "app": 159,
+        "tests": 202,
+        "scripts": 21
+      },
+      "project_module": {
+        "app": 698,
+        "tests": 1772,
+        "scripts": 205
+      },
+      "config_app_config": {
+        "app": 306,
+        "tests": 94,
+        "scripts": 38
+      },
+      "heavy_third_party": {
+        "app": 45,
+        "tests": 10,
+        "scripts": 14
+      },
+      "other": {
+        "app": 61,
+        "tests": 28,
+        "scripts": 12
+      }
+    },
+    "with_lazy_marker_comment": {
+      "app": 57,
+      "scripts": 1
+    },
+    "module_level_from_config_app_config": {
+      "statements": {
+        "app": 37,
+        "tests": 7,
+        "scripts": 25
+      },
+      "distinct_files_all_groups": 57
+    },
+    "note": "config.app_config function-body imports are DOCUMENTED doctrine (live-config-read exception, case 3) in most of core/prompt/*; not counted as a defect on their own."
+  },
+  "2_except_exception_or_bare": {
+    "total": {
+      "app": 1189,
+      "tests": 47,
+      "scripts": 128
+    },
+    "swallow_only": {
+      "app": 412,
+      "tests": 11,
+      "scripts": 67
+    },
+    "other_handling": {
+      "app": 777,
+      "tests": 36,
+      "scripts": 61
+    },
+    "top10_files_by_total_except": [
+      [
+        88,
+        "app",
+        "gui/handlers.py"
+      ],
+      [
+        46,
+        "app",
+        "core/orchestrator.py"
+      ],
+      [
+        36,
+        "app",
+        "core/prompt/builder.py"
+      ],
+      [
+        33,
+        "app",
+        "memory/shutdown_processor.py"
+      ],
+      [
+        32,
+        "app",
+        "core/prompt/gatherer_knowledge.py"
+      ],
+      [
+        30,
+        "app",
+        "core/agentic/tools.py"
+      ],
+      [
+        30,
+        "app",
+        "gui/launch.py"
+      ],
+      [
+        27,
+        "app",
+        "core/prompt/gatherer_memory.py"
+      ],
+      [
+        25,
+        "app",
+        "memory/memory_retriever.py"
+      ],
+      [
+        22,
+        "app",
+        "core/agentic/gate.py"
+      ],
+      [
+        22,
+        "app",
+        "knowledge/web_search_manager.py"
+      ],
+      [
+        22,
+        "app",
+        "memory/memory_storage.py"
+      ],
+      [
+        20,
+        "app",
+        "core/agentic/controller.py"
+      ],
+      [
+        19,
+        "app",
+        "memory/storage/multi_collection_chroma_store.py"
+      ],
+      [
+        18,
+        "app",
+        "memory/fact_extractor.py"
+      ]
+    ],
+    "top10_files_by_swallow_only": [
+      [
+        28,
+        "app",
+        "gui/handlers.py"
+      ],
+      [
+        18,
+        "app",
+        "core/orchestrator.py"
+      ],
+      [
+        17,
+        "app",
+        "memory/shutdown_processor.py"
+      ],
+      [
+        14,
+        "app",
+        "core/agentic/gate.py"
+      ],
+      [
+        12,
+        "app",
+        "core/prompt/builder.py"
+      ],
+      [
+        12,
+        "app",
+        "memory/memory_storage.py"
+      ],
+      [
+        11,
+        "app",
+        "utils/web_search_trigger.py"
+      ],
+      [
+        10,
+        "app",
+        "gui/settings_core.py"
+      ],
+      [
+        10,
+        "app",
+        "memory/memory_retriever.py"
+      ],
+      [
+        9,
+        "app",
+        "core/stm_analyzer.py"
+      ]
+    ]
+  },
+  "3_try_blocks": {
+    "total": {
+      "app": 1831,
+      "tests": 207,
+      "scripts": 220
+    },
+    "top10_files": [
+      [
+        108,
+        "app",
+        "gui/handlers.py"
+      ],
+      [
+        69,
+        "app",
+        "memory/shutdown_processor.py"
+      ],
+      [
+        55,
+        "app",
+        "core/orchestrator.py"
+      ],
+      [
+        55,
+        "app",
+        "gui/launch.py"
+      ],
+      [
+        49,
+        "app",
+        "core/prompt/builder.py"
+      ],
+      [
+        45,
+        "app",
+        "core/prompt/gatherer_knowledge.py"
+      ],
+      [
+        43,
+        "app",
+        "main.py"
+      ],
+      [
+        37,
+        "app",
+        "knowledge/web_search_manager.py"
+      ],
+      [
+        35,
+        "app",
+        "core/prompt/gatherer_memory.py"
+      ],
+      [
+        32,
+        "app",
+        "core/prompt/formatter.py"
+      ],
+      [
+        32,
+        "app",
+        "memory/memory_retriever.py"
+      ],
+      [
+        31,
+        "app",
+        "core/agentic/tools.py"
+      ],
+      [
+        26,
+        "app",
+        "core/agentic/controller.py"
+      ],
+      [
+        26,
+        "app",
+        "memory/fact_extractor.py"
+      ],
+      [
+        25,
+        "app",
+        "memory/memory_storage.py"
+      ]
+    ],
+    "funcs_over_50pct_try": {
+      "app": 67,
+      "tests": 21,
+      "scripts": 26
+    }
+  },
+  "4_config_app_config_import_style": {
+    "module_level_statements": {
+      "app": 37,
+      "tests": 7,
+      "scripts": 25
+    },
+    "module_level_distinct_files": 57,
+    "function_body_statements": {
+      "app": 306,
+      "tests": 94,
+      "scripts": 38
+    },
+    "function_body_distinct_files": 176
+  },
+  "5_print_calls": {
+    "raw_by_group": {
+      "app": 525,
+      "tests": 731,
+      "scripts": 1923
+    },
+    "app_excluding_wizard_and_main": 260,
+    "app_total_including_wizard_main": 525
+  },
+  "6_global_statements": {
+    "total": {
+      "app": 60,
+      "scripts": 1
+    },
+    "distinct_path_name_pairs": 62,
+    "module_level_mutable_singleton_refs": {
+      "app": 27,
+      "scripts": 1
+    },
+    "distinct_singleton_names": 25
+  },
+  "7_mutable_default_args": {
+    "count": 0,
+    "verified_by": "rg cross-check, zero matches"
+  },
+  "8_sys_path_manipulation": {
+    "by_group": {
+      "app": 1,
+      "tests": 28,
+      "scripts": 107
+    },
+    "app_violations_outside_scripts_tests": 1,
+    "app_violation_site": "main.py:113 (frozen-executable bootstrap, documented)"
+  },
+  "9_os_environ_getenv_outside_config": {
+    "total_calls_outside_config_dir": 252,
+    "distinct_var_names_outside_config_dir": 186,
+    "top_files": [
+      "memory/shutdown_processor.py(22)",
+      "knowledge/WikiManager.py(16)",
+      "utils/query_checker.py(13)",
+      "core/prompt/gatherer_knowledge.py(10)",
+      "knowledge/literature_oracle.py(10)"
+    ]
+  },
+  "10_naive_datetime": {
+    "naive_now_or_utcnow": {
+      "app": 176,
+      "tests": 285,
+      "scripts": 89
+    },
+    "tz_aware_now": {
+      "app": 30,
+      "tests": 16,
+      "scripts": 1
+    }
+  },
+  "11_blocking_calls_in_async": {
+    "time_sleep_in_async": {
+      "tests": 3
+    },
+    "requests_in_async": null,
+    "subprocess_run_in_async": {
+      "app": 8
+    },
+    "open_non_tmp_in_async": {
+      "app": 5,
+      "tests": 4,
+      "scripts": 33
+    },
+    "encode_calls_in_async_proxy": {
+      "app": 15,
+      "tests": 2,
+      "scripts": 2
+    }
+  },
+  "12_asyncio_deprecated_apis": {
+    "get_event_loop": {
+      "app": 11,
+      "tests": 1
+    },
+    "ensure_future": {
+      "app": 11
+    },
+    "create_task": {
+      "app": 34,
+      "tests": 50,
+      "scripts": 1
+    }
+  },
+  "13_hasattr_getattr_lazy_init_idiom": {
+    "hasattr_calls_total": {
+      "app": 257,
+      "tests": 46,
+      "scripts": 8
+    },
+    "getattr_calls_total": {
+      "app": 705,
+      "tests": 61,
+      "scripts": 71
+    },
+    "hasattr_as_if_not_hasattr_init_idiom": {
+      "app": 103,
+      "tests": 2,
+      "scripts": 4
+    }
+  },
+  "14_getattr_app_config_with_default": {
+    "count": {
+      "app": 4
+    },
+    "note": "rare (4, all in knowledge/implementation_detector.py) \u2014 below the 10-instance floor, not a widespread practice"
+  },
+  "15_duplicate_functions": {
+    "identical_ast_body_groups_ge2_members": 34,
+    "samename_helpers_defined_in_ge3_modules": 276,
+    "targeted_utility_name_recount_via_rg": {
+      "_slugify": 4,
+      "_now_iso": 3,
+      "_coerce_date": 3,
+      "_truncate": 7,
+      "_parse_bool": 4,
+      "_dedupe_keep_order": 3,
+      "_daemon_running": 19,
+      "_get_formatter_test_helper": 3,
+      "_canonical_prefixed_names": 8
+    }
+  },
+  "16_size": {
+    "functions_over_150_lines_total": {
+      "app": 80,
+      "tests": 2,
+      "scripts": 11
+    },
+    "files_over_2000_lines_total": {
+      "app": 13,
+      "tests": 1
+    },
+    "classes_over_1000_lines_total": {
+      "app": 13
+    },
+    "top_files_over_2000": [
+      [
+        6273,
+        "gui/handlers.py"
+      ],
+      [
+        3748,
+        "core/agentic/controller.py"
+      ],
+      [
+        2682,
+        "core/orchestrator.py"
+      ],
+      [
+        2625,
+        "tests/unit/test_sep10_probe_dump_actions.py"
+      ],
+      [
+        2584,
+        "knowledge/web_search_manager.py"
+      ],
+      [
+        2535,
+        "core/prompt/builder.py"
+      ],
+      [
+        2353,
+        "utils/web_search_trigger.py"
+      ],
+      [
+        2302,
+        "core/prompt/gatherer_knowledge.py"
+      ],
+      [
+        2268,
+        "core/agentic/tools.py"
+      ],
+      [
+        2237,
+        "core/agentic/gate.py"
+      ],
+      [
+        2116,
+        "memory/shutdown_processor.py"
+      ],
+      [
+        2110,
+        "utils/tone_detector.py"
+      ],
+      [
+        2095,
+        "config/app_config.py"
+      ],
+      [
+        2026,
+        "memory/memory_retriever.py"
+      ]
+    ],
+    "top15_functions_over_150": [
+      [
+        1358,
+        "core/agentic/controller.py:534:run_agentic_search"
+      ],
+      [
+        1234,
+        "core/prompt/builder.py:932:build_prompt"
+      ],
+      [
+        1071,
+        "core/prompt/formatter.py:892:_assemble_prompt"
+      ],
+      [
+        1039,
+        "gui/launch.py:685:build_demo"
+      ],
+      [
+        913,
+        "core/agentic/gate.py:705:evaluate_agentic_gate"
+      ],
+      [
+        799,
+        "gui/handlers.py:4643:_run_enhanced"
+      ],
+      [
+        719,
+        "gui/handlers.py:1904:_run_insight_mode"
+      ],
+      [
+        698,
+        "gui/handlers.py:3943:_run_agentic_search"
+      ],
+      [
+        526,
+        "core/agentic/protocols.py:1374:parse_response"
+      ],
+      [
+        515,
+        "gui/tabs/proposals.py:21:build_proposals_tab"
+      ],
+      [
+        480,
+        "gui/handlers.py:5657:_handle_submit_inner"
+      ],
+      [
+        460,
+        "scripts/benchmark_retrieval.py:86:main"
+      ],
+      [
+        432,
+        "core/agentic/protocols.py:317:_parse_single_tool_call"
+      ],
+      [
+        363,
+        "core/insight/sweep.py:120:run_sweep"
+      ],
+      [
+        361,
+        "memory/fact_extractor.py:1431:_extract_with_regex"
+      ],
+      [
+        358,
+        "scripts/verify_synthesis_pipeline.py:441:run_verification"
+      ],
+      [
+        355,
+        "memory/memory_scorer.py:309:rank_memories"
+      ],
+      [
+        353,
+        "utils/web_search_trigger.py:1974:_analyze_for_web_search_llm"
+      ],
+      [
+        339,
+        "core/response_generator.py:63:generate_streaming_response"
+      ],
+      [
+        336,
+        "core/orchestrator.py:1243:_build_system_prompt"
+      ]
+    ],
+    "top_classes_over_1000": [
+      [
+        3427,
+        "core/agentic/controller.py:322:AgenticSearchController"
+      ],
+      [
+        2221,
+        "core/orchestrator.py:462:DaemonOrchestrator"
+      ],
+      [
+        2101,
+        "core/agentic/tools.py:168:ToolExecutor"
+      ],
+      [
+        2003,
+        "memory/shutdown_processor.py:114:ShutdownProcessor"
+      ],
+      [
+        1797,
+        "core/prompt/builder.py:655:UnifiedPromptBuilder"
+      ],
+      [
+        1746,
+        "core/prompt/gatherer_knowledge.py:557:KnowledgeRetrievalMixin"
+      ],
+      [
+        1613,
+        "memory/memory_retriever.py:414:MemoryRetriever"
+      ],
+      [
+        1449,
+        "core/prompt/formatter.py:514:PromptFormatter"
+      ],
+      [
+        1412,
+        "knowledge/web_search_manager.py:1132:WebSearchManager"
+      ],
+      [
+        1321,
+        "memory/fact_extractor.py:669:FactExtractor"
+      ],
+      [
+        1108,
+        "models/model_manager.py:404:ModelManager"
+      ],
+      [
+        1065,
+        "core/context_pipeline.py:244:ContextPipeline"
+      ],
+      [
+        1043,
+        "memory/memory_storage.py:659:MemoryStorage"
+      ]
+    ]
+  },
+  "17_lint_suppressions": {
+    "type_ignore": {
+      "app": 12,
+      "tests": 1,
+      "scripts": 2
+    },
+    "noqa": {
+      "app": 28,
+      "tests": 49,
+      "scripts": 19
+    },
+    "pragma_no_cover": {
+      "app": 6,
+      "tests": 5,
+      "scripts": 3
+    }
+  },
+  "18_todo_fixme_hack_xxx": {
+    "real_comment_markers_app": 6,
+    "real_comment_markers_tests": 4,
+    "real_comment_markers_scripts": 17,
+    "note": "nearly all matches are string-literal data (placeholder detectors, noise-word sets), not undone-work comments; below 10-real-instance floor for app code"
+  },
+  "19_re_compile_location": {
+    "module_level": {
+      "app": 623,
+      "tests": 5,
+      "scripts": 62
+    },
+    "inside_function_body": {
+      "app": 27,
+      "tests": 15,
+      "scripts": 5
+    }
+  },
+  "20_direct_store_io_bypassing_safe_json": {
+    "open_write_mode_on_json_or_data_path_ast_detected": 0,
+    "open_write_mode_total_in_app_excl_safe_json_py": 12,
+    "json_dump_calls_in_app": 3,
+    "json_dump_sites_app": [
+      "utils/backup_manager.py:236",
+      "utils/fs_snapshot.py:165",
+      "utils/safe_json.py:158"
+    ],
+    "note": "doctrine is well-enforced: the only direct writers are safe_json.py itself, backup_manager, fs_snapshot, and non-JSON config/env files"
+  },
+  "21_enum_to_string_comparisons": {
+    "raw_regex_hits": {
+      "app": 54,
+      "tests": 97,
+      "scripts": 7
+    },
+    "precise_in_str_pattern_app": 9,
+    "precise_literal_eq_pattern_app": 0,
+    "note": "raw regex is ~90%+ false positive (str(path), str(exception), str(x.value) with .value already correct); the exact dangerous shape ('X' in str(enum) or =='Enum.MEMBER') is ESSENTIALLY CLOSED in app code today (BC-01 fix), only 9 residual 'in str(' sites and none are enums"
+  },
+  "22_tests": {
+    "date_named_test_files": 53,
+    "total_test_functions_in_dated_files": 1168,
+    "top15_date_named_by_test_count": [
+      [
+        "tests/unit/test_sep10_probe_dump_actions.py",
+        168
+      ],
+      [
+        "tests/unit/test_sep10_probe_dump_interpretation.py",
+        123
+      ],
+      [
+        "tests/unit/test_sep07_calendar_offer_continuation.py",
+        54
+      ],
+      [
+        "tests/unit/test_sep12_search_identity_scope.py",
+        44
+      ],
+      [
+        "tests/unit/test_sep05_evening_turn_audit.py",
+        36
+      ],
+      [
+        "tests/unit/test_sep12_keyword_boundary_and_budget.py",
+        36
+      ],
+      [
+        "tests/unit/test_sep03_followups_continuity.py",
+        35
+      ],
+      [
+        "tests/unit/test_sep08_homework_tone_misfires.py",
+        35
+      ],
+      [
+        "tests/unit/test_audit0831_fixes.py",
+        32
+      ],
+      [
+        "tests/unit/test_sep08_request_scope.py",
+        31
+      ],
+      [
+        "tests/unit/test_sep09_forced_action_type.py",
+        30
+      ],
+      [
+        "tests/unit/test_sep12_action_claim_eligibility.py",
+        29
+      ],
+      [
+        "tests/unit/test_sep01_grounding_misfires.py",
+        24
+      ],
+      [
+        "tests/unit/test_sep12_web_evidence_budget.py",
+        24
+      ],
+      [
+        "tests/unit/test_sep10_calendar_forced_action_loop.py",
+        23
+      ]
+    ],
+    "test_files_over_1500_lines": [
+      [
+        2625,
+        "tests/unit/test_sep10_probe_dump_actions.py"
+      ],
+      [
+        1906,
+        "tests/unit/test_sep10_probe_dump_interpretation.py"
+      ],
+      [
+        1717,
+        "tests/test_agentic_search.py"
+      ]
+    ],
+    "test_files_using_time_sleep": 15,
+    "test_files_reading_source_or_getsource": 88,
+    "test_files_monkeypatching_sys_modules": 8
+  },
+  "23_logging_style": {
+    "fstring_or_percent_precomputed_calls": {
+      "app": 2031,
+      "tests": 81,
+      "scripts": 35
+    },
+    "other_lazy_arg_calls": {
+      "app": 555,
+      "tests": 40,
+      "scripts": 12
+    },
+    "logger_acquisition_styles": {
+      "app": {
+        "get_logger": 147,
+        "logging.getLogger": 50
+      },
+      "tests": {
+        "get_logger": 9,
+        "logging.getLogger": 13
+      },
+      "scripts": {
+        "get_logger": 16,
+        "logging.getLogger": 2
+      }
+    }
+  },
+  "24_dated_comments_in_source": {
+    "dated_comment_lines": {
+      "app": 98,
+      "tests": 35,
+      "scripts": 6
+    },
+    "top_files": [
+      [
+        "core/agentic/gate.py",
+        12
+      ],
+      [
+        "core/action_claim_guard.py",
+        8
+      ],
+      [
+        "core/prompt/gatherer_knowledge.py",
+        6
+      ],
+      [
+        "gui/handlers.py",
+        5
+      ],
+      [
+        "core/actions/registry.py",
+        4
+      ],
+      [
+        "core/prompt/builder.py",
+        4
+      ],
+      [
+        "scripts/probe_tone_backstop.py",
+        4
+      ],
+      [
+        "config/app_config.py",
+        3
+      ],
+      [
+        "knowledge/web_search_manager.py",
+        3
+      ],
+      [
+        "memory/entity_resolver.py",
+        3
+      ],
+      [
+        "memory/fact_extractor.py",
+        3
+      ],
+      [
+        "utils/tone_detector.py",
+        3
+      ],
+      [
+        "utils/web_search_trigger.py",
+        3
+      ],
+      [
+        "config/schema.py",
+        2
+      ],
+      [
+        "core/agentic/protocols.py",
+        2
+      ]
+    ]
+  },
+  "25_kwargs_unused": {
+    "count_by_group": {
+      "app": 12,
+      "tests": 246,
+      "scripts": 2
+    }
+  },
+  "26_long_param_lists_gt8": {
+    "count_by_group": {
+      "app": 41,
+      "tests": 4
+    },
+    "sample": null
+  },
+  "27_other_patterns": {
+    "os_getenv_bypassing_config_chokepoint": "see item 9 \u2014 252 calls / 186 distinct names outside config/",
+    "hasattr_lazy_init_pattern": "see item 13 \u2014 103 app instances of if-not-hasattr-init",
+    "logger_fstring_over_lazy": "see item 23"
+  }
+}
