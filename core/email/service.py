@@ -43,7 +43,7 @@ class EmailService:
         self.providers: List[EmailProvider] = providers
         if cache_ttl_seconds is None:
             try:
-                from config.app_config import EMAIL_CACHE_TTL_SECONDS
+                from config.app_config import EMAIL_CACHE_TTL_SECONDS  # lazy import: live-config
                 cache_ttl_seconds = float(EMAIL_CACHE_TTL_SECONDS)
             except Exception:
                 cache_ttl_seconds = 300.0

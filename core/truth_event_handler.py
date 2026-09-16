@@ -16,6 +16,7 @@ from typing import Optional
 
 from utils.logging_utils import get_logger
 from core.correction_detector import CorrectionEvent
+import memory.user_profile_schema as user_profile_schema
 
 logger = get_logger("truth_event_handler")
 
@@ -30,8 +31,7 @@ def get_recent_profile_facts(user_profile, limit: int = 30) -> list:
     """Gather recent current facts from user profile for correction/confirmation detection."""
     facts = []
     try:
-        from memory.user_profile_schema import ProfileCategory
-        for cat in ProfileCategory:
+        for cat in user_profile_schema.ProfileCategory:
             cat_facts = user_profile.get_category(cat, include_historical=False)
             for f in cat_facts:
                 if isinstance(f, dict) and f.get("fact_id"):
@@ -46,10 +46,9 @@ def get_recent_profile_facts(user_profile, limit: int = 30) -> list:
 def apply_truth_event(event: CorrectionEvent, user_profile) -> None:
     """Apply a correction/confirmation event to the matching profile fact."""
     try:
-        from memory.truth_scorer import TruthScorer
-        from memory.user_profile_schema import ProfileCategory
+        from memory.truth_scorer import TruthScorer  # lazy import: import-side-effect
 
-        for cat in ProfileCategory:
+        for cat in user_profile_schema.ProfileCategory:
             cat_facts = user_profile.get_category(cat, include_historical=True)
             for fact in cat_facts:
                 if not isinstance(fact, dict):
@@ -87,7 +86,7 @@ def cascade_entity_resolution(events: list, memory_system) -> None:
     Whiskers + crisis keywords and marks them with a resolution note +
     elevated staleness_ratio so the prompt prefix signals resolution.
     """
-    from config.app_config import STALENESS_ENABLED
+    from config.app_config import STALENESS_ENABLED  # lazy import: live-config
     if not STALENESS_ENABLED:
         return
 

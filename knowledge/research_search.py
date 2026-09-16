@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import re
 from typing import Any
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -49,7 +50,7 @@ def parse_arxiv_entries(xml_text: str) -> list[dict[str, Any]]:
 
 
 async def search_arxiv(query: str, *, max_results: int = 5) -> list[dict[str, Any]]:
-    import httpx
+    import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
     max_results = max(1, min(int(max_results), 20))
     url = (
@@ -74,7 +75,6 @@ def parse_stackexchange_items(data: dict[str, Any]) -> list[dict[str, Any]]:
         body = html.unescape(str(item.get("body") or ""))
         # The API body is HTML; a compact text rendition is enough for evidence
         # selection while the canonical link remains available for citation.
-        import re
         body = " ".join(re.sub(r"<[^>]+>", " ", body).split())
         rows.append({
             "question_id": question_id,
@@ -95,7 +95,6 @@ def parse_stackexchange_items(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _clean_html(value: Any) -> str:
-    import re
     return " ".join(re.sub(r"<[^>]+>", " ", html.unescape(str(value or ""))).split())
 
 
@@ -127,7 +126,7 @@ def attach_stackexchange_answers(rows: list[dict[str, Any]], data: dict[str, Any
 async def search_stackexchange(
     query: str, *, site: str = "stackoverflow", max_results: int = 5,
 ) -> list[dict[str, Any]]:
-    import httpx
+    import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
     max_results = max(1, min(int(max_results), 20))
     url = (

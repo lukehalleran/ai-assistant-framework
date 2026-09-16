@@ -34,6 +34,7 @@ from typing import Tuple, Dict, Any, Optional
 from pathlib import Path
 
 from utils.logging_utils import get_logger
+import memory.llm_fact_extractor as llm_fact_extractor
 
 logger = get_logger("wizard")
 
@@ -823,10 +824,8 @@ async def _handle_background(
 
     if not is_skip(user_input):
         try:
-            from memory.llm_fact_extractor import LLMFactExtractor
-
             logger.info(f"[Wizard] Extracting facts from background text: '{user_input[:100]}...'")
-            extractor = LLMFactExtractor(orchestrator.model_manager)
+            extractor = llm_fact_extractor.LLMFactExtractor(orchestrator.model_manager)
             facts = await extractor.extract_triples([user_input])
 
             if facts:
@@ -870,7 +869,7 @@ async def _finalize_wizard(
     Skips FactVerifier — no existing facts to conflict with on first boot.
     """
     try:
-        from memory.user_profile import UserProfile
+        from memory.user_profile import UserProfile  # lazy import: import-side-effect
 
         # Get or create user profile
         profile = orchestrator.user_profile if hasattr(orchestrator, 'user_profile') else UserProfile()
@@ -1050,7 +1049,7 @@ def _apply_personality_style(style: str) -> None:
     For 'balanced', remove any existing custom file so default is used.
     """
     try:
-        from config.app_config import PERSONALITY_CUSTOM_PATH, PERSONALITY_DEFAULT_PATH
+        from config.app_config import PERSONALITY_CUSTOM_PATH, PERSONALITY_DEFAULT_PATH  # lazy import: live-config
 
         if style == 'balanced':
             # Use default personality — remove custom if it exists

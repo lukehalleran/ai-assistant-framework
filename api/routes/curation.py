@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/curation", tags=["curation"])
 
 
 def _engine(request: Request):
-    from memory.curation.service import get_engine, init_engine
+    from memory.curation.service import get_engine, init_engine  # lazy import: import-side-effect
 
     engine = get_engine()
     if engine is None:
@@ -72,7 +72,7 @@ async def queue(request: Request):
 @router.post("/scan")
 async def scan_now(request: Request):
     """On-demand scan (same code path as the shutdown phase)."""
-    from config.app_config import CURATION_SCAN_TIMEOUT_S
+    from config.app_config import CURATION_SCAN_TIMEOUT_S  # lazy import: live-config
 
     engine = _engine(request)
     report = await _run_operation(engine.run_scan, timeout=CURATION_SCAN_TIMEOUT_S)

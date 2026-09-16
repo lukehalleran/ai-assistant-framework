@@ -106,7 +106,7 @@ def maintain_debug_archives(directory: str, compress_age_days: float,
 
 def run_startup_log_maintenance() -> Dict[str, int]:
     """One startup pass over all managed logs. Config-driven; never raises."""
-    from config.app_config import (
+    from config.app_config import (  # lazy import: live-config
         LOG_MAINTENANCE_AUDIT_MAX_MB,
         LOG_MAINTENANCE_DAILY_NOTES_MAX_MB,
         LOG_MAINTENANCE_DEBUG_COMPRESS_AGE_DAYS,

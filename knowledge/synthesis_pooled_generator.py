@@ -76,7 +76,7 @@ class PooledConceptSynthesisGenerator:
         oversample: float = 2.0,
         seed: Optional[int] = None,
     ):
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             SYNTHESIS_POOLED_MIN_COS,
             SYNTHESIS_POOLED_MAX_COS,
         )
@@ -97,7 +97,7 @@ class PooledConceptSynthesisGenerator:
         off the external drive. Blocking (model load + encode) — call off-loop.
         """
         try:
-            from knowledge.semantic_search import _load_embedder, EMBED_MODEL
+            from knowledge.semantic_search import _load_embedder, EMBED_MODEL  # lazy import: startup-cost
             embedder = _load_embedder(EMBED_MODEL)
         except Exception as e:
             logger.warning(f"[PooledGen] embedder unavailable — no candidates: {e}")
@@ -114,7 +114,7 @@ class PooledConceptSynthesisGenerator:
         return pairs
 
     async def _articulate(self, sem, a: str, b: str, cos: float) -> Optional[SynthesisCandidate]:
-        from config.app_config import SYNTHESIS_COHERENCE_MODEL
+        from config.app_config import SYNTHESIS_COHERENCE_MODEL  # lazy import: live-config
         async with sem:
             try:
                 raw = await self.model_manager.generate_once(

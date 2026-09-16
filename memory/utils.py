@@ -60,7 +60,7 @@ def is_junk_conversation_doc(content: str = "", query: str = "", response: str =
     This is the RETRIEVAL-TIME belt; `scripts/purge_error_memories.py` is the
     (dry-run-first) suspenders for the stored docs themselves.
     """
-    from models.model_manager import API_ERROR_PREFIXES
+    from models.model_manager import API_ERROR_PREFIXES  # lazy import: startup-cost (would newly load: httpx, openai, sentence_transformers, torch, transformers)
 
     content = content or ""
     query = query or ""
@@ -126,7 +126,7 @@ def is_junk_summary(text: Any) -> bool:
     # "[API Error] 402 ..." docs found in the summaries collection by the
     # cross-dedup queue review — long and letter-rich, so the length/letter
     # checks above pass them).
-    from models.model_manager import API_ERROR_PREFIXES
+    from models.model_manager import API_ERROR_PREFIXES  # lazy import: startup-cost (would newly load: httpx, openai, sentence_transformers, torch, transformers)
     if stripped.startswith(API_ERROR_PREFIXES):
         return True
     # Provider/harness wrappers not covered by the fixed prefix list

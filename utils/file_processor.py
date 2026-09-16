@@ -326,7 +326,7 @@ class FileProcessor:
         Compress an image to fit within target_size bytes.
         Progressively reduces quality and resolution until it fits.
         """
-        from PIL import Image
+        from PIL import Image  # lazy import: startup-cost
 
         img = Image.open(io.BytesIO(file_bytes))
         original_size = len(file_bytes)
@@ -688,7 +688,7 @@ class FileProcessor:
         For each page: extracts tables via pdfplumber.extract_tables(), then
         extracts remaining text. Tables are rendered as pipe-delimited markdown.
         """
-        import pdfplumber
+        import pdfplumber  # lazy import: optional-dependency
 
         pages = []
         with pdfplumber.open(path) as pdf:
@@ -748,7 +748,7 @@ class FileProcessor:
         Falls back to docx2txt if python-docx fails.
         """
         try:
-            from docx import Document as DocxDocument
+            from docx import Document as DocxDocument  # lazy import: startup-cost
             doc = DocxDocument(str(path))
         except Exception:
             # Fallback to legacy extractor
@@ -799,7 +799,7 @@ class FileProcessor:
         already carries the true row count. No numeric summary here
         (openpyxl rows aren't a DataFrame); kept simple.
         """
-        import openpyxl
+        import openpyxl  # lazy import: startup-cost
 
         wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
         parts = []

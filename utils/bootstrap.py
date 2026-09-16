@@ -357,7 +357,7 @@ def setup_environment() -> str:
     env_path = os.path.join(user_dir, '.env')
     if os.path.exists(env_path):
         try:
-            from dotenv import load_dotenv
+            from dotenv import load_dotenv  # lazy import: optional-dependency
             load_dotenv(env_path, override=True)
         except ImportError:
             # Manual parsing if dotenv not available
@@ -434,7 +434,7 @@ def _load_env_manual(env_path: str) -> None:
 def close_splash() -> None:
     """Close PyInstaller splash screen if present."""
     try:
-        import pyi_splash
+        import pyi_splash  # lazy import: optional-dependency
         pyi_splash.close()
     except ImportError:
         pass  # No splash screen in development mode
@@ -443,7 +443,7 @@ def close_splash() -> None:
 def update_splash(text: str) -> None:
     """Update splash screen text if present."""
     try:
-        import pyi_splash
+        import pyi_splash  # lazy import: optional-dependency
         pyi_splash.update_text(text)
     except ImportError:
         # In development, print to console

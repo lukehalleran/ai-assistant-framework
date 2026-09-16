@@ -49,6 +49,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 from utils.logging_utils import get_logger
+from config import app_config
 
 logger = get_logger("intent_classifier")
 
@@ -616,7 +617,7 @@ _intent_text_emb_cache: dict = {}
 
 def _intent_store_version() -> int:
     try:
-        from utils.adaptive_exemplars import get_store
+        from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
         return get_store().version
     except Exception:
         return -1
@@ -632,20 +633,20 @@ def _get_intent_prototypes():
     ):
         return _intent_prototype_cache[1]
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: startup-cost
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return {}
-        import numpy as np
+        import numpy as np  # lazy import: startup-cost
         protos = {}
         for label, seeds in INTENT_EXEMPLARS.items():
             merged = list(seeds)
             try:
-                from utils.adaptive_exemplars import get_store
+                from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
                 merged += get_store().get_learned("intent", label)
             except Exception:
                 pass
-            from utils.adaptive_exemplars import encode_texts_cached
+            from utils.adaptive_exemplars import encode_texts_cached  # lazy import: startup-cost
             vecs = encode_texts_cached(
                 embedder, merged, _intent_text_emb_cache, normalize=True
             )
@@ -664,11 +665,11 @@ def _semantic_intent(query: str):
     if not protos:
         return None
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: startup-cost
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return None
-        import numpy as np
+        import numpy as np  # lazy import: startup-cost
         q = embedder.encode([query], convert_to_numpy=True,
                             normalize_embeddings=True)[0]
         sims = sorted(
@@ -705,7 +706,7 @@ def _query_is_ack_shaped(query: str) -> bool:
     """Casual-ack / bare-agreement shape — carries no intent signal of its
     own (the deployed light-path checker, call-time import as patch point)."""
     try:
-        from utils.query_checker import is_casual_acknowledgment  # lazy import: patch point
+        from utils.query_checker import is_casual_acknowledgment  # lazy import: patch-point
         if is_casual_acknowledgment(query):
             return True
     except Exception:
@@ -730,7 +731,7 @@ def _learn_intent_exemplar(query: str, label: str, source: str) -> None:
     if label not in INTENT_EXEMPLARS:
         return
     try:
-        from utils.adaptive_exemplars import get_store
+        from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
         get_store().record(
             "intent", label, query, source,
             seed_texts=INTENT_EXEMPLARS.get(label, []),
@@ -836,7 +837,7 @@ class IntentClassifier:
         # Thread temporal anchor for TEMPORAL_RECALL so the scorer can
         # reshape the recency decay curve around the referenced time window.
         if best_intent == IntentType.TEMPORAL_RECALL:
-            from utils.query_checker import extract_temporal_window
+            from utils.query_checker import extract_temporal_window  # lazy import: cycle
             days = extract_temporal_window(query_stripped)
             if days > 0:
                 result.weight_overrides["_temporal_anchor_hours"] = days * 24
@@ -936,13 +937,11 @@ class IntentClassifier:
 
     def _build_result(self, intent: IntentType, confidence: float) -> IntentResult:
         """Build an IntentResult with profile overrides populated."""
-        from config.app_config import PROMPT_SECTION_GATING_ENABLED
-
         profile = _PROFILES.get(intent, _PROFILES[IntentType.GENERAL])
         retrieval = dict(profile.get("retrieval", {}))
 
         # Strip Phase 8 gating keys when section gating is disabled
-        if not PROMPT_SECTION_GATING_ENABLED:
+        if not app_config.PROMPT_SECTION_GATING_ENABLED:
             retrieval = {
                 k: v for k, v in retrieval.items()
                 if k not in self._PHASE8_GATING_KEYS

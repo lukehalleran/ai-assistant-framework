@@ -44,6 +44,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
+import utils.user_identity as user_identity
 
 logger = get_logger("response_planner")
 
@@ -175,7 +176,7 @@ class ResponsePlanner:
     def should_plan(context) -> bool:
         """Return False for small-talk, crisis, or when disabled by config."""
         try:
-            from config.app_config import RESPONSE_PLANNING_ENABLED
+            from config.app_config import RESPONSE_PLANNING_ENABLED  # lazy import: live-config
             if not RESPONSE_PLANNING_ENABLED:
                 return False
         except ImportError:
@@ -196,14 +197,14 @@ class ResponsePlanner:
         # paper over. LIGHT SUPPORT is an instruction not to plan.
         tone = getattr(context, "tone_level", None)
         if tone is not None:
-            from core.context_pipeline import ToneLevel
+            from core.context_pipeline import ToneLevel  # lazy import: patch-point (tests/unit/test_response_planner.py:97)
             if tone in (ToneLevel.CRISIS, ToneLevel.ELEVATED, ToneLevel.CONCERN):
                 return False
 
         # Skip for casual social intent
         intent = getattr(context, "intent", None)
         if intent and hasattr(intent, "intent"):
-            from core.intent_classifier import IntentType
+            from core.intent_classifier import IntentType  # lazy import: cycle
             if intent.intent == IntentType.CASUAL_SOCIAL:
                 return False
 
@@ -223,7 +224,7 @@ class ResponsePlanner:
         # ``is_task_directive``'s own docstring), so an info-seeking
         # request is unaffected and keeps planning normally.
         try:
-            from utils.query_checker import is_task_directive
+            from utils.query_checker import is_task_directive  # lazy import: cycle
             if is_task_directive(query):
                 return False
         except Exception:
@@ -242,7 +243,7 @@ class ResponsePlanner:
         # ``is_status_report`` is the same shape's separate, narrow cousin
         # (see its docstring for why it's not folded into is_self_report).
         try:
-            from utils.query_checker import is_self_report, is_status_report, is_request_shaped
+            from utils.query_checker import is_self_report, is_status_report, is_request_shaped  # lazy import: cycle
             if ((is_self_report(query) or is_status_report(query))
                     and not is_request_shaped(query)):
                 return False
@@ -467,7 +468,7 @@ class ResponsePlanner:
         Returns None on any failure (LLM error, timeout, bad JSON).
         """
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 RESPONSE_PLANNING_MODEL,
                 RESPONSE_PLANNING_MAX_TOKENS,
                 RESPONSE_PLANNING_TIMEOUT,
@@ -666,7 +667,7 @@ class ResponsePlanner:
         Returns None on any failure.
         """
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 RESPONSE_REVIEW_MODEL,
                 RESPONSE_REVIEW_MAX_TOKENS,
                 RESPONSE_REVIEW_TIMEOUT,
@@ -797,8 +798,7 @@ class ResponsePlanner:
         set on any failure (the resolver's own fallback, "the user", is
         already covered by the "the"/"user" stop tokens)."""
         try:
-            from utils.user_identity import get_user_display_name
-            name = get_user_display_name() or ""
+            name = user_identity.get_user_display_name() or ""
         except Exception:
             return cls._HEAD_NOUN_STOP
         extra = {t.lower() for t in re.findall(r"[A-Za-z']+", name)}
@@ -861,7 +861,7 @@ class ResponsePlanner:
         if query is None:
             return False, ""
         try:
-            from utils.query_checker import is_request_shaped
+            from utils.query_checker import is_request_shaped  # lazy import: cycle
             if is_request_shaped(query):
                 return False, ""
         except Exception:

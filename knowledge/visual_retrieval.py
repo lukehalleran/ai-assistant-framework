@@ -25,6 +25,7 @@ Module Contract
 from __future__ import annotations
 
 import base64
+import io
 import os
 from typing import Any, Dict, List
 
@@ -237,8 +238,7 @@ class VisualRetriever:
         This keeps API costs reasonable (~800 tokens per image).
         """
         try:
-            from PIL import Image
-            import io
+            from PIL import Image  # lazy import: startup-cost
 
             img = Image.open(image_path).convert("RGB")
 
@@ -271,5 +271,5 @@ class VisualRetriever:
 
     @staticmethod
     def _get_max_images() -> int:
-        from config.app_config import VISUAL_MEMORY_MAX_IMAGES
+        from config.app_config import VISUAL_MEMORY_MAX_IMAGES  # lazy import: live-config
         return VISUAL_MEMORY_MAX_IMAGES

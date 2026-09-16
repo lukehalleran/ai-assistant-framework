@@ -164,7 +164,7 @@ def _assign_sessions(
     conversations: List[Dict], gap_hours: float
 ) -> List[Dict]:
     """Assign session labels to conversation entries based on timestamps."""
-    from core.prompt.formatter import _detect_session_boundary
+    from core.prompt.formatter import _detect_session_boundary  # lazy import: cycle
 
     result = []
     session_num = 0

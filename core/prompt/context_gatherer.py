@@ -85,6 +85,7 @@ from .formatter import _parse_bool
 from .gatherer_web import WebSearchMixin
 from .gatherer_memory import MemoryRetrievalMixin
 from .gatherer_knowledge import KnowledgeRetrievalMixin
+import memory.user_profile as user_profile
 
 logger = get_logger("prompt_context_gatherer")
 
@@ -208,8 +209,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
             logger.debug("[ContextGatherer] Using UserProfile from memory_coordinator")
         else:
             # Fallback: create our own instance
-            from memory.user_profile import UserProfile
-            self.user_profile = UserProfile()
+            self.user_profile = user_profile.UserProfile()
             logger.debug("[ContextGatherer] Created new UserProfile instance")
 
         # Initialize web search manager (lazy - only created when first used)
@@ -220,7 +220,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
     def gate_system(self):
         """Get cached gate system, creating it only once."""
         if self._gate_system is None:
-            from processing.gate_system import CosineSimilarityGateSystem
+            from processing.gate_system import CosineSimilarityGateSystem  # lazy import: cycle
             self._gate_system = CosineSimilarityGateSystem()
         return self._gate_system
 
@@ -229,7 +229,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
         """Get cached web search manager, creating it only once."""
         if self._web_search_manager is None:
             try:
-                from knowledge.web_search_manager import WebSearchManager, WebSearchRateLimiter
+                from knowledge.web_search_manager import WebSearchManager, WebSearchRateLimiter  # lazy import: cycle
 
                 # Create rate limiter with config values. The daily limit is
                 # read LIVE (2026-09-09, audit F04): a Settings change made
@@ -272,7 +272,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
         """Get cached web search trigger (sync heuristic version), creating it only once."""
         if self._web_search_trigger is None:
             try:
-                from utils.web_search_trigger import analyze_for_web_search
+                from utils.web_search_trigger import analyze_for_web_search  # lazy import: cycle
                 self._web_search_trigger = analyze_for_web_search
                 logger.debug("[ContextGatherer] Initialized web search trigger (sync)")
             except ImportError as e:
@@ -289,7 +289,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
         first with heuristic fallback. Returns optimized search_terms.
         """
         try:
-            from utils.web_search_trigger import analyze_for_web_search_llm
+            from utils.web_search_trigger import analyze_for_web_search_llm  # lazy import: cycle
             return analyze_for_web_search_llm
         except ImportError as e:
             logger.warning(f"[ContextGatherer] LLM WebSearchTrigger not available: {e}")
@@ -307,12 +307,12 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
 
         if self._obsidian_manager is None:
             try:
-                from config.app_config import OBSIDIAN_ENABLED
+                from config.app_config import OBSIDIAN_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 if not OBSIDIAN_ENABLED:
                     logger.debug("[ContextGatherer] Obsidian integration disabled")
                     return None
 
-                from knowledge.obsidian_manager import ObsidianManager
+                from knowledge.obsidian_manager import ObsidianManager  # lazy import: cycle
                 self._obsidian_manager = ObsidianManager()
                 logger.info("[ContextGatherer] ObsidianManager initialized")
             except ImportError as e:
@@ -335,12 +335,12 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
 
         if self._reference_docs_manager is None:
             try:
-                from config.app_config import REFERENCE_DOCS_ENABLED
+                from config.app_config import REFERENCE_DOCS_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 if not REFERENCE_DOCS_ENABLED:
                     logger.debug("[ContextGatherer] Reference docs integration disabled")
                     return None
 
-                from knowledge.reference_docs_manager import ReferenceDocsManager
+                from knowledge.reference_docs_manager import ReferenceDocsManager  # lazy import: cycle
                 self._reference_docs_manager = ReferenceDocsManager()
                 logger.info("[ContextGatherer] ReferenceDocsManager initialized")
             except ImportError as e:
@@ -375,7 +375,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
                 logger.debug("Using cached gate system for gating")
             else:
                 # Fallback: Create gate system with model_manager
-                from processing.gate_system import MultiStageGateSystem
+                from processing.gate_system import MultiStageGateSystem  # lazy import: cycle
                 gate_system = MultiStageGateSystem(self.model_manager)
                 logger.debug("Creating new gate system (fallback)")
 

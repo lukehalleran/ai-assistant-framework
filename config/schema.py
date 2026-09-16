@@ -13,7 +13,7 @@ import sys
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger("config.schema")
 
@@ -1236,8 +1236,6 @@ def validate_config(config: dict) -> dict:
     Raises:
         SystemExit: On validation failure (with formatted error messages).
     """
-    from pydantic import ValidationError
-
     # Warn about unknown top-level sections (typo detection)
     unknown_sections = set(config.keys()) - _KNOWN_SECTIONS
     if unknown_sections:

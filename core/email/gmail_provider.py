@@ -35,14 +35,14 @@ class GmailProvider:
     def is_configured(self) -> bool:
         """Cheap check: config flag + auth token file present."""
         try:
-            from config.app_config import EMAIL_INTEGRATION_ENABLED, EMAIL_GMAIL_ENABLED
+            from config.app_config import EMAIL_INTEGRATION_ENABLED, EMAIL_GMAIL_ENABLED  # lazy import: live-config
         except ImportError:
             return False
 
         if not (EMAIL_INTEGRATION_ENABLED and EMAIL_GMAIL_ENABLED):
             return False
 
-        from core.actions.google_auth import get_google_auth
+        from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
         auth = get_google_auth()
         if auth is None or not auth.is_authenticated:
@@ -53,7 +53,7 @@ class GmailProvider:
     async def health(self) -> dict:
         """Check availability: config + token + scope (no network call)."""
         try:
-            from config.app_config import EMAIL_INTEGRATION_ENABLED, EMAIL_GMAIL_ENABLED
+            from config.app_config import EMAIL_INTEGRATION_ENABLED, EMAIL_GMAIL_ENABLED  # lazy import: live-config
         except ImportError:
             return {
                 "available": False,
@@ -72,7 +72,7 @@ class GmailProvider:
                 "detail": "EMAIL_GMAIL_ENABLED=False",
             }
 
-        from core.actions.google_auth import get_google_auth
+        from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
         auth = get_google_auth()
         if auth is None:
@@ -118,7 +118,7 @@ class GmailProvider:
         Returns:
             List of EmailMessage objects, sorted newest-first. Empty on any error.
         """
-        from core.actions.google_auth import get_google_auth
+        from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
         auth = get_google_auth()
         if auth is None or not auth.is_authenticated:
@@ -139,7 +139,7 @@ class GmailProvider:
         gmail_query = f'{safe_query} newer_than:{window_days}d'
 
         try:
-            import httpx
+            import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
             async with httpx.AsyncClient() as client:
                 list_resp = await client.get(
@@ -202,7 +202,7 @@ class GmailProvider:
         Returns:
             List of EmailMessage objects, sorted newest-first. Empty on any error.
         """
-        from core.actions.google_auth import get_google_auth
+        from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
         auth = get_google_auth()
         if auth is None or not auth.is_authenticated:
@@ -218,7 +218,7 @@ class GmailProvider:
         gmail_query = f"newer_than:{window_days}d -category:promotions -category:social"
 
         try:
-            import httpx
+            import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
             async with httpx.AsyncClient() as client:
                 list_resp = await client.get(
@@ -278,7 +278,7 @@ class GmailProvider:
         """
         async with sem:
             try:
-                import httpx
+                import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(

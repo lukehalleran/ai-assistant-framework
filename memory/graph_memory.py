@@ -68,7 +68,9 @@ except ImportError:
 import networkx as nx
 
 from memory.graph_models import GraphEdge, GraphNode
+import memory.relation_classifier as relation_classifier
 from utils.logging_utils import get_logger
+import utils.safe_json as safe_json
 from utils.safe_json import atomic_write_json
 from memory.graph_utils import (
     _DEFAULT_HUB_DEGREE,
@@ -581,8 +583,7 @@ class GraphMemory:
         mention surfaces again and only ages out once it stops being mentioned.
         Edges with no/unparseable timestamp are kept (can't judge age).
         """
-        from memory.relation_classifier import ephemeral_ttl_hours
-        ttl_hours = ephemeral_ttl_hours(edge.relation)
+        ttl_hours = relation_classifier.ephemeral_ttl_hours(edge.relation)
         if ttl_hours is None or ttl_hours <= 0:
             return False  # durable relation — never ages out
         ts = edge.last_seen or edge.first_seen
@@ -773,12 +774,10 @@ class GraphMemory:
             with open(self.persist_path, "r", encoding="utf-8") as f:
                 payload = _json_load(f)
         except (ValueError, OSError) as e:
-            from utils.safe_json import corrupt_store
-            raise corrupt_store(self.persist_path, "Knowledge graph", e) from e
+            raise safe_json.corrupt_store(self.persist_path, "Knowledge graph", e) from e
 
         # Refuse files written by a NEWER build (missing version = v1).
-        from utils.safe_json import check_schema_version
-        check_schema_version(payload, current=GRAPH_SCHEMA_VERSION,
+        safe_json.check_schema_version(payload, current=GRAPH_SCHEMA_VERSION,
                              path=self.persist_path, label="Knowledge graph")
 
         # Load nodes

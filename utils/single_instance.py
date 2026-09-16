@@ -33,7 +33,7 @@ class SingleInstanceError(RuntimeError):
 
 def _default_lock_dir() -> str:
     try:
-        from config.app_config import CHROMA_PATH
+        from config.app_config import CHROMA_PATH  # lazy import: live-config
         parent = os.path.dirname(os.path.abspath(CHROMA_PATH))
         if parent:
             return parent
@@ -44,7 +44,7 @@ def _default_lock_dir() -> str:
 
 def _try_lock(fh) -> bool:
     if sys.platform == "win32":
-        import msvcrt
+        import msvcrt  # lazy import: platform
         try:
             fh.seek(0)
             msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
@@ -52,7 +52,7 @@ def _try_lock(fh) -> bool:
         except OSError:
             return False
     else:
-        import fcntl
+        import fcntl  # lazy import: platform
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True

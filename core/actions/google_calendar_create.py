@@ -11,10 +11,13 @@ Module Contract
 """
 
 import logging
+import re as _re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from config import app_config
 from core.actions.types import ActionProposal, ActionResult
+import utils.timezone_resolver as timezone_resolver
 
 logger = logging.getLogger("actions_calendar_create")
 
@@ -41,7 +44,6 @@ def wall_clock_time(value: str) -> str:
     time governs the clock. Date-only strings pass through untouched.
     """
     global _UTC_OFFSET_RE
-    import re as _re
     if _UTC_OFFSET_RE is None:
         _UTC_OFFSET_RE = _re.compile(r"(?:Z|[+-]\d{2}:?\d{2})$")
     v = (value or "").strip()
@@ -60,7 +62,7 @@ async def _fetch_existing_event_keys(
 ) -> Optional[Set[Tuple[str, str, str]]]:
     """Read the bounded calendar windows, returning None if checking failed."""
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
         keys: Set[Tuple[str, str, str]] = set()
         async with httpx.AsyncClient(timeout=15.0) as client:
             for calendar_id in calendar_ids:
@@ -105,7 +107,6 @@ def normalize_recurrence(value: Any) -> Tuple[Optional[List[str]], str]:
     carry FREQ=.
     """
     global _RRULE_LINE_RE
-    import re as _re
     if _RRULE_LINE_RE is None:
         _RRULE_LINE_RE = _re.compile(r"^(RRULE|RDATE|EXDATE|EXRULE)(;[^:]*)?:", _re.IGNORECASE)
     if value in (None, "", [], ()):
@@ -221,11 +222,10 @@ def timezone_refusal(events: List[Dict[str, Any]]) -> str:
     duplicate-check GET — so an unknown zone never silently becomes Central
     or UTC (BC-59/BC-47), and a multi-event batch with one zoneless event
     refuses the WHOLE proposal rather than partially creating the rest."""
-    from utils.timezone_resolver import resolve_event_timezone
     for event in events:
         if _truthy(event.get("all_day")):
             continue
-        if resolve_event_timezone(event.get("time_zone")) is None:
+        if timezone_resolver.resolve_event_timezone(event.get("time_zone")) is None:
             return UNKNOWN_TIMEZONE_MESSAGE
     return ""
 
@@ -283,16 +283,14 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
           ("RRULE:FREQ=WEEKLY;UNTIL=20261204"); start/end are the FIRST
           occurrence. One recurring event, never N copies.
     """
-    from config.app_config import GOOGLE_CALENDAR_ENABLED
-
-    if not GOOGLE_CALENDAR_ENABLED:
+    if not app_config.GOOGLE_CALENDAR_ENABLED:
         return ActionResult(
             action_id=proposal.action_id,
             success=False,
             message="Google Calendar is not enabled in config.",
         )
 
-    from core.actions.google_auth import get_google_auth
+    from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
     if auth is None:
@@ -327,9 +325,8 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
         )
 
     try:
-        from config.app_config import GOOGLE_CALENDAR_MAX_EVENTS
-        max_events = int(GOOGLE_CALENDAR_MAX_EVENTS)
-    except (ImportError, TypeError, ValueError):
+        max_events = int(app_config.GOOGLE_CALENDAR_MAX_EVENTS)
+    except (ImportError, AttributeError, TypeError, ValueError):
         max_events = 10
     events, validation_error = _event_items(proposal.params, max_events)
     if validation_error:
@@ -388,7 +385,7 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
         )
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         created: List[Tuple[str, str]] = []
         failures: List[Tuple[str, str]] = []
@@ -434,7 +431,7 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
         # including a partially successful batch (was all-success only).
         if created:
             try:
-                from core.actions.google_calendar import clear_cache
+                from core.actions.google_calendar import clear_cache  # lazy import: cycle
                 clear_cache()
             except Exception as exc:
                 logger.debug(f"[CalendarCreate] Could not clear calendar cache: {exc}")

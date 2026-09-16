@@ -32,6 +32,7 @@ from core.insight.provenance import render_evidence_block
 from core.insight.types import Assessment, EvidenceItem, InsightIntent
 from core.response_guidance import DECISION_SUPPORT_GROUNDING, UNIVERSAL_GROUNDING
 from utils.logging_utils import get_logger
+import core.reasoning_stream_filter as reasoning_stream_filter
 
 logger = get_logger("insight_synthesizer")
 
@@ -402,8 +403,7 @@ async def synthesize_stream(
     conversation_context: str = "",
 ) -> AsyncGenerator[str, None]:
     """Stream visible synthesis chunks (reasoning-channel filtered)."""
-    from config.app_config import INSIGHT_SYNTHESIS_MAX_TOKENS
-    from core.reasoning_stream_filter import InterleavedReasoningFilter
+    from config.app_config import INSIGHT_SYNTHESIS_MAX_TOKENS  # lazy import: live-config
 
     system_prompt, prompt = build_synthesis_prompts(
         intent, evidence, assessment, tone_elevated=tone_elevated,
@@ -421,9 +421,7 @@ async def synthesize_stream(
 
     # Yield ONLY confirmed visible content — synthetic <thinking> markers are
     # dropped (insight mode shows sweep progress instead of a thinking shell).
-    from core.reasoning_stream_filter import CONTENT
-
-    rfilter = InterleavedReasoningFilter()
+    rfilter = reasoning_stream_filter.InterleavedReasoningFilter()
     if hasattr(stream, "__aiter__"):
         async for chunk in stream:
             if hasattr(chunk, "choices") and chunk.choices:
@@ -435,14 +433,14 @@ async def synthesize_stream(
                 )
                 delta_content = getattr(delta, "content", "") or ""
                 for kind, text in rfilter.feed(delta_reasoning, delta_content):
-                    if kind == CONTENT:
+                    if kind == reasoning_stream_filter.CONTENT:
                         yield text
             elif isinstance(chunk, str) and chunk:
                 for kind, text in rfilter.feed("", chunk):
-                    if kind == CONTENT:
+                    if kind == reasoning_stream_filter.CONTENT:
                         yield text
         for kind, text in rfilter.finish():
-            if kind == CONTENT:
+            if kind == reasoning_stream_filter.CONTENT:
                 yield text
     elif isinstance(stream, str):
         yield stream

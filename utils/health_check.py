@@ -28,6 +28,7 @@ Module Contract
 """
 
 import os
+import json
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -54,7 +55,7 @@ def get_health_status(orchestrator=None) -> Dict[str, Any]:
 
     # 1. Check corpus file exists
     try:
-        from config.app_config import CORPUS_FILE
+        from config.app_config import CORPUS_FILE  # lazy import: live-config
         corpus_path = Path(CORPUS_FILE)
         checks["corpus_file"] = {
             "exists": corpus_path.exists(),
@@ -68,7 +69,7 @@ def get_health_status(orchestrator=None) -> Dict[str, Any]:
 
     # 2. Check ChromaDB directory exists
     try:
-        from config.app_config import CHROMA_PATH
+        from config.app_config import CHROMA_PATH  # lazy import: live-config
         chroma_path = Path(CHROMA_PATH)
         checks["chroma_db"] = {
             "exists": chroma_path.exists(),
@@ -123,7 +124,7 @@ def get_health_status(orchestrator=None) -> Dict[str, Any]:
                 "summary": executor.get_tool_health(),
             }
         else:
-            from config.app_config import WEB_SEARCH_ENABLED, WEB_SEARCH_API_KEY
+            from config.app_config import WEB_SEARCH_ENABLED, WEB_SEARCH_API_KEY  # lazy import: live-config
             checks["search_tools"] = {
                 "web_search": "ready" if WEB_SEARCH_ENABLED and WEB_SEARCH_API_KEY else "unavailable",
                 "dedicated_apis": "ready (network not probed)",
@@ -134,7 +135,7 @@ def get_health_status(orchestrator=None) -> Dict[str, Any]:
 
     # Get version
     try:
-        from config.app_config import VERSION
+        from config.app_config import VERSION  # lazy import: live-config
         version = VERSION
     except Exception:
         version = "unknown"
@@ -161,8 +162,7 @@ def add_health_endpoint(app, orchestrator=None):
     """
     try:
         # FastAPI is bundled with Gradio, but import here for clarity
-        from fastapi import Response
-        import json
+        from fastapi import Response  # lazy import: startup-cost
 
         @app.get("/health")
         async def health():

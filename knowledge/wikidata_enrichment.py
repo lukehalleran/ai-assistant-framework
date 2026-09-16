@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Optional
 
 from utils.logging_utils import get_logger
+import memory.graph_models as graph_models
 import re
 
 logger = get_logger("wikidata_enrichment")
@@ -67,7 +68,7 @@ class WikidataGraphEnricher:
 
     def enrich(self) -> dict:
         """Main entry point. Returns stats dict; never raises."""
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             WIKIDATA_ENRICHMENT_RELATION_WHITELIST,
             WIKIDATA_ENRICHMENT_MAX_EDGES_PER_ENTITY,
             WIKIDATA_ENRICHMENT_MAX_NEW_NODES,
@@ -207,8 +208,7 @@ class WikidataGraphEnricher:
         return None
 
     def _stamp_qid(self, node_id: str, data: dict, qid: str) -> None:
-        from memory.graph_models import GraphNode
-        self.graph.add_entity(GraphNode(
+        self.graph.add_entity(graph_models.GraphNode(
             entity_id=node_id,
             display_name=data.get("display_name", node_id),
             entity_type=data.get("entity_type", "other"),
@@ -219,8 +219,6 @@ class WikidataGraphEnricher:
                             nodes_this_run: int, max_new_nodes: int):
         """Resolve or create the wikidata-side node. Returns (entity_id|None,
         created: bool). None when the node cap blocks creation."""
-        from memory.graph_models import GraphNode
-
         label = ent["label"]
         slug = _slugify(label)
         if self.graph.graph.has_node(slug):
@@ -231,7 +229,7 @@ class WikidataGraphEnricher:
         if nodes_this_run >= max_new_nodes:
             return None, False
 
-        self.graph.add_entity(GraphNode(
+        self.graph.add_entity(graph_models.GraphNode(
             entity_id=slug,
             display_name=label,
             entity_type="concept",
@@ -250,9 +248,8 @@ class WikidataGraphEnricher:
 
     def _add_edge(self, src_id: str, relation: str, tgt_id: str,
                   property_id: str, now) -> None:
-        from memory.graph_models import GraphEdge
-        from memory.entity_resolver import normalize_relation
-        self.graph.add_relation(GraphEdge(
+        from memory.entity_resolver import normalize_relation  # lazy import: startup-cost
+        self.graph.add_relation(graph_models.GraphEdge(
             source_id=src_id,
             relation=normalize_relation(relation),
             target_id=tgt_id,

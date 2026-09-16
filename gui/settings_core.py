@@ -25,6 +25,8 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
+import yaml
+
 from utils.logging_utils import get_logger
 
 logger = get_logger("settings_core")
@@ -35,7 +37,6 @@ logger = get_logger("settings_core")
 def load_settings() -> dict:
     """Load persisted settings from config/config.yaml (best-effort)."""
     try:
-        import yaml
         cfg_path = Path("config") / "config.yaml"
         if cfg_path.exists():
             with open(cfg_path, "r", encoding="utf-8") as f:
@@ -48,7 +49,6 @@ def load_settings() -> dict:
 def save_settings(updater: Callable[[dict], None]):
     """Read-modify-write config/config.yaml. Returns (ok, error_or_None)."""
     try:
-        import yaml
         cfg_path = Path("config") / "config.yaml"
         data = {}
         if cfg_path.exists():
@@ -215,7 +215,7 @@ def apply_web_search(orchestrator, *, enabled: bool, daily_credit_limit: int,
         ws_cfg["enabled"] = bool(enabled)
         ws_cfg["daily_credit_limit"] = int(daily_credit_limit)
         try:
-            import config.app_config as app_cfg
+            import config.app_config as app_cfg  # lazy import: live-config
             app_cfg.WEB_SEARCH_ENABLED = bool(enabled)
             app_cfg.WEB_SEARCH_DAILY_CREDIT_LIMIT = int(daily_credit_limit)
         except (ImportError, AttributeError):
@@ -377,7 +377,7 @@ def apply_synthesis(orchestrator, *, enabled: bool, candidates_per_session: int,
             cfg.setdefault("synthesis_pooled", {}).update(
                 {"enabled": bool(enabled), "candidates_per_session": n})
         try:
-            import config.app_config as app_cfg
+            import config.app_config as app_cfg  # lazy import: live-config
             app_cfg.SYNTHESIS_POOLED_ENABLED = bool(enabled)
             app_cfg.SYNTHESIS_POOLED_CANDIDATES_PER_SESSION = n
             if not enabled:
@@ -414,7 +414,7 @@ def apply_proposals(orchestrator, *, enabled: bool, max_per_session: int,
             cfg.setdefault("code_proposals", {}).update(
                 {"enabled": bool(enabled), "max_per_session": n})
         try:
-            import config.app_config as app_cfg
+            import config.app_config as app_cfg  # lazy import: live-config
             app_cfg.CODE_PROPOSALS_ENABLED = bool(enabled)
             app_cfg.CODE_PROPOSALS_MAX_PER_SESSION = n
         except (ImportError, AttributeError):

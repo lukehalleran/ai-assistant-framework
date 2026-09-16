@@ -117,7 +117,7 @@ def record_turn(record: Dict[str, Any]) -> bool:
     """
     try:
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 TURN_TELEMETRY_ENABLED,
                 TURN_TELEMETRY_PATH,
             )

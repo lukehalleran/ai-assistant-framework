@@ -35,6 +35,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+import memory.graph_models as graph_models
 from knowledge.synthesis_models import (
     CandidateStatus,
     SynthesisResult,
@@ -226,7 +227,7 @@ class SynthesisMemory:
 
         Returns edge key if created, empty string on failure.
         """
-        from config.app_config import SYNTHESIS_BRIDGE_ON_ACCEPT, SYNTHESIS_BRIDGE_RELATION
+        from config.app_config import SYNTHESIS_BRIDGE_ON_ACCEPT, SYNTHESIS_BRIDGE_RELATION  # lazy import: live-config
 
         if not SYNTHESIS_BRIDGE_ON_ACCEPT or not graph_memory or not entity_resolver:
             return ""
@@ -245,9 +246,8 @@ class SynthesisMemory:
             # Resolve/create wiki entity (concept_b)
             target_id = entity_resolver.resolve(concept_b.lower().strip())
             if not target_id:
-                from memory.graph_models import GraphNode
                 target_id = concept_b.lower().strip().replace(" ", "_")
-                graph_memory.add_entity(GraphNode(
+                graph_memory.add_entity(graph_models.GraphNode(
                     entity_id=target_id,
                     display_name=concept_b,
                     entity_type="concept",
@@ -257,10 +257,7 @@ class SynthesisMemory:
                 ))
 
             # Provisional bridge: weight=0.0, matures on rediscovery
-            from memory.graph_models import GraphEdge
-            from datetime import datetime
-
-            edge = GraphEdge(
+            edge = graph_models.GraphEdge(
                 source_id=source_id,
                 relation=SYNTHESIS_BRIDGE_RELATION,
                 target_id=target_id,
@@ -513,7 +510,7 @@ class SynthesisMemory:
         FP rate = fraction of accepted insights graded 1-3.
         Auto-halt triggers when FP rate > threshold with sufficient data.
         """
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             SYNTHESIS_AUDIT_FP_HALT_THRESHOLD,
             SYNTHESIS_AUDIT_MIN_GRADED,
         )

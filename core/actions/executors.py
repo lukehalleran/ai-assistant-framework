@@ -13,6 +13,7 @@ Module Contract
 
 import logging
 
+import core.actions.registry as registry
 from core.actions.types import ActionProposal, ActionResult
 
 logger = logging.getLogger("actions")
@@ -27,9 +28,7 @@ class ActionExecutorRegistry:
         The action→executor mapping lives in core.actions.registry (ACTION_SPECS) — the single
         source of truth. Adding an action there makes it executable here automatically.
         """
-        from core.actions.registry import ACTION_SPECS
-
-        spec = ACTION_SPECS.get(proposal.action_type)
+        spec = registry.ACTION_SPECS.get(proposal.action_type)
         if spec is None:
             return ActionResult(
                 action_id=proposal.action_id,

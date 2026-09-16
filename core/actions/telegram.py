@@ -13,6 +13,7 @@ Module Contract
 
 import logging
 
+from config import app_config
 from core.actions.types import ActionProposal, ActionResult
 
 logger = logging.getLogger("actions_telegram")
@@ -28,12 +29,7 @@ async def send_telegram_message(proposal: ActionProposal) -> ActionResult:
     Returns:
         ActionResult with success status and delivery info.
     """
-    from config.app_config import (
-        INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN,
-        INTERNET_ACTIONS_TELEGRAM_CHAT_ID,
-    )
-
-    bot_token = INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN
+    bot_token = app_config.INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN
     if not bot_token:
         return ActionResult(
             action_id=proposal.action_id,
@@ -41,7 +37,7 @@ async def send_telegram_message(proposal: ActionProposal) -> ActionResult:
             message="Telegram bot token not configured. Set telegram_bot_token in config or TELEGRAM_BOT_TOKEN env var.",
         )
 
-    chat_id = proposal.params.get("recipient") or INTERNET_ACTIONS_TELEGRAM_CHAT_ID
+    chat_id = proposal.params.get("recipient") or app_config.INTERNET_ACTIONS_TELEGRAM_CHAT_ID
     if not chat_id:
         return ActionResult(
             action_id=proposal.action_id,
@@ -66,7 +62,7 @@ async def send_telegram_message(proposal: ActionProposal) -> ActionResult:
     }
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(url, json=payload)
 

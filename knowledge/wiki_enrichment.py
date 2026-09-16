@@ -14,6 +14,7 @@ This grows the graph organically from usage without LLM calls.
 import re
 from datetime import datetime
 
+import memory.graph_utils as graph_utils
 from memory.graph_models import GraphEdge, GraphNode
 from utils.logging_utils import get_logger
 
@@ -40,13 +41,13 @@ class WikiGraphEnricher:
 
         Returns dict with keys: articles_added, relations_added, skipped.
         """
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             WIKI_ENRICHMENT_MAX_PER_SESSION,
             WIKI_ENRICHMENT_MIN_TEXT,
             WIKI_ENRICHMENT_EDGE_RELATION,
             WIKI_ENRICHMENT_EDGE_WEIGHT,
         )
-        from knowledge.wiki_tracker import WikiArticleTracker
+        from knowledge.wiki_tracker import WikiArticleTracker  # lazy import: patch-point (tests/unit/test_gatherer_outcomes_background_knowledge.py:75)
 
         tracker = WikiArticleTracker.get_instance()
         tracked = tracker.get_tracked()
@@ -175,9 +176,7 @@ class WikiGraphEnricher:
         Filters out junk entities (short, numeric, stopwords).
         Returns count of edges added.
         """
-        from memory.graph_utils import extract_graph_entities
-
-        mentioned = extract_graph_entities(text, self.resolver)
+        mentioned = graph_utils.extract_graph_entities(text, self.resolver)
 
         # Filter to conversation entities only + junk filter
         valid = set()

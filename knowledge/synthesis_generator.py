@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from knowledge.synthesis_models import SynthesisCandidate
+import memory.user_profile_schema as user_profile_schema
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -134,7 +135,7 @@ class SynthesisGenerator:
         Returns:
             List of SynthesisCandidate objects ready for filter pipeline.
         """
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             SYNTHESIS_GENERATOR_ENABLED,
             SYNTHESIS_GENERATOR_LLM_CONCURRENCY,
             SYNTHESIS_GENERATOR_MIN_GRAPH_NODES,
@@ -265,7 +266,7 @@ class SynthesisGenerator:
 
     def _sample_wiki_articles(self, n: int) -> List[Dict[str, Any]]:
         """Sample diverse wiki articles via FAISS semantic search (40M vectors)."""
-        from knowledge.semantic_search import semantic_search_with_neighbors
+        from knowledge.semantic_search import semantic_search_with_neighbors  # lazy import: startup-cost
 
         seen_titles: Set[str] = set()
         articles: List[Dict[str, Any]] = []
@@ -458,8 +459,7 @@ class SynthesisGenerator:
         relation = metadata.get("predicate", metadata.get("relation", ""))
         if relation:
             try:
-                from memory.user_profile_schema import categorize_relation
-                category = categorize_relation(relation)
+                category = user_profile_schema.categorize_relation(relation)
                 if category.value != "other":
                     return category.value
             except Exception:
@@ -586,7 +586,7 @@ class SynthesisGenerator:
 
         Returns None if the model can't find a meaningful connection.
         """
-        from config.app_config import SYNTHESIS_COHERENCE_MODEL
+        from config.app_config import SYNTHESIS_COHERENCE_MODEL  # lazy import: live-config
 
         prompt = BRIDGE_PROMPT.format(
             concept_a=concept_a,
@@ -707,7 +707,7 @@ class SynthesisGenerator:
 
         # Wiki stats from FAISS index
         try:
-            from knowledge.semantic_search import get_index
+            from knowledge.semantic_search import get_index  # lazy import: startup-cost
             idx = get_index()
             stats["wiki_count"] = idx._total_rows if idx.loaded else 0
             stats["wiki_source"] = "faiss"

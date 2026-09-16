@@ -26,11 +26,13 @@ Module Contract
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import os
 import threading
 from typing import List, Optional
 
+import memory.graph_utils as graph_utils
 from utils.logging_utils import get_logger
 
 logger = get_logger("knowledge.visual_memory_pipeline")
@@ -166,7 +168,7 @@ class VisualMemoryPipeline:
             return ""
 
         try:
-            from config.app_config import VISUAL_MEMORY_CAPTION_TIMEOUT
+            from config.app_config import VISUAL_MEMORY_CAPTION_TIMEOUT  # lazy import: live-config
             timeout = VISUAL_MEMORY_CAPTION_TIMEOUT
         except ImportError:
             timeout = 10.0
@@ -210,8 +212,6 @@ class VisualMemoryPipeline:
     @staticmethod
     def _read_caption_image(image_path: str) -> str:
         """Read and encode the caption payload away from the event loop."""
-        import base64
-
         with open(image_path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
 
@@ -221,10 +221,8 @@ class VisualMemoryPipeline:
             return []
 
         try:
-            from memory.graph_utils import extract_graph_entities
-
             combined = f"{caption} {context_text}".strip()
-            entities = extract_graph_entities(combined, self._entity_resolver)
+            entities = graph_utils.extract_graph_entities(combined, self._entity_resolver)
             return list(entities)
         except Exception as e:
             logger.debug(f"[VisualPipeline] Entity extraction failed: {e}")

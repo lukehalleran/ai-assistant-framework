@@ -29,7 +29,7 @@ def is_repository_status_report(query: str) -> bool:
     Keep questions on the existing hybrid/history route. A casual tone must
     not suppress records of the very activity being reported.
     """
-    from utils.query_checker import is_self_report, is_status_report
+    from utils.query_checker import is_self_report, is_status_report  # lazy import: cycle
 
     text = normalize_ws(query)
     return bool(

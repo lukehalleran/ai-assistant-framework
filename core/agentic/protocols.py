@@ -92,7 +92,7 @@ def _native_tool_registry() -> List[str]:
     if _native_tool_registry_cache is None:
         derived = set(NATIVE_TOOL_MODELS)
         try:
-            # lazy import: startup cost (model_manager imports torch/transformers
+            # lazy import: startup-cost (model_manager imports torch/transformers
             # at module level)
             from models.model_manager import API_MODEL_ALIASES, MODEL_CAPABILITIES
             derived.update(
@@ -196,7 +196,7 @@ class NativeToolsHandler(BaseProtocolHandler):
     """
 
     def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False, actions_available: bool = False, email_search_available: bool = False):
-        from core.agentic.types import (
+        from core.agentic.types import (  # lazy import: cycle
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
             WOLFRAM_TOOL_DEFINITION,
@@ -658,8 +658,8 @@ class NativeToolsHandler(BaseProtocolHandler):
             # Registry-driven: acceptance, param-forwarding, coercion, and
             # summary all come from the action's spec (core/actions/registry.py)
             # via resolve_forced_action — no per-action-type hardcoding here.
-            from core.actions.registry import ACTION_SPECS, resolve_forced_action
-            from core.actions.types import ActionType as _ActionType
+            from core.actions.registry import ACTION_SPECS, resolve_forced_action  # lazy import: cycle
+            from core.actions.types import ActionType as _ActionType  # lazy import: cycle
             action_type = args.get("action_type", "")
             reason = args.get("reason", "")
             resolved_type, resolved_params, reject_reason = resolve_forced_action(
@@ -1281,7 +1281,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
     def _action_spec(action_type: str):
         # lazy import: cycle (mirrors the native propose_action path above)
         from core.actions.registry import ACTION_SPECS
-        from core.actions.types import ActionType as _ActionType
+        from core.actions.types import ActionType as _ActionType  # lazy import: cycle
         try:
             return ACTION_SPECS.get(_ActionType(action_type))
         except ValueError:
@@ -1353,7 +1353,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
             params["message"] = message
         if action_type and XMLMarkerHandler._action_spec(action_type) is None:
             return action_type, params, None
-        from core.actions.registry import resolve_forced_action
+        from core.actions.registry import resolve_forced_action  # lazy import: cycle
         resolved_type, resolved_params, reject_reason = resolve_forced_action(
             action_type, params, forced_action_type=forced_action_type,
         )
@@ -1916,7 +1916,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
         """
         Add XML marker instructions to system prompt.
         """
-        from core.agentic.types import AGENTIC_SYSTEM_PROMPT_INJECTION
+        from core.agentic.types import AGENTIC_SYSTEM_PROMPT_INJECTION  # lazy import: cycle
 
         injection = AGENTIC_SYSTEM_PROMPT_INJECTION.format(max_rounds=max_rounds)
         return system_prompt + "\n\n" + injection

@@ -33,11 +33,14 @@ take, not a conflict to resolve). Legacy untagged facts unchanged.
 import re
 import time
 from collections import defaultdict
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from config import app_config as cfg
+from config import app_config
+import memory.claim_tracker as claim_tracker
 from memory.dedup_models import (
     ContradictionCluster,
     DedupAction,
@@ -45,6 +48,7 @@ from memory.dedup_models import (
     DedupReason,
     DuplicatePair,
 )
+import memory.stance_classifier as stance_classifier
 from utils.logging_utils import get_logger
 
 logger = get_logger("cross_deduplicator")
@@ -155,12 +159,10 @@ class CrossCollectionDeduplicator:
         # 4.5. Cascade staleness for contradiction clusters
         if contradiction_clusters:
             try:
-                from config.app_config import STALENESS_ENABLED
-                if STALENESS_ENABLED and self._claim_index:
-                    from memory.claim_tracker import canonicalize_claim
+                if app_config.STALENESS_ENABLED and self._claim_index:
                     total_affected = 0
                     for cluster in contradiction_clusters:
-                        ck = canonicalize_claim(
+                        ck = claim_tracker.canonicalize_claim(
                             cluster.subject, cluster.predicate,
                             entity_resolver=self._entity_resolver,
                         )
@@ -399,7 +401,6 @@ class CrossCollectionDeduplicator:
             return float(ts)
         if isinstance(ts, str) and ts:
             try:
-                from datetime import datetime
                 dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 return dt.timestamp()
             except (ValueError, TypeError):
@@ -439,7 +440,7 @@ class CrossCollectionDeduplicator:
         # Load ephemeral relations to exclude from contradiction detection
         ephemeral = self._get_ephemeral_relations()
         try:
-            from memory.relation_classifier import (
+            from memory.relation_classifier import (  # lazy import: optional-dependency
                 GENERIC_PREDICATES, is_multi_valued_relation,
             )
         except ImportError:  # pragma: no cover - defensive
@@ -460,8 +461,7 @@ class CrossCollectionDeduplicator:
             # take, not a conflict to resolve. Extends the MULTI_VALUED
             # carve-out; legacy untagged facts unchanged (conservative).
             try:
-                from memory.stance_classifier import effective_stance
-                if effective_stance(md) == "appraisal":
+                if stance_classifier.effective_stance(md) == "appraisal":
                     continue
             except Exception:
                 pass
@@ -528,9 +528,8 @@ class CrossCollectionDeduplicator:
         """Load the set of ephemeral relation names that should be excluded
         from contradiction detection (their history is meaningful)."""
         try:
-            from config.app_config import PROFILE_EPHEMERAL_RELATIONS
-            return frozenset(r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS)
-        except ImportError:
+            return frozenset(r.lower().strip() for r in app_config.PROFILE_EPHEMERAL_RELATIONS)
+        except (ImportError, AttributeError):
             return frozenset()
 
     @classmethod
@@ -680,7 +679,7 @@ class CrossCollectionDeduplicator:
         """
         already_deleted = already_deleted or set()
         try:
-            from memory.truth_scorer import TruthScorer
+            from memory.truth_scorer import TruthScorer  # lazy import: optional-dependency
 
             # Penalize older contradicting facts (skip already-deleted)
             for del_id in cluster.delete_ids:

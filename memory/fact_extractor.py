@@ -62,14 +62,18 @@ Enhanced (2026-03):
 - Helper functions: _detect_entity_type(), _detect_user_connection()
 """
 import os
+import os as _os
 import re
+import re as _re
 import uuid
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
 from memory.fact_source import classify_claim_time, supporting_excerpt
 from memory.memory_interface import MemoryNode, MemoryType
+import memory.stance_classifier as stance_classifier
 from utils.logging_utils import get_logger, log_and_time
+import utils.temporal_resolver as temporal_resolver
 
 logger = get_logger("fact_extractor")
 logger.debug("fact_extractor.py is alive")
@@ -371,8 +375,7 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
     # belongs to the user's unresolved referent, not to whoever a resolver
     # would guess (memory/stance_classifier.py; the tamsin/she incident class).
     try:
-        from memory.stance_classifier import scope_unresolved_referent
-        _scoped = scope_unresolved_referent(s, o)
+        _scoped = stance_classifier.scope_unresolved_referent(s, o)
         if _scoped:
             s = _scoped
     except Exception:
@@ -484,7 +487,7 @@ def _get_nlp():
         return _NLP
     _NLP_LOADED = True
     try:
-        import spacy
+        import spacy  # lazy import: startup-cost
         _NLP = spacy.load("en_core_web_sm")
         logger.debug("[FactExtractor] spaCy loaded: en_core_web_sm")
     except Exception as e:
@@ -499,7 +502,7 @@ def _get_rebel():
         return _REBEL
     _REBEL_LOADED = True
     try:
-        from transformers import pipeline
+        from transformers import pipeline  # lazy import: startup-cost
         _REBEL = pipeline(
             "text2text-generation",
             model="Babelscape/rebel-large",
@@ -528,7 +531,7 @@ PREF_PATTERNS = [
 # slots live in config.yaml under user_profile.personal_vocabulary.
 def _load_personal_extractor_vocab():
     try:
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             PROFILE_PERSONAL_GENERIC_SUBJECTS,
             PROFILE_PERSONAL_ENTITY_CASING,
         )
@@ -545,7 +548,7 @@ _PERSONAL_GENERIC_SUBJECTS, _PERSONAL_ENTITY_CASING = _load_personal_extractor_v
 def _append_personal_preference_slots() -> None:
     """Add per-user 'my favorite X' slots from config (keeps source general)."""
     try:
-        from config.app_config import PROFILE_PERSONAL_PREFERENCE_SLOTS
+        from config.app_config import PROFILE_PERSONAL_PREFERENCE_SLOTS  # lazy import: live-config
     except Exception:
         return
     for slot in (PROFILE_PERSONAL_PREFERENCE_SLOTS or []):
@@ -1011,7 +1014,7 @@ class FactExtractor:
 
         # 3) Canonicalize + dedupe (augmented with preference logic + generic cleaner & scorer)
         #    Split into user facts and entity facts with separate budgets.
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             ENTITY_FACTS_ENABLED, ENTITY_FACTS_PER_TURN_CAP,
             USER_FACTS_PER_TURN_CAP, ENTITY_FACT_MIN_CONFIDENCE,
             PROFILE_EPHEMERAL_RELATIONS,
@@ -1325,7 +1328,6 @@ class FactExtractor:
 
         # Light normalization for common contractions to improve regex hits
         try:
-            import re as _re
             base = _re.sub(r"\bI['']m\b", "I am", base)
         except (re.error, TypeError):
             pass
@@ -1354,7 +1356,6 @@ class FactExtractor:
         try:
             # Hard cap input length to keep within model limits even if upstream changes
             try:
-                import os as _os
                 max_chars = int(_os.getenv("REBEL_MAX_INPUT_CHARS", "1200"))
             except (ValueError, TypeError):
                 max_chars = 1200
@@ -1658,7 +1659,7 @@ class FactExtractor:
                 logger.debug(f"[FactExtractor] TemporalPattern[{ti}:{rel_key}] matched {temp_total}")
 
         # 3b) Schedule patterns — day + time range, multi-day, date events, shifts, days off
-        from config.app_config import SCHEDULE_EXTRACTION_ENABLED
+        from config.app_config import SCHEDULE_EXTRACTION_ENABLED  # lazy import: live-config
         if SCHEDULE_EXTRACTION_ENABLED:
             for si, (rel_key, pattern) in enumerate(self.schedule_patterns):
                 sched_total = 0
@@ -1813,12 +1814,7 @@ class FactExtractor:
         expressions, and scope (recurring vs one-off).  Sets parser_confidence,
         resolution_basis, and needs_confirmation based on parsing certainty.
         """
-        from utils.temporal_resolver import (
-            expand_day_abbreviations,
-            normalize_time_range,
-            resolve_date_expression,
-        )
-        from config.app_config import SCHEDULE_BARE_TIME_MIN_CONFIDENCE
+        from config.app_config import SCHEDULE_BARE_TIME_MIN_CONFIDENCE  # lazy import: live-config
 
         obj_lower = obj.lower().strip()
 
@@ -1840,7 +1836,7 @@ class FactExtractor:
             time_part = " ".join(parts[1:]) if len(parts) > 1 else ""
 
             # Expand days
-            days = expand_day_abbreviations(day_part)
+            days = temporal_resolver.expand_day_abbreviations(day_part)
             metadata["schedule_days"] = ",".join(days) if days else day_part
 
             # Detect scope from original text
@@ -1866,7 +1862,7 @@ class FactExtractor:
                 start_text = time_match.group(1)
                 end_text = time_match.group(2)
                 context = "work" if relation == "work_schedule" else "class"
-                start_hhmm, end_hhmm, basis, confidence = normalize_time_range(
+                start_hhmm, end_hhmm, basis, confidence = temporal_resolver.normalize_time_range(
                     start_text, end_text, context=context,
                 )
                 metadata["schedule_start"] = start_hhmm
@@ -1882,7 +1878,7 @@ class FactExtractor:
                 metadata["needs_confirmation"] = False
 
         elif relation == "exam_date":
-            iso_date, basis, confidence = resolve_date_expression(obj)
+            iso_date, basis, confidence = temporal_resolver.resolve_date_expression(obj)
             metadata["schedule_days"] = iso_date or obj_lower
             metadata["schedule_scope"] = "one_off"
             metadata["schedule_start"] = None
@@ -1901,7 +1897,7 @@ class FactExtractor:
             metadata["needs_confirmation"] = False
 
         elif relation == "day_off":
-            days = expand_day_abbreviations(obj_lower.rstrip("s"))
+            days = temporal_resolver.expand_day_abbreviations(obj_lower.rstrip("s"))
             metadata["schedule_days"] = ",".join(days) if days else obj_lower
 
             if obj_lower.endswith("s") and not obj_lower.endswith("ss"):

@@ -41,6 +41,7 @@ import uuid
 
 import json
 from datetime import date, datetime
+from datetime import datetime as _dt
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import threading
@@ -48,11 +49,16 @@ import threading
 from utils.bootstrap import get_user_profile_path
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json, corrupt_store, load_critical_json
+import utils.temporal_resolver as temporal_resolver
+import utils.time_manager as time_manager
 from utils.trigger_match import compile_keyword_matcher
+import memory.relation_classifier as relation_classifier
+import memory.stance_classifier as stance_classifier
 from memory.user_profile_schema import (
     ProfileCategory, ProfileFact, categorize_relation,
     ProfilePreferences, ProfileIdentity, SCHEMA_VERSION
 )
+import memory.user_profile_schema as user_profile_schema
 import config.app_config as app_config
 from memory.truth_scorer import TruthScorer
 
@@ -237,17 +243,15 @@ class UserProfile:
         value = value.strip()
 
         # Canonicalize relation name to prevent namespace drift
-        from memory.user_profile_schema import canonicalize_profile_relation
         original_relation = relation
-        relation = canonicalize_profile_relation(relation, value)
+        relation = user_profile_schema.canonicalize_profile_relation(relation, value)
         if relation != original_relation:
             logger.debug(f"[UserProfile] Canonicalized relation: {original_relation} → {relation}")
 
         # Resolve relative temporal references ("tomorrow" → "Thu 2026-03-13")
-        from utils.temporal_resolver import resolve_temporal_references, has_temporal_reference
-        if has_temporal_reference(value):
+        if temporal_resolver.has_temporal_reference(value):
             ref_date = timestamp if isinstance(timestamp, datetime) else datetime.now()
-            value = resolve_temporal_references(value, reference_date=ref_date)
+            value = temporal_resolver.resolve_temporal_references(value, reference_date=ref_date)
 
         # Re-categorize after canonicalization (unless explicitly provided)
         if category is None:
@@ -268,8 +272,7 @@ class UserProfile:
         # of truth in memory/stance_classifier.py).
         if not stance:
             try:
-                from memory.stance_classifier import classify_triple_stance
-                stance = classify_triple_stance("user", relation, value).stance
+                stance = stance_classifier.classify_triple_stance("user", relation, value).stance
             except Exception:
                 stance = ""
 
@@ -297,7 +300,7 @@ class UserProfile:
                     continue
                 existing_rel = existing.get("relation", "")
                 # Compare using canonical forms so e.g. pet_name matches pet
-                existing_canonical = canonicalize_profile_relation(
+                existing_canonical = user_profile_schema.canonicalize_profile_relation(
                     existing_rel, existing.get("value")
                 )
                 if existing_canonical != relation:
@@ -496,8 +499,7 @@ class UserProfile:
         TTL all agree on what counts as transient. The pattern tables that used
         to live here now live in that module (single source of truth).
         """
-        from memory.relation_classifier import is_ephemeral_relation
-        return is_ephemeral_relation(relation)
+        return relation_classifier.is_ephemeral_relation(relation)
 
     def get_category(self, category: ProfileCategory, include_historical: bool = False) -> List[Dict]:
         """Get facts in a category.
@@ -512,7 +514,6 @@ class UserProfile:
         if include_historical:
             return facts
 
-        from memory.relation_classifier import ephemeral_ttl_hours
         now = datetime.now()
 
         result = []
@@ -523,7 +524,7 @@ class UserProfile:
                 continue
             # Drop stale transient facts beyond their per-relation TTL
             rel = f.get("relation", "")
-            ttl_hours = ephemeral_ttl_hours(rel)
+            ttl_hours = relation_classifier.ephemeral_ttl_hours(rel)
             if ttl_hours is not None and ttl_hours > 0:
                 ts_str = f.get("timestamp", "")
                 try:
@@ -814,19 +815,17 @@ class UserProfile:
                 )[:facts_per_category]
 
             if relevant_facts:
-                from utils.time_manager import format_relative_timestamp
                 fact_strs = []
                 for f in relevant_facts:
                     # Include timestamp with relative day label for temporal reasoning
                     ts = f.get('timestamp', '')
                     if isinstance(ts, str) and ts:
                         try:
-                            from datetime import datetime as _dt
-                            ts_str = format_relative_timestamp(_dt.fromisoformat(ts))
+                            ts_str = time_manager.format_relative_timestamp(_dt.fromisoformat(ts))
                         except (ValueError, TypeError):
                             ts_str = ts
                     elif hasattr(ts, 'isoformat'):
-                        ts_str = format_relative_timestamp(ts)
+                        ts_str = time_manager.format_relative_timestamp(ts)
                     else:
                         ts_str = str(ts) if ts else ''
                     entry = f"{f['relation']}={f['value']} [{ts_str}]"

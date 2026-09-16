@@ -23,6 +23,7 @@ import os
 import time
 import json
 import threading
+import bisect
 from typing import List, Dict, Any, Tuple
 
 import numpy as np
@@ -63,7 +64,7 @@ _warned_missing = False
 def _cuda_available() -> bool:
     """Cheap check for CUDA presence without importing torch at module import."""
     try:
-        import torch
+        import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
         return torch.cuda.is_available()
     except Exception:
         return False
@@ -77,7 +78,7 @@ def _load_embedder(name: str):
     # Avoid repeated remote HEADs; respect local cache/offline.
     # Try to use cached embedder first, fallback to loading directly
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: startup-cost
         model = ModelManager._get_cached_embedder()
         logger.debug("Using cached embedder for semantic search")
         return model
@@ -87,7 +88,7 @@ def _load_embedder(name: str):
         if HF_OFFLINE:
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import SentenceTransformer  # lazy import: startup-cost
         device = "cuda" if _cuda_available() else "cpu"
         model = SentenceTransformer(name, device=device)
         return model
@@ -169,7 +170,7 @@ class SemanticSearchIndex:
             return
 
         try:
-            import pyarrow.parquet as pq
+            import pyarrow.parquet as pq  # lazy import: startup-cost
 
             # Embedder
             self.embedder = _load_embedder(EMBED_MODEL)
@@ -212,7 +213,6 @@ class SemanticSearchIndex:
 
         Uses binary search on the precomputed offset table.
         """
-        import bisect
         rg = bisect.bisect_right(self._rg_offsets, row_idx) - 1
         return rg, row_idx - self._rg_offsets[rg]
 

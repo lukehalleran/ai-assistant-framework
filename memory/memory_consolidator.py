@@ -34,6 +34,8 @@ Narrative Context System (2026-01-17, updated 2026-03-10 for 3-tier):
 
 import os
 from datetime import datetime, timedelta
+from datetime import date as _date
+from datetime import timedelta as _timedelta
 from typing import List, Dict, Any, Optional
 
 from pydantic import BaseModel, Field
@@ -42,6 +44,7 @@ from utils.logging_utils import get_logger
 from utils.completed_plan_claims import remove_completed_plan_claims
 from utils.personal_claim_provenance import MARKER as PERSONAL_CLAIM_MARKER, annotate_personal_claim_memory
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
+import utils.status_claims as status_claims
 from utils.streak_claims import remove_stale_streak_claims, streak_ledger, streak_ledger_block
 from utils.retrieval_outcome import RetrievalError
 from pathlib import Path
@@ -199,7 +202,7 @@ class MemoryConsolidator:
         call but never blocks narrative generation."""
         if self._user_profile is None:
             try:
-                from memory.user_profile import UserProfile  # lazy import: startup cost
+                from memory.user_profile import UserProfile  # lazy import: startup-cost
                 self._user_profile = UserProfile()
             except Exception as e:
                 logger.debug(f"[Consolidator] UserProfile unavailable for status-claim guard: {e}")
@@ -211,8 +214,6 @@ class MemoryConsolidator:
         status-claim conflict guard (utils/status_claims.py). Raises
         RetrievalError when the profile is unavailable or the read fails;
         a genuine empty filter result still returns []."""
-        from utils.status_claims import STATUS_RELATIONS
-
         profile = self.user_profile
         if profile is None:
             raise RetrievalError(source="status_facts", reason="profile_unavailable")
@@ -225,7 +226,7 @@ class MemoryConsolidator:
         facts: List[Dict[str, Any]] = []
         for cat_facts in (current or {}).values():
             for f in cat_facts or []:
-                if isinstance(f, dict) and f.get("relation") in STATUS_RELATIONS:
+                if isinstance(f, dict) and f.get("relation") in status_claims.STATUS_RELATIONS:
                     facts.append(f)
         return facts
 
@@ -419,8 +420,7 @@ Do NOT make up information not present in the summaries."""
     def _get_obsidian_notes_path(self) -> Optional[str]:
         """Get the path to Obsidian daily notes folder."""
         try:
-            from config.app_config import OBSIDIAN_VAULT_PATH
-            from pathlib import Path
+            from config.app_config import OBSIDIAN_VAULT_PATH  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             vault_path = Path(OBSIDIAN_VAULT_PATH).expanduser()
             notes_path = vault_path / "Vault" / "Daily Notes and To Do's"
             if notes_path.exists():
@@ -665,7 +665,7 @@ Do NOT make up information not present in the summaries."""
             Synthesized narrative string, or empty string on failure
         """
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 NARRATIVE_SYNTHESIS_MODEL, NARRATIVE_MONTHLIES_COUNT,
                 NARRATIVE_WEEKLIES_COUNT, NARRATIVE_DAILIES_COUNT,
             )
@@ -727,8 +727,6 @@ Do NOT make up information not present in the summaries."""
             # Streak ledger (2026-09-05): the user's own day counts, dated and
             # projected to today — injected as a block AND used as a
             # post-generation stale-count check below.
-            from datetime import date as _date
-            from datetime import timedelta as _timedelta
             _today = _date.today()
             streak_claims = []
             try:

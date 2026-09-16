@@ -15,6 +15,7 @@ whether its description happens to contain the word "impactful".
 """
 
 import hashlib
+import json as _json
 import math
 import re
 import subprocess
@@ -75,7 +76,7 @@ class ProposalFilter:
         """Lazy-init ProposalStore."""
         if self._proposal_store is None:
             try:
-                from memory.proposal_store import ProposalStore
+                from memory.proposal_store import ProposalStore  # lazy import: patch-point (tests/unit/test_proposal_filter.py:385)
                 self._proposal_store = ProposalStore(self._chroma_store)
             except ImportError:
                 logger.warning("[ProposalFilter] ProposalStore not available")
@@ -86,7 +87,7 @@ class ProposalFilter:
         """Lazy-init gate system."""
         if self._gate_system is None:
             try:
-                from processing.gate_system import CosineSimilarityGateSystem
+                from processing.gate_system import CosineSimilarityGateSystem  # lazy import: cycle
                 self._gate_system = CosineSimilarityGateSystem()
             except ImportError:
                 logger.warning("[ProposalFilter] Gate system not available")
@@ -238,8 +239,8 @@ class ProposalFilter:
             return list(proposals)
 
         try:
-            from sentence_transformers import SentenceTransformer, util
-            import torch
+            from sentence_transformers import SentenceTransformer, util  # lazy import: startup-cost (would newly load: sentence_transformers)
+            import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
         except ImportError:
             logger.debug("[ProposalFilter] sentence-transformers not available, skipping semantic dedup")
             return list(proposals)
@@ -485,7 +486,6 @@ class ProposalFilter:
             meta = candidate.get("metadata", {})
             tags_raw = meta.get("tags_json", "[]")
             try:
-                import json as _json
                 tags = set(_json.loads(tags_raw)) if isinstance(tags_raw, str) else set(tags_raw or [])
             except Exception:
                 tags = set()
@@ -537,7 +537,7 @@ class ProposalFilter:
             return proposals[:limit]
 
         try:
-            from config.app_config import CODE_PROPOSALS_LLM_RANKING_MODEL
+            from config.app_config import CODE_PROPOSALS_LLM_RANKING_MODEL  # lazy import: live-config read
         except ImportError:
             CODE_PROPOSALS_LLM_RANKING_MODEL = "gpt-4o-mini"
 
@@ -619,7 +619,7 @@ class ProposalFilter:
         [{content, metadata, relevance_score}, ...]
         """
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config read
                 CODE_PROPOSALS_PROMPT_ENABLED,
                 CODE_PROPOSALS_PROMPT_MAX,
                 CODE_PROPOSALS_KEYWORD_DEDUP_TAG_THRESHOLD,

@@ -84,7 +84,7 @@ class OutlookAuthManager:
         Returns True on success (new token persisted), False otherwise.
         """
         try:
-            import httpx
+            import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
             # For a proper refresh, this should be async, but we'll do a sync call
             # via a helper. Actually, let's use httpx's sync Client instead.
@@ -130,7 +130,7 @@ class OutlookAuthManager:
             return False
 
         try:
-            import httpx
+            import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
             async with httpx.AsyncClient() as client:
                 # Step 1: Get device code
@@ -254,7 +254,7 @@ def get_outlook_auth() -> Optional[OutlookAuthManager]:
         return _instance
 
     try:
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             EMAIL_OUTLOOK_CLIENT_ID,
             EMAIL_OUTLOOK_TENANT,
         )

@@ -11,6 +11,7 @@ Module Contract
 
 import logging
 
+from config import app_config
 from core.actions.types import ActionProposal, ActionResult
 
 logger = logging.getLogger("actions_discord")
@@ -23,9 +24,7 @@ async def send_discord_message(proposal: ActionProposal) -> ActionResult:
         - message (str): The message text.
         - recipient (str, optional): Webhook URL override. Falls back to config default.
     """
-    from config.app_config import INTERNET_ACTIONS_DISCORD_WEBHOOK_URL
-
-    webhook_url = proposal.params.get("recipient") or INTERNET_ACTIONS_DISCORD_WEBHOOK_URL
+    webhook_url = proposal.params.get("recipient") or app_config.INTERNET_ACTIONS_DISCORD_WEBHOOK_URL
     if not webhook_url:
         return ActionResult(
             action_id=proposal.action_id,
@@ -44,7 +43,7 @@ async def send_discord_message(proposal: ActionProposal) -> ActionResult:
     payload = {"content": message_text}
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(webhook_url, json=payload)
 

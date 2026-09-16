@@ -28,6 +28,7 @@ from collections import deque
 from datetime import datetime
 from typing import List, Optional, Set
 
+import memory.stance_classifier as stance_classifier
 from utils.logging_utils import get_logger
 
 logger = get_logger("graph_utils")
@@ -277,8 +278,7 @@ def rank_expansion_candidates(
         # tag ("unknown") are unchanged — suppression acts only on explicit
         # tags (conservative missing-field semantics).
         try:
-            from memory.stance_classifier import effective_stance
-            if effective_stance(getattr(edge, "metadata", None)) in (
+            if stance_classifier.effective_stance(getattr(edge, "metadata", None)) in (
                     "appraisal", "inferred"):
                 return False
         except Exception:

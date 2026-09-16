@@ -20,6 +20,7 @@ Module Contract:
 import re
 from typing import Set, List
 from utils.logging_utils import get_logger
+import utils.topic_manager as topic_manager
 
 logger = get_logger(__name__)
 
@@ -99,8 +100,7 @@ def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
     #    user's words, in topic order)
     if use_topic_extraction:
         try:
-            from utils.topic_manager import TopicManager
-            topic_mgr = TopicManager()
+            topic_mgr = topic_manager.TopicManager()
             topic = topic_mgr.get_primary_topic(query)
             topics = [topic] if topic else []
 

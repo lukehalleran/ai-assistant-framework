@@ -176,7 +176,7 @@ class WebSearchMixin:
                 # (2026-09-12, adversarial review F3): at zero budget an
                 # explicit "search" query still went to the provider path.
                 if dataclasses.is_dataclass(decision):
-                    from utils.web_search_trigger import apply_search_budget
+                    from utils.web_search_trigger import apply_search_budget  # lazy import: cycle
                     decision = apply_search_budget(decision, remaining_credits)
 
             _blocked = _text_field(decision, "blocked_reason") or None
@@ -227,7 +227,7 @@ class WebSearchMixin:
             )
 
             # Import the depth enum from the manager
-            from knowledge.web_search_manager import WebSearchDepth as ManagerDepth
+            from knowledge.web_search_manager import WebSearchDepth as ManagerDepth  # lazy import: cycle
 
             # Map trigger depth to manager depth
             depth_map = {
@@ -334,7 +334,7 @@ class WebSearchMixin:
         cache = getattr(manager, "cache", None)
         if cache is None or not hasattr(cache, "get"):
             return None
-        from knowledge.web_search_manager import WebSearchDepth as ManagerDepth
+        from knowledge.web_search_manager import WebSearchDepth as ManagerDepth  # lazy import: cycle
         wanted = getattr(getattr(decision, "depth", None), "value", "")
         depths = sorted(ManagerDepth, key=lambda d: d.value != wanted)
         terms = [t for t in (getattr(decision, "blocked_search_terms", None) or [])

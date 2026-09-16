@@ -21,7 +21,7 @@ Module Contract
 
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -167,7 +167,6 @@ class OpenThread(BaseModel):
         # Deadline-aware: if deadline_date has passed + grace period, it's stale
         if self.deadline_date:
             try:
-                from datetime import datetime, timezone
                 deadline_dt = datetime.fromisoformat(self.deadline_date)
                 if deadline_dt.tzinfo is None:
                     deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)

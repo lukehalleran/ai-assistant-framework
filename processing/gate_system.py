@@ -32,6 +32,7 @@ import os
 import re
 import time
 import asyncio
+import traceback
 from dataclasses import dataclass
 from typing import Callable, Awaitable, List, Tuple, Dict, Any, Optional
 
@@ -708,7 +709,7 @@ class CosineSimilarityGateSystem:
         else:
             try:
                 # Import here to avoid circular import
-                from models.model_manager import ModelManager
+                from models.model_manager import ModelManager  # lazy import: startup-cost (would newly load: openai, torch, transformers)
                 self.embedder = ModelManager._get_cached_embedder()
                 logger.debug("[Cosine Gate] Using cached embedder from ModelManager")
             except (ImportError, AttributeError, RuntimeError) as e:
@@ -716,7 +717,7 @@ class CosineSimilarityGateSystem:
 
                 class _StubEmbedder:
                     def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False):
-                        import numpy as np
+                        import numpy as np  # lazy import: startup-cost
                         n = len(texts or [])
                         # Deterministic but simple vectors for stable tests
                         return np.zeros((n, 384), dtype=np.float32)
@@ -1548,8 +1549,6 @@ class MultiStageGateSystem:
 
         except Exception as e:
             logger.error(f"[Semantic Filter Error] {e}")
-            import traceback
-
             logger.error(traceback.format_exc())
             return []
 

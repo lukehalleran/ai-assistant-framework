@@ -47,6 +47,7 @@ from typing import List, Optional, Set
 from utils.logging_utils import get_logger
 from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher, prefix_only_hits
 from memory.fact_source import strip_quoted_correspondence
+import utils.temporal_resolver as temporal_resolver
 import re
 from datetime import datetime
 
@@ -266,7 +267,7 @@ def is_casual_acknowledgment(q: str, max_words: int = 8) -> bool:
     # 1K-token context, and the gate had nothing to work with. The deployed
     # request-shape test tolerates leading discourse markers.
     try:
-        from core.agentic.gate import _is_request_shaped
+        from core.agentic.gate import _is_request_shaped  # lazy import: cycle
         if _is_request_shaped(q):
             return False
     except Exception:
@@ -405,7 +406,7 @@ def is_fragment_continuation(q: str, max_words: int = 4) -> bool:
     if is_greeting_opener(ql):
         return False  # greetings never inherit topic / suppress shift (2026-09-03)
     try:
-        from core.agentic.gate import _is_request_shaped
+        from core.agentic.gate import _is_request_shaped  # lazy import: cycle
         if _is_request_shaped(q):
             return False  # imperatives route to tools, not topic inheritance
     except Exception:
@@ -510,7 +511,7 @@ def is_request_shaped(q: str) -> bool:
     text = (q or "").strip()
     if not text:
         return False
-    from core.agentic.gate import _is_info_seeking, _is_request_shaped
+    from core.agentic.gate import _is_info_seeking, _is_request_shaped  # lazy import: cycle
     if _is_request_shaped(text) or _is_info_seeking(text):
         return True
     ql = _normalize(text)
@@ -995,7 +996,7 @@ def is_task_directive(q: str) -> bool:
     # module-level dependency on this module) — avoids a module-load-time
     # cycle and stays a patch point for tests, matching the established
     # call-time-import convention used by is_request_shaped above.
-    from core.actions.registry import detect_action_intent
+    from core.actions.registry import detect_action_intent  # lazy import: cycle
     return detect_action_intent(text) is not None
 
 
@@ -1050,7 +1051,7 @@ def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
     # Terse acknowledgments route to the lightweight prompt path — but never
     # for heavy/crisis topics, which need the full context apparatus.
     try:
-        from config.app_config import LIGHT_PROMPT_MAX_WORDS as _lp_max
+        from config.app_config import LIGHT_PROMPT_MAX_WORDS as _lp_max  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
     except Exception:
         _lp_max = 8
     q_is_small_talk = (not q_is_heavy) and is_casual_acknowledgment(q, max_words=_lp_max)
@@ -1746,8 +1747,7 @@ def _canonicalize_clock_time(raw: str) -> Optional[str]:
     AM" and "10:00" compare equal. None if unparseable."""
     cleaned = (raw or "").strip().lower()
     try:
-        from utils.temporal_resolver import _parse_single_time
-        hour, minute, _has_explicit = _parse_single_time(cleaned)
+        hour, minute, _has_explicit = temporal_resolver._parse_single_time(cleaned)
     except Exception:
         hour, minute = None, None
     if hour is None:

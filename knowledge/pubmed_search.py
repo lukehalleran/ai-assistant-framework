@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Iterable, Optional, Sequence
+import asyncio
 import urllib.parse
 import xml.etree.ElementTree as ET
 import re
@@ -470,8 +471,6 @@ async def _get_with_retry(client: Any, url: str, *, max_attempts: int = 3) -> An
     (non-retryable-or-exhausted) response is returned as-is — callers decide
     how to classify a persistent failure.
     """
-    import asyncio
-
     response = None
     for attempt in range(max(1, max_attempts)):
         response = await client.get(url)
@@ -503,7 +502,7 @@ async def search_pubmed(
     ``anchor_terms``/``concept_synonyms`` (2026-09-06) reach the per-rung
     ranker: without them a broadened rung ("rest AND days") anchored on its own
     first word and farm-labor / nurse-shift / bed-rest abstracts passed."""
-    import httpx
+    import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
     max_results = max(1, min(int(max_results), 20))
     search_url = (

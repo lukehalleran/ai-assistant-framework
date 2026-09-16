@@ -35,10 +35,15 @@ from core.agentic.types import (
     _ToolResult,
 )
 from core.agentic.formatters import AgenticFormatter
+from config import app_config
 import re as _re
 import asyncio
 import urllib.parse
 import re
+from urllib.parse import quote as _q
+import knowledge.sandbox_manager as sandbox_manager
+import knowledge.research_search as research_search
+import knowledge.pubmed_search as pubmed_search
 
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
@@ -246,7 +251,7 @@ class ToolExecutor:
 
         # FAISS Wikipedia index
         try:
-            from knowledge.semantic_search import is_faiss_available
+            from knowledge.semantic_search import is_faiss_available  # lazy import: startup-cost (would newly load: faiss, numpy)
             if is_faiss_available():
                 lines.append("wiki_knowledge (FAISS 41M vectors): AVAILABLE")
             else:
@@ -290,10 +295,9 @@ class ToolExecutor:
 
         # Visual memory
         try:
-            from config.app_config import VISUAL_MEMORY_ENABLED
-            if VISUAL_MEMORY_ENABLED and self.chroma_store:
+            if app_config.VISUAL_MEMORY_ENABLED and self.chroma_store:
                 lines.append("recall_image: READY (visual memory enabled; shared Chroma store injected)")
-            elif VISUAL_MEMORY_ENABLED:
+            elif app_config.VISUAL_MEMORY_ENABLED:
                 lines.append("recall_image: UNAVAILABLE (visual memory enabled but no Chroma store)")
             else:
                 lines.append("recall_image: DISABLED")
@@ -304,8 +308,7 @@ class ToolExecutor:
         if self.github_manager:
             gh_line = "github: AVAILABLE (query issues, PRs, actions, releases, search)."
             try:
-                from config.app_config import INTERNET_ACTIONS_GITHUB_WRITE_ENABLED
-                if INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
+                if app_config.INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
                     gh_line += (
                         " To CREATE an issue or comment on a PR, use propose_action "
                         "(github_create_issue / github_comment_pr) — not this query tool."
@@ -325,8 +328,7 @@ class ToolExecutor:
 
         # Document generation
         try:
-            from config.app_config import DOCUMENT_GENERATION_ENABLED
-            if DOCUMENT_GENERATION_ENABLED:
+            if app_config.DOCUMENT_GENERATION_ENABLED:
                 lines.append("generate_document: AVAILABLE (research topic → save markdown report/summary to documents/)")
             else:
                 lines.append("generate_document: DISABLED")
@@ -335,8 +337,7 @@ class ToolExecutor:
 
         # Daemon self-notes
         try:
-            from config.app_config import DAEMON_NOTES_ENABLED
-            if DAEMON_NOTES_ENABLED:
+            if app_config.DAEMON_NOTES_ENABLED:
                 lines.append("create_daemon_note: AVAILABLE (save working context for future sessions → daemon_notes/)")
             else:
                 lines.append("create_daemon_note: DISABLED")
@@ -345,7 +346,7 @@ class ToolExecutor:
 
         # Email search
         try:
-            from core.email.service import get_email_service
+            from core.email.service import get_email_service  # lazy import: cycle
             service = get_email_service()
             if service.providers:
                 provider_names = ", ".join(
@@ -363,7 +364,7 @@ class ToolExecutor:
         # Internet actions — action registry is also the source of runtime
         # OAuth/scope status, shared with the enhanced fallback prompt.
         try:
-            from core.actions.registry import get_runtime_action_health
+            from core.actions.registry import get_runtime_action_health  # lazy import: cycle
             lines.extend(get_runtime_action_health().splitlines())
         except Exception:
             lines.append("propose_action: DISABLED")
@@ -410,6 +411,7 @@ class ToolExecutor:
 
     async def _dispatch_pattern_scan(self, decision: SearchDecision, round_number: int) -> _ToolResult:
         """Execute the deterministic scan and preserve its machine result."""
+        # lazy import: cycle
         from memory.pattern_engine import LongitudinalEvidenceSpec, run_longitudinal_scan
         try:
             from config.app_config import PATTERN_ANALYSIS_ENABLED
@@ -563,8 +565,7 @@ class ToolExecutor:
         elif self.sandbox_manager and self.sandbox_manager.is_available():
             sandbox_result = await self.sandbox_manager.execute_code(decision.sandbox_code)
         else:
-            from knowledge.sandbox_manager import SandboxResult
-            sandbox_result = SandboxResult(
+            sandbox_result = sandbox_manager.SandboxResult(
                 code=decision.sandbox_code,
                 success=False,
                 error="Code sandbox not available (E2B not configured)"
@@ -1136,13 +1137,11 @@ class ToolExecutor:
         self, topic: str, doc_type: str, focus: str | None = None,
     ) -> str:
         """Execute document generation via DocumentGenerator."""
-        from config import app_config
-
         if not app_config.DOCUMENT_GENERATION_ENABLED:
             return "[Document generation is disabled in config]"
 
         try:
-            from knowledge.document_generator import DocumentGenerator
+            from knowledge.document_generator import DocumentGenerator  # lazy import: cycle
 
             generator = DocumentGenerator(
                 model_manager=self.model_manager,
@@ -1248,9 +1247,9 @@ class ToolExecutor:
         Does NOT execute the action — just proposes it. The GUI handler
         will surface the proposal and the user confirms or rejects.
         """
+        # lazy import: cycle
         from core.actions.types import ActionProposal, ActionType, PendingActionsStore
-        from core.actions.audit import ActionAuditLog
-        from config.app_config import INTERNET_ACTIONS_TTL, INTERNET_ACTIONS_AUDIT_LOG
+        from core.actions.audit import ActionAuditLog  # lazy import: cycle
 
         action_type_str = decision.action_type or ""
         summary = decision.action_summary or f"{action_type_str}: action proposed"
@@ -1321,7 +1320,7 @@ class ToolExecutor:
             )
 
         # Audit log
-        audit = ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG)
+        audit = ActionAuditLog(app_config.INTERNET_ACTIONS_AUDIT_LOG)
         audit.log_proposal(proposal)
 
         # Build formatted context for the agentic loop
@@ -1413,13 +1412,13 @@ class ToolExecutor:
     async def _execute_lookup_contact(self, name: str) -> str:
         """Execute Google Contacts + Gmail header lookup and format results."""
         try:
-            from config.app_config import (
-                GOOGLE_CONTACTS_ENABLED, GOOGLE_OTHER_CONTACTS_ENABLED,
-                GOOGLE_GMAIL_SEARCH_ENABLED,
-            )
-            if not GOOGLE_CONTACTS_ENABLED and not GOOGLE_OTHER_CONTACTS_ENABLED and not GOOGLE_GMAIL_SEARCH_ENABLED:
+            if (
+                not app_config.GOOGLE_CONTACTS_ENABLED
+                and not app_config.GOOGLE_OTHER_CONTACTS_ENABLED
+                and not app_config.GOOGLE_GMAIL_SEARCH_ENABLED
+            ):
                 return "[Contact lookup disabled in config]"
-            from core.actions.google_contacts import resolve_contact
+            from core.actions.google_contacts import resolve_contact  # lazy import: cycle
             results = await resolve_contact(name, max_results=10)
             if not results:
                 return f"[No contacts found matching '{name}']"
@@ -1488,7 +1487,7 @@ class ToolExecutor:
     async def _execute_email_search(self, query: Optional[str], window_days: int) -> str:
         """Execute email search and format results."""
         try:
-            # lazy import: service initialization touches the registry
+            # lazy import: cycle (service initialization touches the registry)
             from core.email.service import get_email_service
             try:
                 from config.app_config import EMAIL_MAX_RESULTS, EMAIL_DEFAULT_WINDOW_DAYS
@@ -1504,7 +1503,7 @@ class ToolExecutor:
             # the ones not connected (advisor mail in unconnected Outlook
             # read as "no reply" without this).
             try:
-                from core.email.registry import coverage_note
+                from core.email.registry import coverage_note  # lazy import: cycle
                 _coverage = coverage_note()
             except Exception:
                 _coverage = ""
@@ -1512,7 +1511,6 @@ class ToolExecutor:
             # Counting/volume questions (2026-09-01): "how many emails am I
             # getting" against a 20-result cap is not a count. Fetch wide,
             # report the true in-window total, list only the newest few.
-            import re as _re
             counting_shape = bool(query) and bool(_re.search(
                 r"\b(?:how\s+many|how\s+much|how\s+often|count|volume)\b",
                 query, _re.IGNORECASE))
@@ -1569,7 +1567,7 @@ class ToolExecutor:
             (None, message) on zero or multiple matches.
         """
         try:
-            from core.actions.google_contacts import resolve_contact
+            from core.actions.google_contacts import resolve_contact  # lazy import: cycle
             matches = await resolve_contact(name, max_results=10)
         except Exception as e:
             logger.debug(f"[ToolExecutor] Contact resolution failed: {e}")
@@ -1599,11 +1597,10 @@ class ToolExecutor:
     def _get_pending_actions_store(cls):
         """Get or create the global PendingActionsStore singleton."""
         if cls._pending_actions_store is None:
-            from core.actions.types import PendingActionsStore
-            from config.app_config import INTERNET_ACTIONS_TTL, INTERNET_ACTIONS_MAX_PENDING
+            from core.actions.types import PendingActionsStore  # lazy import: cycle
             cls._pending_actions_store = PendingActionsStore(
-                ttl_seconds=INTERNET_ACTIONS_TTL,
-                max_pending=INTERNET_ACTIONS_MAX_PENDING,
+                ttl_seconds=app_config.INTERNET_ACTIONS_TTL,
+                max_pending=app_config.INTERNET_ACTIONS_MAX_PENDING,
             )
         return cls._pending_actions_store
 
@@ -1633,8 +1630,6 @@ class ToolExecutor:
         skip result names the exact reason (no generic "guardrails" string)
         so the dispatcher's receipt is honest about what happened.
         """
-        from config import app_config
-
         if not app_config.DAEMON_NOTES_ENABLED:
             return "[Self-notes disabled in config]"
 
@@ -1642,7 +1637,7 @@ class ToolExecutor:
             return "[Self-note skipped: summary too short]"
 
         try:
-            from knowledge.daemon_notes_manager import DaemonNotesManager
+            from knowledge.daemon_notes_manager import DaemonNotesManager  # lazy import: cycle
 
             # Reuse manager instance for session cap tracking
             if ToolExecutor._daemon_notes_manager is None:
@@ -1693,7 +1688,7 @@ class ToolExecutor:
         include_domains: Optional[List[str]] = None,
     ) -> Any:
         """Execute web search with given terms."""
-        from knowledge.web_search_manager import WebSearchDepth
+        from knowledge.web_search_manager import WebSearchDepth  # lazy import: cycle
 
         if len(search_terms) == 1:
             return await self.web_search_manager.search(
@@ -1721,7 +1716,7 @@ class ToolExecutor:
         the newly-numbered sources for this batch (URLs already cited keep their
         prior id and are skipped).
         """
-        from knowledge.web_search_manager import assign_web_ids, _canonical_url
+        from knowledge.web_search_manager import assign_web_ids, _canonical_url  # lazy import: cycle
         existing_url_to_id = {
             _canonical_url(meta.get("url", "")): sid
             for sid, meta in self._current_web_source_map.items()
@@ -1737,7 +1732,7 @@ class ToolExecutor:
 
     def _register_research_rows(self, rows: list[dict]) -> list[dict]:
         """Attach the same WEB_N provenance markers used by Tavily results."""
-        from knowledge.web_search_manager import WebPage
+        from knowledge.web_search_manager import WebPage  # lazy import: cycle
         pages = []
         for row in rows or []:
             url = str(row.get("url") or "")
@@ -1752,7 +1747,7 @@ class ToolExecutor:
         numbered = self._merge_web_ids(pages)
         ids_by_url = {item.url: item.source_id for item in numbered}
         # Existing URLs may have been numbered in an earlier round.
-        from knowledge.web_search_manager import _canonical_url
+        from knowledge.web_search_manager import _canonical_url  # lazy import: cycle
         existing = {
             _canonical_url(meta.get("url", "")): source_id
             for source_id, meta in self._current_web_source_map.items()
@@ -1774,7 +1769,7 @@ class ToolExecutor:
         if not result or not hasattr(result, 'pages') or not result.pages:
             return "No results found."
 
-        from knowledge.web_search_manager import format_web_sources_with_ids
+        from knowledge.web_search_manager import format_web_sources_with_ids  # lazy import: cycle
         numbered_sources = self._merge_web_ids(result.pages)
         if not numbered_sources:
             # Every page this round was already cited in an earlier round —
@@ -1829,8 +1824,6 @@ Provide a focused summary with the most important information."""
 
     async def _execute_memory_search(self, query: str, collection: str) -> str:
         """Execute raw semantic search against a ChromaDB collection."""
-        from config.app_config import AGENTIC_MEMORY_SEARCH_LIMIT
-
         if not self.chroma_store:
             return "[Memory search unavailable]"
 
@@ -1841,16 +1834,16 @@ Provide a focused summary with the most important information."""
             results = self.chroma_store.query_collection(
                 collection_name=collection,
                 query_text=query,
-                n_results=AGENTIC_MEMORY_SEARCH_LIMIT,
+                n_results=app_config.AGENTIC_MEMORY_SEARCH_LIMIT,
             )
 
             # For wiki_knowledge: always prefer FAISS semantic search (41M vectors)
             # over ChromaDB which has sparse/irrelevant legacy data.
             if collection == "wiki_knowledge":
-                faiss_results = self._search_wiki_faiss(query, k=AGENTIC_MEMORY_SEARCH_LIMIT)
+                faiss_results = self._search_wiki_faiss(query, k=app_config.AGENTIC_MEMORY_SEARCH_LIMIT)
                 if faiss_results:
                     # Track wiki titles for session enrichment
-                    from knowledge.wiki_tracker import WikiArticleTracker
+                    from knowledge.wiki_tracker import WikiArticleTracker  # lazy import: patch-point (tests/unit/test_gatherer_outcomes_background_knowledge.py:75)
                     tracker = WikiArticleTracker.get_instance()
                     for r in faiss_results:
                         t = r.get("title", "")
@@ -1859,7 +1852,6 @@ Provide a focused summary with the most important information."""
                     logger.info(f"[AgenticSearch] wiki_knowledge using FAISS index "
                                 f"({len(faiss_results)} results)")
                     # Register [WIKI_N] citation ids (session-continuing, like WEB_N)
-                    from urllib.parse import quote as _q
                     start = len(self._current_wiki_source_map)
                     for j, r in enumerate(faiss_results, 1):
                         _title = r.get("title", "") or "Unknown"
@@ -1871,7 +1863,7 @@ Provide a focused summary with the most important information."""
                     return self.formatter.format_wiki_faiss_results(faiss_results, start_index=start)
                 else:
                     # FAISS returned nothing — check if the index is actually available
-                    from knowledge.semantic_search import is_faiss_available
+                    from knowledge.semantic_search import is_faiss_available  # lazy import: startup-cost (would newly load: faiss, numpy)
                     if not is_faiss_available():
                         faiss_warning = (
                             "[⚠ FAISS WIKIPEDIA INDEX UNAVAILABLE — the 41M-vector "
@@ -1954,7 +1946,7 @@ Provide a focused summary with the most important information."""
     def _search_wiki_faiss(self, query: str, k: int = 8) -> list[dict]:
         """Search the FAISS Wikipedia index (41M vectors) as fallback for wiki_knowledge."""
         try:
-            from knowledge.semantic_search import semantic_search_with_neighbors
+            from knowledge.semantic_search import semantic_search_with_neighbors  # lazy import: startup-cost (would newly load: faiss, numpy)
             return semantic_search_with_neighbors(query, k=k)
         except Exception as e:
             logger.warning(f"[AgenticSearch] FAISS wiki search failed: {e}")
@@ -1967,8 +1959,7 @@ Provide a focused summary with the most important information."""
         if not self.memory_expander:
             return {"anchor_id": memory_id, "turns": [], "error": "Expander not available"}
         try:
-            from config.app_config import EXPAND_MAX_WINDOW
-            window = max(1, min(window, EXPAND_MAX_WINDOW))
+            window = max(1, min(window, app_config.EXPAND_MAX_WINDOW))
             return self.memory_expander.expand(memory_id, window, collection)
         except Exception as e:
             logger.warning(f"[AgenticSearch] Memory expand failed: {e}")
@@ -2020,7 +2011,7 @@ Provide a focused summary with the most important information."""
         if not self.chroma_store:
             return "[Full document retrieval unavailable — no memory store]"
         try:
-            from knowledge.reference_docs_manager import ReferenceDocsManager
+            from knowledge.reference_docs_manager import ReferenceDocsManager  # lazy import: cycle
             manager = ReferenceDocsManager(chroma_store=self.chroma_store)
             content = manager.get_full_document(title)
             if content:
@@ -2093,7 +2084,7 @@ Provide a focused summary with the most important information."""
                     web_id = numbered[0].source_id
                     return f"[{web_id}] Title: {title}\nURL: {url}\n\n{content}"
                 # Already fetched/cited earlier — reuse its existing id.
-                from knowledge.web_search_manager import _canonical_url
+                from knowledge.web_search_manager import _canonical_url  # lazy import: cycle
                 _canon = _canonical_url(url)
                 existing_id = next(
                     (sid for sid, meta in self._current_web_source_map.items()
@@ -2113,13 +2104,12 @@ Provide a focused summary with the most important information."""
     async def _execute_recall_image(self, query: str) -> dict:
         """Search visual memory for images matching the query."""
         try:
-            from config.app_config import VISUAL_MEMORY_ENABLED
-            if not VISUAL_MEMORY_ENABLED:
+            if not app_config.VISUAL_MEMORY_ENABLED:
                 return {"summary": "[Visual memory not enabled]", "formatted": "", "count": 0}
 
-            from knowledge.clip_manager import get_clip_manager
-            from knowledge.visual_memory_store import VisualMemoryStore
-            from knowledge.visual_retrieval import VisualRetriever
+            from knowledge.clip_manager import get_clip_manager  # lazy import: startup-cost (would newly load: numpy)
+            from knowledge.visual_memory_store import VisualMemoryStore  # lazy import: startup-cost (would newly load: faiss, numpy)
+            from knowledge.visual_retrieval import VisualRetriever  # lazy import: optional-dependency
 
             clip = get_clip_manager()
             # ToolExecutor receives the shared Chroma store directly. The old
@@ -2215,31 +2205,25 @@ Provide a focused summary with the most important information."""
 
     async def _execute_stackexchange(self, query: str, site: str = "stackoverflow") -> str:
         """Search Stack Exchange API. No auth needed."""
-        from knowledge.research_search import (
-            format_stackexchange_results, search_stackexchange,
-        )
-        rows = await search_stackexchange(query, site=site, max_results=5)
+        rows = await research_search.search_stackexchange(query, site=site, max_results=5)
         rows = self._register_research_rows(rows)
-        return format_stackexchange_results(query, rows, site=site)
+        return research_search.format_stackexchange_results(query, rows, site=site)
 
     async def _execute_arxiv(self, query: str) -> str:
         """Search arXiv API. No auth needed."""
-        from knowledge.research_search import format_arxiv_results, search_arxiv
-        rows = await search_arxiv(query, max_results=5)
+        rows = await research_search.search_arxiv(query, max_results=5)
         rows = self._register_research_rows(rows)
-        return format_arxiv_results(query, rows)
+        return research_search.format_arxiv_results(query, rows)
 
     async def _execute_pubmed(self, query: str) -> str:
         """Search PubMed E-utilities. No auth needed."""
-        from knowledge.pubmed_search import format_pubmed_results, search_pubmed
-
-        rows = await search_pubmed(query, max_results=5)
+        rows = await pubmed_search.search_pubmed(query, max_results=5)
         rows = self._register_research_rows(rows)
-        return format_pubmed_results(query, rows)
+        return pubmed_search.format_pubmed_results(query, rows)
 
     async def _execute_hackernews(self, query: str) -> str:
         """Search Hacker News via Algolia API. No auth needed."""
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         url = (
             f"https://hn.algolia.com/api/v1/search"

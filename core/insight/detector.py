@@ -49,7 +49,7 @@ def allows_pattern_classification(query: str) -> bool:
     This checks speech act, not a medication/topic keyword list. Explicit
     detector matches and affirmed offers retain their existing routes.
     """
-    from core.agentic.gate import _is_info_seeking, _is_request_shaped
+    from core.agentic.gate import _is_info_seeking, _is_request_shaped  # lazy import: cycle (gate imports insight.detector at call time)
     return bool(query and (_is_info_seeking(query) or _is_request_shaped(query)))
 
 # ---------------------------------------------------------------------------

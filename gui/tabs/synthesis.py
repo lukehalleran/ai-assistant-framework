@@ -7,6 +7,8 @@ import html
 
 import gradio as gr
 
+import memory.synthesis_memory as synthesis_memory
+
 
 def render_synth_card(doc_id: str, result, show_grade: bool = False) -> str:
     """Render one synthesis result as an escaped HTML audit card.
@@ -144,12 +146,11 @@ def build_synthesis_tab(orchestrator, _show_dev_tabs):
 
         # --- Handlers ---
         def _get_synth_memory():
-            from memory.synthesis_memory import SynthesisMemory
             mc = getattr(orchestrator, "memory_system", None)
             store = getattr(mc, "chroma_store", None) if mc else None
             if not store:
                 return None
-            return SynthesisMemory(store)
+            return synthesis_memory.SynthesisMemory(store)
 
         def _load_synth_stats() -> str:
             sm = _get_synth_memory()

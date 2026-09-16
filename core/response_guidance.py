@@ -70,7 +70,7 @@ def include_decision_support(
     text = (user_input or "").strip()
     if not text or is_small_talk:
         return False
-    from utils.query_checker import is_request_shaped, is_self_report
+    from utils.query_checker import is_request_shaped, is_self_report  # lazy import: cycle
     if is_self_report(text):
         return False
     return is_request_shaped(text)

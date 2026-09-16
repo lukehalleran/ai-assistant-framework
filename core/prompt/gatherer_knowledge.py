@@ -54,8 +54,12 @@ import asyncio
 import contextvars
 import hashlib
 import logging
+import subprocess
 import threading
+import os as _os
+import asyncio as _asyncio
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
@@ -65,6 +69,12 @@ from utils.trigger_match import is_negated as _trigger_is_negated
 from utils.retrieval_outcome import OutcomeList, outcome_status
 from .formatter import _parse_bool
 import time as _t
+import memory.valence as valence
+import knowledge.git_memory as git_memory
+import memory.graph_utils as graph_utils
+import knowledge.clip_manager as clip_manager
+import knowledge.visual_memory_store as visual_memory_store
+import knowledge.visual_retrieval as visual_retrieval
 
 logger = logging.getLogger("prompt_context_gatherer")
 
@@ -153,9 +163,8 @@ def _is_negative_mood_note(note: Dict[str, Any]) -> bool:
     if _note_section(note) not in _MOOD_SECTIONS:
         return False
     try:
-        from memory.valence import negative_affect_score
         from config.app_config import VALENCE_NEGATIVE_THRESHOLD  # lazy import: live-config read
-        return negative_affect_score(str(note.get("content", ""))) >= float(VALENCE_NEGATIVE_THRESHOLD)
+        return valence.negative_affect_score(str(note.get("content", ""))) >= float(VALENCE_NEGATIVE_THRESHOLD)
     except Exception:
         return False
 
@@ -627,7 +636,6 @@ class KnowledgeRetrievalMixin:
 
         try:
             # Clean query: remove self-referential phrases that pollute search
-            import re
             clean_query = re.sub(
                 r'\b(from|in|check|look at|search|find in)?\s*(my|the)?\s*(notes?|vault|obsidian)\b',
                 '', query, flags=re.IGNORECASE
@@ -1037,18 +1045,15 @@ class KnowledgeRetrievalMixin:
             List of commit dicts with content, metadata, and relevance_score
         """
         try:
-            from config.app_config import GIT_MEMORY_ENABLED
+            from config.app_config import GIT_MEMORY_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not GIT_MEMORY_ENABLED or limit <= 0:
                 return []
 
-            from utils.repository_context import is_repository_status_report
+            from utils.repository_context import is_repository_status_report  # lazy import: cycle
             if is_repository_status_report(query):
                 # The procedural index is manually synced; it cannot establish
                 # what just landed. Read local git without writing the index.
-                from knowledge.git_memory import GitMemoryExtractor
-                from pathlib import Path
-
-                extractor = GitMemoryExtractor(str(Path(__file__).resolve().parents[2]))
+                extractor = git_memory.GitMemoryExtractor(str(Path(__file__).resolve().parents[2]))
                 commits = await asyncio.to_thread(extractor.extract_commits, limit=limit)
                 for idx, commit in enumerate(commits, start=1):
                     # A status update needs subjects, hashes and dates; long
@@ -1130,7 +1135,7 @@ class KnowledgeRetrievalMixin:
             List of proposal dicts with content, metadata, and relevance_score
         """
         try:
-            from config.app_config import CODE_PROPOSALS_PROMPT_ENABLED
+            from config.app_config import CODE_PROPOSALS_PROMPT_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not CODE_PROPOSALS_PROMPT_ENABLED:
                 return []
 
@@ -1139,7 +1144,7 @@ class KnowledgeRetrievalMixin:
                 self._proposal_filter = None
 
             if self._proposal_filter is None:
-                from .proposal_filter import ProposalFilter
+                from .proposal_filter import ProposalFilter  # lazy import: cycle
                 chroma = getattr(self.memory_coordinator, 'chroma_store', None)
                 self._proposal_filter = ProposalFilter(
                     chroma_store=chroma,
@@ -1184,7 +1189,7 @@ class KnowledgeRetrievalMixin:
             List of skill dicts with content, metadata, and relevance_score
         """
         try:
-            from config.app_config import PROCEDURAL_SKILLS_ENABLED
+            from config.app_config import PROCEDURAL_SKILLS_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not PROCEDURAL_SKILLS_ENABLED:
                 return []
 
@@ -1227,7 +1232,7 @@ class KnowledgeRetrievalMixin:
             List of natural language relationship sentences
         """
         try:
-            from config.app_config import KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH, ENABLE_GRAPH_ATTRIBUTION
+            from config.app_config import KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH, ENABLE_GRAPH_ATTRIBUTION  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not KNOWLEDGE_GRAPH_ENABLED:
                 return []
 
@@ -1239,8 +1244,7 @@ class KnowledgeRetrievalMixin:
 
             # Extract entity mentions from query using the shared utility
             # (strips punctuation, filters stopwords/common words, skips wikidata concepts)
-            from memory.graph_utils import extract_graph_entities
-            seen_entities = extract_graph_entities(query, resolver, graph_memory=graph)
+            seen_entities = graph_utils.extract_graph_entities(query, resolver, graph_memory=graph)
 
             sentences: list[str] = []
             for eid in seen_entities:
@@ -1287,7 +1291,7 @@ class KnowledgeRetrievalMixin:
             List of thread dicts with topic, summary, thread_type, urgency, deadline_date
         """
         try:
-            from config.app_config import THREAD_SURFACING_ENABLED
+            from config.app_config import THREAD_SURFACING_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not THREAD_SURFACING_ENABLED:
                 return []
 
@@ -1315,7 +1319,7 @@ class KnowledgeRetrievalMixin:
             List of insight text strings for prompt injection
         """
         try:
-            from config.app_config import PROACTIVE_SURFACING_ENABLED, ENABLE_INSIGHT_ATTRIBUTION
+            from config.app_config import PROACTIVE_SURFACING_ENABLED, ENABLE_INSIGHT_ATTRIBUTION  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not PROACTIVE_SURFACING_ENABLED:
                 return []
 
@@ -1378,7 +1382,7 @@ class KnowledgeRetrievalMixin:
         """
         empty = {"text_results": [], "images": []}
         try:
-            from config.app_config import VISUAL_MEMORY_ENABLED
+            from config.app_config import VISUAL_MEMORY_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not VISUAL_MEMORY_ENABLED:
                 return empty
 
@@ -1395,14 +1399,10 @@ class KnowledgeRetrievalMixin:
                 return empty
 
             if not hasattr(self, '_visual_retriever') or self._visual_retriever is None:
-                from knowledge.clip_manager import get_clip_manager
-                from knowledge.visual_memory_store import VisualMemoryStore
-                from knowledge.visual_retrieval import VisualRetriever
-
-                clip = get_clip_manager()
+                clip = clip_manager.get_clip_manager()
                 chroma = getattr(self.memory_coordinator, 'chroma_store', None)
-                store = VisualMemoryStore(chroma_store=chroma)
-                self._visual_retriever = VisualRetriever(clip, store)
+                store = visual_memory_store.VisualMemoryStore(chroma_store=chroma)
+                self._visual_retriever = visual_retrieval.VisualRetriever(clip, store)
 
             # Entity-gated retrieval: only search when query mentions an entity
             # that has stored images (associative recall, not broad CLIP matching).
@@ -1430,8 +1430,7 @@ class KnowledgeRetrievalMixin:
             resolver = getattr(mc, "entity_resolver", None)
 
             if resolver:
-                from memory.graph_utils import extract_graph_entities
-                query_entities = extract_graph_entities(query, resolver, graph_memory=graph)
+                query_entities = graph_utils.extract_graph_entities(query, resolver, graph_memory=graph)
                 matched_entities = query_entities & clean_visual
             else:
                 matched_entities = set()
@@ -1560,7 +1559,7 @@ class KnowledgeRetrievalMixin:
             since_label keys. Empty dict on failure or when disabled.
         """
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 SESSION_DIFF_ENABLED,
                 SESSION_DIFF_MAX_COMMITTED,
                 SESSION_DIFF_MAX_UNCOMMITTED,
@@ -1568,9 +1567,6 @@ class KnowledgeRetrievalMixin:
             )
             if not SESSION_DIFF_ENABLED or since_datetime is None:
                 return {}
-
-            import subprocess
-            from datetime import datetime
 
             # Resolve the repo root
             repo_root = None
@@ -1591,7 +1587,6 @@ class KnowledgeRetrievalMixin:
 
             def _ext_ok(path: str) -> bool:
                 """Check if file extension is in the allowed list."""
-                import os as _os
                 _, ext = _os.path.splitext(path)
                 return ext.lower() in SESSION_DIFF_EXTENSIONS
 
@@ -1794,7 +1789,7 @@ class KnowledgeRetrievalMixin:
                         )
                 if results:
                     # Track wiki titles for session enrichment
-                    from knowledge.wiki_tracker import WikiArticleTracker
+                    from knowledge.wiki_tracker import WikiArticleTracker  # lazy import: patch-point (tests/unit/test_gatherer_outcomes_background_knowledge.py:75)
                     for r in results:
                         t = r.get('metadata', {}).get('title', '')
                         if t:
@@ -1834,7 +1829,7 @@ class KnowledgeRetrievalMixin:
             # WikiManager._keywords_from_query already strips exactly this
             # vocabulary (give/show/tell/please/me/my/...) for its own probe
             # selection — reuse the single stopword list instead of a second one.
-            # lazy import: startup cost (WikiManager loads sentence_transformers at import)
+            # lazy import: startup-cost (WikiManager loads sentence_transformers at import)
             from knowledge.WikiManager import _keywords_from_query as _wiki_keywords_from_query
             search_terms = _wiki_keywords_from_query(query)
 
@@ -1938,7 +1933,7 @@ class KnowledgeRetrievalMixin:
                 return []
 
             # Track wiki titles for session enrichment
-            from knowledge.wiki_tracker import WikiArticleTracker
+            from knowledge.wiki_tracker import WikiArticleTracker  # lazy import: patch-point (tests/unit/test_gatherer_outcomes_background_knowledge.py:75)
             tracker = WikiArticleTracker.get_instance()
             for r in results:
                 t = r.get("title", "")
@@ -2015,7 +2010,7 @@ class KnowledgeRetrievalMixin:
             The narrative context string, or empty string if not available.
         """
         try:
-            from config.app_config import NARRATIVE_CONTEXT_ENABLED
+            from config.app_config import NARRATIVE_CONTEXT_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             if not NARRATIVE_CONTEXT_ENABLED:
                 return ""
 
@@ -2090,7 +2085,7 @@ class KnowledgeRetrievalMixin:
                 # annotator (also used at formatter.py's two conversation
                 # render sites) instead of its own inline check — same
                 # marker string, same regex-only detection.
-                from core.action_claim_guard import annotate_unverified_action_claim
+                from core.action_claim_guard import annotate_unverified_action_claim  # lazy import: cycle
                 for item in filtered:
                     content = item.get("content", "") or ""
                     if not content:
@@ -2112,7 +2107,7 @@ class KnowledgeRetrievalMixin:
         All failures return [] silently — calendar is best-effort context.
         """
         try:
-            from config.app_config import GOOGLE_CALENDAR_ENABLED
+            from config.app_config import GOOGLE_CALENDAR_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
         except ImportError:
             return []
 
@@ -2120,12 +2115,12 @@ class KnowledgeRetrievalMixin:
             return []
 
         try:
-            from core.actions.google_calendar import fetch_upcoming_events
+            from core.actions.google_calendar import fetch_upcoming_events  # lazy import: cycle
             # Pass the configured lookahead — the YAML knob existed but was
             # never forwarded, so the function's 7-day default ruled and a
             # Sep 9 appointment was invisible on Sep 1 ("Fetched 0 upcoming
             # events") while the model edited that very event (2026-09-01).
-            from config.app_config import GOOGLE_CALENDAR_LOOKAHEAD_DAYS
+            from config.app_config import GOOGLE_CALENDAR_LOOKAHEAD_DAYS  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
             events = await fetch_upcoming_events(
                 max_events=max_events,
                 lookahead_days=GOOGLE_CALENDAR_LOOKAHEAD_DAYS,
@@ -2151,7 +2146,7 @@ class KnowledgeRetrievalMixin:
         All failures return [] silently — email is best-effort context.
         """
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 EMAIL_PASSIVE_CONTEXT_ENABLED,
                 EMAIL_PASSIVE_MIN_RELEVANCE,
                 EMAIL_PASSIVE_MAX,
@@ -2168,14 +2163,13 @@ class KnowledgeRetrievalMixin:
             return []
 
         try:
-            import re
             # Fire conditions: email cue OR rare proper nouns (contacts)
             email_cue = bool(re.search(r'\b(?:e-?mails?|inbox|gmail|outlook)\b', query.lower()))
 
             # Extract rare proper nouns for contact/entity matching
             contact_names = []
             if not email_cue:
-                from utils.query_checker import extract_rare_proper_nouns
+                from utils.query_checker import extract_rare_proper_nouns  # lazy import: cycle
                 contact_names = extract_rare_proper_nouns(query)
                 # 2026-09-03: a capitalized PET name is not a contact — a cat
                 # anecdote pulled a shelter newsletter into the prompt.
@@ -2189,7 +2183,7 @@ class KnowledgeRetrievalMixin:
                 return []
 
             # Seed the search
-            from core.email.service import get_email_service
+            from core.email.service import get_email_service  # lazy import: cycle
             service = get_email_service()
 
             # Search with the contact names or the query itself
@@ -2215,8 +2209,7 @@ class KnowledgeRetrievalMixin:
             sender_name_res = []
             if contact_names:
                 try:
-                    import asyncio as _asyncio
-                    from core.actions.google_contacts import resolve_contact
+                    from core.actions.google_contacts import resolve_contact  # lazy import: cycle
                     _results = await _asyncio.wait_for(
                         resolve_contact(contact_names[0]), timeout=3.0)
                     for _c in _results or []:
@@ -2238,7 +2231,7 @@ class KnowledgeRetrievalMixin:
                 # helper and silently fell to the unranked fallback every
                 # turn — mocks of the same wrong path hid it (the
                 # .intent_type dead-wiring class).
-                from models.model_manager import ModelManager
+                from models.model_manager import ModelManager  # lazy import: startup-cost (would newly load: httpx, openai, torch, transformers)
                 embedder = ModelManager._get_cached_embedder()
                 query_embedding = embedder.encode(query, convert_to_tensor=False)
 
@@ -2251,7 +2244,7 @@ class KnowledgeRetrievalMixin:
                     email_embedding = embedder.encode(email_text, convert_to_tensor=False)
 
                     # Cosine similarity
-                    import numpy as np
+                    import numpy as np  # lazy import: startup-cost (would newly load: numpy)
                     sim = np.dot(query_embedding, email_embedding) / (
                         np.linalg.norm(query_embedding) * np.linalg.norm(email_embedding) + 1e-8
                     )

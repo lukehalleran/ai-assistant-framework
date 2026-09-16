@@ -27,8 +27,11 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from core.actions.types import ActionType
+import utils.temporal_resolver as temporal_resolver
+import utils.timezone_resolver as timezone_resolver
 from utils.trigger_match import is_negated as _is_trigger_negated
 
 
@@ -315,7 +318,7 @@ ACTION_SPECS: Dict[ActionType, ActionSpec] = {
 # ---------------------------------------------------------------------------
 def is_action_enabled(spec: ActionSpec) -> bool:
     """True if internet actions are on AND this spec's extra gate (if any) is on."""
-    import config.app_config as cfg
+    import config.app_config as cfg  # lazy import: live-config (enable flags read at call time — see module doc)
     if not getattr(cfg, "INTERNET_ACTIONS_ENABLED", False):
         return False
     if spec.enabled_flag:
@@ -336,7 +339,7 @@ def get_runtime_action_health() -> str:
     enhanced prompts so their self-knowledge cannot drift.
     """
     try:
-        import config.app_config as cfg
+        import config.app_config as cfg  # lazy import: live-config (enable flags read at call time — see module doc)
         if not getattr(cfg, "INTERNET_ACTIONS_ENABLED", False):
             return "propose_action: DISABLED (internet actions not enabled)"
         names = [at.value for at in enabled_action_types()]
@@ -353,7 +356,7 @@ def get_runtime_action_health() -> str:
         # Checked independently of Calendar's enabled state below (a
         # separate Google surface).
         try:
-            from core.actions.google_contacts import get_last_error as _contacts_last_error
+            from core.actions.google_contacts import get_last_error as _contacts_last_error  # lazy import: cycle
             _contacts_err = _contacts_last_error()
             if _contacts_err:
                 lines.append(f"lookup_contact backend: DEGRADED ({_contacts_err})")
@@ -364,7 +367,7 @@ def get_runtime_action_health() -> str:
             lines.append("calendar_create_event backend: DISABLED by config")
             return "\n".join(lines)
 
-        from core.actions.google_auth import get_google_auth
+        from core.actions.google_auth import get_google_auth  # lazy import: cycle
         auth = get_google_auth()
         if auth is None:
             lines.append(
@@ -385,7 +388,7 @@ def get_runtime_action_health() -> str:
                 "owner must run scripts/reauth_google.py)"
             )
         else:
-            from core.actions.google_calendar_create import CALENDAR_EVENTS_SCOPE
+            from core.actions.google_calendar_create import CALENDAR_EVENTS_SCOPE  # lazy import: cycle
             if auth.has_scope(CALENDAR_EVENTS_SCOPE):
                 lines.append(
                     "calendar_create_event backend: AVAILABLE "
@@ -745,7 +748,7 @@ _OFFER_DISCORD_RE = re.compile(r"\bdiscord\b", re.IGNORECASE)
 
 def action_kind_of(action_type: ActionType):
     """The coarse claim-guard ActionKind for an ActionType (None for self-repairable/unknown)."""
-    from core.action_claim_guard import ActionKind  # leaf module, no cycle
+    from core.action_claim_guard import ActionKind  # lazy import: cycle (leaf module, no cycle)
     mapping = {
         ActionType.SEND_EMAIL: ActionKind.EMAIL,
         ActionType.CALENDAR_CREATE_EVENT: ActionKind.CALENDAR,
@@ -934,14 +937,13 @@ def calendar_timezone_unknown(params: Dict[str, Any]) -> bool:
     resolver cannot supply one either (BC-59: never silently assume Central
     or UTC). All-day events and non-calendar payloads (no start_time/
     end_time) are exempt, mirroring calendar_datetime_shape_errors."""
-    from utils.timezone_resolver import resolve_event_timezone
     items = params.get("events") if isinstance(params.get("events"), list) else [params]
     for ev in items:
         if not isinstance(ev, dict) or ev.get("all_day") in (True, "true", "True"):
             continue
         if not any(str(ev.get(key) or "").strip() for key in ("start_time", "end_time")):
             continue
-        if resolve_event_timezone(ev.get("time_zone")) is None:
+        if timezone_resolver.resolve_event_timezone(ev.get("time_zone")) is None:
             return True
     return False
 
@@ -953,12 +955,10 @@ def _current_wall_clock() -> datetime:
     2026-09-13 A03b-1) is an explicit branch, not an exception path: falls
     back to naive datetime.now() (system local time) rather than guessing a
     zone (BC-59)."""
-    from utils.timezone_resolver import get_user_timezone
-    tz_name = get_user_timezone()
+    tz_name = timezone_resolver.get_user_timezone()
     if tz_name is None:
         return datetime.now()
     try:
-        from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo(tz_name))
     except Exception:
         return datetime.now()
@@ -1034,8 +1034,7 @@ def resolve_weekday_time(query: str) -> Dict[str, str]:
 
     tm = _THROUGH_DATE_RE.search(query)
     if tm:
-        from utils.temporal_resolver import resolve_date_expression
-        iso_date, _basis, _conf = resolve_date_expression(
+        iso_date, _basis, _conf = temporal_resolver.resolve_date_expression(
             tm.group("date"), reference_date=now.replace(tzinfo=None)
         )
         if iso_date:
@@ -1252,7 +1251,7 @@ def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
     if not text:
         return None
     try:
-        from core.action_claim_guard import (
+        from core.action_claim_guard import (  # lazy import: cycle
             NO_CARD_NOTICE, ActionKind, detect_completion_claims, detect_kind,
         )
     except Exception:
@@ -1270,7 +1269,7 @@ def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
 
 def _kind_to_action_type(kind, clause: str) -> Optional[ActionType]:
     try:
-        from core.action_claim_guard import ActionKind
+        from core.action_claim_guard import ActionKind  # lazy import: cycle
     except Exception:
         return None
     if kind == ActionKind.CALENDAR:
@@ -1304,7 +1303,7 @@ def offer_action_type(response_text: str) -> Optional[ActionType]:
     if not response_text:
         return None
     try:
-        from core.action_claim_guard import (
+        from core.action_claim_guard import (  # lazy import: cycle
             ActionKind, detect_kind, detect_offer_clauses, detect_proposals,
             has_offer_marker,
         )
@@ -1426,7 +1425,7 @@ OFFER_AFFIRMATION_MAX_WORDS = 40
 
 
 def _clause_affirms(clause: str) -> bool:
-    from core.pending_proposal import AFFIRMATION_PHRASES, is_decline  # leaf-ish, no cycle
+    from core.pending_proposal import AFFIRMATION_PHRASES, is_decline  # lazy import: cycle (leaf-ish, no cycle)
     head = clause.strip()
     if not head or head.endswith("?"):
         return False
@@ -1531,7 +1530,7 @@ def is_action_retry_request(user_text: str) -> bool:
         return False
     if _RETRY_DEFER_RE.search(text) or _RETRY_SELF_RE.search(text):
         return False
-    from utils.query_checker import is_retry_continuation  # leaf, no cycle
+    from utils.query_checker import is_retry_continuation  # lazy import: cycle (leaf, no cycle)
     m = _RETRY_EXTRA_RE.search(text)
     if m is not None and not _is_trigger_negated(text, m.start()):
         return True

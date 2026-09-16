@@ -54,7 +54,7 @@ def _looks_like_placeholder(value: str) -> bool:
 
 
 def _check_data_dir_writable(result: PreflightResult) -> None:
-    from config.app_config import CHROMA_PATH
+    from config.app_config import CHROMA_PATH  # lazy import: live-config
 
     data_dir = os.path.dirname(CHROMA_PATH) or "."
     probe = os.path.join(data_dir, ".preflight_write_probe")

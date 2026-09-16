@@ -35,6 +35,7 @@ Resolution order:
 import os
 import re
 import sys
+import json
 import threading
 from pathlib import Path
 from typing import Optional
@@ -88,7 +89,7 @@ def _resolve_windows_registry_timezone() -> Optional[str]:
     any other registry value.
     """
     try:
-        import winreg
+        import winreg  # lazy import: patch-point (tests/unit/test_timezone_resolver.py:269)
     except ImportError:
         return None
     try:
@@ -185,7 +186,6 @@ class TimezoneResolver:
                 return self._cached
             value = None
             try:
-                import json
                 with open(self.profile_path, "r", encoding="utf-8") as f:
                     profile = json.load(f)
                 value = self._extract(profile)

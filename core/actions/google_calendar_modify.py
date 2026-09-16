@@ -21,6 +21,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from config import app_config
+import core.actions.google_auth as google_auth
+import core.actions.google_calendar as google_calendar
 from core.actions.types import ActionProposal, ActionResult
 from core.actions.google_calendar_create import (
     CALENDAR_EVENTS_SCOPE, UNKNOWN_TIMEZONE_MESSAGE, wall_clock_time,
@@ -33,16 +36,13 @@ _API_BASE = "https://www.googleapis.com/calendar/v3/calendars"
 
 def _prereq_error(proposal: ActionProposal):
     """Shared config/auth/scope gating; returns (creds, ActionResult|None)."""
-    from config.app_config import GOOGLE_CALENDAR_ENABLED
-
     def fail(msg):
         return None, ActionResult(
             action_id=proposal.action_id, success=False, message=msg)
 
-    if not GOOGLE_CALENDAR_ENABLED:
+    if not app_config.GOOGLE_CALENDAR_ENABLED:
         return fail("Google Calendar is not enabled in config.")
-    from core.actions.google_auth import get_google_auth
-    auth = get_google_auth()
+    auth = google_auth.get_google_auth()
     if auth is None:
         return fail("Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
     if not auth.is_authenticated:
@@ -171,7 +171,7 @@ async def update_calendar_event(proposal: ActionProposal) -> ActionResult:
             message="No change fields supplied (new_summary/new_start_time+"
                     "new_end_time/new_description/new_location).")
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
         async with httpx.AsyncClient(timeout=15.0) as client:
             event, reason = await _resolve_event(
                 client, str(creds.token), calendar_id,
@@ -208,8 +208,7 @@ def _invalidate_read_cache(op: str) -> None:
     mutation (2026-09-09, audit F06): the next prompt used to carry the
     pre-update schedule right after a truthful execution receipt."""
     try:
-        from core.actions.google_calendar import clear_cache
-        clear_cache()
+        google_calendar.clear_cache()
     except Exception as exc:  # cache is best-effort; never fail the action
         logger.debug(f"[CalendarModify] Could not clear calendar cache after {op}: {exc}")
 
@@ -226,7 +225,7 @@ async def delete_calendar_event(proposal: ActionProposal) -> ActionResult:
     p = proposal.params or {}
     calendar_id = p.get("calendar_id") or "primary"
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
         async with httpx.AsyncClient(timeout=15.0) as client:
             event, reason = await _resolve_event(
                 client, str(creds.token), calendar_id,

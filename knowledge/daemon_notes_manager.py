@@ -375,7 +375,7 @@ class DaemonNotesManager:
             )
             if result and result.strip():
                 # Strip trailing stream artifacts (kimi-3 lone 'e', edge <|sep|> tokens)
-                from core.response_parser import ResponseParser
+                from core.response_parser import ResponseParser  # lazy import: cycle
                 result = ResponseParser.strip_trailing_stream_artifact(result.strip())
                 return result
         except Exception as e:

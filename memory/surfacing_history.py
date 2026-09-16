@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timedelta
 
 from utils.logging_utils import get_logger
+import utils.safe_json as safe_json
 
 logger = get_logger("surfacing_history")
 
@@ -78,7 +79,6 @@ class SurfacingHistory:
     def save(self) -> None:
         """Persist history to disk."""
         try:
-            from utils.safe_json import atomic_write_json
-            atomic_write_json(self.persist_path, self._entries)
+            safe_json.atomic_write_json(self.persist_path, self._entries)
         except OSError as e:
             logger.warning(f"[SurfacingHistory] Failed to save {self.persist_path}: {e}")

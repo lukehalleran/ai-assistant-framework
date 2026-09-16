@@ -45,7 +45,7 @@ def _accuracy_clause() -> str:
     accuracy). Lazy import + fail-safe: this module is on the safety-critical
     path and must never break if the clause source is unavailable."""
     try:
-        from core.grounding_check import GROUNDING_ACCURACY_CLAUSE
+        from core.grounding_check import GROUNDING_ACCURACY_CLAUSE  # lazy import: cycle
         return GROUNDING_ACCURACY_CLAUSE
     except Exception:
         return ""
@@ -77,7 +77,7 @@ def _get_elevated_levels():
     """Lazy import of ToneLevel to avoid circular imports."""
     global _ELEVATED_LEVELS
     if _ELEVATED_LEVELS is None:
-        from core.context_pipeline import ToneLevel
+        from core.context_pipeline import ToneLevel  # lazy import: patch-point (tests/unit/test_response_planner.py:97)
         _ELEVATED_LEVELS = {ToneLevel.CRISIS, ToneLevel.ELEVATED}
     return _ELEVATED_LEVELS
 
@@ -91,7 +91,7 @@ def _get_distress_levels():
     """
     global _DISTRESS_LEVELS
     if _DISTRESS_LEVELS is None:
-        from core.context_pipeline import ToneLevel
+        from core.context_pipeline import ToneLevel  # lazy import: patch-point (tests/unit/test_response_planner.py:97)
         _DISTRESS_LEVELS = {ToneLevel.CRISIS, ToneLevel.ELEVATED, ToneLevel.CONCERN}
     return _DISTRESS_LEVELS
 
@@ -601,7 +601,7 @@ class EscalationTracker:
         if len(self.tone_history) < 2:
             return 0.0
 
-        from core.context_pipeline import ToneLevel
+        from core.context_pipeline import ToneLevel  # lazy import: patch-point (tests/unit/test_response_planner.py:97)
         tone_values = {
             ToneLevel.CONVERSATIONAL: 0,
             ToneLevel.CONCERN: 1,

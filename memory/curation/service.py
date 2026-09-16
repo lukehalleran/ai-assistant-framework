@@ -10,6 +10,8 @@ happen, and no daemon-running guard is needed.
 import threading
 from typing import Optional
 
+from config import app_config
+import memory.curation.curators as curators
 from memory.curation.engine import CurationEngine, StoreBundle
 from utils.logging_utils import get_logger
 
@@ -24,15 +26,7 @@ def init_engine(*, chroma_store=None, user_profile=None,
     """Build (or rebuild) the singleton engine from config + live stores.
     Returns None when curation is disabled."""
     global _engine
-    from config.app_config import (
-        CURATION_ANOMALY_FRACTION,
-        CURATION_AUTO_RATE_CAP,
-        CURATION_CURATOR_MODES,
-        CURATION_ENABLED,
-        CURATION_MAX_MODE,
-        CURATION_MAX_QUEUE_ITEMS_PER_CURATOR,
-    )
-    if not CURATION_ENABLED:
+    if not app_config.CURATION_ENABLED:
         return None
     with _lock:
         engine = CurationEngine(
@@ -42,28 +36,19 @@ def init_engine(*, chroma_store=None, user_profile=None,
                 corpus_manager=corpus_manager,
                 graph_memory=graph_memory,
             ),
-            max_mode=CURATION_MAX_MODE,
-            curator_modes=CURATION_CURATOR_MODES,
-            auto_rate_cap=CURATION_AUTO_RATE_CAP,
-            anomaly_fraction=CURATION_ANOMALY_FRACTION,
-            max_queue_items_per_curator=CURATION_MAX_QUEUE_ITEMS_PER_CURATOR,
-        )
-        from config.app_config import CURATION_STALENESS_GRACE_HOURS
-        from memory.curation.curators import (
-            ErrorSentinelCurator,
-            GraphTemporalNodeCurator,
-            JunkFactCurator,
-            ProfileJunkFactCurator,
-            StreamArtifactCurator,
-            TemporalStalenessCurator,
+            max_mode=app_config.CURATION_MAX_MODE,
+            curator_modes=app_config.CURATION_CURATOR_MODES,
+            auto_rate_cap=app_config.CURATION_AUTO_RATE_CAP,
+            anomaly_fraction=app_config.CURATION_ANOMALY_FRACTION,
+            max_queue_items_per_curator=app_config.CURATION_MAX_QUEUE_ITEMS_PER_CURATOR,
         )
         for curator in (
-            ErrorSentinelCurator(),
-            StreamArtifactCurator(),
-            JunkFactCurator(),
-            TemporalStalenessCurator(grace_hours=CURATION_STALENESS_GRACE_HOURS),
-            ProfileJunkFactCurator(),
-            GraphTemporalNodeCurator(),
+            curators.ErrorSentinelCurator(),
+            curators.StreamArtifactCurator(),
+            curators.JunkFactCurator(),
+            curators.TemporalStalenessCurator(grace_hours=app_config.CURATION_STALENESS_GRACE_HOURS),
+            curators.ProfileJunkFactCurator(),
+            curators.GraphTemporalNodeCurator(),
         ):
             try:
                 engine.register(curator)

@@ -54,7 +54,7 @@ class BestOfHandler:
     def _load_defaults(self) -> None:
         """Load default config from app_config with fallbacks."""
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 ENABLE_BEST_OF,
                 BEST_OF_N,
                 BEST_OF_TEMPS,
@@ -146,7 +146,7 @@ class BestOfHandler:
             return False
 
         try:
-            from utils.query_checker import analyze_query
+            from utils.query_checker import analyze_query  # lazy import: cycle
             qinfo = analyze_query(user_input)
             return bool(
                 (qinfo.is_question and qinfo.token_count >= cfg["min_tokens"])

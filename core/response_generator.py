@@ -30,6 +30,7 @@ Module Contract
 from utils.logging_utils import get_logger
 import time
 import asyncio
+import json
 import re
 from typing import AsyncGenerator, List, Tuple, Optional, Sequence, Dict, Any
 from datetime import datetime
@@ -101,7 +102,7 @@ class ResponseGenerator:
             # Ensure a non-empty system prompt is always sent.
             # Falls back to config default if None/blank is provided.
             try:
-                from config.app_config import SYSTEM_PROMPT as DEFAULT_SP  # local import to avoid hard dep at import time
+                from config.app_config import SYSTEM_PROMPT as DEFAULT_SP  # lazy import: live-config (local import to avoid hard dep at import time)
             except Exception as e:
                 logger.warning(f"[ResponseGenerator] Could not load system prompt from config: {e}, using fallback")
                 DEFAULT_SP = "You are Daemon, a helpful assistant with memory and RAG. Be direct, truthful, concise."
@@ -439,7 +440,7 @@ class ResponseGenerator:
                 self.model_manager.switch_model(model_name)
             # Fallback system prompt if missing
             try:
-                from config.app_config import SYSTEM_PROMPT as DEFAULT_SP
+                from config.app_config import SYSTEM_PROMPT as DEFAULT_SP  # lazy import: live-config
             except ImportError:
                 DEFAULT_SP = "You are Daemon, a helpful assistant with memory and RAG. Be direct, truthful, concise."
             effective_sp = (system_prompt or "").strip() or DEFAULT_SP
@@ -566,7 +567,7 @@ class ResponseGenerator:
                 raw_candidates.append(text_raw)
 
                 # Parse thinking block from each candidate
-                from core.response_parser import ResponseParser
+                from core.response_parser import ResponseParser  # lazy import: cycle
                 thinking, text_final = ResponseParser.parse_thinking_block(text_raw)
 
                 # Log thinking block for this candidate
@@ -627,7 +628,6 @@ class ResponseGenerator:
             )
             raw = (text or "").strip()
             # Try parse JSON first
-            import json, re
             score: Optional[float] = None
             try:
                 obj = json.loads(raw)
@@ -680,7 +680,6 @@ class ResponseGenerator:
                 temperature=0.0,
             )
             raw = (text or "").strip()
-            import json, re
             result: Dict[str, Any] = {}
             try:
                 result = json.loads(raw)
@@ -755,7 +754,7 @@ class ResponseGenerator:
         b_text_raw = ("" if isinstance(res2, Exception) else (res2 or "")).strip()
 
         # Parse thinking blocks from both responses
-        from core.response_parser import ResponseParser
+        from core.response_parser import ResponseParser  # lazy import: cycle
         thinking_a, a_text = ResponseParser.parse_thinking_block(a_text_raw)
         thinking_b, b_text = ResponseParser.parse_thinking_block(b_text_raw)
 

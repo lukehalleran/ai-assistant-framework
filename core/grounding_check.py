@@ -1200,7 +1200,7 @@ def build_integrated_fallback(
     `_locate_claim_sentence` explicitly — a call-time read of already-loaded
     config constants, so this stays deterministic for a given config.
     """
-    from config.app_config import (
+    from config.app_config import (  # lazy import: live-config
         GROUNDING_FALLBACK_CLAIM_OVERLAP_THRESHOLD,
         GROUNDING_FALLBACK_MIN_CLAIM_TOKENS,
     )
@@ -1249,7 +1249,7 @@ _INTEGRATE_SYSTEM_PROMPT = (
 def _build_integrate_prompt(response: str, verdict: GroundingVerdict) -> str:
     # Revision guards: the integrator may only EDIT, never expand or gut.
     # Read from config with fallback to historical defaults.
-    from config.app_config import (
+    from config.app_config import (  # lazy import: live-config
         GROUNDING_INTEGRATE_MIN_RATIO,
         GROUNDING_INTEGRATE_MAX_RATIO,
     )
@@ -1333,7 +1333,7 @@ async def integrate_grounding_correction(
         ).strip()
     if not revised or revised == response.strip():
         return None
-    from config.app_config import (
+    from config.app_config import (  # lazy import: live-config
         GROUNDING_INTEGRATE_MIN_RATIO,
         GROUNDING_INTEGRATE_MAX_RATIO,
     )

@@ -48,14 +48,14 @@ async def fetch_upcoming_events(
         return _cache[:max_events]
 
     try:
-        from config.app_config import GOOGLE_CALENDAR_ENABLED
+        from config.app_config import GOOGLE_CALENDAR_ENABLED  # lazy import: live-config
     except ImportError:
         return []
 
     if not GOOGLE_CALENDAR_ENABLED:
         return []
 
-    from core.actions.google_auth import get_google_auth
+    from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
     if auth is None or not auth.is_authenticated:
@@ -72,7 +72,7 @@ async def fetch_upcoming_events(
     time_max = (now + timedelta(days=lookahead_days)).isoformat()
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(
