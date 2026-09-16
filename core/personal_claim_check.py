@@ -247,12 +247,20 @@ def build_personal_evidence(
     flattened: list[tuple[str, str | None, str, Any]] = []
     for value in rows:
         flattened.extend(_canonical_rows(value))
-    seen: set[tuple[str, str, str]] = set()
-    for index, (role, stamp, text, identity) in enumerate(flattened):
-        key = (role, stamp or "", text, _as_text(identity))
+    # One speaker saying one text is ONE source, whatever record carried it:
+    # the API chat history repeats the corpus rows without ids/timestamps.
+    # Rows are pre-sorted so a timestamped copy wins over a bare one.
+    seen: set[tuple[str, str]] = set()
+    ordered = sorted(enumerate(flattened), key=lambda item: (item[1][1] is None, item[0]))
+    kept: list[tuple[int, str, str | None, str, Any]] = []
+    for index, (role, stamp, text, identity) in ordered:
+        key = (role, text.strip())
         if key in seen:
             continue
         seen.add(key)
+        kept.append((index, role, stamp, text, identity))
+    kept.sort(key=lambda item: item[0])
+    for index, role, stamp, text, identity in kept:
         candidates.append((0, index, role, stamp, text, identity))
     # Records from retrieval are often newest-first.  Select newest timestamped
     # rows first to keep later corrections within the budget, then render the
@@ -294,17 +302,42 @@ def _review_prompt(response: str, evidence: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+_FENCE_RE = re.compile(r"\A```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)\r?\n?```\Z", re.DOTALL)
+
+
+def _unfence(text: str) -> str:
+    """Strip ONE surrounding Markdown code fence; anything else is untouched.
+
+    gpt-4o-mini wraps strict-JSON answers in ```json fences on some prompts
+    (live 2026-09-15: 78 completion tokens rejected as "not strict JSON" while
+    the offline replay returned bare JSON). A fence is presentation, not
+    content; the schema check below is still exact. Prose around JSON is
+    still rejected -- this is not a "find the first brace" extraction.
+    """
+    match = _FENCE_RE.match(text)
+    return match.group(1).strip() if match else text
+
+
 def _strict_json(raw: Any) -> dict:
     if not isinstance(raw, str):
-        raise ValueError("response is not text")
+        raise ValueError("shape=not_text")
     text = raw.strip()
-    if not text or text.startswith("``"):
-        raise ValueError("not strict JSON")
-    parsed = json.loads(text)
+    if not text:
+        raise ValueError("shape=empty")
+    fenced = text.startswith("```")
+    text = _unfence(text)
+    if text.startswith("```"):
+        raise ValueError(f"shape=fenced_unclosed len={len(raw)}")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        shape = "fenced_not_json" if fenced else ("prose" if text[:1] not in "{[" else "invalid_json")
+        raise ValueError(f"shape={shape} len={len(raw)} at={exc.pos}") from None
     if not isinstance(parsed, dict) or set(parsed) != {"claims"}:
-        raise ValueError("unexpected JSON shape")
+        keys = sorted(parsed)[:6] if isinstance(parsed, dict) else type(parsed).__name__
+        raise ValueError(f"shape=wrong_keys keys={keys}")
     if not isinstance(parsed["claims"], list):
-        raise ValueError("claims is not a list")
+        raise ValueError("shape=claims_not_list")
     return parsed
 
 

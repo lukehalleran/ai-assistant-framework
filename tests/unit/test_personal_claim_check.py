@@ -172,8 +172,32 @@ async def test_unparseable_output_is_invalid_json_and_preserves_text():
         async def generate_once(self, prompt, **kwargs):
             return "```json\n{\"claims\": []}\n```"
 
+    # A surrounding code fence is presentation (live 2026-09-15 gpt-4o-mini shape).
     fenced = await audit_personal_claims("You uploaded it.", evidence, Fenced())
-    assert (fenced.status, fenced.reason) == ("failed", "invalid_json")
+    assert (fenced.status, fenced.reason) == ("checked", "ok")
+
+    class Prose(ScriptedModel):
+        async def generate_once(self, prompt, **kwargs):
+            return "The draft makes no personal claims. {\"claims\": []}"
+
+    prose = await audit_personal_claims("You uploaded it.", evidence, Prose())
+    assert (prose.status, prose.reason) == ("failed", "invalid_json")
+
+
+def test_history_duplicates_of_recent_conversations_collapse_to_one_source():
+    rows = [
+        {"id": "c1", "timestamp": "2026-09-15T16:41:00-05:00",
+         "query": "I could just upload what I have.", "response": "You could upload it as-is."},
+    ]
+    history = [
+        {"role": "user", "content": "I could just upload what I have."},
+        {"role": "assistant", "content": "You could upload it as-is."},
+    ]
+    evidence = build_personal_evidence("current", {"recent_conversations": rows}, history=history)
+    texts = [(r["role"], r["text"]) for r in evidence[1:]]
+    assert texts == [("user", "I could just upload what I have."), ("assistant", "You could upload it as-is.")]
+    # the timestamped corpus copy is the one kept
+    assert all(r["timestamp"] == "2026-09-15T16:41:00-05:00" for r in evidence[1:])
 
 
 @pytest.mark.asyncio

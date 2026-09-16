@@ -324,7 +324,8 @@ class _Provider:
         if self.behaviour == "provider_error":
             raise RuntimeError("synthetic provider failure")
         if self.behaviour == "malformed":
-            return "```json\n{\"claims\": []}\n```"
+            # Prose around JSON is still rejected (a bare fence is tolerated since 2026-09-15).
+            return "Here is my review of the draft: no claims found. {\"claims\": []}"
         evidence = json.loads(prompt.split("EVIDENCE:\n", 1)[1].split("\n\nDRAFT:\n", 1)[0])
         correction = next(r for r in evidence if r["role"] == "user" and "did not upload it" in r["text"])
         advice = next(r for r in evidence if r["role"] == "assistant" and "upload it as-is" in r["text"])
