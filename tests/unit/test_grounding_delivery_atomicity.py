@@ -97,6 +97,9 @@ def turn_setup(monkeypatch, tmp_path):
     import core.agentic.gate as gate
     import core.grounding_check as grounding
     monkeypatch.setattr(config, "GROUNDING_CHECK_ENABLED", True)
+    # The independent personal-claim check (2026-09-15) is exercised in
+    # test_personal_claim_delivery.py; keep these verifier-call counts pure.
+    monkeypatch.setattr(config, "PERSONAL_CLAIM_CHECK_ENABLED", False)
     monkeypatch.setattr(config, "GROUNDING_MIN_RESPONSE_CHARS", 1)
     monkeypatch.setattr(config, "GROUNDING_INTEGRATE_ENABLED", True)
     monkeypatch.setattr(config, "TURN_TELEMETRY_ENABLED", True)

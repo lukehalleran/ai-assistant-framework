@@ -167,7 +167,11 @@ async def test_disabled_short_circuits_before_verifier(monkeypatch):
     revised, suffix = await handlers._apply_grounding_check(ctx, FIRING_RESPONSE)
     assert (revised, suffix) == (None, "")
     assert mm.calls == 0
-    assert ctx.telemetry == {}
+    # 2026-09-15 (audit F6 / BC-70): a check that never ran records an explicit
+    # SKIPPED receipt with its reason -- never nothing, never "complete".
+    assert ctx.telemetry["grounding_status"] == "skipped"
+    assert ctx.telemetry["grounding_skip_reason"] == "disabled"
+    assert "grounding_verifier_fired" not in ctx.telemetry
 
 
 @pytest.mark.asyncio

@@ -116,3 +116,20 @@ term backstop and learned_relations→anchors wiring still open), #12 and #18
 fixed. Still open: #8, #10 (safety-path, needs design), #13–17, learned
 channels, and the 08-21 parked items. Hand-verified: #1–4, #5, #7, #11, #17,
 #18 checked against source; constants table spot-checked.
+
+## 2026-09-15 recurrence — personal-event completion evidence
+
+The résumé turn promoted a possible upload and assistant advice into a
+completed user event despite an explicit prompt prohibition. Read-only replay
+confirmed that factual-grounding, tool-completion, attachment-recency and
+history-annotation checks all miss the exact reply. See
+[the audit and repair design](AUDIT_20260915_personal_event_grounding.md).
+
+This is a mechanism coverage gap (BC-46/48/58), not owner-specific vocabulary.
+Apply **DERIVE** to role/timestamp/source-backed event state and a **single
+shared boundary** to claim support across answer and memory consumers. Open
+action language needs semantic assessment with mechanically validated source
+references; a new résumé/upload regex is not a general closure (BC-76).
+Plans, suggestions, completions, partial work, cancellation and unknown state
+must remain distinct. Missing evidence must never become proof of noncompletion.
+Status: proposed; runtime unchanged, precision and outcome tests still required.

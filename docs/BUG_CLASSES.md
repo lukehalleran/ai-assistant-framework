@@ -88,7 +88,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-45 | Shown ≠ stored ≠ recorded | E | partial |
 | BC-46 | Prompt instruction loses to a structural input or model prior | E | recurs |
 | BC-47 | Failure or not-run collapsed into a valid empty result | E | partial |
-| BC-48 | Confabulated action-completion claim | E | recurs |
+| BC-48 | Confabulated action-completion claim | E | partial |
 | BC-49 | Mid-loop narration shipped as the answer | E | partial |
 | BC-50 | Verifier's own false corrections | E | partial |
 | BC-51 | Attribute or count inferred from a label, not the user's words | E | recurs |
@@ -123,6 +123,8 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-81 | Private instance of a process-wide heavyweight resource | D | open |
 | BC-82 | Change validated only under the committed default configuration | G | open |
 | BC-83 | Sandbox or probe resolves live code or live paths through the inherited environment | H | open |
+| BC-84 | One invalid element discards a whole multi-item verdict | E | partial |
+| BC-85 | Verbatim-span contract with a paraphrasing model | E | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -243,7 +245,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-17 Sentinel/prefix registered in one list, not all
 - Mechanism: an error prefix is added to `API_ERROR_PREFIXES` but not the display map or junk filter (or vice versa).
-- Incidents: 2026-08-14 `[Streaming Error` missing everywhere; 2026-09-03/04 `[OpenAI unavailable` registered but no display entry → CI red (CHANGELOG 08-14, 09-04 item 3).
+- Incidents: 2026-08-14 `[Streaming Error` missing everywhere; 2026-09-03/04 `[OpenAI unavailable` registered but no display entry → CI red (CHANGELOG 08-14, 09-04 item 3); 2026-09-15 the `personal_claim_` telemetry prefix was registered at the debug-record copy sites but not in the deferred turn-row merge (`grounding_`/`storage_` only) nor the telemetry writer's task gather — every log-only row would have frozen at `pending` (caught by the delivery tests before the first live turn).
 - Find: diff `API_ERROR_PREFIXES` against `_API_ERROR_DISPLAY`; `tests/unit/test_api_error_fail_fast.py`.
 - Closure: parity test exists; no single registry ties prefix→display→filter.
 - Status: partial.
@@ -474,18 +476,18 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Status: recurs — bespoke backstop per incident; the T2 refusal is the first instance of the model's OWN prior narration (not an image or offset convention) as the overriding "structural input", closed only for the calendar forced-round path.
 
 ### BC-47 Failure or not-run collapsed into a valid empty result
-- Mechanism: timeout/unavailable/never-ran is encoded like a genuine negative — in code (same return shape) or in the prompt (`web_search=ON(0)` for both "0 results" and "never ran") — so downstream, including the model, cannot tell "nothing" from "couldn't check".
-- Incidents: 2026-09-05 classifier timeout reused the no-search verdict; 2026-09-06 failed plan = zero events; 2026-09-09 verifier timeouts recorded `complete` (B6 follow-up); 2026-09-09 the model narrated "my web search came back empty" from `ON(0)` when no search ran (HANDOFF_20260910_web_search_gap); 2026-09-12 (follow-up review F3) a PARTIAL budget refusal collapsed into success — `multi_search` joined sub-query errors only when no page came back, so with one credit and two sub-queries the refused one vanished (`error=None`, receipt `blocked=None`, no notice), and a URL fetch whose free layer found nothing and whose billed fallback was unaffordable returned a bare `[]` that rendered as a generic "Could not fetch".
+- Mechanism: timeout/unavailable/never-ran is encoded like a genuine negative — in code (same return shape) or in the prompt (`web_search=ON(0)` for both "0 results" and "never ran") — so downstream, including the model, cannot tell "nothing" from "couldn't check". The MIRROR is the same class: a genuine "found nothing" encoded as a failure (2026-09-15), so a shadow-mode measurement counts clean audits as broken ones.
+- Incidents: 2026-09-15 (mirror) the personal-claim audit whose only claim was a well-formed restatement of the user's message — dropped correctly, nothing survived — was recorded `failed/invalid_verdict`; now `checked/no_claims` with the dropped count, `invalid_verdict` only when a MALFORMED claim is why nothing survived; 2026-09-05 classifier timeout reused the no-search verdict; 2026-09-06 failed plan = zero events; 2026-09-09 verifier timeouts recorded `complete` (B6 follow-up); 2026-09-09 the model narrated "my web search came back empty" from `ON(0)` when no search ran (HANDOFF_20260910_web_search_gap); 2026-09-12 (follow-up review F3) a PARTIAL budget refusal collapsed into success — `multi_search` joined sub-query errors only when no page came back, so with one credit and two sub-queries the refused one vanished (`error=None`, receipt `blocked=None`, no notice), and a URL fetch whose free layer found nothing and whose billed fallback was unaffordable returned a bare `[]` that rendered as a generic "Could not fetch".
 - Find: any except/timeout branch returning the negative-verdict shape without a `source`/`reason` discriminator; feature labels built from result counts instead of decisions; any aggregation that keeps an error only when the merged result is empty.
 - Closure: CM-05 tri-state outcomes (`source=fallback`, `grounding_status`, "unavailable not zero" doctrine); web labels now derive from `web_search_decision` and distinguish not-triggered, zero-result and error outcomes (09-10); 2026-09-12 (adversarial review F4) a budget-blocked search is its own outcome end to end — the trigger decision keeps `evidence_needed`/`blocked_reason`, the gatherer receipt records `requested`/`blocked`, and `utils/web_evidence_receipt` appends one delivery-time notice ("I couldn't run a fresh web search because today's search budget is used up…", partial wording when fetched or cached pages were still used) on both answer routes, identically in display and storage. Before it, 14 turns on 2026-09-11 answered from priors with no disclosure. Follow-up: the refusal is TYPED, not inferred from an error string — `WebSearchResult.blocked`/`MultiSearchResult.blocked` ("budget") survive aggregation even when other sub-queries returned pages, `FetchedPages(blocked=)` → `BlockedFetchText` → `SearchRound.blocked` carries a refused fetch fallback, and the gatherer and receipt read those fields, so a partial refusal gets the partial notice. Tests: `test_sep12_followup_budget_outcomes.py`.
 - Status: partial.
 
 ### BC-48 Confabulated action-completion claim
-- Mechanism: the reply asserts it sent/created/queued when nothing executed.
-- Incidents: 2026-09-01 "Re-queuing… Approve that one" with nothing queued; 2026-09-07 "Confirmed — creating the recurring event now"; expired proposal re-served as "Queued"; 2026-09-10 "Queued up" / "Queuing it now … approval card pop up" shipped with no backing card.
-- Find: `claims_pending_card()`/`_COMPLETION_PATTERNS` match with empty `proposed_kinds` and `executed_kinds` for the turn.
-- Closure: `core/action_claim_guard.py`, `NO_CARD_NOTICE` backstop.
-- Status: recurs — each new phrasing found individually.
+- Mechanism: the reply asserts an action completed without supporting execution evidence or a user completion report; suggestions and intentions can be promoted to completed events.
+- Incidents: 2026-09-01 "Re-queuing… Approve that one" with nothing queued; 2026-09-07 "Confirmed — creating the recurring event now"; expired proposal re-served as "Queued"; 2026-09-10 "Queued up" / "Queuing it now … approval card pop up" shipped with no backing card; 2026-09-15 the enhanced reply claimed the user finished and uploaded a résumé from a contemplated upload and the assistant's own advice (audit: `docs/AUDIT_20260915_personal_event_grounding.md`; also BC-46/58, with a BC-70 receipt gap).
+- Find: `claims_pending_card()`/`_COMPLETION_PATTERNS` match with empty `proposed_kinds` and `executed_kinds` for assistant actions; replay user-event claims through the deployed guards and compare against role-preserved reports (09-15 exact and wrapped replies bypass all four checked guards). General user-event entailment checker remains proposed.
+- Closure: `core/action_claim_guard.py`, `NO_CARD_NOTICE` backstop for assistant tool claims. Personal-event completions (2026-09-15): `core/personal_claim_check.py` — role-preserved evidence + a semantic auditor whose claim/source spans are validated exactly and whose supported user completions need USER-role evidence; `omit_unsupported_claims` in `correct` mode; receipts persisted and marked at retrieval by `utils/personal_claim_provenance.py`. Runs on both routes regardless of tone/planning/prefilter; default `log_only`.
+- Status: partial — assistant tool claims per-incident; the general user-event boundary is deployed in shadow (log_only) pending precision measurement and a live canary before `correct`.
 
 ### BC-49 Mid-loop narration shipped as the answer
 - Mechanism: decision-answer reuse or the synthesis call ships "let me aim at…" as the final response.
@@ -577,8 +579,8 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-61 Owner-domain-scoped vocabulary lists
 - Mechanism: a list meant to generalize is built from one person's incidents (HOI4 exemplar, care-team relations, therapist-only audience markers).
-- Incidents: `_SELF_MODEL_NOUNS`, `_PERSONAL_MARKER_RE`, `HEAVY_KEYWORDS` conflating personal and professional vocabulary (GENERALIZATION 09-01 P1); 2026-09-12 the 2026-08-27 academic-logistics cue list (`institution_resolver._ACADEMIC_CUE_RE`) was built from one student's drop-date turn and treated cross-domain words as school vocabulary — withdrawal (medication, troops), registration (voters), enrollment (Medicare), transcript (a court hearing) — so a medical, civic or legal query carried the owner's school into the search provider.
-- Find: `rg -n "_NOUNS\s*=|_KEYWORDS\s*=|_EXEMPLARS\s*=|_MARKER_RE\s*=|_CUE_RE\s*=" core/ memory/ utils/` and check for an adaptive-store sibling; for each cue word, name one non-owner domain where it means something else.
+- Incidents: 2026-09-15 a committed test fixture quoted a LIVE reply verbatim, medication names included — the pre-commit privacy hook (`config/privacy_terms.local.txt`) blocked the commit; fixture genericized (the shape, never the owner's vocabulary); `_SELF_MODEL_NOUNS`, `_PERSONAL_MARKER_RE`, `HEAVY_KEYWORDS` conflating personal and professional vocabulary (GENERALIZATION 09-01 P1); 2026-09-12 the 2026-08-27 academic-logistics cue list (`institution_resolver._ACADEMIC_CUE_RE`) was built from one student's drop-date turn and treated cross-domain words as school vocabulary — withdrawal (medication, troops), registration (voters), enrollment (Medicare), transcript (a court hearing) — so a medical, civic or legal query carried the owner's school into the search provider.
+- Find: `rg -n "_NOUNS\s*=|_KEYWORDS\s*=|_EXEMPLARS\s*=|_MARKER_RE\s*=|_CUE_RE\s*=" core/ memory/ utils/` and check for an adaptive-store sibling; for each cue word, name one non-owner domain where it means something else. For fixtures: grep staged files against `config/privacy_terms.local.txt` (the pre-commit hook does this; a live-reply fixture is the usual way it fires).
 - Closure: categorized-generic rewrites; adaptive exemplar stores; 2026-09-12 `institution_resolver` split into school-logistics cues, cross-domain cues (counted only beside a school-domain anchor noun or the user's own school) and the anchor table.
 - Status: partial.
 
@@ -657,7 +659,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 ### BC-72 Unobservable decision (no receipt in telemetry or debug)
 - Mechanism: a routing/verification decision is made inside a function and dies there; nothing in `turn_records.jsonl` or the debug record says what was decided or why, so the defect is found only when the owner pastes a dump.
 - Incidents: gate reason invisible until 09-02; `tone_trigger` absent until 07-25 (the latch went unmeasured for weeks); grounding failures labeled `complete` (09-10); web-trigger decision has no field at all (09-10); 2026-09-12 the `web_trigger_*` fields added on 09-10 record the GATHERER's verdict even when the GATE's separate verdict routed the turn — five 2026-09-11 turns are recorded `should_search=False` while an agentic web search actually ran, so the receipt contradicted the behaviour, and no field carried the credit budget that explained six "triggered, 0 results" turns.
-- Find: for each decision function, does its verdict + source + reason reach `_last_turn_signals`/the debug record? DM-26 rollups exist only for fields that exist.
+- Find: for each decision function, does its verdict + source + reason reach `_last_turn_signals`/the debug record? DM-26 rollups exist only for fields that exist. 2026-09-15: a receipt that EXISTS but folds N distinct failure causes into one label (`personal_claim_reason=invalid_json` for thirteen validator conditions) is the same class — the first live turn failed and nothing said which check tripped; now `invalid_json` (unparseable) vs `invalid_verdict` (no usable claim) plus dropped/demoted counts and a debug line of the constant-string drop reasons.
 - Closure: CM-12 receipts (`gate_reason`, `tone_trigger`, `grounding_status`, `answer_call`, timings); `web_trigger_*`, result count and error fields added 09-10; `web_budget_remaining` added 09-12 so a "triggered, 0 results" row is distinguishable from a search that ran. Still open for the divergence half: the receipt records the GATHERER's verdict, and only the credit/toggle resolution (which makes the two agree) keeps it honest — nothing asserts that the recorded decision is the one that routed the turn. 2026-09-12 (evening, adversarial review F4): `web_evidence` (requested / blocked / acquired / fetched), built at delivery from the gate decision, the gatherer receipt and THIS turn's loop rounds, is on the turn record for both answer routes; `web_budget_remaining` is the budget frozen at the decision rather than a later limiter reading; and the agentic controller names `_last_session` at session creation — it had been set only after a successful synthesis, so an error-fallback turn's provenance, grounding source and receipt read the PREVIOUS turn's rounds.
 - Status: partial.
 
@@ -752,6 +754,20 @@ next free number at their own merge.
 - Closure: none — CM-11 isolation covers store paths only for code that honours `DAEMON_TEST_MODE`; "probes run `python -s` and assert `__file__`" is not yet adopted, and `hooks/pre-push` still calls plain `python` (interim manual workaround for a push from a clone: `env -u PYTHONPATH git push`).
 - Status: open.
 
+### BC-84 One invalid element discards a whole multi-item verdict
+- Mechanism: a validator over a multi-item model output (claims, phases, events, proposals) raises on the first bad element, so one imprecise quote or one malformed row turns N-1 valid verdicts into a single "failed" — a fail-closed check becomes data-blind, and in shadow mode it produces no measurement at all. The safe shape is per-item: drop the bad element, count it in the receipt, and let a lost element only move a verdict in the conservative direction (evidence dropped → less supported, never more).
+- Incidents: 2026-09-06 the insight planner's string `"null"` survived freeze and killed the WHOLE pattern channel (closed per-phase, filed under BC-57 for the sentinel half); 2026-09-15 the first live personal-claim audit returned `failed/invalid_json` although an offline replay of the same prompt validated and caught the recurring "resume uploaded" confabulation — `_validate_claims` raised on any one of thirteen conditions across six claims.
+- Find: grep validators for `raise` inside a `for item in payload[...]` loop; a receipt with a single failure reason and no per-item counts; a shadow-mode feature whose rows are mostly `failed`.
+- Closure: `core/personal_claim_check._validate_claims` is per-claim (drop + count + demote-only) with `dropped_claim_count`/`dropped_evidence_count`/`demoted_count` on the receipt; `core/insight/coordinator` per-phase drop. No shared helper yet; other multi-item validators (calendar `events[]` — deliberately atomic, actions must not half-create) are exempt by design and should say so.
+- Status: partial.
+
+### BC-85 Verbatim-span contract with a paraphrasing model
+- Mechanism: a mechanical check requires the model to quote a span of some text CHARACTER-EXACTLY (a claim from the draft, a quote from a source) and gates on `text in response`; the model reworded it, normalized a quote mark, or restated a different text entirely, so a correct semantic verdict is silently discarded — and because the check is fail-open, the discard looks like "nothing to flag". The instruction "copy exactly" does not fix it (BC-46: a prompt instruction loses to the model prior).
+- Incidents: 2026-08-29 the grounding integrator could not splice corrections because the verifier's `claim` was reworded (`build_integrated_fallback` → `_locate_claim_sentence` with 0.8 content-token overlap); 2026-09-15 the personal-claim checker dropped 3/3 then 2/2 claims as "not an exact response span" on consecutive live turns (gpt-4o-mini: "User has a cover letter waiting for a fresher brain tomorrow." for "Tomorrow's got the cover letter waiting for a fresher brain.") — every audit read `failed` while an offline replay validated.
+- Find: `rg -n "in response\b|not in response|in draft|in text\b" core/ | rg -i "claim|quote|span"` at any site that consumes model JSON; a shadow feature whose receipts are mostly `dropped`/`invalid`; replay the live prompt with a spy on the raw output and diff each returned span against the source text.
+- Closure: ONE locator (`core/grounding_check._sentence_chunks` + `_locate_claim_sentence`: exact word-bounded containment, else the single sentence whose content tokens cover ≥0.8 of the claim's; ambiguous → not located, never guessed), consumed by the grounding integrator and the personal-claim checker (2026-09-15); a relocated claim's text BECOMES the exact source sentence so any downstream splice/omit stays exact. Source-side quotes (`evidence[].quote`) still require exact containment — a wrong quote only drops the reference, which moves a verdict toward insufficient (BC-84 direction). No scanner.
+- Status: partial — two consumers share the locator; any new "quote it exactly" contract must adopt it rather than a bare substring test.
+
 ## Detection methods (DM) — find instances without a full read
 
 | ID | Method | Runs as | Classes |
@@ -790,7 +806,7 @@ next free number at their own merge.
 
 The `check_bug_classes.py scan` rows above are pinned by
 `config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
-Together they are a scoped structural lane. 11 of the 82 classes have a
+Together they are a scoped structural lane. 11 of the 84 classes have a
 scanner (9 gated, 2 report-only), and every scan report lists the classes no
 scanner covers. A green scan is not a behavioral guarantee for any class.
 Baseline candidates and their per-occurrence reviews live in

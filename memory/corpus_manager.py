@@ -41,6 +41,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from utils.logging_utils import get_logger, log_and_time
 from utils.safe_json import atomic_write_json, atomic_write_text, load_critical_json
+from utils.personal_claim_provenance import clean_personal_claim_receipt
 from config.app_config import CORPUS_MAX_ENTRIES
 from datetime import timedelta
 import re as _re
@@ -159,6 +160,7 @@ class CorpusManager:
         topic: Optional[str] = None,
         response_mode: Optional[str] = None,
         user_text: Optional[str] = None,
+        personal_claim_support: Optional[Dict] = None,
     ):
         """
         Add a new interaction to corpus with optional thread metadata.
@@ -212,6 +214,10 @@ class CorpusManager:
             entry["topic"] = topic
         if response_mode:
             entry["response_mode"] = response_mode
+        if personal_claim_support:
+            receipt = clean_personal_claim_receipt(personal_claim_support, response=r)
+            if receipt:
+                entry["personal_claim_support"] = receipt
 
         self.corpus.append(entry)
         self._episodic_cache = None  # Invalidate cache

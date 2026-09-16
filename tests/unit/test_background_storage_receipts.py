@@ -360,10 +360,18 @@ class TestCallSiteOrder:
             if m.start() != def_call_pos and src[m.end():m.end() + 1] != ")"
         ]
         assert len(call_positions) == 4, "expected exactly four _dispatch_storage call sites"
-        for pos in call_positions:
-            window = src[pos:pos + 1200]  # widest site (agentic closure) spans ~990 chars
+        # The window for each site runs to the NEXT dispatch call (or the end
+        # of the module), not a pinned character count: a fixed 1200-char
+        # window went stale on 2026-09-15 when the agentic site gained the
+        # personal-claim kwarg lines (same drift class as the ordered-slice
+        # guard's pinned line numbers, 09-05). The ordering guarantee is what
+        # this test pins, not the size of the code between the calls.
+        bounds = call_positions + [len(src)]
+        for pos, nxt in zip(call_positions, bounds[1:]):
+            window = src[pos:nxt]
             track_idx = window.find("_track_storage_task(ctx")
             write_idx = window.find("_write_turn_telemetry(")
             assert track_idx != -1, f"no _track_storage_task call found near offset {pos}"
             assert write_idx != -1, f"no _write_turn_telemetry call found near offset {pos}"
             assert track_idx < write_idx, f"_track_storage_task must precede _write_turn_telemetry near {pos}"
+            assert write_idx < 4000, f"_write_turn_telemetry is {write_idx} chars past the dispatch near {pos} -- is it still the same site?"

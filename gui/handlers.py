@@ -153,6 +153,7 @@ async def _background_store_interaction(
     session_id: str = None,
     provenance: dict = None,
     mode: str = "enhanced",
+    personal_claim_task=None,
 ):
     """
     Store interaction in background to avoid blocking response delivery.
@@ -172,6 +173,22 @@ async def _background_store_interaction(
     memory_id = None
     storage_failed_label = None
     try:
+        # In log-only mode the support check is deliberately backgrounded for
+        # delivery, but storage must wait for its receipt.  Otherwise the
+        # provenance write can race the checker and lose the support status.
+        if isinstance(personal_claim_task, asyncio.Task):
+            try:
+                await personal_claim_task
+            except asyncio.CancelledError:
+                # A cancelled child is a failed-open check.  A cancellation
+                # of this storage task itself must propagate so persistence
+                # cannot continue after its owner has gone away.
+                current = asyncio.current_task()
+                if current is not None and getattr(current, "cancelling", lambda: 0)():
+                    raise
+                logger.warning("[PersonalClaim] checker cancelled; continuing without verification")
+            except Exception as exc:
+                logger.debug(f"[PersonalClaim] storage wait failed: {exc}")
         try:
             memory_id = await orchestrator.memory_system.store_interaction(
                 query=merged_input,
@@ -832,13 +849,14 @@ def _dispatch_storage(
     orchestrator, merged_input, response_to_store, user_text,
     final_output, personality, file_names, conversation_logger,
     session_id, provenance, mode,
+    *, personal_claim_task=None,
 ):
     """Create a background storage task and track it for graceful shutdown."""
     tags = [
         f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}",
         "topic:general",
     ]
-    task = asyncio.create_task(_background_store_interaction(
+    store_kwargs = dict(
         orchestrator=orchestrator,
         merged_input=merged_input,
         response_to_store=response_to_store,
@@ -851,7 +869,10 @@ def _dispatch_storage(
         session_id=session_id,
         provenance=provenance,
         mode=mode,
-    ))
+    )
+    if personal_claim_task is not None:
+        store_kwargs["personal_claim_task"] = personal_claim_task
+    task = asyncio.create_task(_background_store_interaction(**store_kwargs))
     _pending_storage_tasks.add(task)
     task.add_done_callback(_pending_storage_tasks.discard)
     return task
@@ -966,16 +987,25 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
         _telemetry = getattr(ctx, "telemetry", None)
         _grounding_task = getattr(ctx, "grounding_task", None)
         _storage_task = getattr(ctx, "storage_task", None)
-        # Only combine when BOTH are real Tasks (asyncio.gather rejects a
-        # non-awaitable, e.g. a MagicMock-ctx test's auto-vivified truthy
-        # attribute -- that must fall through to today's plain-passthrough
-        # behaviour below, not raise and skip every hook).
-        if isinstance(_grounding_task, asyncio.Task) and isinstance(_storage_task, asyncio.Task):
+        # 2026-09-15: the deferred personal-claim shadow check is a third
+        # background receipt the turn row must wait for (storage awaits it
+        # in production, but a stubbed storage dispatch must not let the
+        # row freeze at "pending").
+        _personal_claim_task = getattr(ctx, "personal_claim_task", None)
+        # Only combine real Tasks (asyncio.gather rejects a non-awaitable,
+        # e.g. a MagicMock-ctx test's auto-vivified truthy attribute -- that
+        # must fall through to the plain-passthrough behaviour below, not
+        # raise and skip every hook).
+        _real_tasks = [
+            t for t in (_grounding_task, _personal_claim_task, _storage_task)
+            if isinstance(t, asyncio.Task)
+        ]
+        if len(_real_tasks) >= 2:
             # Exactly one combined waiter -- two separate callbacks would
             # write two turn rows.
-            _telemetry_task = asyncio.gather(
-                _grounding_task, _storage_task, return_exceptions=True,
-            )
+            _telemetry_task = asyncio.gather(*_real_tasks, return_exceptions=True)
+        elif len(_real_tasks) == 1:
+            _telemetry_task = _real_tasks[0]
         else:
             _telemetry_task = _storage_task if _storage_task is not None else _grounding_task
         hook_ctx = PostResponseHookContext(
@@ -1320,6 +1350,13 @@ class SubmitContext:
     grounding_mode: Any = None
     grounding_pending: Any = None
     grounding_task: Any = None
+    # Independent personal-event support check.  Like grounding_mode this is
+    # captured at ingress, so a config reload cannot change a live turn's
+    # buffering or delivery policy.
+    personal_claim_mode: Any = None
+    personal_claim_pending: Any = None
+    personal_claim_task: Any = None
+    personal_claim_receipt: Any = None
     debug_record: Any = None
 
 
@@ -3169,7 +3206,8 @@ def _capture_delivery(ctx, debug_record):
         if debug_record.get(key):
             ctx.telemetry[key] = dict(debug_record[key])
     debug_record.update({k: v for k, v in ctx.telemetry.items()
-                         if k.startswith("grounding_") or k in {"wall_elapsed_s", "pre_prepare_elapsed_s"}})
+                         if k.startswith(("grounding_", "personal_claim_"))
+                         or k in {"wall_elapsed_s", "pre_prepare_elapsed_s"}})
 
 
 async def _apply_grounding_check_for_delivery(ctx, response_text, source_material=""):
@@ -3361,17 +3399,35 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
             mode = GROUNDING_MODE
         if (not GROUNDING_CHECK_ENABLED or not response_text
                 or len(response_text.strip()) < GROUNDING_MIN_RESPONSE_CHARS):
+            ctx.telemetry.update(
+                grounding_status="skipped",
+                grounding_skip_reason=(
+                    "disabled" if not GROUNDING_CHECK_ENABLED else
+                    "empty_or_short_response"
+                ),
+                grounding_mode=mode,
+            )
             return _no_action
         from core.grounding_check import (
             has_checkable_claims, verify_grounding, integrate_grounding_correction,
             build_integrated_fallback,
         )
         if not has_checkable_claims(response_text, ctx.user_text or ""):
+            ctx.telemetry.update(
+                grounding_status="skipped",
+                grounding_skip_reason="no_checkable_claims",
+                grounding_mode=mode,
+            )
             return _no_action
         ctx.telemetry["grounding_prefilter_fired"] = True
 
         mm = getattr(ctx.orchestrator, "model_manager", None)
         if mm is None:
+            ctx.telemetry.update(
+                grounding_status="unavailable",
+                grounding_failure_reason="model_manager_missing",
+                grounding_mode=mode,
+            )
             return _no_action
         ctx.telemetry["grounding_verifier_fired"] = True
         # The runtime clock is source data, not something the verifier should
@@ -3395,6 +3451,16 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
             telemetry=ctx.telemetry,
         )
         if verdict is None:
+            # verify_grounding may already have recorded a precise timeout,
+            # cancellation, provider, or parse failure on telemetry. Preserve
+            # that explicit reason; only fill a generic failure when no
+            # status was recorded.
+            if not ctx.telemetry.get("grounding_status"):
+                ctx.telemetry.update(
+                    grounding_status="failed",
+                    grounding_failure_reason="no_verdict",
+                    grounding_mode=mode,
+                )
             return _no_action  # fail-open: timeout / call failure / unparseable
         ctx.telemetry["grounding_flagged"] = bool(verdict.false_claim_present)
         ctx.telemetry["grounding_confidence"] = round(float(verdict.confidence), 3)
@@ -3474,6 +3540,218 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
         ctx.telemetry.update(grounding_status="failed", grounding_failure_reason="check_error")
         logger.warning(f"[GroundingCheck] failed (non-fatal): {e}")
         return _no_action
+
+
+def _personal_claim_receipt(result, *, delivery="unchanged", status=None, reason=None):
+    """Return the checker receipt with a bounded, JSON-safe delivery label.
+
+    ``status``/``reason`` overrides describe a handler-level outcome (the
+    check never ran); they pass through the same whitelist as the checker's
+    own vocabulary, so an unknown label degrades to ``other`` here rather
+    than diverging between telemetry and storage.
+    """
+    try:
+        receipt_fn = getattr(result, "receipt", None)
+        receipt = receipt_fn() if callable(receipt_fn) else {}
+    except Exception:
+        receipt = {}
+    if not isinstance(receipt, dict):
+        receipt = {}
+    # The checker owns status/reason/count semantics.  Keep a defensive
+    # fallback for a provider double returning a small result-like object,
+    # then use the shared whitelist before anything reaches telemetry/storage.
+    receipt = dict(receipt)
+    receipt.setdefault("status", str(getattr(result, "status", "failed") or "failed"))
+    receipt.setdefault("reason", str(getattr(result, "reason", "check_error") or "check_error"))
+    for key in (
+        "candidate_count", "supported_count", "contradicted_count",
+        "insufficient_count",
+    ):
+        if key not in receipt:
+            receipt[key] = getattr(result, key, 0)
+    if "source_ids" not in receipt:
+        receipt["source_ids"] = getattr(result, "source_ids", [])
+    if "elapsed_s" not in receipt:
+        receipt["elapsed_s"] = getattr(result, "elapsed_s", 0.0)
+    if status is not None:
+        receipt["status"] = status
+    if reason is not None:
+        receipt["reason"] = reason
+    receipt["delivery"] = delivery
+    try:
+        from utils.personal_claim_provenance import clean_personal_claim_receipt
+        clean = clean_personal_claim_receipt(receipt)
+    except Exception:
+        clean = {}
+    if not clean:
+        clean = {
+            "status": "failed", "reason": "check_error",
+            "candidate_count": 0, "supported_count": 0,
+            "contradicted_count": 0, "insufficient_count": 0,
+            "source_ids": [], "elapsed_s": 0.0,
+        }
+    clean["delivery"] = delivery
+    return clean
+
+
+def _record_personal_claim_outcome(ctx, receipt, provenance=None):
+    """Copy only the bounded receipt into turn telemetry/debug/provenance."""
+    receipt = dict(receipt or {})
+    ctx.personal_claim_receipt = receipt
+    for key, value in receipt.items():
+        # Keep telemetry field names explicit and easy to query.  The nested
+        # receipt is also carried in provenance for storage consumers.
+        ctx.telemetry[f"personal_claim_{key}"] = value
+    if isinstance(provenance, dict):
+        provenance["personal_claim_support"] = dict(receipt)
+    record = getattr(ctx, "debug_record", None)
+    if isinstance(record, dict):
+        record["personal_claim_support"] = dict(receipt)
+        record.update({f"personal_claim_{k}": v for k, v in receipt.items()})
+    return receipt
+
+
+def _attach_personal_claim_provenance(provenance, ctx):
+    receipt = getattr(ctx, "personal_claim_receipt", None)
+    if isinstance(receipt, dict):
+        provenance["personal_claim_support"] = dict(receipt)
+    return provenance
+
+
+async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
+    """Run the independent personal-event support boundary.
+
+    The checker is imported lazily so legacy/raw paths and installations that
+    have not deployed the checker remain fail-open.  Its receipt is the only
+    model-derived value transported out of this helper.
+    """
+    try:
+        from config.app_config import (
+            PERSONAL_CLAIM_CHECK_ENABLED, PERSONAL_CLAIM_CHECK_MODEL,
+            PERSONAL_CLAIM_TIMEOUT_S, PERSONAL_CLAIM_MAX_TOKENS,
+            PERSONAL_CLAIM_MAX_EVIDENCE_CHARS,
+        )
+        if not PERSONAL_CLAIM_CHECK_ENABLED:
+            receipt = _personal_claim_receipt(
+                None, delivery="unchanged", status="skipped", reason="disabled")
+            return _record_personal_claim_outcome(ctx, receipt), None
+        if not response_text or not str(response_text).strip():
+            receipt = _personal_claim_receipt(
+                None, delivery="unchanged", status="skipped", reason="empty_response")
+            return _record_personal_claim_outcome(ctx, receipt), None
+        from core.personal_claim_check import (
+            build_personal_evidence, audit_personal_claims,
+            omit_unsupported_claims,
+        )
+        mm = getattr(ctx.orchestrator, "model_manager", None)
+        if mm is None:
+            receipt = _personal_claim_receipt(
+                None, delivery="failed_open", status="unavailable", reason="no_model")
+            return _record_personal_claim_outcome(ctx, receipt), None
+        context = dict(getattr(ctx, "raw_context", {}) or {})
+        context["current_query"] = ctx.user_text or ""
+        evidence = build_personal_evidence(
+            ctx.user_text or "", context, history=getattr(ctx, "history", ()) or (),
+            max_chars=PERSONAL_CLAIM_MAX_EVIDENCE_CHARS,
+        )
+        result = await audit_personal_claims(
+            response_text, evidence, mm,
+            model_name=PERSONAL_CLAIM_CHECK_MODEL,
+            timeout_s=PERSONAL_CLAIM_TIMEOUT_S,
+            max_tokens=PERSONAL_CLAIM_MAX_TOKENS,
+        )
+        if result is None:
+            receipt = _personal_claim_receipt(
+                None, delivery="failed_open", status="failed", reason="invalid_response")
+            return _record_personal_claim_outcome(ctx, receipt), None
+        status = str(getattr(result, "status", "failed") or "failed")
+        claims = list(getattr(result, "claims", []) or [])
+        def _claim_status(claim):
+            if isinstance(claim, dict):
+                return str(claim.get("status", "") or "")
+            return str(getattr(claim, "status", "") or "")
+
+        unsupported = any(
+            _claim_status(claim) in {"contradicted", "insufficient"}
+            for claim in claims
+        )
+        if mode == "correct" and status == "checked" and unsupported:
+            revised = omit_unsupported_claims(response_text, result)
+            if isinstance(revised, str) and revised != response_text:
+                receipt = _personal_claim_receipt(result, delivery="omitted")
+                return _record_personal_claim_outcome(ctx, receipt), revised
+        delivery = "unchanged" if status == "checked" else "failed_open"
+        receipt = _personal_claim_receipt(result, delivery=delivery)
+        return _record_personal_claim_outcome(ctx, receipt), None
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(f"[PersonalClaim] failed (non-fatal): {exc}")
+        receipt = {
+            "status": "failed", "reason": "check_error", "candidate_count": 0,
+            "supported_count": 0, "contradicted_count": 0,
+            "insufficient_count": 0, "source_ids": [], "elapsed_s": 0.0,
+            "delivery": "failed_open",
+        }
+        return _record_personal_claim_outcome(ctx, receipt), None
+
+
+async def _apply_personal_claim_check_for_delivery(ctx, response_text):
+    mode = getattr(ctx, "personal_claim_mode", None)
+    if mode is None:
+        from config.app_config import PERSONAL_CLAIM_CHECK_ENABLED, PERSONAL_CLAIM_MODE
+        mode = PERSONAL_CLAIM_MODE if PERSONAL_CLAIM_CHECK_ENABLED else "off"
+    if mode == "off":
+        return None
+    if mode == "log_only":
+        ctx.personal_claim_pending = response_text
+        ctx.telemetry.update(
+            personal_claim_status="pending", personal_claim_mode="log_only",
+        )
+        return None
+    _, revised = await _apply_personal_claim_check(ctx, response_text, mode=mode)
+    return revised
+
+
+def _start_background_personal_claim(ctx, provenance=None):
+    """Start one deferred shadow check and attach its receipt to all sinks."""
+    pending = getattr(ctx, "personal_claim_pending", None)
+    if pending is None or getattr(ctx, "personal_claim_task", None) is not None:
+        return getattr(ctx, "personal_claim_task", None)
+
+    async def check():
+        receipt, _ = await _apply_personal_claim_check(ctx, pending, mode="log_only")
+        if isinstance(provenance, dict):
+            provenance["personal_claim_support"] = dict(receipt)
+        return receipt
+
+    def finished(task):
+        try:
+            if task.cancelled():
+                receipt = {
+                    "status": "failed", "reason": "cancelled", "candidate_count": 0,
+                    "supported_count": 0, "contradicted_count": 0,
+                    "insufficient_count": 0, "source_ids": [], "elapsed_s": 0.0,
+                    "delivery": "failed_open",
+                }
+                _record_personal_claim_outcome(ctx, receipt, provenance)
+            else:
+                task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug(f"[PersonalClaim] background receipt skipped: {exc}")
+        record = getattr(ctx, "debug_record", None)
+        if isinstance(record, dict):
+            record.update({k: v for k, v in ctx.telemetry.items()
+                           if k.startswith("personal_claim_")})
+        _pending_storage_tasks.discard(task)
+
+    task = asyncio.create_task(check())
+    ctx.personal_claim_task = task
+    _pending_storage_tasks.add(task)
+    task.add_done_callback(finished)
+    return task
 
 
 async def _run_self_note(ctx):
@@ -3745,10 +4023,12 @@ async def _run_agentic_search(ctx):
         # dispatch. If a later step in this closure raises, `finally:` must not
         # call it again and store the answer twice.
         _agentic_storage_dispatched = True
+        _start_background_personal_claim(ctx, _agentic_prov)
         _storage_task = _dispatch_storage(
             orchestrator, merged_input, final_output_sanitized, user_text,
             final_output_sanitized, personality, file_names, conversation_logger,
             _agentic_session_id, _agentic_prov, 'agentic-search',
+            personal_claim_task=getattr(ctx, "personal_claim_task", None),
         )
         _track_storage_task(ctx, _storage_task)
         logger.info("[Handle Submit] Agentic storage dispatched to background")
@@ -4119,6 +4399,7 @@ async def _run_agentic_search(ctx):
             citations, thinking_block=thinking_part or "",
         )
         _attach_agentic_provenance(_agentic_prov, orchestrator)
+        _attach_personal_claim_provenance(_agentic_prov, ctx)
 
         _agentic_phase = getattr(orchestrator, '_last_phase_timings', {})
         _agentic_tasks = getattr(orchestrator, '_last_task_timings', {})
@@ -4225,6 +4506,23 @@ async def _run_agentic_search(ctx):
                 final_output = _ag_gc_revised
         except Exception as _ag_gc_err:
             logger.warning(f"[Handle Submit] Agentic grounding check failed (non-fatal): {_ag_gc_err}")
+
+        # Personal-event support is independent of tone, planning, and the
+        # factual-grounding prefilter.  In correction mode this runs before
+        # the final chunk is yielded; in log-only mode it schedules a
+        # deferred receipt while preserving the delivered text.
+        try:
+            _ag_pc_revised = await _apply_personal_claim_check_for_delivery(
+                ctx, display_output,
+            )
+            if _ag_pc_revised:
+                display_output = _ag_pc_revised
+                final_output = _ag_pc_revised
+        except Exception as _ag_pc_err:
+            logger.warning(
+                f"[Handle Submit] Agentic personal claim check failed (non-fatal): {_ag_pc_err}"
+            )
+        _attach_personal_claim_provenance(_agentic_prov, ctx)
 
         # ── Web-evidence honesty (2026-09-12, review F4): the same receipt and
         # notice as the enhanced path, plus this turn's own loop rounds
@@ -4905,6 +5203,22 @@ async def _run_enhanced(ctx):
         except Exception as e:
             logger.warning(f"[Handle Submit] Grounding check failed (non-fatal): {e}")
 
+        # Independent personal-event support boundary. It applies to every
+        # enhanced final answer, including emotional turns with no response
+        # plan. Log-only defers the verifier until after this final yield.
+        try:
+            _pc_revised = await _apply_personal_claim_check_for_delivery(
+                ctx, _resp_for_debug,
+            )
+            if _pc_revised:
+                _resp_for_debug = _pc_revised
+                final_output = _pc_revised
+        except Exception as _pc_err:
+            logger.warning(
+                f"[Handle Submit] Enhanced personal claim check failed (non-fatal): {_pc_err}"
+            )
+        _attach_personal_claim_provenance(_enh_prov, ctx)
+
         # ── Web-evidence honesty (2026-09-12, adversarial review F4): a turn
         # that wanted fresh web evidence the spent budget could not fund says
         # so — once, after retries/guard/grounding, identically in the
@@ -5094,10 +5408,12 @@ async def _run_enhanced(ctx):
                         "the text the user saw and the text being stored diverge."
                     )
 
+                _start_background_personal_claim(ctx, _store_prov)
                 _storage_task = _dispatch_storage(
                     orchestrator, merged_input, response_to_store, user_text,
                     final_output, personality, file_names, conversation_logger,
                     _store_session_id, _store_prov, _store_mode,
+                    personal_claim_task=getattr(ctx, "personal_claim_task", None),
                 )
                 _track_storage_task(ctx, _storage_task)
                 logger.info("[HANDLE_SUBMIT] Storage dispatched to background")
@@ -5556,6 +5872,11 @@ async def _handle_submit_inner(
     # config change mid-turn cannot flip this turn's buffering/delivery.
     from config.app_config import GROUNDING_CHECK_ENABLED as _gc_enabled, GROUNDING_MODE as _gc_mode
     ctx.grounding_mode = _gc_mode if _gc_enabled else "off"
+    from config.app_config import (
+        PERSONAL_CLAIM_CHECK_ENABLED as _pc_enabled,
+        PERSONAL_CLAIM_MODE as _pc_mode,
+    )
+    ctx.personal_claim_mode = _pc_mode if _pc_enabled else "off"
     ctx.telemetry["has_images"] = bool(files_result.images)
     if _active_doc_telemetry:
         ctx.telemetry["active_document"] = _active_doc_telemetry
@@ -5797,7 +6118,7 @@ async def _handle_submit_inner(
             # draft must never leak onto the wire ahead of the reviewed
             # enhanced answer (A05_design.md, Revision 2026-09-13, F1).
             _agentic_stream = _run_agentic_search(ctx)
-            if ctx.grounding_mode == "correct":
+            if ctx.grounding_mode == "correct" or ctx.personal_claim_mode == "correct":
                 _agentic_stream = _buffer_grounding_draft(
                     ctx, _agentic_stream, flush_on_exhaust=lambda: ctx.handled,
                 )
@@ -5809,7 +6130,7 @@ async def _handle_submit_inner(
 
     # A05b-2: same buffering as the agentic dispatch above.
     _enhanced_stream = _run_enhanced(ctx)
-    if ctx.grounding_mode == "correct":
+    if ctx.grounding_mode == "correct" or ctx.personal_claim_mode == "correct":
         _enhanced_stream = _buffer_grounding_draft(ctx, _enhanced_stream)
     async for _c in _enhanced_stream:
         yield _c
