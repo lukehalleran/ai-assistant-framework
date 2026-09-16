@@ -44,7 +44,6 @@ import os
 import re
 import logging
 import shutil
-import yaml
 from pathlib import Path
 from utils.safe_json import atomic_write_text
 import utils.tag_generator as _tag_generator
