@@ -164,7 +164,7 @@ async def test_unparseable_output_is_invalid_json_and_preserves_text():
     bad_json = ScriptedModel({"claims": [{"text": "uploaded it"}]})
     invalid = await audit_personal_claims("You uploaded it.", evidence, bad_json)
     assert invalid.status == "failed"
-    assert invalid.reason == "invalid_verdict"  # parsed, but no usable claim survived
+    assert invalid.reason == "invalid_verdict"  # parsed, but the only claim broke the schema
     assert invalid.dropped_claim_count == 1
     assert omit_unsupported_claims("You uploaded it.", invalid) == "You uploaded it."
 
@@ -333,5 +333,22 @@ async def test_ambiguous_paraphrase_is_dropped_not_guessed():
         {"text": "The user sent the email today.", "status": "supported", "kind": "completion", "evidence": []},
     ]})
     result = await audit_personal_claims(reply, _evidence(), model)
-    assert result.status == "failed" and result.reason == "invalid_verdict"
-    assert result.dropped_claim_count == 1
+    # Well-formed but unlocatable: a CHECKED audit with no candidates, never a failure.
+    assert result.status == "checked" and result.reason == "no_claims"
+    assert result.claims == [] and result.dropped_claim_count == 1
+    assert omit_unsupported_claims(reply, result) == reply
+
+
+@pytest.mark.asyncio
+async def test_restatement_of_the_user_message_is_a_checked_audit_with_no_claims():
+    """Live 2026-09-15 20:29: the only claim was the user's own message restated;
+    it has no draft sentence. Dropping it is right; calling the audit failed is not."""
+    reply = "Looks like that came through as a test — same message as a few minutes ago. My answer stands."
+    model = ScriptedModel({"claims": [
+        {"text": "User took meds recently and hopes to go to bed early.", "status": "supported",
+         "kind": "completed action", "evidence": [{"source_id": "src_current_query", "quote": "took meds"}]},
+    ]})
+    result = await audit_personal_claims(reply, build_personal_evidence("Ya took meds just recently hoping I can go to bed early", {}), model)
+    assert (result.status, result.reason) == ("checked", "no_claims")
+    assert result.dropped_claim_count == 1 and result.claims == []
+    assert result.receipt()["candidate_count"] == 0

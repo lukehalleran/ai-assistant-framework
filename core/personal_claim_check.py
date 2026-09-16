@@ -366,6 +366,10 @@ class _DropClaim(ValueError):
     """This claim cannot be used; the rest of the audit still can."""
 
 
+class _MalformedClaim(_DropClaim):
+    """The model broke the schema for this claim (shape/enum/empty text)."""
+
+
 _STATUS_RANK = {"supported": 0, "insufficient": 1, "contradicted": 2}
 
 
@@ -447,23 +451,33 @@ def _validate_claims(
             sources.setdefault(source_id, []).append(row)
     claims: list[dict] = []
     by_span: dict[str, dict] = {}
-    counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0, "relocated": 0}
+    counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0, "relocated": 0,
+              "malformed": 0}
     drops: list[str] = []
     for raw_claim in payload["claims"]:
         try:
             if not isinstance(raw_claim, dict) or set(raw_claim) != {"text", "status", "kind", "evidence"}:
-                raise _DropClaim("unexpected claim shape")
+                raise _MalformedClaim("unexpected claim shape")
             text, status, kind = raw_claim["text"], raw_claim["status"], raw_claim["kind"]
             if status not in _VALID_STATUSES or not isinstance(kind, str) or not kind.strip():
-                raise _DropClaim("invalid claim enum")
+                raise _MalformedClaim("invalid claim enum")
             if not isinstance(text, str) or not text.strip():
-                raise _DropClaim("claim is not an exact response span")
+                raise _MalformedClaim("empty claim text")
             located, how = _locate_span(
                 response, text, overlap_threshold=overlap_threshold,
                 min_claim_tokens=min_claim_tokens,
             )
             if located is None:
+                # A semantic miss, not a broken verdict: the model audited
+                # something that is not in the draft (live 2026-09-15 20:29:
+                # it restated the user's own message). Dropping it IS the
+                # correct verdict for that claim.
                 raise _DropClaim(f"claim is not an exact response span ({how})")
+        except _MalformedClaim as exc:
+            counts["dropped_claims"] += 1
+            counts["malformed"] += 1
+            drops.append(str(exc))
+            continue
         except _DropClaim as exc:
             counts["dropped_claims"] += 1
             drops.append(str(exc))
@@ -603,13 +617,17 @@ async def audit_personal_claims(
     if drops:
         logger.debug(f"[PersonalClaim] dropped {counts['dropped_claims']} claim(s), "
                      f"{counts['dropped_evidence']} reference(s): {sorted(set(drops))}")
-    if payload["claims"] and not claims:
-        # Every claim the model produced was unusable: nothing was checked.
+    if payload["claims"] and not claims and counts["malformed"]:
+        # The model broke the schema and nothing survived: nothing was checked.
         return PersonalClaimResult("failed", "invalid_verdict", elapsed_s=perf_counter() - started,
                                    evidence_truncated=truncated,
                                    dropped_claim_count=counts["dropped_claims"],
                                    dropped_evidence_count=counts["dropped_evidence"])
-    return PersonalClaimResult("checked", "ok", claims=claims, elapsed_s=perf_counter() - started,
+    # Well-formed claims that were all semantic misses (restatements of the
+    # user's message, nothing in the draft) are a CHECKED audit with no
+    # candidates -- the counts say what was dropped.
+    reason = "ok" if claims or not payload["claims"] else "no_claims"
+    return PersonalClaimResult("checked", reason, claims=claims, elapsed_s=perf_counter() - started,
                                evidence_truncated=truncated,
                                dropped_claim_count=counts["dropped_claims"],
                                dropped_evidence_count=counts["dropped_evidence"],
