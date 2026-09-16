@@ -125,6 +125,7 @@ from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 from utils.ordered_slice import oldest_first as _ordered_oldest_first
 from utils.text_budget import fit_text_to_tokens
+from utils.async_results import classify_gather_results
 import memory.memory_expander as memory_expander
 from config import app_config
 
@@ -1664,9 +1665,14 @@ class AgenticSearchController:
 
                 # Yield events and accumulate results (deterministic order)
                 session.state = AgentState.OBSERVING
-                for tr in results:
-                    if isinstance(tr, Exception):
-                        logger.error(f"[AgenticSearch] Tool dispatch error: {tr}")
+                # A cancelled child task (client disconnect, outer timeout) is a
+                # CancelledError INSTANCE in `results`, not an Exception — the old
+                # isinstance(tr, Exception) filter let it reach tr.start_events and
+                # killed the whole agentic generator for the turn (2026-09-16).
+                outcomes = classify_gather_results(results)
+                for _idx, tr, err in outcomes:
+                    if err is not None:
+                        logger.error(f"[AgenticSearch] Tool dispatch error: {err!r}")
                         continue
                     for ev in tr.start_events:
                         yield ev
@@ -1684,8 +1690,8 @@ class AgenticSearchController:
                         session.expand_count += 1
 
                 # Relaxation tracking (web search results only)
-                for tr in results:
-                    if isinstance(tr, Exception):
+                for _idx, tr, err in outcomes:
+                    if err is not None:
                         continue
                     if tr.decision.wants_search and tr.round_data is not None:
                         self._update_relaxation_tracking(session, tr)
