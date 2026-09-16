@@ -12,10 +12,16 @@ gated. This turns the classifier's supervision metadata into an action the human
 must take at review time rather than a passive label.
 """
 import logging
+import traceback
 import gradio as gr
 import json as _json
 import html as _html
 from datetime import datetime as _dt
+import knowledge.proposal_generator as proposal_generator
+import knowledge.implementation_detector as implementation_detector
+import knowledge.git_memory as git_memory
+import memory.code_proposal as code_proposal
+import memory.proposal_risk as proposal_risk
 
 
 def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_tabs):
@@ -174,14 +180,13 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
         async def _generate_proposals_now():
             """On-demand proposal generation."""
             try:
-                from knowledge.proposal_generator import GoalDirectedGenerator
-                from memory.proposal_store import ProposalStore
+                from memory.proposal_store import ProposalStore  # lazy import: patch-point (tests/unit/test_proposal_filter.py:385)
                 mm = getattr(orchestrator, 'model_manager', None)
                 chroma = getattr(orchestrator, 'memory_system', None)
                 chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
                 if not mm or not chroma_store:
                     return "Model manager or chroma store not available."
-                generator = GoalDirectedGenerator(model_manager=mm, repo_path=".")
+                generator = proposal_generator.GoalDirectedGenerator(model_manager=mm, repo_path=".")
                 store = ProposalStore(chroma_store=chroma_store)
                 extra_parts = []
                 try:
@@ -214,9 +219,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
         async def _check_implementation_now():
             """Run full implementation detection on all pending+approved proposals."""
             try:
-                from knowledge.implementation_detector import ImplementationDetector
-                from memory.proposal_store import ProposalStore
-                from knowledge.git_memory import GitMemoryExtractor
+                from memory.proposal_store import ProposalStore  # lazy import: patch-point (tests/unit/test_proposal_filter.py:385)
 
                 chroma = getattr(orchestrator, 'memory_system', None)
                 chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
@@ -229,9 +232,9 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 if not proposals:
                     return "No pending/approved proposals to check."
 
-                detector = ImplementationDetector(
+                detector = implementation_detector.ImplementationDetector(
                     repo_path=".",
-                    git_extractor=GitMemoryExtractor("."),
+                    git_extractor=git_memory.GitMemoryExtractor("."),
                     model_manager=mm,
                 )
                 results = await detector.detect_batch(proposals, lightweight=False)
@@ -261,9 +264,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 return f"Proposal not found for: {selected_label}"
 
             try:
-                from knowledge.implementation_detector import ImplementationDetector
-                from memory.proposal_store import ProposalStore
-                from knowledge.git_memory import GitMemoryExtractor
+                from memory.proposal_store import ProposalStore  # lazy import: patch-point (tests/unit/test_proposal_filter.py:385)
 
                 chroma = getattr(orchestrator, 'memory_system', None)
                 chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
@@ -276,9 +277,9 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 if not proposal:
                     return f"Proposal {proposal_id} not found."
 
-                detector = ImplementationDetector(
+                detector = implementation_detector.ImplementationDetector(
                     repo_path=".",
-                    git_extractor=GitMemoryExtractor("."),
+                    git_extractor=git_memory.GitMemoryExtractor("."),
                     model_manager=mm,
                 )
                 result = detector.detect_single(proposal, lightweight=False)
@@ -302,9 +303,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 return f"Proposal not found for: {selected_label}", ""
 
             try:
-                from knowledge.proposal_generator import GoalDirectedGenerator
-                from memory.proposal_store import ProposalStore
-                from memory.code_proposal import CodeProposal
+                from memory.proposal_store import ProposalStore  # lazy import: patch-point (tests/unit/test_proposal_filter.py:385)
 
                 mm = getattr(orchestrator, 'model_manager', None)
                 chroma = getattr(orchestrator, 'memory_system', None)
@@ -320,7 +319,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 if not proposal.implementation_steps:
                     return "This proposal has no implementation steps to generate code for.", ""
 
-                generator = GoalDirectedGenerator(model_manager=mm, repo_path=".")
+                generator = proposal_generator.GoalDirectedGenerator(model_manager=mm, repo_path=".")
                 result = await generator.generate_code_for_proposal(proposal)
 
                 # Build HTML output with syntax-highlighted code blocks
@@ -369,7 +368,6 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 return status_msg, "\n".join(html_parts)
 
             except Exception as e:
-                import traceback
                 logging.error(f"[GUI] Code generation error: {traceback.format_exc()}")
                 return f"Code generation failed: {e}", ""
 
@@ -383,8 +381,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 return f"Proposal not found for: {selected_label}"
 
             try:
-                from memory.proposal_store import ProposalStore
-                from memory.code_proposal import ProposalStatus
+                from memory.proposal_store import ProposalStore  # lazy import: patch-point (tests/unit/test_proposal_filter.py:385)
 
                 chroma = getattr(orchestrator, 'memory_system', None)
                 chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
@@ -392,7 +389,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                     return "Chroma store not available."
 
                 store = ProposalStore(chroma_store=chroma_store)
-                status_enum = ProposalStatus(new_status)
+                status_enum = code_proposal.ProposalStatus(new_status)
                 ok = store.update_status(proposal_id, status_enum, reason=reason)
 
                 if ok:
@@ -416,9 +413,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 return f"Proposal not found for: {selected_label}"
 
             try:
-                from memory.proposal_store import ProposalStore
-                from memory.code_proposal import ProposalStatus
-                from memory.proposal_risk import requires_human_ack
+                from memory.proposal_store import ProposalStore  # lazy import: patch-point (tests/unit/test_proposal_filter.py:385)
 
                 chroma = getattr(orchestrator, 'memory_system', None)
                 chroma_store = getattr(chroma, 'chroma_store', None) if chroma else None
@@ -430,7 +425,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                 if not proposal:
                     return f"Proposal {proposal_id} not found."
 
-                needs_ack = requires_human_ack(
+                needs_ack = proposal_risk.requires_human_ack(
                     proposal.risk_level, proposal.touches_core_system
                 )
                 if needs_ack and not acknowledged:
@@ -442,7 +437,7 @@ def build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_
                         f"it before marking it **{new_status}**."
                     )
 
-                ok = store.update_status(proposal_id, ProposalStatus(new_status))
+                ok = store.update_status(proposal_id, code_proposal.ProposalStatus(new_status))
                 if ok:
                     note = " (acknowledged)" if needs_ack else ""
                     return f"Proposal marked as **{new_status}**{note}."

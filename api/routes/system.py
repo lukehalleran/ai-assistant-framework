@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from utils.logging_utils import get_logger
 import asyncio
+import knowledge.obsidian_manager as obsidian_manager
 
 logger = get_logger("api_routes")
 
@@ -54,8 +55,7 @@ async def sync_notes(request: Request):
 
     def _sync() -> str:
         try:
-            from knowledge.obsidian_manager import ObsidianManager
-            manager = ObsidianManager()
+            manager = obsidian_manager.ObsidianManager()
             result = manager.embed_vault(force_reindex=False)
 
             if result.errors:
@@ -92,7 +92,7 @@ async def graph(request: Request, limit: int = 300):
     which used to crash (`'str' object has no attribute 'get'`) or silently
     return the wrong shape once the node count exceeded `limit`.
     """
-    from config.app_config import KNOWLEDGE_GRAPH_PERSIST_PATH
+    from config.app_config import KNOWLEDGE_GRAPH_PERSIST_PATH  # lazy import: live-config
 
     path = KNOWLEDGE_GRAPH_PERSIST_PATH
     if not os.path.exists(path):

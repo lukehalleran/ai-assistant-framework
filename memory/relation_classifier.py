@@ -224,7 +224,7 @@ def _config_exact_set() -> frozenset:
     """The canonical ephemeral relation list from config (lazy, uncached so
     test monkeypatching of the config list is respected)."""
     try:
-        from config.app_config import PROFILE_EPHEMERAL_RELATIONS
+        from config.app_config import PROFILE_EPHEMERAL_RELATIONS  # lazy import: live-config
         return frozenset(r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS)
     except ImportError:
         return frozenset()
@@ -232,7 +232,7 @@ def _config_exact_set() -> frozenset:
 
 def _standard_ephemeral_ttl_hours() -> float:
     try:
-        from config.app_config import PROFILE_EPHEMERAL_TTL_HOURS
+        from config.app_config import PROFILE_EPHEMERAL_TTL_HOURS  # lazy import: live-config
         return float(PROFILE_EPHEMERAL_TTL_HOURS)
     except ImportError:
         return 24.0
@@ -240,7 +240,7 @@ def _standard_ephemeral_ttl_hours() -> float:
 
 def _health_transient_ttl_hours() -> float:
     try:
-        from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS
+        from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS  # lazy import: live-config
         return float(PROFILE_HEALTH_TRANSIENT_TTL_HOURS)
     except ImportError:
         return 96.0  # 4 days — "a few days", not weeks

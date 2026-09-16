@@ -32,21 +32,32 @@ from __future__ import annotations
 import uuid
 from typing import List, Dict, Optional
 from datetime import datetime
+from datetime import datetime as _dt
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+import os as _os
 
 from utils.logging_utils import get_logger
 from utils.safe_json import CorruptStoreError, StoreVersionError
 from utils.topic_manager import TopicManager
+import utils.retrieval_outcome as retrieval_outcome
+import utils.time_manager as time_manager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+import memory.claim_tracker as claim_tracker
+import memory.context_surfacer as context_surfacer
 from memory.fact_extractor import FactExtractor
+import memory.fact_verification as fact_verification
 from memory.memory_consolidator import MemoryConsolidator
 from memory.memory_scorer import MemoryScorer
 from memory.hybrid_retriever import HybridRetriever
 from memory.memory_storage import MemoryStorage
 from memory.memory_retriever import MemoryRetriever
+import memory.shutdown_processor as shutdown_processor
 from memory.thread_manager import ThreadManager
+import memory.thread_store as thread_store
 from memory.user_profile import UserProfile
 from processing.gate_system import MultiStageGateSystem
+from config import app_config
 
 logger = get_logger("memory_coordinator")
 
@@ -78,13 +89,11 @@ class MemoryCoordinator:
         self.fact_extractor = FactExtractor()
         # Determine summary cadence from config or env (fallback to 10)
         try:
-            from config.app_config import config as _app_cfg
-            cfg_n = int(((_app_cfg.get('memory') or {}).get('summary_interval') or 10))
+            cfg_n = int(((app_config.config.get('memory') or {}).get('summary_interval') or 10))
         except (ImportError, AttributeError, ValueError, TypeError) as e:
             logger.debug(f"[MemoryCoordinator] Could not load summary_interval from config: {e}")
             cfg_n = 10
         try:
-            import os as _os
             env_n = int(_os.getenv('SUMMARY_EVERY_N', str(cfg_n)))
         except (ValueError, TypeError) as e:
             logger.debug(f"[MemoryCoordinator] Could not parse SUMMARY_EVERY_N env var: {e}")
@@ -108,7 +117,6 @@ class MemoryCoordinator:
             self.session_start = self._now()
         except (AttributeError, TypeError) as e:
             logger.debug(f"[MemoryCoordinator] _now() failed during init: {e}")
-            from datetime import datetime as _dt
             self.session_start = _dt.now()
 
         # Initialize modular components for delegation
@@ -127,7 +135,6 @@ class MemoryCoordinator:
         # Parallel disk reads: graph+resolver, user profile, claim index
         # These are independent JSON file loads that can overlap.
         # ------------------------------------------------------------------
-        from concurrent.futures import ThreadPoolExecutor
 
         self.graph_memory = None
         self.entity_resolver = None
@@ -137,17 +144,13 @@ class MemoryCoordinator:
         def _load_graph_and_resolver():
             """Load knowledge graph + entity resolver (sequential pair)."""
             try:
-                from config.app_config import (
-                    KNOWLEDGE_GRAPH_ENABLED, KNOWLEDGE_GRAPH_PERSIST_PATH,
-                    KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD, KNOWLEDGE_GRAPH_ALIASES_PATH,
-                )
-                if not KNOWLEDGE_GRAPH_ENABLED:
+                if not app_config.KNOWLEDGE_GRAPH_ENABLED:
                     return None, None
-                from memory.graph_memory import GraphMemory
-                from memory.entity_resolver import EntityResolver
-                gm = GraphMemory(persist_path=KNOWLEDGE_GRAPH_PERSIST_PATH)
-                gm._auto_save_threshold = KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD
-                er = EntityResolver(graph_memory=gm, aliases_path=KNOWLEDGE_GRAPH_ALIASES_PATH)
+                from memory.graph_memory import GraphMemory  # lazy import: startup-cost (would newly load: networkx)
+                from memory.entity_resolver import EntityResolver  # lazy import: startup-cost (would newly load: networkx)
+                gm = GraphMemory(persist_path=app_config.KNOWLEDGE_GRAPH_PERSIST_PATH)
+                gm._auto_save_threshold = app_config.KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD
+                er = EntityResolver(graph_memory=gm, aliases_path=app_config.KNOWLEDGE_GRAPH_ALIASES_PATH)
                 logger.info(
                     "[MemoryCoordinator] Knowledge graph initialized: %d nodes, %d edges",
                     gm.node_count(), gm.edge_count(),
@@ -166,11 +169,9 @@ class MemoryCoordinator:
 
         def _load_claim_index():
             try:
-                from config.app_config import STALENESS_ENABLED, STALENESS_INDEX_PATH
-                if not STALENESS_ENABLED:
+                if not app_config.STALENESS_ENABLED:
                     return None
-                from memory.claim_tracker import ClaimIndex
-                ci = ClaimIndex(persist_path=STALENESS_INDEX_PATH)
+                ci = claim_tracker.ClaimIndex(persist_path=app_config.STALENESS_INDEX_PATH)
                 logger.debug(
                     "[MemoryCoordinator] Claim index initialized: %d claims, %d docs",
                     ci.total_claims, ci.total_documents,
@@ -194,10 +195,8 @@ class MemoryCoordinator:
         # Initialize fact verification gate (pre-storage conflict checking)
         self.fact_verifier = None
         try:
-            from config.app_config import FACT_VERIFICATION_ENABLED
-            if FACT_VERIFICATION_ENABLED:
-                from memory.fact_verification import FactVerifier
-                self.fact_verifier = FactVerifier(
+            if app_config.FACT_VERIFICATION_ENABLED:
+                self.fact_verifier = fact_verification.FactVerifier(
                     chroma_store=chroma_store,
                     model_manager=model_manager,
                 )
@@ -234,10 +233,8 @@ class MemoryCoordinator:
         # Initialize thread store for proactive thread surfacing
         self.thread_store = None
         try:
-            from config.app_config import THREAD_SURFACING_ENABLED
-            if THREAD_SURFACING_ENABLED:
-                from memory.thread_store import ThreadStore
-                self.thread_store = ThreadStore(chroma_store=chroma_store)
+            if app_config.THREAD_SURFACING_ENABLED:
+                self.thread_store = thread_store.ThreadStore(chroma_store=chroma_store)
                 logger.debug("[MemoryCoordinator] Thread store initialized")
         except Exception as e:
             logger.debug(f"[MemoryCoordinator] Thread store init failed (non-fatal): {e}")
@@ -245,10 +242,8 @@ class MemoryCoordinator:
         # Initialize proactive context surfacer
         self.context_surfacer = None
         try:
-            from config.app_config import PROACTIVE_SURFACING_ENABLED
-            if PROACTIVE_SURFACING_ENABLED and self.graph_memory and self.entity_resolver:
-                from memory.context_surfacer import ContextSurfacer
-                self.context_surfacer = ContextSurfacer(
+            if app_config.PROACTIVE_SURFACING_ENABLED and self.graph_memory and self.entity_resolver:
+                self.context_surfacer = context_surfacer.ContextSurfacer(
                     graph_memory=self.graph_memory,
                     entity_resolver=self.entity_resolver,
                     model_manager=model_manager,
@@ -258,8 +253,7 @@ class MemoryCoordinator:
             logger.debug(f"[MemoryCoordinator] Context surfacer init failed (non-fatal): {e}")
 
         # Initialize shutdown processor for end-of-session consolidation
-        from memory.shutdown_processor import ShutdownProcessor
-        self._shutdown = ShutdownProcessor(
+        self._shutdown = shutdown_processor.ShutdownProcessor(
             corpus_manager=corpus_manager,
             chroma_store=chroma_store,
             consolidator=self.consolidator,
@@ -277,12 +271,10 @@ class MemoryCoordinator:
 
     # --------- time helpers (prefer TimeManager) ---------
     def _now(self):
-        from utils.time_manager import now_from
-        return now_from(self.time_manager)
+        return time_manager.now_from(self.time_manager)
 
     def _now_iso(self):
-        from utils.time_manager import now_iso_from
-        return now_iso_from(self.time_manager)
+        return time_manager.now_iso_from(self.time_manager)
 
     @property
     def session_id(self) -> str:
@@ -384,12 +376,11 @@ class MemoryCoordinator:
         # --- Lightweight per-turn thread resolution (pure regex, ~1ms) ---
         if self.thread_store and query:
             try:
-                from memory.thread_store import check_quick_resolutions, _COMPLETION_SIGNALS
                 # Fast pre-check: skip DB query if no completion signal in message
-                if _COMPLETION_SIGNALS.search(query.lower()):
+                if thread_store._COMPLETION_SIGNALS.search(query.lower()):
                     open_threads = self.thread_store.list_open_threads()
                     if open_threads:
-                        resolved_ids = check_quick_resolutions(query, open_threads)
+                        resolved_ids = thread_store.check_quick_resolutions(query, open_threads)
                         for tid in resolved_ids:
                             self.thread_store.resolve_thread(
                                 tid, "auto-resolved: completion signal in user message"
@@ -600,15 +591,14 @@ class MemoryCoordinator:
         """
         if not self.thread_store:
             return []
-        from utils.retrieval_outcome import RetrievalError
         try:
             threads = self.thread_store.get_top_threads(max_results=max_results)
             return [t.to_dict() for t in threads]
-        except RetrievalError:
+        except retrieval_outcome.RetrievalError:
             raise
         except Exception as e:
             logger.debug(f"[MemoryCoordinator] get_unresolved_threads failed: {e}")
-            raise RetrievalError(source="unresolved_threads", reason=type(e).__name__) from e
+            raise retrieval_outcome.RetrievalError(source="unresolved_threads", reason=type(e).__name__) from e
 
     # ---------------------------
     # Delegation methods for sub-components

@@ -477,7 +477,7 @@ class SynthesisFilter:
            novel phrasing. (Replaced an inverted bigram-FAISS signal, 2026-06-27 — see
            docs/SYNTHESIS_VALIDATION.md revert note.)
         """
-        from knowledge.semantic_search import semantic_search_with_neighbors
+        from knowledge.semantic_search import semantic_search_with_neighbors  # lazy import: startup-cost
 
         claim = result.candidate.connection_claim
         concept_a = result.candidate.concept_a
@@ -523,7 +523,7 @@ class SynthesisFilter:
         # co-occurrence). Direct concept cosine separates known (~0.59) from unrelated (~0.05).
         # See docs/SYNTHESIS_VALIDATION.md (2026-06-27) + revert note.
         try:
-            from models.model_manager import ModelManager
+            from models.model_manager import ModelManager  # lazy import: startup-cost
             embedder = ModelManager._get_cached_embedder()
             vecs = embedder.encode([concept_a, concept_b], normalize_embeddings=True)
             cooccurrence_sim = float(np.dot(vecs[0], vecs[1]))

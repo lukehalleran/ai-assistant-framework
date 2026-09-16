@@ -71,6 +71,7 @@ import asyncio
 import math
 import os
 import re
+import re as _re
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -85,6 +86,8 @@ from utils.trigger_match import (
     has_non_negated_hit,
 )
 from core.actions.registry import detect_action_intent
+import utils.institution_resolver as institution_resolver
+import utils.location_resolver as location_resolver
 import json
 
 logger = get_logger("web_search_trigger")
@@ -710,26 +713,26 @@ def _get_search_anchors():
     """
     global _search_anchor_embs, _no_search_anchor_embs, _search_anchor_version
     try:
-        from utils.adaptive_exemplars import get_store
+        from utils.adaptive_exemplars import get_store  # lazy import: startup-cost (would newly load: numpy)
         _version = get_store().version
     except Exception:
         _version = -1
     if _search_anchor_embs is not None and _search_anchor_version == _version:
         return _search_anchor_embs, _no_search_anchor_embs
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: layering
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return None, None
         pos = list(_SEARCH_ANCHOR_PHRASES)
         neg = list(_NO_SEARCH_ANCHOR_PHRASES)
         try:
-            from utils.adaptive_exemplars import get_store
+            from utils.adaptive_exemplars import get_store  # lazy import: startup-cost (would newly load: numpy)
             pos += get_store().get_learned("web_search", "search_worthy")
             neg += get_store().get_learned("web_search", "no_search")
         except Exception:
             pass
-        from utils.adaptive_exemplars import encode_texts_cached
+        from utils.adaptive_exemplars import encode_texts_cached  # lazy import: startup-cost (would newly load: numpy)
         _search_anchor_embs = encode_texts_cached(
             embedder, pos, _anchor_text_emb_cache, normalize=True
         )
@@ -754,11 +757,11 @@ def _semantic_search_boost(query: str, threshold: float = 0.35) -> float:
     if search_embs is None:
         return 0.0
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: layering
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return 0.0
-        import numpy as np
+        import numpy as np  # lazy import: startup-cost
         q_emb = embedder.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
         # Max similarity to any search anchor
         search_sims = search_embs @ q_emb
@@ -1461,8 +1464,7 @@ def _build_llm_trigger_prompt(
         # referring to voting") got "Vermont Wrenfield voting information" out of
         # the LLM with this line present on every call regardless of query
         # content; the post-parse backstop below still scrubs a slip-through.
-        from utils.institution_resolver import query_justifies_institution
-        if query_justifies_institution(
+        if institution_resolver.query_justifies_institution(
                 query, user_institution,
                 context=_identity_scope_context(query, conversation_context)):
             _inst = user_institution.strip()
@@ -1690,14 +1692,12 @@ async def _classify_with_llm_unified(
     current_date = datetime.now().strftime("%Y-%m-%d")
     user_location = None
     try:
-        from utils.location_resolver import get_user_location
-        user_location = get_user_location()
+        user_location = location_resolver.get_user_location()
     except Exception as e:
         logger.debug(f"[WebSearchTrigger] Location resolution failed: {e}")
     user_institution = None
     try:
-        from utils.institution_resolver import get_user_institution
-        user_institution = get_user_institution()
+        user_institution = institution_resolver.get_user_institution()
     except Exception as e:
         logger.debug(f"[WebSearchTrigger] Institution resolution failed: {e}")
     prompt = _build_llm_trigger_prompt(
@@ -1743,15 +1743,13 @@ async def _classify_with_llm_unified(
                 # the deterministic institution backstop for academic-
                 # logistics terms that stayed generic ("college drop date"
                 # 2026-08-27).
-                from utils.institution_resolver import scope_identity_terms
-                parsed.search_terms = scope_identity_terms(
+                parsed.search_terms = institution_resolver.scope_identity_terms(
                     parsed.search_terms, query, user_location, user_institution,
                     context=_identity_scope_context(query, conversation_context),
                 )
             if parsed.should_search and parsed.search_terms:
                 try:
-                    from utils.institution_resolver import get_user_anchors
-                    anchors = get_user_anchors()
+                    anchors = institution_resolver.get_user_anchors()
                 except Exception:
                     anchors = [user_institution] if user_institution else []
                 if terms_are_private_sphere_generic(parsed.search_terms, anchors):
@@ -1809,7 +1807,6 @@ def _detect_retry_after_inability(query: str, conversation_context) -> str:
             if len(term.split()) >= 1 and term:
                 return term
         # strip retry preamble words; keep the remainder if substantive
-        import re as _re
         stripped = _re.sub(
             r"\b(?:ok(?:ay)?|let'?s|try|again|retry|i|fixed|it|now|you|should|"
             r"be|able|to|so|well|one|more|time|that)\b",
@@ -1846,7 +1843,7 @@ def _resolve_remaining_credits(remaining_credits) -> float:
         # keeps the lower layer independent of the provider package (and
         # makes the credit source monkeypatchable). There is no cycle:
         # web_search_manager does not import this module.
-        from knowledge.web_search_manager import live_remaining_credits
+        from knowledge.web_search_manager import live_remaining_credits  # lazy import: layering (utils must not depend on knowledge at import; no cycle — web_search_manager does not import this module)
         live = live_remaining_credits()
     except Exception:
         live = None
@@ -1865,7 +1862,7 @@ def _resolve_web_search_enabled(web_search_enabled) -> bool:
     if web_search_enabled is not None:
         return bool(web_search_enabled)
     try:
-        # lazy import: layering + patch point (see _resolve_remaining_credits)
+        # lazy import: layering + patch-point (see _resolve_remaining_credits)
         from knowledge.web_search_manager import WebSearchManager
         return bool(WebSearchManager.is_enabled())
     except Exception:
@@ -1886,7 +1883,7 @@ def _apply_budget_veto(decision, remaining_credits: float):
     if decision is None or not getattr(decision, "should_search", False):
         return decision
     try:
-        from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor
+        from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor  # lazy import: layering
     except Exception:
         _floor = 1.0
     if remaining_credits >= _floor:
@@ -1926,7 +1923,7 @@ def paid_search_block_reason(remaining_credits=None, web_search_enabled=None) ->
     if not _resolve_web_search_enabled(web_search_enabled):
         return "disabled"
     try:
-        from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor
+        from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor  # lazy import: layering
     except Exception:
         _floor = 1.0
     if _resolve_remaining_credits(remaining_credits) < _floor:
@@ -2171,7 +2168,7 @@ async def _analyze_for_web_search_llm(
             # so the phrasing stops semantically boosting future statements.
             _referential_followup = False
             try:
-                from utils.adaptive_exemplars import get_store
+                from utils.adaptive_exemplars import get_store  # lazy import: startup-cost (would newly load: numpy)
                 get_store().record("web_search", "no_search", query, "personal_state_statement")
             except Exception:
                 pass
@@ -2211,7 +2208,7 @@ async def _analyze_for_web_search_llm(
     # A mixed longitudinal request owns the turn. Do not let the ordinary web
     # confidence blend or a personal-topic search veto erase this independent
     # routing decision; the frozen planner will audit every requested channel.
-    from core.insight.detector import allows_pattern_classification
+    from core.insight.detector import allows_pattern_classification  # lazy import: cycle
     if llm_response.needs_pattern_analysis and not allows_pattern_classification(query):
         logger.info("[WebSearchTrigger] Suppressed unsolicited pattern analysis of a self-report")
         llm_response.needs_pattern_analysis = False

@@ -57,6 +57,7 @@ from utils.query_checker import (
     is_request_shaped,
     keyword_tokens,
 )
+import utils.time_manager as time_manager
 
 logger = get_logger("stm_analyzer")
 
@@ -601,7 +602,7 @@ Return JSON only, no markdown or extra text:"""
             # a new information request. The live "Day of please thank you"
             # turn was otherwise rewritten as "what day is today?".
             try:
-                from utils.query_checker import is_continuation_answer
+                from utils.query_checker import is_continuation_answer  # lazy import: cycle
                 if is_continuation_answer(user_query, last_assistant_response or ""):
                     parsed["reference_type"] = "clarification"
                     parsed["user_question"] = (
@@ -705,7 +706,7 @@ Return JSON only, no markdown or extra text:"""
         generation or narrative refresh.
         """
         try:
-            from config.app_config import STM_INJECT_DAILY_NOTES_DAYS
+            from config.app_config import STM_INJECT_DAILY_NOTES_DAYS  # lazy import: live-config
         except ImportError:
             STM_INJECT_DAILY_NOTES_DAYS = 0
 
@@ -714,7 +715,7 @@ Return JSON only, no markdown or extra text:"""
             return ""
 
         try:
-            from utils.daily_notes_generator import read_daily_note
+            from utils.daily_notes_generator import read_daily_note  # lazy import: cycle
         except ImportError:
             return ""
 
@@ -770,8 +771,6 @@ Return JSON only, no markdown or extra text:"""
         Returns:
             Formatted conversation string with relative day labels
         """
-        from utils.time_manager import format_relative_timestamp
-
         # Corpus contract is newest-first. Render chronologically so the final
         # exchange really is the immediate predecessor; sort by timestamp when
         # all timestamps are parseable, otherwise reverse the contract order.
@@ -809,9 +808,9 @@ Return JSON only, no markdown or extra text:"""
             if ts:
                 try:
                     if isinstance(ts, datetime):
-                        ts_prefix = f"[{format_relative_timestamp(ts)}] "
+                        ts_prefix = f"[{time_manager.format_relative_timestamp(ts)}] "
                     elif isinstance(ts, str):
-                        ts_prefix = f"[{format_relative_timestamp(datetime.fromisoformat(ts))}] "
+                        ts_prefix = f"[{time_manager.format_relative_timestamp(datetime.fromisoformat(ts))}] "
                 except (ValueError, TypeError):
                     pass
 

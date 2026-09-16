@@ -240,7 +240,7 @@ class UncertaintyDetector:
             try:
                 anchor_embs = _get_anchor_embeddings(embedder)
                 if anchor_embs is not None:
-                    from sklearn.metrics.pairwise import cosine_similarity
+                    from sklearn.metrics.pairwise import cosine_similarity  # lazy import: startup-cost
 
                     prefix = text[:UncertaintyDetector.SEMANTIC_CHAR_LIMIT]
                     response_emb = embedder.encode(

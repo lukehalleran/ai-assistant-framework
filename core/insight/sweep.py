@@ -41,6 +41,8 @@ from memory.utils import is_junk_conversation_doc, is_junk_summary, is_quarantin
 from utils.logging_utils import get_logger
 from utils.ordered_slice import week_bucket_key as _ordered_week_bucket_key
 from utils.ordered_slice import window_fair_sample as _ordered_window_fair_sample
+import memory.stance_classifier as stance_classifier
+import core.insight.facets as facets
 
 logger = get_logger("insight_sweep")
 
@@ -51,7 +53,7 @@ SWEEP_COLLECTIONS = (
 
 
 def default_caps() -> dict:
-    from config import app_config as cfg
+    from config import app_config as cfg  # lazy import: live-config
     return {
         "per_facet_cap": cfg.INSIGHT_PER_FACET_CAP,
         "total_evidence_cap": cfg.INSIGHT_TOTAL_EVIDENCE_CAP,
@@ -287,8 +289,7 @@ async def run_sweep(
                     ))
 
     def _sweep_graph(facet: FacetQuery, out: list[EvidenceItem]) -> None:
-        from config.app_config import GRAPH_EXPANSION_HUB_DEGREE
-        from memory.stance_classifier import effective_stance
+        from config.app_config import GRAPH_EXPANSION_HUB_DEGREE  # lazy import: live-config
 
         now = datetime.now()
         for mention in facet.entities:
@@ -327,7 +328,7 @@ async def run_sweep(
                         date=ts.isoformat() if isinstance(ts, datetime) else None,
                         collection="graph",
                         speaker="",
-                        is_appraisal=effective_stance(edge.metadata) == "appraisal",
+                        is_appraisal=stance_classifier.effective_stance(edge.metadata) == "appraisal",
                         facet=facet.name,
                     ))
             except Exception as e:
@@ -348,11 +349,9 @@ async def run_sweep(
         # BEFORE capping, then week-fair-select down to keyword_scan_max (>=2
         # per ISO week when available) so this scan's OWN contribution to
         # `collected` can never be 100% recent even before _finalize runs.
-        from core.insight.facets import extract_quoted_phrases
-
         if corpus_manager is None:
             return
-        phrases = extract_quoted_phrases(request_text)
+        phrases = facets.extract_quoted_phrases(request_text)
         if not phrases:
             return
         kw_kwargs: dict = {}
@@ -492,7 +491,7 @@ def _finalize(
     deduped: list[EvidenceItem] = []
     # Attribution must run on full records: clipping a combined exchange
     # first made assistant prose look like the user's evidence.
-    from core.insight.provenance import label_evidence
+    from core.insight.provenance import label_evidence  # lazy import: cycle
     for item in label_evidence(items):
         key = _dedupe_key(item)
         if key in seen:

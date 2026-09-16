@@ -10,6 +10,8 @@ from datetime import datetime
 from typing import Dict, Optional
 
 from utils.logging_utils import get_logger
+import utils.query_checker as query_checker
+import utils.time_manager as time_manager
 
 logger = get_logger("thread_manager")
 
@@ -40,12 +42,10 @@ class ThreadManager:
         self.time_manager = time_manager
 
     def _now(self) -> datetime:
-        from utils.time_manager import now_from
-        return now_from(self.time_manager)
+        return time_manager.now_from(self.time_manager)
 
     def _now_iso(self) -> str:
-        from utils.time_manager import now_iso_from
-        return now_iso_from(self.time_manager)
+        return time_manager.now_iso_from(self.time_manager)
 
     def get_thread_context(self) -> Optional[Dict]:
         """
@@ -114,8 +114,6 @@ class ThreadManager:
         a SECOND classification here, which could disagree with the first
         and break the thread on a label the prompt never saw.
         """
-        from utils.query_checker import belongs_to_thread
-
         # Get only the most recent conversation (limit=1 for strict consecutive check)
         recent = self.corpus_manager.get_recent_memories(count=1)
 
@@ -140,7 +138,7 @@ class ThreadManager:
         last_conv = recent[0]
 
         # Check if current query continues last conversation
-        if belongs_to_thread(query, last_conv, current_topic=current_query_topic):
+        if query_checker.belongs_to_thread(query, last_conv, current_topic=current_query_topic):
             # Continue existing thread
             thread_id = last_conv.get("thread_id")
             thread_depth = last_conv.get("thread_depth", 0) + 1

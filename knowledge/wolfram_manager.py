@@ -106,7 +106,7 @@ class WolframManager:
         """
         # Load config values with fallbacks
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 WOLFRAM_APP_ID,
                 WOLFRAM_API_URL,
                 WOLFRAM_TIMEOUT,

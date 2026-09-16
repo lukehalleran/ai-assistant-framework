@@ -50,7 +50,7 @@ def _load_spacy():
     global _spacy_nlp
     if _spacy_nlp is None:
         try:
-            import spacy
+            import spacy  # lazy import: startup-cost
             _spacy_nlp = spacy.load("en_core_web_sm")
         except Exception as e:
             # If spaCy unavailable, silently skip (fallback to LLM)
@@ -399,7 +399,7 @@ class TopicManager:
     def _resolve_model_manager(self):
         """Best-effort resolution of ModelManager from dependency container."""
         try:
-            from core.dependencies import deps  # type: ignore
+            from core.dependencies import deps  # lazy import: layering (type: ignore)
             return deps.get_model_manager()
         except Exception:
             return None

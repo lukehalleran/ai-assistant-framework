@@ -125,6 +125,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-83 | Sandbox or probe resolves live code or live paths through the inherited environment | H | open |
 | BC-84 | One invalid element discards a whole multi-item verdict | E | partial |
 | BC-85 | Verbatim-span contract with a paraphrasing model | E | partial |
+| BC-86 | Undocumented function-body import (load-bearing placement indistinguishable from an accident) | B | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -768,6 +769,15 @@ next free number at their own merge.
 - Closure: ONE locator (`core/grounding_check._sentence_chunks` + `_locate_claim_sentence`: exact word-bounded containment, else the single sentence whose content tokens cover ≥0.8 of the claim's; ambiguous → not located, never guessed), consumed by the grounding integrator and the personal-claim checker (2026-09-15); a relocated claim's text BECOMES the exact source sentence so any downstream splice/omit stays exact. Source-side quotes (`evidence[].quote`) still require exact containment — a wrong quote only drops the reference, which moves a verdict toward insufficient (BC-84 direction). No scanner.
 - Status: partial — two consumers share the locator; any new "quote it exactly" contract must adopt it rather than a bare substring test.
 
+## L. New mechanisms (2026-09-16 import-hygiene session)
+
+### BC-86 Undocumented function-body import (load-bearing placement indistinguishable from an accident)
+- Mechanism: an `import` sits inside a function body with no recorded reason. Sometimes the placement is a contract — it breaks a cycle, keeps a test's `sys.modules`/attribute patch visible, reads a setting live, defers a heavy load, tolerates a missing optional dependency, or (for `import main`) avoids a second module instance — and sometimes it is an accident of LLM-driven editing. Nothing in the source distinguishes the two, so a later "hoist" silently breaks the contract and a later "make it lazy" hides a dependency: a broken import fails mid-conversation instead of at startup, and the module is read from disk after the working tree may have moved (branch switch under a live Daemon). BC-11 is the frozen-`from` sibling on the module-level side.
+- Incidents: 2026-08-28 the import untangle found 82 function-body imports with no reason and `import torch` at `config/app_config.py` module level (~1.25 s on every script/test), so the four-case doctrine was written but no guard (CHANGELOG 08-28); 2026-09-13/14 the inventory (`~/daemon_checkpoints/import_hygiene/`) counted 1,221 function-body imports in app code with 55 markers (3 outside any vocabulary), 36 `config.app_config` imports placed inside `except ImportError` handlers whose documented fallback depends on that placement, nine `sys.modules`-substitution tests (`tests/test_thread_surfacing.py:348`, `tests/unit/test_sep09_latency_metrics.py:170-176`) that pass only because their consumers happen to import at call time, and `import main` in `gui/handlers.py`/`api/app.py` that must stay call-time because `main.py:802-803` aliases `sys.modules["main"]` (the 2026-08-22 double-shutdown fix) — none marked (PLAN_20260914_import_hygiene_v2.md §2, Appendix B.7); 2026-09-16 the guard's first run: 1,193 unmarked in the gated packages, 289 in `scripts/`.
+- Find: DM-32 — `tests/unit/test_import_hygiene_guard.py` (self-contained AST scan, prints per-file counts under `-s`); the full inventory with recommended actions is the plan's tool (`--disagreements` lists markers the graph analysis cannot confirm).
+- Closure: CLAUDE.md import doctrine (five cases, closed reason vocabulary `startup-cost`, `import-side-effect`, `cycle`, `live-config`, `layering`, `patch-point`, `optional-dependency`, `platform`, comma-separated) + the guard as a CEILING RATCHET (`MAX_UNMARKED`/`MAX_INVALID` lowered by every hygiene batch, never raised; a second test fails when a batch leaves the ceiling slack) — CM-02; the plan's Phase 6 flips it to a content-anchored allowlist at zero.
+- Status: partial — the ratchet fails on net growth, not on every new unmarked import inside a batch that also removes some; `closed` when the allowlist gate lands.
+
 ## Detection methods (DM) — find instances without a full read
 
 | ID | Method | Runs as | Classes |
@@ -802,11 +812,12 @@ next free number at their own merge.
 | DM-28 | Persisted-model-output sweep: for every tool/generator writing model text into a store later re-rendered into a prompt, check write-path attribution stripping and read-path provenance marking | grep + manual | BC-75 |
 | DM-31 | Public function asserting live budget/toggle state through a literal default (`remaining_credits: float = 100`, `web_search_enabled: bool = True`); `None` = "resolve it" is the fix shape | `check_bug_classes.py scan` — dm31_live_state_default (gated) | BC-78, BC-11, BC-12 |
 | DM-30 | Keyword-boundary corpus diff: for every list compiled through `utils/trigger_match.py`, diff old vs new match sets over the corpus's word tokens and review BOTH directions (lost tokens must be unrelated words; gained tokens must be true inflections) | `scripts/probe_keyword_boundary.py`, read-only | BC-01 |
+| DM-32 | Function-body import without a `# lazy import: <reason>` marker from the closed vocabulary, in the app packages + `main.py` (`scripts/` reported only); self-contained AST scan with a ceiling ratchet that every hygiene batch lowers | `tests/unit/test_import_hygiene_guard.py` (CM-02; allowlist gate at the plan's Phase 6) | BC-86, BC-11 |
 | DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human; its untracked changelog input reports *unavailable* in CI, never a clean zero) | BC-76 |
 
 The `check_bug_classes.py scan` rows above are pinned by
 `config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
-Together they are a scoped structural lane. 11 of the 84 classes have a
+Together they are a scoped structural lane. 11 of the 85 classes have a
 scanner (9 gated, 2 report-only), and every scan report lists the classes no
 scanner covers. A green scan is not a behavioral guarantee for any class.
 Baseline candidates and their per-occurrence reviews live in

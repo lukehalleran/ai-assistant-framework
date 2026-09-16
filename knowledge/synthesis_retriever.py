@@ -24,6 +24,7 @@ import hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import knowledge.synthesis_generator as synthesis_generator
 from knowledge.synthesis_models import SynthesisCandidate
 from utils.logging_utils import get_logger
 
@@ -96,8 +97,7 @@ class RetrievalSynthesisGenerator:
         self.entity_resolver = entity_resolver
 
         # Delegate sampling/classification to existing SynthesisGenerator
-        from knowledge.synthesis_generator import SynthesisGenerator
-        self._base = SynthesisGenerator(
+        self._base = synthesis_generator.SynthesisGenerator(
             chroma_store, model_manager, graph_memory, entity_resolver,
         )
 
@@ -113,7 +113,7 @@ class RetrievalSynthesisGenerator:
         5. Adversarial LLM evaluation
         6. Package as SynthesisCandidate
         """
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             SYNTHESIS_RETRIEVAL_ENABLED,
             SYNTHESIS_GENERATOR_LLM_CONCURRENCY,
             SYNTHESIS_COHERENCE_MODEL,
@@ -185,7 +185,7 @@ class RetrievalSynthesisGenerator:
         semaphore: asyncio.Semaphore,
     ) -> Optional[Tuple[Dict, str]]:
         """LLM extracts domain-agnostic structural properties from a personal fact."""
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             SYNTHESIS_COHERENCE_MODEL,
             SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS,
         )
@@ -231,11 +231,11 @@ class RetrievalSynthesisGenerator:
         structural_query: str,
     ) -> List[Dict[str, Any]]:
         """FAISS retrieval with similarity floor + domain filtering."""
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             SYNTHESIS_RETRIEVAL_K,
             SYNTHESIS_RETRIEVAL_MIN_SIMILARITY,
         )
-        from knowledge.semantic_search import semantic_search_with_neighbors
+        from knowledge.semantic_search import semantic_search_with_neighbors  # lazy import: startup-cost
 
         try:
             results = semantic_search_with_neighbors(
@@ -286,7 +286,7 @@ class RetrievalSynthesisGenerator:
         semaphore: asyncio.Semaphore,
     ) -> Optional[SynthesisCandidate]:
         """Adversarial LLM evaluation: find reasons the parallel does NOT hold."""
-        from config.app_config import SYNTHESIS_COHERENCE_MODEL
+        from config.app_config import SYNTHESIS_COHERENCE_MODEL  # lazy import: live-config
 
         concept_a = self._base._extract_concept_name(fact_item, source="personal")
         concept_b = self._base._extract_concept_name(wiki_item, source="wiki")

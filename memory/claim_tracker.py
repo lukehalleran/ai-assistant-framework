@@ -88,7 +88,7 @@ def canonicalize_claim(
     # Relation normalization
     canon_relation = re.sub(r"\s+", "_", relation.lower().strip())
     try:
-        from memory.entity_resolver import normalize_relation
+        from memory.entity_resolver import normalize_relation  # lazy import: startup-cost (would newly load: networkx)
         canon_relation = normalize_relation(relation)
     except ImportError:
         pass

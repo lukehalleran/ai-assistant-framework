@@ -48,11 +48,16 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 import hashlib
+import json
+import os
 import re
+import re as _re
 from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel, Field
+import yaml
 
+import memory.utils as utils
 from utils.logging_utils import get_logger
 
 logger = get_logger("pattern_engine")
@@ -651,7 +656,6 @@ def _trend(buckets: list[PatternBucket]) -> str:
 def _corpus_entries(corpus_manager, since: datetime, until: datetime) -> list[dict]:
     """Episodic corpus entries in-window (junk filtered), parsed timestamps
     attached as '_ts'. Read-only."""
-    from memory.utils import is_junk_conversation_doc
     out = []
     try:
         entries = corpus_manager._get_episodic_sorted()
@@ -663,7 +667,7 @@ def _corpus_entries(corpus_manager, since: datetime, until: datetime) -> list[di
         if ts is None or not (since <= ts <= until):
             continue
         try:
-            if is_junk_conversation_doc(e.get("query", ""), e.get("response", "")):
+            if utils.is_junk_conversation_doc(e.get("query", ""), e.get("response", "")):
                 continue
         except Exception:
             pass
@@ -699,7 +703,7 @@ def run_pattern_query(
 ) -> PatternResult:
     """Run one deterministic pattern query. Never raises — failures degrade
     to an empty result with a note. Synchronous (callers may to_thread)."""
-    from config.app_config import (
+    from config.app_config import (  # lazy import: live-config
         PATTERN_DEFAULT_WINDOW_DAYS,
         PATTERN_EXEMPLARS_PER_BUCKET,
         PATTERN_KEYWORD_HIT_CAP,
@@ -837,10 +841,8 @@ def _events_topic_keyword(query, corpus_manager, since, until, hit_cap, result):
 
 
 def _events_tone(query, telemetry_path, since, until, result):
-    import json
-    import os
     if telemetry_path is None:
-        from config.app_config import TURN_TELEMETRY_PATH as telemetry_path  # noqa: F811
+        from config.app_config import TURN_TELEMETRY_PATH as telemetry_path  # lazy import: live-config  # noqa: F811
     if not telemetry_path or not os.path.exists(telemetry_path):
         result.notes.append("no telemetry available")
         return []
@@ -952,8 +954,6 @@ def _events_session_rhythm(query, corpus_manager, since, until, bucket, buckets,
 def _note_frontmatter_and_emotion(text: str) -> tuple[dict, str]:
     """Parse a Daemon daily note's YAML frontmatter + the first line of its
     '## Emotional State' section. Lenient: failures return ({}, '')."""
-    import re as _re
-    import yaml
     fm: dict = {}
     if text.startswith("---"):
         end = text.find("\n---", 3)
@@ -978,7 +978,7 @@ def _events_daily_notes(query, since, until, result):
     counted conversations, so no double-counting. Summaries/reflections stay
     deliberately UNCOUNTED for exactly that reason (they compress the same
     turns the corpus dimensions already count)."""
-    from utils.daily_notes_generator import read_daily_note
+    from utils.daily_notes_generator import read_daily_note  # lazy import: cycle
     span = (until.date() - since.date()).days
     if span > 400:
         result.notes.append("daily_notes window capped at 400 days")
@@ -1077,7 +1077,7 @@ def _events_email(email_rows, since, until, result):
     return events
 
 def _events_content_type(query, corpus_manager, since, until, result):
-    from core.content_type_detector import detect_content_type
+    from core.content_type_detector import detect_content_type  # lazy import: cycle
     if corpus_manager is None:
         result.notes.append("no corpus available")
         return []

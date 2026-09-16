@@ -37,8 +37,10 @@ import re
 import logging
 import shutil
 import calendar
+import yaml
 from pathlib import Path
 from utils.safe_json import atomic_write_text
+import utils.tag_generator as _tag_generator
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
@@ -139,7 +141,7 @@ class MonthlyNotesGenerator:
 
         # Load config
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 OBSIDIAN_VAULT_PATH,
                 DAILY_NOTES_FOLDER,
                 MONTHLY_NOTES_ENABLED,
@@ -169,7 +171,7 @@ class MonthlyNotesGenerator:
         """Lazy-load ModelManager."""
         if self._model_manager is None:
             try:
-                from models.model_manager import ModelManager
+                from models.model_manager import ModelManager  # lazy import: layering
                 self._model_manager = ModelManager()
                 logger.debug("[MonthlyNotes] ModelManager lazy-loaded")
             except Exception as e:
@@ -182,8 +184,7 @@ class MonthlyNotesGenerator:
         """Lazy-load TagGenerator."""
         if self._tag_generator is None:
             try:
-                from utils.tag_generator import TagGenerator
-                self._tag_generator = TagGenerator(model_manager=self.model_manager)
+                self._tag_generator = _tag_generator.TagGenerator(model_manager=self.model_manager)
                 logger.debug("[MonthlyNotes] TagGenerator lazy-loaded")
             except Exception as e:
                 logger.warning(f"[MonthlyNotes] Failed to load TagGenerator: {e}")
@@ -264,7 +265,6 @@ class MonthlyNotesGenerator:
             parts = content.split('---', 2)
             if len(parts) >= 3:
                 try:
-                    import yaml
                     frontmatter = yaml.safe_load(parts[1]) or {}
                 except Exception:
                     pass

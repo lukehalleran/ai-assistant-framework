@@ -22,6 +22,7 @@ Module Contract
 """
 import json, os, logging
 from datetime import datetime, date, timedelta
+import utils.safe_json as safe_json
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +117,11 @@ class TimeManager:
 
     def _save_last_query_time(self):
         if self.last_query_time:
-            from utils.safe_json import atomic_write_json
             data = {"last_query_time": self.last_query_time.isoformat()}
             # Also save previous_query_time for next load
             if self.previous_query_time:
                 data["previous_query_time"] = self.previous_query_time.isoformat()
-            atomic_write_json(self.time_file, data)
+            safe_json.atomic_write_json(self.time_file, data)
 
     def _load_last_session_time(self):
         if os.path.exists(self.session_file):
@@ -134,8 +134,7 @@ class TimeManager:
 
     def _save_last_session_time(self):
         if self.last_session_end_time:
-            from utils.safe_json import atomic_write_json
-            atomic_write_json(self.session_file,
+            safe_json.atomic_write_json(self.session_file,
                               {"last_session_end_time": self.last_session_end_time.isoformat()})
 
     # ---------- active days tracking ----------
@@ -153,8 +152,7 @@ class TimeManager:
     def _save_active_days(self):
         """Save set of active days to persistent storage"""
         try:
-            from utils.safe_json import atomic_write_json
-            atomic_write_json(self.active_days_file,
+            safe_json.atomic_write_json(self.active_days_file,
                               {"active_days": sorted(list(self.active_days))})
         except Exception as e:
             logger.warning(f"Failed to save active days: {e}")

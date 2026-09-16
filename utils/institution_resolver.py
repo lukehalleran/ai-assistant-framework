@@ -457,7 +457,7 @@ def scope_identity_terms(
     (which can re-introduce the institution into a term that stayed
     academic-logistics-generic once its location was removed, e.g. "drop
     deadline" -> "Vermont Wrenfield drop deadline")."""
-    from utils.location_resolver import strip_unjustified_location
+    from utils.location_resolver import strip_unjustified_location  # lazy import: cycle
 
     if terms and location:
         terms = strip_unjustified_location(terms, query, location, institution=institution)

@@ -46,7 +46,7 @@ class GitMemoryLoader:
         repo_path: str = ".",
     ):
         if chroma_store is None:
-            from config.app_config import CHROMA_PATH
+            from config.app_config import CHROMA_PATH  # lazy import: live-config
             chroma_store = MultiCollectionChromaStore(CHROMA_PATH)
         self.chroma_store = chroma_store
         self.extractor = GitMemoryExtractor(repo_path)

@@ -12,6 +12,7 @@ create_app(orchestrator) builds the parent app:
 Mount order matters: routers → /admin → static /.
 """
 
+import html as html_lib
 import os
 import sys
 import threading
@@ -27,6 +28,7 @@ from api.launch_auth import (
 )
 from api.routes import actions, chat, curation, debug, files, models, settings, system
 from api.state import AppState
+from config import app_config
 from utils.logging_utils import get_logger
 
 logger = get_logger("api_app")
@@ -53,7 +55,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
     async def lifespan(app: FastAPI):
         if start_background:
             try:
-                from gui.launch import start_background_tasks
+                from gui.launch import start_background_tasks  # lazy import: cycle
                 start_background_tasks(orchestrator)
             except Exception as e:
                 logger.warning(f"[API] Background startup tasks failed (non-fatal): {e}")
@@ -61,7 +63,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
             # Idle monitor + activity timestamp live in main.py (handle_submit
             # pokes main.update_activity_timestamp via its `import main` hook).
             try:
-                import main as main_mod
+                import main as main_mod  # lazy import: cycle (main alias — see main.py:802)
                 main_mod._orchestrator_ref = orchestrator
                 idle_thread = threading.Thread(
                     target=main_mod._idle_monitor_thread, daemon=True, name="IdleMonitor"
@@ -75,7 +77,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
 
         if start_background:
             try:
-                import main as main_mod
+                import main as main_mod  # lazy import: cycle (main alias — see main.py:802)
                 await main_mod.run_shutdown_tasks_async(orchestrator)
             except Exception as e:
                 logger.error(f"[API] Lifespan shutdown tasks failed: {e}")
@@ -90,10 +92,9 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
     # trusted-origin source with CORSMiddleware.
     cors_origins: list = []
     try:
-        from config.app_config import API_CORS_ORIGINS
-        cors_origins = list(API_CORS_ORIGINS or [])
+        cors_origins = list(app_config.API_CORS_ORIGINS or [])
         if cors_origins:
-            from fastapi.middleware.cors import CORSMiddleware
+            from fastapi.middleware.cors import CORSMiddleware  # lazy import: startup-cost
             app.add_middleware(
                 CORSMiddleware,
                 allow_origins=cors_origins,
@@ -126,8 +127,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
     # log a hostname/IP value — counts only.
     if trusted_hosts is None:
         try:
-            from config.app_config import API_ALLOWED_HOSTS, API_HOST
-            trusted_hosts, rejected_hosts = normalize_trusted_hostnames(API_HOST, API_ALLOWED_HOSTS)
+            trusted_hosts, rejected_hosts = normalize_trusted_hostnames(app_config.API_HOST, app_config.API_ALLOWED_HOSTS)
         except Exception as e:
             trusted_hosts, rejected_hosts = frozenset(), 0
             logger.warning(f"[API] Trusted-host config unavailable ({e}); loopback only")
@@ -161,14 +161,14 @@ def mount_admin_and_frontend(app: FastAPI, orchestrator) -> FastAPI:
     the (possibly wrapped) parent app — use the return value.
     """
     try:
-        import gradio as gr
-        from gui.launch import build_demo
+        import gradio as gr  # lazy import: startup-cost
+        from gui.launch import build_demo  # lazy import: cycle
         demo = build_demo(orchestrator)
         app = gr.mount_gradio_app(app, demo, path="/admin", max_file_size="100mb")
 
         # Bare /admin gets swallowed by the StaticFiles root mount before the
         # sub-app's slash redirect can fire — redirect it explicitly.
-        from fastapi.responses import RedirectResponse
+        from fastapi.responses import RedirectResponse  # lazy import: startup-cost
 
         @app.get("/admin", include_in_schema=False)
         async def _admin_redirect():
@@ -179,12 +179,11 @@ def mount_admin_and_frontend(app: FastAPI, orchestrator) -> FastAPI:
         logger.error(f"[API] Gradio /admin mount failed: {e}")
 
     try:
-        from config.app_config import API_SERVE_FRONTEND, FRONTEND_DIST_DIR
-        if API_SERVE_FRONTEND and os.path.isdir(FRONTEND_DIST_DIR):
-            from fastapi.responses import HTMLResponse
-            from fastapi.staticfiles import StaticFiles
+        if app_config.API_SERVE_FRONTEND and os.path.isdir(app_config.FRONTEND_DIST_DIR):
+            from fastapi.responses import HTMLResponse  # lazy import: startup-cost
+            from fastapi.staticfiles import StaticFiles  # lazy import: startup-cost
 
-            index_path = os.path.join(FRONTEND_DIST_DIR, "index.html")
+            index_path = os.path.join(app_config.FRONTEND_DIST_DIR, "index.html")
             if os.path.isfile(index_path):
                 # Only delivery channel for the token: a plain GET can't carry a
                 # custom header, and LaunchAuthMiddleware already Host-checked
@@ -194,7 +193,6 @@ def mount_admin_and_frontend(app: FastAPI, orchestrator) -> FastAPI:
                 # is the trust boundary, not this server. Never cached, never
                 # framed (clickjacking the approval buttons via a framed page),
                 # and the secret is HTML-escaped before going into an attribute.
-                import html as html_lib
 
                 @app.get("/", include_in_schema=False)
                 async def _serve_shell():
@@ -211,8 +209,8 @@ def mount_admin_and_frontend(app: FastAPI, orchestrator) -> FastAPI:
 
             # Registered after "/" above, which claims the exact path; this
             # Mount only ever answers other asset paths — public/inert.
-            app.mount("/", StaticFiles(directory=FRONTEND_DIST_DIR, html=True), name="frontend")
-            logger.info(f"[API] Frontend served from {FRONTEND_DIST_DIR}")
+            app.mount("/", StaticFiles(directory=app_config.FRONTEND_DIST_DIR, html=True), name="frontend")
+            logger.info(f"[API] Frontend served from {app_config.FRONTEND_DIST_DIR}")
         else:
             logger.info("[API] No frontend build found (web/dist) — API + /admin only")
     except Exception as e:

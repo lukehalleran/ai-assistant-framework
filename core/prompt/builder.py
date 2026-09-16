@@ -71,13 +71,17 @@ Module Contract
 
 import os
 import re
+import subprocess
 import time
+import traceback
+import uuid
 import asyncio
+import asyncio as _asyncio
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.context_pipeline import ContextResult
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.time_manager import TimeManager
 from utils.query_checker import (
     analyze_query, is_anaphoric_continuation, is_fragment_continuation,
@@ -106,6 +110,11 @@ from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
 import hashlib as _hashlib
 from utils.ordered_slice import newest_first as _ordered_newest_first
 from utils.retrieval_outcome import outcome_status
+import eval.snapshots as snapshots
+import eval.schema as schema
+import eval.section_registry as section_registry
+import utils.turn_progress as turn_progress
+import memory.valence as valence
 
 logger = get_logger("prompt_builder")
 
@@ -194,20 +203,13 @@ def _maybe_capture_eval_snapshot(
         return
 
     try:
-        # Lazy import to avoid loading eval modules during normal operation
-        from eval.snapshots import SnapshotCapture, save_snapshot
-        from eval.schema import PromptProvenance
-        from eval.section_registry import match_header_to_key
-        from datetime import datetime, timezone
-        import subprocess
-
         # Build formatted_sections map from the sections list
         formatted_sections: Dict[str, str] = {}
         for section_text in sections:
             if not section_text:
                 continue
             first_line = section_text.split("\n", 1)[0]
-            key = match_header_to_key(first_line)
+            key = section_registry.match_header_to_key(first_line)
             if key:
                 formatted_sections[key] = section_text
             else:
@@ -227,7 +229,7 @@ def _maybe_capture_eval_snapshot(
         except Exception:
             pass
 
-        provenance = PromptProvenance(
+        provenance = schema.PromptProvenance(
             model_name="",  # Not available in builder context
             git_commit_hash=git_hash,
             system_prompt_hash="",  # System prompt is in orchestrator
@@ -235,7 +237,7 @@ def _maybe_capture_eval_snapshot(
         )
 
         # Capture post_hygiene layer only (raw_retrieval would need pre-hygiene context)
-        capture = SnapshotCapture()
+        capture = snapshots.SnapshotCapture()
         layer = capture.capture_layer(
             layer_name="post_hygiene",
             structured_context=context,
@@ -244,10 +246,7 @@ def _maybe_capture_eval_snapshot(
         )
 
         # Build minimal snapshot (single layer from builder hook)
-        import uuid
-        from eval.schema import PromptSnapshot
-
-        snapshot = PromptSnapshot(
+        snapshot = schema.PromptSnapshot(
             snapshot_id=str(uuid.uuid4())[:8],
             query_text=user_input,
             query_timestamp=datetime.now(timezone.utc).isoformat(),
@@ -260,7 +259,7 @@ def _maybe_capture_eval_snapshot(
             assembly_metadata={"section_count": len(sections)},
         )
 
-        save_snapshot(snapshot)
+        snapshots.save_snapshot(snapshot)
         logger.info(f"[EVAL] Snapshot captured: {snapshot.snapshot_id} ({len(formatted_sections)} sections)")
 
     except Exception as e:
@@ -473,7 +472,7 @@ def _should_include_note_images(model_name: str, query: str, intent_type=None) -
     """
     if not (OBSIDIAN_INCLUDE_IMAGES and _is_multimodal_model(model_name)):
         return False
-    from .gatherer_knowledge import _query_wants_visual
+    from .gatherer_knowledge import _query_wants_visual  # lazy import: cycle
     return _query_wants_visual(query or "", intent_type)
 PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 15)
 PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
@@ -552,7 +551,7 @@ def _is_action_request_query(query: str) -> bool:
     at 3, through Dec 4" ran a 3.6s wiki FAISS lookup in parallel with the
     gate's own (correct) tools routing."""
     try:
-        from core.actions.registry import detect_action_intent
+        from core.actions.registry import detect_action_intent  # lazy import: cycle
         return detect_action_intent(query) is not None
     except Exception:
         return False
@@ -621,7 +620,7 @@ def _apply_self_report_trim(
     (`utils.query_checker._is_heavy_topic_heuristic`) — both need full
     context regardless of the terse, request-free surface shape.
     """
-    from utils.query_checker import is_self_report, _is_heavy_topic_heuristic
+    from utils.query_checker import is_self_report, _is_heavy_topic_heuristic  # lazy import: cycle
 
     if not is_self_report(user_input):
         return ro
@@ -631,7 +630,7 @@ def _apply_self_report_trim(
         return ro
 
     merged = dict(ro)
-    from utils.repository_context import is_repository_status_report
+    from utils.repository_context import is_repository_status_report  # lazy import: cycle
     repository_report = is_repository_status_report(user_input)
     for key, trim_value in SELF_REPORT_RETRIEVAL_TRIM.items():
         if key == "max_git_commits" and repository_report:
@@ -733,7 +732,7 @@ class UnifiedPromptBuilder:
 
         # Skill activation policy (post-retrieval filtering + cooldown)
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 SKILL_ACTIVATION_ENABLED, SKILL_ACTIVATION_MAX_SKILLS,
                 SKILL_ACTIVATION_MIN_SCORE, SKILL_ACTIVATION_COOLDOWN_HOURS,
                 SKILL_ACTIVATION_FETCH_MULTIPLIER, SKILL_ACTIVATION_STM_BONUS,
@@ -784,7 +783,7 @@ class UnifiedPromptBuilder:
         if not self.model_manager or not hasattr(self.model_manager, 'generate_once'):
             return context
 
-        from .token_manager import MEMORY_ITEM_MAX_TOKENS, SEMANTIC_ITEM_MAX_TOKENS, PRIORITY_ORDER as TM_PRIORITY_ORDER
+        from .token_manager import MEMORY_ITEM_MAX_TOKENS, SEMANTIC_ITEM_MAX_TOKENS, PRIORITY_ORDER as TM_PRIORITY_ORDER  # lazy import: cycle
 
         try:
             model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
@@ -835,8 +834,7 @@ class UnifiedPromptBuilder:
         candidates = candidates[:LLM_COMPRESSION_MAX_BATCH]
 
         logger.info(f"[LLM-COMPRESS] {len(candidates)} items queued for LLM compression")
-        from utils.turn_progress import emit as _progress_emit
-        _progress_emit(f"🗜️ Compressing {len(candidates)} oversized items…")
+        turn_progress.emit(f"🗜️ Compressing {len(candidates)} oversized items…")
 
         # Build compression tasks
         async def _compress_one(section: str, idx: int, item, item_tokens: int, max_tok: int):
@@ -1219,8 +1217,6 @@ class UnifiedPromptBuilder:
             task_timings = {}
 
             # Live per-task progress for the streaming UI (no-op outside a turn)
-            from utils.turn_progress import emit as _progress_emit
-
             _TASK_LABELS = {
                 "recent": "recent conversations",
                 "memories": "memory retrieval",
@@ -1256,7 +1252,7 @@ class UnifiedPromptBuilder:
                     if _dur >= 0.2:
                         _label = _TASK_LABELS.get(name, name)
                         _n = f" · {len(result)} hits" if isinstance(result, (list, tuple)) else ""
-                        _progress_emit(f"📥 {_label} ✓ {_dur:.1f}s{_n}")
+                        turn_progress.emit(f"📥 {_label} ✓ {_dur:.1f}s{_n}")
                     return result
                 except Exception as e:
                     task_timings[name] = time.perf_counter() - _start
@@ -1331,13 +1327,12 @@ class UnifiedPromptBuilder:
                 # cue: heavy topic, active distress, or negative affect in the
                 # message itself (2026-09-03).
                 try:
-                    from utils.query_checker import _is_heavy_topic_heuristic
-                    from memory.valence import negative_affect_score
+                    from utils.query_checker import _is_heavy_topic_heuristic  # lazy import: cycle
                     from config.app_config import VALENCE_NEGATIVE_THRESHOLD  # lazy import: live-config read
                     _notes_allow_mood = bool(
                         getattr(self.context_gatherer, "_distress_active", False)
                         or _is_heavy_topic_heuristic(user_input)
-                        or negative_affect_score(user_input) >= float(VALENCE_NEGATIVE_THRESHOLD)
+                        or valence.negative_affect_score(user_input) >= float(VALENCE_NEGATIVE_THRESHOLD)
                     )
                 except Exception:
                     _notes_allow_mood = True
@@ -1459,7 +1454,7 @@ class UnifiedPromptBuilder:
 
             # Google Calendar events (real-time, cached 5 min)
             try:
-                from config.app_config import GOOGLE_CALENDAR_ENABLED, GOOGLE_CALENDAR_MAX_EVENTS
+                from config.app_config import GOOGLE_CALENDAR_ENABLED, GOOGLE_CALENDAR_MAX_EVENTS  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 if GOOGLE_CALENDAR_ENABLED and not _local_repo_audit:
                     tasks["google_calendar"] = asyncio.create_task(
                         _timed_task("google_calendar",
@@ -1470,7 +1465,7 @@ class UnifiedPromptBuilder:
 
             # Relevant emails (passive retrieval, cue-gated + distress-suppressed)
             try:
-                from config.app_config import EMAIL_PASSIVE_CONTEXT_ENABLED, EMAIL_PASSIVE_MAX
+                from config.app_config import EMAIL_PASSIVE_CONTEXT_ENABLED, EMAIL_PASSIVE_MAX  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 # 2026-09-03: intent profiles may zero passive email (casual_social /
                 # emotional_support) via the max_relevant_emails override key.
                 _eff_emails = int(_ro.get("max_relevant_emails", EMAIL_PASSIVE_MAX))
@@ -1485,7 +1480,7 @@ class UnifiedPromptBuilder:
 
             # Daemon self-notes (working context from prior sessions)
             try:
-                from config.app_config import DAEMON_NOTES_ENABLED, DAEMON_NOTES_MAX_PER_PROMPT
+                from config.app_config import DAEMON_NOTES_ENABLED, DAEMON_NOTES_MAX_PER_PROMPT  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 if (DAEMON_NOTES_ENABLED and DAEMON_NOTES_MAX_PER_PROMPT > 0
                         and not _local_repo_audit):
                     tasks["daemon_self_notes"] = asyncio.create_task(
@@ -1502,7 +1497,7 @@ class UnifiedPromptBuilder:
             # claim scores 0 on the standalone heuristic and the LLM is never consulted.
             _web_conv_ctx = None
             try:
-                from core.agentic.gate import _build_recent_context
+                from core.agentic.gate import _build_recent_context  # lazy import: cycle
                 _web_conv_ctx = _build_recent_context(
                     getattr(self.memory_coordinator, 'corpus_manager', None)
                 )
@@ -1526,7 +1521,7 @@ class UnifiedPromptBuilder:
 
             # Gather all results with timeout — use asyncio.wait so completed
             # tasks survive a timeout instead of wiping the entire context.
-            _progress_emit(f"🔎 Retrieving context from {len(tasks)} sources in parallel…")
+            turn_progress.emit(f"🔎 Retrieving context from {len(tasks)} sources in parallel…")
             _gather_start = time.perf_counter()
             phase_timings["before_retrieval"] = _gather_start - start_time
             try:
@@ -1580,7 +1575,7 @@ class UnifiedPromptBuilder:
                     logger.info(
                         f"[BUILD_PROMPT TIMING] total={_gather_elapsed:.2f}s | {timing_str}"
                     )
-                _progress_emit(
+                turn_progress.emit(
                     f"🧱 Context retrieved ({_gather_elapsed:.1f}s) — gating, dedup, token budget…"
                 )
 
@@ -1695,7 +1690,7 @@ class UnifiedPromptBuilder:
                         "fresh_facts": gathered.get("recent_facts", [])
                     }
 
-                    _progress_emit("💭 Generating on-demand reflection…")
+                    turn_progress.emit("💭 Generating on-demand reflection…")
                     on_demand_reflections = await self.summarizer._reflect_on_demand(
                         context_for_reflection,
                         user_input,
@@ -1880,7 +1875,6 @@ class UnifiedPromptBuilder:
                             res = self.memory_coordinator.get_summaries(
                                 max(1, eff_max_summaries_r + eff_max_summaries_s) * 2
                             )
-                            import asyncio as _asyncio
                             stored = await res if _asyncio.iscoroutine(res) else res
                             logger.debug(f"AFTER get_summaries: memories count = {len(context.get('memories', []))}, stored type = {type(stored).__name__}")
                         elif hasattr(self.memory_coordinator, 'corpus_manager') and hasattr(self.memory_coordinator.corpus_manager, 'get_summaries'):
@@ -1997,7 +1991,6 @@ class UnifiedPromptBuilder:
                     try:
                         if hasattr(self.memory_coordinator, 'get_summaries'):
                             res = self.memory_coordinator.get_summaries(PROMPT_MAX_SUMMARIES * 3)
-                            import asyncio as _asyncio
                             stored = await res if _asyncio.iscoroutine(res) else res
                         elif hasattr(self.memory_coordinator, 'corpus_manager') and hasattr(self.memory_coordinator.corpus_manager, 'get_summaries'):
                             stored = self.memory_coordinator.corpus_manager.get_summaries(PROMPT_MAX_SUMMARIES * 3)
@@ -2037,7 +2030,6 @@ class UnifiedPromptBuilder:
                     try:
                         if hasattr(self.memory_coordinator, 'get_reflections'):
                             res = self.memory_coordinator.get_reflections(PROMPT_MAX_REFLECTIONS * 3)
-                            import asyncio as _asyncio
                             if _asyncio.iscoroutine(res):
                                 stored_refl = await res
                             else:
@@ -2131,7 +2123,6 @@ class UnifiedPromptBuilder:
 
         except Exception as e:
             logger.error(f"Prompt building failed: {e}")
-            import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             # Return minimal context on error
             error_context = {
@@ -2191,7 +2182,7 @@ class UnifiedPromptBuilder:
             final_prompt = prompt_builder._assemble_prompt(prompt_ctx, user_input)
         """
         # Import here to avoid circular dependency
-        from core.context_pipeline import ContextResult
+        from core.context_pipeline import ContextResult  # lazy import: patch-point (tests/unit/test_response_planner.py:97)
 
         if not isinstance(context, ContextResult):
             raise TypeError(f"Expected ContextResult, got {type(context)}")
@@ -2256,7 +2247,7 @@ class UnifiedPromptBuilder:
         value ("crisis_support", "light_support") via crisis_level_str —
         the substring check covers both encodings.
         """
-        from config.app_config import LIGHT_PROMPT_ENABLED
+        from config.app_config import LIGHT_PROMPT_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
         if not LIGHT_PROMPT_ENABLED:
             return False
         if not getattr(query_analysis, "is_small_talk", False):
@@ -2277,7 +2268,7 @@ class UnifiedPromptBuilder:
         need the support apparatus — the answer is in the immediate exchange, and
         the system-prompt tone still applies to the lightweight prompt.
         """
-        from config.app_config import LIGHT_PROMPT_ENABLED
+        from config.app_config import LIGHT_PROMPT_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
         if not LIGHT_PROMPT_ENABLED:
             return False
         if getattr(query_analysis, "is_heavy_topic", False):
@@ -2287,7 +2278,7 @@ class UnifiedPromptBuilder:
         # so check the message for any crisis/emotional keyword before stripping
         # context. Benign answers ("amplification") score None and pass.
         try:
-            from utils.tone_detector import _check_keyword_crisis
+            from utils.tone_detector import _check_keyword_crisis  # lazy import: cycle
             if _check_keyword_crisis(user_input) is not None:
                 return False
         except Exception as e:
@@ -2303,7 +2294,7 @@ class UnifiedPromptBuilder:
         except Exception as e:
             logger.debug(f"[BUILD_PROMPT] continuation-answer peek failed: {e}")
             return False
-        from utils.query_checker import is_continuation_answer
+        from utils.query_checker import is_continuation_answer  # lazy import: cycle
         return is_continuation_answer(user_input, last_resp)
 
     async def _build_lightweight_context(self, user_input: str, stm_summary: Optional[Dict[str, Any]] = None,
@@ -2354,7 +2345,7 @@ class UnifiedPromptBuilder:
             # Ambiguity detection: check if short user message references a phrase
             # that appears in multiple sessions (prevents content conflation)
             try:
-                from core.ambiguity_detector import AmbiguityDetector
+                from core.ambiguity_detector import AmbiguityDetector  # lazy import: cycle
                 ambiguity = AmbiguityDetector.detect(
                     user_input,
                     context.get("recent_conversations", []),

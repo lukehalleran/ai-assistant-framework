@@ -22,6 +22,7 @@ import re
 import subprocess
 from typing import List, Optional
 
+from config import app_config
 from core.actions.types import ActionProposal, ActionResult
 
 logger = logging.getLogger("actions_github_write")
@@ -59,9 +60,7 @@ def _detect_repo() -> Optional[str]:
 
 def _repo_args(params: dict) -> List[str]:
     """Return ['--repo', 'owner/repo'] from params/config/detection, or [] (gh uses cwd remote)."""
-    from config.app_config import GITHUB_API_REPO
-
-    repo = (params.get("repo") or GITHUB_API_REPO or _detect_repo() or "").strip()
+    repo = (params.get("repo") or app_config.GITHUB_API_REPO or _detect_repo() or "").strip()
     return ["--repo", repo] if repo else []
 
 
@@ -123,9 +122,7 @@ async def create_github_issue(proposal: ActionProposal) -> ActionResult:
         - message (str): issue body (optional).
         - repo (str, optional): owner/repo; defaults to GITHUB_API_REPO or the detected repo.
     """
-    from config.app_config import INTERNET_ACTIONS_GITHUB_WRITE_ENABLED, GITHUB_API_TIMEOUT
-
-    if not INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
+    if not app_config.INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
         return ActionResult(
             action_id=proposal.action_id,
             success=False,
@@ -150,7 +147,7 @@ async def create_github_issue(proposal: ActionProposal) -> ActionResult:
 
     args = ["issue", "create", "--title", title, "--body", body] + _repo_args(params)
     try:
-        out = _run_gh_write(args, GITHUB_API_TIMEOUT)
+        out = _run_gh_write(args, app_config.GITHUB_API_TIMEOUT)
     except (ValueError, RuntimeError) as e:
         logger.warning(f"[GitHubWrite] issue create failed: {e}")
         return ActionResult(
@@ -175,9 +172,7 @@ async def comment_github_pr(proposal: ActionProposal) -> ActionResult:
         - message (str): comment body (required).
         - repo (str, optional): owner/repo; defaults to GITHUB_API_REPO or the detected repo.
     """
-    from config.app_config import INTERNET_ACTIONS_GITHUB_WRITE_ENABLED, GITHUB_API_TIMEOUT
-
-    if not INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
+    if not app_config.INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
         return ActionResult(
             action_id=proposal.action_id,
             success=False,
@@ -208,7 +203,7 @@ async def comment_github_pr(proposal: ActionProposal) -> ActionResult:
 
     args = ["pr", "comment", pr_number, "--body", body] + _repo_args(params)
     try:
-        out = _run_gh_write(args, GITHUB_API_TIMEOUT)
+        out = _run_gh_write(args, app_config.GITHUB_API_TIMEOUT)
     except (ValueError, RuntimeError) as e:
         logger.warning(f"[GitHubWrite] pr comment failed: {e}")
         return ActionResult(

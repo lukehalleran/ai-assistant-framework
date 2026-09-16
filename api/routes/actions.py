@@ -19,7 +19,7 @@ def _state(request: Request):
 
 
 async def _decide(request: Request, action_id: str, approve: bool) -> ActionDecisionResponse:
-    from gui.handlers import execute_pending_action_core, reject_pending_action_core
+    from gui.handlers import execute_pending_action_core, reject_pending_action_core  # lazy import: cycle, startup-cost (gui.handlers import-time work)
 
     state = _state(request)
     core = execute_pending_action_core if approve else reject_pending_action_core

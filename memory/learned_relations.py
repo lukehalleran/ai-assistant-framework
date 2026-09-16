@@ -36,12 +36,14 @@ Module Contract
 - Tests: tests/unit/test_learned_relations.py (store sandboxed via
   tests/conftest.py autouse fixture, same pattern as adaptive_exemplars).
 """
+import json
 import os
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+import memory.relation_classifier as relation_classifier
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json
 
@@ -75,7 +77,6 @@ class LearnedRelationStore:
         self._data = {"version": 1, "relations": {}}
         try:
             if self._path.exists():
-                import json
                 raw = json.loads(self._path.read_text())
                 if isinstance(raw, dict) and isinstance(raw.get("relations"), dict):
                     self._data = raw
@@ -95,7 +96,7 @@ class LearnedRelationStore:
         if not rel or not _SHAPE_RE.match(rel):
             return None
         try:
-            from memory.entity_resolver import normalize_relation
+            from memory.entity_resolver import normalize_relation  # lazy import: startup-cost (would newly load: networkx)
             rel = normalize_relation(rel) or rel
         except Exception:
             pass
@@ -104,8 +105,7 @@ class LearnedRelationStore:
         if rel in CORE_RELATIONS:
             return None
         try:
-            from memory.relation_classifier import is_ephemeral_relation
-            if is_ephemeral_relation(rel):
+            if relation_classifier.is_ephemeral_relation(rel):
                 return None
         except Exception:
             pass

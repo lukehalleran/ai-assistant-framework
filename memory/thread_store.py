@@ -311,14 +311,14 @@ class ThreadStore:
         """
         if stale_days is None:
             try:
-                from config.app_config import THREAD_STALE_DAYS
+                from config.app_config import THREAD_STALE_DAYS  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 stale_days = THREAD_STALE_DAYS
             except ImportError:
                 stale_days = 14
 
         if deadline_grace_hours is None:
             try:
-                from config.app_config import THREAD_DEADLINE_GRACE_HOURS
+                from config.app_config import THREAD_DEADLINE_GRACE_HOURS  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 deadline_grace_hours = THREAD_DEADLINE_GRACE_HOURS
             except ImportError:
                 deadline_grace_hours = 48
@@ -499,7 +499,7 @@ class ThreadStore:
         """
         if max_open is None:
             try:
-                from config.app_config import THREAD_MAX_OPEN
+                from config.app_config import THREAD_MAX_OPEN  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
                 max_open = THREAD_MAX_OPEN
             except ImportError:
                 max_open = 50

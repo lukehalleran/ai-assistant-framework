@@ -164,7 +164,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 2: Configuration (fast, ~0.1s)
     def load_config():
-        from config.app_config import config
+        from config.app_config import config  # lazy import: live-config
         return config
 
     components['config'] = load_with_fallback(
@@ -173,7 +173,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 3: Torch (slow, ~1.8s)
     def load_torch():
-        import torch
+        import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
         return torch
 
     components['torch'] = load_with_fallback(
@@ -183,7 +183,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
     # Stage 4: Sentence Transformers (slowest, ~4.1s)
     # This includes transformers import
     def load_sentence_transformers():
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import SentenceTransformer  # lazy import: startup-cost
         return SentenceTransformer
 
     components['sentence_transformers'] = load_with_fallback(
@@ -192,7 +192,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 5: spaCy (moderate, ~0.5s)
     def load_spacy():
-        import spacy
+        import spacy  # lazy import: startup-cost
         return spacy
 
     components['spacy'] = load_with_fallback(
@@ -201,7 +201,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 6: ChromaDB (moderate, ~0.6s)
     def load_chromadb():
-        import chromadb
+        import chromadb  # lazy import: startup-cost
         return chromadb
 
     components['chromadb'] = load_with_fallback(
@@ -210,7 +210,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 7: Gradio (moderate, ~1.4s)
     def load_gradio():
-        import gradio as gr
+        import gradio as gr  # lazy import: startup-cost
         return gr
 
     components['gradio'] = load_with_fallback(
@@ -219,7 +219,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 8: Memory Coordinator (moderate, ~1.5s due to cross-encoder)
     def load_memory():
-        from memory.memory_coordinator import MemoryCoordinator
+        from memory.memory_coordinator import MemoryCoordinator  # lazy import: layering
         return MemoryCoordinator
 
     components['memory_coordinator'] = load_with_fallback(
@@ -228,7 +228,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 9: Orchestrator (fast after dependencies loaded)
     def load_orchestrator():
-        from core.orchestrator import DaemonOrchestrator
+        from core.orchestrator import DaemonOrchestrator  # lazy import: layering
         return DaemonOrchestrator
 
     components['orchestrator'] = load_with_fallback(
@@ -251,7 +251,7 @@ def preload_models(progress: StartupProgress) -> Dict[str, Any]:
 
     # Load spaCy model
     def load_spacy_model():
-        import spacy
+        import spacy  # lazy import: startup-cost
         return spacy.load('en_core_web_sm')
 
     models['spacy_nlp'] = load_with_fallback(

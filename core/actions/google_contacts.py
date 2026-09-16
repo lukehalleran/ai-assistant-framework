@@ -67,7 +67,7 @@ async def search_contacts(
     missing scope, API error, or no results.
     """
     try:
-        from config.app_config import GOOGLE_CONTACTS_ENABLED
+        from config.app_config import GOOGLE_CONTACTS_ENABLED  # lazy import: live-config
     except ImportError:
         return []
 
@@ -98,7 +98,7 @@ async def search_other_contacts(
     missing scope, API error, or no results.
     """
     try:
-        from config.app_config import GOOGLE_OTHER_CONTACTS_ENABLED
+        from config.app_config import GOOGLE_OTHER_CONTACTS_ENABLED  # lazy import: live-config
     except ImportError:
         return []
 
@@ -148,7 +148,7 @@ async def resolve_contact(
     # Priority 3: Gmail header search (fallback when contacts return nothing)
     if not results:
         try:
-            from core.actions.gmail_search import search_gmail_contacts
+            from core.actions.gmail_search import search_gmail_contacts  # lazy import: cycle
             gmail = await search_gmail_contacts(name, max_results=max_results)
             for r in gmail:
                 email_lower = r["email"].lower()
@@ -187,7 +187,7 @@ async def _warmup(auth) -> None:
         return
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         async with httpx.AsyncClient() as client:
             await client.get(
@@ -218,7 +218,7 @@ async def _search_api(
     if cache_key in _cache and (time.time() - _cache_ts.get(cache_key, 0)) < _CACHE_TTL_SECONDS:
         return _cache[cache_key][:max_results]
 
-    from core.actions.google_auth import get_google_auth
+    from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
     if auth is None or not auth.is_authenticated:
@@ -237,7 +237,7 @@ async def _search_api(
     await _warmup(auth)
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         if endpoint == "saved":
             url = "https://people.googleapis.com/v1/people:searchContacts"

@@ -57,6 +57,9 @@ from typing import List, Dict, Any, Optional
 import re
 
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
+import utils.status_claims as status_claims
+import utils.streak_claims as streak_claims
+import utils.tag_generator as _tag_generator
 from utils.retrieval_outcome import RetrievalError
 
 logger = logging.getLogger(__name__)
@@ -165,8 +168,7 @@ def build_temporal_claim_audit(convos: List[Dict[str, Any]]) -> str:
         # instead of copying an assistant reply's number ("six solid days"
         # was copied into the Sep 3 note a day after the user said day 6).
         try:
-            from utils.streak_claims import extract_streak_claims
-            for sc in extract_streak_claims(audit_text, ts if ts else None):
+            for sc in streak_claims.extract_streak_claims(audit_text, ts if ts else None):
                 key = ("streak", sc.count, sc.snippet.casefold())
                 if key in seen:
                     continue
@@ -222,7 +224,7 @@ def get_daily_note_path(target_date: date, vault_path: Optional[Path] = None) ->
     """
     if vault_path is None:
         try:
-            from config.app_config import OBSIDIAN_VAULT_PATH, DAILY_NOTES_FOLDER
+            from config.app_config import OBSIDIAN_VAULT_PATH, DAILY_NOTES_FOLDER  # lazy import: live-config
             base = Path(OBSIDIAN_VAULT_PATH).expanduser() / DAILY_NOTES_FOLDER
         except ImportError:
             return None
@@ -358,7 +360,7 @@ class DailyNotesGenerator:
 
         # Load config
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 OBSIDIAN_VAULT_PATH,
                 DAILY_NOTES_ENABLED,
                 DAILY_NOTES_FOLDER,
@@ -388,8 +390,8 @@ class DailyNotesGenerator:
         """Lazy-load CorpusManager."""
         if self._corpus_manager is None:
             try:
-                from memory.corpus_manager import CorpusManager
-                from config.app_config import CORPUS_FILE
+                from memory.corpus_manager import CorpusManager  # lazy import: cycle
+                from config.app_config import CORPUS_FILE  # lazy import: live-config
                 self._corpus_manager = CorpusManager(CORPUS_FILE)
                 logger.debug("[DailyNotes] CorpusManager lazy-loaded")
             except Exception as e:
@@ -402,7 +404,7 @@ class DailyNotesGenerator:
         """Lazy-load ModelManager."""
         if self._model_manager is None:
             try:
-                from models.model_manager import ModelManager
+                from models.model_manager import ModelManager  # lazy import: layering
                 self._model_manager = ModelManager()
                 logger.debug("[DailyNotes] ModelManager lazy-loaded")
             except Exception as e:
@@ -415,8 +417,7 @@ class DailyNotesGenerator:
         """Lazy-load TagGenerator."""
         if self._tag_generator is None:
             try:
-                from utils.tag_generator import TagGenerator
-                self._tag_generator = TagGenerator(model_manager=self.model_manager)
+                self._tag_generator = _tag_generator.TagGenerator(model_manager=self.model_manager)
                 logger.debug("[DailyNotes] TagGenerator lazy-loaded")
             except Exception as e:
                 logger.warning(f"[DailyNotes] Failed to load TagGenerator: {e}")
@@ -432,7 +433,7 @@ class DailyNotesGenerator:
         call but never blocks daily-note generation."""
         if getattr(self, "_user_profile", None) is None:
             try:
-                from memory.user_profile import UserProfile  # lazy import: startup cost
+                from memory.user_profile import UserProfile  # lazy import: startup-cost
                 self._user_profile = UserProfile()
             except Exception as e:
                 logger.debug(f"[DailyNotes] UserProfile unavailable for status-claim guard: {e}")
@@ -444,8 +445,6 @@ class DailyNotesGenerator:
         status-claim conflict guard (utils/status_claims.py). Raises
         RetrievalError when the profile is unavailable or the read fails;
         a genuine empty filter result still returns []."""
-        from utils.status_claims import STATUS_RELATIONS
-
         profile = self.user_profile
         if profile is None:
             raise RetrievalError(source="status_facts", reason="profile_unavailable")
@@ -458,7 +457,7 @@ class DailyNotesGenerator:
         facts: List[Dict[str, Any]] = []
         for cat_facts in (current or {}).values():
             for f in cat_facts or []:
-                if isinstance(f, dict) and f.get("relation") in STATUS_RELATIONS:
+                if isinstance(f, dict) and f.get("relation") in status_claims.STATUS_RELATIONS:
                     facts.append(f)
         return facts
 
@@ -538,7 +537,7 @@ class DailyNotesGenerator:
 
     def _should_auto_update(self, target_date: date, current_count: int) -> bool:
         """Check if an existing note should be regenerated due to significant new data."""
-        from config.app_config import DAILY_NOTES_UPDATE_MIN_NEW
+        from config.app_config import DAILY_NOTES_UPDATE_MIN_NEW  # lazy import: live-config
 
         existing_count = self._get_existing_conversation_count(target_date)
         new_conversations = current_count - existing_count
@@ -959,11 +958,11 @@ generated: {datetime.now().isoformat()}
         affect the daily note generation result.
         """
         try:
-            from config.app_config import NARRATIVE_CONTEXT_ENABLED
+            from config.app_config import NARRATIVE_CONTEXT_ENABLED  # lazy import: live-config
             if not NARRATIVE_CONTEXT_ENABLED:
                 return
 
-            from memory.memory_consolidator import MemoryConsolidator
+            from memory.memory_consolidator import MemoryConsolidator  # lazy import: layering
             consolidator = MemoryConsolidator(self.model_manager)
 
             # Recent user statements feed the streak ledger (2026-09-05).

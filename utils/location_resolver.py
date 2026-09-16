@@ -318,8 +318,7 @@ def _institution_protected_spans(text: str, institution: Optional[str]) -> list:
         for m in re.finditer(re.escape(inst), text, re.I):
             spans.append((m.start(), m.end()))
     try:
-        # lazy import: avoids a module-level cycle — institution_resolver
-        # imports this module's functions for scope_identity_terms.
+        # lazy import: cycle (avoids a module-level cycle — institution_resolver imports this module's functions for scope_identity_terms.)
         from utils.institution_resolver import _NAMED_INSTITUTION_RE
     except Exception:
         _NAMED_INSTITUTION_RE = None

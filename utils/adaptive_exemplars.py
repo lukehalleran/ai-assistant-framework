@@ -38,12 +38,14 @@ Module Contract:
   labels from silence (a missed detection would then TEACH the miss).
 """
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 
+import utils.safe_json as safe_json
 from utils.logging_utils import get_logger
 
 logger = get_logger("adaptive_exemplars")
@@ -67,7 +69,6 @@ class AdaptiveExemplarStore:
     # -- persistence ------------------------------------------------------
     def _load(self) -> None:
         try:
-            import json
             if self._path.exists():
                 raw = json.loads(self._path.read_text())
                 if isinstance(raw, dict):
@@ -80,8 +81,7 @@ class AdaptiveExemplarStore:
 
     def _save(self) -> None:
         try:
-            from utils.safe_json import atomic_write_json
-            atomic_write_json(str(self._path), self._data)
+            safe_json.atomic_write_json(str(self._path), self._data)
         except Exception as e:
             logger.warning(f"[AdaptiveExemplars] Save failed (non-fatal): {e}")
 

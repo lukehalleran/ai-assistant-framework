@@ -50,7 +50,7 @@ async def submit_stream(req: ChatRequest, state: AppState) -> AsyncGenerator[Cha
     Caller must hold state.session.stream_lock. The user message and final
     assistant message are appended to session.history here.
     """
-    from gui.handlers import handle_submit
+    from gui.handlers import handle_submit  # lazy import: cycle
 
     session = state.session
     orchestrator = state.orchestrator

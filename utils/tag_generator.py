@@ -159,7 +159,7 @@ class TagGenerator:
 
         # Load config overrides if available
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 TAG_GENERATION_MODEL,
                 TAG_GENERATION_MAX_TAGS,
                 TAG_GENERATION_MIN_TAGS,
@@ -177,7 +177,7 @@ class TagGenerator:
         """Lazy-load ModelManager."""
         if self._model_manager is None:
             try:
-                from models.model_manager import ModelManager
+                from models.model_manager import ModelManager  # lazy import: layering
                 self._model_manager = ModelManager()
                 logger.debug("[TagGenerator] ModelManager lazy-loaded")
             except Exception as e:

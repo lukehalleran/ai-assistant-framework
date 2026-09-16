@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+import utils.bootstrap as bootstrap
 from utils.logging_utils import get_logger
 
 logger = get_logger("backup_manager")
@@ -58,7 +59,7 @@ class BackupResult:
 
 
 def _config():
-    from config.app_config import (
+    from config.app_config import (  # lazy import: live-config
         BACKUP_DIR, BACKUP_ENABLED, BACKUP_INCLUDE_CHROMA,
         BACKUP_MIN_INTERVAL_HOURS, BACKUP_RETENTION,
     )
@@ -73,14 +74,13 @@ def _config():
 
 def backup_targets(*, existing_only: bool = True) -> List[str]:
     """Configured stores; restore also needs paths whose live files are missing."""
-    from config.app_config import (
+    from config.app_config import (  # lazy import: live-config
         CORPUS_FILE, KNOWLEDGE_GRAPH_ALIASES_PATH, KNOWLEDGE_GRAPH_PERSIST_PATH,
         PROACTIVE_SURFACING_HISTORY_PATH, STALENESS_INDEX_PATH,
     )
-    from memory.user_profile import UserProfile
-    from utils.adaptive_exemplars import _STORE_PATH as adaptive_exemplars_path
-    from memory.learned_relations import _STORE_PATH as learned_relations_path
-    from utils.bootstrap import get_user_profile_path
+    from memory.user_profile import UserProfile  # lazy import: layering
+    from utils.adaptive_exemplars import _STORE_PATH as adaptive_exemplars_path  # lazy import: startup-cost (would newly load: numpy)
+    from memory.learned_relations import _STORE_PATH as learned_relations_path  # lazy import: layering
 
     # Narrative staleness flag path — resolved at call time for test sandboxing
     narrative_stale_path = os.getenv("NARRATIVE_STALE_FLAG_PATH", os.path.join("data", "narrative_stale.json"))
@@ -89,7 +89,7 @@ def backup_targets(*, existing_only: bool = True) -> List[str]:
         KNOWLEDGE_GRAPH_PERSIST_PATH,
         KNOWLEDGE_GRAPH_ALIASES_PATH,
         # DEFAULT_PATH is None unless overridden; the same authority UserProfile() uses.
-        UserProfile.DEFAULT_PATH or get_user_profile_path(),
+        UserProfile.DEFAULT_PATH or bootstrap.get_user_profile_path(),
         CORPUS_FILE,
         STALENESS_INDEX_PATH,
         PROACTIVE_SURFACING_HISTORY_PATH,
@@ -105,7 +105,7 @@ def backup_targets(*, existing_only: bool = True) -> List[str]:
 
 
 def chroma_path() -> str:
-    from config.app_config import CHROMA_PATH
+    from config.app_config import CHROMA_PATH  # lazy import: live-config
     return CHROMA_PATH
 
 

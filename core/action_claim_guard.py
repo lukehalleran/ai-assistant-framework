@@ -59,6 +59,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+import utils.temporal_resolver as temporal_resolver
 from utils.trigger_match import normalize_ws
 
 
@@ -1081,18 +1082,18 @@ def _get_claim_anchors() -> dict:
     cache exactly)."""
     global _claim_anchor_embs, _claim_anchor_version
     try:
-        from utils.adaptive_exemplars import get_store
+        from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
         version = get_store().version
     except Exception:
         version = -1
     if _claim_anchor_embs and _claim_anchor_version == version:
         return _claim_anchor_embs
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: startup-cost
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return {}
-        from utils.adaptive_exemplars import encode_texts_cached, get_store
+        from utils.adaptive_exemplars import encode_texts_cached, get_store  # lazy import: startup-cost
         out = {}
         for label, seeds in _CLAIM_SEED_EXEMPLARS.items():
             texts = list(seeds)
@@ -1120,11 +1121,11 @@ def _claim_semantic_hit(sentence: str, label: str) -> bool:
     if embs is None or len(embs) == 0:
         return False
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: startup-cost
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return False
-        import numpy as np
+        import numpy as np  # lazy import: startup-cost
         q = embedder.encode([sentence], convert_to_numpy=True, normalize_embeddings=True)[0]
         sims = embs @ q
         return bool(np.max(sims) >= _CLAIM_SEMANTIC_THRESHOLD)
@@ -1137,7 +1138,7 @@ def record_claim_exemplar(label: str, text: str, source: str) -> bool:
     callers only (see module docstring above) — never call this from
     claims_pending_card/claims_calendar_state's own verdict."""
     try:
-        from utils.adaptive_exemplars import get_store
+        from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
         return get_store().record("action_claim", label, text, source)
     except Exception:
         return False
@@ -1359,10 +1360,9 @@ def _calendar_temporal_anchor_re() -> re.Pattern:
     global _calendar_temporal_anchor_re_cache
     if _calendar_temporal_anchor_re_cache is not None:
         return _calendar_temporal_anchor_re_cache
-    from core.actions.registry import _WEEKDAY_NAMES
-    from utils.temporal_resolver import _MONTH_NAMES
+    from core.actions.registry import _WEEKDAY_NAMES  # lazy import: cycle
     weekday_alt = "|".join(sorted(_WEEKDAY_NAMES.keys()))
-    month_alt = "|".join(sorted(_MONTH_NAMES.keys()))
+    month_alt = "|".join(sorted(temporal_resolver._MONTH_NAMES.keys()))
     _calendar_temporal_anchor_re_cache = re.compile(
         rf"\b(?:{weekday_alt})\b"
         rf"|\b(?:through|until|till|every)\b[^.?!]{{0,20}}?\b(?:{month_alt}|{weekday_alt})\b",
@@ -1372,7 +1372,7 @@ def _calendar_temporal_anchor_re() -> re.Pattern:
 
 
 def _has_calendar_temporal_anchor(sent: str) -> bool:
-    from core.actions.registry import _CLOCK_TOKEN_RE
+    from core.actions.registry import _CLOCK_TOKEN_RE  # lazy import: cycle
     return bool(_CLOCK_TOKEN_RE.search(sent) or _calendar_temporal_anchor_re().search(sent))
 
 

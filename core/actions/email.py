@@ -18,9 +18,14 @@ Module Contract
 import logging
 from typing import Optional
 
+from config import app_config
+import core.actions.google_auth as google_auth
+import core.actions.google_contacts as google_contacts
 from core.actions.types import ActionProposal, ActionResult
 import base64
 import email.message
+import asyncio
+import smtplib
 
 logger = logging.getLogger("actions_email")
 
@@ -89,24 +94,14 @@ async def _try_gmail_send(
         ActionResult(success=False) — Gmail attempted but failed (no SMTP fallback).
         None                        — Gmail not configured; caller should try SMTP.
     """
-    from config.app_config import (
-        INTERNET_ACTIONS_GOOGLE_CLIENT_ID,
-        INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET,
-        INTERNET_ACTIONS_GOOGLE_TOKEN_PATH,
-        INTERNET_ACTIONS_SMTP_FROM,
-        INTERNET_ACTIONS_SMTP_USER,
-    )
-
     # Not configured → return None so caller falls back to SMTP
-    if not INTERNET_ACTIONS_GOOGLE_CLIENT_ID or not INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET:
+    if not app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_ID or not app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET:
         return None
 
-    from core.actions.google_auth import GoogleAuthManager
-
-    auth = GoogleAuthManager(
-        client_id=INTERNET_ACTIONS_GOOGLE_CLIENT_ID,
-        client_secret=INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET,
-        token_path=INTERNET_ACTIONS_GOOGLE_TOKEN_PATH,
+    auth = google_auth.GoogleAuthManager(
+        client_id=app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_ID,
+        client_secret=app_config.INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET,
+        token_path=app_config.INTERNET_ACTIONS_GOOGLE_TOKEN_PATH,
     )
 
     if not auth.is_authenticated:
@@ -122,7 +117,7 @@ async def _try_gmail_send(
 
     # Build RFC 5322 message
 
-    from_addr = INTERNET_ACTIONS_SMTP_FROM or INTERNET_ACTIONS_SMTP_USER
+    from_addr = app_config.INTERNET_ACTIONS_SMTP_FROM or app_config.INTERNET_ACTIONS_SMTP_USER
     subject = proposal.params.get("subject", "Message from Daemon")
 
     msg = email.message.EmailMessage()
@@ -134,7 +129,7 @@ async def _try_gmail_send(
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -174,15 +169,7 @@ async def _smtp_send(
     message: str,
 ) -> ActionResult:
     """Send via SMTP. Used as fallback when Gmail is not configured."""
-    from config.app_config import (
-        INTERNET_ACTIONS_SMTP_HOST,
-        INTERNET_ACTIONS_SMTP_PORT,
-        INTERNET_ACTIONS_SMTP_USER,
-        INTERNET_ACTIONS_SMTP_PASSWORD,
-        INTERNET_ACTIONS_SMTP_FROM,
-    )
-
-    if not INTERNET_ACTIONS_SMTP_HOST:
+    if not app_config.INTERNET_ACTIONS_SMTP_HOST:
         return ActionResult(
             action_id=proposal.action_id,
             success=False,
@@ -190,7 +177,7 @@ async def _smtp_send(
         )
 
     subject = proposal.params.get("subject", "Message from Daemon")
-    from_addr = INTERNET_ACTIONS_SMTP_FROM or INTERNET_ACTIONS_SMTP_USER
+    from_addr = app_config.INTERNET_ACTIONS_SMTP_FROM or app_config.INTERNET_ACTIONS_SMTP_USER
 
     msg = email.message.EmailMessage()
     msg["Subject"] = subject
@@ -199,14 +186,11 @@ async def _smtp_send(
     msg.set_content(message)
 
     try:
-        import asyncio
-        import smtplib
-
         def _send():
-            with smtplib.SMTP(INTERNET_ACTIONS_SMTP_HOST, INTERNET_ACTIONS_SMTP_PORT) as server:
+            with smtplib.SMTP(app_config.INTERNET_ACTIONS_SMTP_HOST, app_config.INTERNET_ACTIONS_SMTP_PORT) as server:
                 server.starttls()
-                if INTERNET_ACTIONS_SMTP_USER and INTERNET_ACTIONS_SMTP_PASSWORD:
-                    server.login(INTERNET_ACTIONS_SMTP_USER, INTERNET_ACTIONS_SMTP_PASSWORD)
+                if app_config.INTERNET_ACTIONS_SMTP_USER and app_config.INTERNET_ACTIONS_SMTP_PASSWORD:
+                    server.login(app_config.INTERNET_ACTIONS_SMTP_USER, app_config.INTERNET_ACTIONS_SMTP_PASSWORD)
                 server.send_message(msg)
 
         await asyncio.get_event_loop().run_in_executor(None, _send)
@@ -234,8 +218,7 @@ async def _resolve_recipient(name: str) -> tuple:
         (None, message) on zero or multiple matches.
     """
     try:
-        from core.actions.google_contacts import resolve_contact
-        matches = await resolve_contact(name, max_results=10)
+        matches = await google_contacts.resolve_contact(name, max_results=10)
     except Exception as e:
         logger.debug(f"[Email] Contact resolution failed: {e}")
         return None, f"Could not resolve '{name}' to an email address: {e}"

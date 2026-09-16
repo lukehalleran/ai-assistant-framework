@@ -17,7 +17,7 @@ class DependencyContainer:
         if self._initialized:
             return
 
-        from models.tokenizer_manager import TokenizerManager
+        from models.tokenizer_manager import TokenizerManager  # lazy import: startup-cost
 
         self.model_manager = model_manager
         self.tokenizer_manager = TokenizerManager(model_manager=model_manager)

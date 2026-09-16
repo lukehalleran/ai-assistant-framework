@@ -74,7 +74,12 @@ import os
 import sys
 import json
 import logging
+import logging as _log
 import socket
+import subprocess
+import tempfile
+import time
+import traceback
 import gradio as gr
 from gradio import themes
 import copy
@@ -84,10 +89,29 @@ from gui.wizard import WizardState, process_wizard_message, get_welcome_message
 from gui.theme import DARK_CHATBOT_CSS, get_dark_theme
 import threading
 import asyncio
+import asyncio as _aio
 import time as _t
+from datetime import date, timedelta
 from datetime import datetime, timezone
+from pathlib import Path
 import asyncio as _a
 import re as _re_final
+from config import app_config
+import core.agentic.tools as tools
+import gui.settings_core as settings_core
+import gui.tabs.proposals as proposals
+import gui.tabs.settings as settings
+import gui.tabs.synthesis as synthesis
+import gui.wizard as wizard
+import knowledge.obsidian_manager as obsidian_manager
+import knowledge.reference_docs_manager as reference_docs_manager
+import memory.memory_retriever as memory_retriever
+import utils.daily_notes_generator as daily_notes_generator
+import utils.health_check as health_check
+import utils.monthly_notes_generator as monthly_notes_generator
+import utils.privacy_redaction as privacy_redaction
+import utils.weekly_notes_generator as weekly_notes_generator
+import utils.web_search_trigger as web_search_trigger
 
 # Module-level logger: 14 call sites referenced `logger` while it was only
 # assigned inside two function scopes — every other use was a latent
@@ -127,16 +151,12 @@ def _run_daily_notes_catchup():
 
     def _catchup_task():
         try:
-            from config.app_config import DAILY_NOTES_ENABLED
-            if not DAILY_NOTES_ENABLED:
+            if not app_config.DAILY_NOTES_ENABLED:
                 return
-
-            from utils.daily_notes_generator import DailyNotesGenerator
-            from datetime import date, timedelta
 
             # Create a fresh generator for this thread - don't share model_manager
             # across event loops (httpx.AsyncClient is not thread-safe)
-            generator = DailyNotesGenerator()
+            generator = daily_notes_generator.DailyNotesGenerator()
 
             # Create new event loop for this thread
             loop = asyncio.new_event_loop()
@@ -176,15 +196,12 @@ def _run_weekly_notes_catchup():
 
     def _catchup_task():
         try:
-            from config.app_config import WEEKLY_NOTES_ENABLED
-            if not WEEKLY_NOTES_ENABLED:
+            if not app_config.WEEKLY_NOTES_ENABLED:
                 return
-
-            from utils.weekly_notes_generator import WeeklyNotesGenerator
 
             # Create a fresh generator for this thread - don't share model_manager
             # across event loops (httpx.AsyncClient is not thread-safe)
-            generator = WeeklyNotesGenerator()
+            generator = weekly_notes_generator.WeeklyNotesGenerator()
 
             # Create new event loop for this thread
             loop = asyncio.new_event_loop()
@@ -220,13 +237,10 @@ def _run_monthly_notes_catchup():
 
     def _catchup_task():
         try:
-            from config.app_config import MONTHLY_NOTES_ENABLED
-            if not MONTHLY_NOTES_ENABLED:
+            if not app_config.MONTHLY_NOTES_ENABLED:
                 return
 
-            from utils.monthly_notes_generator import MonthlyNotesGenerator
-
-            generator = MonthlyNotesGenerator()
+            generator = monthly_notes_generator.MonthlyNotesGenerator()
 
             # Step 1: Migrate weekly folders to monthly parents (sync, no event loop)
             migrated = generator.migrate_weekly_folders_to_monthly()
@@ -270,22 +284,15 @@ def _run_reference_docs_seed(chroma_store=None):
 
     def _seed_task():
         try:
-            from config.app_config import (
-                REFERENCE_DOCS_ENABLED, REFERENCE_DOCS_AUTO_SEED,
-                REFERENCE_DOCS_SEED_PATHS,
-            )
-            if not REFERENCE_DOCS_ENABLED or not REFERENCE_DOCS_AUTO_SEED:
+            if not app_config.REFERENCE_DOCS_ENABLED or not app_config.REFERENCE_DOCS_AUTO_SEED:
                 return
 
-            from knowledge.reference_docs_manager import ReferenceDocsManager
-            from pathlib import Path
-
-            manager = ReferenceDocsManager(chroma_store=chroma_store)
+            manager = reference_docs_manager.ReferenceDocsManager(chroma_store=chroma_store)
             total_uploaded = 0
             total_skipped = 0
             total_failed = 0
 
-            for seed_path in REFERENCE_DOCS_SEED_PATHS:
+            for seed_path in app_config.REFERENCE_DOCS_SEED_PATHS:
                 p = Path(seed_path).expanduser().resolve()
                 if p.is_dir():
                     result = manager.sync_directory(str(p))
@@ -335,14 +342,13 @@ def _run_model_warmup(orchestrator):
         # 1) Cross-encoder reranker (MemoryRetriever lazy singleton) — the biggest
         #    cold cost on turn 1; the gate's cross-encoder already loads at init.
         try:
-            from memory.memory_retriever import MemoryRetriever
-            if MemoryRetriever._cross_encoder is None:
-                from sentence_transformers import CrossEncoder
-                MemoryRetriever._cross_encoder = CrossEncoder(
+            if memory_retriever.MemoryRetriever._cross_encoder is None:
+                from sentence_transformers import CrossEncoder  # lazy import: startup-cost
+                memory_retriever.MemoryRetriever._cross_encoder = CrossEncoder(
                     "cross-encoder/ms-marco-MiniLM-L-6-v2"
                 )
-            if MemoryRetriever._cross_encoder:
-                MemoryRetriever._cross_encoder.predict([["warm", "warm up the reranker"]])
+            if memory_retriever.MemoryRetriever._cross_encoder:
+                memory_retriever.MemoryRetriever._cross_encoder.predict([["warm", "warm up the reranker"]])
         except Exception as e:
             print(f"[Warmup] cross-encoder skip: {e}")
         # 2) Shared MiniLM embedder first-inference (gate / tone / web-trigger).
@@ -362,8 +368,7 @@ def _run_model_warmup(orchestrator):
             print(f"[Warmup] bge skip: {e}")
         # 4) Web-search trigger anchor embeddings (computed once per process).
         try:
-            from utils.web_search_trigger import _get_search_anchors
-            _get_search_anchors()
+            web_search_trigger._get_search_anchors()
         except Exception as e:
             print(f"[Warmup] anchors skip: {e}")
         # 5) Wiki FAISS cold-touch (USB-backed index): the first semantic
@@ -374,10 +379,10 @@ def _run_model_warmup(orchestrator):
         #    off the critical path. Runs on the dedicated wiki executor so it
         #    can never block anything else.
         try:
-            from core.prompt.gatherer_knowledge import (
+            from core.prompt.gatherer_knowledge import (  # lazy import: startup-cost
                 _WIKI_SEM_EXECUTOR, _WIKI_SEM_INFLIGHT,
             )
-            from knowledge.semantic_search import semantic_search_with_neighbors
+            from knowledge.semantic_search import semantic_search_with_neighbors  # lazy import: startup-cost
             # Hold an in-flight slot like any real search — submissions must
             # never exceed the semaphore or a queued future could be cancelled
             # before its release-in-finally ever runs.
@@ -395,9 +400,9 @@ def _run_model_warmup(orchestrator):
         #    multi-second "Computing exemplar embeddings" stall on turn 1).
         try:
             mm = getattr(orchestrator, "model_manager", None)
-            from utils.tone_detector import _get_exemplar_embeddings
+            from utils.tone_detector import _get_exemplar_embeddings  # lazy import: startup-cost
             _get_exemplar_embeddings(mm)
-            from utils.need_detector import _get_need_exemplar_embeddings
+            from utils.need_detector import _get_need_exemplar_embeddings  # lazy import: startup-cost
             _get_need_exemplar_embeddings(mm)
         except Exception as e:
             print(f"[Warmup] tone/need exemplars skip: {e}")
@@ -409,7 +414,6 @@ def _run_model_warmup(orchestrator):
         #    per-task gather all waiting on it. One read-only retrieval here
         #    moves that off the first message.
         try:
-            import asyncio as _aio
             mem_sys = getattr(orchestrator, "memory_system", None)
             if mem_sys is not None and hasattr(mem_sys, "get_memories"):
                 _aio.run(mem_sys.get_memories("warm up retrieval path", limit=3))
@@ -418,10 +422,9 @@ def _run_model_warmup(orchestrator):
         # 8) CLIP cold load + read-only visual index touch. The temporary store
         #    warms filesystem pages; upload/retrieval keep their own stores.
         try:
-            from config.app_config import VISUAL_MEMORY_ENABLED
-            if VISUAL_MEMORY_ENABLED:
-                from knowledge.clip_manager import get_clip_manager
-                from knowledge.visual_memory_store import VisualMemoryStore
+            if app_config.VISUAL_MEMORY_ENABLED:
+                from knowledge.clip_manager import get_clip_manager  # lazy import: startup-cost
+                from knowledge.visual_memory_store import VisualMemoryStore  # lazy import: startup-cost
                 get_clip_manager().load()
                 VisualMemoryStore().load()
         except Exception as e:
@@ -471,9 +474,8 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
             return chat_history, wizard_state_dict, "", completion_msg
 
         # Reconstruct WizardState from dict
-        from gui.wizard import WizardStep
         state = WizardState(
-            step=WizardStep(wizard_state_dict['step']),
+            step=wizard.WizardStep(wizard_state_dict['step']),
             collected_data=wizard_state_dict['collected_data'],
             error_count=wizard_state_dict['error_count'],
             max_retries=wizard_state_dict['max_retries']
@@ -544,9 +546,8 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
 
         # Wizard state stored as dict (Gradio State can't handle custom classes directly)
         # Start at WELCOME - first user input advances to INTRO, then to API_KEY
-        from gui.wizard import WizardStep
         wizard_state = gr.State({
-            'step': WizardStep.WELCOME.value,  # Start at WELCOME for new intro flow
+            'step': wizard.WizardStep.WELCOME.value,  # Start at WELCOME for new intro flow
             'collected_data': {},
             'error_count': 0,
             'max_retries': 3
@@ -576,7 +577,6 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
         print("[DEBUG] demo.launch() returned")
 
         # Keep alive until browser tab closes or Ctrl+C
-        import threading
         _wizard_event = threading.Event()
 
         if IS_FROZEN:
@@ -593,7 +593,6 @@ def _launch_wizard_ui(orchestrator, share, server_name, port):
 
     except Exception as e:
         print(f"[ERROR] demo.launch() failed: {e}")
-        import traceback
         traceback.print_exc()
         raise
 
@@ -621,7 +620,6 @@ def check_first_run(orchestrator, force_wizard=False):
         return False
     except Exception as e:
         print(f"[DEBUG] First-run check failed: {e}")
-        import traceback
         traceback.print_exc()
         return False
 
@@ -648,7 +646,6 @@ def launch_gui(orchestrator, force_wizard=False):
             return _launch_wizard_ui(orchestrator, SHARE, SERVER_NAME, PORT)
         except Exception as e:
             print(f"[ERROR] Wizard UI failed to launch: {e}")
-            import traceback
             traceback.print_exc()
             raise
     else:
@@ -692,8 +689,7 @@ def build_demo(orchestrator, dev_tabs=None):
     conversation_logger = get_conversation_logger()
 
     if dev_tabs is None:
-        from config.app_config import DAEMON_MODE as _DAEMON_MODE
-        dev_tabs = (_DAEMON_MODE == "dev")
+        dev_tabs = (app_config.DAEMON_MODE == "dev")
     _show_dev_tabs = dev_tabs
 
     def get_summary_status():
@@ -903,7 +899,7 @@ def build_demo(orchestrator, dev_tabs=None):
             # Show the System Prompt exactly once at the top (below token line),
             # using the most recent value so it stays current across queries.
             # Only shown in dev mode to avoid exposing internals to users.
-            if i == 1 and latest_system_prompt and _DAEMON_MODE == "dev":
+            if i == 1 and latest_system_prompt and app_config.DAEMON_MODE == "dev":
                 segment += f"**System Prompt**\n\n````\n{latest_system_prompt}\n````\n\n"
 
             segment += (
@@ -955,13 +951,10 @@ def build_demo(orchestrator, dev_tabs=None):
 
     def _check_pending_action():
         """Check if there's a pending action proposal after submit_chat completes."""
-        import logging as _log
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            _log.warning(f"[_check_pending_action] INTERNET_ACTIONS_ENABLED={INTERNET_ACTIONS_ENABLED}")
-            if INTERNET_ACTIONS_ENABLED:
-                from core.agentic.tools import ToolExecutor
-                store = ToolExecutor._get_pending_actions_store()
+            _log.warning(f"[_check_pending_action] INTERNET_ACTIONS_ENABLED={app_config.INTERNET_ACTIONS_ENABLED}")
+            if app_config.INTERNET_ACTIONS_ENABLED:
+                store = tools.ToolExecutor._get_pending_actions_store()
                 pending = store.get_pending()
                 _log.warning(f"[_check_pending_action] pending={pending is not None}, action_id={pending.action_id if pending else 'N/A'}")
                 if pending:
@@ -971,7 +964,6 @@ def build_demo(orchestrator, dev_tabs=None):
         return None, gr.update(visible=False)
 
     async def submit_chat(user_text, chat_history, files, use_raw_gpt, enable_citations_flag, fast_mode, personality, debug_entries):
-        import logging
         logger = logging.getLogger("gradio_gui")
         logger.warning(f"[SUBMIT_CHAT] ENTRY - fast_mode={fast_mode}, type={type(fast_mode)}")
 
@@ -1038,7 +1030,6 @@ def build_demo(orchestrator, dev_tabs=None):
                     tick.cancel()
                     # If streaming errored, log it and show error to user
                     logging.error(f"[GUI] Streaming error: {type(e).__name__}: {e}")
-                    import traceback
                     logging.error(f"[GUI] Traceback:\n{traceback.format_exc()}")
 
                     error_msg = f"⚠️ Connection error: {str(e)}"
@@ -1200,10 +1191,8 @@ def build_demo(orchestrator, dev_tabs=None):
         _final_action_id = None
         _final_action_visible = gr.update(visible=False)
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            if INTERNET_ACTIONS_ENABLED:
-                from core.agentic.tools import ToolExecutor
-                _fa_store = ToolExecutor._get_pending_actions_store()
+            if app_config.INTERNET_ACTIONS_ENABLED:
+                _fa_store = tools.ToolExecutor._get_pending_actions_store()
                 _fa_pending = _fa_store.get_pending()
                 if _fa_pending:
                     _final_action_id = _fa_pending.action_id
@@ -1216,12 +1205,10 @@ def build_demo(orchestrator, dev_tabs=None):
     # ---- Settings persistence helpers ----
     # Single implementation lives in gui/settings_core.py (shared with the
     # FastAPI settings routes); these locals keep existing call sites working.
-    from gui.settings_core import load_settings as _load_settings
-    from gui.settings_core import save_settings as _save_settings
 
     # Apply persisted active model at startup (if present)
     try:
-        _persisted = (_load_settings().get('models', {}) or {}).get('active')
+        _persisted = (settings_core.load_settings().get('models', {}) or {}).get('active')
         if isinstance(_persisted, str) and _persisted.strip():
             try:
                 orchestrator.model_manager.switch_model(_persisted.strip())
@@ -1232,7 +1219,7 @@ def build_demo(orchestrator, dev_tabs=None):
 
     # Apply persisted default temperature at startup (if present)
     try:
-        _m = (_load_settings().get('models', {}) or {})
+        _m = (settings_core.load_settings().get('models', {}) or {})
         _t = _m.get('default_temperature', None)
         if _t is not None:
             try:
@@ -1356,7 +1343,7 @@ def build_demo(orchestrator, dev_tabs=None):
                 )
 
                 # Internet Actions — Approve/Reject button wiring
-                from gui.handlers import execute_pending_action, reject_pending_action
+                from gui.handlers import execute_pending_action, reject_pending_action  # lazy import: cycle
 
                 approve_btn.click(
                     fn=execute_pending_action,
@@ -1372,8 +1359,7 @@ def build_demo(orchestrator, dev_tabs=None):
                 # Sync Obsidian notes handler
                 def _sync_obsidian_notes():
                     try:
-                        from knowledge.obsidian_manager import ObsidianManager
-                        manager = ObsidianManager()
+                        manager = obsidian_manager.ObsidianManager()
                         result = manager.embed_vault(force_reindex=False)
 
                         if result.errors:
@@ -1408,7 +1394,7 @@ def build_demo(orchestrator, dev_tabs=None):
                             if 'models' not in d:
                                 d['models'] = {}
                             d['models']['active'] = _name
-                        _ok, _err = _save_settings(_update_active)
+                        _ok, _err = settings_core.save_settings(_update_active)
                         if not _ok:
                             return f"Switched to '{_name}'. Persist failed: {_err}"
                         return f"Model: {_name}"
@@ -1474,8 +1460,6 @@ def build_demo(orchestrator, dev_tabs=None):
                 def _download_full_prompt(entries):
                     """Extract the most recent full prompt and prepare it for download"""
                     try:
-                        from utils.privacy_redaction import build_redacted_prompt_export
-
                         if not entries:
                             return gr.update(visible=False), "❌ No debug entries available. Submit a message first."
 
@@ -1489,7 +1473,7 @@ def build_demo(orchestrator, dev_tabs=None):
                         mode = latest.get('mode', 'unknown')
                         model = latest.get('model', 'unknown')
 
-                        content = build_redacted_prompt_export(
+                        content = privacy_redaction.build_redacted_prompt_export(
                             {
                                 "system_prompt": system_prompt,
                                 "prompt": prompt,
@@ -1497,14 +1481,10 @@ def build_demo(orchestrator, dev_tabs=None):
                                 "mode": mode,
                                 "model": model,
                             },
-                            include_system=_DAEMON_MODE == "dev",
+                            include_system=app_config.DAEMON_MODE == "dev",
                         )
 
                         # Write to temporary file
-                        from pathlib import Path
-                        import tempfile
-                        from datetime import datetime
-
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         filename = f"daemon_prompt_{timestamp}.txt"
 
@@ -1519,7 +1499,6 @@ def build_demo(orchestrator, dev_tabs=None):
                         return gr.update(value=str(filepath), visible=True), f"✅ Prompt exported to {filename}"
 
                     except Exception as e:
-                        import traceback
                         logging.error(f"[GUI] Download prompt error: {e}\n{traceback.format_exc()}")
                         return gr.update(visible=False), f"❌ Error: {str(e)}"
 
@@ -1598,7 +1577,7 @@ def build_demo(orchestrator, dev_tabs=None):
 
                     def _run_dedup(dry_run: bool) -> str:
                         try:
-                            from memory.cross_deduplicator import CrossCollectionDeduplicator
+                            from memory.cross_deduplicator import CrossCollectionDeduplicator  # lazy import: startup-cost
                             store = orchestrator.memory_system.chroma_store
                             dedup = CrossCollectionDeduplicator(store)
                             plan = dedup.run(dry_run=dry_run)
@@ -1616,16 +1595,13 @@ def build_demo(orchestrator, dev_tabs=None):
                     )
 
             # Proposals tab (extracted to gui/tabs/proposals.py)
-            from gui.tabs.proposals import build_proposals_tab
-            _proposals = build_proposals_tab(orchestrator, _load_settings, _save_settings, _show_dev_tabs)
+            _proposals = proposals.build_proposals_tab(orchestrator, settings_core.load_settings, settings_core.save_settings, _show_dev_tabs)
 
             # Synthesis tab (extracted to gui/tabs/synthesis.py)
-            from gui.tabs.synthesis import build_synthesis_tab
-            build_synthesis_tab(orchestrator, _show_dev_tabs)
+            synthesis.build_synthesis_tab(orchestrator, _show_dev_tabs)
 
             # Settings tab (extracted to gui/tabs/settings.py)
-            from gui.tabs.settings import build_settings_tab
-            build_settings_tab(orchestrator, _load_settings, _save_settings)
+            settings.build_settings_tab(orchestrator, settings_core.load_settings, settings_core.save_settings)
 
             # Original inline Proposals/Synthesis/Settings tab code removed.
             # Now in gui/tabs/proposals.py, gui/tabs/synthesis.py, gui/tabs/settings.py
@@ -1643,8 +1619,7 @@ def build_demo(orchestrator, dev_tabs=None):
 
                 def _load_current_personality():
                     try:
-                        from config.app_config import load_personality_text
-                        return load_personality_text()
+                        return app_config.load_personality_text()
                     except Exception:
                         return ""
 
@@ -1664,15 +1639,13 @@ def build_demo(orchestrator, dev_tabs=None):
 
                 def _set_personality(text):
                     try:
-                        from config.app_config import PERSONALITY_CUSTOM_PATH, PERSONALITY_MAX_CHARS
-                        from pathlib import Path
-                        if len(text) > PERSONALITY_MAX_CHARS:
-                            logger.warning(f"[Personality] Rejected save: {len(text)} chars exceeds limit of {PERSONALITY_MAX_CHARS}")
-                            return f"Too long ({len(text)} chars). Max is {PERSONALITY_MAX_CHARS}. Trim and retry."
-                        Path(PERSONALITY_CUSTOM_PATH).parent.mkdir(parents=True, exist_ok=True)
-                        with open(PERSONALITY_CUSTOM_PATH, "w", encoding="utf-8") as f:
+                        if len(text) > app_config.PERSONALITY_MAX_CHARS:
+                            logger.warning(f"[Personality] Rejected save: {len(text)} chars exceeds limit of {app_config.PERSONALITY_MAX_CHARS}")
+                            return f"Too long ({len(text)} chars). Max is {app_config.PERSONALITY_MAX_CHARS}. Trim and retry."
+                        Path(app_config.PERSONALITY_CUSTOM_PATH).parent.mkdir(parents=True, exist_ok=True)
+                        with open(app_config.PERSONALITY_CUSTOM_PATH, "w", encoding="utf-8") as f:
                             f.write(text)
-                        logger.info(f"[Personality] Custom personality saved ({len(text)} chars) to {PERSONALITY_CUSTOM_PATH}")
+                        logger.info(f"[Personality] Custom personality saved ({len(text)} chars) to {app_config.PERSONALITY_CUSTOM_PATH}")
                         return f"Custom personality saved ({len(text)} chars). Takes effect on the next message."
                     except Exception as e:
                         logger.error(f"[Personality] Failed to save custom personality: {e}")
@@ -1680,13 +1653,11 @@ def build_demo(orchestrator, dev_tabs=None):
 
                 def _restore_default_personality():
                     try:
-                        from config.app_config import PERSONALITY_CUSTOM_PATH, load_default_personality
-                        from pathlib import Path
-                        custom = Path(PERSONALITY_CUSTOM_PATH)
+                        custom = Path(app_config.PERSONALITY_CUSTOM_PATH)
                         if custom.exists():
                             custom.unlink()
-                            logger.info(f"[Personality] Deleted custom personality file: {PERSONALITY_CUSTOM_PATH}")
-                        default_text = load_default_personality()
+                            logger.info(f"[Personality] Deleted custom personality file: {app_config.PERSONALITY_CUSTOM_PATH}")
+                        default_text = app_config.load_default_personality()
                         logger.info(f"[Personality] Restored default personality ({len(default_text)} chars)")
                         return default_text, "Restored default personality. Takes effect on the next message."
                     except Exception as e:
@@ -1739,8 +1710,7 @@ def _launch_demo(demo, orchestrator, SHARE, SERVER_NAME, PORT):
             prevent_thread_lock=True,
         )
         # Add health check endpoint
-        from utils.health_check import add_health_endpoint
-        add_health_endpoint(app, orchestrator)
+        health_check.add_health_endpoint(app, orchestrator)
 
         # Print URLs for visibility
         logger = logging.getLogger("gui.launch")
@@ -1760,8 +1730,6 @@ def _launch_demo(demo, orchestrator, SHARE, SERVER_NAME, PORT):
         # Robust browser opening for frozen executable (handles icon launch)
         # Uses platform-specific commands which are more reliable than webbrowser module
         if IS_FROZEN and _env_flag("GRADIO_OPEN_BROWSER", True):
-            import subprocess
-            import time
             time.sleep(0.5)  # Brief delay to ensure server is ready
             try:
                 if sys.platform.startswith('linux'):
@@ -1798,16 +1766,13 @@ def _launch_demo(demo, orchestrator, SHARE, SERVER_NAME, PORT):
                 prevent_thread_lock=True,
             )
             # Add health check endpoint (fallback path)
-            from utils.health_check import add_health_endpoint
-            add_health_endpoint(app, orchestrator)
+            health_check.add_health_endpoint(app, orchestrator)
 
             print(f"[GUI] Local: {local_url}")
             print(f"[GUI] Health: {local_url}/health")
 
             # Robust browser opening for frozen executable (fallback path)
             if IS_FROZEN and _env_flag("GRADIO_OPEN_BROWSER", True):
-                import subprocess
-                import time
                 time.sleep(0.5)
                 try:
                     if sys.platform.startswith('linux'):

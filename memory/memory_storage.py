@@ -56,6 +56,8 @@ import os
 import re
 import json
 import logging
+import traceback
+import json as _json
 from datetime import datetime
 from typing import List, Dict, Optional
 from collections import deque
@@ -63,8 +65,18 @@ from collections import deque
 from utils.logging_utils import get_logger
 from utils.retrieval_outcome import RetrievalError, StoreWriteError
 from utils.personal_claim_provenance import clean_personal_claim_receipt
+import utils.query_checker as query_checker
+import utils.time_manager as time_manager
 from models.model_manager import API_ERROR_PREFIXES
+import core.content_type_detector as content_type_detector
+import core.response_parser as response_parser
+from config import app_config
 from datetime import timedelta
+import memory.fact_source as fact_source
+import memory.fact_verification as fact_verification
+import memory.graph_models as graph_models
+import memory.graph_utils as graph_utils
+import memory.stance_classifier as stance_classifier
 
 logger = get_logger("memory_storage")
 
@@ -114,8 +126,7 @@ _FACT_EXTRACT_SKIP_CONTENT_MIN_CONF = float(
 def fact_extraction_skip_reason(query: str) -> str:
     """Return a non-empty reason when per-turn fact extraction must be skipped."""
     try:
-        from core.content_type_detector import detect_content_type
-        ct = detect_content_type(query or "")
+        ct = content_type_detector.detect_content_type(query or "")
     except Exception:
         return ""
     if (ct.content_type in _FACT_EXTRACT_SKIP_CONTENT_TYPES
@@ -132,8 +143,7 @@ def fact_extraction_source_text(query: str) -> str:
     facts from inside the block, while genuine commentary outside it still
     does. Framing lines around either kind of block are kept."""
     try:
-        from memory.fact_source import strip_quoted_correspondence
-        return strip_quoted_correspondence(query or "")
+        return fact_source.strip_quoted_correspondence(query or "")
     except Exception:
         return query or ""
 
@@ -141,9 +151,8 @@ def fact_extraction_source_text(query: str) -> str:
 # Knowledge graph config (imported inside methods to avoid circular imports)
 def _get_graph_enabled():
     try:
-        from config.app_config import KNOWLEDGE_GRAPH_ENABLED
-        return KNOWLEDGE_GRAPH_ENABLED
-    except ImportError:
+        return app_config.KNOWLEDGE_GRAPH_ENABLED
+    except (ImportError, AttributeError):
         return False
 
 
@@ -599,8 +608,7 @@ def _detect_project_area(text: str) -> str:
     lower = text.lower()
     # Per-user project areas (config-defined, keeps source general)
     try:
-        from config.app_config import PROFILE_PERSONAL_PROJECT_AREAS
-        for area, keywords in (PROFILE_PERSONAL_PROJECT_AREAS or {}).items():
+        for area, keywords in (app_config.PROFILE_PERSONAL_PROJECT_AREAS or {}).items():
             if any(str(w).lower() in lower for w in (keywords or [])):
                 return str(area)
     except Exception:
@@ -712,12 +720,10 @@ class MemoryStorage:
         self._thread_detect_fn = None  # Set by coordinator
 
     def _now(self) -> datetime:
-        from utils.time_manager import now_from
-        return now_from(self.time_manager)
+        return time_manager.now_from(self.time_manager)
 
     def _now_iso(self) -> str:
-        from utils.time_manager import now_iso_from
-        return now_iso_from(self.time_manager)
+        return time_manager.now_iso_from(self.time_manager)
 
     def _calculate_truth_score(self, query: str, response: str) -> float:
         """Calculate truth score using scorer (falls back to 0.5 if no scorer)."""
@@ -826,9 +832,8 @@ class MemoryStorage:
             # artifacts. Display-layer defenses can be bypassed by new response
             # paths; this boundary cannot. Persisted leaks get replayed into
             # prompts as history and the model starts imitating them.
-            from core.response_parser import ResponseParser
             _raw_response = response or ""
-            response = ResponseParser.sanitize_for_storage(_raw_response)
+            response = response_parser.ResponseParser.sanitize_for_storage(_raw_response)
             if _raw_response.strip() and not response.strip():
                 logger.warning(
                     "[MemoryStorage] Response was entirely thinking content "
@@ -857,16 +862,14 @@ class MemoryStorage:
             # check turn carrying ~270K chars of lecture transcripts was
             # stored is_heavy_topic=True, and the next session's opener
             # inherited "This is a sensitive/heavy topic").
-            from utils.query_checker import _is_heavy_topic_heuristic
             _heavy_text = (user_text or "").strip() if isinstance(user_text, str) else ""
-            is_heavy = _is_heavy_topic_heuristic(_heavy_text or query)
+            is_heavy = query_checker._is_heavy_topic_heuristic(_heavy_text or query)
 
             # B3 (2026-09-06): an operator-marked [test]...[/test] block in
             # the user's own text tags this turn's provenance as synthetic —
             # detected structurally by the bracket markers only, never
             # inferred from wording/repetition/a medication name.
-            from memory.fact_source import contains_test_block
-            is_test_origin = contains_test_block(_heavy_text or query)
+            is_test_origin = fact_source.contains_test_block(_heavy_text or query)
             # A fresh, mutable copy: the corpus's "tags" field is the SAME
             # list object passed to add_entry when non-empty, so this must
             # never be the caller's own list (avoids retroactively mutating
@@ -963,8 +966,7 @@ class MemoryStorage:
 
             # Content type detection (lyrics, poems, code, quotes, etc.)
             try:
-                from core.content_type_detector import detect_content_type
-                ct = detect_content_type(query)
+                ct = content_type_detector.detect_content_type(query)
                 if ct.content_type:
                     raw_metadata["content_type"] = ct.content_type
                     if ct.title_hint:
@@ -982,7 +984,6 @@ class MemoryStorage:
                     PROVENANCE_ENABLED = True
                     PROVENANCE_THINKING_MAX_CHARS = 4000
                 if PROVENANCE_ENABLED:
-                    import json as _json
                     if provenance.get("thinking_block"):
                         tb = str(provenance["thinking_block"])
                         raw_metadata["thinking_block"] = tb[:PROVENANCE_THINKING_MAX_CHARS]
@@ -1034,7 +1035,6 @@ class MemoryStorage:
             raise  # a typed write failure propagates unchanged, not re-wrapped
         except Exception as e:
             logger.error(f"Error storing interaction: {e}")
-            import traceback
             traceback.print_exc()
             raise StoreWriteError(source="store_interaction", reason=type(e).__name__) from e
 
@@ -1068,7 +1068,6 @@ class MemoryStorage:
                 })
         except Exception as e:
             logger.debug(f"[MemoryStorage] Corpus add_summary failed: {e}")
-            import traceback
             logger.debug(f"[MemoryStorage] Traceback:\n{traceback.format_exc()}")
 
         # 2) Chroma (semantic)
@@ -1123,8 +1122,7 @@ class MemoryStorage:
             # under-fires — the safe direction).
             _turn_is_heavy = None
             try:
-                from utils.query_checker import _is_heavy_topic_heuristic
-                _turn_is_heavy = bool(_is_heavy_topic_heuristic(query))
+                _turn_is_heavy = bool(query_checker._is_heavy_topic_heuristic(query))
             except Exception:
                 pass
             _skip_reason = fact_extraction_skip_reason(query)
@@ -1181,12 +1179,8 @@ class MemoryStorage:
                 # provided stance only fills lexicon gaps.
                 stance_md = {}
                 try:
-                    from memory.stance_classifier import (
-                        VALID_STANCES,
-                        classify_for_storage,
-                    )
                     if subj and rel and obj:
-                        stance_md = classify_for_storage(
+                        stance_md = stance_classifier.classify_for_storage(
                             subj, rel, obj,
                             tone_level=(None if _turn_is_heavy is None
                                         else ("elevated" if _turn_is_heavy
@@ -1194,7 +1188,7 @@ class MemoryStorage:
                         )
                         _ext_stance = md.get("stance")
                         if (stance_md.get("stance") == "objective"
-                                and _ext_stance in VALID_STANCES):
+                                and _ext_stance in stance_classifier.VALID_STANCES):
                             stance_md["stance"] = _ext_stance
                 except Exception as stance_err:
                     logger.debug(f"[MemoryStorage] Stance classification failed: {stance_err}")
@@ -1216,19 +1210,18 @@ class MemoryStorage:
                     # Fact verification gate: check for conflicts before storage
                     if self.fact_verifier:
                         try:
-                            from memory.fact_verification import FactVerdict
                             vr = await self.fact_verifier.verify(
                                 subject=subj, predicate=rel, object_val=obj,
                                 fact_text=fact_text, source=src, confidence=conf,
                                 fact_scope=md.get("fact_scope", "user"),
                             )
-                            if vr.verdict == FactVerdict.REJECT:
+                            if vr.verdict == fact_verification.FactVerdict.REJECT:
                                 logger.debug(
                                     f"[MemoryStorage] Fact rejected by verifier: "
                                     f"{fact_text[:80]} (reason={vr.reason})"
                                 )
                                 continue
-                            if vr.verdict == FactVerdict.STORE_AND_FLAG:
+                            if vr.verdict == fact_verification.FactVerdict.STORE_AND_FLAG:
                                 # Flag conflicting old facts as superseded
                                 for cand in vr.conflicting_candidates:
                                     if cand.doc_id:
@@ -1359,12 +1352,9 @@ class MemoryStorage:
         if not subj or not rel or not obj:
             return
         try:
-            from memory.entity_resolver import normalize_relation
-            from memory.graph_models import GraphNode, GraphEdge
-            from memory.graph_utils import is_junk_entity
-            from config.app_config import KNOWLEDGE_GRAPH_MIN_CONFIDENCE
+            from memory.entity_resolver import normalize_relation  # lazy import: startup-cost (would newly load: networkx)
 
-            if confidence < KNOWLEDGE_GRAPH_MIN_CONFIDENCE:
+            if confidence < app_config.KNOWLEDGE_GRAPH_MIN_CONFIDENCE:
                 return
 
             _is_role_subject = subj.lower().startswith("user's ")
@@ -1372,7 +1362,7 @@ class MemoryStorage:
             # Filter junk subjects (pronouns, stopwords, numbers) — these
             # should never become graph nodes. "user" is exempt; user-scoped
             # role subjects are deliberate, not junk.
-            if subj.lower() != "user" and not _is_role_subject and is_junk_entity(subj):
+            if subj.lower() != "user" and not _is_role_subject and graph_utils.is_junk_entity(subj):
                 logger.debug(f"[MemoryStorage] Graph skip junk subject: '{subj}'")
                 return
 
@@ -1381,7 +1371,7 @@ class MemoryStorage:
             def _role_subject_node_id() -> str:
                 """Verbatim role node — NEVER through the alias resolver (a
                 possessive alias would bind the appraisal to a named person)."""
-                return self.graph_memory.add_entity(GraphNode(
+                return self.graph_memory.add_entity(graph_models.GraphNode(
                     entity_id=re.sub(r"[^a-z0-9]+", "_", subj.lower()).strip("_"),
                     display_name=subj,
                     entity_type="role",
@@ -1404,7 +1394,7 @@ class MemoryStorage:
                 # Store as node metadata: {"relation": "value"}
                 node = self.graph_memory.get_entity(subj_id)
                 if node:
-                    self.graph_memory.add_entity(GraphNode(
+                    self.graph_memory.add_entity(graph_models.GraphNode(
                         entity_id=subj_id,
                         display_name=node.display_name,
                         entity_type=node.entity_type,
@@ -1431,9 +1421,8 @@ class MemoryStorage:
             # user|has_dog|Daisy against a node declaring species: cat; the
             # wrong edge fed a junk proactive insight). Edge only — the fact
             # itself still stores normally.
-            from memory.graph_utils import relation_species_conflict
             _target_node = self.graph_memory.get_entity(obj_id)
-            if _target_node is not None and relation_species_conflict(
+            if _target_node is not None and graph_utils.relation_species_conflict(
                     canon_rel, getattr(_target_node, "metadata", None)):
                 logger.info(
                     f"[MemoryStorage] Graph skip species-conflict edge: "
@@ -1448,7 +1437,7 @@ class MemoryStorage:
             if capture_tone:
                 _edge_md["capture_tone"] = capture_tone
             self.graph_memory.add_relation(
-                GraphEdge(source_id=subj_id, relation=canon_rel, target_id=obj_id,
+                graph_models.GraphEdge(source_id=subj_id, relation=canon_rel, target_id=obj_id,
                           metadata=_edge_md),
                 fact_id=fact_id,
             )
@@ -1518,8 +1507,7 @@ class MemoryStorage:
                 (disabled/dedup); raises StoreWriteError on a failed write [F10b].
         """
         try:
-            from config.app_config import PROCEDURAL_SKILLS_ENABLED, SKILL_DEDUP_THRESHOLD
-            if not PROCEDURAL_SKILLS_ENABLED:
+            if not app_config.PROCEDURAL_SKILLS_ENABLED:
                 return None
 
             collection_name = "procedural_skills"
@@ -1544,7 +1532,7 @@ class MemoryStorage:
                 )
                 for match in similar:
                     score = match.get("relevance_score", 0.0)
-                    if score and score >= SKILL_DEDUP_THRESHOLD:
+                    if score and score >= app_config.SKILL_DEDUP_THRESHOLD:
                         existing_trigger = (match.get("metadata") or {}).get("trigger", "")
                         logger.info(
                             f"[MemoryStorage] Skill deduplicated (score={score:.2f}): "
@@ -1579,8 +1567,7 @@ class MemoryStorage:
         consolidator still return quietly, as before.
         """
         try:
-            from config.app_config import NARRATIVE_CONTEXT_ENABLED
-            if not NARRATIVE_CONTEXT_ENABLED:
+            if not app_config.NARRATIVE_CONTEXT_ENABLED:
                 return
 
             # Retrieve recent summaries for synthesis

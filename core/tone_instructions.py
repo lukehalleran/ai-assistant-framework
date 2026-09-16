@@ -104,7 +104,7 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
         _request_shaped = False
         if query:
             try:
-                from utils.query_checker import is_request_shaped
+                from utils.query_checker import is_request_shaped  # lazy import: cycle
                 _request_shaped = is_request_shaped(query)
             except Exception:
                 _request_shaped = False
@@ -351,12 +351,7 @@ def get_intent_style_instructions(
         return ""
     if query:
         try:
-            # lazy import: patch point + avoids a module-load-time cycle
-            # (utils.query_checker call-time-imports core.actions.registry
-            # and core.agentic.gate; tone_instructions is itself imported
-            # early by core.orchestrator, so this stays call-time like the
-            # other query-shape checks in this module).
-            from utils.query_checker import is_task_directive
+            from utils.query_checker import is_task_directive  # lazy import: cycle (also a patch point: utils.query_checker call-time-imports core.actions.registry and core.agentic.gate; tone_instructions is itself imported early by core.orchestrator, so this stays call-time like the other query-shape checks in this module)
             if is_task_directive(query):
                 return ""
         except Exception:

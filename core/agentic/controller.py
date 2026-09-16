@@ -125,6 +125,8 @@ from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 from utils.ordered_slice import oldest_first as _ordered_oldest_first
 from utils.text_budget import fit_text_to_tokens
+import memory.memory_expander as memory_expander
+from config import app_config
 
 if TYPE_CHECKING:
     from models.model_manager import ModelManager
@@ -203,7 +205,7 @@ def _pending_cards_note(action_verb: str = "call propose_action") -> str:
     builder — the XML forced prompt must never leak native-tools wording.
     """
     try:
-        from core.agentic.tools import ToolExecutor
+        from core.agentic.tools import ToolExecutor  # lazy import: cycle
         pending = ToolExecutor._get_pending_actions_store().get_all_pending()
     except Exception:
         pending = []
@@ -388,8 +390,7 @@ class AgenticSearchController:
         self.memory_expander = None
         if chroma_store:
             try:
-                from memory.memory_expander import MemoryExpander
-                self.memory_expander = MemoryExpander(chroma_store)
+                self.memory_expander = memory_expander.MemoryExpander(chroma_store)
             except Exception as e:
                 logger.warning(f"[AgenticSearch] Could not init MemoryExpander: {e}")
 
@@ -498,7 +499,6 @@ class AgenticSearchController:
 
         # A single tool response may exceed the budget, or contain no round
         # delimiter at all. Dropping old blocks alone cannot bound that case.
-        from utils.text_budget import fit_text_to_tokens
         session.accumulated_context = fit_text_to_tokens(
             "\n\n---\n".join(blocks), self.context_budget_tokens, self._estimate_tokens,
         )
@@ -524,7 +524,7 @@ class AgenticSearchController:
     def _email_search_is_available() -> bool:
         """Cheap runtime capability check used when exposing native tools."""
         try:
-            from core.email.service import get_email_service
+            from core.email.service import get_email_service  # lazy import: cycle
 
             service = get_email_service()
             return any(provider.is_configured() for provider in service.providers)
@@ -609,7 +609,7 @@ class AgenticSearchController:
         # dispatch time in _dispatch_single_inner.
         session.note_body_override = None
         try:
-            from utils.query_checker import is_note_save_request
+            from utils.query_checker import is_note_save_request  # lazy import: cycle
             if is_note_save_request(self._action_query_ws):
                 session.note_body_override = extract_note_body(self._action_query_ws)
         except Exception as e:
@@ -630,9 +630,8 @@ class AgenticSearchController:
         fetch_url_available = self.web_search_manager is not None and self.web_search_manager.is_available()
         email_search_available = self._email_search_is_available()
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            actions_available = INTERNET_ACTIONS_ENABLED
-        except ImportError:
+            actions_available = app_config.INTERNET_ACTIONS_ENABLED
+        except (ImportError, AttributeError):
             actions_available = False
         handler = get_protocol_handler(
             protocol,
@@ -664,9 +663,8 @@ class AgenticSearchController:
 
         # Inject internet actions availability
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            if INTERNET_ACTIONS_ENABLED:
-                from core.actions.registry import enabled_action_types
+            if app_config.INTERNET_ACTIONS_ENABLED:
+                from core.actions.registry import enabled_action_types  # lazy import: cycle
                 _action_types = ", ".join(at.value for at in enabled_action_types())
                 augmented_system_prompt += (
                     "\n\n[AVAILABLE ACTIONS]\n"
@@ -690,7 +688,7 @@ class AgenticSearchController:
                     "Call propose_action immediately as your first action. For a GitHub issue: "
                     "propose_action(action_type=\"github_create_issue\", subject=<title>, message=<body>)."
                 )
-        except ImportError:
+        except (ImportError, AttributeError):
             pass
 
         # Lazy sandbox acquisition (2026-09-08, F5): sandbox_available (=
@@ -934,7 +932,7 @@ class AgenticSearchController:
                             # mint a second, colliding set of ids for the same
                             # pages; see knowledge/web_search_manager.py).
                             _numbered = _merge_web_ids(_base_web.pages)
-                            from knowledge.web_search_manager import render_prenumbered_web_sources  # lazy import: matches tools.py's existing lazy web_search_manager imports
+                            from knowledge.web_search_manager import render_prenumbered_web_sources  # lazy import: cycle (matches tools.py's existing lazy web_search_manager imports)
                             _seed_lines, _ = render_prenumbered_web_sources(
                                 _numbered, max_sources=8, max_chars_per_source=2000,
                             )
@@ -995,7 +993,7 @@ class AgenticSearchController:
             _forced_via_gate = _forced_action is None and bool(forced_action)
             if _forced_action is None and forced_action:
                 try:
-                    from core.actions.types import ActionType as _AT
+                    from core.actions.types import ActionType as _AT  # lazy import: cycle
                     _forced_action = _AT(forced_action)
                     logger.info(
                         f"[AgenticSearch] Forcing {forced_action} from the gate's "
@@ -1038,15 +1036,14 @@ class AgenticSearchController:
             # round to max_rounds and hang the turn for minutes. Once exceeded,
             # stop starting new rounds and fall through to final synthesis with
             # whatever was gathered.
-            from config.app_config import AGENTIC_LOOP_TIMEOUT_S
-            _loop_deadline = time.monotonic() + AGENTIC_LOOP_TIMEOUT_S
+            _loop_deadline = time.monotonic() + app_config.AGENTIC_LOOP_TIMEOUT_S
 
             # === ROUNDS 2-N: Model-driven iteration ===
             while session.can_continue and session.current_round <= self.max_rounds:
                 if time.monotonic() > _loop_deadline:
                     logger.warning(
                         f"[AgenticSearch] Loop wall-clock budget "
-                        f"({AGENTIC_LOOP_TIMEOUT_S:.0f}s) exceeded after "
+                        f"({app_config.AGENTIC_LOOP_TIMEOUT_S:.0f}s) exceeded after "
                         f"{len(session.rounds)} round(s) — stopping and "
                         f"synthesizing from gathered context"
                     )
@@ -1079,7 +1076,7 @@ class AgenticSearchController:
                     _forced_action.value if (_force_propose_pending and _forced_action) else None
                 )
                 if _force_propose_pending:
-                    from core.actions.registry import ACTION_SPECS, build_forced_tool_schema
+                    from core.actions.registry import ACTION_SPECS, build_forced_tool_schema  # lazy import: cycle
                     _spec = ACTION_SPECS.get(_forced_action)
                     _hint = (_spec.field_hint if _spec and _spec.field_hint else "the required fields")
                     _prior_reject_reason = session.last_action_reject_reason
@@ -1197,13 +1194,12 @@ class AgenticSearchController:
                 # Substitute a deterministic search from the trigger's own
                 # seed terms (or the query itself) — once. Route depends on
                 # the trigger mode: web_search → web, memory → memory.
-                from config.app_config import AGENTIC_TIMEOUT_TOOL_FALLBACK
                 if (
                     decisions
                     and getattr(decisions[0], "timed_out", False)
                     and not session.rounds
                     and not _timeout_fallback_used
-                    and AGENTIC_TIMEOUT_TOOL_FALLBACK
+                    and app_config.AGENTIC_TIMEOUT_TOOL_FALLBACK
                 ):
                     _timeout_fallback_used = True
                     _fb_terms = [
@@ -1292,7 +1288,7 @@ class AgenticSearchController:
                     and _should_ground_calendar_times(session, _this_round_forced_type)
                     and session.action_context_digest
                 ):
-                    from core.actions.registry import ground_calendar_params_by_resolution
+                    from core.actions.registry import ground_calendar_params_by_resolution  # lazy import: cycle
                     _pool = "\n".join(str(x or "") for x in (
                         query, session.action_context_digest,
                         session.recent_conversation_digest, session.accumulated_context))
@@ -1329,7 +1325,7 @@ class AgenticSearchController:
                         # has a deterministic extractor (e.g. github issue title/body). Models call
                         # propose_action but unreliably leave content empty under a large context.
                         try:
-                            from core.actions.types import ActionType as _AT
+                            from core.actions.types import ActionType as _AT  # lazy import: cycle
                             _bf = backfill_params(_AT(_ad.action_type), query)
                         except ValueError:
                             _bf = {}
@@ -1623,12 +1619,11 @@ class AgenticSearchController:
                     )
 
                 # Pre-filter expand_memory requests against session limit
-                from config.app_config import EXPAND_MEMORY_ENABLED, EXPAND_MAX_PER_SESSION
-                expand_budget = EXPAND_MAX_PER_SESSION - session.expand_count
+                expand_budget = app_config.EXPAND_MAX_PER_SESSION - session.expand_count
                 filtered_decisions = []
                 for d in tool_decisions:
                     if d.wants_memory_expand and d.expand_memory_id:
-                        if not EXPAND_MEMORY_ENABLED or not self.memory_expander:
+                        if not app_config.EXPAND_MEMORY_ENABLED or not self.memory_expander:
                             logger.info("[AgenticSearch] expand_memory disabled, skipping")
                             continue
                         if expand_budget <= 0:
@@ -1771,10 +1766,9 @@ class AgenticSearchController:
             # second full-context synthesis call (the observed pattern: a 32s
             # decision call whose answer text was discarded, followed by a 24s
             # re-generation of essentially the same answer).
-            from config.app_config import AGENTIC_REUSE_DECISION_ANSWER
             _candidate_reused_answer = (
                 self._usable_decision_answer(_decision_answer_text)
-                if (AGENTIC_REUSE_DECISION_ANSWER and _decision_answer_text)
+                if (app_config.AGENTIC_REUSE_DECISION_ANSWER and _decision_answer_text)
                 else None
             )
             # A4/B1 (2026-09-06/07): reuse is permitted only when the decision
@@ -1919,7 +1913,7 @@ class AgenticSearchController:
         own method if it defines one (preserving test-mockability), otherwise to the ToolExecutor's.
         Always runs under agent_mode() context.
         """
-        from core.agentic.tools import DISPATCH_TABLE, reroute_url_search
+        from core.agentic.tools import DISPATCH_TABLE, reroute_url_search  # lazy import: cycle
         decision = reroute_url_search(decision)
         # A14 (2026-09-10, round 3): a gate-detected note-save request's
         # body is the USER'S stated content — computed once at session
@@ -2076,7 +2070,6 @@ class AgenticSearchController:
         # Per-round backstop against a stalled connection / hung provider call.
         # Generous (default 75s) so it never cuts a legitimate full-length
         # decision round; on timeout we answer with whatever context we have.
-        from config.app_config import AGENTIC_ROUND_TIMEOUT_S
         try:
             if session.protocol == SearchProtocol.NATIVE_TOOLS:
                 # Use tool calling. tools_override lets a caller restrict the tool set
@@ -2090,7 +2083,7 @@ class AgenticSearchController:
                         tools=_tools,
                         tool_choice=tool_choice,
                     ),
-                    timeout=AGENTIC_ROUND_TIMEOUT_S,
+                    timeout=app_config.AGENTIC_ROUND_TIMEOUT_S,
                 )
             else:
                 # Use standard generation for XML markers.
@@ -2104,7 +2097,7 @@ class AgenticSearchController:
                         model_name=model_name,
                         system_prompt=system_prompt,
                     ),
-                    timeout=AGENTIC_ROUND_TIMEOUT_S,
+                    timeout=app_config.AGENTIC_ROUND_TIMEOUT_S,
                 )
 
             return handler.parse_response(response, forced_action_type=forced_action_type)
@@ -2112,7 +2105,7 @@ class AgenticSearchController:
         except asyncio.TimeoutError:
             logger.warning(
                 f"[AgenticSearch] Decision generation timed out after "
-                f"{AGENTIC_ROUND_TIMEOUT_S:.0f}s"
+                f"{app_config.AGENTIC_ROUND_TIMEOUT_S:.0f}s"
             )
             # Marked timed_out so the loop can distinguish a stalled decision
             # call from the model's own ready-to-answer signal: on a
@@ -2148,13 +2141,12 @@ class AgenticSearchController:
         top_p=0.95 or 400s) and the ``extra_body={"usage":{"include":True}}``
         cache-usage accounting ``generate_once`` already sends.
         """
-        from config.app_config import AGENTIC_DECISION_MAX_TOKENS
         try:
             return await self.model_manager.generate_once(
                 prompt=prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,
-                max_tokens=AGENTIC_DECISION_MAX_TOKENS,
+                max_tokens=app_config.AGENTIC_DECISION_MAX_TOKENS,
                 temperature=0.3,
                 disable_reasoning=True,
             )
@@ -2184,14 +2176,13 @@ class AgenticSearchController:
         """
         # Check if model_manager has tool support
         if hasattr(self.model_manager, 'generate_once_with_tools'):
-            from config.app_config import AGENTIC_DECISION_MAX_TOKENS
             return await self.model_manager.generate_once_with_tools(
                 prompt=prompt,
                 model_name=model_name,
                 system_prompt=system_prompt,
                 tools=tools,
                 tool_choice=tool_choice,
-                max_tokens=AGENTIC_DECISION_MAX_TOKENS,
+                max_tokens=app_config.AGENTIC_DECISION_MAX_TOKENS,
                 disable_reasoning=True,
             )
         else:
@@ -2629,7 +2620,7 @@ class AgenticSearchController:
         except Exception as e:
             logger.error(f"[AgenticSearch] Narration recovery failed: {e}")
             return None
-        from core.response_parser import ResponseParser
+        from core.response_parser import ResponseParser  # lazy import: cycle
         recovered = (ResponseParser.sanitize_for_storage(recovered or "") or "").strip()
         if len(recovered) < 200 or self.narration_shaped_final(recovered):
             logger.warning(
@@ -2657,7 +2648,7 @@ class AgenticSearchController:
           fewer than 2 non-question lines is a clarification list, not an
           answer
         """
-        from core.response_parser import ResponseParser
+        from core.response_parser import ResponseParser  # lazy import: cycle
         candidate = (text or "").strip()
         if len(candidate) < 200:
             return None
@@ -2835,7 +2826,7 @@ class AgenticSearchController:
                     # assembled visible text sanitizes down to nothing, recover the
                     # same way. (Observed 2026-07-03: stored response was one raw
                     # <reasoning> block.)
-                    from core.response_parser import ResponseParser
+                    from core.response_parser import ResponseParser  # lazy import: cycle
                     _assembled = "".join(_visible_parts)
                     if _assembled.strip() and not ResponseParser.sanitize_for_storage(_assembled):
                         logger.warning(
@@ -3189,7 +3180,7 @@ class AgenticSearchController:
         # …" reached the loop and the model replied that it can't save
         # notes at all, never calling create_daemon_note.
         try:
-            from utils.query_checker import is_note_save_request
+            from utils.query_checker import is_note_save_request  # lazy import: cycle
             if is_note_save_request(query):
                 hints.append(
                     'Use the create_daemon_note tool to save this note now — '
@@ -3524,7 +3515,7 @@ What would you like to do?""")
         # Check if an action was proposed during this session
         _has_pending_action = False
         try:
-            from core.agentic.tools import ToolExecutor
+            from core.agentic.tools import ToolExecutor  # lazy import: cycle
             _store = ToolExecutor._get_pending_actions_store()
             _pending = _store.get_pending()
             if _pending:

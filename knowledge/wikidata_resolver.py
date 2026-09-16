@@ -181,8 +181,8 @@ class WikidataEntityMapper:
     ) -> list[dict]:
         """Description-enriched embedding matching with category-aware filtering."""
         try:
-            from sentence_transformers import SentenceTransformer
-            import numpy as np
+            from sentence_transformers import SentenceTransformer  # lazy import: startup-cost
+            import numpy as np  # lazy import: startup-cost
         except ImportError:
             logger.warning("sentence-transformers not available, skipping embedding matches")
             return []

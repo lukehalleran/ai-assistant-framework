@@ -22,13 +22,13 @@ __all__ = [
 
 # Lazy imports to prevent circular dependencies
 def get_orchestrator_class():
-    from .orchestrator import DaemonOrchestrator
+    from .orchestrator import DaemonOrchestrator  # lazy import: cycle
     return DaemonOrchestrator
 
 def get_prompt_builder_class():
-    from .prompt_builder_v2 import UnifiedPromptBuilder
+    from .prompt_builder_v2 import UnifiedPromptBuilder  # lazy import: cycle
     return UnifiedPromptBuilder
 
 def get_response_generator_class():
-    from .response_generator import ResponseGenerator
+    from .response_generator import ResponseGenerator  # lazy import: cycle
     return ResponseGenerator

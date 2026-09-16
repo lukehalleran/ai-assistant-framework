@@ -19,6 +19,7 @@ Module Contract:
 
 import asyncio
 import logging
+import traceback
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 
@@ -27,6 +28,7 @@ from utils.query_rewriter import rewrite_query, _ordered_keywords
 from utils.keyword_matcher import calculate_keyword_score
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.utils import is_junk_conversation_doc
+import memory.utils as utils
 from config.app_config import CHROMA_PATH
 
 # Cap on query keywords used for candidate scoring. Normal queries have well
@@ -138,8 +140,7 @@ class HybridRetriever:
                         # guards (API-error sentinel turns, bare "test"
                         # exchanges) — they were ranking in top-10 retrieval.
                         # Curation-quarantined docs are dropped the same way.
-                        from memory.utils import is_quarantined
-                        if is_quarantined(item.get("metadata")) or is_junk_conversation_doc(
+                        if utils.is_quarantined(item.get("metadata")) or is_junk_conversation_doc(
                             content=item.get("content", ""),
                             query=item.get("query", ""),
                             response=item.get("response", ""),
@@ -169,7 +170,6 @@ class HybridRetriever:
 
         except Exception as e:
             logger.error(f"[HybridRetriever] Semantic search failed: {e}")
-            import traceback
             traceback.print_exc()
 
         if junk_dropped:

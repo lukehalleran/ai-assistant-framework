@@ -31,7 +31,7 @@ class OutlookProvider:
     def is_configured(self) -> bool:
         """Cheap check: config flag + auth token file present."""
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 EMAIL_INTEGRATION_ENABLED,
                 EMAIL_OUTLOOK_ENABLED,
             )
@@ -41,7 +41,7 @@ class OutlookProvider:
         if not (EMAIL_INTEGRATION_ENABLED and EMAIL_OUTLOOK_ENABLED):
             return False
 
-        from core.email.outlook_auth import get_outlook_auth
+        from core.email.outlook_auth import get_outlook_auth  # lazy import: cycle
 
         auth = get_outlook_auth()
         if auth is None or not auth.token_exists:
@@ -52,7 +52,7 @@ class OutlookProvider:
     async def health(self) -> dict:
         """Check availability: config + token (no network call)."""
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 EMAIL_INTEGRATION_ENABLED,
                 EMAIL_OUTLOOK_ENABLED,
             )
@@ -74,7 +74,7 @@ class OutlookProvider:
                 "detail": "EMAIL_OUTLOOK_ENABLED=False",
             }
 
-        from core.email.outlook_auth import get_outlook_auth
+        from core.email.outlook_auth import get_outlook_auth  # lazy import: cycle
 
         auth = get_outlook_auth()
         if auth is None:
@@ -120,7 +120,7 @@ class OutlookProvider:
         Returns:
             List of EmailMessage objects, sorted newest-first. Empty on any error.
         """
-        from core.email.outlook_auth import get_outlook_auth
+        from core.email.outlook_auth import get_outlook_auth  # lazy import: cycle
 
         auth = get_outlook_auth()
         if auth is None:
@@ -143,7 +143,7 @@ class OutlookProvider:
         cutoff = now - timedelta(days=window_days)
 
         try:
-            import httpx
+            import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
             async with httpx.AsyncClient() as client:
                 # Note: Graph $search cannot combine with $filter/$orderby, so we
@@ -210,7 +210,7 @@ class OutlookProvider:
         Returns:
             List of EmailMessage objects, sorted newest-first. Empty on any error.
         """
-        from core.email.outlook_auth import get_outlook_auth
+        from core.email.outlook_auth import get_outlook_auth  # lazy import: cycle
 
         auth = get_outlook_auth()
         if auth is None:
@@ -228,7 +228,7 @@ class OutlookProvider:
         cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
 
         try:
-            import httpx
+            import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
             async with httpx.AsyncClient() as client:
                 resp = await client.get(

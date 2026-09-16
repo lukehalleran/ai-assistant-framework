@@ -63,10 +63,13 @@ import hashlib
 import json
 import uuid
 import asyncio
+import traceback
+import functools
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
 from datetime import datetime as _dt
 
+import memory.utils as utils
 from utils.retrieval_outcome import RetrievalError, StoreWriteError
 
 logger = logging.getLogger(__name__)
@@ -160,7 +163,7 @@ def _resolve_embed_device() -> str:
     if env:
         return env
     try:
-        import torch
+        import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
         return "cuda" if torch.cuda.is_available() else "cpu"
     except Exception:
         return "cpu"
@@ -484,7 +487,6 @@ class MultiCollectionChromaStore:
         def _ts(x):
             ts = (x.get("metadata") or {}).get("timestamp")
             try:
-                from datetime import datetime
                 if isinstance(ts, str):
                     return datetime.fromisoformat(ts)
             except Exception as e:
@@ -571,7 +573,6 @@ class MultiCollectionChromaStore:
             return doc_id
         except Exception as e:
             logger.error(f"Error adding conversation memory: {e}")
-            import traceback
             traceback.print_exc()
             raise StoreWriteError(source="chroma_conversations", reason=type(e).__name__) from e
 
@@ -580,12 +581,11 @@ class MultiCollectionChromaStore:
     def add_summary(self, summary: str, period: str, metadata: Dict = None) -> str:
         # Storage-time junk guard (2026-07-25): "-" and truncated one-line
         # fragments were stored as summaries and later dominated retrieval.
-        from memory.utils import is_junk_summary
-        from core.response_parser import ResponseParser
+        from core.response_parser import ResponseParser  # lazy import: cycle
         # Endpoint artifact guard (2026-08-03): kimi-3 appends a stray 'e' to
         # its final token ("…impress them.e") on the non-streaming path too.
         summary = ResponseParser.strip_trailing_stream_artifact(summary or "")
-        if is_junk_summary(summary):
+        if utils.is_junk_summary(summary):
             logger.warning(
                 f"[ChromaStore] Rejected junk summary (len={len(str(summary or '').strip())}): "
                 f"{str(summary or '')[:60]!r}"
@@ -901,7 +901,6 @@ class MultiCollectionChromaStore:
                     return collection_name, []
 
                 # Run query in thread pool to avoid blocking
-                import functools
                 loop = asyncio.get_event_loop()
                 results = await loop.run_in_executor(
                     None,

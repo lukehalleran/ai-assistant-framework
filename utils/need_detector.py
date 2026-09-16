@@ -21,6 +21,7 @@ import numpy as np
 from enum import Enum
 from dataclasses import dataclass
 from typing import Tuple, Dict, List, Optional
+import utils.adaptive_exemplars as adaptive_exemplars
 from utils.logging_utils import get_logger
 
 logger = get_logger("need_detector")
@@ -188,7 +189,7 @@ def _get_embedder(model_manager=None):
 
     # Try tone_detector's cache first (avoid duplicate embedders)
     try:
-        from utils.tone_detector import _get_embedder as tone_get_embedder
+        from utils.tone_detector import _get_embedder as tone_get_embedder  # lazy import: cycle
         _embedder_cache = tone_get_embedder(model_manager)
         if _embedder_cache:
             logger.info("[NeedDetector] Sharing embedder with tone_detector")
@@ -206,7 +207,7 @@ def _get_embedder(model_manager=None):
             logger.warning(f"[NeedDetector] Failed to get embedder from model_manager: {e}")
 
     try:
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import SentenceTransformer  # lazy import: startup-cost
         _embedder_cache = SentenceTransformer("all-MiniLM-L6-v2")
         logger.info("[NeedDetector] Created fallback embedder")
         return _embedder_cache
@@ -220,8 +221,7 @@ _need_text_emb_cache: Dict[str, np.ndarray] = {}
 
 def _adaptive_store_version() -> int:
     try:
-        from utils.adaptive_exemplars import get_store
-        return get_store().version
+        return adaptive_exemplars.get_store().version
     except Exception:
         return -1
 
@@ -255,12 +255,10 @@ def _get_need_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
         try:
             merged = list(examples)
             try:
-                from utils.adaptive_exemplars import get_store
-                merged += get_store().get_learned("need", need_type)
+                merged += adaptive_exemplars.get_store().get_learned("need", need_type)
             except Exception:
                 pass
-            from utils.adaptive_exemplars import encode_texts_cached
-            embeddings = encode_texts_cached(
+            embeddings = adaptive_exemplars.encode_texts_cached(
                 embedder, merged, _need_text_emb_cache
             )
             prototypes[need_type] = np.mean(embeddings, axis=0)
@@ -514,7 +512,7 @@ def _skip_need_teaching(message: str) -> bool:
     # memory.fact_source (query_checker's own import) off need_detector's
     # module-load path for callers that never reach the fast-path teach
     # branch.
-    from utils.query_checker import strip_code_shaped_lines
+    from utils.query_checker import strip_code_shaped_lines  # lazy import: cycle
 
     if strip_code_shaped_lines(message) != message:
         return True
@@ -551,8 +549,7 @@ def detect_need_type(message: str, model_manager=None) -> NeedAnalysis:
             and not _skip_need_teaching(message)
         ):
             try:
-                from utils.adaptive_exemplars import get_store
-                get_store().record(
+                adaptive_exemplars.get_store().record(
                     "need", keyword_result.need_type.value, message, "keyword",
                     embedder=_get_embedder(model_manager),
                     seed_texts=NEED_EXEMPLARS.get(keyword_result.need_type.value, []),

@@ -104,9 +104,21 @@ Module Contract
   - Writes to conversation logger; stores to memory_system (with provenance metadata); updates debug_state for Debug Trace tab.
 """
 import asyncio
+import copy
 import hashlib
 import logging
+import os as _os
+import re
+import re as _re_action
+import re as _re_email
+import re as _re_enh_action
+import re as _re_url
+import traceback
 from dataclasses import dataclass, field
+from datetime import datetime as _dt
+from datetime import datetime as _fu_dt
+from datetime import datetime as _grounding_datetime
+from datetime import datetime as _insight_now
 from typing import Any
 from core.response_parser import ResponseParser
 from utils.logging_utils import log_and_time
@@ -125,11 +137,54 @@ from core.active_document import (
     format_exhausted_note,
 )
 import json
+from config import app_config
 from config.app_config import load_system_prompt
 import re as _re_draft
 import time as _time_mod
 import time as _time
 import threading
+import core.action_claim_guard as action_claim_guard
+import core.actions.audit as _audit
+import core.actions.audit as audit
+import core.actions.executors as executors
+import core.actions.google_contacts as google_contacts
+import core.actions.registry as registry
+import core.actions.types as types
+import core.agentic as _agentic
+import core.agentic as agentic
+import core.agentic.gate as gate
+import core.agentic.protocols as protocols
+import core.agentic.tools as tools
+import core.citation_extractor as citation_extractor
+import core.email.service as service
+import core.grounding_check as grounding_check
+import core.insight.assessor as assessor
+import core.insight.coordinator as coordinator
+import core.insight.detector as detector
+import core.insight.evidence_layout as evidence_layout
+import core.insight.facets as facets
+import core.insight.provenance as provenance
+import core.insight.streaming as streaming
+import core.insight.sweep as sweep
+import core.insight.synthesizer as synthesizer
+import core.insight.temporal as temporal
+import core.insight.types as _types
+import core.pending_proposal as pending_proposal
+import core.personal_claim_check as personal_claim_check
+import knowledge.daemon_notes_manager as daemon_notes_manager
+import knowledge.pubmed_search as pubmed_search
+import knowledge.reference_docs_manager as reference_docs_manager
+import knowledge.research_search as research_search
+import knowledge.visual_memory_pipeline as visual_memory_pipeline
+import memory.memory_expander as memory_expander
+import utils as utils
+import utils.ordered_slice as ordered_slice
+import utils.personal_claim_provenance as personal_claim_provenance
+import utils.privacy_redaction as privacy_redaction
+import utils.query_checker as query_checker
+import utils.retrieval_outcome as retrieval_outcome
+import utils.topic_manager as topic_manager
+import utils.web_evidence_receipt as web_evidence_receipt
 DEFAULT_SYSTEM_PROMPT = load_system_prompt()
 logger = logging.getLogger("gradio_gui")
 
@@ -168,7 +223,6 @@ async def _background_store_interaction(
     outer-except failure) so `_track_storage_task` [F13c-1] can carry it
     onto the deferred turn row and the already-delivered debug record.
     """
-    from utils.retrieval_outcome import StoreWriteError
 
     memory_id = None
     storage_failed_label = None
@@ -202,10 +256,10 @@ async def _background_store_interaction(
                 user_text=user_text,
             )
             logger.info(f"[HANDLE_SUBMIT] Background storage complete, ID: {memory_id}")
-        except StoreWriteError as e:
+        except retrieval_outcome.StoreWriteError as e:
             # Failed write [F10a]: log it, still record the transcript below.
             logger.error(f"[HANDLE_SUBMIT] Background storage failed: {e}")
-            from core.orchestrator import _storage_failure_label
+            from core.orchestrator import _storage_failure_label  # lazy import: startup-cost
             storage_failed_label = _storage_failure_label(e)
 
         # Log conversation with db_id
@@ -344,18 +398,16 @@ def _build_agentic_tool_name_set() -> frozenset:
     import fails (e.g. during partial/mocked test imports)."""
     names = set()
     try:
-        from core.agentic import types as _agentic_types
-        for _attr_name in dir(_agentic_types):
+        for _attr_name in dir(agentic.types):
             if not _attr_name.endswith("_TOOL_DEFINITION"):
                 continue
-            _tool_def = getattr(_agentic_types, _attr_name, None)
+            _tool_def = getattr(agentic.types, _attr_name, None)
             if not isinstance(_tool_def, dict):
                 continue
             _fn = _tool_def.get("function")
             if isinstance(_fn, dict) and isinstance(_fn.get("name"), str):
                 names.add(_fn["name"])
-        from core.agentic.tools import DISPATCH_TABLE
-        for _entry in DISPATCH_TABLE:
+        for _entry in tools.DISPATCH_TABLE:
             _handler_name = _entry[1] if len(_entry) > 1 else None
             if isinstance(_handler_name, str) and _handler_name.startswith("_dispatch_"):
                 names.add(_handler_name[len("_dispatch_"):])
@@ -412,14 +464,13 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
     block response delivery.
     """
     try:
-        from knowledge.reference_docs_manager import ReferenceDocsManager
 
         # Get or create a ReferenceDocsManager
         ref_manager = None
         if hasattr(orchestrator, 'prompt_builder') and hasattr(orchestrator.prompt_builder, 'context_gatherer'):
             ref_manager = orchestrator.prompt_builder.context_gatherer.reference_docs_manager
         if not ref_manager:
-            ref_manager = await asyncio.to_thread(ReferenceDocsManager)
+            ref_manager = await asyncio.to_thread(reference_docs_manager.ReferenceDocsManager)
 
         # Persist text documents
         for doc in files_result.documents:
@@ -459,11 +510,9 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
 
         # CLIP-embed uploaded images for visual memory retrieval
         try:
-            from config.app_config import VISUAL_MEMORY_ENABLED, VISUAL_MEMORY_INGEST_ON_UPLOAD
-            if VISUAL_MEMORY_ENABLED and VISUAL_MEMORY_INGEST_ON_UPLOAD:
-                from knowledge.clip_manager import get_clip_manager
-                from knowledge.visual_memory_store import VisualMemoryStore
-                from knowledge.visual_memory_pipeline import VisualMemoryPipeline
+            if app_config.VISUAL_MEMORY_ENABLED and app_config.VISUAL_MEMORY_INGEST_ON_UPLOAD:
+                from knowledge.clip_manager import get_clip_manager  # lazy import: startup-cost
+                from knowledge.visual_memory_store import VisualMemoryStore  # lazy import: startup-cost
 
                 clip = get_clip_manager()
                 chroma = getattr(orchestrator, 'memory_coordinator', None)
@@ -471,7 +520,7 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
                 store = VisualMemoryStore(chroma_store=chroma_store)
                 model_mgr = getattr(orchestrator, 'model_manager', None)
                 resolver = getattr(chroma, 'entity_resolver', None) if chroma else None
-                pipeline = VisualMemoryPipeline(clip, store, model_manager=model_mgr, entity_resolver=resolver)
+                pipeline = visual_memory_pipeline.VisualMemoryPipeline(clip, store, model_manager=model_mgr, entity_resolver=resolver)
 
                 for img in files_result.images:
                     if not img.error and img.file_path:
@@ -481,7 +530,7 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
                             )
                         except Exception as e:
                             logger.warning(f"[PERSIST] Visual memory ingest failed for {img.filename}: {e}")
-        except ImportError:
+        except (ImportError, AttributeError):
             pass  # Visual memory deps not installed
 
     except Exception as e:
@@ -798,7 +847,7 @@ def _sanitize_response_text(text):
     text = ResponseParser.sanitize_for_storage(text)
     text = _strip_leaked_xml_blocks(text)
     try:
-        from core.prompt import _truncate_at_spurious_turns
+        from core.prompt import _truncate_at_spurious_turns  # lazy import: startup-cost
         text = _truncate_at_spurious_turns(text)
     except Exception:
         pass
@@ -973,7 +1022,7 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
     (corrections/confirmations -> truth events -> staleness cascade).
     """
     try:
-        from core.orchestrator import PostResponseHookContext, run_post_response_hooks
+        from core.orchestrator import PostResponseHookContext, run_post_response_hooks  # lazy import: startup-cost
         _start_background_grounding(ctx)
         # getattr-defensive: some callers (e.g. _run_pending_proposal's
         # lightweight SimpleNamespace ctx) don't carry every SubmitContext
@@ -1035,7 +1084,6 @@ async def _silent_agentic_retry(
     else (None, None).
     """
     try:
-        from core.agentic import ProgressEvent
 
         agentic = orchestrator.agentic_controller
         retry_system = hint + "\n\n" + (system_prompt or "")
@@ -1049,7 +1097,7 @@ async def _silent_agentic_retry(
             initial_context=raw_context,
             skip_initial_search=True,
         ):
-            if isinstance(item, ProgressEvent):
+            if isinstance(item, _agentic.ProgressEvent):
                 pass
             else:
                 retry_response += item
@@ -1086,7 +1134,6 @@ async def _silent_agentic_retry(
 
     except Exception as e:
         logger.error(f"[{log_prefix}] Agentic retry failed: {e}")
-        import traceback
         logger.debug(f"[{log_prefix}] Traceback:\n{traceback.format_exc()}")
         return None, None
 
@@ -1126,15 +1173,12 @@ def _make_text_action_proposal(decision, store):
     audit block). Returns the new ``action_id``, or ``None`` if the action type is unknown
     (caller should ``break`` in that case, matching the originals).
     """
-    from core.actions.types import ActionProposal, ActionType
-    from core.actions.audit import ActionAuditLog
-    from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
     try:
-        action_type = ActionType(decision.action_type)
+        action_type = types.ActionType(decision.action_type)
     except ValueError:
         logger.warning(f"[Handle Submit] Unknown action type from text: {decision.action_type}")
         return None
-    proposal = ActionProposal(
+    proposal = types.ActionProposal(
         action_type=action_type,
         params=decision.action_params or {},
         summary=decision.action_summary or f"{decision.action_type}: action",
@@ -1143,7 +1187,7 @@ def _make_text_action_proposal(decision, store):
     if not store.propose(proposal):
         logger.warning("[Handle Submit] Pending action store rejected text proposal")
         return None
-    ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(proposal)
+    audit.ActionAuditLog(app_config.INTERNET_ACTIONS_AUDIT_LOG).log_proposal(proposal)
     return proposal.action_id
 
 
@@ -1222,9 +1266,8 @@ async def _resolve_contact_and_propose_email(
     Contacts or Gmail"). Callers do their own XML stripping and own the surrounding
     try/except, matching the originals.
     """
-    from core.actions.google_contacts import resolve_contact
 
-    contacts = await resolve_contact(contact_name, max_results=5)
+    contacts = await google_contacts.resolve_contact(contact_name, max_results=5)
     action_id = None
     if contacts:
         email = contacts[0]['email']
@@ -1237,13 +1280,10 @@ async def _resolve_contact_and_propose_email(
             'send', 'email', 'mail', 'draft', 'fire', 'message', 'try',
         ))
         if email_intent:
-            from core.actions.types import ActionProposal, ActionType
-            from core.actions.audit import ActionAuditLog
-            from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
             body = _find_email_draft(history, display_text)
             if body:
-                proposal = ActionProposal(
-                    action_type=ActionType.SEND_EMAIL,
+                proposal = types.ActionProposal(
+                    action_type=types.ActionType.SEND_EMAIL,
                     params={
                         "recipient": email,
                         "message": body,
@@ -1253,7 +1293,7 @@ async def _resolve_contact_and_propose_email(
                     reasoning=f"Resolved '{contact_name}' via contact search",
                 )
                 store.propose(proposal)
-                ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG).log_proposal(proposal)
+                audit.ActionAuditLog(app_config.INTERNET_ACTIONS_AUDIT_LOG).log_proposal(proposal)
                 action_id = proposal.action_id
                 card = f"\n\n---\n**send_email** to {name} <{email}>\n"
                 card += f"> {body[:300]}\n\n"
@@ -1379,7 +1419,7 @@ async def _prepare_submit_context(ctx):
     ctx.original_limits = {}
     if ctx.fast_mode:
         logger.warning("[Handle Submit] ⚡⚡⚡ FAST MODE ENABLED ⚡⚡⚡")
-        import core.prompt.builder as builder_module
+        import core.prompt.builder as builder_module  # lazy import: startup-cost
         # Override builder module constants (the REAL location of these limits)
         ctx.original_limits['PROMPT_MAX_MEMS'] = builder_module.PROMPT_MAX_MEMS
         logger.warning(f"[Fast Mode] PROMPT_MAX_MEMS: {builder_module.PROMPT_MAX_MEMS} → 10")
@@ -1407,7 +1447,6 @@ async def _prepare_submit_context(ctx):
                 logger.warning("[Fast Mode] Set hybrid_retriever._fast_mode = True (2150 → ~40 candidates)")
 
     # Use merged_input (user text + file contents) so file content appears in the prompt.
-    from utils import turn_progress
 
     ctx.t_prepare_start = _time_mod.perf_counter()
     if getattr(ctx, "t_ingress", 0.0):
@@ -1416,7 +1455,7 @@ async def _prepare_submit_context(ctx):
     # Install the per-turn progress bus BEFORE prepare_prompt starts so the
     # prompt builder's live events (per-source retrieval completions, gating/
     # assembly milestones) stream to the UI instead of canned placeholders.
-    _progress_q = turn_progress.begin_turn()
+    _progress_q = utils.turn_progress.begin_turn()
     try:
         prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
             # user_input=ctx.user_text, NOT ctx.merged_input (2026-09-04,
@@ -1450,7 +1489,7 @@ async def _prepare_submit_context(ctx):
         _quiet_polls = 0
         while not prepare_task.done():
             await asyncio.sleep(0.3)
-            events = turn_progress.drain(_progress_q)
+            events = utils.turn_progress.drain(_progress_q)
             if events:
                 _quiet_polls = 0
                 for _ev in events:
@@ -1464,10 +1503,10 @@ async def _prepare_submit_context(ctx):
 
         prep_result = await prepare_task
         # Flush any events emitted between the last poll and completion
-        for _ev in turn_progress.drain(_progress_q):
+        for _ev in utils.turn_progress.drain(_progress_q):
             yield {"role": "assistant", "content": _ev, "is_progress": True}
     finally:
-        turn_progress.end_turn()
+        utils.turn_progress.end_turn()
 
     ctx.t_prepare_elapsed = _time_mod.perf_counter() - ctx.t_prepare_start
 
@@ -1566,20 +1605,18 @@ async def _run_duel(ctx, gens, sels, features_duel):
     try:
         # Read temps from config
         try:
-            from config.app_config import BEST_OF_TEMPS, BEST_OF_MAX_TOKENS, BEST_OF_SELECTOR_MAX_TOKENS
-            _duel_temps = tuple(BEST_OF_TEMPS) if isinstance(BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7)
-            _duel_max_tok = int(BEST_OF_MAX_TOKENS)
-            _duel_judge_tok = int(BEST_OF_SELECTOR_MAX_TOKENS)
-        except (ImportError, TypeError, ValueError):
+            _duel_temps = tuple(app_config.BEST_OF_TEMPS) if isinstance(app_config.BEST_OF_TEMPS, (list, tuple)) else (0.2, 0.7)
+            _duel_max_tok = int(app_config.BEST_OF_MAX_TOKENS)
+            _duel_judge_tok = int(app_config.BEST_OF_SELECTOR_MAX_TOKENS)
+        except (ImportError, AttributeError, TypeError, ValueError):
             _duel_temps = (0.2, 0.7)
             _duel_max_tok = 512
             _duel_judge_tok = 64
 
         # Read latency budget
         try:
-            from config.app_config import BEST_OF_LATENCY_BUDGET_S
-            _duel_budget = float(features_duel.get('best_of_latency_budget_s', BEST_OF_LATENCY_BUDGET_S))
-        except (ImportError, TypeError, ValueError):
+            _duel_budget = float(features_duel.get('best_of_latency_budget_s', app_config.BEST_OF_LATENCY_BUDGET_S))
+        except (ImportError, AttributeError, TypeError, ValueError):
             _duel_budget = 0.0
 
         m1, m2 = gens[0], gens[1]
@@ -1680,7 +1717,6 @@ async def _run_duel(ctx, gens, sels, features_duel):
         logger.warning(f"[DUEL] Timed out after {_duel_budget}s, falling back to streaming")
     except Exception as e:
         logger.error(f"[DUEL] Failed, falling back to standard: {e}")
-        import traceback
         logger.debug(f"[DUEL] Traceback:\n{traceback.format_exc()}")
     # Fall through to agentic/streaming on failure (ctx.handled stays False)
 
@@ -1754,7 +1790,7 @@ async def _run_doc_generation(ctx):
     _doc_gen_intent = ctx.doc_gen_intent
     logger.warning(f"[Handle Submit] DIRECT DOCUMENT GENERATION: {_doc_gen_intent}")
     try:
-        from knowledge.document_generator import DocumentGenerator
+        from knowledge.document_generator import DocumentGenerator  # lazy import: startup-cost
 
         # Resolve web_search_manager: same path the orchestrator uses
         _wsm = None
@@ -1820,7 +1856,7 @@ async def _run_doc_generation(ctx):
                     tags=["document_generation"],
                 )
             except Exception as e:
-                from core.orchestrator import _storage_failure_label
+                from core.orchestrator import _storage_failure_label  # lazy import: startup-cost
                 label = _storage_failure_label(e)
                 logger.warning(f"[Handle Submit] Document-generation storage failed: {label}")
                 _telemetry = getattr(ctx, "telemetry", None)
@@ -1854,7 +1890,6 @@ async def _run_doc_generation(ctx):
 
     except Exception as e:
         logger.error(f"[Handle Submit] Direct document generation failed: {e}")
-        import traceback
         traceback.print_exc()
         # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
 
@@ -1874,12 +1909,11 @@ def _interleave_phase_events(comparisons):
     buckets — here the grouping axis is PHASE, not time, so it calls the
     shared merge loop directly rather than window_fair_sample).
     """
-    from utils.ordered_slice import round_robin_merge
     queues = [
         list(comparison.events) + list(comparison.proxy_events)
         for comparison in comparisons
     ]
-    return round_robin_merge(queues)
+    return ordered_slice.round_robin_merge(queues)
 
 
 def _window_scan_collection(chroma_store, collection_name, window, cap):
@@ -1897,8 +1931,7 @@ def _window_scan_collection(chroma_store, collection_name, window, cap):
     truth instead of a second copy); this name stays as a thin delegating
     alias so existing call sites/tests keep working unchanged.
     """
-    from core.insight.sweep import window_scan_collection
-    return window_scan_collection(chroma_store, collection_name, window, cap)
+    return sweep.window_scan_collection(chroma_store, collection_name, window, cap)
 
 
 async def _run_insight_mode(ctx):
@@ -1927,38 +1960,22 @@ async def _run_insight_mode(ctx):
     _insight_started = _time.monotonic()
     _insight_timings = {}
     try:
-        from core.agentic.gate import _tone_is_elevated
-        from core.insight.assessor import assess
-        from core.insight.facets import decompose
-        from core.insight.provenance import label_evidence
-        from core.insight.sweep import (
-            exclude_assistant_directed_items,
-            exclude_current_request_evidence,
-            interleave_evidence_for_coverage,
-            run_sweep,
-        )
-        from core.insight.synthesizer import (
-            build_synthesis_prompts, recent_conversation_context, synthesize_stream,
-        )
-        from core.insight.types import InsightIntent, EvidenceItem
-        from core.insight.streaming import synthesis_events
 
-        intent = InsightIntent(**_intent_dict)
+        intent = _types.InsightIntent(**_intent_dict)
         tone_level = (ctx.raw_context or {}).get("tone_level")
-        tone_elevated = _tone_is_elevated(tone_level)
+        tone_elevated = gate._tone_is_elevated(tone_level)
 
         _ms = getattr(orchestrator, "memory_system", None)
         _chroma = getattr(_ms, "chroma_store", None)
         _corpus = getattr(_ms, "corpus_manager", None)
-        _conversation_context = recent_conversation_context(ctx.history, _corpus)
+        _conversation_context = synthesizer.recent_conversation_context(ctx.history, _corpus)
         _graph = getattr(_ms, "graph_memory", None)
         _resolver = getattr(_ms, "entity_resolver", None)
         if _chroma is None:
             raise RuntimeError("insight mode requires a chroma_store")
         _expander = None
         try:
-            from memory.memory_expander import MemoryExpander
-            _expander = MemoryExpander(_chroma)
+            _expander = memory_expander.MemoryExpander(_chroma)
         except Exception:
             pass
 
@@ -1991,11 +2008,6 @@ async def _run_insight_mode(ctx):
         _deliberation = None
         _pattern_evidence = []
         if _is_pattern:
-            from core.insight.temporal import run_pattern_stage
-            from core.insight.coordinator import (
-                LongitudinalDeliberationCoordinator,
-                normalize_chroma_rows,
-            )
             _profile = getattr(_ms, "user_profile", None)
 
             # Email pattern prefetch (2026-09-01): the engine is sync and
@@ -2005,13 +2017,10 @@ async def _run_insight_mode(ctx):
             # dimension reports "source not available" honestly.
             _email_rows = None
             try:
-                import re as _re_email
                 if _re_email.search(r"\b(?:e-?mails?|inbox|gmail|outlook)\b",
                                     intent.theme or "", _re_email.IGNORECASE):
-                    from config.app_config import EMAIL_INTEGRATION_ENABLED
-                    if EMAIL_INTEGRATION_ENABLED:
-                        from core.email.service import get_email_service
-                        _email_rows = await get_email_service().recent(
+                    if app_config.EMAIL_INTEGRATION_ENABLED:
+                        _email_rows = await service.get_email_service().recent(
                             window_days=intent.window_days or 30, limit=200)
             except Exception as _e:
                 logger.debug(f"[Insight Mode] email pattern prefetch skipped: {_e}")
@@ -2034,29 +2043,26 @@ async def _run_insight_mode(ctx):
                 } for page in getattr(result, "pages", [])]
 
             async def _pubmed_adapter(q, anchor_terms=None, concept_synonyms=None):
-                from knowledge.pubmed_search import search_pubmed
                 # Literature requests need enough breadth to expose adjacent
                 # endpoints (aggression, agitation, behavior scales), not just
                 # the first few keyword hits. The coordinator passes the frozen
                 # spec's axes so every rung is ranked against them (2026-09-06).
-                return await search_pubmed(
+                return await pubmed_search.search_pubmed(
                     q, max_results=10, anchor_terms=anchor_terms,
                     concept_synonyms=concept_synonyms,
                 )
 
             async def _arxiv_adapter(q):
-                from knowledge.research_search import search_arxiv
-                return await search_arxiv(q, max_results=5)
+                return await research_search.search_arxiv(q, max_results=5)
 
             async def _stackexchange_adapter(q):
-                from knowledge.research_search import search_stackexchange
-                return await search_stackexchange(q, max_results=5)
+                return await research_search.search_stackexchange(q, max_results=5)
 
             async def _chroma_adapter(collection, channel, q, limit, window=None):
                 rows = await asyncio.to_thread(
                     _chroma.query_collection, collection, q, limit,
                 )
-                normalized = normalize_chroma_rows(rows, channel=channel)
+                normalized = coordinator.normalize_chroma_rows(rows, channel=channel)
                 if window:
                     # Date-range retrieval arm: semantic similarity is
                     # date-blind, so a windowed longitudinal spec also pulls
@@ -2068,7 +2074,7 @@ async def _run_insight_mode(ctx):
                         window, max(limit * 3, 30),
                     )
                     seen = {row.get("source_id") or row.get("id") for row in normalized}
-                    for row in normalize_chroma_rows(dated, channel=channel):
+                    for row in coordinator.normalize_chroma_rows(dated, channel=channel):
                         key = row.get("source_id") or row.get("id")
                         if key not in seen:
                             seen.add(key)
@@ -2093,9 +2099,8 @@ async def _run_insight_mode(ctx):
             )
             if _wolfram_manager is None:
                 try:
-                    from config.app_config import WOLFRAM_ENABLED, WOLFRAM_APP_ID
-                    if WOLFRAM_ENABLED and WOLFRAM_APP_ID:
-                        from knowledge.wolfram_manager import WolframManager
+                    if app_config.WOLFRAM_ENABLED and app_config.WOLFRAM_APP_ID:
+                        from knowledge.wolfram_manager import WolframManager  # lazy import: startup-cost
                         _wolfram_manager = WolframManager()
                 except Exception as _wolfram_init_error:
                     logger.debug(
@@ -2126,7 +2131,7 @@ async def _run_insight_mode(ctx):
             if _wolfram_manager is not None:
                 _deliberation_adapters["wolfram"] = _wolfram_adapter
 
-            _coord = LongitudinalDeliberationCoordinator(
+            _coord = coordinator.LongitudinalDeliberationCoordinator(
                 corpus_manager=_corpus,
                 adapters=_deliberation_adapters,
                 model_manager=orchestrator.model_manager,
@@ -2145,7 +2150,7 @@ async def _run_insight_mode(ctx):
             if _deliberation.freeze.status == "ready" and _deliberation.freeze.spec is not None:
                 if _deliberation.freeze.spec.analysis_kind == "time_series":
                     _pattern_task = asyncio.ensure_future(asyncio.to_thread(
-                        run_pattern_stage, intent,
+                        temporal.run_pattern_stage, intent,
                         corpus_manager=_corpus, user_profile=_profile,
                         spec=_deliberation.freeze.spec,
                         email_rows=_email_rows,
@@ -2172,7 +2177,7 @@ async def _run_insight_mode(ctx):
                     _patterns = []
                 else:
                     _fallback_pattern_task = asyncio.ensure_future(asyncio.to_thread(
-                        run_pattern_stage, intent,
+                        temporal.run_pattern_stage, intent,
                         corpus_manager=_corpus, user_profile=_profile,
                         email_rows=_email_rows,
                     ))
@@ -2193,7 +2198,7 @@ async def _run_insight_mode(ctx):
                     if _key in _seen_internal:
                         continue
                     _seen_internal.add(_key)
-                    _pattern_evidence.append(EvidenceItem(
+                    _pattern_evidence.append(_types.EvidenceItem(
                         doc_id=_event.source_id,
                         text=_event.text,
                         date=_event.timestamp,
@@ -2208,11 +2213,9 @@ async def _run_insight_mode(ctx):
                     ))
             # External research remains usable even when a fuzzy personal
             # anchor prevents the before/after phase scan from running.
-            from core.insight.evidence_layout import external_evidence_item
-            from core.insight.sweep import default_caps as _insight_default_caps
-            _insight_caps = _insight_default_caps()
+            _insight_caps = sweep.default_caps()
             for _src in _deliberation.external_evidence:
-                _pattern_evidence.append(external_evidence_item(
+                _pattern_evidence.append(evidence_layout.external_evidence_item(
                     _src, snippet_chars=_insight_caps["external_snippet_chars"],
                 ))
 
@@ -2223,21 +2226,20 @@ async def _run_insight_mode(ctx):
             # frozen support/refute angles into the existing cross-store sweep
             # interface instead of decomposing the raw conversational request
             # a second time.
-            from core.insight.types import FacetPlan, FacetQuery
             _spec = _deliberation.freeze.spec
             _facet_terms = (_spec.outcome_terms + _spec.behavioral_indicators)[:8]
             _facet_rows = []
             for _idx, _facet in enumerate(_spec.supporting_facets[:6]):
-                _facet_rows.append(FacetQuery(
+                _facet_rows.append(_types.FacetQuery(
                     name=f"support-{_idx + 1}", query_text=_facet,
                     keywords=_facet_terms, entities=[],
                 ))
             for _idx, _facet in enumerate(_spec.refuting_facets[:4]):
-                _facet_rows.append(FacetQuery(
+                _facet_rows.append(_types.FacetQuery(
                     name=("counter-evidence" if _idx == 0 else f"refute-{_idx + 1}"),
                     query_text=_facet, keywords=_facet_terms, entities=[],
                 ))
-            plan = FacetPlan(
+            plan = _types.FacetPlan(
                 facets=_facet_rows,
                 claims=[claim.proposition for claim in _spec.claims],
                 fallback=False,
@@ -2249,7 +2251,7 @@ async def _run_insight_mode(ctx):
             # marked as fallback: it can assemble evidence, but must not be
             # presented as a frozen phase/causal analysis.
             _fallback_plan_task = asyncio.ensure_future(
-                decompose(intent, orchestrator.model_manager,
+                facets.decompose(intent, orchestrator.model_manager,
                           entity_resolver=_resolver)
             )
             _n = 0
@@ -2262,7 +2264,7 @@ async def _run_insight_mode(ctx):
             plan.fallback = True
         else:
             _plan_task = asyncio.ensure_future(
-                decompose(intent, orchestrator.model_manager, entity_resolver=_resolver)
+                facets.decompose(intent, orchestrator.model_manager, entity_resolver=_resolver)
             )
             _n = 0
             while not await _wait_stage(_plan_task):
@@ -2280,7 +2282,7 @@ async def _run_insight_mode(ctx):
             tuple(intent.date_window) if len(intent.date_window) == 2 else None
         )
         if plan.facets:
-            _sweep_task = asyncio.ensure_future(run_sweep(
+            _sweep_task = asyncio.ensure_future(sweep.run_sweep(
                 plan, chroma_store=_chroma, corpus_manager=_corpus,
                 graph_memory=_graph, entity_resolver=_resolver,
                 memory_expander=_expander,
@@ -2296,7 +2298,7 @@ async def _run_insight_mode(ctx):
             evidence = _sweep_task.result()
         else:
             evidence = []
-        evidence = label_evidence(evidence)
+        evidence = provenance.label_evidence(evidence)
         # Self-reference exclusion: the sweep can surface the current
         # request's own turn or a prior exchange discussing it — those are
         # not history (2026-09-04 live incident: 7 of 37 rendered items were
@@ -2304,19 +2306,16 @@ async def _run_insight_mode(ctx):
         # PREVIOUS day's near-identical request turns also survived because
         # they overlapped below the any-day 60% bar — current_turn_date is
         # now threaded through so the same-day-tightened bar can engage).
-        from datetime import datetime as _insight_now
-        evidence = exclude_current_request_evidence(
+        evidence = sweep.exclude_current_request_evidence(
             evidence, intent.raw_query or intent.theme,
             current_turn_date=_insight_now.now().isoformat(),
         )
         # Prior requests TO the assistant are not observations (2026-09-06).
-        evidence = exclude_assistant_directed_items(evidence)
+        evidence = sweep.exclude_assistant_directed_items(evidence)
         # Phase events / window-scan chunks bypass the sweep clip — cap every
         # text before layout so one whole note cannot starve the block.
-        from core.insight.evidence_layout import clip_evidence_texts
-        from core.insight.sweep import default_caps as _clip_caps
-        evidence = clip_evidence_texts(
-            evidence, max_chars=_clip_caps()["external_snippet_chars"],
+        evidence = evidence_layout.clip_evidence_texts(
+            evidence, max_chars=sweep.default_caps()["external_snippet_chars"],
         )
         if _is_pattern:
             # Engine exemplars are already provenance-labeled; join after
@@ -2329,11 +2328,11 @@ async def _run_insight_mode(ctx):
             # (live 15:57: [E1] was the 15:20 request text). Re-apply the
             # self-reference + assistant-directed exclusions post-merge
             # (both are idempotent on already-filtered lists).
-            evidence = exclude_current_request_evidence(
+            evidence = sweep.exclude_current_request_evidence(
                 evidence, intent.raw_query or intent.theme,
                 current_turn_date=_insight_now.now().isoformat(),
             )
-            evidence = exclude_assistant_directed_items(evidence)
+            evidence = sweep.exclude_assistant_directed_items(evidence)
 
         # The generic adapters and the cross-store sweep can surface the same
         # source. Keep one prompt item while preserving first-seen provenance.
@@ -2386,7 +2385,7 @@ async def _run_insight_mode(ctx):
         # personal sweep evidence among itself would fight the numbers
         # they restate.
         if intent.kind == "theme_sweep":
-            evidence = interleave_evidence_for_coverage(evidence)
+            evidence = sweep.interleave_evidence_for_coverage(evidence)
         elif _is_pattern:
             # Evidence-layout fairness (2026-09-06): pattern/deliberation
             # runs put computed aggregates and raw external-research
@@ -2400,10 +2399,8 @@ async def _run_insight_mode(ctx):
             # nothing is dropped — the hard 50-item cap that used to live
             # in the dedup loop above is now this single trim, applied
             # fairly instead of first-come-first-served).
-            from core.insight.evidence_layout import layout_evidence
-            from core.insight.synthesizer import SYNTHESIS_MAX_EVIDENCE_CHARS
-            evidence = layout_evidence(
-                evidence, max_chars=SYNTHESIS_MAX_EVIDENCE_CHARS, max_items=50,
+            evidence = evidence_layout.layout_evidence(
+                evidence, max_chars=synthesizer.SYNTHESIS_MAX_EVIDENCE_CHARS, max_items=50,
             )
 
         _stores = {e.collection for e in evidence}
@@ -2414,7 +2411,7 @@ async def _run_insight_mode(ctx):
 
         assessment = None
         if intent.kind == "insight_assessment":
-            _assess_task = asyncio.ensure_future(assess(
+            _assess_task = asyncio.ensure_future(assessor.assess(
                 plan.claims or [intent.theme], evidence, orchestrator.model_manager,
             ))
             _n = 0
@@ -2430,7 +2427,7 @@ async def _run_insight_mode(ctx):
         )()
 
         def _synthesis_with_keepalive(stream):
-            return synthesis_events(
+            return streaming.synthesis_events(
                 stream, heartbeat_s=_KEEPALIVE_S,
                 max_seconds=_SYNTHESIS_STREAM_MAX_S,
             )
@@ -2438,7 +2435,7 @@ async def _run_insight_mode(ctx):
         _synthesis_started = _time.monotonic()
         _insight_timings["insight_evidence"] = _synthesis_started - _insight_started
         _buffer = ""
-        _primary_stream = synthesize_stream(
+        _primary_stream = synthesizer.synthesize_stream(
             intent, evidence, assessment,
             model_manager=orchestrator.model_manager,
             model_name=model_name,
@@ -2488,7 +2485,7 @@ async def _run_insight_mode(ctx):
                    "🔄 Synthesis returned no visible text; retrying without extended reasoning...",
                    "is_progress": True}
             _retry_buffer = ""
-            _retry_stream = synthesize_stream(
+            _retry_stream = synthesizer.synthesize_stream(
                 intent, evidence, assessment,
                 model_manager=orchestrator.model_manager,
                 model_name=model_name,
@@ -2527,17 +2524,16 @@ async def _run_insight_mode(ctx):
         # honest: never hand the user a document the record disputes). An
         # assessment run without an explicit doc request also saves on
         # agreement when doc_on_agreement is enabled (goal 2's contract).
-        from config.app_config import INSIGHT_DOC_ON_AGREEMENT
         _save_doc = (
             (intent.wants_document
              and (assessment is None or assessment.allows_document))
-            or (assessment is not None and INSIGHT_DOC_ON_AGREEMENT
+            or (assessment is not None and app_config.INSIGHT_DOC_ON_AGREEMENT
                 and assessment.allows_document)
         )
         doc_line = ""
         if _save_doc:
             try:
-                from knowledge.document_generator import DocumentGenerator
+                from knowledge.document_generator import DocumentGenerator  # lazy import: startup-cost
                 _dg = DocumentGenerator(model_manager=orchestrator.model_manager)
                 _doc = _dg.save_prewritten(
                     final_text,
@@ -2569,7 +2565,7 @@ async def _run_insight_mode(ctx):
         # Audit F19 (2026-08-31): pass the same patterns/manifest kwargs the
         # real synthesize_stream calls pass — the debug record understated
         # the sent prompt by up to 14K chars without them.
-        _syn_system, _syn_prompt = build_synthesis_prompts(
+        _syn_system, _syn_prompt = synthesizer.build_synthesis_prompts(
             intent, evidence, assessment, tone_elevated=tone_elevated,
             conversation_context=_conversation_context,
             patterns=_patterns,
@@ -2610,7 +2606,6 @@ async def _run_insight_mode(ctx):
 
     except Exception as e:
         logger.error(f"[Handle Submit] Insight mode failed: {e}")
-        import traceback
         traceback.print_exc()
         # Insight requests are a distinct, evidence-sensitive workflow. Do
         # not silently replace a failed analysis with an unrelated agentic
@@ -2631,13 +2626,11 @@ async def _run_insight_mode(ctx):
 def _get_pending_proposal_store(orchestrator):
     """Lazily create + return the session-scoped pending-proposal store, or None."""
     try:
-        from config.app_config import PENDING_PROPOSAL_ENABLED, PENDING_PROPOSAL_TTL_TURNS
-        if not PENDING_PROPOSAL_ENABLED:
+        if not app_config.PENDING_PROPOSAL_ENABLED:
             return None
         store = getattr(orchestrator, "_pending_proposal_store", None)
         if store is None:
-            from core.pending_proposal import PendingProposalStore
-            store = PendingProposalStore(ttl_turns=PENDING_PROPOSAL_TTL_TURNS)
+            store = pending_proposal.PendingProposalStore(ttl_turns=app_config.PENDING_PROPOSAL_TTL_TURNS)
             orchestrator._pending_proposal_store = store
         return store
     except Exception as e:
@@ -2681,10 +2674,9 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
     follow-through, and claim self-repair.
     """
     orchestrator = ctx.orchestrator
-    from knowledge.daemon_notes_manager import DaemonNotesManager
 
     _cs = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
-    _dnm = DaemonNotesManager(model_manager=orchestrator.model_manager, chroma_store=_cs)
+    _dnm = daemon_notes_manager.DaemonNotesManager(model_manager=orchestrator.model_manager, chroma_store=_cs)
 
     title = (title or "").strip()[:100] or "Conversation note"
     yield {"role": "assistant", "content": f"🗒️ Saving note: {title}...", "is_progress": True}
@@ -2722,7 +2714,7 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
                 query=ctx.user_text, response=_resp, tags=["daemon_self_note"],
             )
         except Exception as e:
-            from core.orchestrator import _storage_failure_label
+            from core.orchestrator import _storage_failure_label  # lazy import: startup-cost
             label = _storage_failure_label(e)
             logger.warning(f"[ActionGuard] Self-note storage failed: {label}")
             _telemetry = getattr(ctx, "telemetry", None)
@@ -2757,18 +2749,15 @@ def _capture_proposal(orchestrator, response_text):
     flow through the propose_action / PendingActionsStore card approval path.
     """
     try:
-        from config.app_config import PENDING_PROPOSAL_ENABLED
-        if not PENDING_PROPOSAL_ENABLED or not response_text:
+        if not app_config.PENDING_PROPOSAL_ENABLED or not response_text:
             return
-        from core.action_claim_guard import ActionKind, detect_proposals
-        from core.pending_proposal import build_proposal_from_response
-        props = [p for p in detect_proposals(response_text) if p.kind == ActionKind.NOTE]
+        props = [p for p in action_claim_guard.detect_proposals(response_text) if p.kind == action_claim_guard.ActionKind.NOTE]
         if not props:
             return
         store = _get_pending_proposal_store(orchestrator)
         if store is None:
             return
-        proposal = build_proposal_from_response(
+        proposal = pending_proposal.build_proposal_from_response(
             response_text, props[-1], turn=store.turn,
             session_id=_get_session_id(orchestrator),
         )
@@ -2785,9 +2774,8 @@ async def _self_repair_note(ctx, detected):
 
     store = _get_pending_proposal_store(orchestrator)
     if store is not None:
-        from core.action_claim_guard import ActionKind
         p = store.peek()
-        if p is not None and p.kind == ActionKind.NOTE:
+        if p is not None and p.kind == action_claim_guard.ActionKind.NOTE:
             body, title, category = p.body, p.title, p.category
             store.clear()
     if not body:
@@ -2797,9 +2785,8 @@ async def _self_repair_note(ctx, detected):
         title = first[:80] or "Conversation note"
 
     try:
-        from knowledge.daemon_notes_manager import DaemonNotesManager
         _cs = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
-        _dnm = DaemonNotesManager(model_manager=orchestrator.model_manager, chroma_store=_cs)
+        _dnm = daemon_notes_manager.DaemonNotesManager(model_manager=orchestrator.model_manager, chroma_store=_cs)
         summary = _summary_from_body(body) or f"Auto-saved from conversation: {title}"
         note = await _dnm.create_note(
             title=title[:100], category=category, summary=summary,
@@ -2913,19 +2900,16 @@ def _user_requested_external_kinds(user_text):
     reply is affirmation, not Daemon confabulating.
     """
     try:
-        from core.actions.registry import detect_action_intent
-        from core.actions.types import ActionType
-        from core.action_claim_guard import ActionKind
-        at = detect_action_intent(user_text or "")
+        at = registry.detect_action_intent(user_text or "")
         if at is None:
             return set()
         mapping = {
-            ActionType.SEND_EMAIL: ActionKind.EMAIL,
-            ActionType.CALENDAR_CREATE_EVENT: ActionKind.CALENDAR,
-            ActionType.SEND_TELEGRAM: ActionKind.MESSAGE,
-            ActionType.SEND_DISCORD: ActionKind.MESSAGE,
-            ActionType.GITHUB_CREATE_ISSUE: ActionKind.GITHUB,
-            ActionType.GITHUB_COMMENT_PR: ActionKind.GITHUB,
+            types.ActionType.SEND_EMAIL: action_claim_guard.ActionKind.EMAIL,
+            types.ActionType.CALENDAR_CREATE_EVENT: action_claim_guard.ActionKind.CALENDAR,
+            types.ActionType.SEND_TELEGRAM: action_claim_guard.ActionKind.MESSAGE,
+            types.ActionType.SEND_DISCORD: action_claim_guard.ActionKind.MESSAGE,
+            types.ActionType.GITHUB_CREATE_ISSUE: action_claim_guard.ActionKind.GITHUB,
+            types.ActionType.GITHUB_COMMENT_PR: action_claim_guard.ActionKind.GITHUB,
         }
         k = mapping.get(at)
         return {k} if k is not None else set()
@@ -2951,12 +2935,11 @@ def _pending_proposal_kinds(orchestrator):
     except Exception:
         pass
     try:
-        from core.actions.registry import action_kind_of, offer_action_type
         _cm = getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None)
         _recent = _cm.get_recent_memories(1) if _cm is not None else []
         if _recent:
-            _offer = offer_action_type(_recent[0].get('response', '') or '')
-            _kind = action_kind_of(_offer) if _offer is not None else None
+            _offer = registry.offer_action_type(_recent[0].get('response', '') or '')
+            _kind = registry.action_kind_of(_offer) if _offer is not None else None
             if _kind is not None:
                 kinds.add(_kind)
     except Exception:
@@ -3051,7 +3034,6 @@ def _calendar_claim_matches_event(clause: str, event) -> bool:
     stated_days = {d for d in _WEEKDAY_NAMES if _re.search(rf"\b{d}\b", clause_l)}
     start = event.get("start") or ""
     try:
-        from datetime import datetime as _dt
         weekday_name = _dt.fromisoformat(str(start)).strftime("%A").lower()
     except Exception:
         weekday_name = ""
@@ -3073,27 +3055,21 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     executed nor proposed. Never auto-executes external actions.
     """
     _capture_proposal(ctx.orchestrator, response_text)
-    from core.action_claim_guard import NO_CARD_NOTICE, claims_pending_card
 
     suffix = ""
     try:
-        from config.app_config import ACTION_CLAIM_GUARD_ENABLED, ACTION_CLAIM_SELF_REPAIR_ENABLED
-        if not ACTION_CLAIM_GUARD_ENABLED or not response_text:
+        if not app_config.ACTION_CLAIM_GUARD_ENABLED or not response_text:
             return suffix
-        from core.action_claim_guard import (
-            ActionKind, build_correction_notice, detect_completion_claims,
-            is_first_person_claim, verify_claims,
-        )
-        claims = detect_completion_claims(response_text)
+        claims = action_claim_guard.detect_completion_claims(response_text)
         if not claims:
             raise _NoClaims()
-        rec = verify_claims(claims, executed_kinds=set(executed_kinds), proposed_kinds=set(proposed_kinds))
+        rec = action_claim_guard.verify_claims(claims, executed_kinds=set(executed_kinds), proposed_kinds=set(proposed_kinds))
         if not rec.has_issue:
             return suffix
 
-        if self_repair and ACTION_CLAIM_SELF_REPAIR_ENABLED:
+        if self_repair and app_config.ACTION_CLAIM_SELF_REPAIR_ENABLED:
             for a in rec.repairable:
-                if a.kind == ActionKind.NOTE:
+                if a.kind == action_claim_guard.ActionKind.NOTE:
                     saved = await _self_repair_note(ctx, a)
                     if saved is not None:
                         suffix += f"\n\n> 🗒️ (I went ahead and actually saved that note: `{saved.path}`)"
@@ -3112,9 +3088,9 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
         external = [
             a for a in rec.external_unbacked
             if a.kind not in set(proposed_kinds)
-            and (a.kind in actionable or is_first_person_claim(a.matched_text))
+            and (a.kind in actionable or action_claim_guard.is_first_person_claim(a.matched_text))
         ]
-        suffix += build_correction_notice(external)
+        suffix += action_claim_guard.build_correction_notice(external)
     except _NoClaims:
         pass
     except Exception as e:
@@ -3123,12 +3099,11 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     # card ("Approve it and it should land this time") but no proposal was
     # created or executed this turn — the card does not exist.
     try:
-        from config.app_config import ACTION_CLAIM_GUARD_ENABLED as _guard_on
-        if (_guard_on and response_text and not proposed_kinds and not executed_kinds
-                and NO_CARD_NOTICE not in suffix and claims_pending_card(response_text)):
+        if (app_config.ACTION_CLAIM_GUARD_ENABLED and response_text and not proposed_kinds and not executed_kinds
+                and action_claim_guard.NO_CARD_NOTICE not in suffix and action_claim_guard.claims_pending_card(response_text)):
             logger.warning("[ActionGuard] Reply directs the user to approve a card, "
                            "but no proposal exists this turn — appending notice")
-            suffix += NO_CARD_NOTICE
+            suffix += action_claim_guard.NO_CARD_NOTICE
     except Exception as e:
         logger.warning(f"[ActionGuard] No-card backstop failed (non-fatal): {e}")
     # Fresh-upload claim backstop (2026-09-10, probe T4/B6): "Can you take a
@@ -3139,12 +3114,10 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     # AND this turn's own gathered upload context carries a dated entry
     # that isn't today; fails open (no notice) when neither is knowable.
     try:
-        from core.action_claim_guard import claims_fresh_upload
-        if response_text and claims_fresh_upload(response_text):
+        if response_text and action_claim_guard.claims_fresh_upload(response_text):
             _registry = getattr(ctx.orchestrator, 'active_documents', None)
             _has_active_docs = bool(_registry is not None and _registry.documents())
             if not _has_active_docs:
-                from datetime import datetime as _fu_dt
                 _upload_date = _newest_upload_date(ctx)
                 _today = _fu_dt.now().strftime('%Y-%m-%d')
                 if _upload_date and _upload_date != _today:
@@ -3167,15 +3140,13 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     # key the formatter renders as [GOOGLE CALENDAR]); no calendar section
     # at all means we cannot verify either way, so fail open.
     try:
-        from core.action_claim_guard import claims_calendar_state
-        from core.action_claim_guard import ActionKind as _AK
         # A calendar card proposed or executed THIS turn is the ground truth
         # the reply is describing ("…is sitting there waiting on your
         # approval") — never contradict it with a state-claim notice
         # (2026-09-11, round 7 live over-fire under a real card).
-        _cal_acted = _AK.CALENDAR in (set(proposed_kinds) | set(executed_kinds))
+        _cal_acted = action_claim_guard.ActionKind.CALENDAR in (set(proposed_kinds) | set(executed_kinds))
         _state_claims = (
-            claims_calendar_state(response_text) if (response_text and not _cal_acted) else []
+            action_claim_guard.claims_calendar_state(response_text) if (response_text and not _cal_acted) else []
         )
         if _state_claims:
             _cal_events = (getattr(ctx, "raw_context", None) or {}).get("google_calendar") or []
@@ -3211,7 +3182,6 @@ def _capture_delivery(ctx, debug_record):
 
 
 async def _apply_grounding_check_for_delivery(ctx, response_text, source_material=""):
-    from config.app_config import GROUNDING_MODE, GROUNDING_CHECK_ENABLED
     # A05b-2: use the mode captured once at turn start when present (see
     # SubmitContext.grounding_mode) so a config change mid-turn cannot alter
     # this turn's delivery. A bare ctx that never went through handle_submit's
@@ -3219,7 +3189,7 @@ async def _apply_grounding_check_for_delivery(ctx, response_text, source_materia
     # back to reading config fresh, exactly as before this batch.
     mode = getattr(ctx, "grounding_mode", None)
     if mode is None:
-        mode = GROUNDING_MODE if GROUNDING_CHECK_ENABLED else "off"
+        mode = app_config.GROUNDING_MODE if app_config.GROUNDING_CHECK_ENABLED else "off"
     if mode == "off":
         return None, ""
     if mode == "log_only":
@@ -3309,11 +3279,10 @@ def _start_background_grounding(ctx):
     response_text, source_material = pending
 
     async def check():
-        from config.app_config import GROUNDING_TIMEOUT_S
         try:
             await asyncio.wait_for(
                 _apply_grounding_check(ctx, response_text, source_material, mode="log_only"),
-                timeout=max(0.1, GROUNDING_TIMEOUT_S) + 1.0,
+                timeout=max(0.1, app_config.GROUNDING_TIMEOUT_S) + 1.0,
             )
             # The verifier reports failures before its fail-open return.
             if ctx.telemetry.get("grounding_status") == "pending":
@@ -3387,32 +3356,20 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
     """
     _no_action = (None, "")
     try:
-        from config.app_config import (
-            GROUNDING_CHECK_ENABLED, GROUNDING_CHECK_MODEL,
-            GROUNDING_CONFIDENCE_THRESHOLD, GROUNDING_TIMEOUT_S,
-            GROUNDING_MAX_TOKENS, GROUNDING_MIN_RESPONSE_CHARS,
-            GROUNDING_INTEGRATE_ENABLED, GROUNDING_INTEGRATE_TIMEOUT_S,
-            GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS,
-        )
         if mode is None:
-            from config.app_config import GROUNDING_MODE
-            mode = GROUNDING_MODE
-        if (not GROUNDING_CHECK_ENABLED or not response_text
-                or len(response_text.strip()) < GROUNDING_MIN_RESPONSE_CHARS):
+            mode = app_config.GROUNDING_MODE
+        if (not app_config.GROUNDING_CHECK_ENABLED or not response_text
+                or len(response_text.strip()) < app_config.GROUNDING_MIN_RESPONSE_CHARS):
             ctx.telemetry.update(
                 grounding_status="skipped",
                 grounding_skip_reason=(
-                    "disabled" if not GROUNDING_CHECK_ENABLED else
+                    "disabled" if not app_config.GROUNDING_CHECK_ENABLED else
                     "empty_or_short_response"
                 ),
                 grounding_mode=mode,
             )
             return _no_action
-        from core.grounding_check import (
-            has_checkable_claims, verify_grounding, integrate_grounding_correction,
-            build_integrated_fallback,
-        )
-        if not has_checkable_claims(response_text, ctx.user_text or ""):
+        if not grounding_check.has_checkable_claims(response_text, ctx.user_text or ""):
             ctx.telemetry.update(
                 grounding_status="skipped",
                 grounding_skip_reason="no_checkable_claims",
@@ -3433,7 +3390,6 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
         # The runtime clock is source data, not something the verifier should
         # reconstruct from model priors. Put it FIRST so source truncation can
         # never drop it behind a long retrieved document.
-        from datetime import datetime as _grounding_datetime
         _runtime_now = _grounding_datetime.now().astimezone()
         _runtime_source = (
             "[AUTHORITATIVE RUNTIME CLOCK]\n"
@@ -3442,11 +3398,11 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
         _grounding_source = _runtime_source
         if source_material:
             _grounding_source += "\n\n" + str(source_material)
-        verdict = await verify_grounding(
+        verdict = await grounding_check.verify_grounding(
             ctx.user_text or "", response_text, mm,
-            model_name=GROUNDING_CHECK_MODEL,
-            max_tokens=GROUNDING_MAX_TOKENS,
-            timeout_s=GROUNDING_TIMEOUT_S,
+            model_name=app_config.GROUNDING_CHECK_MODEL,
+            max_tokens=app_config.GROUNDING_MAX_TOKENS,
+            timeout_s=app_config.GROUNDING_TIMEOUT_S,
             source_material=_grounding_source,
             telemetry=ctx.telemetry,
         )
@@ -3466,24 +3422,23 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
         ctx.telemetry["grounding_confidence"] = round(float(verdict.confidence), 3)
         if not (verdict.false_claim_present
                 and verdict.correction.strip()
-                and verdict.confidence >= GROUNDING_CONFIDENCE_THRESHOLD):
+                and verdict.confidence >= app_config.GROUNDING_CONFIDENCE_THRESHOLD):
             if verdict.false_claim_present:
                 # Observability: without this line a flagged-but-suppressed
                 # verdict leaves no trace of what the verifier wanted to say
                 # or which gate stopped it (2026-09-01 live-verification gap).
                 logger.info(
                     "[GroundingCheck] Flagged verdict suppressed "
-                    f"(conf={verdict.confidence:.2f} < {GROUNDING_CONFIDENCE_THRESHOLD}"
+                    f"(conf={verdict.confidence:.2f} < {app_config.GROUNDING_CONFIDENCE_THRESHOLD}"
                     f" or empty correction): {verdict.correction[:120]!r}"
                 )
             return _no_action
 
         # Mode is captured at invocation; a setting change while the verifier
         # is in flight must not revise an already-delivered log-only answer.
-        from utils.privacy_redaction import redact_text
 
         ctx.telemetry["grounding_mode"] = mode
-        _redacted_verdict = redact_text(verdict.correction)[:300]
+        _redacted_verdict = privacy_redaction.redact_text(verdict.correction)[:300]
         ctx.telemetry["grounding_verdict"] = _redacted_verdict
 
         if mode == "log_only":
@@ -3499,8 +3454,7 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
             )
             return (response_text, "")
 
-        from core.agentic.gate import _tone_is_elevated
-        elevated = _tone_is_elevated((ctx.raw_context or {}).get("tone_level"))
+        elevated = gate._tone_is_elevated((ctx.raw_context or {}).get("tone_level"))
         logger.warning(
             f"[GroundingCheck] Correcting false claim "
             f"(conf={verdict.confidence:.2f}, elevated={elevated}): "
@@ -3509,12 +3463,12 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
         # Audit F24 (2026-08-31): grounding_corrected records what SHIPPED —
         # it is set only once a correction (integrated or fallback) is
         # actually returned, never before the integrate attempt.
-        if GROUNDING_INTEGRATE_ENABLED:
-            revised = await integrate_grounding_correction(
+        if app_config.GROUNDING_INTEGRATE_ENABLED:
+            revised = await grounding_check.integrate_grounding_correction(
                 response_text, verdict, mm,
-                model_name=GROUNDING_CHECK_MODEL,
-                timeout_s=GROUNDING_INTEGRATE_TIMEOUT_S,
-                max_response_chars=GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS,
+                model_name=app_config.GROUNDING_CHECK_MODEL,
+                timeout_s=app_config.GROUNDING_INTEGRATE_TIMEOUT_S,
+                max_response_chars=app_config.GROUNDING_INTEGRATE_MAX_RESPONSE_CHARS,
             )
             if revised:
                 ctx.telemetry["grounding_integrated"] = True
@@ -3523,7 +3477,7 @@ async def _apply_grounding_check(ctx, response_text, source_material: str = "", 
         # A05b-1 (F04/G12): the integrator is disabled or unavailable — the
         # ONE integrated fallback (spliced-in or standalone) ships through
         # this same revised path. Never draft-plus-suffix (BC-45, BC-71).
-        fb = build_integrated_fallback(response_text, verdict, elevated=elevated)
+        fb = grounding_check.build_integrated_fallback(response_text, verdict, elevated=elevated)
         if fb is not None:
             ctx.telemetry["grounding_status"] = "fallback"
             # Constant kind:reason label only — never claim or correction
@@ -3579,8 +3533,7 @@ def _personal_claim_receipt(result, *, delivery="unchanged", status=None, reason
         receipt["reason"] = reason
     receipt["delivery"] = delivery
     try:
-        from utils.personal_claim_provenance import clean_personal_claim_receipt
-        clean = clean_personal_claim_receipt(receipt)
+        clean = personal_claim_provenance.clean_personal_claim_receipt(receipt)
     except Exception:
         clean = {}
     if not clean:
@@ -3626,12 +3579,7 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
     model-derived value transported out of this helper.
     """
     try:
-        from config.app_config import (
-            PERSONAL_CLAIM_CHECK_ENABLED, PERSONAL_CLAIM_CHECK_MODEL,
-            PERSONAL_CLAIM_TIMEOUT_S, PERSONAL_CLAIM_MAX_TOKENS,
-            PERSONAL_CLAIM_MAX_EVIDENCE_CHARS,
-        )
-        if not PERSONAL_CLAIM_CHECK_ENABLED:
+        if not app_config.PERSONAL_CLAIM_CHECK_ENABLED:
             receipt = _personal_claim_receipt(
                 None, delivery="unchanged", status="skipped", reason="disabled")
             return _record_personal_claim_outcome(ctx, receipt), None
@@ -3639,10 +3587,6 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
             receipt = _personal_claim_receipt(
                 None, delivery="unchanged", status="skipped", reason="empty_response")
             return _record_personal_claim_outcome(ctx, receipt), None
-        from core.personal_claim_check import (
-            build_personal_evidence, audit_personal_claims,
-            omit_unsupported_claims,
-        )
         mm = getattr(ctx.orchestrator, "model_manager", None)
         if mm is None:
             receipt = _personal_claim_receipt(
@@ -3650,15 +3594,15 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
             return _record_personal_claim_outcome(ctx, receipt), None
         context = dict(getattr(ctx, "raw_context", {}) or {})
         context["current_query"] = ctx.user_text or ""
-        evidence = build_personal_evidence(
+        evidence = personal_claim_check.build_personal_evidence(
             ctx.user_text or "", context, history=getattr(ctx, "history", ()) or (),
-            max_chars=PERSONAL_CLAIM_MAX_EVIDENCE_CHARS,
+            max_chars=app_config.PERSONAL_CLAIM_MAX_EVIDENCE_CHARS,
         )
-        result = await audit_personal_claims(
+        result = await personal_claim_check.audit_personal_claims(
             response_text, evidence, mm,
-            model_name=PERSONAL_CLAIM_CHECK_MODEL,
-            timeout_s=PERSONAL_CLAIM_TIMEOUT_S,
-            max_tokens=PERSONAL_CLAIM_MAX_TOKENS,
+            model_name=app_config.PERSONAL_CLAIM_CHECK_MODEL,
+            timeout_s=app_config.PERSONAL_CLAIM_TIMEOUT_S,
+            max_tokens=app_config.PERSONAL_CLAIM_MAX_TOKENS,
         )
         if result is None:
             receipt = _personal_claim_receipt(
@@ -3676,7 +3620,7 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
             for claim in claims
         )
         if mode == "correct" and status == "checked" and unsupported:
-            revised = omit_unsupported_claims(response_text, result)
+            revised = personal_claim_check.omit_unsupported_claims(response_text, result)
             if isinstance(revised, str) and revised != response_text:
                 receipt = _personal_claim_receipt(result, delivery="omitted")
                 return _record_personal_claim_outcome(ctx, receipt), revised
@@ -3699,8 +3643,7 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
 async def _apply_personal_claim_check_for_delivery(ctx, response_text):
     mode = getattr(ctx, "personal_claim_mode", None)
     if mode is None:
-        from config.app_config import PERSONAL_CLAIM_CHECK_ENABLED, PERSONAL_CLAIM_MODE
-        mode = PERSONAL_CLAIM_MODE if PERSONAL_CLAIM_CHECK_ENABLED else "off"
+        mode = app_config.PERSONAL_CLAIM_MODE if app_config.PERSONAL_CLAIM_CHECK_ENABLED else "off"
     if mode == "off":
         return None
     if mode == "log_only":
@@ -3772,7 +3715,6 @@ async def _run_self_note(ctx):
         return
     except Exception as e:
         logger.error(f"[Handle Submit] Direct self-note creation failed: {e}")
-        import traceback
         traceback.print_exc()
         # Fall through to normal agentic/enhanced mode (ctx.handled stays False)
 
@@ -3784,12 +3726,11 @@ async def _run_pending_proposal(ctx, proposal):
     and sets ctx.handled on success; on failure, logs and leaves ctx.handled False
     so the dispatcher falls through to the normal flow.
     """
-    from core.action_claim_guard import ActionKind
     logger.warning(
         f"[ActionGuard] Affirmation → executing pending {proposal.kind.value}: {proposal.title!r}"
     )
     try:
-        if proposal.kind == ActionKind.NOTE:
+        if proposal.kind == action_claim_guard.ActionKind.NOTE:
             async for _c in _save_daemon_note(
                 ctx, title=proposal.title, body=proposal.body, category=proposal.category,
             ):
@@ -3797,7 +3738,6 @@ async def _run_pending_proposal(ctx, proposal):
             return
     except Exception as e:
         logger.error(f"[ActionGuard] Pending proposal execution failed: {e}")
-        import traceback
         traceback.print_exc()
         # Fall through to normal flow (ctx.handled stays False)
 
@@ -3811,14 +3751,11 @@ def _failed_action_to_retry(user_text):
     second); the store holds a failed proposal proposed within the last 30 min.
     """
     try:
-        from config.app_config import INTERNET_ACTIONS_ENABLED
-        if not INTERNET_ACTIONS_ENABLED:
+        if not app_config.INTERNET_ACTIONS_ENABLED:
             return None
-        from core.actions.registry import is_action_retry_request
-        if not is_action_retry_request(user_text or ""):
+        if not registry.is_action_retry_request(user_text or ""):
             return None
-        from core.agentic.tools import ToolExecutor
-        store = ToolExecutor._get_pending_actions_store()
+        store = tools.ToolExecutor._get_pending_actions_store()
         if store.get_pending() is not None:
             return None
         return store.most_recent_failed()
@@ -3836,11 +3773,8 @@ async def _run_action_retry(ctx, failed):
     """
     orchestrator = ctx.orchestrator
     try:
-        import copy
-        from core.actions.types import ActionProposal
-        from core.agentic.tools import ToolExecutor
-        store = ToolExecutor._get_pending_actions_store()
-        new = ActionProposal(
+        store = tools.ToolExecutor._get_pending_actions_store()
+        new = types.ActionProposal(
             action_type=failed.action_type,
             params=copy.deepcopy(failed.params or {}),
             summary=failed.summary or "",
@@ -3871,7 +3805,7 @@ async def _run_action_retry(ctx, failed):
                     query=ctx.user_text, response=_resp, tags=["action_retry"],
                 )
             except Exception as e:
-                from core.orchestrator import _storage_failure_label
+                from core.orchestrator import _storage_failure_label  # lazy import: startup-cost
                 label = _storage_failure_label(e)
                 logger.warning(f"[Actions] Retry storage failed: {label}")
                 _telemetry = getattr(ctx, "telemetry", None)
@@ -3897,8 +3831,7 @@ async def _run_action_retry(ctx, failed):
 
 def _retry_fetch_urls_from_context(user_text, chat_history) -> list[str]:
     """Recover a URL only for an explicit retry after the assistant failed to fetch."""
-    from utils.query_checker import is_retry_continuation
-    if not is_retry_continuation(user_text):
+    if not query_checker.is_retry_continuation(user_text):
         return []
     # Both production callers append the CURRENT turn before this runs (SPA:
     # the user message; legacy Gradio: user + an "…" typing placeholder), so a
@@ -3935,7 +3868,6 @@ def _retry_fetch_urls_from_context(user_text, chat_history) -> list[str]:
         (messages[i] for i in range(last_assistant_idx - 1, -1, -1)
          if messages[i].get("role") == "user"), None,
     )
-    import re
     urls = re.findall(r'https?://[^\s<>"\')\]]+', str((previous_user or {}).get("content", "")))
     return urls
 
@@ -4059,7 +3991,6 @@ async def _run_agentic_search(ctx):
         _agentic_storage_dispatched = True
 
     try:
-        from core.agentic import AgenticSearchController, ProgressEvent
 
         # Get the agentic controller from orchestrator
         agentic_controller = orchestrator.agentic_controller
@@ -4084,20 +4015,16 @@ async def _run_agentic_search(ctx):
         logger.debug(f"[Handle Submit] Agentic initial terms: {initial_terms}")
 
         # Extract URLs from the user message for direct fetch
-        import re as _re_url
         _url_pattern = _re_url.compile(r'https?://[^\s<>"\')\]]+')
         _url_in_current_msg = _url_pattern.findall(user_text)
         _retry_recovered_urls = _retry_fetch_urls_from_context(user_text, history)
         _extracted_urls = _url_in_current_msg or _retry_recovered_urls
-        from utils.topic_manager import _TOPIC_URL_RE
-        from core.actions.registry import detect_action_intent
-        from config.app_config import AGENTIC_FETCH_FASTPATH
-        _remainder_words = len(_TOPIC_URL_RE.sub("", user_text).split())
+        _remainder_words = len(topic_manager._TOPIC_URL_RE.sub("", user_text).split())
         _gate_modes = getattr(_gate_decision, "modes", []) or []
         _gate_forced_action = getattr(_gate_decision, "forced_action", None)
-        _forced_action = detect_action_intent(user_text_ws) or _gate_forced_action
+        _forced_action = registry.detect_action_intent(user_text_ws) or _gate_forced_action
         _fastpath_ok = (
-            AGENTIC_FETCH_FASTPATH
+            app_config.AGENTIC_FETCH_FASTPATH
             and ((bool(_url_in_current_msg) and _remainder_words <= 12)
                  or (bool(_retry_recovered_urls) and _remainder_words <= 25))
             and not any(mode in _gate_modes for mode in ("memory", "computation", "knowledge"))
@@ -4155,7 +4082,7 @@ async def _run_agentic_search(ctx):
             item, _exhausted = _task.result()
             if _exhausted:
                 break
-            if isinstance(item, ProgressEvent):
+            if isinstance(item, agentic.ProgressEvent):
                 # Don't overwrite streamed response with late progress events
                 if agentic_response:
                     logger.debug(f"[Handle Submit] Skipping post-content progress: {item.event_type}")
@@ -4220,7 +4147,7 @@ async def _run_agentic_search(ctx):
                 # Fail fast on a classified API-error payload at the stream
                 # head — never render raw error JSON into the bubble (same
                 # guard as the enhanced path, added 2026-08-21).
-                from models.model_manager import API_ERROR_PREFIXES as _api_err_prefixes
+                from models.model_manager import API_ERROR_PREFIXES as _api_err_prefixes  # lazy import: startup-cost
                 if agentic_response.lstrip().startswith(_api_err_prefixes):
                     logger.warning("[Handle Submit] Agentic stream head is an API-error payload — suppressing raw display")
                     break
@@ -4342,14 +4269,11 @@ async def _run_agentic_search(ctx):
         # as text in the final generation instead of calling the tool
         # during the agentic loop.
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            if INTERNET_ACTIONS_ENABLED and display_output:
-                from core.agentic.tools import ToolExecutor
-                _actions_store = ToolExecutor._get_pending_actions_store()
+            if app_config.INTERNET_ACTIONS_ENABLED and display_output:
+                _actions_store = tools.ToolExecutor._get_pending_actions_store()
                 if not _actions_store.get_pending():
                     # No action was proposed via tool call — check text
-                    from core.agentic.protocols import NativeToolsHandler
-                    _text_handler = NativeToolsHandler(actions_available=True)
+                    _text_handler = protocols.NativeToolsHandler(actions_available=True)
                     _text_decisions = _text_handler._parse_text_tool_calls(display_output)
                     for _td in _text_decisions:
                         if _td.wants_action and _td.action_type:
@@ -4357,7 +4281,6 @@ async def _run_agentic_search(ctx):
                             if _make_text_action_proposal(_td, _actions_store) is None:
                                 break
                             # Strip the raw tool text + leaked XML blocks from display
-                            import re as _re_action
                             display_output = _re_action.sub(
                                 r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
                                 '', display_output, count=1,
@@ -4370,10 +4293,8 @@ async def _run_agentic_search(ctx):
         # Check for pending action proposals → append card to display
         _pending_action_id = None
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            if INTERNET_ACTIONS_ENABLED:
-                from core.agentic.tools import ToolExecutor
-                _actions_store = ToolExecutor._get_pending_actions_store()
+            if app_config.INTERNET_ACTIONS_ENABLED:
+                _actions_store = tools.ToolExecutor._get_pending_actions_store()
                 _all_pending = _actions_store.get_all_pending()
                 if _all_pending:
                     # Newest drives the approve button; EVERY pending card
@@ -4382,7 +4303,7 @@ async def _run_agentic_search(ctx):
                     _pending_action_id = _all_pending[-1].action_id
                     for _pp in _all_pending:
                         display_output += _format_action_proposal_card(_pp)
-        except ImportError:
+        except (ImportError, AttributeError):
             pass
 
         logger.debug(f"[Handle Submit] Agentic loop done, response_len={len(final_output)}, display_len={len(display_output)}")
@@ -4435,15 +4356,12 @@ async def _run_agentic_search(ctx):
         # If model emitted contact lookup in final answer, resolve inline + auto-propose
         if not _pending_action_id:
             try:
-                from config.app_config import INTERNET_ACTIONS_ENABLED
-                if INTERNET_ACTIONS_ENABLED:
-                    from core.agentic.protocols import NativeToolsHandler
-                    _ag_handler = NativeToolsHandler(actions_available=True)
+                if app_config.INTERNET_ACTIONS_ENABLED:
+                    _ag_handler = protocols.NativeToolsHandler(actions_available=True)
                     _ag_decisions = _ag_handler._parse_text_tool_calls(final_output or display_output)
                     for _agd in _ag_decisions:
                         if _agd.wants_lookup_contact and _agd.lookup_contact_name:
-                            from core.agentic.tools import ToolExecutor
-                            _ag_store = ToolExecutor._get_pending_actions_store()
+                            _ag_store = tools.ToolExecutor._get_pending_actions_store()
                             display_output, _ag_aid = await _resolve_contact_and_propose_email(
                                 _agd.lookup_contact_name, user_text, history,
                                 display_output, _ag_store,
@@ -4468,8 +4386,7 @@ async def _run_agentic_search(ctx):
         # human-in-the-loop (never auto-executed by the loop), so a bare "I sent
         # it" with no proposal is safe to correct.
         try:
-            from core.action_claim_guard import EXTERNAL as _EXTERNAL_KINDS
-            _ag_proposed = _EXTERNAL_KINDS if _pending_action_id else set()
+            _ag_proposed = action_claim_guard.EXTERNAL if _pending_action_id else set()
             _ag_guard_suffix = await _apply_action_guard(
                 ctx, display_output, executed_kinds=set(),
                 proposed_kinds=_ag_proposed, self_repair=False,
@@ -4528,18 +4445,15 @@ async def _run_agentic_search(ctx):
         # notice as the enhanced path, plus this turn's own loop rounds
         # (limiter refusals, results, URL fetches that returned a page).
         try:
-            from utils.web_evidence_receipt import (
-                apply_web_evidence_notice, build_web_evidence_receipt, web_evidence_notice,
-            )
-            _ag_we_receipt = build_web_evidence_receipt(
+            _ag_we_receipt = web_evidence_receipt.build_web_evidence_receipt(
                 getattr(ctx, "gate_decision", None),
                 (raw_context or {}).get("web_search_decision"),
                 session=_agentic_session,
             )
             ctx.telemetry["web_evidence"] = _ag_we_receipt
-            if web_evidence_notice(_ag_we_receipt):
-                display_output = apply_web_evidence_notice(display_output, _ag_we_receipt)
-                final_output = apply_web_evidence_notice(final_output, _ag_we_receipt)
+            if web_evidence_receipt.web_evidence_notice(_ag_we_receipt):
+                display_output = web_evidence_receipt.apply_web_evidence_notice(display_output, _ag_we_receipt)
+                final_output = web_evidence_receipt.apply_web_evidence_notice(final_output, _ag_we_receipt)
         except Exception as _ag_we_err:
             logger.warning(f"[Handle Submit] Agentic web-evidence notice failed (non-fatal): {_ag_we_err}")
 
@@ -4577,7 +4491,6 @@ async def _run_agentic_search(ctx):
 
     except Exception as e:
         logger.error(f"[Handle Submit] Agentic search failed, falling back to standard: {e}")
-        import traceback
         logger.debug(f"[Agentic] Exception traceback:\n{traceback.format_exc()}")
 
     except BaseException:
@@ -4671,8 +4584,7 @@ async def _run_enhanced(ctx):
     # tools, so they must not inherit the "no tools" claim.
     _stream_system_prompt = system_prompt
     try:
-        from core.actions.registry import get_runtime_action_health
-        _action_health = get_runtime_action_health()
+        _action_health = registry.get_runtime_action_health()
         _stream_system_prompt = (system_prompt or "") + (
             "\n\n[APPLICATION ACTION STATUS — AUTHORITATIVE]\n"
             f"{_action_health}\n"
@@ -4684,8 +4596,7 @@ async def _run_enhanced(ctx):
             f"[Handle Submit] Action-status block build failed (non-fatal): {_health_err}"
         )
     try:
-        from config.app_config import ACTION_CLAIM_GUARD_ENABLED
-        if ACTION_CLAIM_GUARD_ENABLED:
+        if app_config.ACTION_CLAIM_GUARD_ENABLED:
             _stream_system_prompt = (_stream_system_prompt or "") + (
                 "\n\n[ACTION HONESTY] This enhanced generation pass cannot invoke tools "
                 "directly. Do NOT claim you "
@@ -4779,7 +4690,7 @@ async def _run_enhanced(ctx):
             # the trailing-strip at the storage boundary), so stop checking
             # once real content is flowing.
             if chunk_count <= 5:
-                from models.model_manager import API_ERROR_PREFIXES as _api_err_prefixes
+                from models.model_manager import API_ERROR_PREFIXES as _api_err_prefixes  # lazy import: startup-cost
                 if final_output.lstrip().startswith(_api_err_prefixes):
                     logger.warning(
                         "[Handle Submit] API-error payload at stream head — "
@@ -4845,7 +4756,6 @@ async def _run_enhanced(ctx):
                 else:
                     # Continue streaming the answer
                     try:
-                        import re
                         # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
                         # Use non-greedy match and ensure we capture everything between outer tags
                         m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", final_answer or "", flags=re.IGNORECASE)
@@ -4858,7 +4768,6 @@ async def _run_enhanced(ctx):
             else:
                 # No thinking block detected, stream normally
                 try:
-                    import re
                     # Strip ONLY outer wrapper tags at start/end (not tags mentioned in content)
                     m = re.match(r"^\s*<\s*(result|reply|response|answer)\s*>\s*([\s\S]*?)\s*<\s*/\s*\1\s*>\s*$", (final_output or ""), flags=re.IGNORECASE)
                     display_output = (m.group(2).strip() if m else final_output)
@@ -4968,13 +4877,8 @@ async def _run_enhanced(ctx):
         _uncertainty_retry_done = False
         if agentic_enabled and final_output:
             try:
-                from config.app_config import (
-                    UNCERTAINTY_FALLBACK_ENABLED,
-                    UNCERTAINTY_SEMANTIC_THRESHOLD,
-                    UNCERTAINTY_MAX_LENGTH,
-                )
-                if UNCERTAINTY_FALLBACK_ENABLED:
-                    from core.uncertainty_detector import UncertaintyDetector
+                if app_config.UNCERTAINTY_FALLBACK_ENABLED:
+                    from core.uncertainty_detector import UncertaintyDetector  # lazy import: startup-cost
 
                     _uf_embedder = getattr(
                         getattr(orchestrator, 'model_manager', None), 'embed_model', None
@@ -4982,8 +4886,8 @@ async def _run_enhanced(ctx):
                     _uf_result = UncertaintyDetector.detect(
                         response=final_output,
                         embedder=_uf_embedder,
-                        semantic_threshold=UNCERTAINTY_SEMANTIC_THRESHOLD,
-                        max_length=UNCERTAINTY_MAX_LENGTH,
+                        semantic_threshold=app_config.UNCERTAINTY_SEMANTIC_THRESHOLD,
+                        max_length=app_config.UNCERTAINTY_MAX_LENGTH,
                     )
 
                     if _uf_result.is_uncertain:
@@ -5040,11 +4944,7 @@ async def _run_enhanced(ctx):
         _review_min_len = 120
         if agentic_enabled and final_output and not _uncertainty_retry_done and len(final_output) >= _review_min_len:
             try:
-                from config.app_config import (
-                    RESPONSE_REVIEW_ENABLED,
-                    RESPONSE_REVIEW_CONFIDENCE_THRESHOLD,
-                )
-                if RESPONSE_REVIEW_ENABLED:
+                if app_config.RESPONSE_REVIEW_ENABLED:
                     _plan = getattr(orchestrator, '_current_response_plan', None)
                     _planner = getattr(orchestrator, 'response_planner', None)
                     if _plan is not None and _planner is not None:
@@ -5060,7 +4960,7 @@ async def _run_enhanced(ctx):
                         if (
                             _review
                             and not _review.passes
-                            and _review.confidence >= RESPONSE_REVIEW_CONFIDENCE_THRESHOLD
+                            and _review.confidence >= app_config.RESPONSE_REVIEW_CONFIDENCE_THRESHOLD
                         ):
                             logger.warning(
                                 f"[REVIEW GATE] Response failed review "
@@ -5094,8 +4994,7 @@ async def _run_enhanced(ctx):
         # paragraph markdown isn't flattened. (Mirrors the agentic path, which
         # linkifies display_output and extracts citations from a separate string.)
         _, citations = _safe_extract_citations(_resp_for_debug, orchestrator)
-        from core.citation_extractor import strip_memory_citation_markers
-        _resp_for_debug = strip_memory_citation_markers(_resp_for_debug)
+        _resp_for_debug = citation_extractor.strip_memory_citation_markers(_resp_for_debug)
 
         _enh_session_id = _get_session_id(orchestrator)
         _enh_mode = "uncertainty-fallback" if _uncertainty_retry_done else "enhanced"
@@ -5124,13 +5023,10 @@ async def _run_enhanced(ctx):
         # in non-agentic mode if it knows about the tool from context.
         _enh_pending_action_id = None
         try:
-            from config.app_config import INTERNET_ACTIONS_ENABLED
-            if INTERNET_ACTIONS_ENABLED and _resp_for_debug:
-                from core.agentic.tools import ToolExecutor
-                _enh_store = ToolExecutor._get_pending_actions_store()
+            if app_config.INTERNET_ACTIONS_ENABLED and _resp_for_debug:
+                _enh_store = tools.ToolExecutor._get_pending_actions_store()
                 if not _enh_store.get_pending():
-                    from core.agentic.protocols import NativeToolsHandler
-                    _enh_handler = NativeToolsHandler(actions_available=True)
+                    _enh_handler = protocols.NativeToolsHandler(actions_available=True)
                     _enh_decisions = _enh_handler._parse_text_tool_calls(_resp_for_debug)
                     # Handle lookup_contact inline: resolve contact, auto-create email proposal if context indicates sending
                     for _etd in _enh_decisions:
@@ -5157,7 +5053,6 @@ async def _run_enhanced(ctx):
                                 break
                             _enh_pending_action_id = _ea_aid
                             # Strip raw tool text + leaked XML and append proper action card
-                            import re as _re_enh_action
                             _resp_for_debug = _re_enh_action.sub(
                                 r'\[propose_action:\s*\w+\]\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}',
                                 '', _resp_for_debug, count=1,
@@ -5175,8 +5070,7 @@ async def _run_enhanced(ctx):
         # unbacked. Self-repair note/doc claims; honestly correct external claims
         # that weren't even proposed. (proposed kinds suppressed via the card.)
         try:
-            from core.action_claim_guard import EXTERNAL as _EXTERNAL_KINDS
-            _enh_proposed = _EXTERNAL_KINDS if _enh_pending_action_id else set()
+            _enh_proposed = action_claim_guard.EXTERNAL if _enh_pending_action_id else set()
             _guard_suffix = await _apply_action_guard(
                 ctx, _resp_for_debug, executed_kinds=set(),
                 proposed_kinds=_enh_proposed, self_repair=True,
@@ -5224,17 +5118,14 @@ async def _run_enhanced(ctx):
         # so — once, after retries/guard/grounding, identically in the
         # streamed bubble and the stored reply. The receipt goes to telemetry.
         try:
-            from utils.web_evidence_receipt import (
-                apply_web_evidence_notice, build_web_evidence_receipt, web_evidence_notice,
-            )
-            _we_receipt = build_web_evidence_receipt(
+            _we_receipt = web_evidence_receipt.build_web_evidence_receipt(
                 getattr(ctx, "gate_decision", None),
                 (ctx.raw_context or {}).get("web_search_decision"),
             )
             ctx.telemetry["web_evidence"] = _we_receipt
-            if web_evidence_notice(_we_receipt):
-                _resp_for_debug = apply_web_evidence_notice(_resp_for_debug, _we_receipt)
-                final_output = apply_web_evidence_notice(final_output, _we_receipt)
+            if web_evidence_receipt.web_evidence_notice(_we_receipt):
+                _resp_for_debug = web_evidence_receipt.apply_web_evidence_notice(_resp_for_debug, _we_receipt)
+                final_output = web_evidence_receipt.apply_web_evidence_notice(final_output, _we_receipt)
         except Exception as e:
             logger.warning(f"[Handle Submit] Web-evidence notice failed (non-fatal): {e}")
 
@@ -5371,7 +5262,6 @@ async def _run_enhanced(ctx):
                     cm = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
                     if cm and hasattr(cm, "max_entries"):
                         # Default test cap to 5000 if not set via env
-                        import os as _os
                         cm.max_entries = int(_os.getenv("CORPUS_MAX_ENTRIES", "5000"))
                 except (AttributeError, ValueError) as e:
                     logger.debug(f"[Handlers] Could not override corpus max_entries: {e}")
@@ -5434,7 +5324,6 @@ async def _run_enhanced(ctx):
 
         # Restore original config limits if Fast Mode was enabled
         if fast_mode and '_original_limits' in locals():
-            from config import app_config
             for key, value in _original_limits.items():
                 setattr(app_config, key, value)
                 logger.warning(f"[Fast Mode] Restored {key} = {value}")
@@ -5497,8 +5386,7 @@ def _resend_serve_appropriate(user_text, stored_reply, history) -> bool:
       so a served approval prompt is wrong by construction.
     """
     try:
-        from core.actions.registry import detect_action_intent
-        if detect_action_intent(user_text or "") is not None:
+        if registry.detect_action_intent(user_text or "") is not None:
             return False
     except Exception:
         pass
@@ -5518,7 +5406,6 @@ def _recent_completed_duplicate(orchestrator, norm_query: str):
     """Return the stored response of an identical turn completed within the
     resend window, else None. Read-only over the newest corpus entries."""
     try:
-        from datetime import datetime as _dt
         corpus = getattr(
             getattr(orchestrator, "memory_system", None), "corpus_manager", None,
         )
@@ -5672,7 +5559,7 @@ async def _handle_submit_inner(
 
     # Update activity timestamp for idle monitor
     try:
-        import main
+        import main  # lazy import: cycle (main alias — see main.py:802)
         if hasattr(main, 'update_activity_timestamp'):
             main.update_activity_timestamp()
     except (ImportError, AttributeError) as e:
@@ -5870,13 +5757,8 @@ async def _handle_submit_inner(
     # A05b-2: capture the grounding delivery mode ONCE for this turn (see
     # SubmitContext.grounding_mode) — read here, not re-read later, so a
     # config change mid-turn cannot flip this turn's buffering/delivery.
-    from config.app_config import GROUNDING_CHECK_ENABLED as _gc_enabled, GROUNDING_MODE as _gc_mode
-    ctx.grounding_mode = _gc_mode if _gc_enabled else "off"
-    from config.app_config import (
-        PERSONAL_CLAIM_CHECK_ENABLED as _pc_enabled,
-        PERSONAL_CLAIM_MODE as _pc_mode,
-    )
-    ctx.personal_claim_mode = _pc_mode if _pc_enabled else "off"
+    ctx.grounding_mode = app_config.GROUNDING_MODE if app_config.GROUNDING_CHECK_ENABLED else "off"
+    ctx.personal_claim_mode = app_config.PERSONAL_CLAIM_MODE if app_config.PERSONAL_CLAIM_CHECK_ENABLED else "off"
     ctx.telemetry["has_images"] = bool(files_result.images)
     if _active_doc_telemetry:
         ctx.telemetry["active_document"] = _active_doc_telemetry
@@ -5933,8 +5815,7 @@ async def _handle_submit_inner(
     # context pipeline's classification, so it is applied post-hoc in the
     # dispatcher via gate.apply_intent_veto().
     if agentic_enabled:
-        from core.agentic.gate import evaluate_agentic_gate
-        ctx.gate_task = asyncio.create_task(evaluate_agentic_gate(
+        ctx.gate_task = asyncio.create_task(gate.evaluate_agentic_gate(
             user_text=user_text_ws,
             entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
             model_manager=orchestrator.model_manager,
@@ -5980,13 +5861,12 @@ async def _handle_submit_inner(
         # else duel bailed (timeout/exception) — fall through to agentic/streaming
 
     if agentic_enabled:
-        from core.agentic.gate import evaluate_agentic_gate, apply_intent_veto
         if getattr(ctx, 'gate_task', None) is not None:
             # Gate ran concurrently with prepare_prompt; its ~2s LLM fallback
             # is already paid for by now on all but the fastest prepares.
             _gate_decision = await ctx.gate_task
         else:
-            _gate_decision = await evaluate_agentic_gate(
+            _gate_decision = await gate.evaluate_agentic_gate(
                 user_text=user_text_ws,
                 entity_resolver=getattr(getattr(orchestrator, 'memory_system', None), 'entity_resolver', None),
                 model_manager=orchestrator.model_manager,
@@ -5994,7 +5874,7 @@ async def _handle_submit_inner(
                 intent_info=None,
             )
         # Post-hoc intent veto with the context pipeline's classification.
-        _gate_decision = apply_intent_veto(
+        _gate_decision = gate.apply_intent_veto(
             _gate_decision,
             raw_context.get("intent") if raw_context else None,
             tone_level=raw_context.get("tone_level") if raw_context else None,
@@ -6005,8 +5885,7 @@ async def _handle_submit_inner(
         # not downgrade a recognized pattern request into ordinary web search.
         if not getattr(_gate_decision, "insight_intent", None):
             try:
-                from core.insight.detector import detect_insight_request
-                _explicit_insight = detect_insight_request(user_text)
+                _explicit_insight = detector.detect_insight_request(user_text)
                 if _explicit_insight is not None:
                     _gate_decision.insight_intent = _explicit_insight.model_dump()
                     _gate_decision.should_trigger = True
@@ -6069,8 +5948,7 @@ async def _handle_submit_inner(
         # (gate consumes the slot); anything else drops the offer permanently.
         if not getattr(_gate_decision, "insight_intent", None):
             try:
-                from core.agentic.gate import maybe_arm_insight_offer
-                if maybe_arm_insight_offer(
+                if gate.maybe_arm_insight_offer(
                     user_text,
                     raw_context.get("tone_level") if raw_context else None,
                 ):
@@ -6168,44 +6046,39 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
     Returns an ActionOutcome whose `message` is the assistant-styled chat line.
     Shared by the Gradio Approve button and the FastAPI approve route.
     """
-    from core.actions.types import ActionOutcome
-    from core.actions.audit import ActionAuditLog
-    from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
 
     if not action_id:
-        return ActionOutcome(status="not_found",
+        return types.ActionOutcome(status="not_found",
                              message="Action expired or not found. Ask me again if you still want this.")
 
     # Load proposal from the global store
-    from core.agentic.tools import ToolExecutor
-    store = ToolExecutor._get_pending_actions_store()
+    store = tools.ToolExecutor._get_pending_actions_store()
     proposal = store.approve(action_id)
 
     if not proposal:
-        return ActionOutcome(status="not_found",
+        return types.ActionOutcome(status="not_found",
                              message="Action expired or not found. Ask me again if you still want this.")
 
     # Audit: log approval
-    audit = ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG)
+    audit = _audit.ActionAuditLog(app_config.INTERNET_ACTIONS_AUDIT_LOG)
     audit.log_decision(action_id, approved=True)
 
     # Execute via the executor registry
     try:
-        from core.actions.executors import ActionExecutorRegistry
-        executor = ActionExecutorRegistry()
+        executor = executors.ActionExecutorRegistry()
         result = await executor.execute(proposal)
         audit.log_execution(action_id, result)
 
         if result.success:
             store.mark_executed(action_id, result.message)
-            return _chain_next_pending(store, ActionOutcome(
+            return _chain_next_pending(store, types.ActionOutcome(
                 status="executed",
                 message=f"[ACTION EXECUTED: {proposal.action_type.value}] {result.message}",
                 action_type=proposal.action_type.value,
                 summary=proposal.summary,
             ))
         store.mark_failed(action_id, result.message)
-        return _chain_next_pending(store, ActionOutcome(
+        return _chain_next_pending(store, types.ActionOutcome(
             status="failed",
             message=f"Action failed: {result.message}\n\nWant me to try something else?",
             action_type=proposal.action_type.value,
@@ -6214,7 +6087,7 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
     except Exception as e:
         store.mark_failed(action_id, str(e))
         logger.error(f"[Actions] Execution failed for {action_id}: {e}")
-        return ActionOutcome(
+        return types.ActionOutcome(
             status="failed",
             message=f"Action failed with error: {e}\n\nWant me to try something else?",
             action_type=proposal.action_type.value,
@@ -6224,29 +6097,25 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
 
 async def reject_pending_action_core(action_id: str, orchestrator=None):
     """Reject a pending internet action; transport-agnostic core (see execute_pending_action_core)."""
-    from core.actions.types import ActionOutcome
-    from core.actions.audit import ActionAuditLog
-    from config.app_config import INTERNET_ACTIONS_AUDIT_LOG
 
     if not action_id:
-        return ActionOutcome(status="not_found",
+        return types.ActionOutcome(status="not_found",
                              message="Action already expired or was not found.")
 
-    from core.agentic.tools import ToolExecutor
-    store = ToolExecutor._get_pending_actions_store()
+    store = tools.ToolExecutor._get_pending_actions_store()
     proposal = store.reject(action_id)
 
-    audit = ActionAuditLog(INTERNET_ACTIONS_AUDIT_LOG)
+    audit = _audit.ActionAuditLog(app_config.INTERNET_ACTIONS_AUDIT_LOG)
     audit.log_decision(action_id, approved=False)
 
     if proposal:
-        return _chain_next_pending(store, ActionOutcome(
+        return _chain_next_pending(store, types.ActionOutcome(
             status="rejected",
             message=f"[ACTION REJECTED] Cancelled: {proposal.summary}",
             action_type=proposal.action_type.value,
             summary=proposal.summary,
         ))
-    return ActionOutcome(status="not_found",
+    return types.ActionOutcome(status="not_found",
                          message="Action already expired or was not found.")
 
 
@@ -6255,7 +6124,7 @@ async def execute_pending_action(action_id: str, chat_history: list, orchestrato
 
     Does NOT go through submit_chat — directly modifies chat_history and returns.
     """
-    import gradio as gr
+    import gradio as gr  # lazy import: startup-cost
 
     outcome = await execute_pending_action_core(action_id, orchestrator)
     if action_id:  # legacy behavior: empty id appends nothing
@@ -6265,7 +6134,7 @@ async def execute_pending_action(action_id: str, chat_history: list, orchestrato
 
 async def reject_pending_action(action_id: str, chat_history: list, orchestrator=None):
     """Reject a pending internet action. Called by GUI Reject button."""
-    import gradio as gr
+    import gradio as gr  # lazy import: startup-cost
 
     outcome = await reject_pending_action_core(action_id, orchestrator)
     if action_id:  # legacy behavior: empty id appends nothing

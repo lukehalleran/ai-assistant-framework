@@ -60,7 +60,7 @@ class VisualMemoryStore:
         meta_path: Optional[str] = None,
     ) -> None:
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 VISUAL_MEMORY_INDEX_PATH,
                 VISUAL_MEMORY_META_PATH,
                 VISUAL_MEMORY_SIMILARITY_THRESHOLD,

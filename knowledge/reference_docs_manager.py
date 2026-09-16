@@ -98,7 +98,7 @@ class ReferenceDocsManager:
 
         # Load config values (with fallback defaults)
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 REFERENCE_DOCS_CHUNK_THRESHOLD,
                 REFERENCE_DOCS_MAX_PROMPT,
             )
@@ -115,8 +115,8 @@ class ReferenceDocsManager:
         """Lazy-load ChromaDB store."""
         if self._chroma_store is None:
             try:
-                from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
-                from config.app_config import CHROMA_PATH
+                from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore  # lazy import: cycle
+                from config.app_config import CHROMA_PATH  # lazy import: live-config
                 self._chroma_store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
                 logger.debug("[RefDocs] ChromaDB store lazy-loaded")
             except Exception as e:

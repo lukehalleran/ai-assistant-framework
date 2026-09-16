@@ -87,10 +87,14 @@ print(f"[DEBUG] OPENAI_API_KEY loaded: {'SET' if os.environ.get('OPENAI_API_KEY'
 
 
 import asyncio
+import asyncio as _a2
 import signal
 import threading
 import time
-from datetime import datetime
+import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
+from datetime import datetime, timedelta
 
 # DEBUG: Check environment at the very start of main.py
 print(f"[DEBUG main.py START] SEM_INDEX_PATH = {os.environ.get('SEM_INDEX_PATH', 'NOT SET')}")
@@ -129,6 +133,13 @@ from knowledge.WikiManager import WikiManager
 from processing.gate_system import set_topic_resolver
 from models.tokenizer_manager import TokenizerManager
 from config.app_config import config, CHROMA_PATH, CORPUS_FILE
+from config import app_config
+import core.dependencies as dependencies
+import memory.curation.service as service
+import utils.backup_manager as backup_manager
+import utils.bootstrap as bootstrap
+import utils.daily_notes_generator as daily_notes_generator
+import utils.retrieval_outcome as retrieval_outcome
 
 orchestrator = None  # module-scope
 # Import model manager
@@ -245,9 +256,6 @@ class _SimplePromptBuilder:
 # main.py (updated build_orchestrator function)
 def build_orchestrator():
     """Builds and returns a configured orchestrator"""
-    import time as _time
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from utils.bootstrap import update_splash
 
     _t_total = _time.monotonic()
 
@@ -260,10 +268,9 @@ def build_orchestrator():
     # NOTE: SentenceTransformer model loads must be serialized — PyTorch's
     # Module.to() is not thread-safe when two models load concurrently
     # (causes "Cannot copy out of meta tensor" crash).
-    update_splash("Loading models (parallel)...")
+    bootstrap.update_splash("Loading models (parallel)...")
 
     _results = {}
-    import threading
     _st_load_lock = threading.Lock()
 
     def _init_model_manager():
@@ -315,31 +322,25 @@ def build_orchestrator():
     model_manager.switch_model(target_model)
     logger.info(f"[ModelManager] Active model set to: {model_manager.get_active_model_name()}")
     try:
-        from config.app_config import (
-            BEST_OF_GENERATOR_MODELS as _BO_GENS,
-            BEST_OF_SELECTOR_MODELS as _BO_SEL,
-            BEST_OF_DUEL_MODE as _BO_DUEL,
-        )
-        if _BO_DUEL and isinstance(_BO_GENS, list) and len(_BO_GENS) == 2:
+        if app_config.BEST_OF_DUEL_MODE and isinstance(app_config.BEST_OF_GENERATOR_MODELS, list) and len(app_config.BEST_OF_GENERATOR_MODELS) == 2:
             logger.info(
-                f"[DUEL] configured model_1={_BO_GENS[0]} model_2={_BO_GENS[1]} judge={( _BO_SEL[0] if isinstance(_BO_SEL, list) and _BO_SEL else 'N/A')}"
+                f"[DUEL] configured model_1={app_config.BEST_OF_GENERATOR_MODELS[0]} model_2={app_config.BEST_OF_GENERATOR_MODELS[1]} judge={( app_config.BEST_OF_SELECTOR_MODELS[0] if isinstance(app_config.BEST_OF_SELECTOR_MODELS, list) and app_config.BEST_OF_SELECTOR_MODELS else 'N/A')}"
             )
-        elif isinstance(_BO_GENS, list) and _BO_GENS:
-            logger.info(f"[BESTOF] configured generators={_BO_GENS} selectors={( _BO_SEL if isinstance(_BO_SEL, list) else [])}")
+        elif isinstance(app_config.BEST_OF_GENERATOR_MODELS, list) and app_config.BEST_OF_GENERATOR_MODELS:
+            logger.info(f"[BESTOF] configured generators={app_config.BEST_OF_GENERATOR_MODELS} selectors={( app_config.BEST_OF_SELECTOR_MODELS if isinstance(app_config.BEST_OF_SELECTOR_MODELS, list) else [])}")
     except (ImportError, AttributeError):
         pass
 
     # Register shared dependencies so modules (e.g., TopicManager) can resolve them
     try:
-        from core.dependencies import deps
-        deps.initialize(model_manager)
+        dependencies.deps.initialize(model_manager)
     except Exception as e:
         logger.debug(f"[build_orchestrator] deps.initialize failed or unavailable: {e}")
 
     # ------------------------------------------------------------------ #
     # Phase 3: Light components + gate system (needs model_manager)      #
     # ------------------------------------------------------------------ #
-    update_splash("Initializing components...")
+    bootstrap.update_splash("Initializing components...")
     time_manager = TimeManager()
     tokenizer_manager = TokenizerManager(model_manager=model_manager)
     topic_manager = TopicManager()
@@ -370,7 +371,7 @@ def build_orchestrator():
     # ------------------------------------------------------------------ #
     # Phase 4: Memory coordinator + prompt builder + orchestrator         #
     # ------------------------------------------------------------------ #
-    update_splash("Connecting memory system...")
+    bootstrap.update_splash("Connecting memory system...")
     _t4 = _time.monotonic()
     memory_coordinator = MemoryCoordinator(
         corpus_manager=corpus_manager,
@@ -403,7 +404,7 @@ def build_orchestrator():
     logger.info(f"[startup] Phase 4 (coordinator + builder): {_time.monotonic()-_t4:.2f}s")
     logger.info(f"[startup] TOTAL build_orchestrator: {_time.monotonic()-_t_total:.2f}s")
 
-    update_splash("Building orchestrator...")
+    bootstrap.update_splash("Building orchestrator...")
     return DaemonOrchestrator(
         model_manager=model_manager,
         response_generator=response_generator,
@@ -566,10 +567,8 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     Each phase announces itself with its time bound on the console — a clean
     exit can legitimately take ~5 minutes (60s reflection/facts cap + 240s
     dreaming cap) and a silent gap reads as a hang."""
-    from config.app_config import SHUTDOWN_TASK_TIMEOUT_S as _REFL_S
-    from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S as _DREAM_S
-    print(f"[Shutdown] Session-end processing started — worst case ~{(10 + _REFL_S + _DREAM_S) // 60 + 1:.0f} min "
-          f"(storage drain → reflection/facts ≤{_REFL_S}s → daily note → dreaming ≤{_DREAM_S}s → backup)")
+    print(f"[Shutdown] Session-end processing started — worst case ~{(10 + app_config.SHUTDOWN_TASK_TIMEOUT_S + app_config.SYNTHESIS_DREAM_TIMEOUT_S) // 60 + 1:.0f} min "
+          f"(storage drain → reflection/facts ≤{app_config.SHUTDOWN_TASK_TIMEOUT_S}s → daily note → dreaming ≤{app_config.SYNTHESIS_DREAM_TIMEOUT_S}s → backup)")
 
     # Close persistent sandbox session if active
     try:
@@ -582,7 +581,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     # Wait for any pending background storage tasks first
     print("[Shutdown] 1/6 Draining pending memory writes (≤10s)…")
     try:
-        from gui.handlers import wait_for_pending_storage
+        from gui.handlers import wait_for_pending_storage  # lazy import: cycle
         await wait_for_pending_storage(timeout=10.0)
     except Exception as e:
         logger.warning(f"[Shutdown] wait_for_pending_storage failed: {e}")
@@ -592,8 +591,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     # explicit model_name internally now, so there's no active-model race.
     # Bounded by SHUTDOWN_TASK_TIMEOUT_S so a hung LLM call (e.g. a slow
     # reasoning model) can't block exit — we persist whatever finished.
-    from config.app_config import SHUTDOWN_TASK_TIMEOUT_S
-    print(f"[Shutdown] 2/6 Session reflection + fact extraction (≤{SHUTDOWN_TASK_TIMEOUT_S}s)…")
+    print(f"[Shutdown] 2/6 Session reflection + fact extraction (≤{app_config.SHUTDOWN_TASK_TIMEOUT_S}s)…")
     try:
         _refl, _proc = await asyncio.wait_for(
             asyncio.gather(
@@ -606,7 +604,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
                 ),
                 return_exceptions=True,
             ),
-            timeout=SHUTDOWN_TASK_TIMEOUT_S,
+            timeout=app_config.SHUTDOWN_TASK_TIMEOUT_S,
         )
         if isinstance(_refl, Exception):
             logger.error(f"[Shutdown] Reflection failed: {_refl}")
@@ -619,17 +617,14 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     except asyncio.TimeoutError:
         logger.warning(
             f"[Shutdown] reflection/summary tasks exceeded "
-            f"{SHUTDOWN_TASK_TIMEOUT_S}s — proceeding with whatever completed"
+            f"{app_config.SHUTDOWN_TASK_TIMEOUT_S}s — proceeding with whatever completed"
         )
 
     # Generate today's daily note from this session's conversations
     print("[Shutdown] 3/6 Daily note…")
     try:
-        from config.app_config import DAILY_NOTES_ENABLED
-        if DAILY_NOTES_ENABLED:
-            from utils.daily_notes_generator import DailyNotesGenerator
-            from datetime import date
-            gen = DailyNotesGenerator(model_manager=orchestrator.model_manager)
+        if app_config.DAILY_NOTES_ENABLED:
+            gen = daily_notes_generator.DailyNotesGenerator(model_manager=orchestrator.model_manager)
             result = await gen.generate_for_date(date.today())
             if result.success:
                 logger.info(f"[Shutdown] Daily note generated ({result.conversation_count} conversations)")
@@ -646,18 +641,17 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     # alongside reflection + fact extraction, so before this split it was
     # cancelled mid-flight on every exit and never persisted a candidate.
     try:
-        from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S
-        print(f"[Shutdown] 4/6 Synthesis dreaming (≤{SYNTHESIS_DREAM_TIMEOUT_S}s — the embedding "
+        print(f"[Shutdown] 4/6 Synthesis dreaming (≤{app_config.SYNTHESIS_DREAM_TIMEOUT_S}s — the embedding "
               f"'Batches' bar below may sit at 0% for a while)…")
         await asyncio.wait_for(
             orchestrator.memory_system.run_synthesis_dreaming(),
-            timeout=SYNTHESIS_DREAM_TIMEOUT_S,
+            timeout=app_config.SYNTHESIS_DREAM_TIMEOUT_S,
         )
         logger.info("[Shutdown] Synthesis dreaming completed")
         print("[Shutdown] 4/6 Synthesis dreaming done.")
     except asyncio.TimeoutError:
         logger.warning(
-            f"[Shutdown] Synthesis dreaming exceeded {SYNTHESIS_DREAM_TIMEOUT_S}s — skipped"
+            f"[Shutdown] Synthesis dreaming exceeded {app_config.SYNTHESIS_DREAM_TIMEOUT_S}s — skipped"
         )
     except Exception as e:
         logger.warning(f"[Shutdown] Synthesis dreaming failed (non-fatal): {e}")
@@ -668,23 +662,21 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     # Runs in-process against the daemon's OWN store objects, so the external
     # -script clobber problem (08-05 profile incident) cannot occur.
     try:
-        from config.app_config import CURATION_ENABLED, CURATION_SCAN_TIMEOUT_S
-        if CURATION_ENABLED:
-            from memory.curation.service import get_engine, init_engine
-            engine = get_engine()
+        if app_config.CURATION_ENABLED:
+            engine = service.get_engine()
             if engine is None:
                 ms = orchestrator.memory_system
-                engine = init_engine(
+                engine = service.init_engine(
                     chroma_store=getattr(ms, "chroma_store", None),
                     user_profile=getattr(ms, "user_profile", None),
                     corpus_manager=getattr(ms, "corpus_manager", None),
                     graph_memory=getattr(ms, "graph_memory", None),
                 )
             if engine is not None:
-                print(f"[Shutdown] 5/6 Curation scan (≤{CURATION_SCAN_TIMEOUT_S:.0f}s)…")
+                print(f"[Shutdown] 5/6 Curation scan (≤{app_config.CURATION_SCAN_TIMEOUT_S:.0f}s)…")
                 _rep = await asyncio.wait_for(
                     asyncio.to_thread(engine.run_scan),
-                    timeout=CURATION_SCAN_TIMEOUT_S,
+                    timeout=app_config.CURATION_SCAN_TIMEOUT_S,
                 )
                 logger.info(
                     f"[Shutdown] Curation scan: {_rep.proposals_queued} queued, "
@@ -700,11 +692,9 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     # copies (a few MB of JSON always; the ~600MB chroma tree only when the
     # newest chroma backup is older than BACKUP_MIN_INTERVAL_HOURS).
     try:
-        from config.app_config import BACKUP_ENABLED
-        if BACKUP_ENABLED:
+        if app_config.BACKUP_ENABLED:
             print("[Shutdown] 6/6 Backing up memory stores…")
-            from utils.backup_manager import run_shutdown_backup
-            _bk = await asyncio.to_thread(run_shutdown_backup)
+            _bk = await asyncio.to_thread(backup_manager.run_shutdown_backup)
             if _bk.ok and _bk.path:
                 print(f"[Shutdown] 6/6 Backup written: {_bk.path}"
                       f"{' (+chroma)' if _bk.chroma_included else ''} — exiting.")
@@ -768,7 +758,7 @@ def _idle_monitor_thread():
         # B6 S3 (2026-09-10): a long in-flight turn is activity, not idleness —
         # but only up to the idle timeout itself, so a hung turn cannot block
         # the idle shutdown forever (pre-B6 behaviour for a hang is kept).
-        from gui.handlers import has_inflight_turns
+        from gui.handlers import has_inflight_turns  # lazy import: cycle
         if has_inflight_turns(max_age_s=_idle_timeout_minutes * 60):
             continue
 
@@ -1331,15 +1321,13 @@ if __name__ == "__main__":
                 consolidator = MemoryConsolidator(model_manager)
 
                 # Check Obsidian sources (3-tier: monthly + weekly + daily)
-                from config.app_config import NARRATIVE_MONTHLIES_COUNT, NARRATIVE_WEEKLIES_COUNT, NARRATIVE_DAILIES_COUNT
 
                 print("Checking Obsidian vault...")
-                from utils.retrieval_outcome import RetrievalError
                 try:
-                    obsidian_monthlies = consolidator._read_obsidian_monthly_summaries(limit=NARRATIVE_MONTHLIES_COUNT)
-                    obsidian_weeklies = consolidator._read_obsidian_weekly_summaries(limit=NARRATIVE_WEEKLIES_COUNT)
-                    obsidian_dailies = consolidator._read_obsidian_daily_notes(limit=NARRATIVE_DAILIES_COUNT)
-                except RetrievalError as e:
+                    obsidian_monthlies = consolidator._read_obsidian_monthly_summaries(limit=app_config.NARRATIVE_MONTHLIES_COUNT)
+                    obsidian_weeklies = consolidator._read_obsidian_weekly_summaries(limit=app_config.NARRATIVE_WEEKLIES_COUNT)
+                    obsidian_dailies = consolidator._read_obsidian_daily_notes(limit=app_config.NARRATIVE_DAILIES_COUNT)
+                except retrieval_outcome.RetrievalError as e:
                     print(f"\n✗ Could not read Obsidian notes ({e.source}: {e.reason})")
                     return False
                 print(f"  - Obsidian monthly summaries: {len(obsidian_monthlies)}")
@@ -1348,7 +1336,6 @@ if __name__ == "__main__":
 
                 # Get corpus summaries as fallback
                 print("\nChecking corpus summaries (fallback)...")
-                from datetime import datetime, timedelta
                 all_summaries = corpus.get_summaries(count=50)
 
                 now = datetime.now()
@@ -1722,11 +1709,9 @@ if __name__ == "__main__":
                     # LLM filter needs its own (longer) cap, else it's cancelled
                     # mid-flight and never persists a candidate. Self-gating.
                     try:
-                        from config.app_config import SYNTHESIS_DREAM_TIMEOUT_S
-                        import asyncio as _a2
                         await _a2.wait_for(
                             orchestrator.memory_system.run_synthesis_dreaming(),
-                            timeout=SYNTHESIS_DREAM_TIMEOUT_S,
+                            timeout=app_config.SYNTHESIS_DREAM_TIMEOUT_S,
                         )
                     except Exception as e:
                         logger.warning(f"[Shutdown] Synthesis dreaming failed (non-fatal): {e}")

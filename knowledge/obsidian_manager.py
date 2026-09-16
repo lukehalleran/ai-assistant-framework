@@ -38,6 +38,7 @@ Features:
 
 import os
 import re
+import re as _re
 import logging
 import hashlib
 import base64
@@ -80,7 +81,7 @@ class ObsidianManager:
 
         # Load config values
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 OBSIDIAN_VAULT_PATH,
                 OBSIDIAN_CHUNK_THRESHOLD,
                 OBSIDIAN_MAX_NOTES_PROMPT,
@@ -101,8 +102,8 @@ class ObsidianManager:
         """Lazy-load ChromaDB store."""
         if self._chroma_store is None:
             try:
-                from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
-                from config.app_config import CHROMA_PATH
+                from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore  # lazy import: cycle
+                from config.app_config import CHROMA_PATH  # lazy import: live-config
                 self._chroma_store = MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
                 logger.debug("[Obsidian] ChromaDB store lazy-loaded")
             except Exception as e:
@@ -823,8 +824,7 @@ class ObsidianManager:
             # overlap, below exact-title matches.
             proper_noun_pats = []
             try:
-                import re as _re
-                from utils.query_checker import extract_rare_proper_nouns
+                from utils.query_checker import extract_rare_proper_nouns  # lazy import: cycle
                 proper_noun_pats = [
                     _re.compile(r"\b" + _re.escape(t) + r"\b", _re.IGNORECASE)
                     for t in extract_rare_proper_nouns(query)

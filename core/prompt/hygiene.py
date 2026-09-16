@@ -90,7 +90,7 @@ class ContentHygiene:
         reasonable limits for each content type.
         """
         # Import caps here to avoid circular import at module level
-        from .builder import PROMPT_MAX_PERSONAL_NOTES
+        from .builder import PROMPT_MAX_PERSONAL_NOTES  # lazy import: cycle
 
         # Debug: Log that we're starting dedup
         section_counts = {k: len(v) if isinstance(v, list) else 1 for k, v in context.items() if v}

@@ -72,9 +72,11 @@ import re
 import numpy as np
 from enum import Enum
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from utils.logging_utils import get_logger
 from utils.trigger_match import compile_keyword_matcher, is_negated
+import utils.adaptive_exemplars as adaptive_exemplars
 
 logger = get_logger("tone_detector")
 
@@ -713,7 +715,7 @@ def _get_embedder(model_manager=None):
 
     # Fallback: use cached embedder to avoid re-loading
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: layering
         _embedder_cache = ModelManager._get_cached_embedder()
         logger.info("[ToneDetector] Using cached embedder from ModelManager")
         return _embedder_cache
@@ -725,16 +727,14 @@ def _get_embedder(model_manager=None):
 def _get_learned_exemplars(level: str) -> list:
     """Learned per-user exemplars for a level (adaptive store; [] on failure)."""
     try:
-        from utils.adaptive_exemplars import get_store
-        return get_store().get_learned("tone", level)
+        return adaptive_exemplars.get_store().get_learned("tone", level)
     except Exception:
         return []
 
 
 def _adaptive_store_version() -> int:
     try:
-        from utils.adaptive_exemplars import get_store
-        return get_store().version
+        return adaptive_exemplars.get_store().version
     except Exception:
         return -1
 
@@ -773,8 +773,7 @@ def _get_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
     for level, examples in CRISIS_EXEMPLARS.items():
         try:
             merged = list(examples) + _get_learned_exemplars(level)
-            from utils.adaptive_exemplars import encode_texts_cached
-            embeddings = encode_texts_cached(
+            embeddings = adaptive_exemplars.encode_texts_cached(
                 embedder, merged, _exemplar_text_emb_cache
             )
             # Compute mean embedding as the prototype
@@ -808,8 +807,7 @@ def _learn_tone_exemplar(message: str, level_key: str, source: str,
     if level_key not in ("concern", "medium", "high"):
         return
     try:
-        from utils.adaptive_exemplars import get_store
-        get_store().record(
+        adaptive_exemplars.get_store().record(
             "tone", level_key, message, source,
             embedder=_get_embedder(model_manager),
             seed_texts=CRISIS_EXEMPLARS.get(level_key, []),
@@ -986,7 +984,7 @@ def _heavy_row_is_distress_evidence(turn: dict) -> bool:
         )
         return False
 
-    # lazy import: call-time patch point — tests monkeypatch
+    # lazy import: patch-point — tests monkeypatch
     # utils.query_checker.heavy_keyword_hits/strip_code_shaped_lines
     from utils.query_checker import (
         heavy_keyword_hits,
@@ -1061,8 +1059,7 @@ def _recent_distress_from_history(conversation_history: Optional[List[dict]]) ->
     if not conversation_history:
         return False
     try:
-        from datetime import datetime, timedelta
-        from config.app_config import TONE_STICKINESS_MAX_GAP_MINUTES
+        from config.app_config import TONE_STICKINESS_MAX_GAP_MINUTES  # lazy import: live-config
 
         def _fresh(turn: dict) -> bool:
             ts = turn.get("timestamp") if isinstance(turn, dict) else None
@@ -1721,7 +1718,7 @@ def _is_task_directive_signal(message: str) -> bool:
         # core.actions.registry at tone_detector module load time — the
         # same convention already used a few lines up for
         # heavy_keyword_hits/strip_code_shaped_lines.
-        from utils.query_checker import is_task_directive
+        from utils.query_checker import is_task_directive  # lazy import: cycle
         return bool(is_task_directive(message))
     except Exception:
         return False

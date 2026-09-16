@@ -40,9 +40,12 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Protocol, Union, TYPE_CHECKING
 from enum import Enum
 import asyncio
+import json as _json
 import logging
 import os
+import os as _os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from config.app_config import (
     USE_STM_PASS,
@@ -51,9 +54,11 @@ from config.app_config import (
     REWRITE_TIMEOUT_S,
     INTENT_ENABLED,
 )
+from config import app_config
 from core.intent_classifier import IntentClassifier, IntentResult, IntentType
 from utils.turn_progress import emit as _progress_emit
 from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
+import utils.safe_json as safe_json
 
 if TYPE_CHECKING:
     from utils.topic_manager import TopicManager
@@ -218,7 +223,7 @@ def stm_skip_shape(user_input: str, is_small_talk: bool = False, max_words: int 
     if is_small_talk:
         return True
     try:
-        from utils.query_checker import is_greeting_opener, is_casual_acknowledgment
+        from utils.query_checker import is_greeting_opener, is_casual_acknowledgment  # lazy import: cycle
         text = user_input or ""
         if len(text.split()) > max_words:
             return False
@@ -606,7 +611,7 @@ class ContextPipeline:
             # drove a false [THREAD CONTEXT] shift assertion and a wrong
             # response plan). Inheriting keeps topic, thread continuity, and
             # the planner's Topics: signal aligned with the real referent.
-            from utils.query_checker import (
+            from utils.query_checker import (  # lazy import: cycle
                 is_anaphoric_continuation,
                 is_continuation_answer,
                 is_fragment_continuation,
@@ -706,10 +711,7 @@ class ContextPipeline:
             Tuple of (ToneLevel, EmotionalContext)
         """
         try:
-            # lazy import: patch point (tone tests monkeypatch
-            # utils.emotional_context.analyze_emotional_context; the call-time
-            # import is what makes the patch visible here)
-            from utils.emotional_context import analyze_emotional_context
+            from utils.emotional_context import analyze_emotional_context  # lazy import: cycle, patch-point (tone tests monkeypatch analyze_emotional_context; the call-time import is what makes the patch visible here)
 
             # Get recent memories for context if memory_system available
             recent_memories = []
@@ -737,7 +739,6 @@ class ContextPipeline:
 
             # Analyze emotional context. previous_tone carries the prior turn's
             # crisis level so distress is sticky across short/terse messages.
-            import os as _os
             _floor_chain_max = int(_os.getenv("TONE_FLOOR_CHAIN_MAX", "3"))
             _prev_tone = self._last_tone_level
             _floor_budget_left = self._floor_chain < _floor_chain_max
@@ -821,17 +822,13 @@ class ContextPipeline:
         or string for previous_tone).
         """
         try:
-            import json as _json
-            from datetime import datetime, timedelta
-            from pathlib import Path
-            from config.app_config import TONE_STICKINESS_MAX_GAP_MINUTES
             p = Path(self._TONE_STATE_PATH)
             if not p.exists():
                 return None
             state = _json.loads(p.read_text())
             level = str(state.get("level", "") or "")
             ts = datetime.fromisoformat(str(state.get("ts", "")))
-            if datetime.now() - ts > timedelta(minutes=TONE_STICKINESS_MAX_GAP_MINUTES):
+            if datetime.now() - ts > timedelta(minutes=app_config.TONE_STICKINESS_MAX_GAP_MINUTES):
                 return None
             low = level.lower()
             if not any(m in low for m in self._ELEVATED_TONE_MARKERS):
@@ -859,9 +856,7 @@ class ContextPipeline:
     def _persist_tone(self, level_str: str, trigger: str = "") -> None:
         """Write this turn's tone level + trigger + timestamp (atomic, best-effort)."""
         try:
-            from datetime import datetime
-            from utils.safe_json import atomic_write_json
-            atomic_write_json(
+            safe_json.atomic_write_json(
                 self._TONE_STATE_PATH,
                 {"level": str(level_str), "trigger": str(trigger or ""),
                  "ts": datetime.now().isoformat()},
@@ -885,15 +880,13 @@ class ContextPipeline:
         if not recent_memories:
             return True   # no prior turn on record → treat as a fresh session
         try:
-            from datetime import datetime, timedelta
-            from config.app_config import TONE_STICKINESS_MAX_GAP_MINUTES
             newest = recent_memories[0]
             ts = newest.get("timestamp") if isinstance(newest, dict) else None
             if isinstance(ts, str):
                 ts = datetime.fromisoformat(ts)
             if not isinstance(ts, datetime):
                 return False
-            return (datetime.now() - ts) > timedelta(minutes=TONE_STICKINESS_MAX_GAP_MINUTES)
+            return (datetime.now() - ts) > timedelta(minutes=app_config.TONE_STICKINESS_MAX_GAP_MINUTES)
         except Exception as e:
             logger.debug(f"[ContextPipeline] tone-stickiness gap check failed: {e}")
             return False
@@ -940,7 +933,7 @@ class ContextPipeline:
             Tuple of (is_heavy_topic, extracted_facts, query_analysis)
         """
         try:
-            from utils.query_checker import analyze_query_async, analyze_query
+            from utils.query_checker import analyze_query_async, analyze_query  # lazy import: cycle
 
             # First, get basic query analysis (synchronous, heuristic only)
             query_analysis = analyze_query(query, self.model_manager)

@@ -590,7 +590,7 @@ class ModelManager:
             logger.warning("Failed to load SentenceTransformer, using stub embedder")
             class _StubEmbedder:
                 def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False):
-                    import numpy as np
+                    import numpy as np  # lazy import: startup-cost
                     n = len(texts or [])
                     return np.zeros((n, 384), dtype=np.float32)
 
@@ -618,7 +618,7 @@ class ModelManager:
 
         try:
             logger.debug(f"Loading CrossEncoder model (first time only): {model_name}")
-            from sentence_transformers import CrossEncoder
+            from sentence_transformers import CrossEncoder  # lazy import: startup-cost
 
             cross_encoder = CrossEncoder(model_name)
 
@@ -633,7 +633,7 @@ class ModelManager:
             # Return a stub cross-encoder that always returns neutral scores
             class _StubCrossEncoder:
                 def predict(self, pairs, batch_size=32, show_progress_bar=False):
-                    import numpy as np
+                    import numpy as np  # lazy import: startup-cost
                     n = len(pairs or [])
                     return np.ones(n, dtype=np.float32) * 0.5  # Neutral score
 

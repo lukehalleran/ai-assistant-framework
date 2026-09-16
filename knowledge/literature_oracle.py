@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field, field_validator
 
+import knowledge.web_search_manager as web_search_manager
 from utils.logging_utils import get_logger
 
 log = get_logger("literature_oracle")
@@ -397,7 +398,7 @@ class LiteratureOracle:
     def model_name(self) -> str:
         if self._model_name:
             return self._model_name
-        from config.app_config import SYNTHESIS_COHERENCE_MODEL
+        from config.app_config import SYNTHESIS_COHERENCE_MODEL  # lazy import: live-config
         return SYNTHESIS_COHERENCE_MODEL
 
     # ------------------------------------------------------------------ [Q]
@@ -452,7 +453,7 @@ class LiteratureOracle:
     # ------------------------------------------------------------------ [R]
     async def retrieve_arxiv(self, query: str) -> List[EvidenceItem]:
         """arXiv API search; polite (>=ORACLE_ARXIV_DELAY_S between requests, serialized)."""
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         url = (
             f"{_ARXIV_API}?search_query=all:{urllib.parse.quote(query)}"
@@ -505,8 +506,7 @@ class LiteratureOracle:
         """Tavily via WebSearchManager (QUICK default). Returns (items, credits_used)."""
         if self.wsm is None:
             return [], 0.0
-        from knowledge.web_search_manager import WebSearchDepth
-        depth = depth or WebSearchDepth.QUICK
+        depth = depth or web_search_manager.WebSearchDepth.QUICK
         try:
             result = await self.wsm.search(
                 query, depth=depth, max_results=ORACLE_TAVILY_MAX_RESULTS, use_cache=True,
@@ -518,7 +518,7 @@ class LiteratureOracle:
         if getattr(result, "error", None):
             log.warning(f"[oracle] Tavily returned error: {result.error}")
             return [], 0.0
-        source = "tavily_extract" if depth != WebSearchDepth.QUICK else "tavily_quick"
+        source = "tavily_extract" if depth != web_search_manager.WebSearchDepth.QUICK else "tavily_quick"
         items = [
             EvidenceItem(
                 source=source, url=p.url, title=p.title or "",
@@ -539,11 +539,10 @@ class LiteratureOracle:
         never crowded out — textbook identities live in books/reviews/Wikipedia, which
         only the Tavily channel carries (observed in the first live smoke: 4 arXiv
         queries filled all 8 slots and the paid-for web results were dropped)."""
-        from knowledge.web_search_manager import _canonical_url
         by_url: Dict[str, EvidenceItem] = {}
         for lst in lists:
             for item in lst:
-                key = _canonical_url(item.url)
+                key = web_search_manager._canonical_url(item.url)
                 prev = by_url.get(key)
                 if prev is None or (prev.source == "tavily_quick" and item.source == "tavily_extract"):
                     by_url[key] = item
@@ -604,8 +603,6 @@ class LiteratureOracle:
         DOCUMENTED_* survives only with >=1 citation where: url matches a retrieved item
         (canonical form), passage <= 40 words, and passage is a verbatim (normalized)
         substring of that item's title+text."""
-        from knowledge.web_search_manager import _canonical_url
-
         verdict_str = _parse_verdict_string(parsed.get("verdict"))
         if verdict_str is None:
             return OracleVerdict.UNCERTAIN, [], True
@@ -613,14 +610,14 @@ class LiteratureOracle:
         if verdict not in (OracleVerdict.DOCUMENTED_EXACT, OracleVerdict.DOCUMENTED_ADJACENT):
             return verdict, [], False
 
-        by_url = {_canonical_url(e.url): e for e in evidence}
+        by_url = {web_search_manager._canonical_url(e.url): e for e in evidence}
         valid: List[Citation] = []
         for c in parsed.get("citations", []) or []:
             if not isinstance(c, dict):
                 continue
             url = str(c.get("url", ""))
             passage = str(c.get("supporting_passage", ""))
-            item = by_url.get(_canonical_url(url))
+            item = by_url.get(web_search_manager._canonical_url(url))
             if item is None:
                 continue
             if not passage or len(passage.split()) > ORACLE_PASSAGE_MAX_WORDS:
@@ -709,9 +706,8 @@ class LiteratureOracle:
             and self.wsm is not None
         ):
             t0 = time.monotonic()
-            from knowledge.web_search_manager import WebSearchDepth
             extra, spent = await self.retrieve_tavily(
-                plan.queries[plan.canonical_idx], depth=WebSearchDepth.STANDARD
+                plan.queries[plan.canonical_idx], depth=web_search_manager.WebSearchDepth.STANDARD
             )
             credits += spent
             evidence = self.merge_evidence(evidence, extra)
@@ -737,7 +733,7 @@ class LiteratureOracle:
         # Aux signals: NEVER affect the verdict; default off (wiki-FAISS memory safety).
         if self.enable_aux:
             try:
-                from knowledge.doc_cooccurrence import doc_cooccurrence
+                from knowledge.doc_cooccurrence import doc_cooccurrence  # lazy import: startup-cost
                 r = doc_cooccurrence(a, b, depth=40)
                 record.aux_doc_cooccurrence = {
                     "shared": r.shared, "mention": r.mention, "known": r.known,

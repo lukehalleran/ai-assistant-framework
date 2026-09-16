@@ -139,7 +139,7 @@ async def decompose(
 ) -> FacetPlan:
     """Decompose the theme into a FacetPlan. Never raises — falls back to a
     deterministic single-facet plan on any LLM/parse failure."""
-    from config.app_config import INSIGHT_DECOMPOSE_MAX_TOKENS, INSIGHT_MAX_FACETS
+    from config.app_config import INSIGHT_DECOMPOSE_MAX_TOKENS, INSIGHT_MAX_FACETS  # lazy import: live-config
 
     is_assessment = intent.kind == "insight_assessment"
     prompt = _DECOMPOSE_PROMPT.format(

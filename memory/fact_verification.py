@@ -22,6 +22,7 @@ from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
+import utils.temporal_resolver as temporal_resolver
 
 logger = get_logger("fact_verification")
 
@@ -140,7 +141,7 @@ class FactVerifier:
         # ── Conflict detected ───────────────────────────────────────
 
         # User-stated / corrected facts with high confidence → trust user
-        from config.app_config import FACT_VERIFICATION_USER_TRUST_THRESHOLD
+        from config.app_config import FACT_VERIFICATION_USER_TRUST_THRESHOLD  # lazy import: live-config
         user_trust_sources = {"user_stated", "user_corrected", "correction"}
         if source in user_trust_sources and confidence >= FACT_VERIFICATION_USER_TRUST_THRESHOLD:
             return VerificationResult(
@@ -161,7 +162,7 @@ class FactVerifier:
             )
 
         # LLM adjudication (when available and enabled)
-        from config.app_config import FACT_VERIFICATION_LLM_ENABLED
+        from config.app_config import FACT_VERIFICATION_LLM_ENABLED  # lazy import: live-config
         if self._model_manager and FACT_VERIFICATION_LLM_ENABLED:
             return await self._adjudicate_conflict(
                 subject, predicate, object_val, fact_text,
@@ -199,7 +200,7 @@ class FactVerifier:
         """Load ephemeral relation names (lazy, cached)."""
         if self._ephemeral is None:
             try:
-                from config.app_config import PROFILE_EPHEMERAL_RELATIONS
+                from config.app_config import PROFILE_EPHEMERAL_RELATIONS  # lazy import: live-config
                 self._ephemeral = frozenset(
                     r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS
                 )
@@ -268,10 +269,9 @@ class FactVerifier:
             # Extract days from the new fact
             new_days = set()
             obj_lower = object_val.lower()
-            from utils.temporal_resolver import expand_day_abbreviations
             parts = obj_lower.split()
             if parts:
-                new_days = set(expand_day_abbreviations(parts[0]))
+                new_days = set(temporal_resolver.expand_day_abbreviations(parts[0]))
 
             superseded: List[ConflictCandidate] = []
             for r in results:
@@ -315,7 +315,7 @@ class FactVerifier:
         self, subject: str, predicate: str, fact_text: str,
     ) -> List[ConflictCandidate]:
         """Query ChromaDB facts collection for potential conflicts."""
-        from config.app_config import FACT_VERIFICATION_MAX_CANDIDATES
+        from config.app_config import FACT_VERIFICATION_MAX_CANDIDATES  # lazy import: live-config
 
         candidates: List[ConflictCandidate] = []
         try:
@@ -330,7 +330,7 @@ class FactVerifier:
                 n_results=min(FACT_VERIFICATION_MAX_CANDIDATES, coll.count()),
             )
 
-            from memory.cross_deduplicator import CrossCollectionDeduplicator
+            from memory.cross_deduplicator import CrossCollectionDeduplicator  # lazy import: startup-cost (would newly load: numpy)
 
             for doc in results:
                 doc_meta = doc.get("metadata", {})
@@ -373,7 +373,7 @@ class FactVerifier:
         candidates: List[ConflictCandidate],
     ) -> VerificationResult:
         """Use a minimal LLM prompt to decide A (update), B (coexist), C (reject)."""
-        from config.app_config import FACT_VERIFICATION_MODEL
+        from config.app_config import FACT_VERIFICATION_MODEL  # lazy import: live-config
 
         existing_lines = []
         for c in candidates[:3]:  # limit context

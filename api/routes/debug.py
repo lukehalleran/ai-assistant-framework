@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from api.schemas import DebugRecordsResponse
+from config import app_config
 from utils.logging_utils import get_logger
 from utils.privacy_redaction import build_redacted_prompt_export, redact_data
 
@@ -61,12 +62,10 @@ async def debug_records(request: Request):
 @router.get("/debug/prompt", response_class=PlainTextResponse)
 async def export_prompt(request: Request, index: int = -1):
     """Full prompt of one turn as a downloadable TXT (Gradio download button)."""
-    from config.app_config import DAEMON_MODE
-
     record = _record_at(request, index)
     content = build_redacted_prompt_export(
         record,
-        include_system=DAEMON_MODE == "dev",
+        include_system=app_config.DAEMON_MODE == "dev",
     )
 
     filename = f"daemon_prompt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"

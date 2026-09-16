@@ -1,6 +1,9 @@
 """Model listing + active-model switch (mirrors the Gradio selector in gui/launch.py)."""
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request
+import yaml
 
 from api.schemas import ActiveModelRequest, ModelListResponse
 from utils.logging_utils import get_logger
@@ -41,8 +44,6 @@ async def set_active_model(req: ActiveModelRequest, request: Request):
 
     # Persist to config.yaml (same best-effort pattern as the Gradio selector)
     try:
-        import yaml
-        from pathlib import Path
         cfg_path = Path("config") / "config.yaml"
         data = {}
         if cfg_path.exists():

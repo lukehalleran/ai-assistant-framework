@@ -52,7 +52,7 @@ async def search_gmail_contacts(
     missing scope, API error, or no results.
     """
     try:
-        from config.app_config import GOOGLE_GMAIL_SEARCH_ENABLED
+        from config.app_config import GOOGLE_GMAIL_SEARCH_ENABLED  # lazy import: live-config
     except ImportError:
         return []
 
@@ -63,7 +63,7 @@ async def search_gmail_contacts(
     if normalized in _cache and (time.time() - _cache_ts.get(normalized, 0)) < _CACHE_TTL_SECONDS:
         return _cache[normalized][:max_results]
 
-    from core.actions.google_auth import get_google_auth
+    from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
     if auth is None or not auth.is_authenticated:
@@ -79,7 +79,7 @@ async def search_gmail_contacts(
         return []
 
     try:
-        import httpx
+        import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
         # Search for messages matching the query
         async with httpx.AsyncClient() as client:
@@ -117,7 +117,7 @@ async def search_gmail_contacts(
         # Get the user's own email to exclude from results
         _own_email = ""
         try:
-            from config.app_config import INTERNET_ACTIONS_SMTP_FROM, INTERNET_ACTIONS_SMTP_USER
+            from config.app_config import INTERNET_ACTIONS_SMTP_FROM, INTERNET_ACTIONS_SMTP_USER  # lazy import: live-config
             _own_email = (INTERNET_ACTIONS_SMTP_FROM or INTERNET_ACTIONS_SMTP_USER or "").lower()
         except ImportError:
             pass
@@ -168,7 +168,7 @@ async def _fetch_message_headers(
     """
     async with sem:
         try:
-            import httpx
+            import httpx  # lazy import: patch-point (tests/unit/test_audit0831_fixes.py:653)
 
             async with httpx.AsyncClient() as client:
                 resp = await client.get(

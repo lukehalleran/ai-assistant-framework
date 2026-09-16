@@ -467,7 +467,7 @@ class TestRetryTurn:
         # normalized user_text_ws (a client soft line-wrap must not defeat
         # is_action_retry_request) — same relative ordering, updated text.
         i_retry = src.index("_retry_target = _failed_action_to_retry(user_text_ws)")
-        i_gate = src.index("ctx.gate_task = asyncio.create_task(evaluate_agentic_gate(")
+        i_gate = src.index("ctx.gate_task = asyncio.create_task(gate.evaluate_agentic_gate(")  # 2026-09-16: gate imported as a module alias (import hygiene)
         assert i_retry < i_gate
 
 

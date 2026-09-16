@@ -21,14 +21,14 @@ logger = get_logger("email_registry")
 
 def _build_gmail() -> EmailProvider:
     """Factory for Gmail provider."""
-    from core.email.gmail_provider import GmailProvider
+    from core.email.gmail_provider import GmailProvider  # lazy import: cycle
 
     return GmailProvider()
 
 
 def _build_outlook() -> EmailProvider:
     """Factory for Outlook provider."""
-    from core.email.outlook_provider import OutlookProvider
+    from core.email.outlook_provider import OutlookProvider  # lazy import: cycle
 
     return OutlookProvider()
 
@@ -39,7 +39,7 @@ def _gmail_enabled() -> bool:
     Uses function-body import for live-config doctrine.
     """
     try:
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             EMAIL_INTEGRATION_ENABLED,
             EMAIL_GMAIL_ENABLED,
         )
@@ -54,7 +54,7 @@ def _outlook_enabled() -> bool:
     Uses function-body import for live-config doctrine.
     """
     try:
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             EMAIL_INTEGRATION_ENABLED,
             EMAIL_OUTLOOK_ENABLED,
         )
