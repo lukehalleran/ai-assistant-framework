@@ -12,6 +12,9 @@ pytest-cov==7.0.0
 # Code quality and linting
 # Bug-focused rule floor configured in pyproject.toml [tool.ruff] — enforced in CI.
 ruff>=0.14.0
+# Static type-checking lane (docs/PLAN_20260916_typecheck_lane.md); version pinned because the
+# baseline config/typecheck_baseline.json is the output of exactly this version.
+pyright==1.1.403
 # (Add these if/when needed)
 # black>=23.0.0
 # mypy>=1.0.0
