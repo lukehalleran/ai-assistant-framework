@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from knowledge.synthesis_models import SynthesisCandidate
 import memory.user_profile_schema as user_profile_schema
+from utils.async_results import classify_gather_results
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -192,10 +193,10 @@ class SynthesisGenerator:
         candidates = []
         errors = 0
         no_connections = 0
-        for r in results:
-            if isinstance(r, Exception):
+        for _i, r, err in classify_gather_results(results):
+            if err is not None:
                 errors += 1
-                logger.debug(f"[SynthesisGenerator] Articulation error: {r}")
+                logger.debug(f"[SynthesisGenerator] Articulation error: {err!r}")
             elif r is None:
                 no_connections += 1
             else:
