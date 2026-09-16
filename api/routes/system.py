@@ -2,12 +2,13 @@
 
 import json
 import os
+import threading
+import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 
-from utils.logging_utils import get_logger
-import asyncio
 import knowledge.obsidian_manager as obsidian_manager
+from utils.logging_utils import get_logger
 
 logger = get_logger("api_routes")
 
@@ -45,35 +46,97 @@ async def status(request: Request):
     return out
 
 
+def _sync_message(result) -> str:
+    if result.errors:
+        return f"⚠️ Sync completed with errors: {', '.join(result.errors)}"
+    if result.embedded_files == 0 and result.updated_files == 0 and result.skipped_files > 0:
+        return f"✓ All {result.skipped_files} notes unchanged"
+    parts = []
+    if result.embedded_files:
+        parts.append(f"{result.embedded_files} new")
+    if result.updated_files:
+        parts.append(f"{result.updated_files} updated")
+    return (f"✅ Synced {', '.join(parts)} notes ({result.total_chunks} chunks) "
+            f"in {result.duration_seconds:.1f}s. Skipped {result.skipped_files} unchanged.")
+
+
+def _sync_result_payload(result) -> dict:
+    return {
+        "embedded_files": result.embedded_files,
+        "updated_files": result.updated_files,
+        "skipped_files": result.skipped_files,
+        "processed_files": result.processed_files,
+        "total_files": result.total_files,
+        "total_chunks": result.total_chunks,
+        "errors": list(result.errors),
+        "duration_seconds": result.duration_seconds,
+    }
+
+
+def _run_notes_sync(daemon, task_id: str) -> None:
+    """Worker body: embed the vault with the LIVE store, then record the outcome.
+
+    Runs on its own thread so the outcome survives the requesting client
+    (BC-80). Uses the orchestrator's Chroma store — a bare ObsidianManager()
+    lazily built a second store + embedder inside the running process (BC-81).
+    """
+    state = daemon.notes_sync
+    try:
+        store = daemon.orchestrator.memory_system.chroma_store
+        if store is None:
+            raise RuntimeError("live Chroma store is unavailable")
+        manager = obsidian_manager.ObsidianManager(chroma_store=store)
+        result = manager.embed_vault(force_reindex=False)
+        status = "failed" if result.errors else "succeeded"
+        state.finish(
+            task_id,
+            status,
+            _sync_message(result),
+            error="; ".join(result.errors) if result.errors else None,
+            result=_sync_result_payload(result),
+        )
+    except Exception as exc:
+        logger.error(f"[API] notes sync failed: {exc}")
+        state.finish(task_id, "failed", f"❌ Sync failed: {exc}", error=str(exc))
+
+
 @router.post("/sync-notes")
 async def sync_notes(request: Request):
-    """Embed the Obsidian vault into ChromaDB (same helper as the Gradio button).
+    """Start the vault sync as a retained background job and return at once.
 
-    embed_vault is synchronous and can take a while on big vaults — run it in a
-    worker thread so the event loop (and any in-flight chat stream) stays live.
+    Single-flight: a second tap while one runs reports "already running" with
+    the running job's task_id. The outcome is read from GET /sync-notes/status.
+    The response keeps the ``message`` key the SPA and Gradio paths rely on.
     """
+    daemon = request.app.state.daemon
+    state = daemon.notes_sync
+    task_id = uuid.uuid4().hex
+    if not state.try_start(task_id):
+        current = state.snapshot()
+        return {
+            "message": "Notes sync already running",
+            "status": "running",
+            "task_id": current["task_id"],
+        }
+    worker = threading.Thread(
+        target=_run_notes_sync, args=(daemon, task_id), name="NotesSync", daemon=True,
+    )
+    state.worker = worker
+    try:
+        worker.start()
+    except Exception as exc:
+        # A job that never started must not stay "running" forever.
+        logger.error(f"[API] notes sync worker failed to start: {exc}")
+        state.finish(task_id, "failed", f"❌ Sync failed to start: {exc}", error=str(exc))
+        current = state.snapshot()
+        return {"message": current["message"], "status": "failed", "task_id": task_id}
+    return {"message": "Notes sync started", "status": "running", "task_id": task_id}
 
-    def _sync() -> str:
-        try:
-            manager = obsidian_manager.ObsidianManager()
-            result = manager.embed_vault(force_reindex=False)
 
-            if result.errors:
-                return f"⚠️ Sync completed with errors: {', '.join(result.errors)}"
-            if result.embedded_files == 0 and result.updated_files == 0 and result.skipped_files > 0:
-                return f"✓ All {result.skipped_files} notes unchanged"
-            parts = []
-            if result.embedded_files:
-                parts.append(f"{result.embedded_files} new")
-            if result.updated_files:
-                parts.append(f"{result.updated_files} updated")
-            return (f"✅ Synced {', '.join(parts)} notes ({result.total_chunks} chunks) "
-                    f"in {result.duration_seconds:.1f}s. Skipped {result.skipped_files} unchanged.")
-        except Exception as e:
-            return f"❌ Sync failed: {e}"
-
-    message = await asyncio.to_thread(_sync)
-    return {"message": message}
+@router.get("/sync-notes/status")
+async def sync_notes_status(request: Request):
+    """Current or retained notes-sync outcome (survives a dropped POST response)."""
+    return request.app.state.daemon.notes_sync.snapshot()
 
 
 @router.get("/graph")

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import {
   ActionIcon,
   AppShell,
@@ -15,7 +15,13 @@ import {
 } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { notifications } from '@mantine/notifications'
-import { api } from './api/client'
+import {
+  api,
+  NotesSyncNotStartedError,
+  pollNotesSync,
+  startNotesSyncAndPoll,
+  type NotesSyncStatus,
+} from './api/client'
 import { captureDebugBaseline } from './api/debugSession'
 import { useChatStream } from './api/useChatStream'
 import ActivityLog from './components/chat/ActivityLog'
@@ -39,6 +45,8 @@ export default function App() {
   const [rawMode, setRawMode] = useState(false)
   const [citations, setCitations] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  // One poll loop at a time; the newest controller owns the `syncing` flag.
+  const syncPollRef = useRef<AbortController | null>(null)
   const [models, setModels] = useState<string[]>([])
   const [activeModel, setActiveModel] = useState<string | null>(null)
   // Mobile: sidebar collapses into a burger-toggled drawer so chat gets the screen
@@ -80,19 +88,83 @@ export default function App() {
     }
   }
 
-  const syncNotes = async () => {
+  // BC-80: the sync runs as a retained server job. A red "failed" card means
+  // the SERVER reported failure; a dropped connection is reported as unknown
+  // and the retained outcome is re-read, never invented from the rejection.
+  const showSyncOutcome = (status: NotesSyncStatus) => {
+    if (status.status === 'failed') {
+      notifications.show({
+        color: 'red',
+        title: 'Notes sync failed',
+        message: status.message ?? status.error ?? 'The server reported a failure.',
+      })
+    } else if (status.status === 'succeeded') {
+      notifications.show({
+        title: 'Notes sync',
+        message: status.message ?? 'Notes sync complete',
+        autoClose: 8000,
+      })
+    }
+  }
+
+  const beginSyncWatch = () => {
+    syncPollRef.current?.abort()
+    const controller = new AbortController()
+    syncPollRef.current = controller
     setSyncing(true)
+    const done = () => {
+      if (syncPollRef.current === controller) setSyncing(false)
+    }
+    return { controller, done }
+  }
+
+  // On mount, read the retained state: a reload after a dropped request
+  // sees the in-flight job (and polls it) or an outcome finished within the
+  // last two minutes, instead of nothing.
+  useEffect(() => {
+    const { controller, done } = beginSyncWatch()
+    api
+      .getNotesSyncStatus(controller.signal)
+      .then(async (status) => {
+        if (status.status === 'running') {
+          showSyncOutcome(await pollNotesSync({ signal: controller.signal }))
+        } else if (status.finished_at !== null && status.server_time - status.finished_at <= 120) {
+          showSyncOutcome(status)
+        }
+      })
+      .catch(() => {})
+      .finally(done)
+    return () => controller.abort()
+  }, [])
+
+  const syncNotes = async () => {
+    const { controller, done } = beginSyncWatch()
     try {
-      const { message } = await api.syncNotes()
-      notifications.show({ title: 'Notes sync', message, autoClose: 8000 })
+      const outcome = await startNotesSyncAndPoll({
+        signal: controller.signal,
+        onTransportError: () =>
+          notifications.show({
+            id: 'notes-sync-transport',
+            color: 'yellow',
+            title: 'Notes sync',
+            message: 'Connection interrupted — still checking the server for the outcome.',
+          }),
+      })
+      showSyncOutcome(outcome)
     } catch (err) {
+      if (controller.signal.aborted) return
+      if (err instanceof NotesSyncNotStartedError) {
+        notifications.show({ color: 'yellow', title: 'Notes sync not started', message: err.message })
+        return
+      }
+      // Only a real HTTP status reaches here (401 after a restart, 5xx).
       notifications.show({
         color: 'red',
         title: 'Notes sync failed',
         message: err instanceof Error ? err.message : String(err),
       })
     } finally {
-      setSyncing(false)
+      done()
     }
   }
 

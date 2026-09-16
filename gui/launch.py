@@ -1359,7 +1359,12 @@ def build_demo(orchestrator, dev_tabs=None):
                 # Sync Obsidian notes handler
                 def _sync_obsidian_notes():
                     try:
-                        manager = obsidian_manager.ObsidianManager()
+                        # BC-81: reuse the live store — a bare ObsidianManager()
+                        # lazily built a second Chroma store + embedder in-process.
+                        store = orchestrator.memory_system.chroma_store
+                        if store is None:
+                            raise RuntimeError("live Chroma store is unavailable")
+                        manager = obsidian_manager.ObsidianManager(chroma_store=store)
                         result = manager.embed_vault(force_reindex=False)
 
                         if result.errors:

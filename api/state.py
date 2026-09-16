@@ -6,6 +6,8 @@ registry mapping file_id → temp path. Session state here is UI state only;
 clearing it never touches stored memory (ChromaDB/corpus).
 """
 
+import threading
+import time
 import asyncio
 import os
 import uuid
@@ -16,6 +18,84 @@ from core.active_document import ActiveDocumentRegistry
 from utils.logging_utils import get_logger
 
 logger = get_logger("api_state")
+
+
+class NotesSyncState:
+    """Retained outcome of the notes-sync background job (BC-80).
+
+    The worker thread outlives the HTTP request that started it, so a client
+    whose fetch dropped (backgrounded tab, network blip) reads the real
+    outcome from ``GET /api/sync-notes/status`` after a reload instead of
+    showing a failure card for work that finished. Process memory only —
+    nothing is persisted; a restart starts from ``idle``.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.status = "idle"  # idle | running | succeeded | failed
+        self.message: Optional[str] = None
+        self.error: Optional[str] = None
+        self.task_id: Optional[str] = None
+        self.started_at: Optional[float] = None
+        self.finished_at: Optional[float] = None
+        # Terminal payload of the newest finished job (kept when a new job starts).
+        self.last_result: Optional[dict] = None
+        self.worker: Optional[threading.Thread] = None
+
+    def try_start(self, task_id: str) -> bool:
+        """Claim the single flight. False when a job is already running."""
+        with self.lock:
+            if self.status == "running":
+                return False
+            self.status = "running"
+            self.task_id = task_id
+            self.message = "Notes sync started"
+            self.error = None
+            self.started_at = time.time()
+            self.finished_at = None
+            return True
+
+    def finish(
+        self,
+        task_id: str,
+        status: str,
+        message: str,
+        *,
+        error: Optional[str] = None,
+        result: Optional[dict] = None,
+    ) -> None:
+        """Record a terminal outcome. Ignored unless ``task_id`` is the current job."""
+        with self.lock:
+            if self.task_id != task_id:
+                return
+            self.status = status
+            self.message = message
+            self.error = error
+            self.finished_at = time.time()
+            self.last_result = {
+                "task_id": task_id,
+                "status": status,
+                "message": message,
+                "error": error,
+                "started_at": self.started_at,
+                "finished_at": self.finished_at,
+                "result": result,
+            }
+
+    def snapshot(self) -> dict:
+        """JSON-ready view. ``server_time`` lets a client judge whether a
+        retained outcome predates a request whose response it lost."""
+        with self.lock:
+            return {
+                "status": self.status,
+                "message": self.message,
+                "error": self.error,
+                "task_id": self.task_id,
+                "started_at": self.started_at,
+                "finished_at": self.finished_at,
+                "server_time": time.time(),
+                "last_result": self.last_result,
+            }
 
 
 class ChatSession:
@@ -47,6 +127,8 @@ class AppState:
         self.orchestrator = orchestrator
         self.session = ChatSession()
         self._uploads: Dict[str, dict] = {}
+        # Retained notes-sync outcome (BC-80); see NotesSyncState.
+        self.notes_sync = NotesSyncState()
         # Bounded active-document continuity (2026-09-08, B5): an in-memory
         # registry of this session's attached documents + numbered-item
         # navigation state, NOT persisted across a restart. Referenced from
