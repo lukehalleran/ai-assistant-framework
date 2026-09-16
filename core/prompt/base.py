@@ -6,8 +6,6 @@ Module Contract
 - Utility functions:
   - _cfg_int(key, default) -> int  [config value with fallback]
   - _parse_bool(s, default) -> bool  [string to bool parsing]
-  - _as_summary_dict(text, tags, source, timestamp) -> dict  [standardized summary format]
-  - _dedupe_keep_order(items, key_fn) -> List  [dedup preserving insertion order]
   - _truncate_list(items, limit) -> List  [keep most recent N items]
   - _strip_prompt_artifacts(text) -> str  [remove bracketed prompt headers from echoed text]
 - Fallback classes (for testing when real dependencies unavailable):
@@ -45,26 +43,6 @@ def _cfg_int(key: str, default_val: int) -> int:
         return int(v) if v is not None else int(default_val)
     except (ValueError, TypeError):
         return int(default_val)
-
-def _as_summary_dict(text: str, tags: list[str], source: str, timestamp: Optional[str] = None) -> dict:
-    """Convert summary text to standardized dict format."""
-    return {
-        "content": text,
-        "tags": tags or [],
-        "source": source,
-        "timestamp": timestamp or datetime.now().isoformat()
-    }
-
-def _dedupe_keep_order(items: Iterable[Any], key_fn=lambda x: str(x).strip().lower()) -> List[Any]:
-    """Deduplicate while preserving order."""
-    seen = set()
-    result = []
-    for item in items:
-        key = key_fn(item)
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-    return result
 
 def _truncate_list(items: List[Any], limit: int) -> List[Any]:
     """Truncate list to limit, keeping most recent items."""

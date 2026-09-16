@@ -87,18 +87,12 @@ _CASUAL_LONG = 500       # casual queries shouldn't produce essays
 _COMPLEX_LONG = 5000     # even complex queries shouldn't hit this
 
 
-def check_response_length(
-    response_text: str,
-    query_text: str,
-) -> CheckResult:
+def check_response_length(response_text: str, query_text: str) -> CheckResult:
     """Check if response length is appropriate for the query type."""
     length = len(response_text.strip())
     is_casual = bool(_CASUAL_PATTERNS.match(query_text.strip()))
 
-    details: Dict[str, Any] = {
-        "response_length": length,
-        "is_casual_query": is_casual,
-    }
+    details: Dict[str, Any] = {"response_length": length, "is_casual_query": is_casual}
 
     # Too short — likely truncated or empty
     if length < _SHORT_THRESHOLD:
@@ -129,12 +123,7 @@ def check_response_length(
             details={**details, "issue": "excessive", "threshold": _COMPLEX_LONG},
         )
 
-    return CheckResult(
-        check_name="response_length",
-        passed=True,
-        score=1.0,
-        details=details,
-    )
+    return CheckResult(check_name="response_length", passed=True, score=1.0, details=details)
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +209,7 @@ def _extract_names_from_response(response_text: str) -> List[str]:
     return list(set(names))
 
 
-def check_profile_grounding(
-    response_text: str,
-    prompt_text: str,
-) -> CheckResult:
+def check_profile_grounding(response_text: str, prompt_text: str) -> CheckResult:
     """Check if names/facts mentioned in the response are grounded in the prompt.
 
     Looks for proper names in the response and checks if they appear
@@ -271,10 +257,7 @@ def check_profile_grounding(
 _CITATION_PATTERN = re.compile(r"\[(MEM|WEB|GRAPH)_\d+\]")
 
 
-def check_citation_validity(
-    response_text: str,
-    prompt_text: str,
-) -> CheckResult:
+def check_citation_validity(response_text: str, prompt_text: str) -> CheckResult:
     """Check if citation markers in the response reference sources in the prompt.
 
     Validates [MEM_N], [WEB_N], [GRAPH_N] markers against what's actually
@@ -364,11 +347,7 @@ def check_filler(response_text: str) -> CheckResult:
 # Run all checks on one response
 # ---------------------------------------------------------------------------
 
-def run_all_checks(
-    response_text: str,
-    prompt_text: str,
-    query_text: str,
-) -> List[CheckResult]:
+def run_all_checks(response_text: str, prompt_text: str, query_text: str) -> List[CheckResult]:
     """Run all objective checks on a single response."""
     return [
         check_response_length(response_text, query_text),
@@ -383,9 +362,7 @@ def run_all_checks(
 # Batch runner
 # ---------------------------------------------------------------------------
 
-def run_checks_on_generation_run(
-    gen_run_dir: str,
-) -> List[ResponseCheckResults]:
+def run_checks_on_generation_run(gen_run_dir: str) -> List[ResponseCheckResults]:
     """Run all checks on every result from a Phase 4 generation run."""
     results_path = Path(gen_run_dir) / "results"
     all_results: List[ResponseCheckResults] = []
@@ -421,9 +398,7 @@ def run_checks_on_generation_run(
 # Aggregation
 # ---------------------------------------------------------------------------
 
-def aggregate_checks_by_section(
-    results: List[ResponseCheckResults],
-) -> Dict[str, Dict[str, Any]]:
+def aggregate_checks_by_section(results: List[ResponseCheckResults]) -> Dict[str, Dict[str, Any]]:
     """Aggregate check results by removed section (LOO only).
 
     For each section, compares baseline pass rates with variant pass rates
@@ -438,9 +413,7 @@ def aggregate_checks_by_section(
             baseline_checks[r.snapshot_id] = {c.check_name: c for c in r.checks}
 
     # Collect LOO variant results by section
-    section_data: Dict[str, Dict[str, List[tuple]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
+    section_data: Dict[str, Dict[str, List[tuple]]] = defaultdict(lambda: defaultdict(list))
 
     for r in results:
         if r.strategy != "leave_one_out" or not r.sections_removed:
@@ -451,9 +424,7 @@ def aggregate_checks_by_section(
         for check in r.checks:
             bl_check = bl.get(check.check_name)
             bl_score = bl_check.score if bl_check else 1.0
-            section_data[section][check.check_name].append(
-                (bl_score, check.score)
-            )
+            section_data[section][check.check_name].append((bl_score, check.score))
 
     # Compute aggregates
     result: Dict[str, Dict[str, Any]] = {}
@@ -475,9 +446,7 @@ def aggregate_checks_by_section(
     return result
 
 
-def format_checks_report(
-    section_stats: Dict[str, Dict[str, Any]],
-) -> str:
+def format_checks_report(section_stats: Dict[str, Dict[str, Any]]) -> str:
     """Human-readable report of objective check results per section."""
     check_names = ["response_length", "thinking_leak", "profile_grounding",
                    "citation_validity", "filler"]
@@ -494,9 +463,7 @@ def format_checks_report(
     # Per-check tables
     for check_name in check_names:
         lines.append(f"--- {check_name} ---")
-        lines.append(
-            f"{'Section':<28s} {'BL avg':>7s} {'Var avg':>8s} {'Delta':>7s} {'N':>4s}"
-        )
+        lines.append(f"{'Section':<28s} {'BL avg':>7s} {'Var avg':>8s} {'Delta':>7s} {'N':>4s}")
         lines.append("-" * 58)
 
         entries = []

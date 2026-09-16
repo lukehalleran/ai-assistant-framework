@@ -86,15 +86,20 @@ def resolve_vars(config: dict) -> dict:
 # YAML loading
 # --------------------------------------------------------------------
 
+# Order-preserving-deduped candidate locations for a config filename.
+def _candidate_config_paths(filename) -> list:
+    return list(dict.fromkeys([
+        Path(filename),
+        Path(__file__).parent / filename,
+        Path(__file__).parent.parent / filename,
+        Path.cwd() / filename,
+    ]))
+
+
 def load_yaml_config(config_path="config.yaml"):
     """Load configuration from YAML file with robust variable substitution."""
     # Try multiple paths
-    paths_to_try = list(dict.fromkeys([
-        Path(config_path),
-        Path(__file__).parent / config_path,
-        Path(__file__).parent.parent / config_path,
-        Path.cwd() / config_path,
-    ]))
+    paths_to_try = _candidate_config_paths(config_path)
 
     config = {}
     for path in paths_to_try:
@@ -139,12 +144,7 @@ def load_local_overrides(filename="config.local.yaml"):
     (e.g. user_profile.personal_vocabulary, private paths) stays out of the committed
     config.yaml. Missing file → {} (fully generic install).
     """
-    paths_to_try = list(dict.fromkeys([
-        Path(filename),
-        Path(__file__).parent / filename,
-        Path(__file__).parent.parent / filename,
-        Path.cwd() / filename,
-    ]))
+    paths_to_try = _candidate_config_paths(filename)
     for path in paths_to_try:
         if path.exists():
             try:

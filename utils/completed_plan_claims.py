@@ -60,6 +60,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # with memory.fact_source's own negation-scoping. Explicitly allowed by the
 # Phase B contract rather than duplicating the regex here.
 from memory.fact_source import _split_clauses
+from utils.date_coerce import coerce_date as _coerce_date
 
 # --- Forward-looking plan cues (closed grammatical set) -----------------
 _PLAN_CUE_RE = re.compile(
@@ -250,19 +251,6 @@ def _clause_matches_head(clause: str, head: str, modifier: str) -> bool:
             return True
         return bool(re.search(rf"\b(?:that|the|my|this)\s+{re.escape(head)}\b", low))
     return bool(re.search(rf"\b{re.escape(head)}\b", low))
-
-
-def _coerce_date(value: Any) -> Optional[date]:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str) and value.strip():
-        try:
-            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).date()
-        except ValueError:
-            return None
-    return None
 
 
 def _coerce_datetime(value: Any) -> Optional[datetime]:

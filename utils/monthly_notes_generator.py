@@ -37,10 +37,10 @@ import re
 import logging
 import shutil
 import calendar
-import yaml
 from pathlib import Path
 from utils.safe_json import atomic_write_text
 import utils.tag_generator as _tag_generator
+from utils.notes_common import FALLBACK_MODELS, parse_frontmatter
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
@@ -256,27 +256,11 @@ class MonthlyNotesGenerator:
 
         return sorted(notes.items(), key=lambda x: x[0])
 
-    def _parse_frontmatter(self, content: str) -> Tuple[Dict[str, Any], str]:
-        """Parse YAML frontmatter from markdown content."""
-        frontmatter = {}
-        body = content
-
-        if content.startswith('---'):
-            parts = content.split('---', 2)
-            if len(parts) >= 3:
-                try:
-                    frontmatter = yaml.safe_load(parts[1]) or {}
-                except Exception:
-                    pass
-                body = parts[2].strip()
-
-        return frontmatter, body
-
     def _read_daily_note(self, path: Path) -> Dict[str, Any]:
         """Read daily note and parse frontmatter and content."""
         try:
             content = path.read_text(encoding='utf-8')
-            frontmatter, body = self._parse_frontmatter(content)
+            frontmatter, body = parse_frontmatter(content)
 
             return {
                 'path': path,
@@ -536,19 +520,7 @@ generated: {datetime.now().isoformat()}
         )
 
         # Call LLM with fallback models
-        fallback_models = [
-            "claude-opus-4.8",  # Anthropic Claude (best)
-            "sonnet-4.5",       # Anthropic Claude (fast)
-            "gpt-4o-mini",      # Fast, cheap OpenAI
-            "deepseek-v3.1",    # DeepSeek
-            "gpt-4o",           # Standard OpenAI
-            "claude-opus-4.5",  # Anthropic Claude
-            "gemini-3-pro",     # Google Gemini
-            "gpt-5",            # Newer OpenAI
-            "deepseek-r1",      # DeepSeek reasoning
-            "glm-4.6",          # GLM
-        ]
-        models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
+        models_to_try = [self.model_name] + [m for m in FALLBACK_MODELS if m != self.model_name]
 
         llm_response = None
         last_error = None

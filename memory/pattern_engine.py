@@ -133,9 +133,7 @@ class PatternResult(BaseModel):
         ]
         for b in self.buckets:
             extra = f" [{'; '.join(b.values)}]" if b.values else ""
-            lines.append(
-                f"  {b.label or b.start}: {b.count} hits / {b.denominator} turns{extra}"
-            )
+            lines.append(f"  {b.label or b.start}: {b.count} hits / {b.denominator} turns{extra}")
         for n in self.notes:
             lines.append(f"  note: {n}")
         return "\n".join(lines)
@@ -205,8 +203,7 @@ class LongitudinalEvidenceSpec(BaseModel):
     refuting_facets: list[str] = Field(default_factory=list)
     sensitivity_axes: list[str] = Field(default_factory=lambda: [
         "date_bounds", "phase_boundaries", "proxy_inclusion", "confounders"])
-    requested_channels: list[str] = Field(default_factory=lambda: [
-        "pattern", "corpus", "notes"])
+    requested_channels: list[str] = Field(default_factory=lambda: ["pattern", "corpus", "notes"])
     research_queries: dict[str, str] = Field(default_factory=dict)
     phase_policy: dict[str, int] = Field(default_factory=dict)
     assumptions: list[str] = Field(default_factory=list)
@@ -282,9 +279,7 @@ class LongitudinalScanResult(BaseModel):
         return "\n".join(lines)
 
 
-def _date_bound(
-    value: Optional[str], fallback: datetime, *, is_end: bool = False,
-) -> datetime:
+def _date_bound(value: Optional[str], fallback: datetime, *, is_end: bool = False) -> datetime:
     parsed = _parse_ts(value) if value else None
     if parsed is not None and value and len(value) == 10 and is_end:
         # Calendar-date bounds are inclusive through the end of that date.
@@ -292,9 +287,7 @@ def _date_bound(
     return parsed or fallback
 
 
-def _event_polarity(
-    text: str, directional_indicators: dict[str, list[str]],
-) -> tuple[int, str]:
+def _event_polarity(text: str, directional_indicators: dict[str, list[str]]) -> tuple[int, str]:
     """Apply only the frozen domain-neutral direction lexicon.
 
     The planner may freeze literal phrases meaning an increase or decrease of
@@ -455,9 +448,7 @@ def run_longitudinal_scan(
         end = _date_bound(phase.end, datetime.max, is_end=True)
         selected = [e for e in normalized if start <= _parse_ts(e.timestamp) <= end]
         selected_proxy = [e for e in proxy_normalized if start <= _parse_ts(e.timestamp) <= end]
-        phase_observations = [
-            e for e in observations if start <= _parse_ts(e.timestamp) <= end
-        ]
+        phase_observations = [e for e in observations if start <= _parse_ts(e.timestamp) <= end]
         covariate_counts: dict[str, int] = {}
         covariate_events: list[LongitudinalEvent] = []
         evidence_class_counts: dict[str, int] = defaultdict(int)
@@ -523,8 +514,7 @@ def run_longitudinal_scan(
         presence = {name: 0 for name in series_names}
         all_series = none_series = 0
         for comp in comparisons:
-            present = [name for name in series_names
-                       if comp.series_counts.get(name, 0) > 0]
+            present = [name for name in series_names if comp.series_counts.get(name, 0) > 0]
             for name in present:
                 presence[name] += 1
             if len(present) == len(series_names):
@@ -660,8 +650,7 @@ def _corpus_entries(corpus_manager, since: datetime, until: datetime) -> list[di
     try:
         entries = corpus_manager._get_episodic_sorted()
     except Exception:
-        entries = [e for e in getattr(corpus_manager, "corpus", [])
-                   if isinstance(e, dict)]
+        entries = [e for e in getattr(corpus_manager, "corpus", []) if isinstance(e, dict)]
     for e in entries:
         ts = _parse_ts(e.get("timestamp"))
         if ts is None or not (since <= ts <= until):
@@ -1027,8 +1016,7 @@ def _events_email(email_rows, since, until, result):
     None = integration disabled/not fetched; [] = fetched, nothing in window
     — both reported honestly, never conflated with zero activity."""
     if email_rows is None:
-        result.notes.append(
-            "email source not available (integration disabled or not fetched)")
+        result.notes.append("email source not available (integration disabled or not fetched)")
         return []
 
     def _field(row, name, default=""):
@@ -1067,11 +1055,8 @@ def _events_email(email_rows, since, until, result):
     if events:
         top = sorted(domain_counts.items(), key=lambda kv: -kv[1])[:5]
         if top:
-            result.notes.append(
-                "top sender domains: "
-                + ", ".join(f"{d} ({n})" for d, n in top))
-        result.notes.append(
-            f"{len(events)} emails in window; {unread} unread")
+            result.notes.append("top sender domains: " + ", ".join(f"{d} ({n})" for d, n in top))
+        result.notes.append(f"{len(events)} emails in window; {unread} unread")
     else:
         result.notes.append("no emails found in the window")
     return events

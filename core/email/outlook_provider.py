@@ -57,31 +57,19 @@ class OutlookProvider:
                 EMAIL_OUTLOOK_ENABLED,
             )
         except ImportError:
-            return {
-                "available": False,
-                "detail": "config import failed",
-            }
+            return {"available": False, "detail": "config import failed"}
 
         if not EMAIL_INTEGRATION_ENABLED:
-            return {
-                "available": False,
-                "detail": "EMAIL_INTEGRATION_ENABLED=False",
-            }
+            return {"available": False, "detail": "EMAIL_INTEGRATION_ENABLED=False"}
 
         if not EMAIL_OUTLOOK_ENABLED:
-            return {
-                "available": False,
-                "detail": "EMAIL_OUTLOOK_ENABLED=False",
-            }
+            return {"available": False, "detail": "EMAIL_OUTLOOK_ENABLED=False"}
 
         from core.email.outlook_auth import get_outlook_auth  # lazy import: cycle
 
         auth = get_outlook_auth()
         if auth is None:
-            return {
-                "available": False,
-                "detail": "Outlook auth not configured",
-            }
+            return {"available": False, "detail": "Outlook auth not configured"}
 
         if not auth.token_exists:
             return {
@@ -98,10 +86,7 @@ class OutlookProvider:
                 ),
             }
 
-        return {
-            "available": True,
-            "detail": "Outlook configured and authenticated",
-        }
+        return {"available": True, "detail": "Outlook configured and authenticated"}
 
     async def search(
         self,
@@ -164,9 +149,7 @@ class OutlookProvider:
 
             if resp.status_code != 200:
                 err_body = resp.text[:500] if resp.text else "(no body)"
-                logger.warning(
-                    f"[Outlook] search error: HTTP {resp.status_code} — {err_body}"
-                )
+                logger.warning(f"[Outlook] search error: HTTP {resp.status_code} — {err_body}")
                 return []
 
             data = resp.json()
@@ -195,12 +178,7 @@ class OutlookProvider:
             logger.warning(f"[Outlook] search failed: {e}")
             return []
 
-    async def recent(
-        self,
-        *,
-        window_days: int = 7,
-        limit: int = 25,
-    ) -> List[EmailMessage]:
+    async def recent(self, *, window_days: int = 7, limit: int = 25) -> List[EmailMessage]:
         """Fetch recent messages in the window (no query), newest first.
 
         Args:
@@ -248,9 +226,7 @@ class OutlookProvider:
 
             if resp.status_code != 200:
                 err_body = resp.text[:500] if resp.text else "(no body)"
-                logger.warning(
-                    f"[Outlook] recent error: HTTP {resp.status_code} — {err_body}"
-                )
+                logger.warning(f"[Outlook] recent error: HTTP {resp.status_code} — {err_body}")
                 return []
 
             data = resp.json()

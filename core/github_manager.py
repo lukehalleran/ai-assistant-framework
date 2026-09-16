@@ -214,12 +214,7 @@ def _extract_search_terms(query: str) -> str:
 class GitHubManager:
     """Read-only GitHub API access for the agentic loop."""
 
-    def __init__(
-        self,
-        repo: Optional[str] = None,
-        timeout: int = 15,
-        max_output_lines: int = 80,
-    ):
+    def __init__(self, repo: Optional[str] = None, timeout: int = 15, max_output_lines: int = 80):
         """
         Args:
             repo: Optional owner/repo string (e.g. "lukehalleran/Daemon").
@@ -452,9 +447,7 @@ class GitHubManager:
     # Intent handlers
     # ------------------------------------------------------------------
 
-    def _query_issues(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_issues(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         q = query.lower()
         args = ["issue", "list"] + repo_flag + ["--limit", "15"]
 
@@ -479,9 +472,7 @@ class GitHubManager:
         line_count = len(output.split("\n")) if output else 0
         return output or "(no issues found)", [cmd_str], f"{line_count} issues"
 
-    def _query_issue_detail(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_issue_detail(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         num = _extract_number(query)
         if not num:
             return "(could not parse issue number)", [], "No issue number found"
@@ -489,9 +480,7 @@ class GitHubManager:
         output = self._run_gh(args)
         return output, [f"gh {' '.join(args)}"], f"Issue #{num}"
 
-    def _query_prs(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_prs(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         q = query.lower()
         args = ["pr", "list"] + repo_flag + ["--limit", "15"]
 
@@ -512,9 +501,7 @@ class GitHubManager:
         line_count = len(output.split("\n")) if output else 0
         return output or "(no pull requests found)", [cmd_str], f"{line_count} PRs"
 
-    def _query_pr_detail(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_pr_detail(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         num = _extract_number(query)
         if not num:
             return "(could not parse PR number)", [], "No PR number found"
@@ -522,9 +509,7 @@ class GitHubManager:
         output = self._run_gh(args)
         return output, [f"gh {' '.join(args)}"], f"PR #{num}"
 
-    def _query_pr_diff(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_pr_diff(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         num = _extract_number(query)
         if not num:
             return "(could not parse PR number for diff)", [], "No PR number found"
@@ -532,9 +517,7 @@ class GitHubManager:
         output = self._run_gh(args)
         return output, [f"gh {' '.join(args)}"], f"PR #{num} diff"
 
-    def _query_pr_checks(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_pr_checks(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         num = _extract_number(query)
         if not num:
             return "(could not parse PR number for checks)", [], "No PR number found"
@@ -542,17 +525,13 @@ class GitHubManager:
         output = self._run_gh(args)
         return output, [f"gh {' '.join(args)}"], f"PR #{num} checks"
 
-    def _query_actions(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_actions(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         args = ["run", "list"] + repo_flag + ["--limit", "10"]
         output = self._run_gh(args)
         line_count = len(output.split("\n")) if output else 0
         return output or "(no runs found)", [f"gh {' '.join(args)}"], f"{line_count} workflow runs"
 
-    def _query_action_detail(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_action_detail(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         num = _extract_number(query)
         if not num:
             return "(could not parse run number)", [], "No run number found"
@@ -560,25 +539,19 @@ class GitHubManager:
         output = self._run_gh(args)
         return output, [f"gh {' '.join(args)}"], f"Run #{num}"
 
-    def _query_workflows(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_workflows(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         args = ["workflow", "list"] + repo_flag
         output = self._run_gh(args)
         line_count = len(output.split("\n")) if output else 0
         return output or "(no workflows found)", [f"gh {' '.join(args)}"], f"{line_count} workflows"
 
-    def _query_releases(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_releases(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         args = ["release", "list"] + repo_flag + ["--limit", "10"]
         output = self._run_gh(args)
         line_count = len(output.split("\n")) if output else 0
         return output or "(no releases found)", [f"gh {' '.join(args)}"], f"{line_count} releases"
 
-    def _query_repo_info(
-        self, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_repo_info(self, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         # gh repo view takes the repo as a positional arg, not --repo flag
         repo = self.repo or self._detected_repo
         args = ["repo", "view"]
@@ -605,9 +578,7 @@ class GitHubManager:
             f"{line_count} {search_type} results",
         )
 
-    def _query_contributors(
-        self, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_contributors(self, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         repo = self.repo or self._detected_repo
         if not repo:
             return "(no repo detected)", [], "Cannot query contributors without repo"
@@ -617,9 +588,7 @@ class GitHubManager:
         line_count = len(output.split("\n")) if output else 0
         return output or "(no contributors)", [f"gh {' '.join(args)}"], f"{line_count} contributors"
 
-    def _query_labels(
-        self, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_labels(self, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         repo = self.repo or self._detected_repo
         if not repo:
             return "(no repo detected)", [], "Cannot query labels without repo"
@@ -628,9 +597,7 @@ class GitHubManager:
         line_count = len(output.split("\n")) if output else 0
         return output or "(no labels)", [f"gh {' '.join(args)}"], f"{line_count} labels"
 
-    def _query_milestones(
-        self, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_milestones(self, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         repo = self.repo or self._detected_repo
         if not repo:
             return "(no repo detected)", [], "Cannot query milestones without repo"
@@ -640,9 +607,7 @@ class GitHubManager:
         line_count = len(output.split("\n")) if output else 0
         return output or "(no milestones)", [f"gh {' '.join(args)}"], f"{line_count} milestones"
 
-    def _query_fallback(
-        self, query: str, repo_flag: List[str]
-    ) -> Tuple[str, List[str], str]:
+    def _query_fallback(self, query: str, repo_flag: List[str]) -> Tuple[str, List[str], str]:
         """Fallback: repo info + recent issues + PRs."""
         parts = []
         cmds = []

@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from utils.date_coerce import coerce_date as _coerce_date
+
 _NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
     "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
@@ -123,19 +125,6 @@ def _sentence_window(text: str, start: int, end: int, max_chars: int = 200) -> s
     if len(snippet) > max_chars:
         snippet = snippet[:max_chars].rstrip() + "…"
     return snippet
-
-
-def _coerce_date(value: Any) -> Optional[date]:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str) and value.strip():
-        try:
-            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).date()
-        except ValueError:
-            return None
-    return None
 
 
 def extract_streak_claims(text: str, stated_on: Any) -> List[StreakClaim]:

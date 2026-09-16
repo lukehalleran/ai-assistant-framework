@@ -61,6 +61,7 @@ import utils.status_claims as status_claims
 import utils.streak_claims as streak_claims
 import utils.tag_generator as _tag_generator
 from utils.retrieval_outcome import RetrievalError
+from utils.notes_common import FALLBACK_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -834,19 +835,7 @@ generated: {datetime.now().isoformat()}
         # Call LLM with fallback models
         # Try primary model first, then fallback to alternatives if it fails
         # Expanded list includes Claude, Gemini, and newer GPT models for better reliability
-        fallback_models = [
-            "claude-opus-4.8",  # Anthropic Claude (best)
-            "sonnet-4.5",       # Anthropic Claude (fast)
-            "gpt-4o-mini",       # Fast, cheap OpenAI
-            "deepseek-v3.1",    # DeepSeek
-            "gpt-4o",           # Standard OpenAI
-            "claude-opus-4.5",  # Anthropic Claude
-            "gemini-3-pro",     # Google Gemini
-            "gpt-5",            # Newer OpenAI
-            "deepseek-r1",      # DeepSeek reasoning
-            "glm-4.6",          # GLM
-        ]
-        models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
+        models_to_try = [self.model_name] + [m for m in FALLBACK_MODELS if m != self.model_name]
 
         llm_response = None
         last_error = None
