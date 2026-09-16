@@ -119,7 +119,7 @@ from datetime import datetime as _dt
 from datetime import datetime as _fu_dt
 from datetime import datetime as _grounding_datetime
 from datetime import datetime as _insight_now
-from typing import Any
+from typing import Any, Optional
 from core.response_parser import ResponseParser
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
@@ -782,19 +782,22 @@ def _build_debug_record(
     return record
 
 
-def _find_email_draft(chat_history: list, fallback: str) -> str:
+def _find_email_draft(chat_history: list, fallback: str = "") -> Optional[str]:
     """Search chat history for the most recent email draft content.
 
     Looks backward through assistant messages for substantial content that
     looks like an email draft (bullet points, summaries, multiple lines).
     Returns None if no suitable draft is found — callers should NOT
     auto-send with meta-commentary as the body.
-    """
-    if not chat_history:
-        return None
 
-    # Search recent assistant messages (last 10) for draft-like content
-    assistant_msgs = []
+    ``fallback`` is the reply generated THIS turn (not yet in ``chat_history``);
+    it is the newest candidate and goes through the same draft-shape test as
+    history — meta-commentary never becomes a body. (2026-09-16: the
+    parameter was accepted and never read — BC-14.)
+    """
+    # Search recent assistant messages (last 10) for draft-like content,
+    # newest first: this turn's fallback, then history.
+    assistant_msgs = [fallback] if isinstance(fallback, str) and len(fallback) > 100 else []
     for msg in reversed(chat_history):
         if isinstance(msg, dict) and msg.get("role") == "assistant":
             content = msg.get("content", "")

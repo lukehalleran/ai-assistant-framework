@@ -36,6 +36,7 @@ from typing import AsyncGenerator, List, Tuple, Optional, Sequence, Dict, Any
 from datetime import datetime
 from utils.time_manager import TimeManager
 from utils.query_checker import keyword_tokens
+from utils.async_results import classify_gather_results
 from core.reasoning_stream_filter import InterleavedReasoningFilter, MARKER
 import math
 # No config constants imported here; defaults are managed by ModelManager
@@ -557,9 +558,10 @@ class ResponseGenerator:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         candidates: List[str] = []
         raw_candidates: List[str] = []
-        for idx, res in enumerate(results, start=1):
-            if isinstance(res, Exception):
-                self.logger.error(f"[BESTOF] candidate {idx}/{n} error: {res}")
+        for pos, res, err in classify_gather_results(results):
+            idx = pos + 1
+            if err is not None:
+                self.logger.error(f"[BESTOF] candidate {idx}/{n} error: {err!r}")
                 candidates.append("")
                 raw_candidates.append("")
             else:
@@ -750,8 +752,9 @@ class ResponseGenerator:
             )
         )
         res1, res2 = await asyncio.gather(t1, t2, return_exceptions=True)
-        a_text_raw = ("" if isinstance(res1, Exception) else (res1 or "")).strip()
-        b_text_raw = ("" if isinstance(res2, Exception) else (res2 or "")).strip()
+        (_, val_a, err_a), (_, val_b, err_b) = classify_gather_results((res1, res2))
+        a_text_raw = ("" if err_a is not None else (val_a or "")).strip()
+        b_text_raw = ("" if err_b is not None else (val_b or "")).strip()
 
         # Parse thinking blocks from both responses
         from core.response_parser import ResponseParser  # lazy import: cycle
@@ -878,10 +881,10 @@ class ResponseGenerator:
 
         results = await asyncio.gather(*gen_tasks, return_exceptions=True)
         candidates: List[Dict[str, Any]] = []
-        for i, res in enumerate(results):
+        for i, res, err in classify_gather_results(results):
             src = meta[i]
-            if isinstance(res, Exception):
-                self.logger.error(f"[BESTOF/MULTI] {src['model']}@{src['temp']} error: {res}")
+            if err is not None:
+                self.logger.error(f"[BESTOF/MULTI] {src['model']}@{src['temp']} error: {err!r}")
                 text = ""
             else:
                 text = (res or "").strip()
