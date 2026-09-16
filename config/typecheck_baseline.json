@@ -1,0 +1,398 @@
+{
+  "files": {
+    "api/chat_service.py": {
+      "reportArgumentType": 2,
+      "reportCallIssue": 1,
+      "reportOptionalMemberAccess": 1
+    },
+    "api/routes/chat.py": {
+      "reportAttributeAccessIssue": 1
+    },
+    "api/routes/system.py": {
+      "reportArgumentType": 1,
+      "reportCallIssue": 1
+    },
+    "api/state.py": {
+      "reportAttributeAccessIssue": 1
+    },
+    "config/app_config.py": {
+      "reportAssignmentType": 1
+    },
+    "core/actions/gmail_search.py": {
+      "reportArgumentType": 1,
+      "reportGeneralTypeIssues": 1
+    },
+    "core/actions/google_auth.py": {
+      "reportArgumentType": 1
+    },
+    "core/actions/google_calendar_modify.py": {
+      "reportOptionalMemberAccess": 4
+    },
+    "core/actions/registry.py": {
+      "reportOptionalIterable": 3
+    },
+    "core/agentic/controller.py": {
+      "reportArgumentType": 11,
+      "reportAssignmentType": 1,
+      "reportAttributeAccessIssue": 27,
+      "reportCallIssue": 1,
+      "reportOptionalIterable": 1,
+      "reportOptionalMemberAccess": 5
+    },
+    "core/agentic/gate.py": {
+      "reportArgumentType": 4
+    },
+    "core/agentic/protocols.py": {
+      "reportOptionalMemberAccess": 8,
+      "reportOptionalSubscript": 1
+    },
+    "core/agentic/tools.py": {
+      "reportArgumentType": 28,
+      "reportAttributeAccessIssue": 1,
+      "reportOptionalMemberAccess": 1,
+      "reportOptionalSubscript": 1
+    },
+    "core/best_of_handler.py": {
+      "reportArgumentType": 1
+    },
+    "core/context_pipeline.py": {
+      "reportAttributeAccessIssue": 1
+    },
+    "core/email/gmail_provider.py": {
+      "reportArgumentType": 4,
+      "reportReturnType": 2
+    },
+    "core/email/outlook_auth.py": {
+      "reportArgumentType": 1
+    },
+    "core/email/registry.py": {
+      "reportAttributeAccessIssue": 1,
+      "reportGeneralTypeIssues": 1
+    },
+    "core/email/service.py": {
+      "reportArgumentType": 1
+    },
+    "core/git_stats_manager.py": {
+      "reportAssignmentType": 1
+    },
+    "core/insight/coordinator.py": {
+      "reportArgumentType": 3,
+      "reportOperatorIssue": 1,
+      "reportOptionalMemberAccess": 26
+    },
+    "core/insight/deliberation.py": {
+      "reportArgumentType": 2,
+      "reportOptionalMemberAccess": 1
+    },
+    "core/insight/sweep.py": {
+      "reportOptionalMemberAccess": 6
+    },
+    "core/orchestrator.py": {
+      "reportArgumentType": 4,
+      "reportAssignmentType": 1,
+      "reportOptionalMemberAccess": 10
+    },
+    "core/prompt/builder.py": {
+      "reportArgumentType": 4,
+      "reportGeneralTypeIssues": 2,
+      "reportOptionalMemberAccess": 1
+    },
+    "core/prompt/context_gatherer.py": {
+      "reportAttributeAccessIssue": 1
+    },
+    "core/prompt/formatter.py": {
+      "reportArgumentType": 1
+    },
+    "core/prompt/gatherer_knowledge.py": {
+      "reportAttributeAccessIssue": 38,
+      "reportCallIssue": 2,
+      "reportReturnType": 1
+    },
+    "core/prompt/gatherer_memory.py": {
+      "reportArgumentType": 2,
+      "reportAttributeAccessIssue": 48,
+      "reportReturnType": 1
+    },
+    "core/prompt/gatherer_web.py": {
+      "reportAttributeAccessIssue": 7
+    },
+    "core/prompt/proposal_filter.py": {
+      "reportAttributeAccessIssue": 1
+    },
+    "core/response_generator.py": {
+      "reportArgumentType": 8,
+      "reportAttributeAccessIssue": 4,
+      "reportReturnType": 1
+    },
+    "core/response_planner.py": {
+      "reportArgumentType": 4
+    },
+    "core/tone_instructions.py": {
+      "reportArgumentType": 3
+    },
+    "core/uncertainty_detector.py": {
+      "reportOptionalMemberAccess": 1
+    },
+    "gui/handlers.py": {
+      "reportArgumentType": 11,
+      "reportAttributeAccessIssue": 7,
+      "reportGeneralTypeIssues": 3,
+      "reportOperatorIssue": 1,
+      "reportOptionalMemberAccess": 2,
+      "reportPossiblyUnboundVariable": 10,
+      "reportReturnType": 2
+    },
+    "gui/launch.py": {
+      "reportAttributeAccessIssue": 9,
+      "reportCallIssue": 1,
+      "reportOptionalMemberAccess": 6
+    },
+    "gui/tabs/settings.py": {
+      "reportOptionalMemberAccess": 1,
+      "reportPossiblyUnboundVariable": 1
+    },
+    "gui/wizard.py": {
+      "reportArgumentType": 1
+    },
+    "knowledge/WikiManager.py": {
+      "reportArgumentType": 2
+    },
+    "knowledge/clip_manager.py": {
+      "reportAttributeAccessIssue": 1,
+      "reportCallIssue": 3,
+      "reportOptionalCall": 2,
+      "reportOptionalMemberAccess": 2
+    },
+    "knowledge/document_generator.py": {
+      "reportOptionalMemberAccess": 6
+    },
+    "knowledge/obsidian_manager.py": {
+      "reportArgumentType": 3,
+      "reportOperatorIssue": 2,
+      "reportReturnType": 1
+    },
+    "knowledge/proposal_generator.py": {
+      "reportGeneralTypeIssues": 1,
+      "reportOptionalMemberAccess": 1
+    },
+    "knowledge/reference_docs_manager.py": {
+      "reportArgumentType": 6
+    },
+    "knowledge/research_search.py": {
+      "reportArgumentType": 2
+    },
+    "knowledge/sandbox_manager.py": {
+      "reportArgumentType": 5
+    },
+    "knowledge/semantic_search.py": {
+      "reportOptionalMemberAccess": 2
+    },
+    "knowledge/visual_memory_store.py": {
+      "reportOptionalMemberAccess": 1
+    },
+    "knowledge/visual_retrieval.py": {
+      "reportArgumentType": 1,
+      "reportAttributeAccessIssue": 2
+    },
+    "knowledge/web_search_manager.py": {
+      "reportArgumentType": 3,
+      "reportAttributeAccessIssue": 7,
+      "reportOperatorIssue": 2,
+      "reportOptionalMemberAccess": 6,
+      "reportOptionalSubscript": 2
+    },
+    "knowledge/wikidata_resolver.py": {
+      "reportGeneralTypeIssues": 1
+    },
+    "knowledge/wolfram_manager.py": {
+      "reportArgumentType": 5
+    },
+    "main.py": {
+      "reportArgumentType": 1,
+      "reportAssignmentType": 2,
+      "reportGeneralTypeIssues": 1,
+      "reportOptionalMemberAccess": 6,
+      "reportPossiblyUnboundVariable": 1
+    },
+    "memory/corpus_manager.py": {
+      "reportArgumentType": 5,
+      "reportGeneralTypeIssues": 1,
+      "reportPossiblyUnboundVariable": 1,
+      "reportReturnType": 1
+    },
+    "memory/cross_deduplicator.py": {
+      "reportArgumentType": 1,
+      "reportCallIssue": 1
+    },
+    "memory/curation/adapters.py": {
+      "reportOptionalMemberAccess": 6
+    },
+    "memory/curation/engine.py": {
+      "reportArgumentType": 1
+    },
+    "memory/fact_extractor.py": {
+      "reportArgumentType": 3,
+      "reportAttributeAccessIssue": 1,
+      "reportIndexIssue": 1,
+      "reportOptionalOperand": 1,
+      "reportOptionalSubscript": 1,
+      "reportPrivateImportUsage": 1,
+      "reportRedeclaration": 1
+    },
+    "memory/fact_verification.py": {
+      "reportOptionalMemberAccess": 1
+    },
+    "memory/graph_memory.py": {
+      "reportArgumentType": 1,
+      "reportAttributeAccessIssue": 1,
+      "reportCallIssue": 1,
+      "reportReturnType": 1
+    },
+    "memory/hybrid_retriever.py": {
+      "reportOperatorIssue": 1
+    },
+    "memory/llm_fact_extractor.py": {
+      "reportArgumentType": 4
+    },
+    "memory/memory_consolidator.py": {
+      "reportArgumentType": 3,
+      "reportOperatorIssue": 1
+    },
+    "memory/memory_coordinator.py": {
+      "reportAttributeAccessIssue": 3
+    },
+    "memory/memory_expander.py": {
+      "reportArgumentType": 2
+    },
+    "memory/memory_retriever.py": {
+      "reportArgumentType": 1,
+      "reportAttributeAccessIssue": 6,
+      "reportGeneralTypeIssues": 1,
+      "reportOptionalMemberAccess": 2
+    },
+    "memory/memory_storage.py": {
+      "reportOptionalMemberAccess": 9
+    },
+    "memory/pattern_engine.py": {
+      "reportArgumentType": 3,
+      "reportOperatorIssue": 4,
+      "reportOptionalMemberAccess": 1,
+      "reportOptionalOperand": 4
+    },
+    "memory/proposal_store.py": {
+      "reportOptionalMemberAccess": 13
+    },
+    "memory/shutdown_processor.py": {
+      "reportArgumentType": 2,
+      "reportGeneralTypeIssues": 2,
+      "reportOptionalMemberAccess": 5
+    },
+    "memory/storage/multi_collection_chroma_store.py": {
+      "reportArgumentType": 4,
+      "reportAttributeAccessIssue": 19,
+      "reportGeneralTypeIssues": 1,
+      "reportReturnType": 2
+    },
+    "memory/thread_store.py": {
+      "reportOptionalMemberAccess": 7
+    },
+    "memory/user_profile.py": {
+      "reportArgumentType": 7
+    },
+    "memory/user_profile_schema.py": {
+      "reportArgumentType": 1,
+      "reportAssignmentType": 1
+    },
+    "models/model_manager.py": {
+      "reportArgumentType": 83,
+      "reportCallIssue": 2,
+      "reportOptionalMemberAccess": 2,
+      "reportPrivateImportUsage": 2
+    },
+    "models/tokenizer_manager.py": {
+      "reportArgumentType": 1
+    },
+    "processing/gate_system.py": {
+      "reportArgumentType": 1,
+      "reportAttributeAccessIssue": 2,
+      "reportCallIssue": 2,
+      "reportOptionalMemberAccess": 3
+    },
+    "utils/attachment_audit.py": {
+      "reportArgumentType": 2,
+      "reportCallIssue": 1
+    },
+    "utils/daily_notes_generator.py": {
+      "reportArgumentType": 2,
+      "reportGeneralTypeIssues": 1,
+      "reportInvalidTypeForm": 1
+    },
+    "utils/file_processor.py": {
+      "reportAttributeAccessIssue": 2,
+      "reportPossiblyUnboundVariable": 1,
+      "reportReturnType": 1
+    },
+    "utils/location_resolver.py": {
+      "reportOptionalMemberAccess": 2
+    },
+    "utils/monthly_notes_generator.py": {
+      "reportArgumentType": 2
+    },
+    "utils/need_detector.py": {
+      "reportArgumentType": 2,
+      "reportAssignmentType": 1,
+      "reportAttributeAccessIssue": 1,
+      "reportReturnType": 1
+    },
+    "utils/personal_claim_provenance.py": {
+      "reportArgumentType": 2,
+      "reportCallIssue": 1,
+      "reportOperatorIssue": 1,
+      "reportOptionalMemberAccess": 1,
+      "reportOptionalOperand": 1
+    },
+    "utils/python_fs_guard.py": {
+      "reportOptionalOperand": 1
+    },
+    "utils/time_manager.py": {
+      "reportArgumentType": 2,
+      "reportOperatorIssue": 1
+    },
+    "utils/timezone_resolver.py": {
+      "reportAttributeAccessIssue": 4
+    },
+    "utils/tone_detector.py": {
+      "reportArgumentType": 2,
+      "reportAssignmentType": 1,
+      "reportAttributeAccessIssue": 1,
+      "reportReturnType": 1
+    },
+    "utils/turn_telemetry.py": {
+      "reportArgumentType": 2
+    },
+    "utils/web_search_trigger.py": {
+      "reportArgumentType": 11,
+      "reportAssignmentType": 2,
+      "reportReturnType": 5
+    },
+    "utils/weekly_notes_generator.py": {
+      "reportArgumentType": 2
+    }
+  },
+  "ignores": {},
+  "legacy_ignores": {
+    "gui/launch.py": 1,
+    "knowledge/semantic_search.py": 1,
+    "models/model_manager.py": 4,
+    "models/tokenizer_manager.py": 2,
+    "processing/gate_system.py": 1
+  },
+  "mode": "standard",
+  "notes": {
+    "__initial__": "initial baseline 2026-09-16 (plan \u00a72.2)"
+  },
+  "python": "3.11",
+  "schema": 1,
+  "tool": "pyright",
+  "version": "1.1.403"
+}

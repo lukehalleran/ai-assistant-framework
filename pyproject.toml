@@ -45,3 +45,16 @@ select = [
     "F601", "F602",  # is-comparisons to str/int literals
     "B002", "B006",  # ++n typo, mutable default args
 ]
+
+[tool.pyright]
+# Static lane (docs/PLAN_20260916_typecheck_lane.md). Default ("standard") checking
+# mode — the measured baseline is default-mode output; do not change the mode
+# without regenerating config/typecheck_baseline.json.
+pythonVersion = "3.11"
+pythonPlatform = "Linux"
+include = ["core", "memory", "knowledge", "utils", "gui", "api", "models", "processing", "config", "main.py"]
+exclude = ["venv", "**/venv", "data", "web", "integration.bak", "build", "dist", "scripts", "tests", "agent_branch", "**/__pycache__"]
+typeCheckingMode = "standard"
+# Missing third-party stubs are an environment fact, not a code defect (2 rows).
+reportMissingImports = "none"
+reportMissingModuleSource = "none"

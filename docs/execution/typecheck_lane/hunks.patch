@@ -1,0 +1,71 @@
+# Proposed hunks for class-guard-owned files (docs/templates/EXECUTOR_BRIEF.md):
+# hooks/pre-push and .github/workflows/tests.yml are never edited by an executor.
+# Owner-waiver required before applying — see docs/PLAN_20260916_typecheck_lane.md
+# §3.1 (CI step) and §3.2 (pre-push mirror). Apply with: git apply <this file>.
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -63,6 +63,8 @@
+ 
+     steps:
+       - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
+ 
+       - name: Set up Python ${{ matrix.python-version }}
+         uses: actions/setup-python@v5
+@@ -79,7 +81,7 @@
+             --index-url https://download.pytorch.org/whl/cpu \
+             torch==2.7.1+cpu torchvision==0.22.1+cpu
+           python -m pip install --no-cache-dir -r requirements.txt
+-          python -m pip install --no-cache-dir pytest pytest-asyncio pytest-cov fpdf2 ruff
++          python -m pip install --no-cache-dir pytest pytest-asyncio pytest-cov fpdf2 ruff pyright==1.1.403
+           python -m spacy download en_core_web_sm
+           python -m pip check
+           python -c 'import open_clip, torch, torchvision; assert torch.__version__.startswith("2.7.1+cpu"); assert torchvision.__version__.startswith("0.22.1+cpu"); assert not torch.cuda.is_available()'
+@@ -125,6 +127,12 @@
+       - name: Lint (bug-focused floor — rules in pyproject [tool.ruff])
+         run: python -m ruff check .
+ 
++      - name: Typecheck (pyright, baseline + ratchet — docs/PLAN_20260916_typecheck_lane.md)
++        run: python scripts/check_typecheck.py --root . --changed-since "${{ github.event.pull_request.base.sha || github.event.before }}"
++        env:
++          PYRIGHT_PYTHON_FORCE_VERSION: "1.1.403"
++          PYRIGHT_PYTHON_IGNORE_WARNINGS: "1"
++
+       - name: Five repo-wide guards (always selected, JUnit receipt)
+         run: |
+           set -euo pipefail
+--- a/hooks/pre-push
++++ b/hooks/pre-push
+@@ -73,6 +73,7 @@
+ changed_tests=()
+ changed_sources=()
+ has_content_push=0
++typecheck_base=""
+ while read -r local_ref local_sha remote_ref remote_sha; do
+   [ "$local_sha" = "$ZERO" ] && continue            # branch deletion
+   has_content_push=1
+@@ -82,6 +83,12 @@
+   else
+     range="$remote_sha..$local_sha"
+   fi
++  # Typecheck lane base ref (docs/PLAN_20260916_typecheck_lane.md §3.2):
++  # first content ref in the push wins, mirroring the CI expression
++  # (github.event.pull_request.base.sha || github.event.before).
++  if [ -z "$typecheck_base" ]; then
++    typecheck_base="${base:-$remote_sha}"
++  fi
+   while IFS= read -r f; do
+     [ -n "$f" ] && [ -f "$f" ] && changed_tests+=("$f")
+   done < <(git diff --name-only --diff-filter=AMR "$range" -- 'tests/*.py' 'tests/**/*.py' 2>/dev/null)
+@@ -135,6 +142,10 @@
+ # ---- 2. lint -------------------------------------------------------------
+ python -m ruff check . || fail "ruff"
+ 
++# ---- 2b. typecheck (pyright, baseline + ratchet; mirrors the CI step) ------
++PYRIGHT_PYTHON_FORCE_VERSION=1.1.403 PYRIGHT_PYTHON_IGNORE_WARNINGS=1 \
++  python scripts/check_typecheck.py --root . --changed-since "${typecheck_base:-0000000000000000000000000000000000000000}" || fail "typecheck"
++
+ # ---- 2a. bug-class contract (docs/BUG_CLASSES.md detection methods) -------
+ # Exit 1 = a NEW or STALE gate occurrence, an unreviewed or re-review
+ # disposition, or a missing/empty required input; exit 2 = the contract could
