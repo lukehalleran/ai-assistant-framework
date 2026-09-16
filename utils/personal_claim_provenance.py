@@ -19,7 +19,8 @@ MARKER = (
     "interpretation, not a user completion report.]"
 )
 _COUNTS = ("candidate_count", "supported_count", "contradicted_count", "insufficient_count",
-           "dropped_claim_count", "dropped_evidence_count", "demoted_count")
+           "dropped_claim_count", "dropped_evidence_count", "demoted_count",
+           "relocated_count")
 _STATUSES = {"checked", "unavailable", "failed", "skipped"}
 _REASONS = {
     "ok", "checked", "no_claims", "empty_response", "disabled", "no_model",

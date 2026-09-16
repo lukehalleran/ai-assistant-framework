@@ -237,7 +237,8 @@ async def test_non_span_claim_is_dropped_while_the_rest_survive():
     result = await audit_personal_claims("You uploaded it.", evidence, model)
     assert result.status == "checked"
     assert [c["text"] for c in result.claims] == ["uploaded it"]
-    assert result.dropped_claim_count == 3
+    # non-span + bad shape are dropped; the duplicate span is MERGED, not dropped
+    assert result.dropped_claim_count == 2
     assert omit_unsupported_claims("You uploaded it.", result) == "I don't have enough context to verify those personal details."
 
 
@@ -272,3 +273,65 @@ def test_omission_all_removed_uses_neutral_fallback_and_failures_preserve_text()
     assert omit_unsupported_claims(response, result) == "I don't have enough context to verify those personal details."
     failed = PersonalClaimResult("failed", "invalid_json")
     assert omit_unsupported_claims(response, failed) == response
+
+
+# ---------------------------------------------------------------------------
+# Paraphrased claims (live 2026-09-15 19:51: gpt-4o-mini restated every claim)
+# ---------------------------------------------------------------------------
+
+# Shape of the live 19:51 reply with the medication names genericized (the
+# committed tree carries no personal vocabulary — config/privacy_terms.local.txt).
+LIVE_REPLY = (
+    "Fingers crossed it lines up — after today, an early night is exactly what the doctor ordered. "
+    "One thing worth checking though: if\"meds\" means the morning stimulant, taking it this late works against "
+    "the early bedtime. If it's the evening stuff (the usual two), then yeah, let it do its job "
+    "and don't fight it with screens. Tomorrow's got the cover letter waiting for a fresher brain."
+)
+
+
+@pytest.mark.asyncio
+async def test_paraphrased_claim_relocates_to_the_exact_draft_sentence():
+    """The exact live model output for the 19:51 turn: three paraphrases, one
+    of which maps onto a draft sentence; the two restatements of the USER's
+    own message have no draft sentence and are dropped."""
+    evidence = build_personal_evidence("Ya took meds just recently hoping I can go to bed early", {})
+    model = ScriptedModel({"claims": [
+        {"text": "User took meds just recently hoping to go to bed early.", "status": "supported",
+         "kind": "completed action", "evidence": []},
+        {"text": "User is checking if the meds are the stimulant or evening stuff.", "status": "insufficient",
+         "kind": "plan/suggestion", "evidence": []},
+        {"text": "User has a cover letter waiting for a fresher brain tomorrow.", "status": "supported",
+         "kind": "future plan", "evidence": []},
+    ]})
+    result = await audit_personal_claims(LIVE_REPLY, evidence, model)
+    assert result.status == "checked"
+    assert [c["text"] for c in result.claims] == ["Tomorrow's got the cover letter waiting for a fresher brain."]
+    assert result.claims[0]["status"] == "insufficient"  # supported with no evidence → demoted
+    assert result.relocated_count == 1 and result.dropped_claim_count == 2 and result.demoted_count == 1
+    assert omit_unsupported_claims(LIVE_REPLY, result).endswith("don't fight it with screens.")
+
+
+@pytest.mark.asyncio
+async def test_two_paraphrases_on_one_sentence_merge_in_the_conservative_direction():
+    evidence = _evidence()
+    model = ScriptedModel({"claims": [
+        {"text": "The user has a cover letter waiting for tomorrow.", "status": "supported",
+         "kind": "plan", "evidence": [_ref(evidence, "I could just upload")]},
+        {"text": "The cover letter is waiting for a fresher brain tomorrow.", "status": "contradicted",
+         "kind": "plan", "evidence": []},
+    ]})
+    result = await audit_personal_claims(LIVE_REPLY, evidence, model)
+    assert len(result.claims) == 1
+    assert result.claims[0]["status"] == "contradicted"
+    assert result.relocated_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_paraphrase_is_dropped_not_guessed():
+    reply = "You sent the email to your advisor today. You sent the email to your professor today."
+    model = ScriptedModel({"claims": [
+        {"text": "The user sent the email today.", "status": "supported", "kind": "completion", "evidence": []},
+    ]})
+    result = await audit_personal_claims(reply, _evidence(), model)
+    assert result.status == "failed" and result.reason == "invalid_verdict"
+    assert result.dropped_claim_count == 1

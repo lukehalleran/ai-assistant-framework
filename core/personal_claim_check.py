@@ -23,7 +23,19 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Iterable, Mapping, Sequence
 
+# Shared claim-location machinery (2026-09-15): the grounding verifier already
+# solved "the model paraphrased the claim" with exact-then-overlap sentence
+# location over chunks that concatenate back to the input byte-for-byte.
+# One implementation, two consumers (no cycle: grounding_check never imports
+# this module).
+from core.grounding_check import _locate_claim_sentence, _sentence_chunks
+
 logger = logging.getLogger(__name__)
+
+# Same defaults as grounding_check.fallback_claim_overlap_threshold /
+# fallback_min_claim_tokens (config.yaml); explicit kwargs keep this pure.
+DEFAULT_LOCATE_OVERLAP = 0.8
+DEFAULT_LOCATE_MIN_TOKENS = 3
 
 
 _VALID_STATUSES = frozenset({"supported", "contradicted", "insufficient"})
@@ -289,7 +301,7 @@ def build_personal_evidence(
 
 _SYSTEM_PROMPT = """You audit personal claims in an assistant draft against supplied conversation evidence.
 Return one strict JSON object with exactly this shape: {\"claims\":[{\"text\":string,\"status\":\"supported\"|\"contradicted\"|\"insufficient\",\"kind\":string,\"evidence\":[{\"source_id\":string,\"quote\":string}]}]}.
-Find every material claim about what the user or another person did, including novel actions; do not use a closed action-verb list. Also classify plans, suggestions, conditional/partial/negated/cancelled claims, quoted claims, discussion claims, and claims about another episode or object. The draft span must be copied exactly.
+Find every material claim IN THE DRAFT about what the user or another person did, including novel actions; do not use a closed action-verb list. Also classify plans, suggestions, conditional/partial/negated/cancelled claims, quoted claims, discussion claims, and claims about another episode or object. The "text" field MUST be a character-exact copy of a contiguous span of the DRAFT: never paraphrase, never prefix it with "User", never restate the user's own message as a claim (the user's message is evidence, not a claim). If you cannot copy the span exactly, omit the claim.
 Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Ambiguous, missing, or incomplete evidence is insufficient, never a negative fact. Cite exact contiguous source quotes and their source IDs; cite no source for an insufficient claim when no exact span supports it.
 """
 
@@ -354,6 +366,35 @@ class _DropClaim(ValueError):
     """This claim cannot be used; the rest of the audit still can."""
 
 
+_STATUS_RANK = {"supported": 0, "insufficient": 1, "contradicted": 2}
+
+
+def _locate_span(response: str, text: str, *, overlap_threshold: float,
+                 min_claim_tokens: int) -> tuple[str | None, str]:
+    """Map a model claim onto an EXACT span of the draft.
+
+    Exact substring first. Otherwise the grounding verifier's locator finds
+    the single sentence whose content tokens cover ``overlap_threshold`` of
+    the claim's (live 2026-09-15: gpt-4o-mini wrote "User has a cover letter
+    waiting for a fresher brain tomorrow." for the draft's "Tomorrow's got
+    the cover letter waiting for a fresher brain."). Ambiguous or missing →
+    ``None``: a restatement of the user's own message has no draft sentence
+    and is dropped, which is the correct outcome.
+    """
+    if text in response:
+        return text, "exact"
+    chunks = _sentence_chunks(response)
+    index, reason = _locate_claim_sentence(
+        chunks, text, overlap_threshold=overlap_threshold, min_claim_tokens=min_claim_tokens,
+    )
+    if index is None:
+        return None, reason
+    span = chunks[index].strip()
+    if not span or span not in response:
+        return None, "claim_not_located"
+    return span, "relocated"
+
+
 def _checked_references(
     refs: Any, sources: Mapping[str, list[Mapping[str, Any]]], drops: list[str],
 ) -> list[dict]:
@@ -387,7 +428,9 @@ def _checked_references(
 
 
 def _validate_claims(
-    response: str, payload: dict, evidence: Sequence[Mapping[str, Any]],
+    response: str, payload: dict, evidence: Sequence[Mapping[str, Any]], *,
+    overlap_threshold: float = DEFAULT_LOCATE_OVERLAP,
+    min_claim_tokens: int = DEFAULT_LOCATE_MIN_TOKENS,
 ) -> tuple[list[dict], dict[str, int], list[str]]:
     """Validate the model's claims one at a time.
 
@@ -403,25 +446,40 @@ def _validate_claims(
         if isinstance(source_id, str):
             sources.setdefault(source_id, []).append(row)
     claims: list[dict] = []
-    spans: set[str] = set()
-    counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0}
+    by_span: dict[str, dict] = {}
+    counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0, "relocated": 0}
     drops: list[str] = []
     for raw_claim in payload["claims"]:
         try:
             if not isinstance(raw_claim, dict) or set(raw_claim) != {"text", "status", "kind", "evidence"}:
                 raise _DropClaim("unexpected claim shape")
             text, status, kind = raw_claim["text"], raw_claim["status"], raw_claim["kind"]
-            if not isinstance(text, str) or not text or text not in response:
-                raise _DropClaim("claim is not an exact response span")
-            if text in spans:
-                raise _DropClaim("duplicate claim span")
             if status not in _VALID_STATUSES or not isinstance(kind, str) or not kind.strip():
                 raise _DropClaim("invalid claim enum")
+            if not isinstance(text, str) or not text.strip():
+                raise _DropClaim("claim is not an exact response span")
+            located, how = _locate_span(
+                response, text, overlap_threshold=overlap_threshold,
+                min_claim_tokens=min_claim_tokens,
+            )
+            if located is None:
+                raise _DropClaim(f"claim is not an exact response span ({how})")
         except _DropClaim as exc:
             counts["dropped_claims"] += 1
             drops.append(str(exc))
             continue
-        spans.add(text)
+        if how == "relocated":
+            counts["relocated"] += 1
+        text = located
+        if text in by_span:
+            # Two claims landed on one sentence: keep ONE claim per span and
+            # let the status move only in the conservative direction.
+            existing = by_span[text]
+            if _STATUS_RANK[status] > _STATUS_RANK[existing["status"]]:
+                existing["status"] = status
+                existing["kind"] = kind.strip()
+            drops.append("duplicate claim span (merged)")
+            continue
         ref_drops: list[str] = []
         checked_refs = _checked_references(raw_claim["evidence"], sources, ref_drops)
         counts["dropped_evidence"] += len(ref_drops)
@@ -439,7 +497,9 @@ def _validate_claims(
                 # Assistant discussion/advice cannot corroborate a user event.
                 status = "insufficient"
                 counts["demoted"] += 1
-        claims.append({"text": text, "status": status, "kind": kind.strip(), "evidence": checked_refs})
+        claim = {"text": text, "status": status, "kind": kind.strip(), "evidence": checked_refs}
+        by_span[text] = claim
+        claims.append(claim)
     return claims, counts, drops
 
 
@@ -453,6 +513,7 @@ class PersonalClaimResult:
     dropped_claim_count: int = 0
     dropped_evidence_count: int = 0
     demoted_count: int = 0
+    relocated_count: int = 0
 
     def __post_init__(self) -> None:
         if self.status not in _RESULT_STATUSES:
@@ -480,6 +541,7 @@ class PersonalClaimResult:
             "dropped_claim_count": int(self.dropped_claim_count),
             "dropped_evidence_count": int(self.dropped_evidence_count),
             "demoted_count": int(self.demoted_count),
+            "relocated_count": int(self.relocated_count),
         }
         if self.evidence_truncated:
             result["evidence_truncated"] = True
@@ -494,6 +556,8 @@ async def audit_personal_claims(
     model_name: str | None = None,
     timeout_s: float = 5.0,
     max_tokens: int = 900,
+    overlap_threshold: float = DEFAULT_LOCATE_OVERLAP,
+    min_claim_tokens: int = DEFAULT_LOCATE_MIN_TOKENS,
 ) -> PersonalClaimResult:
     """Semantically review ``response`` and mechanically validate its JSON."""
 
@@ -532,7 +596,10 @@ async def audit_personal_claims(
         logger.debug(f"[PersonalClaim] invalid_json: {exc}")
         return PersonalClaimResult("failed", "invalid_json", elapsed_s=perf_counter() - started,
                                    evidence_truncated=truncated)
-    claims, counts, drops = _validate_claims(response, payload, evidence)
+    claims, counts, drops = _validate_claims(
+        response, payload, evidence,
+        overlap_threshold=overlap_threshold, min_claim_tokens=min_claim_tokens,
+    )
     if drops:
         logger.debug(f"[PersonalClaim] dropped {counts['dropped_claims']} claim(s), "
                      f"{counts['dropped_evidence']} reference(s): {sorted(set(drops))}")
@@ -546,7 +613,8 @@ async def audit_personal_claims(
                                evidence_truncated=truncated,
                                dropped_claim_count=counts["dropped_claims"],
                                dropped_evidence_count=counts["dropped_evidence"],
-                               demoted_count=counts["demoted"])
+                               demoted_count=counts["demoted"],
+                               relocated_count=counts["relocated"])
 
 
 _SENTENCE_END_RE = re.compile(r"[.!?]+(?:[\"'”’»\)\]]+)?(?:\s+|$)|\n{2,}")
