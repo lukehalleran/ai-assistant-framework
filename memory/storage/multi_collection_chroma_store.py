@@ -70,6 +70,7 @@ from chromadb.utils import embedding_functions
 from datetime import datetime as _dt
 
 import memory.utils as utils
+from utils.async_results import classify_gather_results
 from utils.retrieval_outcome import RetrievalError, StoreWriteError
 
 logger = logging.getLogger(__name__)
@@ -901,7 +902,7 @@ class MultiCollectionChromaStore:
                     return collection_name, []
 
                 # Run query in thread pool to avoid blocking
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 results = await loop.run_in_executor(
                     None,
                     functools.partial(
@@ -923,12 +924,14 @@ class MultiCollectionChromaStore:
         tasks = [query_single_collection(name) for name in collection_names]
         results_dict = {}
 
-        for collection_name, results in await asyncio.gather(*tasks, return_exceptions=True):
-            if isinstance(results, Exception):
-                logger.error(f"[BatchQuery] Exception in {collection_name}: {results}")
-                results_dict[collection_name] = []
-            else:
-                results_dict[collection_name] = results
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+        for name, (_pos, value, err) in zip(collection_names, classify_gather_results(gathered)):
+            if err is not None:
+                logger.error(f"[BatchQuery] Exception in {name}: {err!r}")
+                results_dict[name] = []
+                continue
+            _cname, results = value
+            results_dict[name] = results
 
         return results_dict
 
