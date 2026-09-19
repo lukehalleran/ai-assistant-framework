@@ -712,9 +712,11 @@ def _raising_stream_factory(chunks_before_error, exc=None):
 def _builder_const_isolation():
     """Patches that roll back core.prompt.builder constants mutated by fast mode.
 
-    Fast mode rebinds builder_module.PROMPT_MAX_* in place (handlers.py:701-712)
-    and (due to a latent restore-to-wrong-module bug) never restores them. These
-    patches ensure a fast-mode test does not pollute global module state.
+    Fast mode rebinds builder_module.PROMPT_MAX_* in place (2026-09-19:
+    entered/restored via handlers._enter_fast_mode_limits/_exit_fast_mode_limits
+    in handle_submit's finally, on every path). These patches let a fast-mode
+    test snapshot + roll back the constants itself, independent of that
+    restore's own bookkeeping.
     """
     import core.prompt.builder as _bm
     return [
@@ -884,7 +886,15 @@ class TestEnhancedStreamError:
 
 
 class TestFastModeCleanup:
-    """Pin that the finally (and thus fast-mode flag restore) is enhanced-path-only."""
+    """Pin that fast-mode flags + builder limits are restored on EVERY path.
+
+    2026-09-19: handle_submit's outer finally (_enter_fast_mode_limits /
+    _exit_fast_mode_limits) is the single chokepoint every submission path
+    passes through — enhanced, agentic, duel, doc-gen, self-note alike —
+    so a path that returns before the enhanced-only inline finally no
+    longer leaves fast-mode flags or the builder's PROMPT_MAX_* limits
+    stuck lowered for the rest of the process.
+    """
 
     @pytest.mark.asyncio
     async def test_fast_mode_flag_cleared_enhanced(self):
@@ -895,9 +905,10 @@ class TestFastModeCleanup:
         assert orch.prompt_builder.context_gatherer._fast_mode is False
 
     @pytest.mark.asyncio
-    async def test_fast_mode_agentic_leaves_flag_set(self):
-        # LATENT BUG (pinned, do NOT fix in this refactor): agentic returns before
-        # the enhanced finally, so fast-mode flags are never restored on that path.
+    async def test_fast_mode_agentic_clears_flag(self):
+        # 2026-09-19: agentic used to return before the enhanced-only finally
+        # and leave the fast-mode flag set; the outer wrapper's finally now
+        # clears it on every path, including agentic.
         orch = _make_orchestrator(
             agentic_enabled=True,
             agentic_items=["The 10th Fibonacci number is 55."],
@@ -905,7 +916,90 @@ class TestFastModeCleanup:
         await _run_submit(
             "calculate fibonacci 10", orch, fast_mode=True, extra_patches=_builder_const_isolation(),
         )
-        assert orch.prompt_builder.context_gatherer._fast_mode is True
+        assert orch.prompt_builder.context_gatherer._fast_mode is False
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_restores_builder_limits_enhanced(self):
+        # No _builder_const_isolation() here on purpose -- those patches
+        # restore the constants themselves at stopall, which would make
+        # this assertion vacuous. This drives the real restore path.
+        import core.prompt.builder as bm
+        import gui.handlers as handlers
+
+        before = (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC)
+        try:
+            orch = _make_orchestrator(streaming_chunks=["A normal answer."])
+            await _run_submit("How are you?", orch, fast_mode=True)
+            after = (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC)
+            assert after == before
+            assert handlers._fast_mode_depth == 0
+        finally:
+            bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC = before
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_restores_builder_limits_agentic(self):
+        # Same as above, but through the agentic path -- the path the
+        # wrong-module restore never reached before this fix.
+        import core.prompt.builder as bm
+        import gui.handlers as handlers
+
+        before = (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC)
+        try:
+            orch = _make_orchestrator(
+                agentic_enabled=True,
+                agentic_items=["The 10th Fibonacci number is 55."],
+            )
+            await _run_submit("calculate fibonacci 10", orch, fast_mode=True)
+            after = (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC)
+            assert after == before
+            assert handlers._fast_mode_depth == 0
+        finally:
+            bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC = before
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_limits_lowered_during_turn(self):
+        # The limits must actually be down WHILE the turn runs (not just
+        # correctly restored afterward) -- capture the value prepare_prompt
+        # sees at call time.
+        import core.prompt.builder as bm
+
+        before = (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC)
+        captured = {}
+        orch = _make_orchestrator(streaming_chunks=["A normal answer."])
+
+        async def _capture_and_return(*args, **kwargs):
+            captured["PROMPT_MAX_MEMS"] = bm.PROMPT_MAX_MEMS
+            return ("Test prompt", "Test system prompt", {})
+
+        orch.prepare_prompt.side_effect = _capture_and_return
+        try:
+            await _run_submit("How are you?", orch, fast_mode=True)
+            assert captured.get("PROMPT_MAX_MEMS") == 10
+        finally:
+            bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC = before
+
+    def test_fast_mode_depth_nested(self):
+        # Overlapping/nested enter calls must not let an inner exit restore
+        # the limits early, and the true originals only come back once the
+        # depth counter reaches zero.
+        import core.prompt.builder as bm
+        import gui.handlers as handlers
+
+        before = (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC)
+        try:
+            handlers._enter_fast_mode_limits()
+            handlers._enter_fast_mode_limits()
+            assert (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC) == (10, 5, 8)
+
+            handlers._exit_fast_mode_limits(MagicMock())
+            assert (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC) == (10, 5, 8)
+
+            handlers._exit_fast_mode_limits(MagicMock())
+            assert (bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC) == before
+        finally:
+            bm.PROMPT_MAX_MEMS, bm.PROMPT_MAX_RECENT, bm.PROMPT_MAX_SEMANTIC = before
+            handlers._fast_mode_depth = 0
+            handlers._fast_mode_saved.clear()
 
 
 class TestDebugChunkInvariant:
