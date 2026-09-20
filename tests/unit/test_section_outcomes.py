@@ -146,14 +146,54 @@ class TestGatherExceptionMarksAllFailedGatherError:
             raise RuntimeError(f"{MARKER} wait blew up")
 
         monkeypatch.setattr("core.prompt.builder.asyncio.wait", boom)
-        result = await builder.build_prompt(
-            "Synthetic question", retrieval_overrides=retrieval_limits()
-        )
-        outcomes = result["_section_outcomes"]
-        for name in ("recent", "user_profile", "web_search"):
-            assert outcomes[name] == {"status": "failed", "reason": "gather_error"}
-        assert "_build_time" in result, "builder must not fall back to its error path"
-        assert MARKER not in str(result)
+
+        # `boom` raises synchronously with no `await` inside it, so control
+        # never returns to the event loop between the builder's
+        # `asyncio.create_task(_timed_task(name, coro))` calls (one per
+        # "recent"/"user_profile"/"web_search") and the failing
+        # `await asyncio.wait(...)` line -- none of those three Tasks ever
+        # gets its first `__step()`. The builder's own `finally` block then
+        # does `task.cancel()` + `await asyncio.gather(*tasks.values(),
+        # return_exceptions=True)`, but cancelling a Task that has not yet
+        # started throws CancelledError into its (unstarted) wrapper
+        # coroutine -- and per CPython's coroutine .throw() semantics that
+        # never executes the wrapper's own body (verified empirically: the
+        # wrapper's `try: result = await coro` line never runs). So the
+        # AsyncMock coroutine created when each `_timed_task(name, coro)`
+        # argument was evaluated (e.g. `self.context_gatherer.
+        # _get_recent_conversations(...)`) is abandoned, unstarted, and
+        # would otherwise warn "was never awaited" when garbage collected.
+        # This is an unavoidable side effect of driving this exact
+        # synchronous-failure scenario against AsyncMock collaborators, not
+        # a genuine bug in the assertions below -- track each created
+        # coroutine here and close() it explicitly (recommended by the
+        # batch plan) rather than masking the warning with a filter.
+        created_coros = []
+
+        def _tracking(async_mock):
+            def _call(*args, **kwargs):
+                coro = async_mock(*args, **kwargs)
+                created_coros.append(coro)
+                return coro
+            return _call
+
+        for name in ("_get_recent_conversations", "get_user_profile_context", "_get_web_search_results"):
+            monkeypatch.setattr(
+                builder.context_gatherer, name, _tracking(getattr(builder.context_gatherer, name))
+            )
+
+        try:
+            result = await builder.build_prompt(
+                "Synthetic question", retrieval_overrides=retrieval_limits()
+            )
+            outcomes = result["_section_outcomes"]
+            for name in ("recent", "user_profile", "web_search"):
+                assert outcomes[name] == {"status": "failed", "reason": "gather_error"}
+            assert "_build_time" in result, "builder must not fall back to its error path"
+            assert MARKER not in str(result)
+        finally:
+            for coro in created_coros:
+                coro.close()
 
 
 class TestNarrativeOutcome:
