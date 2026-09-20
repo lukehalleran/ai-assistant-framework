@@ -18,6 +18,7 @@ import time
 from email.utils import parseaddr
 from typing import Dict, List, Optional, Tuple
 
+from utils.async_results import partition_gather_results
 from utils.logging_utils import get_logger
 
 logger = get_logger("gmail_search")
@@ -114,6 +115,10 @@ async def search_gmail_contacts(
             return_exceptions=True,
         )
 
+        header_values, header_errors = partition_gather_results(headers_list)
+        for _err in header_errors:
+            logger.debug(f"[GmailSearch] header fetch dropped: {_err!r}")
+
         # Get the user's own email to exclude from results
         _own_email = ""
         try:
@@ -124,8 +129,8 @@ async def search_gmail_contacts(
 
         # Parse and deduplicate
         seen_emails: Dict[str, Dict] = {}  # email -> best result dict
-        for headers in headers_list:
-            if isinstance(headers, Exception) or not headers:
+        for headers in header_values:
+            if not headers:
                 continue
             for direction, raw_header in headers:
                 name, email = parseaddr(raw_header)

@@ -265,6 +265,7 @@ async def test_short_turn_inflight_clears_on_cancel_and_idle_skips(monkeypatch):
     try:
         assert handlers.has_inflight_turns()
         monkeypatch.setattr(main, "_shutdown_requested", False)
+        monkeypatch.setattr(main, "_process_exiting", False)
         monkeypatch.setattr(main, "_last_activity_time", 0)
         monkeypatch.setattr(main, "_orchestrator_ref", object())
         shutdown = MagicMock()
@@ -274,7 +275,7 @@ async def test_short_turn_inflight_clears_on_cancel_and_idle_skips(monkeypatch):
         def tick(*args):
             sleeps.append(1)
             if len(sleeps) == 2:
-                main._shutdown_requested = True
+                main._process_exiting = True
 
         monkeypatch.setattr(main.time, "sleep", tick)
         main._idle_monitor_thread()
