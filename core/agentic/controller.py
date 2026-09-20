@@ -736,9 +736,14 @@ class AgenticSearchController:
 
                 # Build accumulated context from fetched pages
                 fetch_context_parts = []
-                for url, result in zip(initial_urls[:3], fetch_results):
-                    if isinstance(result, Exception):
-                        content = f"[Error fetching {url}: {result}]"
+                # One classification for the whole round: the per-URL context, the
+                # round summary and the budget-block lookup below all read the SAME
+                # outcomes, so a cancelled fetch (a CancelledError instance, not an
+                # Exception) is an error in every one of them (2026-09-19).
+                fetch_outcomes = classify_gather_results(fetch_results)
+                for url, (_pos, result, err) in zip(initial_urls[:3], fetch_outcomes):
+                    if err is not None:
+                        content = f"[Error fetching {url}: {str(err) or type(err).__name__}]"
                     else:
                         content = result
                     fetch_context_parts.append(
@@ -755,8 +760,9 @@ class AgenticSearchController:
                     duration_ms=fetch_duration
                 )
                 first_round.summary = "\n\n".join(
-                    r if not isinstance(r, Exception) else f"[Error: {r}]"
-                    for r in fetch_results
+                    o.value if o.error is None
+                    else f"[Error: {str(o.error) or type(o.error).__name__}]"
+                    for o in fetch_outcomes
                 )
                 # Adversarial-review follow-up finding 3: carry a typed
                 # budget-block reason through even when one of several URLs
@@ -764,10 +770,10 @@ class AgenticSearchController:
                 # wins (there is one round for all of round 1's URLs).
                 first_round.blocked = next(
                     (
-                        getattr(r, "blocked", None)
-                        for r in fetch_results
-                        if not isinstance(r, Exception)
-                        and isinstance(getattr(r, "blocked", None), str)
+                        getattr(o.value, "blocked", None)
+                        for o in fetch_outcomes
+                        if o.error is None
+                        and isinstance(getattr(o.value, "blocked", None), str)
                     ),
                     None,
                 )

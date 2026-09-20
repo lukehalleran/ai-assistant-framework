@@ -193,7 +193,7 @@ async def _smtp_send(
                     server.login(app_config.INTERNET_ACTIONS_SMTP_USER, app_config.INTERNET_ACTIONS_SMTP_PASSWORD)
                 server.send_message(msg)
 
-        await asyncio.get_event_loop().run_in_executor(None, _send)
+        await asyncio.get_running_loop().run_in_executor(None, _send)
         logger.info(f"[Email] Sent to {recipient}: {subject}")
         return ActionResult(
             action_id=proposal.action_id,

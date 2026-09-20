@@ -73,6 +73,22 @@ def _marker_reason(marker) -> str:
     return reason
 
 
+def pytest_configure(config):
+    # pytest-asyncio tripwire (2026-09-19): PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 (or
+    # `-p no:asyncio`) silently disables pytest-asyncio, so every `async def`
+    # test either errors or is skipped instead of running — a 2026-09-16 batch
+    # re-ran 21 test batches before this was caught. Refuse to proceed instead.
+    # NOTE: the stdlib-only bug-class-guards lane runs with
+    # `--confcutdir=tests/bug_class_guards`, which keeps pytest from loading
+    # this file at all, so this hook never fires for that lane.
+    if not config.pluginmanager.hasplugin("asyncio"):
+        raise _pytest.UsageError(
+            "pytest-asyncio is not loaded (PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 or "
+            "'-p no:asyncio'?). Every async test would error or be skipped — "
+            "refusing to run. See docs/TEST_LANES.md."
+        )
+
+
 def pytest_collection_modifyitems(config, items):
     violations = []
     for item in items:

@@ -25,6 +25,7 @@ import time
 from typing import Dict, List, Optional
 
 from core.email.provider import EmailMessage, EmailProvider, message_timestamp
+from utils.async_results import classify_gather_results
 from utils.logging_utils import get_logger
 
 logger = get_logger("email_service")
@@ -53,11 +54,11 @@ class EmailService:
     async def _fan_out(self, coros) -> List[EmailMessage]:
         results = await asyncio.gather(*coros, return_exceptions=True)
         merged: List[EmailMessage] = []
-        for provider, res in zip(self.providers, results):
-            if isinstance(res, Exception):
+        for provider, (_pos, res, err) in zip(self.providers, classify_gather_results(results)):
+            if err is not None:
                 logger.warning(
                     f"[EmailService] provider {getattr(provider, 'name', '?')} "
-                    f"failed: {res}")
+                    f"failed: {err!r}")
                 continue
             merged.extend(res or [])
         merged = [m for m in merged if isinstance(m, EmailMessage)]

@@ -280,7 +280,7 @@ async def test_wiki_records_swallowed_live_snippet_timeout(wiki, monkeypatch):
         raise TimeoutError
 
     monkeypatch.setattr(gk, "asyncio", SimpleNamespace(
-        wait_for=timeout, get_event_loop=gk.asyncio.get_event_loop, TimeoutError=TimeoutError,
+        wait_for=timeout, get_running_loop=gk.asyncio.get_running_loop, TimeoutError=TimeoutError,
     ))
     assert await gatherer._get_wiki_content("describe stellar quasars") == []
     snippet.assert_called_once_with("quasar")
