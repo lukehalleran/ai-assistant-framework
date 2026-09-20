@@ -12,6 +12,7 @@ import {
 import { notifications } from '@mantine/notifications'
 import { api } from '../../api/client'
 import type { CurationProposal } from '../../api/types'
+import { describeCurationFailure } from './failure'
 
 // Curation Center (docs/AUTONOMOUS_CURATION_DESIGN.md): the one-click queue
 // that replaces terminal candidate files + --apply scripts. Proposals carry
@@ -42,12 +43,11 @@ function ProposalCard({
         onResolve()
       })
       .catch((err) => {
-        notifications.show({
-          color: 'red',
-          title: `${verb} failed`,
-          message: err instanceof Error ? err.message : String(err),
-        })
+        const f = describeCurationFailure(err, verb)
+        notifications.show({ color: f.color, title: f.title, message: f.message })
         // A failed save can leave an interrupted operation requiring Undo.
+        // A lost response may have completed on the server — re-read the
+        // real state either way.
         onResolve()
       })
       .finally(() => setBusy(false))
@@ -153,13 +153,12 @@ export default function CurationPage() {
         })
         refresh()
       })
-      .catch((err) =>
-        notifications.show({
-          color: 'red',
-          title: 'Scan failed',
-          message: err instanceof Error ? err.message : String(err),
-        }),
-      )
+      .catch((err) => {
+        const f = describeCurationFailure(err, 'Scan')
+        notifications.show({ color: f.color, title: f.title, message: f.message })
+        // A lost response may have completed on the server; re-read the queue.
+        if (f.lost) refresh()
+      })
       .finally(() => setScanning(false))
   }
 
@@ -231,14 +230,13 @@ export default function CurationPage() {
                         })
                         refresh()
                       })
-                      .catch((err) =>
-                        notifications.show({
-                          color: 'red',
-                          title: 'Undo failed',
-                          message:
-                            err instanceof Error ? err.message : String(err),
-                        }),
-                      )
+                      .catch((err) => {
+                        const f = describeCurationFailure(err, 'Undo')
+                        notifications.show({ color: f.color, title: f.title, message: f.message })
+                        // A lost response may have completed on the server;
+                        // re-read the activity feed either way.
+                        if (f.lost) refresh()
+                      })
                   }
                 >
                   Undo
