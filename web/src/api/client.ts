@@ -57,13 +57,18 @@ export interface NotesSyncStatus {
 }
 
 /** A non-ok HTTP status. Distinguishable from a dropped connection (a bare
- * fetch rejection), which is the case BC-80 must never report as a failure. */
+ * fetch rejection), which is the case BC-80 must never report as a failure.
+ * `detail` is the server's own error text (e.g. a FastAPI `{"detail": …}`
+ * body) when the caller could read one; existing call sites that omit it
+ * keep the generic `nonOkRequestMessage` wording unchanged. */
 export class HttpStatusError extends Error {
   readonly status: number
-  constructor(status: number, label: string) {
-    super(nonOkRequestMessage(status, label))
+  readonly detail?: string
+  constructor(status: number, label: string, detail?: string) {
+    super(detail || nonOkRequestMessage(status, label))
     this.name = 'HttpStatusError'
     this.status = status
+    this.detail = detail
   }
 }
 
@@ -160,6 +165,25 @@ function startedSince(status: NotesSyncStatus, postedAtMs: number): boolean {
   const ageS = status.server_time - status.started_at
   const sinceRequestS = (Date.now() - postedAtMs) / 1000
   return ageS <= sinceRequestS + 5
+}
+
+/** Reads a Curation Center endpoint's response. A non-ok status is a real
+ * failure (BC-80): thrown as HttpStatusError carrying the server's `detail`
+ * text when the body has one, so the caller can tell it apart from a lost
+ * response (any other rejection — see failure.ts). */
+async function curationResult<T>(resp: Response, label: string): Promise<T> {
+  if (!resp.ok) {
+    const detail = await resp
+      .json()
+      .then((b: unknown) =>
+        b && typeof b === 'object' && typeof (b as { detail?: unknown }).detail === 'string'
+          ? (b as { detail: string }).detail
+          : null,
+      )
+      .catch(() => null)
+    throw new HttpStatusError(resp.status, label, detail ?? undefined)
+  }
+  return resp.json() as Promise<T>
 }
 
 
@@ -268,42 +292,43 @@ export const api = {
   },
 
   // ---- Curation Center (docs/AUTONOMOUS_CURATION_DESIGN.md) ----
+  //
+  // BC-80: apply/dismiss/undo/scan run in a server worker that outlives the
+  // HTTP request (api/routes/curation.py `_run_operation`) — the queue +
+  // journal are the retained outcome. A non-ok response is a real failure
+  // (HttpStatusError, carrying the server's `detail` when it sent one); any
+  // other rejection (network reset, aborted fetch) means the response was
+  // lost, not that the operation failed — see failure.ts describeCurationFailure.
 
   getCurationQueue: () =>
-    authorizedFetch('/api/curation/queue').then((r) => json<CurationQueueResponse>(r)),
+    authorizedFetch('/api/curation/queue').then((r) =>
+      curationResult<CurationQueueResponse>(r, 'Curation queue'),
+    ),
 
   runCurationScan: () =>
     authorizedFetch('/api/curation/scan', { method: 'POST' }).then((r) =>
-      json<CurationScanReport>(r),
+      curationResult<CurationScanReport>(r, 'Scan'),
     ),
 
   applyCurationProposal: (id: string) =>
-    authorizedFetch(`/api/curation/${id}/apply`, { method: 'POST' }).then(async (r) => {
-      if (!r.ok) {
-        const detail = await r.json().then((b) => b.detail).catch(() => null)
-        throw new Error(detail || `${r.status} ${r.statusText}`)
-      }
-      return r.json() as Promise<CurationProposal>
-    }),
+    authorizedFetch(`/api/curation/${id}/apply`, { method: 'POST' }).then((r) =>
+      curationResult<CurationProposal>(r, 'Apply'),
+    ),
 
   dismissCurationProposal: (id: string, reason = '') =>
     authorizedFetch(`/api/curation/${id}/dismiss`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
-    }).then((r) => json<CurationProposal>(r)),
+    }).then((r) => curationResult<CurationProposal>(r, 'Dismiss')),
 
   undoCurationProposal: (id: string) =>
-    authorizedFetch(`/api/curation/${id}/undo`, { method: 'POST' }).then(async (r) => {
-      if (!r.ok) {
-        const detail = await r.json().then((b) => b.detail).catch(() => null)
-        throw new Error(detail || `${r.status} ${r.statusText}`)
-      }
-      return r.json() as Promise<CurationProposal>
-    }),
+    authorizedFetch(`/api/curation/${id}/undo`, { method: 'POST' }).then((r) =>
+      curationResult<CurationProposal>(r, 'Undo'),
+    ),
 
   getCurationActivity: (limit = 100) =>
     authorizedFetch(`/api/curation/activity?limit=${limit}`).then((r) =>
-      json<{ events: Record<string, unknown>[] }>(r),
+      curationResult<{ events: Record<string, unknown>[] }>(r, 'Curation activity'),
     ),
 }
