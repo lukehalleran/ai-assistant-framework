@@ -114,13 +114,21 @@ def configure_logging(
             # Rotate existing log instead of truncating — preserves debug
             # data from prior runs (critical when app restarts mid-session).
             if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                mtime = os.path.getmtime(file_path)
-                ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(mtime))
-                base, ext = os.path.splitext(file_path)
-                rotated = f"{base}_{ts}{ext}"
-                # Avoid overwriting if rotated name already exists
-                if not os.path.exists(rotated):
-                    os.rename(file_path, rotated)
+                # A refused second launch (the single-instance lock is still
+                # held by a live process) must not steal that process's log:
+                # renaming it here would leave the running instance appending
+                # to the archived name while the "live" path holds only the
+                # refused launcher's few startup lines (2026-09-19).
+                from utils.single_instance import instance_lock_held_by_other  # lazy import: cycle
+                held = instance_lock_held_by_other()
+                if not held:
+                    mtime = os.path.getmtime(file_path)
+                    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(mtime))
+                    base, ext = os.path.splitext(file_path)
+                    rotated = f"{base}_{ts}{ext}"
+                    # Avoid overwriting if rotated name already exists
+                    if not os.path.exists(rotated):
+                        os.rename(file_path, rotated)
         except Exception:
             pass
         try:
