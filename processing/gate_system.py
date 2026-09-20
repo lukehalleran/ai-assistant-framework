@@ -824,7 +824,7 @@ class CosineSimilarityGateSystem:
                     chunk, convert_to_numpy=True, normalize_embeddings=True
                 )
             else:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 # Use kwargs (positional booleans hit wrong params in ST).
                 chunk_vecs = await loop.run_in_executor(
                     None,
