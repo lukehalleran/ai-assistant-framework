@@ -55,7 +55,7 @@ def _cfg_int(key: str, default_val: int) -> int:
 # Summary configuration
 FORCE_LLM_SUMMARIES = _parse_bool(os.getenv("FORCE_LLM_SUMMARIES", "0"))
 SUM_TIMEOUT = int(os.getenv("SUM_TIMEOUT", "30"))
-REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "1"))
+REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "0"))  # same default as core/prompt/builder.py (off: an LLM call inside the prompt build)
 
 # Target number of reflections to include in prompt (kept in sync with builder)
 try:

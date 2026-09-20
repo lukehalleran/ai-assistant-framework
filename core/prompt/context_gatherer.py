@@ -158,10 +158,6 @@ try:
 except ImportError:
     SEMANTIC_CHUNKS_GATE_THRESHOLD = 0.35
 
-# Gating configuration
-GATE_COSINE_THRESHOLD = float(os.getenv("GATE_COSINE_THRESHOLD", "0.45"))
-GATE_XENC_THRESHOLD = float(os.getenv("GATE_XENC_THRESHOLD", "0.55"))
-
 # Web search configuration (import from app_config if available)
 try:
     from config.app_config import (
