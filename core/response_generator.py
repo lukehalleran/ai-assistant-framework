@@ -11,7 +11,7 @@ Module Contract
   - Switches to the requested model via model_manager; wraps generate_async; yields words; logs first‑token latency + total duration.
   - Ensures a non‑empty system prompt is sent (falls back to config SYSTEM_PROMPT if blank/None).
   - Reasoning/thinking detection [NEW 2026-03-26]: Extracts reasoning_content from streaming chunks
-    (OpenAI-style delta). Emits synthetic <thinking>/<\/thinking> wrapper tags around reasoning blocks
+    (OpenAI-style delta). Emits synthetic <thinking>/</thinking> wrapper tags around reasoning blocks
     so handlers.py can detect and suppress them during streaming display. Implemented via
     core.reasoning_stream_filter.InterleavedReasoningFilter [2026-06-28], which ALSO holds back a
     leading draft run so interleaved reason→draft→reason→answer streams can't fuse the draft onto the
