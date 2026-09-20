@@ -104,9 +104,15 @@ class TestMainWiring:
         assert self.SRC.count("install_hangup_handler(logger=logger)") == 2
 
     def test_second_shutdown_entrant_waits_for_inflight_run(self):
+        # 2026-09-19: `_shutdown_requested` is no longer a permanent one-shot
+        # latch — it is True only while a run is in flight, claimed/released
+        # via _begin_shutdown_run()/_end_shutdown_run() (see main.py). The
+        # assertions below were rewritten around those helpers' names.
+        # Behavioural sibling covering the actual re-arming semantics:
+        # tests/unit/test_shutdown_latch_rearm.py (BC-63).
         body = self.SRC.split("async def run_shutdown_tasks_async", 1)[1].split("\ndef ", 1)[0]
         assert "_shutdown_done.wait" in body, "lifespan entrant must wait for an in-flight idle shutdown"
-        assert body.index("_shutdown_done.wait") < body.index("_shutdown_requested = True")
-        assert body.rstrip().endswith("_shutdown_done.set()")
+        assert body.index("_shutdown_done.wait") < body.index("_do_shutdown_async(")
+        assert body.rstrip().endswith("_end_shutdown_run()")
         sync_body = self.SRC.split("def _run_shutdown_tasks(orchestrator)", 1)[1].split("\nasync def ", 1)[0]
-        assert "finally:\n        _shutdown_done.set()" in sync_body
+        assert "finally:\n        _end_shutdown_run()" in sync_body
