@@ -112,7 +112,11 @@ async def test_generate_async_fallback_has_no_stray_model_kwarg():
 
 
 @pytest.mark.asyncio
-async def test_reflections_accept_complete_string_generation():
+async def test_reflections_accept_complete_string_generation(monkeypatch):
+    # On-demand reflections default OFF (same default as the builder, its only
+    # caller — 2026-09-19); this test is about parsing the generation, so it
+    # turns the feature on explicitly instead of relying on an env default.
+    monkeypatch.setattr("core.prompt.summarizer.REFLECTIONS_ON_DEMAND", True)
     manager = _OnceManager("- First useful reflection.\n- Second useful reflection.")
     summarizer = LLMSummarizer(manager, memory_coordinator=None)
 
