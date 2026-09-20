@@ -939,10 +939,10 @@ class ResponseGenerator:
         judge_scores: Dict[int, List[float]] = {id(c): [] for c in candidates}
         if judge_tasks:
             judge_results = await asyncio.gather(*judge_tasks, return_exceptions=True)
-            for m, res in zip(judge_meta, judge_results):
+            for m, (_pos, res, err) in zip(judge_meta, classify_gather_results(judge_results)):
                 sc = 0.0
-                if isinstance(res, Exception):
-                    self.logger.error(f"[JUDGE] error: {res}")
+                if err is not None:
+                    self.logger.error(f"[JUDGE] error: {err!r}")
                 else:
                     sc = float(res)
                 judge_scores[m["cid"]].append(sc)
