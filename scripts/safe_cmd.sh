@@ -71,6 +71,7 @@ sys.stdout.write(json.dumps(args))
 " "$@")
 
     local result
+    local rc=0
     result=$(python3 -c "
 import json, sys
 sys.path.insert(0, '${REPO_ROOT}')
@@ -83,9 +84,9 @@ print(r.get('reason', 'destructive operation'))
 if r.get('severity') == 'always':
     sys.exit(2)
 sys.exit(1)
-" "$args_json" 2>&1)
+" "$args_json" 2>&1) || rc=$?
 
-    CLASSIFY_EXIT=$?
+    CLASSIFY_EXIT=$rc
     CLASSIFY_REASON="$result"
 }
 

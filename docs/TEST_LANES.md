@@ -263,3 +263,15 @@ handoff/commit. Never bypass on a green-by-assertion.
 
 **Eval suite** (`tests/test_eval/`, 246 tests by collect-only on 2026-09-10; not broken out in `docs/METRICS_SNAPSHOT.md`)
 is unmarked and unignored — already part of the fast lane above.
+
+## 5. Invocation pitfalls
+
+- Never `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` outside the §4 bug-class
+  `tests/bug_class_guards` command — it disables pytest-asyncio (2026-09-16:
+  21 batches re-run); `tests/conftest.py::pytest_configure` now refuses to
+  run at all when the plugin is missing.
+- From a clone, every line is `env -u PYTHONPATH <vars> python -s …` and
+  should print `module.__file__` first — `usercustomize.py` otherwise
+  preloads the LIVE checkout's `utils`.
+- SSH shells default to a soft `nofile` of 1024 — `ulimit -n "$(ulimit -Hn)"`
+  before the non-unit remainder in §4.

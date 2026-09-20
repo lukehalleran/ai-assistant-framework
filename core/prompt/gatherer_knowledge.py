@@ -584,7 +584,7 @@ class KnowledgeRetrievalMixin:
         # Fetch from wiki
         try:
             snippet = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, get_wiki_snippet, query),
+                asyncio.get_running_loop().run_in_executor(None, get_wiki_snippet, query),
                 timeout=5.0
             )
             if snippet:
@@ -1571,7 +1571,7 @@ class KnowledgeRetrievalMixin:
             # Resolve the repo root
             repo_root = None
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(subprocess.run,
                     ["git", "rev-parse", "--show-toplevel"],
                     capture_output=True, text=True, timeout=5
                 )
@@ -1601,7 +1601,7 @@ class KnowledgeRetrievalMixin:
             iso_since = since_datetime.isoformat() if hasattr(since_datetime, 'isoformat') else str(since_datetime)
             committed = []
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(subprocess.run,
                     ["git", "log", f"--since={iso_since}", "--oneline", "--no-merges"],
                     capture_output=True, text=True, timeout=10, cwd=repo_root
                 )
@@ -1614,7 +1614,7 @@ class KnowledgeRetrievalMixin:
             # 2) Uncommitted modified files
             uncommitted_modified = []
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(subprocess.run,
                     ["git", "diff", "--name-only"],
                     capture_output=True, text=True, timeout=10, cwd=repo_root
                 )
@@ -1627,7 +1627,7 @@ class KnowledgeRetrievalMixin:
             # 3) Untracked new files
             uncommitted_new = []
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(subprocess.run,
                     ["git", "status", "--porcelain"],
                     capture_output=True, text=True, timeout=10, cwd=repo_root
                 )
@@ -1761,7 +1761,7 @@ class KnowledgeRetrievalMixin:
                 started = _t.perf_counter()
                 try:
                     results = await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
+                        asyncio.get_running_loop().run_in_executor(
                             _WIKI_CHROMA_EXECUTOR, _query_wiki_chroma
                         ),
                         timeout=WIKI_CHROMA_TIMEOUT_S,
@@ -1892,7 +1892,7 @@ class KnowledgeRetrievalMixin:
             started = _t.perf_counter()
             try:
                 results = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
+                    asyncio.get_running_loop().run_in_executor(
                         _WIKI_SEM_EXECUTOR,
                         _search_and_release,
                     ),

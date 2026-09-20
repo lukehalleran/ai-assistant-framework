@@ -978,16 +978,11 @@ class MemoryStorage:
 
             # Provenance metadata (audit trail)
             if provenance and isinstance(provenance, dict):
-                try:
-                    from config.app_config import PROVENANCE_ENABLED, PROVENANCE_THINKING_MAX_CHARS
-                except ImportError:
-                    PROVENANCE_ENABLED = True
-                    PROVENANCE_THINKING_MAX_CHARS = 4000
-                if PROVENANCE_ENABLED:
+                if app_config.PROVENANCE_ENABLED:
                     if provenance.get("thinking_block"):
                         tb = str(provenance["thinking_block"])
-                        raw_metadata["thinking_block"] = tb[:PROVENANCE_THINKING_MAX_CHARS]
-                        if len(tb) > PROVENANCE_THINKING_MAX_CHARS:
+                        raw_metadata["thinking_block"] = tb[:app_config.PROVENANCE_THINKING_MAX_CHARS]
+                        if len(tb) > app_config.PROVENANCE_THINKING_MAX_CHARS:
                             raw_metadata["thinking_block_truncated"] = True
                     if provenance.get("response_mode"):
                         raw_metadata["response_mode"] = provenance["response_mode"]

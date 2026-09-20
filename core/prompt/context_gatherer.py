@@ -158,10 +158,6 @@ try:
 except ImportError:
     SEMANTIC_CHUNKS_GATE_THRESHOLD = 0.35
 
-# Gating configuration
-GATE_COSINE_THRESHOLD = float(os.getenv("GATE_COSINE_THRESHOLD", "0.45"))
-GATE_XENC_THRESHOLD = float(os.getenv("GATE_XENC_THRESHOLD", "0.55"))
-
 # Web search configuration (import from app_config if available)
 try:
     from config.app_config import (
@@ -224,12 +220,27 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
             self._gate_system = CosineSimilarityGateSystem()
         return self._gate_system
 
+    def _live_chroma_store(self):
+        """The running Daemon's one Chroma store (or None outside a full stack).
+
+        The managers below lazily build their OWN MultiCollectionChromaStore —
+        a second Chroma client plus another bge embedder on the GPU — when no
+        store is injected. Until 2026-09-19 nothing was ever injected here, so
+        a live process held four embedders (startup + reference docs + notes +
+        web-search cache) and the extra stores' writes bypassed the live
+        store's opened-collection cache (BC-81).
+        """
+        # getattr twice: partially-built gatherers (tests, CLI stacks) may lack the coordinator.
+        return getattr(getattr(self, "memory_coordinator", None), "chroma_store", None)
+
     @property
     def web_search_manager(self):
         """Get cached web search manager, creating it only once."""
         if self._web_search_manager is None:
             try:
-                from knowledge.web_search_manager import WebSearchManager, WebSearchRateLimiter  # lazy import: cycle
+                from knowledge.web_search_manager import (  # lazy import: cycle
+                    WebSearchCache, WebSearchManager, WebSearchRateLimiter,
+                )
 
                 # Create rate limiter with config values. The daily limit is
                 # read LIVE (2026-09-09, audit F04): a Settings change made
@@ -248,6 +259,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
                 self._web_search_manager = WebSearchManager(
                     api_key=WEB_SEARCH_API_KEY,  # Pass API key from config
                     rate_limiter=rate_limiter,
+                    cache=WebSearchCache(chroma_store=self._live_chroma_store()),
                     default_timeout=WEB_SEARCH_TIMEOUT,
                     max_content_chars=WEB_SEARCH_MAX_CONTENT_CHARS,
                     link_selector_model=WEB_SEARCH_LINK_SELECTOR_MODEL,
@@ -313,7 +325,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
                     return None
 
                 from knowledge.obsidian_manager import ObsidianManager  # lazy import: cycle
-                self._obsidian_manager = ObsidianManager()
+                self._obsidian_manager = ObsidianManager(chroma_store=self._live_chroma_store())
                 logger.info("[ContextGatherer] ObsidianManager initialized")
             except ImportError as e:
                 logger.debug(f"[ContextGatherer] ObsidianManager not available: {e}")
@@ -341,7 +353,7 @@ class ContextGatherer(WebSearchMixin, MemoryRetrievalMixin, KnowledgeRetrievalMi
                     return None
 
                 from knowledge.reference_docs_manager import ReferenceDocsManager  # lazy import: cycle
-                self._reference_docs_manager = ReferenceDocsManager()
+                self._reference_docs_manager = ReferenceDocsManager(chroma_store=self._live_chroma_store())
                 logger.info("[ContextGatherer] ReferenceDocsManager initialized")
             except ImportError as e:
                 logger.debug(f"[ContextGatherer] ReferenceDocsManager not available: {e}")

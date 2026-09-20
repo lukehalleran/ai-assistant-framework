@@ -13,7 +13,7 @@ itself (verifying the effective per-call args it hands the context gatherer).
 """
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from core.prompt.builder import (
     UnifiedPromptBuilder,
@@ -140,6 +140,22 @@ class TestApplySelfReportTrim:
 def _make_builder() -> UnifiedPromptBuilder:
     b = UnifiedPromptBuilder.__new__(UnifiedPromptBuilder)
     b.context_gatherer = MagicMock(spec=ContextGatherer)
+    # An unconfigured AsyncMock's `return_value` defaults to ANOTHER AsyncMock
+    # (not a plain MagicMock/dict) -- verified against unittest.mock's
+    # _get_child_mock: klass=AsyncMock whenever the parent is AsyncMockMixin
+    # and the new attribute isn't a known sync magic. build_prompt then does
+    # `reflections_data = gathered.get("reflections", {})` and, since that
+    # auto-AsyncMock is not a dict, falls into `all_reflections = reflections_data
+    # or []` -- keeping the SAME AsyncMock instance instead of a real list.
+    # Its later plain (non-magic) `session_reflections.sort(...)` attribute
+    # access then also auto-vivifies as an AsyncMock, so *calling* it returns
+    # a real coroutine that production code (expecting list.sort's synchronous
+    # None return) never awaits -- "coroutine ... was never awaited". Giving
+    # the mock a realistic dict return value keeps it a genuine list by the
+    # time .sort() runs.
+    b.context_gatherer._get_reflections_separate = AsyncMock(
+        return_value={"recent": [], "semantic": []}
+    )
     b.time_manager = None
     b.model_manager = None
     b.memory_coordinator = MagicMock()

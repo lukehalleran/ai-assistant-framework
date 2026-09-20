@@ -434,7 +434,7 @@ class GoalDirectedGenerator:
         a missing/empty registry degrades to no annotation. NOT a merge gate and NOT
         a convergence signal; it only informs review."""
         try:
-            from config.feature_registry import check_conflicts, get_dependencies
+            from config.feature_registry import check_conflicts, get_dependencies  # lazy import: optional-dependency (a missing/broken registry degrades to no annotation)
         except Exception:  # noqa: BLE001
             return
         for p in proposals:

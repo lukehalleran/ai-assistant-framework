@@ -49,7 +49,7 @@ MARKER_RE = re.compile(r"#\s*lazy import:\s*(?P<reasons>[^\n]*)")
 LOOKBACK_LINES = 2
 
 # Lowered by every import-hygiene batch; raised by nobody. See module docstring.
-MAX_UNMARKED = 268  # 2026-09-16 free-file phases done; the remainder is in accepted-debt files (plan v2 phase 5d)
+MAX_UNMARKED = 262  # 2026-09-19: the six try-only config imports resolved (five live app_config reads, one marked optional-dependency); the remainder is in accepted-debt files (plan v2 phase 5d)
 MAX_INVALID = 0  # 0 since the 2026-09-16 MARK batches; a marker outside the vocabulary now fails
 CEILING_SLACK = 25
 
