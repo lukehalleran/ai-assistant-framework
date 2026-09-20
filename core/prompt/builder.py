@@ -108,6 +108,7 @@ from .base import _FallbackMemoryCoordinator
 from .hygiene import ContentHygiene
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
 import hashlib as _hashlib
+from utils.async_results import classify_gather_results
 from utils.ordered_slice import newest_first as _ordered_newest_first
 from utils.retrieval_outcome import outcome_status
 import eval.snapshots as snapshots
@@ -908,8 +909,8 @@ class UnifiedPromptBuilder:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Apply successful compressions back into context
-        for result in results:
-            if result is None or isinstance(result, Exception):
+        for _pos, result, err in classify_gather_results(results):
+            if err is not None or result is None:
                 continue
             section, idx, compressed_text = result
             items = context.get(section)

@@ -38,15 +38,10 @@ def _daemon_running() -> bool:
     try:
         from utils.daemon_guard import daemon_running
         return daemon_running()
-    except Exception:
-        pass
-    # Fallback (guard module unavailable): old cmdline heuristic. Known hole:
-    # a relative-path launch has no repo name in its cmdline (2026-08-21).
-    try:
-        out = subprocess.run(["pgrep", "-af", "main.py"], capture_output=True, text=True).stdout
-        return any("Daemon_v1" in line for line in out.splitlines())
-    except Exception:
-        return False
+    except Exception as exc:  # fail CLOSED: without the real guard we cannot prove the Daemon is down
+        print(f"[daemon-guard] utils.daemon_guard unavailable ({exc!r}) — treating the Daemon as RUNNING; "
+              f"--apply is refused. Run from the repo root with the project interpreter.", file=sys.stderr)
+        return True
 
 
 def main() -> int:
