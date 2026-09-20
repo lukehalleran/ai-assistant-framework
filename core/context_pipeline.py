@@ -1126,12 +1126,8 @@ Rewritten query (just the rewritten text, no explanation):"""
                 # Class-level hasattr (not instance) so Mock objects with auto-created
                 # attributes correctly fall through to the legacy get_recent_memories path.
                 if hasattr(type(cm), 'get_recent_within_hours'):
-                    try:
-                        from config.app_config import STM_RECENT_HOURS
-                    except ImportError:
-                        STM_RECENT_HOURS = 24
                     recent_memories = cm.get_recent_within_hours(
-                        hours=STM_RECENT_HOURS,
+                        hours=app_config.STM_RECENT_HOURS,
                         max_count=self._stm_max_recent,
                     )
                 else:

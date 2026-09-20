@@ -787,13 +787,9 @@ class AgenticSearchController:
                 # A plainly shared URL does not need a planning round after a
                 # successful fetch.  Keep the normal loop as the fallback for
                 # short/error-only fetches.
-                try:
-                    from config.app_config import AGENTIC_FETCH_FASTPATH_MIN_CHARS
-                except ImportError:
-                    AGENTIC_FETCH_FASTPATH_MIN_CHARS = 400
                 substantive = any(
                     not isinstance(result, Exception)
-                    and len(str(result)) >= AGENTIC_FETCH_FASTPATH_MIN_CHARS
+                    and len(str(result)) >= app_config.AGENTIC_FETCH_FASTPATH_MIN_CHARS
                     for result in fetch_results
                 )
                 if fetch_fastpath and substantive:
