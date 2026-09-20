@@ -413,11 +413,7 @@ class ToolExecutor:
         """Execute the deterministic scan and preserve its machine result."""
         # lazy import: cycle
         from memory.pattern_engine import LongitudinalEvidenceSpec, run_longitudinal_scan
-        try:
-            from config.app_config import PATTERN_ANALYSIS_ENABLED
-        except Exception:
-            PATTERN_ANALYSIS_ENABLED = True
-        if not PATTERN_ANALYSIS_ENABLED:
+        if not app_config.PATTERN_ANALYSIS_ENABLED:
             text = "[PATTERN_SCAN] DISABLED by configuration; no evidence retrieved."
             return _ToolResult(decision=decision, round_data=None, formatted_context=text,
                                start_events=[], end_events=[])
@@ -1489,14 +1485,8 @@ class ToolExecutor:
         try:
             # lazy import: cycle (service initialization touches the registry)
             from core.email.service import get_email_service
-            try:
-                from config.app_config import EMAIL_MAX_RESULTS, EMAIL_DEFAULT_WINDOW_DAYS
-            except Exception:
-                EMAIL_MAX_RESULTS = 20
-                EMAIL_DEFAULT_WINDOW_DAYS = 7
-
             service = get_email_service()
-            window_days = window_days or EMAIL_DEFAULT_WINDOW_DAYS
+            window_days = window_days or app_config.EMAIL_DEFAULT_WINDOW_DAYS
 
             # Coverage disclosure (2026-09-01): a negative answer is only as
             # honest as its scope — name the providers actually searched and
@@ -1518,9 +1508,9 @@ class ToolExecutor:
             if counting_shape:
                 messages = await service.recent(window_days=window_days, limit=200)
             elif query:
-                messages = await service.search(query, window_days=window_days, limit=EMAIL_MAX_RESULTS)
+                messages = await service.search(query, window_days=window_days, limit=app_config.EMAIL_MAX_RESULTS)
             else:
-                messages = await service.recent(window_days=window_days, limit=EMAIL_MAX_RESULTS)
+                messages = await service.recent(window_days=window_days, limit=app_config.EMAIL_MAX_RESULTS)
 
             if not messages:
                 return (
@@ -1535,9 +1525,9 @@ class ToolExecutor:
                     f"{window_days} days"
                     + (" (fetch cap 200 reached — true total may be higher)"
                        if len(messages) >= 200 else "")
-                    + f" — newest {min(len(messages), EMAIL_MAX_RESULTS)} listed"
+                    + f" — newest {min(len(messages), app_config.EMAIL_MAX_RESULTS)} listed"
                 )
-                messages = messages[:EMAIL_MAX_RESULTS]
+                messages = messages[:app_config.EMAIL_MAX_RESULTS]
                 lines = [header]
             else:
                 lines = [f"[EMAIL RESULTS] {len(messages)} message(s)"]
