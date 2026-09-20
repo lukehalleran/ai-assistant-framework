@@ -97,9 +97,7 @@ Module Contract
   - _resolve_contact_and_propose_email(...): shared contact resolution + auto-email proposal
     for the agentic and enhanced lookup_contact paths (no_contacts_suffix keeps each path's
     exact not-found wording).
-- KNOWN latent bug (preserved, NOT fixed here): under fast_mode, the duel/doc-gen/self-note/
-  agentic-success paths return before the enhanced finally, so fast-mode flags + _original_limits
-  are never restored on those paths. Pinned by test_fast_mode_agentic_leaves_flag_set.
+- Fast Mode limits/flags are entered and restored in handle_submit's finally (_enter/_exit_fast_mode_limits) — every path.
 - Side effects:
   - Writes to conversation logger; stores to memory_system (with provenance metadata); updates debug_state for Debug Trace tab.
 """
@@ -1422,20 +1420,6 @@ async def _prepare_submit_context(ctx):
     ctx.original_limits = {}
     if ctx.fast_mode:
         logger.warning("[Handle Submit] ⚡⚡⚡ FAST MODE ENABLED ⚡⚡⚡")
-        import core.prompt.builder as builder_module  # lazy import: startup-cost
-        # Override builder module constants (the REAL location of these limits)
-        ctx.original_limits['PROMPT_MAX_MEMS'] = builder_module.PROMPT_MAX_MEMS
-        logger.warning(f"[Fast Mode] PROMPT_MAX_MEMS: {builder_module.PROMPT_MAX_MEMS} → 10")
-        builder_module.PROMPT_MAX_MEMS = 10
-
-        ctx.original_limits['PROMPT_MAX_RECENT'] = builder_module.PROMPT_MAX_RECENT
-        logger.warning(f"[Fast Mode] PROMPT_MAX_RECENT: {builder_module.PROMPT_MAX_RECENT} → 5")
-        builder_module.PROMPT_MAX_RECENT = 5
-
-        if hasattr(builder_module, 'PROMPT_MAX_SEMANTIC'):
-            ctx.original_limits['PROMPT_MAX_SEMANTIC'] = builder_module.PROMPT_MAX_SEMANTIC
-            logger.warning(f"[Fast Mode] PROMPT_MAX_SEMANTIC: {builder_module.PROMPT_MAX_SEMANTIC} → 8")
-            builder_module.PROMPT_MAX_SEMANTIC = 8
 
         # CRITICAL: Set fast mode flags to reduce expensive hybrid retrieval (2150 → ~40 candidates)
         if hasattr(orchestrator.prompt_builder, 'context_gatherer'):
@@ -4615,7 +4599,6 @@ async def _run_enhanced(ctx):
             )
     except Exception:
         pass
-    _original_limits = ctx.original_limits
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
     final_output = ""
@@ -5325,13 +5308,6 @@ async def _run_enhanced(ctx):
             # received the final content during streaming. If needed, a debug
             # record is captured in-stream above.
 
-        # Restore original config limits if Fast Mode was enabled
-        if fast_mode and '_original_limits' in locals():
-            for key, value in _original_limits.items():
-                setattr(app_config, key, value)
-                logger.warning(f"[Fast Mode] Restored {key} = {value}")
-            logger.warning("[Handle Submit] ⚡ Fast Mode limits RESTORED to normal")
-
 
 # ── Ingress guard (2026-08-28): duplicate-submit dedupe + client-error strip ──
 # The SPA's "⚠️ Failed to fetch" resend path double-processed turns for weeks
@@ -5350,6 +5326,56 @@ _INFLIGHT_MIN_CHARS = 20         # short repeats ("ugh", "hello") are legit
 _active_turn_starts: dict = {}   # turn token -> perf_counter at ingress
 _next_turn_token = 0
 _turn_state_lock = threading.Lock()
+
+# Fast Mode module-level state (2026-09-19): the builder's prompt limits are
+# process-wide module constants, so lowering/restoring them has to be a
+# single depth-counted chokepoint every submission path passes through
+# (handle_submit's finally — see _enter_fast_mode_limits/_exit_fast_mode_limits
+# below) rather than something each individual path (enhanced/duel/agentic/
+# doc-gen/self-note) remembers to undo on its own way out.
+_FAST_MODE_LIMITS = {"PROMPT_MAX_MEMS": 10, "PROMPT_MAX_RECENT": 5, "PROMPT_MAX_SEMANTIC": 8}
+_fast_mode_lock = threading.Lock()
+_fast_mode_depth = 0
+_fast_mode_saved: dict = {}
+
+
+def _enter_fast_mode_limits() -> dict:
+    """Lower the builder's prompt limits for a Fast Mode turn. Returns the saved originals."""
+    global _fast_mode_depth
+    import core.prompt.builder as builder_module  # lazy import: startup-cost
+    with _fast_mode_lock:
+        if _fast_mode_depth == 0:
+            _fast_mode_saved.clear()
+            for key, low in _FAST_MODE_LIMITS.items():
+                if hasattr(builder_module, key):
+                    _fast_mode_saved[key] = getattr(builder_module, key)
+                    logger.warning(f"[Fast Mode] {key}: {_fast_mode_saved[key]} → {low}")
+                    setattr(builder_module, key, low)
+        _fast_mode_depth += 1
+        return dict(_fast_mode_saved)
+
+
+def _exit_fast_mode_limits(orchestrator) -> None:
+    """Undo _enter_fast_mode_limits + clear the per-turn fast flags. Idempotent per enter; never raises."""
+    global _fast_mode_depth
+    try:
+        import core.prompt.builder as builder_module  # lazy import: startup-cost
+        with _fast_mode_lock:
+            if _fast_mode_depth > 0:
+                _fast_mode_depth -= 1
+                if _fast_mode_depth == 0:
+                    for key, value in _fast_mode_saved.items():
+                        setattr(builder_module, key, value)
+                        logger.warning(f"[Fast Mode] Restored {key} = {value}")
+                    _fast_mode_saved.clear()
+        gatherer = getattr(getattr(orchestrator, "prompt_builder", None), "context_gatherer", None)
+        if gatherer is not None:
+            gatherer._fast_mode = False
+        retriever = getattr(getattr(orchestrator, "memory_coordinator", None), "_retriever", None)
+        if retriever is not None and hasattr(retriever, "hybrid_retriever"):
+            retriever.hybrid_retriever._fast_mode = False
+    except Exception as e:  # degradation path: a failed restore must never break the turn's teardown
+        logger.error(f"[Fast Mode] restore error (non-fatal): {e}")
 
 
 def has_inflight_turns(max_age_s: float | None = None) -> bool:
@@ -5525,6 +5551,10 @@ async def handle_submit(
         _next_turn_token += 1
         _turn_token = _next_turn_token
         _active_turn_starts[_turn_token] = _time_mod.perf_counter()
+    _fast_entered = False
+    if fast_mode:
+        _enter_fast_mode_limits()
+        _fast_entered = True
     inner = _handle_submit_inner(
             user_text, files, history, use_raw_gpt, orchestrator,
             system_prompt=system_prompt, force_summarize=force_summarize,
@@ -5538,6 +5568,8 @@ async def handle_submit(
         try:
             await inner.aclose()
         finally:
+            if _fast_entered:
+                _exit_fast_mode_limits(orchestrator)
             with _turn_state_lock:
                 _active_turn_starts.pop(_turn_token, None)
             if _key is not None:
@@ -5834,7 +5866,6 @@ async def _handle_submit_inner(
     system_prompt = ctx.system_prompt
     raw_context = ctx.raw_context
     note_images = ctx.note_images
-    _original_limits = ctx.original_limits
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
 

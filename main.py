@@ -486,7 +486,17 @@ async def inspect_summaries():
 
 
 # Globals for shutdown coordination
+# `_shutdown_requested` is True only WHILE a shutdown-task run is in flight
+# (2026-09-19). It used to be a permanent one-shot latch shared by the idle
+# monitor's session flush and the real process-exit shutdown: one idle flush
+# ended the idle monitor's loop for the life of the process AND made the
+# exit-time shutdown return without running — every turn after the first idle
+# hour lost its session reflection, shutdown fact pass and backup
+# (2026-09-18: flush at 16:05, turns at 17:13-17:24, silent exit next day).
 _shutdown_requested = False
+_process_exiting = False        # set by the real exit paths; ends the idle monitor loop
+_exit_shutdown_handled = False  # an exit path has run (or deliberately skipped) the tasks
+_last_flush_done_at = 0.0       # wall time the last shutdown-task run finished (0 = never)
 _orchestrator_ref = None
 _last_activity_time = time.time()
 _idle_check_interval = int(os.getenv("IDLE_CHECK_INTERVAL_MINUTES", "30"))  # Default 30 minutes
@@ -533,15 +543,42 @@ def _gather_session_state(orchestrator):
 # point would have (and did, pre-handler) killed the run mid-fact-extraction.
 _shutdown_done = threading.Event()
 _SHUTDOWN_INFLIGHT_WAIT_S = 600.0  # > reflection cap (60s) + dreaming cap (240s) + backup
+_shutdown_state_lock = threading.Lock()
+_shutdown_owner_thread = None   # ident of the thread that owns the in-flight run
+
+
+def _begin_shutdown_run() -> bool:
+    """Claim the in-flight slot. False when another run is already in flight."""
+    global _shutdown_requested, _shutdown_owner_thread
+    with _shutdown_state_lock:
+        if _shutdown_requested:
+            return False
+        _shutdown_requested = True
+        _shutdown_owner_thread = threading.get_ident()
+        _shutdown_done.clear()
+        return True
+
+
+def _end_shutdown_run() -> None:
+    """Release the in-flight slot and record when the run finished."""
+    global _shutdown_requested, _shutdown_owner_thread, _last_flush_done_at
+    with _shutdown_state_lock:
+        _last_flush_done_at = time.time()
+        _shutdown_requested = False
+        _shutdown_owner_thread = None
+        _shutdown_done.set()
+
+
+def _activity_since_last_flush() -> bool:
+    """True when a user turn arrived after the last completed run (or none has run yet)."""
+    return _last_flush_done_at == 0.0 or _last_activity_time > _last_flush_done_at
 
 
 def _run_shutdown_tasks(orchestrator):
     """Run reflection and summary tasks - callable from signal handler or idle thread."""
-    global _shutdown_requested
-    if _shutdown_requested:
-        return  # Already shutting down
+    if not _begin_shutdown_run():
+        return  # a run is already in flight
 
-    _shutdown_requested = True
     logger.info("[Shutdown] Running reflection and summary tasks...")
 
     _mark_session_end(orchestrator)
@@ -555,7 +592,7 @@ def _run_shutdown_tasks(orchestrator):
     except Exception as e:
         logger.error(f"[Shutdown] Task execution failed: {e}")
     finally:
-        _shutdown_done.set()
+        _end_shutdown_run()
 
 
 async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
@@ -712,47 +749,62 @@ async def run_shutdown_tasks_async(orchestrator):
     Same double-run guard + sequence as _run_shutdown_tasks, so the idle monitor,
     a signal handler, and lifespan shutdown can't run the tasks twice.
     """
-    global _shutdown_requested
-    if _shutdown_requested:
-        if not _shutdown_done.is_set():
-            # The idle monitor (its own thread) is mid-run: let it finish
-            # before the process exits, never cut it off.
-            logger.info("[Shutdown] Shutdown tasks already in flight — waiting for them to finish")
-            loop = asyncio.get_running_loop()
-            finished = await loop.run_in_executor(None, _shutdown_done.wait, _SHUTDOWN_INFLIGHT_WAIT_S)
-            if not finished:
-                logger.warning("[Shutdown] In-flight shutdown tasks did not finish within %ss", _SHUTDOWN_INFLIGHT_WAIT_S)
+    global _process_exiting, _exit_shutdown_handled
+    _process_exiting = True
+    _exit_shutdown_handled = True
+    if not _begin_shutdown_run():
+        # The idle monitor (its own thread) is mid-run: let it finish
+        # before the process exits, never cut it off.
+        logger.info("[Shutdown] Shutdown tasks already in flight — waiting for them to finish")
+        loop = asyncio.get_running_loop()
+        finished = await loop.run_in_executor(None, _shutdown_done.wait, _SHUTDOWN_INFLIGHT_WAIT_S)
+        if not finished:
+            logger.warning("[Shutdown] In-flight shutdown tasks did not finish within %ss", _SHUTDOWN_INFLIGHT_WAIT_S)
         return
-    _shutdown_requested = True
-    logger.info("[Shutdown] Running reflection and summary tasks (lifespan)...")
-
-    _mark_session_end(orchestrator)
 
     try:
+        if not _activity_since_last_flush():
+            # An idle flush already covered everything; re-running would
+            # reflect on the same turns twice. Logged, never silent.
+            logger.info("[Shutdown] No user activity since the last completed session flush — nothing new to process")
+            return
+        logger.info("[Shutdown] Running reflection and summary tasks (lifespan)...")
+        _mark_session_end(orchestrator)
         session_convos, session_summaries = _gather_session_state(orchestrator)
         await _do_shutdown_async(orchestrator, session_convos, session_summaries)
     except Exception as e:
         logger.error(f"[Shutdown] Task execution failed: {e}")
     finally:
-        _shutdown_done.set()
+        _end_shutdown_run()
 
 
 def _signal_handler(signum, frame):
     """Handle SIGTERM/SIGINT for graceful shutdown."""
+    global _process_exiting, _exit_shutdown_handled
     logger.info(f"[Signal] Received signal {signum}, triggering shutdown tasks...")
+    _process_exiting = True
+    _exit_shutdown_handled = True
     if _orchestrator_ref:
-        _run_shutdown_tasks(_orchestrator_ref)
+        if _shutdown_requested and _shutdown_owner_thread != threading.get_ident():
+            # The idle monitor's thread is mid-run: wait, never cut it off.
+            # (A second Ctrl-C on the thread that owns the run still exits at once.)
+            logger.info("[Shutdown] Shutdown tasks already in flight — waiting for them to finish")
+            _shutdown_done.wait(_SHUTDOWN_INFLIGHT_WAIT_S)
+        elif not _activity_since_last_flush():
+            logger.info("[Shutdown] No user activity since the last completed session flush — nothing new to process")
+        else:
+            _run_shutdown_tasks(_orchestrator_ref)
     sys.exit(0)
 
 
 def _idle_monitor_thread():
     """Background thread to detect GUI idle state and trigger shutdown tasks."""
-    global _last_activity_time, _shutdown_requested
-
-    while not _shutdown_requested:
+    # Loops until the PROCESS is exiting. It must not stop after its own
+    # flush: a server that stays up for days has many idle periods.
+    while not _process_exiting:
         time.sleep(_idle_check_interval * 60)  # Check every N minutes
 
-        if _shutdown_requested:
+        if _process_exiting:
             break
 
         # B6 S3 (2026-09-10): a long in-flight turn is activity, not idleness —
@@ -765,12 +817,13 @@ def _idle_monitor_thread():
         idle_seconds = time.time() - _last_activity_time
         idle_minutes = idle_seconds / 60
 
-        if idle_minutes >= _idle_timeout_minutes:
+        # Flush only when there is something new: `_last_activity_time` is no
+        # longer reset after a flush (that reset would read as fresh activity
+        # and re-run the whole LLM sequence every idle hour on the same turns).
+        if idle_minutes >= _idle_timeout_minutes and _activity_since_last_flush():
             logger.info(f"[Idle Monitor] GUI idle for {idle_minutes:.1f} minutes, running shutdown tasks...")
             if _orchestrator_ref:
                 _run_shutdown_tasks(_orchestrator_ref)
-                # Reset activity time after shutdown tasks
-                _last_activity_time = time.time()
 
 
 def update_activity_timestamp():
@@ -1668,9 +1721,11 @@ if __name__ == "__main__":
             # Gather session buffers, if your logger tracks them
             session_convos = []
             session_summaries = []
-            if _shutdown_requested:
-                # Signal handler already ran shutdown tasks — skip to cleanup
+            if _exit_shutdown_handled or _shutdown_requested:
+                # An exit path (signal handler / lifespan) already handled the tasks — skip to cleanup
                 print("[Shutdown] Tasks already completed by signal handler, skipping.")
+            elif not _activity_since_last_flush():
+                print("[Shutdown] No user activity since the last completed session flush, skipping.")
             elif orchestrator:
                 # If your conversation logger exposes a buffer of [{'query','response'}, ...]
                 try:

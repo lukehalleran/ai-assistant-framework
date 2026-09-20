@@ -126,6 +126,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-84 | One invalid element discards a whole multi-item verdict | E | partial |
 | BC-85 | Verbatim-span contract with a paraphrasing model | E | partial |
 | BC-86 | Undocumented function-body import (load-bearing placement indistinguishable from an accident) | B | partial |
+| BC-87 | gather(return_exceptions=True) results admit BaseException into typed code | D | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -778,6 +779,13 @@ next free number at their own merge.
 - Closure: CLAUDE.md import doctrine (five cases, closed reason vocabulary `startup-cost`, `import-side-effect`, `cycle`, `live-config`, `layering`, `patch-point`, `optional-dependency`, `platform`, comma-separated) + the guard as a CEILING RATCHET (`MAX_UNMARKED`/`MAX_INVALID` lowered by every hygiene batch, never raised; a second test fails when a batch leaves the ceiling slack) — CM-02; the plan's Phase 6 flips it to a content-anchored allowlist at zero.
 - Status: partial — the ratchet fails on net growth, not on every new unmarked import inside a batch that also removes some; `closed` when the allowlist gate lands.
 
+### BC-87 gather(return_exceptions=True) results admit BaseException into typed code
+- Mechanism: `asyncio.gather(..., return_exceptions=True)` puts a cancelled child's `CancelledError` (a `BaseException`, not an `Exception`) into the results list; `isinstance(x, Exception)` / `x is not None` filters and tuple-unpacks admit it into typed code.
+- Incidents: 2026-09-16 typecheck triage → PR #14 seven sites; 2026-09-19 six more + the URL-fetch round-summary sibling that the plan missed and an end-to-end test caught; chroma `query_multiple_collections` unpacked every slot before its check.
+- Find: DM-33 = `tests/unit/test_gather_results_guard.py` + `rg -n "return_exceptions=True" -A6 core memory knowledge gui utils api`
+- Closure: `utils/async_results.py` (`classify_gather_results` / `partition_gather_results`, caller cancellation re-raised) as the single decision (CM-01 chokepoint) + the guard with a content-anchored allowlist (CM-02).
+- Status: partial — five sites remain in three accepted-debt files (`memory/shutdown_processor.py` ×3, `knowledge/web_search_manager.py`, `knowledge/document_generator.py` — the last three found by the guard's first run, log-only/positive-type-check shapes), allowlisted in the guard with reasons; closed when they move.
+
 ## Detection methods (DM) — find instances without a full read
 
 | ID | Method | Runs as | Classes |
@@ -814,10 +822,11 @@ next free number at their own merge.
 | DM-30 | Keyword-boundary corpus diff: for every list compiled through `utils/trigger_match.py`, diff old vs new match sets over the corpus's word tokens and review BOTH directions (lost tokens must be unrelated words; gained tokens must be true inflections) | `scripts/probe_keyword_boundary.py`, read-only | BC-01 |
 | DM-32 | Function-body import without a `# lazy import: <reason>` marker from the closed vocabulary, in the app packages + `main.py` (`scripts/` reported only); self-contained AST scan with a ceiling ratchet that every hygiene batch lowers | `tests/unit/test_import_hygiene_guard.py` (CM-02; allowlist gate at the plan's Phase 6) | BC-86, BC-11 |
 | DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human; its untracked changelog input reports *unavailable* in CI, never a clean zero) | BC-76 |
+| DM-33 | `gather(return_exceptions=True)` sites whose result is neither discarded nor routed through the shared classifier; self-contained AST scan with a content-anchored allowlist (CM-02) | `tests/unit/test_gather_results_guard.py` + `rg -n "return_exceptions=True" -A6 core memory knowledge gui utils api` | BC-87 |
 
 The `check_bug_classes.py scan` rows above are pinned by
 `config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
-Together they are a scoped structural lane. 11 of the 85 classes have a
+Together they are a scoped structural lane. 11 of the 86 classes have a
 scanner (9 gated, 2 report-only), and every scan report lists the classes no
 scanner covers. A green scan is not a behavioral guarantee for any class.
 Baseline candidates and their per-occurrence reviews live in

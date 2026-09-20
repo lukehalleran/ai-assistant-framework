@@ -56,7 +56,7 @@ class TestPathTraversalProtection:
 
     @pytest.mark.asyncio
     async def test_blocks_windows_parent_traversal(self, processor):
-        """Should block ..\ path traversal on Windows"""
+        """Should block ..\\ path traversal on Windows"""
         malicious_file = MockFile("..\\..\\windows\\system32\\config", b"system data")
 
         result = await processor.process_files("Test", [malicious_file])
