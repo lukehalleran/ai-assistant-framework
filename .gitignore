@@ -136,6 +136,7 @@ CLAUDE_CHANGELOG.md
 docs/HANDOFF_*.md
 docs/*HANDOFF*.md
 docs/**/*handoff*.md
+docs/**/*HANDOFF*.md
 
 # handoff backup dirs written by the commit runner (local only)
 .handoff-backup-*/
