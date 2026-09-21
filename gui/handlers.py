@@ -3083,6 +3083,22 @@ def _user_requested_external_kinds(user_text):
         return set()
 
 
+def _turn_expected_an_action(ctx) -> bool:
+    """Was Daemon in a position to queue something this turn? The user asked
+    for an action, affirmed an offer, asked for a retry, or an offer is still
+    pending. Any error reads as True — the notice is the safe side."""
+    try:
+        text = getattr(ctx, "user_text_ws", None) or getattr(ctx, "user_text", "") or ""
+        if registry.detect_action_intent(text) is not None:
+            return True
+        if registry.is_action_retry_request(text) or registry.is_offer_affirmation(text):
+            return True
+        return bool(_pending_proposal_kinds(getattr(ctx, "orchestrator", None)))
+    except Exception as e:
+        logger.warning(f"[ActionGuard] action-context check failed (treated as expected): {e}")
+        return True
+
+
 def _pending_proposal_kinds(orchestrator):
     """ActionKinds with a prior-turn offer still pending ("Want me to email X?").
 
@@ -3267,9 +3283,17 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     try:
         if (app_config.ACTION_CLAIM_GUARD_ENABLED and response_text and not proposed_kinds and not executed_kinds
                 and action_claim_guard.NO_CARD_NOTICE not in suffix and action_claim_guard.claims_pending_card(response_text)):
-            logger.warning("[ActionGuard] Reply directs the user to approve a card, "
-                           "but no proposal exists this turn — appending notice")
-            suffix += action_claim_guard.NO_CARD_NOTICE
+            # Same structural gate as the external-claim correction above: a
+            # claim resting only on ordinary wording ("it's still queued up" —
+            # said of a PR rundown, 2026-09-21) is a card claim only on a turn
+            # where Daemon was expected to act.
+            if (action_claim_guard.card_claim_needs_action_context(response_text)
+                    and not _turn_expected_an_action(ctx)):
+                logger.info("[ActionGuard] Queue/pending wording with no action context this turn — no notice")
+            else:
+                logger.warning("[ActionGuard] Reply directs the user to approve a card, "
+                               "but no proposal exists this turn — appending notice")
+                suffix += action_claim_guard.NO_CARD_NOTICE
     except Exception as e:
         logger.warning(f"[ActionGuard] No-card backstop failed (non-fatal): {e}")
     # Fresh-upload claim backstop (2026-09-10, probe T4/B6): "Can you take a

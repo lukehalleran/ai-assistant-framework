@@ -70,7 +70,7 @@ R28 = (
     "than that"
 )
 R40 = (
-    "texted auggie so maybe hell get back to me. if not today thats okay, "
+    "texted casey so maybe hell get back to me. if not today thats okay, "
     "will probably have the beer i bought yesterday and forgot to drink and "
     "take Flappy in the backyared"
 )
