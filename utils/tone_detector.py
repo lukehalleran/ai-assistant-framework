@@ -728,7 +728,7 @@ def _get_learned_exemplars(level: str) -> list:
     """Learned per-user exemplars for a level (adaptive store; [] on failure)."""
     try:
         return adaptive_exemplars.get_store().get_learned("tone", level)
-    except Exception:
+    except Exception:  # degrades: learned tone exemplars unavailable, seed-only prototypes used
         return []
 
 
@@ -812,8 +812,8 @@ def _learn_tone_exemplar(message: str, level_key: str, source: str,
             embedder=_get_embedder(model_manager),
             seed_texts=CRISIS_EXEMPLARS.get(level_key, []),
         )
-    except Exception as e:
-        logger.debug(f"[ToneDetector] exemplar learning skipped: {e}")
+    except Exception as e:  # degrades: confirmed tone exemplar not learned, adaptive store unchanged
+        logger.warning(f"[ToneDetector] exemplar learning skipped: {e}")
 
 
 # ===== Detection Functions =====
@@ -1088,6 +1088,7 @@ def _recent_distress_from_history(conversation_history: Optional[List[dict]]) ->
             ):
                 return True
     except Exception as e:  # pragma: no cover - defensive
+        # degrades: recent-distress history check skipped, no sticky distress signal applied
         logger.debug(f"[ToneDetector] history distress check failed: {e}")
     return False
 
@@ -1693,8 +1694,8 @@ Classification:"""
             )
             return None
 
-    except Exception as e:
-        logger.debug(f"[ToneDetector] LLM fallback failed: {e}")
+    except Exception as e:  # degrades: tone LLM arbiter skipped, deterministic backstop verdict stands
+        logger.warning(f"[ToneDetector] LLM fallback failed: {e}")
         return None
 
 
@@ -1720,7 +1721,7 @@ def _is_task_directive_signal(message: str) -> bool:
         # heavy_keyword_hits/strip_code_shaped_lines.
         from utils.query_checker import is_task_directive  # lazy import: cycle
         return bool(is_task_directive(message))
-    except Exception:
+    except Exception:  # degrades: task-directive detection fails open, message treated as non-directive
         return False
 
 

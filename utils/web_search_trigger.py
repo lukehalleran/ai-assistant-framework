@@ -145,7 +145,7 @@ async def _classify_with_llm_unified_shared(key: int, *args, **kwargs):
             return await asyncio.shield(fut)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # degrades: shared LLM classification join failed, this caller gets no verdict
             return None
     loop = asyncio.get_running_loop()
     task = loop.create_task(_classify_with_llm_unified(*args, **kwargs))
@@ -730,7 +730,7 @@ def _get_search_anchors():
             from utils.adaptive_exemplars import get_store  # lazy import: startup-cost (would newly load: numpy)
             pos += get_store().get_learned("web_search", "search_worthy")
             neg += get_store().get_learned("web_search", "no_search")
-        except Exception:
+        except Exception:  # degrades: learned search/no-search phrases skipped, seed-only anchors used
             pass
         from utils.adaptive_exemplars import encode_texts_cached  # lazy import: startup-cost (would newly load: numpy)
         _search_anchor_embs = encode_texts_cached(
@@ -776,7 +776,7 @@ def _semantic_search_boost(query: str, threshold: float = 0.35) -> float:
             # Higher margin = more confident this is search-worthy
             boost = min(0.3, margin * 0.8 + (max_search_sim - threshold) * 0.5)
             return round(boost, 2)
-    except Exception:
+    except Exception:  # degrades: semantic search-boost skipped, query gets no anchor-similarity adjustment
         pass
     return 0.0
 
@@ -1080,8 +1080,8 @@ async def should_search_with_llm(
                 )
         except asyncio.TimeoutError:
             logger.debug("[WebSearchTrigger] LLM classification timed out")
-        except Exception as e:
-            logger.debug(f"[WebSearchTrigger] LLM classification failed: {e}")
+        except Exception as e:  # degrades: LLM search-trigger classification skipped, heuristic result used
+            logger.warning(f"[WebSearchTrigger] LLM classification failed: {e}")
 
     return heuristic_result
 
@@ -1138,8 +1138,8 @@ Number:"""
 
         return None
 
-    except Exception as e:
-        logger.debug(f"[WebSearchTrigger] LLM parse error: {e}")
+    except Exception as e:  # degrades: web-search LLM classification unavailable, heuristic-only decision stands
+        logger.warning(f"[WebSearchTrigger] LLM parse error: {e}")
         return None
 
 
@@ -1707,12 +1707,12 @@ async def _classify_with_llm_unified(
     user_location = None
     try:
         user_location = location_resolver.get_user_location()
-    except Exception as e:
+    except Exception as e:  # degrades: user location omitted from the web-search trigger prompt
         logger.debug(f"[WebSearchTrigger] Location resolution failed: {e}")
     user_institution = None
     try:
         user_institution = institution_resolver.get_user_institution()
-    except Exception as e:
+    except Exception as e:  # degrades: user institution omitted from the web-search trigger prompt
         logger.debug(f"[WebSearchTrigger] Institution resolution failed: {e}")
     prompt = _build_llm_trigger_prompt(
         query, current_date, remaining_credits, conversation_context,
@@ -1828,7 +1828,7 @@ def _detect_retry_after_inability(query: str, conversation_context) -> str:
         )
         stripped = " ".join(stripped.split()).strip(" .,!:")
         return stripped if len(stripped) >= 3 else None
-    except Exception:
+    except Exception:  # degrades: retry-after-inability detection fails silently, no retry terms extracted
         return None
 
 
@@ -1859,7 +1859,7 @@ def _resolve_remaining_credits(remaining_credits) -> float:
         # web_search_manager does not import this module.
         from knowledge.web_search_manager import live_remaining_credits  # lazy import: layering (utils must not depend on knowledge at import; no cycle — web_search_manager does not import this module)
         live = live_remaining_credits()
-    except Exception:
+    except Exception:  # degrades: live search-credit lookup unavailable, falls back to the assumed-credits default
         live = None
     return _ASSUMED_CREDITS_NO_LIMITER if live is None else float(live)
 
@@ -1898,7 +1898,7 @@ def _apply_budget_veto(decision, remaining_credits: float):
         return decision
     try:
         from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor  # lazy import: layering
-    except Exception:
+    except Exception:  # degrades: search-credit floor constant unavailable, uses a hardcoded 1.0-credit floor
         _floor = 1.0
     if remaining_credits >= _floor:
         return decision
@@ -1938,7 +1938,7 @@ def paid_search_block_reason(remaining_credits=None, web_search_enabled=None) ->
         return "disabled"
     try:
         from knowledge.web_search_manager import MIN_SEARCH_CREDITS as _floor  # lazy import: layering
-    except Exception:
+    except Exception:  # degrades: search-credit floor constant unavailable, uses a hardcoded 1.0-credit floor
         _floor = 1.0
     if _resolve_remaining_credits(remaining_credits) < _floor:
         return "budget"
@@ -2184,7 +2184,7 @@ async def _analyze_for_web_search_llm(
             try:
                 from utils.adaptive_exemplars import get_store  # lazy import: startup-cost (would newly load: numpy)
                 get_store().record("web_search", "no_search", query, "personal_state_statement")
-            except Exception:
+            except Exception:  # degrades: no_search teaching exemplar not recorded, adaptive store misses signal
                 pass
         if heuristic_result.consult_classifier:
             logger.debug(
