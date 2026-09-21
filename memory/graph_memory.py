@@ -615,7 +615,7 @@ class GraphMemory:
         Nodes without species metadata are never blocked (under-fires).
           * temporal-fragment endpoint (2026-09-05) — an edge whose source or
             target node is a bare when-word (`user|dad|today`,
-            `user|feels_better|today`, `auggie|texted|on_thursday`; the
+            `user|feels_better|today`, `casey|texted|on_thursday`; the
             live `today` node carried 11 such in-edges) renders as nonsense
             ("User dad today") and pre-dates the ingestion junk guard.
             Read-time neutralize is the ladder's first instrument: the

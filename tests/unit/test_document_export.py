@@ -15,7 +15,7 @@ import knowledge.document_export as dx
 
 MD = (
     '---\ntitle: "Fair Resume"\ntype: draft\n---\n'
-    "# Luke Example\n\n**Actuarial Analyst** — Mercer, 2022\n\n"
+    "# Jordan Example\n\n**Pricing Analyst** — Acme Mutual, 2022\n\n"
     "- Automated 100+ reports\n- Maintained rate models\n\n## Skills\n\nPython, SQL\n"
 )
 
@@ -47,12 +47,12 @@ def test_detect_requested_format(text, expected):
 def test_frontmatter_never_reaches_the_export(md_file):
     out = dx.export_document(md_file, "txt")
     text = out.read_text(encoding="utf-8")
-    assert "type: draft" not in text and "Luke Example" in text and "**" not in text
+    assert "type: draft" not in text and "Jordan Example" in text and "**" not in text
 
 
 def test_html_export(md_file):
     html = dx.export_document(md_file, "html").read_text(encoding="utf-8")
-    assert "<h1>Luke Example</h1>" in html and "<li>Automated 100+ reports</li>" in html
+    assert "<h1>Jordan Example</h1>" in html and "<li>Automated 100+ reports</li>" in html
 
 
 @pytest.mark.skipif(not shutil.which("pandoc"), reason="pandoc not installed")
@@ -63,7 +63,7 @@ def test_pandoc_formats_write_real_files(md_file, fmt):
     if fmt == "docx":
         with zipfile.ZipFile(out) as z:
             body = z.read("word/document.xml").decode("utf-8")
-        assert "Luke Example" in body and "Automated 100+ reports" in body
+        assert "Jordan Example" in body and "Automated 100+ reports" in body
         assert "type: draft" not in body
 
 
@@ -227,7 +227,7 @@ def test_corrupt_template_falls_back_and_still_succeeds(md_file, tmp_path):
     assert out.exists() and out.stat().st_size > 0
     with zipfile.ZipFile(out) as z:
         body = z.read("word/document.xml").decode("utf-8")
-    assert "Luke Example" in body
+    assert "Jordan Example" in body
 
 
 def test_reference_doc_missing_file_is_ignored(md_file, tmp_path):
@@ -452,7 +452,7 @@ def test_build_from_template_failure_falls_back_to_pandoc_cast(md_file, tmp_path
     assert out.exists() and out.stat().st_size > 0
     with zipfile.ZipFile(out) as z:
         body = z.read("word/document.xml").decode("utf-8")
-    assert "Luke Example" in body
+    assert "Jordan Example" in body
 
 
 @pytest.mark.skipif(not shutil.which("pandoc"), reason="pandoc not installed")

@@ -21,7 +21,7 @@ LIVE_MESSAGE = (
     "formatting fixes. Do not give it to me here in chat, I am asking you to "
     "use tools to create a new document"
 )
-RESUME_TEXT = "Actuarial Analyst, Mercer. Maintained rate models. " * 20
+RESUME_TEXT = "Pricing Analyst, Acme Mutual. Maintained rate models. " * 20
 
 
 def _ctx(user_text, merged_input, *, docs=(), history=(), attachments=()):
@@ -176,12 +176,12 @@ async def test_classify_deliverable_fails_safe_to_analysis(reply, expected):
 
 @pytest.mark.asyncio
 async def test_compose_writes_a_draft_with_no_report_scaffolding(tmp_path):
-    gen = _gen("# Luke Halleran\n\nActuarial Analyst, Mercer.")
+    gen = _gen("# Jordan Example\n\nPricing Analyst, Acme Mutual.")
     doc = await gen.compose_from_material(
         request="new version", material=RESUME_TEXT, topic="fair resume")
     text = open(doc.path, encoding="utf-8").read()
     assert "/drafts/" in doc.path and doc.doc_type == "draft"
-    assert "Actuarial Analyst, Mercer." in text and "## Sources" not in text
+    assert "Pricing Analyst, Acme Mutual." in text and "## Sources" not in text
 
 
 @pytest.mark.asyncio
@@ -221,10 +221,10 @@ async def test_compose_retries_reasoning_only_completion():
 
 @pytest.mark.asyncio
 async def test_compose_strips_leaked_special_token_so_title_is_the_h1():
-    """Live 20:29: body began '<|sep|># LUKE HALLERAN' → title 'SUMMARY', token in the .docx."""
-    gen = _gen("<|sep|># Luke Example\n\n## SUMMARY\n\nBody.")
+    """Live 20:29: body began '<|sep|># JORDAN EXAMPLE' → title 'SUMMARY', token in the .docx."""
+    gen = _gen("<|sep|># Jordan Example\n\n## SUMMARY\n\nBody.")
     doc = await gen.compose_from_material(request="r", material="m", topic="fair resume")
-    assert doc.title == "Luke Example"
+    assert doc.title == "Jordan Example"
     assert "<|sep|>" not in open(doc.path, encoding="utf-8").read()
 
 
@@ -283,7 +283,7 @@ async def test_compose_with_template_text_adds_layout_block_and_rule():
 
     async def generate_once(prompt, **kw):
         seen["prompt"] = prompt
-        return "# Luke Example\n\n## Experience\n\nActuarial Analyst, Mercer."
+        return "# Jordan Example\n\n## Experience\n\nPricing Analyst, Acme Mutual."
 
     gen = dg_mod.DocumentGenerator(model_manager=SimpleNamespace(generate_once=generate_once))
     await gen.compose_from_material(
@@ -300,7 +300,7 @@ async def test_compose_without_template_text_has_no_layout_block():
 
     async def generate_once(prompt, **kw):
         seen["prompt"] = prompt
-        return "# Luke Example\n\nBody."
+        return "# Jordan Example\n\nBody."
 
     gen = dg_mod.DocumentGenerator(model_manager=SimpleNamespace(generate_once=generate_once))
     await gen.compose_from_material(request="r", material=RESUME_TEXT, topic="fair resume")

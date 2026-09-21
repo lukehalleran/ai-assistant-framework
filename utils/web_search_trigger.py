@@ -792,7 +792,7 @@ _PERSONAL_ROUTINE_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 _PERSONAL_ROUTINE_NOUN_RE = re.compile(
-    r"\b(?:meds?|medication|medicine|melatonin|vyvanse|caffeine|sleep|"
+    r"\b(?:meds?|medication|medicine|melatonin|caffeine|sleep|"
     r"bed(?:time)?|workout|exercise|gym|schedule|routine)\b",
     re.IGNORECASE,
 )
@@ -807,7 +807,21 @@ def is_personal_routine_question(query: str) -> bool:
         return False
     if not _PERSONAL_ROUTINE_CUE_RE.search(query):
         return False
-    return bool(_PERSONAL_ROUTINE_NOUN_RE.search(query))
+    if _PERSONAL_ROUTINE_NOUN_RE.search(query):
+        return True
+    return any(
+        re.search(r"\b" + re.escape(term) + r"\b", query, re.IGNORECASE)
+        for term in _personal_health_terms()
+    )
+
+
+def _personal_health_terms() -> tuple:
+    """Owner-specific routine nouns (a medication's name, say) — read from the
+    gitignored personal vocabulary (`user_profile.personal_vocabulary.
+    category_tokens.health` in config.local.yaml), never listed in this file."""
+    import config.app_config as app_config  # lazy import: live-config
+    tokens = (app_config.PROFILE_PERSONAL_CATEGORY_TOKENS or {}).get("health") or []
+    return tuple(str(token).strip() for token in tokens if str(token).strip())
 
 
 def should_search_heuristic(query: str) -> WebSearchDecision:
