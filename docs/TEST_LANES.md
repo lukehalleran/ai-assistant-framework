@@ -235,31 +235,25 @@ systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=512M \
   python -m pytest -q -m "not slow and not benchmark and not semantic" tests/ \
   --ignore=tests/unit
 ```
-**`hooks/pre-push` and the cap (corrected 2026-09-10):** the hook runs
-BOTH its selections — the changed-files-in-the-push-range selection and the
-optional `PREPUSH_FULL=1` unit re-run — under the same `MemoryMax=6G`
-wrapper, in ONE pytest process. The changed-files selection is not unit-only:
-it is whatever test files the push range touched, plus the five guards, plus
-the same-named test of every changed source file (T14 mapping). When the
-push range touches non-unit test files, that selection IS a non-unit batch
-under a cap 2 GiB below the one this section documents, and it gets
-SIGKILLed with no test failure. Observed 2026-09-10 pushing the T01 repair
-(10 non-unit files + 5 guards + 9 unit files, 24 in all): killed at ~40%
-("Killed … pre-push: BLOCKED — tests"); the same 10 non-unit files + guards
-alone peak at 5.97 GB RSS under 6G (killed near test 215/307, inside
-`test_memory_coordinator_methods.py`/`test_memory_deep_integration.py`) and
-pass under the documented 8G cap (305 passed / 1 skipped / 1 xfailed, peak
-7.1 GB, 3 min — `~/daemon_checkpoints/prepush_nonunit_8G_20260910.txt`).
-The unit remainder of that selection (incl. the CLIP-loading
-`test_visual_memory_pipeline.py`/`test_clip_manager.py`, which the T14 mapping
-pulls in even though the hook's own `PREPUSH_FULL` path ignores the former)
-peaked at 1.3 GB — the non-unit files are the cost, not CLIP. Until the hook
-is changed (follow-up: raise its cap to 8G to match §3, and skip
-ignore-listed files in the mapping), a push range containing non-unit test
-files must be verified by hand — Daemon down, the hook's exact selection
-under the 8G wrapper above, output under `~/daemon_checkpoints/` — and then
-pushed with `SKIP_PREPUSH=1 git push`, citing that output file in the
-handoff/commit. Never bypass on a green-by-assertion.
+**`hooks/pre-push` passes (rewritten 2026-09-21; the 2026-09-10 note it replaces is in git history):**
+changed tests are split by lane. Pass 1 = the five repo-wide guards + the changed `tests/unit/**` files (and a
+changed source file's `tests/unit/test_<base>.py`), under `MemoryMax=6G`. Pass 2 = the CI marker filter over all of
+`tests/unit`, same cap. Pass 3 = everything outside `tests/unit` under `MemoryMax=8G`, in a pristine detached
+worktree (no `data/` store; the verified pyenv version is exported because mktemp's directory is outside the
+checkout's `.python-version` chain). Changed NON-unit tests run ONLY in pass 3 — on 2026-09-10 they rode pass 1 and
+a 24-file selection was SIGKILLed at 5.97 GB under the 6G cap (the same ten files pass under 8G at 7.1 GB, 3 min).
+Pass 3 runs only when `hooks/pre_push_support.py daemon-state` answers the literal `down` for the LIVE checkout
+(`DAEMON_LIVE_REPO_ROOT`, else the chain of local `origin` URLs — a clone of the live checkout resolves it
+without configuration; a checkout whose origin is a network URL must set the variable), probed again immediately
+before the pass; `up` or `unknown` skips it and the hook lists the changed non-unit files it did not verify.
+The hook also: drops the ambient `PYTHONPATH` on every interpreter call (a login shell's value pre-imports another
+checkout's `utils`), raises the soft `nofile` limit to the hard limit, refuses to run without `systemd-run`
+(never uncapped) or without an installed pre-commit hook, and tolerates untracked `docs/execution/**/*.py` scratch.
+`PREPUSH_CHECK=1` prints `python= utils= nofile= pyenv_version= pass1= pass3_changed= daemon= pass3= capped=` and exits
+before ruff, the scan and every pytest pass — that is how `tests/unit/test_pre_push_contract.py` drives it; never
+run the hook end to end in a test. When pass 3 was skipped and the push range touches non-unit tests: stop the app,
+push again (pass 3 then runs), or verify that selection by hand under the 8G wrapper above with output under
+`~/daemon_checkpoints/` and push with `SKIP_PREPUSH=1`, citing the file. Never bypass on a green-by-assertion.
 
 **Eval suite** (`tests/test_eval/`, 246 tests by collect-only on 2026-09-10; not broken out in `docs/METRICS_SNAPSHOT.md`)
 is unmarked and unignored — already part of the fast lane above.
