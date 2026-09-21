@@ -1992,10 +1992,16 @@ PATTERN_KEYWORD_HIT_CAP = 5000         # Corpus keyword-scan ceiling for countin
 # Models
 DEFAULT_MODEL_NAME = config["models"]["default"]   # yaml: "llama" (local fallback)
 # API alias registry (models/model_manager.py API_MODEL_ALIASES): gpt-4o-mini, gpt-4o, gpt-4.1,
-#   gpt-5, gpt-5.1, gpt-5.5, claude-opus (→4.8) / -4.5/-4.6/-4.7/-4.8, claude-fable-5 (alias fable-5),
+#   gpt-5, gpt-5.1, gpt-5.5, gpt-6-astra (alias gpt-6), claude-opus (→4.8) / -4.5/-4.6/-4.7/-4.8,
+#   claude-fable-5 (alias fable-5), claude-fable-5.1 (alias fable-5.1),
 #   sonnet-4.5, sonnet-4.6, haiku-4.5, glm-4.6, glm-4.7, glm-5, glm-5-turbo, glm-5.2,
-#   deepseek-v3.1, deepseek-v4, deepseek-v4-flash, deepseek-r1, gemini-3-pro,
+#   deepseek-v3.1, deepseek-v4, deepseek-v4-flash, deepseek-v4.1-flash, deepseek-r1, gemini-3-pro,
 #   kimi-k3 (alias kimi-3), kimi-k2-thinking, kimi-k2.6
+# A REGISTERED slug is answered from its MODEL_CAPABILITIES row; the substring heuristics only answer
+#   for a slug with no row. Rows may also declare request-shape constraints a route ENFORCES with
+#   HTTP 400: forced_top_p, reasoning_mandatory (off-switch -> low effort + exclude, built only by
+#   reasoning_request_config()), forced_tool_choice=False (resolve_tool_choice() sends "auto").
+#   The catalog cannot show these: scripts/probe_model_request_shapes.py (dry run; --run spends credits).
 # Capability truth: MODEL_CAPABILITIES (single source of truth, keyed by full slug) — the four
 #   supports_* classifiers derive from it; pinned by tests/unit/test_model_capability_wiring.py +
 #   scripts/verify_model_capabilities_live.py (validates vs OpenRouter's live /models).
