@@ -254,16 +254,20 @@ See [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) for the full build guide and Wind
 
 ## Development
 
-### Pre-commit hooks (optional)
+### Git hooks
 
-To guard against accidentally committing sensitive terms, install the privacy check:
+Install both, in EVERY checkout — `git clone` copies neither `.git/hooks` nor the gitignored term list, so a fresh clone has no privacy scan until you do:
 
 ```bash
-ln -s ../../hooks/pre-commit-privacy .git/hooks/pre-commit
-ln -s ../../hooks/pre-push .git/hooks/pre-push
+cp hooks/pre-commit-privacy .git/hooks/pre-commit && cp hooks/pre-push .git/hooks/pre-push
+chmod +x .git/hooks/pre-commit .git/hooks/pre-push
+# your private term list (one literal per line; `# comment`; `allow:<literal>`), gitignored:
+$EDITOR config/privacy_terms.local.txt          # in a second clone: ln -s <first checkout>/config/privacy_terms.local.txt config/
 ```
 
-The pre-commit hook runs `gitleaks git --pre-commit --redact --staged --verbose` if installed and greps staged files against the privacy term list. The pre-push hook refuses to push what CI would reject: it requires a clean tracked tree (the pushed commit IS the tested tree), mirrors the CI privacy guard and `ruff check .`, and runs every test file changed in the push range plus the repo-wide guard tests, in one pytest process under a 6 GiB memory cap (`PREPUSH_FULL=1` adds the whole `tests/unit` CI selection; `SKIP_PREPUSH=1` bypasses — required, with hand-run evidence, when the push range includes non-unit test files, which need the 8 GiB batch described in `docs/TEST_LANES.md` §4).
+The pre-commit hook runs `gitleaks git --pre-commit --redact --staged --verbose` if installed, then matches every staged blob against the term list — literally and case-insensitively, never printing a term. A missing, unreadable or empty list BLOCKS the commit (the only bypass is `CI=true` together with `DAEMON_ALLOW_MISSING_PRIVACY_TERMS=1`, and it skips the term scan only). An `allow:<literal>` line exempts a longer public string that contains a term (a hosting handle inside a repository URL); the term still blocks everywhere else.
+
+The pre-push hook refuses to push what CI would reject and is safe to run from a second clone while the app runs from another checkout: it requires a clean tracked tree (untracked `docs/execution/**/*.py` scratch is tolerated), an installed pre-commit hook and `systemd-run`; drops the ambient `PYTHONPATH` for every interpreter call; mirrors the CI privacy guard, `ruff check .` and the bug-class contract; then runs (1) the repo-wide guards + the changed `tests/unit` files and (2) all of `tests/unit`, each under a 6 GiB cap, and (3) the non-unit remainder under 8 GiB in a pristine worktree — only when the app is confirmed DOWN in the live checkout (`DAEMON_LIVE_REPO_ROOT`, or the chain of local `origin` URLs; an unknown state skips pass 3). `PREPUSH_CHECK=1` prints the selection and exits before any pass; `SKIP_PREPUSH=1` bypasses (`docs/TEST_LANES.md` §4).
 
 ---
 

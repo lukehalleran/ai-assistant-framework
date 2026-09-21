@@ -28,19 +28,28 @@ FORBIDDEN_FLAGS = ("--scanner", "--write-baseline", "--baseline", "--disposition
 MASKS = ("|| true", "|| :", "set +e")
 GATE = "bug-class-gate"
 
-HOOK_SCAN = 'python scripts/check_bug_classes.py scan --root . --receipt "$receipts/bug-class-scan.json" || fail "bug-class scan"'
+# The hook's `py()` wrapper (`env -u PYTHONPATH python -s "$@"`) is D1: every
+# hook-started Python process must drop the ambient PYTHONPATH so a clone
+# never tests a mixed tree by picking up the live checkout's `utils` (2026-09-
+# 21). Standalone invocations call `py`; the two systemd-run-wrapped pytest
+# passes can't call a shell function through an exec'd argv, so they spell
+# the same thing out inline as `env -u PYTHONPATH python -s`.
+# The wrapper itself is pinned: a `py …` call site proves nothing if `py()` is
+# later redefined as a plain interpreter call.
+HOOK_PY = 'py() { env -u PYTHONPATH python -s "$@"; }'
+HOOK_SCAN = 'py scripts/check_bug_classes.py scan --root . --receipt "$receipts/bug-class-scan.json" || fail "bug-class scan"'
 HOOK_HARNESS = (
-    'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider '
+    'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 py -m pytest -q -p no:cacheprovider '
     '--confcutdir=tests/bug_class_guards --junitxml="$receipts/bug-class-harness.xml" '
     'tests/bug_class_guards || fail "bug-class guard tests"'
 )
 HOOK_VERIFY = (
-    'python scripts/check_bug_classes.py verify-receipts --root . '
+    'py scripts/check_bug_classes.py verify-receipts --root . '
     '--scan "$receipts/bug-class-scan.json" --harness-junit "$receipts/bug-class-harness.xml" '
     '|| fail "bug-class receipts"'
 )
 HOOK_GUARD_VERIFY = (
-    'python scripts/check_bug_classes.py verify-receipts --root . '
+    'py scripts/check_bug_classes.py verify-receipts --root . '
     '--guards-junit "$receipts/repo-wide-guards.xml" || fail "repo-wide guard receipts"'
 )
 
@@ -106,6 +115,7 @@ def hook_problems(text: str, guards: list[str] | None = None) -> list[str]:
     problems = _shared_problems(lines, "hook")
     if "set -euo pipefail" not in lines:
         problems.append("hook: set -euo pipefail is required")
+    problems += _exactly_once(lines, HOOK_PY, "hook", "the PYTHONPATH-free interpreter wrapper")
     problems += _exactly_once(lines, HOOK_SCAN, "hook", "the full policy scan")
     scans = [line for line in lines if f"{SCAN_TOOL} scan" in line]
     if len(scans) > 1:
@@ -122,7 +132,9 @@ def hook_problems(text: str, guards: list[str] | None = None) -> list[str]:
         problems.append("hook: a missing repo-wide guard file must fail the push, never be skipped")
     guard_run = [
         line for line in lines
-        if "python -m pytest" in line and '--junitxml="$receipts/repo-wide-guards.xml"' in line
+        # D1 rewrote this to `env -u PYTHONPATH python -s -m pytest`; match on
+        # the pytest invocation itself, not a specific interpreter prefix.
+        if "-m pytest" in line and '--junitxml="$receipts/repo-wide-guards.xml"' in line
     ]
     if len(guard_run) != 1 or '"${selection[@]}"' not in guard_run[0] or not guard_run[0].endswith('|| fail "tests"'):
         problems.append("hook: the guard selection must run once with its JUnit receipt and fail the push")

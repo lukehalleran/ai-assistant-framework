@@ -773,8 +773,20 @@ def _approve_is_owner_directed(sentence: str) -> bool:
 # pending. These are UNAMBIGUOUS: none of them is ordinary vocabulary
 # outside the approval-card domain, so any one of them anchors on its own.
 _CARD_ANCHOR_UNAMBIGUOUS_RE = re.compile(
-    r"\b(?:cards?|approvals?|queue(?:s|d)?|re-?queu(?:e|ed|ing)|"
-    r"pending|confirm(?:ation|s|ed|ing)?)\b",
+    r"\b(?:cards?|approvals?|confirm(?:ation|s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+# 2026-09-21: queue/re-queue/pending were listed above as "never ordinary
+# vocabulary outside the approval-card domain". They are ordinary English —
+# live: "if you want the rest of the PR rundown later, it's still queued up"
+# drew the NO_CARD_NOTICE on a turn with no action anywhere in it. Worse, the
+# grammar's own STATE slot is "queued", so the matched word anchored ITSELF and
+# the anchor check could never fail. They are SOFT anchors: enough only when
+# the caller knows Daemon was expected to act this turn (the live-reply
+# backstop, given action context); the context-free read-time annotation and a
+# turn with no action context require a hard anchor.
+_CARD_ANCHOR_SOFT_RE = re.compile(
+    r"\b(?:queue(?:s|d)?|re-?queu(?:e|ed|ing)|pending)\b",
     re.IGNORECASE,
 )
 # 2026-09-12, GAP 2 (frontier adversarial probe): "proposal" is ALSO
@@ -791,8 +803,10 @@ _CARD_ANCHOR_AMBIGUOUS_RE = re.compile(r"\bproposals?\b", re.IGNORECASE)
 _PERSON_REFERENCE_RE = re.compile(r"\b(?:i|we|you|your)\b", re.IGNORECASE)
 
 
-def _card_anchor_present(sentence: str) -> bool:
+def _card_anchor_present(sentence: str, *, hard_only: bool = False) -> bool:
     if _CARD_ANCHOR_UNAMBIGUOUS_RE.search(sentence):
+        return True
+    if not hard_only and _CARD_ANCHOR_SOFT_RE.search(sentence):
         return True
     if _APPROVE_VERB_RE.search(sentence) and _approve_is_owner_directed(sentence):
         return True
@@ -1144,7 +1158,7 @@ def record_claim_exemplar(label: str, text: str, source: str) -> bool:
         return False
 
 
-def _card_claim_regions(text: str) -> list[str]:
+def _card_claim_regions(text: str, *, hard_only: bool = False) -> list[str]:
     """Region texts where the CARD family's composed grammar +
     REFERENT-ANCHOR check fire (2026-09-12, A23) — the ONE shared helper
     ``claims_pending_card`` and ``annotate_unverified_action_claim``'s card
@@ -1168,8 +1182,8 @@ def _card_claim_regions(text: str) -> list[str]:
         prev_region_texts = all_region_texts[i - 1] if i > 0 else []
         for rt in all_region_texts[i]:
             if _APPROVAL_PROMPT_RE.search(rt) and (
-                _card_anchor_present(rt)
-                or any(_card_anchor_present(p) for p in prev_region_texts)
+                _card_anchor_present(rt, hard_only=hard_only)
+                or any(_card_anchor_present(p, hard_only=hard_only) for p in prev_region_texts)
             ):
                 hits.append(rt)
     return hits
@@ -1209,6 +1223,25 @@ def claims_pending_card(text: str) -> bool:
             if _claim_semantic_hit(sent[s:e], "card_claim"):
                 return True
     return False
+
+
+def card_claim_needs_action_context(text: str) -> bool:
+    """True when ``claims_pending_card(text)`` holds ONLY through a soft anchor
+    (queue/pending wording) — no card/approval/confirm word, no owner-directed
+    "approve", no semantic hit. Such a reply is a card claim only on a turn
+    where Daemon was expected to act; the caller decides that."""
+    if _card_claim_regions(text, hard_only=True):
+        return False
+    if not _card_claim_regions(text):
+        return False
+    sentences = _split_sentences(normalize_ws(_strip_quoted_and_drafts(text or "")))
+    for sent in sentences:
+        if sent.rstrip().endswith("?") or _PROPOSAL_MARKER.search(sent):
+            continue
+        for s, e in _voice_ok_regions(sent, "card"):
+            if _claim_semantic_hit(sent[s:e], "card_claim"):
+                return False
+    return True
 
 
 NO_CARD_NOTICE = (
@@ -1559,7 +1592,7 @@ def annotate_unverified_action_claim(text: str) -> str:
     try:
         if detect_completion_claims(text):
             return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
-        if _card_claim_regions(text):
+        if _card_claim_regions(text, hard_only=True):
             return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
         if _calendar_claim_regions(text, use_entity_anchor=False, use_semantic=False):
             return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER

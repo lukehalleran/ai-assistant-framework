@@ -198,6 +198,21 @@ def _sandbox_learned_relations(tmp_path, monkeypatch):
     _lr._store = None
 
 
+# Generated-documents sandbox (2026-09-20): test_insight_mode_handler's
+# assessment test reached the REAL DocumentGenerator.save_prewritten (agree +
+# INSIGHT_DOC_ON_AGREEMENT) and wrote documents/summaries/my-problem-is-x-*.md
+# + an index.json row into the owner's tree on every run — 61 files by the time
+# it was noticed. The generator reads DOCUMENT_OUTPUT_DIR at construction, and
+# an absolute path wins the `root / DOCUMENT_OUTPUT_DIR` join.
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_generated_documents(tmp_path, monkeypatch):
+    import config.app_config as _app_config
+    monkeypatch.setattr(
+        _app_config, "DOCUMENT_OUTPUT_DIR", str(tmp_path / "documents"), raising=False,
+    )
+    yield
+
+
 @_pytest_ae.fixture(autouse=True)
 def _sandbox_pending_actions(tmp_path, monkeypatch):
     """Keep persisted approval proposals isolated from the live daemon and tests."""

@@ -121,7 +121,7 @@ from typing import Any, Optional
 from core.response_parser import ResponseParser
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
-from utils.file_processor import FileProcessor, ProcessedFilesResult
+from utils.file_processor import FileProcessor, ProcessedFilesResult, attachment_display_name
 from utils.attachment_audit import audit_attachments, deadline_timezone_note
 from utils.query_checker import is_task_navigation
 from utils.trigger_match import normalize_ws
@@ -170,6 +170,7 @@ import core.insight.types as _types
 import core.pending_proposal as pending_proposal
 import core.personal_claim_check as personal_claim_check
 import knowledge.daemon_notes_manager as daemon_notes_manager
+import knowledge.document_export as document_export
 import knowledge.pubmed_search as pubmed_search
 import knowledge.reference_docs_manager as reference_docs_manager
 import knowledge.research_search as research_search
@@ -1356,6 +1357,13 @@ class SubmitContext:
     # applied post-hoc in the dispatcher once the context pipeline's intent
     # classification is available).
     gate_task: Any = None
+    # This turn's text attachments (2026-09-20, template-cast doc generation):
+    # [{"name", "path" (on-disk source path, may be None), "extension", "text"}, ...],
+    # one per registered files_result.documents entry, set in
+    # _handle_submit_inner right after attachment registration. Default empty
+    # so a bare ctx built directly by a test/caller (no dispatcher) is safe —
+    # read only via getattr(ctx, "turn_attachments", None) or [].
+    turn_attachments: list = field(default_factory=list)
     # --- set by _prepare_submit_context ---
     full_prompt: str = ""
     system_prompt: str = ""
@@ -1766,6 +1774,72 @@ def _build_conversation_source_material(history, user_text) -> str:
     return f"[CONVERSATION TRANSCRIPT]\n{transcript}\n\n[USER REQUEST]\n{user_text or ''}".strip()
 
 
+# Attachment-sourced document (2026-09-20): "write a new document using info
+# in attachment and applied formatting fixes" with a resume .docx attached ran
+# RESEARCH mode — source_material was ctx.user_text (the raw 180-char request;
+# the attachment text lives only in ctx.merged_input), so the generator
+# web-searched the literal request and saved a report about the PHRASE
+# "please find attached". An attachment on a doc-gen turn IS the material.
+# Generous: on the derivative path the prior turns carry the edits to apply.
+_DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS = 8000
+
+
+def _attachment_source_material(ctx, *, exclude_name: str | None = None) -> str:
+    """This turn's merged attachment text, or '' when nothing substantial was attached.
+
+    Attachment first (it must survive the generator's provided-material cap),
+    then a bounded tail of the conversation — a request like "with the fixes
+    we discussed applied" points at prior turns, not at the file.
+
+    exclude_name (2026-09-20, template-cast documents): when set, the named
+    attachment (identified as a LAYOUT TEMPLATE by
+    DocumentGenerator.assign_attachment_roles) is left out of the material —
+    its placeholder facts must never be treated as content. The merged blob
+    is rebuilt from ctx.turn_attachments' remaining entries instead of the
+    raw ctx.merged_input (which has no per-attachment boundaries to cut at).
+    """
+    from knowledge.document_generator import DOCUMENT_PROVIDED_MIN_CHARS  # lazy import: startup-cost
+
+    user_text = str(getattr(ctx, "user_text", "") or "")
+    if exclude_name:
+        attachments = getattr(ctx, "turn_attachments", None) or []
+        kept = "\n\n".join(
+            str(a.get("text") or "") for a in attachments
+            if str(a.get("name") or "") != exclude_name and a.get("text")
+        )
+        merged = f"{user_text}\n\n{kept}".strip() if kept else user_text
+    else:
+        merged = str(getattr(ctx, "merged_input", "") or "")
+    if len(merged) - len(user_text) < DOCUMENT_PROVIDED_MIN_CHARS:
+        return ""
+    transcript = _build_conversation_source_material(getattr(ctx, "history", None), "")
+    transcript = transcript.replace("[USER REQUEST]", "").strip()
+    if len(transcript) > _DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS:
+        transcript = "[CONVERSATION TRANSCRIPT]\n…" + transcript[-_DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS:]
+    return f"{merged}\n\n{transcript}".strip()
+
+
+def _attachment_topic(ctx, *, exclude_name=None) -> str:
+    """Filename-derived topic for an attachment-sourced document ('' if unknown).
+
+    The gate's topic is the user's whole imperative; as a filename/search
+    string it is noise ("instead-please-write-a-new-document-…").
+    """
+    registry = getattr(getattr(ctx, "orchestrator", None), "active_documents", None)
+    try:
+        docs = list(registry.documents()) if registry is not None else []
+    except Exception:  # degrades: topic falls back to the gate's string
+        docs = []
+    # A layout template is never the document's subject (two-attachment turn:
+    # the newest registration could be the template, naming the output after it).
+    docs = [d for d in docs if getattr(d, "display_name", None) != exclude_name]
+    if not docs:
+        return ""
+    newest = max(docs, key=lambda d: getattr(d, "registered_turn", 0))
+    stem = str(getattr(newest, "display_name", "") or "").rsplit(".", 1)[0]
+    return " ".join(_re.sub(r"[_\-]+", " ", stem).split())
+
+
 async def _run_doc_generation(ctx):
     """Direct document-generation bypass (agentic gate doc_gen_intent).
 
@@ -1799,6 +1873,32 @@ async def _run_doc_generation(ctx):
             chroma_store=_cs,
         )
 
+        # Attachment role assignment (2026-09-20, template-cast documents):
+        # "write a new resume using my old one, cast into this ATS template"
+        # with two attachments — one is CONTENT (facts), the other is a
+        # LAYOUT TEMPLATE (structure/formatting only). Only meaningful with
+        # >=2 attachments; a single-attachment turn never calls this (the old
+        # behaviour — every attachment is content).
+        _attachments = getattr(ctx, "turn_attachments", None) or []
+        _template_name = None
+        _template_attachment = None
+        if len(_attachments) >= 2:
+            try:
+                _roles = await _dg.assign_attachment_roles(
+                    getattr(ctx, "user_text", ""), _attachments,
+                )
+            except Exception as e:  # degrades: no template detected, every attachment treated as content
+                logger.warning(f"[Handle Submit] Attachment role assignment failed: {e}")
+                _roles = {}
+            _template_name = (_roles or {}).get("template")
+            if _template_name:
+                _template_attachment = next(
+                    (a for a in _attachments if str(a.get("name") or "") == _template_name),
+                    None,
+                )
+                if _template_attachment is None:
+                    _template_name = None
+
         # Conversation-sourced request ("summarize these insights so I can
         # text them to my therapist") → the transcript IS the material and
         # clears DOCUMENT_PROVIDED_MIN_CHARS, so web/wiki research is
@@ -1807,24 +1907,103 @@ async def _run_doc_generation(ctx):
         # request is grounded in that content rather than a generic web
         # search on the topic string.
         _doc_source = _resolve_doc_source(_doc_gen_intent, getattr(ctx, "user_text", None))
+        _doc_topic = _doc_gen_intent["topic"]
+        _template_text = None
         if _doc_source == "conversation":
             _source_material = _build_conversation_source_material(
                 getattr(ctx, "history", None), getattr(ctx, "user_text", None)
             )
             yield {"role": "assistant", "content": "📝 Summarizing our conversation...", "is_progress": True}
+            _template_name = _template_attachment = None  # a conversation-sourced doc has no attachment template
         else:
-            _source_material = getattr(ctx, "user_text", None)
-            yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
+            # The template's own placeholder facts must never be treated as
+            # content — exclude it from the material.
+            _source_material = _attachment_source_material(ctx, exclude_name=_template_name)
+            if _source_material:
+                _doc_source = "attachment"
+                _doc_topic = _attachment_topic(ctx, exclude_name=_template_name) or _doc_topic
+                if _template_attachment is not None:
+                    _template_text = str(_template_attachment.get("text") or "") or None
+                    yield {
+                        "role": "assistant",
+                        "content": "📝 Writing from your attachment, cast into the template's layout...",
+                        "is_progress": True,
+                    }
+                else:
+                    yield {"role": "assistant", "content": "📝 Writing from your attachment...", "is_progress": True}
+            else:
+                _source_material = getattr(ctx, "user_text", None)
+                _template_name = _template_attachment = None  # no attachment material used → no template either
+                yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
 
-        _doc_result = await _dg.generate(
-            topic=_doc_gen_intent["topic"],
-            doc_type=_doc_gen_intent["doc_type"],
-            focus=_doc_gen_intent.get("focus"),
-            source_material=_source_material,
-        )
+        # Attachment + "make me a new version of it" is a DERIVATIVE, not a
+        # report about the attachment (2026-09-20: the report pipeline wrote a
+        # cited analysis of a resume the user wanted rewritten). Classifier
+        # fails safe to the report path. A template turn is always derivative
+        # (recasting existing content into a layout) — skip the classifier.
+        _doc_result = None
+        if _doc_source == "attachment":
+            _is_derivative = _template_attachment is not None or (
+                await _dg.classify_deliverable(getattr(ctx, "user_text", "")) == "derivative"
+            )
+            if _is_derivative:
+                _doc_source = "attachment-derivative"
+                _compose_kwargs = {
+                    "request": getattr(ctx, "user_text", ""),
+                    "material": _source_material, "topic": _doc_topic,
+                }
+                if _template_text:
+                    _compose_kwargs["template_text"] = _template_text
+                _doc_result = await _dg.compose_from_material(**_compose_kwargs)
+        if _doc_result is None:
+            _doc_result = await _dg.generate(
+                topic=_doc_topic,
+                doc_type=_doc_gen_intent["doc_type"],
+                focus=_doc_gen_intent.get("focus"),
+                source_material=_source_material,
+            )
 
+        # Requested output format (2026-09-20): the .md stays as the source of
+        # record; a sibling .docx/.pdf/… is converted from it. Conversion is
+        # blocking (pandoc / LibreOffice subprocess) → worker thread. Failure is
+        # reported, never hidden — the markdown is still on disk.
+        _export_line = ""
+        _export_fmt = document_export.detect_requested_format(getattr(ctx, "user_text", "") or "")
+        if _export_fmt:
+            try:
+                # The template's OWN file (not just its text) wins as the
+                # export's styling reference when its format matches — see
+                # document_export.export_document's reference_doc handling.
+                _reference_doc = (
+                    _template_attachment.get("path") if _template_attachment else None
+                )
+                _export_path = await asyncio.to_thread(
+                    document_export.export_document, _doc_result.path, _export_fmt,
+                    reference_doc=_reference_doc,
+                )
+                logger.info(f"[Handle Submit] Document exported: {_export_path}")
+                # The user asked for ONE file in that format: the markdown was
+                # only the intermediate. Removed after a verified export (the
+                # index row follows the file); any failure keeps both.
+                try:
+                    _dg.repoint_index(_doc_result.path, _export_path)
+                    _os.remove(_doc_result.path)
+                    _doc_result.path = str(_export_path)
+                except Exception as _rm_err:  # degrades: a leftover .md beside the export
+                    logger.warning(f"[Handle Submit] Intermediate markdown kept: {_rm_err}")
+                    _export_line = f"- **{_export_fmt.upper()}**: `{_export_path}`\n"
+            except Exception as _exp_err:
+                logger.warning(f"[Handle Submit] Document export to {_export_fmt} failed: {_exp_err}")
+                _export_line = (
+                    f"- **{_export_fmt.upper()}**: not written — {_exp_err} "
+                    f"(the markdown above is the full document)\n"
+                )
+
+        _template_line = f"- **Template**: {_template_name}\n" if _template_name else ""
         _doc_response = (
             f"Document saved: **{_doc_result.title}**\n\n"
+            f"{_export_line}"
+            f"{_template_line}"
             f"- **Path**: `{_doc_result.path}`\n"
             f"- **Type**: {_doc_result.doc_type}\n"
             f"- **Sources**: {len(_doc_result.sources)}\n"
@@ -2904,6 +3083,22 @@ def _user_requested_external_kinds(user_text):
         return set()
 
 
+def _turn_expected_an_action(ctx) -> bool:
+    """Was Daemon in a position to queue something this turn? The user asked
+    for an action, affirmed an offer, asked for a retry, or an offer is still
+    pending. Any error reads as True — the notice is the safe side."""
+    try:
+        text = getattr(ctx, "user_text_ws", None) or getattr(ctx, "user_text", "") or ""
+        if registry.detect_action_intent(text) is not None:
+            return True
+        if registry.is_action_retry_request(text) or registry.is_offer_affirmation(text):
+            return True
+        return bool(_pending_proposal_kinds(getattr(ctx, "orchestrator", None)))
+    except Exception as e:
+        logger.warning(f"[ActionGuard] action-context check failed (treated as expected): {e}")
+        return True
+
+
 def _pending_proposal_kinds(orchestrator):
     """ActionKinds with a prior-turn offer still pending ("Want me to email X?").
 
@@ -3088,9 +3283,17 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     try:
         if (app_config.ACTION_CLAIM_GUARD_ENABLED and response_text and not proposed_kinds and not executed_kinds
                 and action_claim_guard.NO_CARD_NOTICE not in suffix and action_claim_guard.claims_pending_card(response_text)):
-            logger.warning("[ActionGuard] Reply directs the user to approve a card, "
-                           "but no proposal exists this turn — appending notice")
-            suffix += action_claim_guard.NO_CARD_NOTICE
+            # Same structural gate as the external-claim correction above: a
+            # claim resting only on ordinary wording ("it's still queued up" —
+            # said of a PR rundown, 2026-09-21) is a card claim only on a turn
+            # where Daemon was expected to act.
+            if (action_claim_guard.card_claim_needs_action_context(response_text)
+                    and not _turn_expected_an_action(ctx)):
+                logger.info("[ActionGuard] Queue/pending wording with no action context this turn — no notice")
+            else:
+                logger.warning("[ActionGuard] Reply directs the user to approve a card, "
+                               "but no proposal exists this turn — appending notice")
+                suffix += action_claim_guard.NO_CARD_NOTICE
     except Exception as e:
         logger.warning(f"[ActionGuard] No-card backstop failed (non-fatal): {e}")
     # Fresh-upload claim backstop (2026-09-10, probe T4/B6): "Can you take a
@@ -5644,6 +5847,7 @@ async def _handle_submit_inner(
     # and enhanced-mode classification (via analysis_text) see it.
     _attachment_note = ""
     _active_doc_telemetry: dict = {}
+    _turn_attachments: list = []
     if files_result.documents:
         try:
             _notes = []
@@ -5689,6 +5893,29 @@ async def _handle_submit_inner(
                 logger.debug(f"[ActiveDocument] Registration failed for an attachment: {e}")
         if _registered_this_turn:
             _active_doc_telemetry["registered"] = _registered_this_turn
+
+        # This turn's attachments, with the on-disk source path resolved from
+        # the ORIGINAL upload objects (2026-09-20, template-cast documents —
+        # see DocumentGenerator.assign_attachment_roles). files_result.documents
+        # entries carry no path for non-image files, so match back to `files`
+        # by display name (the same name FileProcessor derived it from).
+        _path_by_display_name: dict = {}
+        for _f in (files or []):
+            try:
+                _path_by_display_name[attachment_display_name(_f)] = (
+                    str(getattr(_f, 'name', '') or '') or None
+                )
+            except Exception:  # degrades: that attachment has no on-disk path (template styles unavailable)
+                continue
+        for _doc in files_result.documents:
+            if getattr(_doc, 'error', '') or not getattr(_doc, 'content_text', ''):
+                continue
+            _turn_attachments.append({
+                "name": _doc.filename,
+                "path": _path_by_display_name.get(_doc.filename),
+                "extension": _doc.extension or "",
+                "text": _doc.content_text,
+            })
 
     # Active-document task navigation ("please show me first question", "ok
     # next q please", "question 3", "the last one"). Attempted every turn —
@@ -5787,6 +6014,7 @@ async def _handle_submit_inner(
         files_result=files_result,
         analysis_text=analysis_text,
         user_text_ws=user_text_ws,
+        turn_attachments=_turn_attachments,
         t_ingress=t_ingress,
     )
     # A05b-2: capture the grounding delivery mode ONCE for this turn (see
