@@ -2000,6 +2000,12 @@ DOCUMENT_REPORT_MAX_SECTIONS: int = int(DOCUMENT_CFG.get("report_max_sections", 
 DOCUMENT_SUMMARY_MAX_SECTIONS: int = int(DOCUMENT_CFG.get("summary_max_sections", 3))
 DOCUMENT_REPORT_TOKEN_BUDGET: int = int(DOCUMENT_CFG.get("report_token_budget", 6000))
 DOCUMENT_SUMMARY_TOKEN_BUDGET: int = int(DOCUMENT_CFG.get("summary_token_budget", 2000))
+# Exported-file (docx/pdf/odt) styling — knowledge/document_export.py reads
+# these as live app_config.X attribute lookups (module-level `from config
+# import app_config` there, not a name import — no staleness).
+DOCUMENT_EXPORT_FONT: str = str(DOCUMENT_CFG.get("export_font", "Calibri"))
+DOCUMENT_EXPORT_BODY_PT: int = int(DOCUMENT_CFG.get("export_body_pt", 11))
+DOCUMENT_EXPORT_MARGIN_IN: float = float(DOCUMENT_CFG.get("export_margin_in", 0.6))
 
 # Environment variable overrides
 DOCUMENT_GENERATION_ENABLED = bool(int(os.getenv(

@@ -46,6 +46,8 @@ orjson>=3.9.0
 # Document processing
 docx2txt==0.9
 python-docx>=1.1.0
+fpdf2>=2.7          # document export: pure-python PDF fallback (knowledge/document_export.py)
+mistune>=3.0        # document export: markdown → HTML
 openpyxl>=3.1.0
 pdfplumber>=0.11.0
 lxml==5.4.0

@@ -78,6 +78,7 @@ Module Contract
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -113,6 +114,52 @@ def _looks_like_llm_error(text: str | None) -> bool:
     return any(sentinel in head for sentinel in _LLM_ERROR_SENTINELS)
 
 
+# Trailing-artifact guard (2026-09-20): kimi-3 sometimes glues one stray 'e'
+# onto the FINAL word of a completion ("...MS Excel, and MS Accesse" — live).
+# ResponseParser.strip_trailing_stream_artifact only recognizes the artifact
+# when it sits right after terminal punctuation; a document's last line often
+# has none. Purely structural — it never checks WHAT the word is, only
+# whether dropping the trailing 'e' turns an otherwise-ungrounded word into
+# one that actually appears in the source material.
+_FINAL_ALPHA_TOKEN_RE = re.compile(r"([A-Za-z]+)([^A-Za-z]*)$")
+
+
+def _word_bounded_in(haystack: str, word: str) -> bool:
+    if not word:
+        return False
+    return re.search(rf"\b{re.escape(word)}\b", haystack, re.IGNORECASE) is not None
+
+
+def _strip_ungrounded_trailing_e(body: str, grounding: str) -> str:
+    """Drop a stray trailing 'e' from the final word of `body` when that word
+    (with the 'e') is NOT grounded anywhere in `grounding`, but the same word
+    WITHOUT the trailing 'e' IS — otherwise return `body` unchanged.
+
+    Looks only at the last alphabetic run in the text (trailing punctuation,
+    if any, is preserved) — no keyword lists, no section/format assumptions.
+    """
+    text = body or ""
+    stripped = text.rstrip()
+    if not stripped:
+        return body
+    match = _FINAL_ALPHA_TOKEN_RE.search(stripped)
+    if not match:
+        return body
+    token = match.group(1)
+    if len(token) < 2 or not token.lower().endswith("e"):
+        return body
+    ground = grounding or ""
+    if _word_bounded_in(ground, token):
+        return body
+    trimmed = token[:-1]
+    if not trimmed or not _word_bounded_in(ground, trimmed):
+        return body
+    token_start = match.start(1)
+    new_stripped = stripped[:token_start] + trimmed + match.group(2)
+    trailing_ws = text[len(stripped):]
+    return new_stripped + trailing_ws
+
+
 # Content-aware generation. When the user pastes substantial material to be
 # evaluated/synthesized (e.g. "Write a report evaluating this proposal: ..."),
 # that material — not a web search on the topic string — is the PRIMARY source.
@@ -125,6 +172,8 @@ _PROVIDED_SOURCE_TYPE = "provided"
 _PROVIDED_SOURCE_ID = "INPUT_1"
 DOCUMENT_PROVIDED_MIN_CHARS = 400    # below this, "material" is too thin to anchor on
 DOCUMENT_PROVIDED_MAX_CHARS = 8000   # cap of provided material injected into the prompt
+DOCUMENT_DERIVATIVE_MAX_CHARS = 24000  # derivative path: the material IS the document, keep it whole
+DOCUMENT_TEMPLATE_MAX_CHARS = 6000    # layout-template block injected into compose_from_material
 
 # Canonical citation-token matcher. NOTE: prefixes range from 3 (WEB) to 5
 # (INPUT) letters — a tighter {3,4} bound silently drops [INPUT_1], the primary
@@ -326,7 +375,7 @@ class DocumentGenerator:
         model_name = getattr(self.model_manager, "default_model", "") or ""
         index_entry = {
             "id": path.stem,
-            "path": str(path.resolve().relative_to(self.repo_root.resolve())) if self.repo_root else str(path),
+            "path": self._index_path(path),
             "title": title,
             "type": doc_type,
             "topic": topic,
@@ -359,12 +408,198 @@ class DocumentGenerator:
         )
         return result
 
+    # ------------------------------------------------------------------
+    # Derivative documents (2026-09-20)
+    # ------------------------------------------------------------------
+    # "write a new document using info in attachment and applied formatting
+    # fixes" (resume attached) reached generate() with the resume as [INPUT_1]
+    # and produced a cited research report ANALYSING the resume — the report
+    # pipeline can only write ABOUT its material. A derivative deliverable (a
+    # new version / rewrite / conversion OF the material) is one composition
+    # call with no outline, citations or ## Sources.
+
+    async def classify_deliverable(self, request: str) -> str:
+        """'derivative' | 'analysis'. Any failure or unclear answer → 'analysis'
+        (the pre-existing report behaviour), never a guess."""
+        try:
+            raw = await self.model_manager.generate_once(
+                (
+                    "A user supplied some material and asked for a document. "
+                    "Classify the deliverable.\n"
+                    "DERIVATIVE = a new or revised version OF the material itself "
+                    "(rewrite, reformat, apply edits, convert, fill in, translate).\n"
+                    "ANALYSIS = a document ABOUT the material (report, evaluation, "
+                    "summary, review, critique, research).\n\n"
+                    f"User request: \"{(request or '')[:1500]}\"\n\n"
+                    "Answer with exactly one word: DERIVATIVE or ANALYSIS."
+                ),
+                system_prompt="You classify requests. Output one word.",
+                # Reasoning OFF + headroom: the first live run (kimi-k3) spent
+                # an 8-token cap entirely in the reasoning channel → empty
+                # answer → fail-safe "analysis" → a report, again.
+                max_tokens=64,
+                temperature=0.0,
+                disable_reasoning=True,
+            )
+        except Exception as e:  # degrades: derivative requests get a report
+            logger.warning(f"[DocGen] Deliverable classification failed: {e}")
+            return "analysis"
+        if _looks_like_llm_error(raw):
+            return "analysis"
+        # Prefix match: kimi-3 glues a stray trailing 'e' onto completions
+        # ("DERIVATIVEe" — the known stream artifact), which an exact-word
+        # compare read as "no label" → analysis, intermittently (live probe).
+        words = [
+            next((lab for lab in ("derivative", "analysis") if w.startswith(lab)), w)
+            for w in re.findall(r"[a-z]+", (raw or "").lower())
+        ]
+        labels = {w for w in words if w in ("derivative", "analysis")}
+        kind = "derivative" if (labels == {"derivative"} or words[:1] == ["derivative"]) else "analysis"
+        logger.info(f"[DocGen] Deliverable classified as {kind} (raw={(raw or '')[:60]!r})")
+        return kind
+
+    async def assign_attachment_roles(
+        self, request: str, attachments: list[dict],
+    ) -> dict[str, Any]:
+        """Identify which attachment (if any) is a LAYOUT TEMPLATE rather than content.
+
+        Only meaningful with >=2 attachments — e.g. an old resume (content) plus
+        an ATS template (structure/formatting only) with a request to write a
+        new resume "cast into" the template. One `generate_once` call; any
+        parse/LLM failure fails safe to ``{"template": None}`` (every
+        attachment treated as content — the pre-existing behaviour). Never a
+        guess: the returned name must be exactly one of the supplied names.
+        """
+        names = [str(a.get("name") or "") for a in attachments]
+        lines = [
+            f"- \"{name}\":\n{str(a.get('text') or '')[:400]}"
+            for a, name in zip(attachments, names)
+        ]
+        prompt = (
+            "A user attached multiple files and made a request. Identify whether "
+            "ONE of the attachments was supplied as a LAYOUT TEMPLATE — for its "
+            "look, structure, section ordering, or formatting — rather than for "
+            "its facts or content. Most turns have no template; only name one "
+            "when an attachment is clearly serving that structural role.\n\n"
+            f"User request: \"{(request or '')[:1000]}\"\n\n"
+            "Attachments (name, then the first characters of its text):\n"
+            + "\n\n".join(lines) + "\n\n"
+            "Answer with strict JSON only, no other text: "
+            '{"template": "<exact attachment name>"} if one of them is a layout '
+            'template, otherwise {"template": null}.'
+        )
+        try:
+            raw = await self.model_manager.generate_once(
+                prompt,
+                system_prompt="You classify attachment roles. Output strict JSON only.",
+                max_tokens=120,
+                temperature=0.0,
+                disable_reasoning=True,
+            )
+        except Exception as e:  # degrades: no template detected, every attachment treated as content
+            logger.warning(f"[DocGen] Attachment role assignment failed: {e}")
+            return {"template": None}
+
+        if _looks_like_llm_error(raw):
+            return {"template": None}
+
+        match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+        if not match:
+            return {"template": None}
+        try:
+            parsed = json.loads(match.group(0))
+        except (json.JSONDecodeError, TypeError):
+            return {"template": None}
+
+        template_name = parsed.get("template") if isinstance(parsed, dict) else None
+        if not isinstance(template_name, str) or template_name not in names:
+            template_name = None
+
+        logger.info(f"[DocGen] Attachment role assignment: template={template_name!r}")
+        return {"template": template_name}
+
+    async def compose_from_material(
+        self, *, request: str, material: str, topic: str, template_text: str | None = None,
+    ) -> GeneratedDocument:
+        """Write the derivative document the user asked for and save it (drafts/).
+
+        template_text: an optional second attachment's text, supplied as a
+        LAYOUT TEMPLATE (see assign_attachment_roles) rather than content —
+        its structure guides the draft, its placeholder facts must not.
+        """
+        system_prompt = "You are a careful document editor. Output the finished document only."
+        template_block = ""
+        template_rule = ""
+        if template_text and template_text.strip():
+            template_block = (
+                "\n\n[LAYOUT TEMPLATE — structure and ordering only; its wording "
+                "and placeholder facts are NOT content]\n"
+                f"{template_text.strip()[:DOCUMENT_TEMPLATE_MAX_CHARS]}\n"
+            )
+            template_rule = (
+                "- Mirror the template's section structure, ordering and heading "
+                "names where they fit; never copy its placeholder facts.\n"
+            )
+        prompt = (
+                "Produce the document the user is asking for, as a new version of "
+                "the material below.\n\n"
+                f"[USER REQUEST]\n{(request or '')[:2000]}\n\n"
+                f"[MATERIAL — the attached file first, then recent conversation "
+                f"for context]\n{(material or '')[:DOCUMENT_DERIVATIVE_MAX_CHARS]}\n"
+                f"{template_block}\n"
+                "Rules:\n"
+                "- Output ONLY the finished document in markdown. No preamble, no "
+                "commentary about what you changed, no analysis, no citations, no "
+                "Sources section, no YAML frontmatter.\n"
+                "- Keep every fact (names, dates, numbers, employers, links) exactly "
+                "as the material states it. Never invent content.\n"
+                "- Apply the changes the request and the conversation call for. If "
+                "the conversation lists specific fixes, apply those.\n"
+                "- The conversation is context only; do not copy it into the document.\n"
+                f"{template_rule}"
+                "- Structure with markdown: one `#` line for the document's title or "
+                "the person's name, `##` for each section header, `-` for bullets. "
+                "Start directly with the `#` line.\n"
+                "- If the request or conversation states a length limit (one page, N "
+                "words), meet it by tightening wording, never by dropping facts the "
+                "user did not agree to drop.\n"
+        )
+        body = await self.model_manager.generate_once(
+            prompt, system_prompt=system_prompt,
+            max_tokens=app_config.DOCUMENT_REPORT_TOKEN_BUDGET, temperature=0.2,
+        )
+        if not (body or "").strip():
+            # Reasoning-only completion (answer swallowed by the reasoning
+            # channel) — one retry with reasoning off, same prompt.
+            logger.warning("[DocGen] Derivative body empty — retrying with reasoning disabled")
+            body = await self.model_manager.generate_once(
+                prompt, system_prompt=system_prompt,
+                max_tokens=app_config.DOCUMENT_REPORT_TOKEN_BUDGET,
+                temperature=0.2, disable_reasoning=True,
+            )
+        # Same edge cleanup generate() applies: live 20:29 the draft began
+        # "<|sep|># LUKE HALLERAN" — the leaked token hid the H1 from
+        # _extract_title (title became "SUMMARY") and printed in the .docx.
+        from core.response_parser import ResponseParser  # lazy import: cycle
+        body = ResponseParser.strip_stream_special_tokens(
+            ResponseParser.strip_trailing_stream_artifact(body or "")
+        )
+        body = _strip_ungrounded_trailing_e(
+            body, f"{material or ''} {template_text or ''} {request or ''}"
+        )
+        if _looks_like_llm_error(body) or not (body or "").strip():
+            raise RuntimeError("derivative document generation returned no usable content")
+        return self.save_prewritten(
+            body.strip() + "\n", topic=topic, doc_type="draft",
+            source_types=["provided"],
+        )
+
     def save_prewritten(
         self,
         markdown: str,
         *,
         topic: str,
-        doc_type: Literal["report", "summary"] = "summary",
+        doc_type: Literal["report", "summary", "draft"] = "summary",
         title: str | None = None,
         source_types: list[str] | None = None,
     ) -> GeneratedDocument:
@@ -393,7 +628,7 @@ class DocumentGenerator:
         word_count = len(markdown.split())
         index_entry = {
             "id": path.stem,
-            "path": str(path.resolve().relative_to(self.repo_root.resolve())) if self.repo_root else str(path),
+            "path": self._index_path(path),
             "title": resolved_title,
             "type": doc_type,
             "topic": topic,
@@ -472,8 +707,11 @@ class DocumentGenerator:
                     + "\nTopic:"
                 ),
                 system_prompt="You extract research topics. Output only the topic, nothing else.",
-                max_tokens=30,
+                # BC-89: a 30-token cap with reasoning ON came back empty on
+                # kimi-k3 → the clipped raw imperative became the topic/filename.
+                max_tokens=64,
                 temperature=0.0,
+                disable_reasoning=True,
             )
             if (result and result.strip() and len(result.strip()) >= 3
                     and not _looks_like_llm_error(result)):
@@ -939,6 +1177,33 @@ class DocumentGenerator:
         """Convert text to a filesystem-safe slug."""
         slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
         return slug[:max_length].rstrip("-")
+
+    def repoint_index(self, old_path: str | Path, new_path: str | Path) -> None:
+        """Point an index row at the exported file (the .md it was converted
+        from is an intermediate when the user asked for another format)."""
+        index_path = self.output_dir / "index.json"
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"[DocGen] Index repoint skipped: {e}")
+            return
+        old_key, changed = self._index_path(Path(old_path)), False
+        for row in index if isinstance(index, list) else []:
+            if row.get("path") == old_key:
+                row["path"], changed = self._index_path(Path(new_path)), True
+        if changed:
+            tmp = index_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            os.replace(tmp, index_path)
+
+    def _index_path(self, path: Path) -> str:
+        """Repo-relative path for the index; absolute when output_dir lives
+        outside the repo (an absolute `document.output_dir` used to raise
+        ValueError AFTER the file was written — 2026-09-20)."""
+        try:
+            return str(path.resolve().relative_to(self.repo_root.resolve()))
+        except ValueError:
+            return str(path.resolve())
 
     def _write_versioned_file(self, doc_type: str, topic: str, content: str) -> Path:
         """Write content to a versioned file. Never overwrites existing files."""
