@@ -255,7 +255,7 @@ def wiki_title_candidates(q: str) -> list[str]:
     try:
         if _topic_resolver:
             topic = (_topic_resolver(base) or "").strip()
-    except Exception as e:
+    except Exception as e:  # degrades: wiki title candidates miss the resolved canonical topic
         logger.debug(f"[Wiki Fetch] topic_resolver failed: {e}")
         topic = ""
 
@@ -349,8 +349,8 @@ async def _wiki_search_title(query: str, timeout: float = 0.6) -> Optional[str]:
                 if ":" in title.split(" ", 1)[0]:
                     continue
                 return title
-    except Exception as e:
-        logger.debug(f"[Wiki Search] failed for '{query}': {e}")
+    except Exception as e:  # degrades: wiki title search returns no candidate for this query
+        logger.warning(f"[Wiki Search] failed for '{query}': {e}")
     return None
 
 
@@ -400,8 +400,8 @@ async def _wiki_summary_for_title(title: str, timeout: float = 0.6) -> Optional[
             js = r.json() or {}
             extract = (js.get("extract") or "").strip()
             return extract or None
-    except Exception as e:
-        logger.debug(f"[Wiki Summary] failed for '{title}': {e}")
+    except Exception as e:  # degrades: wiki summary fetch fails, no snippet for this title
+        logger.warning(f"[Wiki Summary] failed for '{title}': {e}")
         return None
 
 
@@ -459,8 +459,8 @@ async def fetch_wiki_with_fallbacks(q: str) -> tuple[bool, str, str]:
                 if ok and text and len(text) > 400:
                     logger.debug(f"[Wiki Fetch] Hit via wikipedia_api '{title}' (len={len(text)})")
                     return True, title, text
-            except Exception as e:
-                logger.debug(f"[Wiki Fetch] wikipedia_api failed for '{title}': {e}")
+            except Exception as e:  # degrades: wiki fetch falls back to shorter REST summary path
+                logger.warning(f"[Wiki Fetch] wikipedia_api failed for '{title}': {e}")
 
         # Fallback to REST summary (fast, avoids 404s)
         summary = await _wiki_summary_for_title(title)
@@ -1608,8 +1608,8 @@ class GatedPromptBuilder:
         try:
             ok, wiki_text = await gated_wiki_fetch(user_input)
             filtered_context["wiki_snippet"] = wiki_text if ok else ""
-        except Exception as e:
-            logger.debug(f"[Gated Prompt - Wiki Error] {e}")
+        except Exception as e:  # degrades: gated prompt build loses the wiki snippet section
+            logger.warning(f"[Gated Prompt - Wiki Error] {e}")
             filtered_context["wiki_snippet"] = ""
 
         # --- Semantic chunks ---
@@ -1617,7 +1617,7 @@ class GatedPromptBuilder:
             filtered_context["semantic_chunks"] = await self.gate_system.filter_semantic_chunks(
                 user_input, semantic_chunks or []
             )
-        except Exception as e:
+        except Exception as e:  # degrades: gated prompt build drops all semantic chunks context
             logger.debug(f"[Gated Prompt - Semantic Error] {e}")
             filtered_context["semantic_chunks"] = []
 

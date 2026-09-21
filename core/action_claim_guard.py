@@ -1099,7 +1099,7 @@ def _get_claim_anchors() -> dict:
             texts = list(seeds)
             try:
                 texts += get_store().get_learned("action_claim", label)
-            except Exception:
+            except Exception:  # degrades: learned claim exemplars skipped, seed-only anchors used
                 pass
             out[label] = encode_texts_cached(
                 embedder, texts, _claim_exemplar_text_emb_cache, normalize=True
@@ -1107,7 +1107,7 @@ def _get_claim_anchors() -> dict:
         _claim_anchor_embs = out
         _claim_anchor_version = version
         return out
-    except Exception:
+    except Exception:  # degrades: claim exemplar cache stays empty, semantic claim-narration check disabled
         return {}
 
 
@@ -1129,7 +1129,7 @@ def _claim_semantic_hit(sentence: str, label: str) -> bool:
         q = embedder.encode([sentence], convert_to_numpy=True, normalize_embeddings=True)[0]
         sims = embs @ q
         return bool(np.max(sims) >= _CLAIM_SEMANTIC_THRESHOLD)
-    except Exception:
+    except Exception:  # degrades: semantic claim similarity skipped, sentence treated as no match
         return False
 
 
@@ -1140,7 +1140,7 @@ def record_claim_exemplar(label: str, text: str, source: str) -> bool:
     try:
         from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
         return get_store().record("action_claim", label, text, source)
-    except Exception:
+    except Exception:  # degrades: confirmed claim exemplar not persisted, learning skipped
         return False
 
 

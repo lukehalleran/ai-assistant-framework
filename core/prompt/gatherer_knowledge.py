@@ -165,7 +165,7 @@ def _is_negative_mood_note(note: Dict[str, Any]) -> bool:
     try:
         from config.app_config import VALENCE_NEGATIVE_THRESHOLD  # lazy import: live-config read
         return valence.negative_affect_score(str(note.get("content", ""))) >= float(VALENCE_NEGATIVE_THRESHOLD)
-    except Exception:
+    except Exception:  # degrades: mood-section negative-affect gate treats note as neutral
         return False
 
 
@@ -189,7 +189,7 @@ def _is_non_contact_entity(graph_memory, name: str) -> bool:
         node = graph_memory.get_entity(eid)
         et = getattr(node, "entity_type", None)
         return isinstance(et, str) and et.strip().lower() in _NON_CONTACT_ENTITY_TYPES
-    except Exception:
+    except Exception:  # degrades: non-contact entity check fails open, may seed email search
         return False
 
 
@@ -1577,7 +1577,7 @@ class KnowledgeRetrievalMixin:
                 )
                 if result.returncode == 0:
                     repo_root = result.stdout.strip()
-            except Exception:
+            except Exception:  # degrades: session diff context omitted, no repo root resolved
                 return {}
             if not repo_root:
                 return {}
@@ -1608,8 +1608,8 @@ class KnowledgeRetrievalMixin:
                 if result.returncode == 0 and result.stdout.strip():
                     lines = result.stdout.strip().split("\n")
                     committed = lines[:SESSION_DIFF_MAX_COMMITTED]
-            except Exception as e:
-                logger.debug(f"[ContextGatherer] git log failed: {e}")
+            except Exception as e:  # degrades: session diff omits committed changes since last session
+                logger.warning(f"[ContextGatherer] git log failed: {e}")
 
             # 2) Uncommitted modified files
             uncommitted_modified = []
@@ -1621,8 +1621,8 @@ class KnowledgeRetrievalMixin:
                 if result.returncode == 0 and result.stdout.strip():
                     files = result.stdout.strip().split("\n")
                     uncommitted_modified = _filter(files)[:SESSION_DIFF_MAX_UNCOMMITTED]
-            except Exception as e:
-                logger.debug(f"[ContextGatherer] git diff failed: {e}")
+            except Exception as e:  # degrades: session diff omits uncommitted modified files list
+                logger.warning(f"[ContextGatherer] git diff failed: {e}")
 
             # 3) Untracked new files
             uncommitted_new = []
@@ -1635,8 +1635,8 @@ class KnowledgeRetrievalMixin:
                     lines = result.stdout.strip().split("\n")
                     untracked = [line[3:].strip() for line in lines if line.startswith("??")]
                     uncommitted_new = _filter(untracked)[:SESSION_DIFF_MAX_UNCOMMITTED]
-            except Exception as e:
-                logger.debug(f"[ContextGatherer] git status failed: {e}")
+            except Exception as e:  # degrades: session diff omits untracked new files list
+                logger.warning(f"[ContextGatherer] git status failed: {e}")
 
             # Human-readable time delta
             since_label = "last session"
@@ -1655,7 +1655,7 @@ class KnowledgeRetrievalMixin:
                         days = total_secs // 86400
                         hours = (total_secs % 86400) // 3600
                         since_label = f"{days}d {hours}h ago"
-            except Exception:
+            except Exception:  # degrades: session diff shows generic 'last session' label
                 pass
 
             if not committed and not uncommitted_modified and not uncommitted_new:
@@ -2091,7 +2091,7 @@ class KnowledgeRetrievalMixin:
                     if not content:
                         continue
                     item["content"] = annotate_unverified_action_claim(content)
-            except Exception as e:
+            except Exception as e:  # degrades: self-note skips unverified-action-claim warning marker
                 logger.debug(f"[ContextGatherer] Self-note action-claim check failed: {e}")
 
             return filtered
@@ -2126,8 +2126,8 @@ class KnowledgeRetrievalMixin:
                 lookahead_days=GOOGLE_CALENDAR_LOOKAHEAD_DAYS,
             )
             return events
-        except Exception as e:
-            logger.debug(f"[ContextGatherer] Google Calendar fetch failed: {e}")
+        except Exception as e:  # degrades: prompt loses upcoming Google Calendar events context
+            logger.warning(f"[ContextGatherer] Google Calendar fetch failed: {e}")
             return []
 
     async def get_relevant_emails(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:

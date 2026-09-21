@@ -164,8 +164,8 @@ class LocationResolver:
                 loc = self._format_place(data.get("city"), data.get("region"))
                 if loc:
                     return loc
-        except Exception as e:
-            logger.debug(f"[Location] ipinfo.io lookup failed: {e}")
+        except Exception as e:  # degrades: ipinfo.io provider unreachable, falls back to ip-api.com
+            logger.warning(f"[Location] ipinfo.io lookup failed: {e}")
         try:
             resp = requests.get(
                 "http://ip-api.com/json/?fields=status,city,regionName",
@@ -175,8 +175,8 @@ class LocationResolver:
                 data = resp.json()
                 if data.get("status") == "success":
                     return self._format_place(data.get("city"), data.get("regionName"))
-        except Exception as e:
-            logger.debug(f"[Location] ip-api.com lookup failed: {e}")
+        except Exception as e:  # degrades: ip-api.com provider unreachable, IP geolocation unresolved this cycle
+            logger.warning(f"[Location] ip-api.com lookup failed: {e}")
         return None
 
     @staticmethod
@@ -216,8 +216,8 @@ class LocationResolver:
                 pool = current or candidates
                 best = max(pool, key=lambda e: str(e.get("timestamp", "")))
                 location = str(best["value"]).strip()
-        except Exception as e:
-            logger.debug(f"[Location] Profile location read failed: {e}")
+        except Exception as e:  # degrades: profile location fact unreadable, lives_in fallback unavailable
+            logger.warning(f"[Location] Profile location read failed: {e}")
 
         self._profile_location = location
         self._profile_mtime = mtime
@@ -320,7 +320,7 @@ def _institution_protected_spans(text: str, institution: Optional[str]) -> list:
     try:
         # lazy import: cycle (avoids a module-level cycle — institution_resolver imports this module's functions for scope_identity_terms.)
         from utils.institution_resolver import _NAMED_INSTITUTION_RE
-    except Exception:
+    except Exception:  # degrades: institution-name regex unavailable, only the resolved name is protected
         _NAMED_INSTITUTION_RE = None
     if _NAMED_INSTITUTION_RE is not None:
         for m in _NAMED_INSTITUTION_RE.finditer(text):
