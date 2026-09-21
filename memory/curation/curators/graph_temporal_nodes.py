@@ -2,7 +2,7 @@
 
 2026-09-05: "today"/"tomorrow" in a casual plans update resolved to live
 graph nodes (`today` carried 11 in-edges: `user|dad|today`,
-`user|feels_better|today`, `auggie|talked_about|today` …) and [KNOWLEDGE
+`user|feels_better|today`, `casey|talked_about|today` …) and [KNOWLEDGE
 GRAPH] rendered nine nonsense lines. The ingestion guard now refuses such
 nodes and GraphMemory.edge_is_suppressed hides their edges at read time,
 but legacy nodes stay on disk and the only cleanup path was the terminal

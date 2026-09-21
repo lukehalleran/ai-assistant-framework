@@ -181,8 +181,18 @@ class ResponseParser:
     # "<|sep|>That's ..."). Leading/trailing runs only: mid-text occurrences
     # are left alone so a conversation ABOUT the token isn't mangled (same
     # quoted-content lesson as the thinking-leak repair).
+    #
+    # 2026-09-21: a kimi-3 reply ended "...queued up.<|close|>think<|sep|>
+    # <|open|>response<|sep|><|close|>message" — a channel-marker run with a
+    # bare role/channel word after each token. The run ends in a WORD, so the
+    # tokens-only trailing pattern never matched and the tail was displayed and
+    # stored. An identifier glued to a token is part of the run: at the END,
+    # any identifier directly after a token; at the START, only an identifier
+    # that is itself followed by another token ("<|open|>response<|sep|>Hi") —
+    # never the reply's own first word ("<|sep|>that's fine" keeps "that's").
     _EDGE_SPECIAL_TOKEN_RE = __import__("re").compile(
-        r"^(?:\s*<\|[a-z_]+\|>)+\s*|(?:\s*<\|[a-z_]+\|>)+\s*$"
+        r"^(?:\s*<\|[a-z_]+\|>(?:[a-z_]+(?=\s*<\|[a-z_]+\|>))?)+\s*"
+        r"|(?:\s*<\|[a-z_]+\|>[a-z_]*)+\s*$"
     )
 
     @staticmethod
