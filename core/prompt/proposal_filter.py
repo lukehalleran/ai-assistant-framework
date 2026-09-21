@@ -239,16 +239,16 @@ class ProposalFilter:
             return list(proposals)
 
         try:
-            from sentence_transformers import SentenceTransformer, util  # lazy import: startup-cost (would newly load: sentence_transformers)
-            import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
+            from sentence_transformers import util  # lazy import: startup-cost (would newly load: sentence_transformers)
+            from models.model_manager import ModelManager  # lazy import: startup-cost
         except ImportError:
             logger.debug("[ProposalFilter] sentence-transformers not available, skipping semantic dedup")
             return list(proposals)
 
         try:
-            model = SentenceTransformer("all-MiniLM-L6-v2")
+            model = ModelManager._get_cached_embedder()
             texts = [p.to_embedding_text() for p in proposals]
-            embeddings = model.encode(texts, convert_to_tensor=True)
+            embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
             cosine_scores = util.cos_sim(embeddings, embeddings)
 
             to_remove = set()
