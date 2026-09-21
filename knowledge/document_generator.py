@@ -577,7 +577,7 @@ class DocumentGenerator:
                 temperature=0.2, disable_reasoning=True,
             )
         # Same edge cleanup generate() applies: live 20:29 the draft began
-        # "<|sep|># LUKE HALLERAN" — the leaked token hid the H1 from
+        # "<|sep|># JORDAN EXAMPLE" — the leaked token hid the H1 from
         # _extract_title (title became "SUMMARY") and printed in the .docx.
         from core.response_parser import ResponseParser  # lazy import: cycle
         body = ResponseParser.strip_stream_special_tokens(

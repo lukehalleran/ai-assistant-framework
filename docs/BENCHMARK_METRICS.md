@@ -4,17 +4,23 @@ Tracks Daemon's retrieval quality over time. Two test suites: **synth** (synthet
 
 All quality metrics computed over retrieval cases only (intent-only cases excluded from recall/MRR).
 
-## Current Metrics (2026-07-23 rerun)
+## Current Metrics (2026-09-20 rerun, git `3d28858`)
 
 ### Combined (n=280 retrieval cases)
 
 | Suite | Cases | MRR | R@1 | R@3 | R@topK |
 |-------|------:|-----|-----|-----|--------|
-| **Combined** | **280** | **0.8402** | **0.7821** | **0.8679** | **0.9143** |
+| Synth | 80 | 0.8901 | 0.7625 | 0.9375 | 1.0000 |
+| Real v2 (adversarial) | 200 | 0.8206 | 0.7950 | 0.8400 | 0.8700 |
+| **Combined** | **280** | **0.8404** | **0.7857** | **0.8679** | **0.9071** |
 
-**283/296 cases pass (95.6%).**
+**273/296 cases pass (92.2%).** Runtime ~40s.
 
-By-intent MRR (retrieval cases): casual_social 1.00 · project_work 0.95 · emotional_support 0.93 · temporal_recall 0.90 · creative_exploration 0.87 · technical_help 0.85 · general 0.84 · factual_recall 0.80 · meta_conversational 0.71.
+By-intent MRR (retrieval cases): casual_social 1.00 · creative_exploration 0.95 · project_work 0.95 · emotional_support 0.93 · temporal_recall 0.90 · technical_help 0.85 · general 0.83 · factual_recall 0.82 · meta_conversational 0.70.
+
+> **Change vs the 2026-07-23 rerun (MRR 0.8402 · R@1 0.7821 · R@3 0.8679 · R@topK 0.9143 · 283/296): retrieval is flat; the pass-count drop is label drift, not retrieval.** Per-case diff of `data/benchmark_per_case.csv`: all 10 newly failing cases fail the *intent-label* assertion only (their retrieval MRR is unchanged) — the real-suite goldens were auto-labelled by the May classifier, and deliberate classifier changes since then (greetings → `casual_social`, `temporal_recall` requires a question/recall shape since 2026-09-03, "how am I feeling" → `emotional_support`) now disagree with those labels. The R@topK dip is two cases (`real_general_108`, `real_general_160`) whose gold documents are the owner's box-test battery messages, which the 2026-07-25 junk-memory guard drops at retrieval by design. Both are stale-golden issues; a golden refresh is the fix.
+>
+> The real suite's fixture is private (`data/benchmarks_private/retrieval_benchmarks_real.yaml`, gitignored); without it the 200 real cases SKIP and only the synth suite runs.
 
 > **The drop from the 2026-05-17 baseline is NOT retrieval degradation.** ~Half the recall-0 misses are the per-relation TTL filter (strengthened in the 2026-07 memory batch) correctly aging out transient facts (`medication_taken`, `sleep_start_time`, `current_mood`, … — 24h TTL) that the *seed corpus still expects*. Investigated 2026-07-22: those goldens are the **#1 raw dense-embedding match** (relevance 0.72–0.77) but are dropped post-scoring by the TTL filter — the seed corpus is stale, not the retriever. A corpus refresh is the fix; true retrieval quality is higher than these numbers. Regenerate the volatile snapshot with `python scripts/generate_doc_metrics.py`.
 
@@ -97,6 +103,8 @@ Do not over-optimize Facts R@1. The 0.77 MRR with 98% R@topK means the system fi
 | 2026-05-16 | n=135 combined | 0.82 | 0.90 | 1.00 | 0.90 | Reflection hybrid rerank fix |
 | 2026-05-16 | n=272 (v2 adversarial) | 0.75 | 0.84 | 0.92 | 0.82 | V2 adversarial benchmark, reflection MRR=0.39 |
 | **2026-05-17** | **n=272 (v2 + refl v2)** | **0.83** | **0.92** | **0.97** | **0.89** | **Reflection retrieval v2: MRR 0.39→0.93** |
+| 2026-07-23 | n=280 combined | 0.78 | 0.87 | 0.91 | 0.84 | Rerun; TTL filter ages out transient-fact goldens (stale seed corpus) |
+| 2026-09-20 | n=280 combined | 0.79 | 0.87 | 0.91 | 0.84 | Rerun at `3d28858`; retrieval flat, intent-label goldens drifted |
 
 ### Key Transitions
 
