@@ -1076,6 +1076,10 @@ class DocumentGenerationSection(BaseModel):
     summary_max_sections: int = Field(default=3, ge=1, le=10)
     report_token_budget: int = Field(default=6000, ge=1000, le=16000)
     summary_token_budget: int = Field(default=2000, ge=500, le=8000)
+    # Exported-file (docx/pdf/odt) styling — see knowledge/document_export.py.
+    export_font: str = "Calibri"
+    export_body_pt: int = Field(default=11, ge=6, le=24)
+    export_margin_in: float = Field(default=0.6, ge=0.1, le=2.0)
 
 
 class DaemonNotesSection(BaseModel):
