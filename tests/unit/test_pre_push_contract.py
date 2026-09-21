@@ -110,6 +110,9 @@ def build_repo(tmp_path: Path, name: str = "repo") -> Path:
             encoding="utf-8",
         )
 
+    # As in the real repository: the private term list is gitignored, so a test's
+    # `git add -A` never stages it (staged, it would match its own term).
+    (repo / ".gitignore").write_text("config/privacy_terms.local.txt\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init")
 
@@ -118,6 +121,14 @@ def build_repo(tmp_path: Path, name: str = "repo") -> Path:
     dest = hooks_dir / "pre-commit"
     shutil.copy2(PRE_COMMIT_PRIVACY, dest)
     dest.chmod(0o755)
+    # A properly set-up checkout has a private term list: the privacy hook is
+    # fail-closed without one, and several tests commit inside this repo. The
+    # file is untracked and not a .py, so the hook's clean-tree check ignores
+    # it. (2026-09-21: green on this branch alone, red in CI on the merge ref —
+    # master had gained the fail-closed hook meanwhile.)
+    terms = repo / "config" / "privacy_terms.local.txt"
+    terms.parent.mkdir(exist_ok=True)
+    terms.write_text("synthetic-private-term-for-tests\n", encoding="utf-8")
     return repo
 
 
