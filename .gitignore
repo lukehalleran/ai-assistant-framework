@@ -66,9 +66,8 @@ installer/output/
 dist/
 
 # --- GENERATED DOCUMENTS ---
-documents/reports/
-documents/summaries/
-documents/index.json
+# Whole tree: any new doc_type dir, index backups, etc. are owner content.
+/documents/
 
 # --- DAEMON SELF-NOTES ---
 daemon_notes/*.md
