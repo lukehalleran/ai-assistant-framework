@@ -127,6 +127,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-85 | Verbatim-span contract with a paraphrasing model | E | partial |
 | BC-86 | Undocumented function-body import (load-bearing placement indistinguishable from an accident) | B | partial |
 | BC-87 | gather(return_exceptions=True) results admit BaseException into typed code | D | partial |
+| BC-88 | Setting read straight from the environment, outside the config pipeline | B | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -640,14 +641,14 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 ### BC-69 Silent ops failures
 - Mechanism: a background job exits 0 or logs at an unwatched level while dead.
 - Incidents: Backblaze dead 46 days; daily-notes timer failing 7.5 months (452 tracebacks, exit 0); wiki FAISS index unmounted; People API 403; OpenRouter credits out mid-session (RETRO §3.15). 2026-09-19 `configure_logging()` renamed a LIVE instance's `daemon_debug.log` on every refused second launch (rotation at import, single-instance lock ~700 lines later), leaving the running Daemon appending to an archive name; `get_codebase_changes` ran four blocking git `subprocess.run` calls on the event loop per prompt build; a swallowing `except` turned an AttributeError into a silent empty wiki result during the same batch.
-- Find: `grep -c Traceback logs/*.log` trended; remote object counts, not exit codes; `get_runtime_action_health()`.
+- Find: `grep -c Traceback logs/*.log` trended; remote object counts, not exit codes; `get_runtime_action_health()`. DM-35 = `tests/unit/test_silent_swallow_guard.py` (ceiling on swallow handlers without a `# degrades:` marker).
 - Closure: per-item (OnFailure alert, prune-on-success, explicit disabled state).
 - Status: partial.
 
 ### BC-70 Log, comment or severity misdescribes the control flow
 - Mechanism: a log says "skipping" but the code falls through; a degradation logs at DEBUG; an idempotent outcome logs ERROR.
-- Incidents: "skipping wiki" fell through to the live API (F26); pattern-preemption crash at DEBUG "how the arbiter stayed dead" (F7/F22); absent FAISS index at ERROR, E2B 404 at ERROR (CODEX 09-03); 2026-09-14 `knowledge/obsidian_manager.py` logs vault-embedding progress when `embedded_files % 50 == 0`, a counter an update-only sync never advances, so "Embedded 0/810 files..." printed once per updated note (34 times).
-- Find: `rg -n "skip|checked first|never|always"` near a branch and read the next lines; `rg -n "logger.debug"` in gate/trigger except blocks.
+- Incidents: "skipping wiki" fell through to the live API (F26); pattern-preemption crash at DEBUG "how the arbiter stayed dead" (F7/F22); absent FAISS index at ERROR, E2B 404 at ERROR (CODEX 09-03); 2026-09-14 `knowledge/obsidian_manager.py` logs vault-embedding progress when `embedded_files % 50 == 0`, a counter an update-only sync never advances, so "Embedded 0/810 files..." printed once per updated note (34 times); 2026-09-19 an AttributeError raised inside a swallowing except in `_get_wiki_snippet_cached` surfaced only as a test's "called 0 times"; 472 swallow-shaped handlers in app code, 8 documented.
+- Find: `rg -n "skip|checked first|never|always"` near a branch and read the next lines; `rg -n "logger.debug"` in gate/trigger except blocks. DM-35 = `tests/unit/test_silent_swallow_guard.py` (ceiling on swallow handlers without a `# degrades:` marker).
 - Closure: per-site.
 - Status: partial.
 
@@ -786,6 +787,13 @@ next free number at their own merge.
 - Closure: `utils/async_results.py` (`classify_gather_results` / `partition_gather_results`, caller cancellation re-raised) as the single decision (CM-01 chokepoint) + the guard with a content-anchored allowlist (CM-02).
 - Status: partial — five sites remain in three accepted-debt files (`memory/shutdown_processor.py` ×3, `knowledge/web_search_manager.py`, `knowledge/document_generator.py` — the last three found by the guard's first run, log-only/positive-type-check shapes), allowlisted in the guard with reasons; closed when they move.
 
+### BC-88 Setting read straight from the environment, outside the config pipeline
+- Mechanism: application code reads a setting via `os.getenv`/`os.environ.get`/`os.environ[NAME]` directly, outside `config/` — bypassing `config.yaml`, `config.local.yaml`, schema validation and the Settings API entirely. Distinct from BC-11 (a live setting update never reaches an already-built consumer) and BC-12 (a config key never reaches its runtime reader): in both of those a key EXISTS somewhere in the pipeline and the failure is in reaching it; here no key exists at all, so there is nothing for a setter probe or a config-key-reachability grep to find. The value is invisible to schema validation and to Settings, can silently diverge into two different literal defaults at different call sites with no single source to reconcile them, and often resolves once at import time, before any test or live Settings change could reach it.
+- Incidents: 2026-09-16 survey — 252 `os.getenv`/`os.environ` calls across 186 distinct names read outside `config/`; 2026-09-19 follow-up inventory — 287 sites / 209 names, 178 of them read at import time, 14 names flagged with two defaults, of which 6 are genuine literal conflicts (the rest pair a literal with a computed default) — 2 fixed 2026-09-19, 4 pinned in the guard's shrinking set (`APPDATA`, `OPENAI_API_KEY`, `WIKI_BUDGET_S`, `WORKER_OBJECTIVE`) (`GATE_COSINE_THRESHOLD` 0.45 vs 0.50, one of the two readers dead; `REFLECTIONS_ON_DEMAND` on vs off); `HEAVY_TOPIC_MAX_TOKENS` names two unrelated constants under one env name.
+- Find: DM-34 = `tests/unit/test_env_read_guard.py` (ceiling on setting-read sites + shrinking set of conflicting defaults)
+- Closure: per-incident; ratchet only — DM-34's ceiling on setting-read sites and its shrink-only set of conflicting literal defaults are what exists today; the planned chokepoint (a per-setting `app_config` constant, or an audited `utils/env` accessor with a schema) that would actually remove existing sites is not built.
+- Status: partial — guard stops growth; migration not started.
+
 ## Detection methods (DM) — find instances without a full read
 
 | ID | Method | Runs as | Classes |
@@ -823,10 +831,12 @@ next free number at their own merge.
 | DM-32 | Function-body import without a `# lazy import: <reason>` marker from the closed vocabulary, in the app packages + `main.py` (`scripts/` reported only); self-contained AST scan with a ceiling ratchet that every hygiene batch lowers | `tests/unit/test_import_hygiene_guard.py` (CM-02; allowlist gate at the plan's Phase 6) | BC-86, BC-11 |
 | DM-29 | Changelog phrase-append signature: group `gained`/`added exemplar`/`extended regex` hits by touched function/list; ≥3 dated batches on the same one is the signature | `check_bug_classes.py scan` — dm29_phrase_append_signature (report-only; the judgment stays human; its untracked changelog input reports *unavailable* in CI, never a clean zero) | BC-76 |
 | DM-33 | `gather(return_exceptions=True)` sites whose result is neither discarded nor routed through the shared classifier; self-contained AST scan with a content-anchored allowlist (CM-02) | `tests/unit/test_gather_results_guard.py` + `rg -n "return_exceptions=True" -A6 core memory knowledge gui utils api` | BC-87 |
+| DM-34 | Env-read guard: ceiling on `os.getenv`/`os.environ` setting-read sites outside `config/` (ops/test/credential bucket excluded) + a shrink-only frozenset of env names with conflicting literal defaults | `tests/unit/test_env_read_guard.py` | BC-88 |
+| DM-35 | Silent-swallow guard: ceiling on swallow-shaped `except` handlers (bare/`Exception`/`BaseException`/tuple, body only pass/continue/empty-return/debug-or-info log) with no `# degrades: <loss>` marker | `tests/unit/test_silent_swallow_guard.py` | BC-69, BC-70 |
 
 The `check_bug_classes.py scan` rows above are pinned by
 `config/bug_class_policy.json`: scanner IDs, modes, classes and input legs.
-Together they are a scoped structural lane. 11 of the 86 classes have a
+Together they are a scoped structural lane. 11 of the 87 classes have a
 scanner (9 gated, 2 report-only), and every scan report lists the classes no
 scanner covers. A green scan is not a behavioral guarantee for any class.
 Baseline candidates and their per-occurrence reviews live in
