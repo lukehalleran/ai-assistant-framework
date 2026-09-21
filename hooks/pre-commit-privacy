@@ -8,8 +8,34 @@
 #   ../../hooks/pre-commit-privacy || exit 1
 #
 # Runs gitleaks if available, then greps staged files against privacy_terms.local.txt
+#
+# Term list format (config/privacy_terms.local.txt, gitignored, one per line):
+#   a literal term      matched case-insensitively anywhere in a staged blob
+#   # comment           ignored
+#   allow:<literal>     a longer PUBLIC string that contains a term (a hosting
+#                       handle inside a repository URL, say). Every occurrence
+#                       of it is masked before the scan, so the term still
+#                       blocks everywhere else. An allow literal equal to a term
+#                       would switch that term off, and is refused.
 
-set -eu
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+fail() { echo "pre-commit privacy: BLOCKED — $*" >&2; exit 1; }
+
+# A clone does not inherit the owner's gitignored terms file. Absence must
+# never look like a successful privacy scan. CI has no owner vocabulary;
+# bypass requires an explicit setting as well as the CI environment.
+if [ ! -r config/privacy_terms.local.txt ]; then
+  if [ "${CI:-}" = "true" ] && [ "${DAEMON_ALLOW_MISSING_PRIVACY_TERMS:-}" = "1" ]; then
+    echo "pre-commit privacy: private-term scan explicitly unavailable in CI"
+  else
+    fail "config/privacy_terms.local.txt is missing or unreadable; install the local term list before committing"
+  fi
+  scan_terms=0
+else
+  scan_terms=1
+fi
 
 # Try gitleaks if installed
 if command -v gitleaks &>/dev/null; then
@@ -18,32 +44,85 @@ if command -v gitleaks &>/dev/null; then
   gitleaks git --pre-commit --redact --staged --verbose
 fi
 
-# Check against our term list if it exists
-if [ ! -f config/privacy_terms.local.txt ]; then
+# The explicit CI opt-out skips only private terms, never gitleaks.
+if [ "$scan_terms" = 0 ]; then
   exit 0
 fi
+
+terms=()
+allowed=()
+while IFS= read -r term || [ -n "$term" ]; do
+  term=${term%$'\r'}
+  [ -z "${term//[[:space:]]/}" ] && continue
+  [ "${term:0:1}" = "#" ] && continue
+  if [ "${term:0:6}" = "allow:" ]; then
+    literal=${term:6}
+    [ -n "${literal//[[:space:]]/}" ] || fail "an allow: line in the local term list is empty"
+    allowed+=("$literal")
+    continue
+  fi
+  terms+=("$term")
+done < config/privacy_terms.local.txt
+[ "${#terms[@]}" -gt 0 ] || fail "the local term list contains no terms"
+for literal in "${allowed[@]+"${allowed[@]}"}"; do
+  for term in "${terms[@]}"; do
+    [ "${literal,,}" != "${term,,}" ] || fail "an allow: line equals a listed term and would disable it"
+  done
+done
+
+# Materialize Git output before grep: a failed index read must block, and
+# grep -q must not turn a successful match into an upstream SIGPIPE failure.
+scratch=$(mktemp -d)
+# `command -p` resolves rm on the default system PATH: this repo's scripts/bin
+# puts a guarded rm wrapper first, and it refuses even this scoped temp dir.
+trap 'command -p rm -rf -- "$scratch"' EXIT
+printf '%s\n' "${allowed[@]+"${allowed[@]}"}" > "$scratch/allowed"
+
+# Blank out every allowed literal (literal text, any case). A space replaces it
+# so the text on either side cannot join up into a new match.
+mask_allowed() {
+  awk '
+    NR == FNR { if (length($0)) lit[++n] = tolower($0); next }
+    {
+      line = $0; low = tolower(line)
+      for (i = 1; i <= n; i++) {
+        size = length(lit[i])
+        while ((at = index(low, lit[i])) > 0) {
+          line = substr(line, 1, at - 1) " " substr(line, at + size)
+          low = substr(low, 1, at - 1) " " substr(low, at + size)
+        }
+      }
+      print line
+    }' "$scratch/allowed" "$1"
+}
+git diff --cached --name-only --diff-filter=ACMR -z > "$scratch/paths" \
+  || fail "cannot enumerate staged paths"
 
 # Inspect index blobs, not working-tree files.  This closes the gap where the
 # staged version is sensitive but the subsequently edited worktree is clean.
 offending_files=()
 while IFS= read -r -d '' file; do
-  # Deleted paths have no stage-0 blob. Renames/copies are included by the
-  # ACMR filter and inspected at their destination path.
-  if ! git cat-file -e ":$file" 2>/dev/null; then
-    continue
+  # ACMR excludes deletions; a missing blob here is an error, not a skip.
+  git show ":$file" > "$scratch/blob" || fail "cannot read a staged blob"
+  # Binary blobs are skipped by grep -I below; only text is worth masking.
+  # The masked copy is scanned in place of the blob — no rename, because a bare
+  # mv/rm here resolves to this repo's guarded scripts/bin wrappers.
+  scan="$scratch/blob"
+  if [ "${#allowed[@]}" -gt 0 ] && grep -Iq . "$scratch/blob"; then
+    mask_allowed "$scratch/blob" > "$scratch/masked" || fail "cannot mask allowed literals"
+    scan="$scratch/masked"
   fi
 
-  while IFS= read -r term || [ -n "$term" ]; do
-    term=${term%$'\r'}
-    [ -z "$term" ] && continue
-    [ "${term:0:1}" = "#" ] && continue
-
-    if git show ":$file" | grep -IFq -- "$term"; then
+  for term in "${terms[@]}"; do
+    if grep -IFiq -- "$term" "$scan"; then
       offending_files+=("$file")
       break
+    else
+      rc=$?
+      [ "$rc" = 1 ] || fail "private-term scanner failed"
     fi
-  done < config/privacy_terms.local.txt
-done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+  done
+done < "$scratch/paths"
 
 if [ "${#offending_files[@]}" -gt 0 ]; then
   echo "Privacy term match in staged files:"
