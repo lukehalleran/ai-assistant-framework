@@ -18,7 +18,10 @@ from fixtures import REPO_ROOT
 HOOK = REPO_ROOT / "hooks" / "pre-push"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
-SCAN_HOOK = 'python scripts/check_bug_classes.py scan --root . --receipt "$receipts/bug-class-scan.json"'
+# hooks/pre-push calls the standalone scan through the `py()` wrapper
+# (env -u PYTHONPATH python -s "$@" — D1, 2026-09-21); the workflow's
+# SCAN_CI below is unaffected since .github/workflows/tests.yml is untouched.
+SCAN_HOOK = 'py scripts/check_bug_classes.py scan --root . --receipt "$receipts/bug-class-scan.json"'
 SCAN_CI = "python scripts/check_bug_classes.py scan --root . --receipt receipts/bug-class-scan.json"
 
 
@@ -63,6 +66,10 @@ HOOK_MUTATIONS = [
         id="missing-guard-not-fatal",
     ),
     pytest.param(lambda t: _replace_once(t, "set -euo pipefail", "set -uo pipefail"), id="errexit-dropped"),
+    pytest.param(
+        lambda t: _replace_once(t, 'py() { env -u PYTHONPATH python -s "$@"; }', 'py() { python "$@"; }'),
+        id="interpreter-wrapper-weakened",
+    ),
 ]
 
 
