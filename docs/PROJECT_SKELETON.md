@@ -2001,7 +2001,7 @@ from config.app_config import config
 - `_log_cache_usage(usage, ...)` → greppable `[PromptCache] HIT|WRITE|MISS` log lines **[NEW 2026-06]**
 - Alias mapping via the `self.api_models` dict (e.g. "deepseek-v4" → "deepseek/deepseek-v4-pro"); there is no `_get_client()`/`_map_alias_to_model()` method
 
-**Model Aliases** (includes `sonnet-4.6` added 2026-03-10, `glm-5-turbo` added 2026-03-20, `deepseek-v4`/`deepseek-v4-flash` — active model is user-selectable via config.yaml `models.active`, changed frequently):
+**Model Aliases** (includes `sonnet-4.6` added 2026-03-10, `glm-5-turbo` added 2026-03-20, `deepseek-v4`/`deepseek-v4-flash`, and 2026-09-21 `gpt-6-astra`/`gpt-6`, `claude-fable-5.1`/`fable-5.1`, `deepseek-v4.1-flash` — active model is user-selectable via config.yaml `models.active`, changed frequently):
 - All routing goes through OpenRouter base URL
 
 **Environment Variables**:
