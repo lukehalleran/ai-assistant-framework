@@ -78,7 +78,6 @@ Module Contract
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -1192,9 +1191,8 @@ class DocumentGenerator:
             if row.get("path") == old_key:
                 row["path"], changed = self._index_path(Path(new_path)), True
         if changed:
-            tmp = index_path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            os.replace(tmp, index_path)
+            from utils.safe_json import atomic_write_text  # lazy import: layering
+            atomic_write_text(index_path, json.dumps(index, indent=2, ensure_ascii=False) + "\n")
 
     def _index_path(self, path: Path) -> str:
         """Repo-relative path for the index; absolute when output_dir lives
