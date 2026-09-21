@@ -25,8 +25,13 @@ Requires network. Run:  python scripts/verify_model_capabilities_live.py
 import sys
 import json
 import urllib.request
+from pathlib import Path
 
-from models.model_manager import API_MODEL_ALIASES, MODEL_CAPABILITIES
+# Resolve `models` from THIS checkout, whatever the shell's PYTHONPATH points at
+# (in a clone the login shell's path resolves the live repo's modules — BC-83).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from models.model_manager import API_MODEL_ALIASES, MODEL_CAPABILITIES  # noqa: E402
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
