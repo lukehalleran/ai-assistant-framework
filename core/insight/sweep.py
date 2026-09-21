@@ -153,8 +153,8 @@ async def run_sweep(
                     chroma_store.query_collection, coll, facet.query_text,
                     caps["per_facet_cap"],
                 )
-            except Exception as e:
-                logger.debug(f"[Insight] query_collection({coll}) failed: {e}")
+            except Exception as e:  # degrades: insight sweep loses this collection's evidence entirely
+                logger.warning(f"[Insight] query_collection({coll}) failed: {e}")
                 return []
 
         chroma_results = await asyncio.gather(*[_query(c) for c in SWEEP_COLLECTIONS])
@@ -224,8 +224,8 @@ async def run_sweep(
                         authored_only=True,
                     )
                 )
-            except Exception as e:
-                logger.debug(f"[Insight] corpus search_keyword failed: {e}")
+            except Exception as e:  # degrades: insight sweep loses corpus keyword evidence for this facet
+                logger.warning(f"[Insight] corpus search_keyword failed: {e}")
                 hits = []
             for h in hits:
                 # Prior-sweep-output feedback-loop guard (round 3): both
@@ -261,8 +261,8 @@ async def run_sweep(
                         memory_expander.expand, row.get("id"),
                         caps["expand_window"], "conversations",
                     )
-                except Exception as e:
-                    logger.debug(f"[Insight] expansion failed: {e}")
+                except Exception as e:  # degrades: insight sweep skips temporal expansion around this hit
+                    logger.warning(f"[Insight] expansion failed: {e}")
                     continue
                 for turn in (exp or {}).get("turns", []):
                     content = (turn.get("content") or "").strip()
@@ -304,7 +304,7 @@ async def run_sweep(
                     continue
                 try:
                     degree = graph_memory.graph.degree(entity_id)
-                except Exception:
+                except Exception:  # degrades: hub-degree check treats entity as non-hub, may over-expand
                     degree = 0
                 if degree >= GRAPH_EXPANSION_HUB_DEGREE:
                     logger.debug(f"[Insight] Skipping hub entity {entity_id} (deg={degree})")
@@ -331,8 +331,8 @@ async def run_sweep(
                         is_appraisal=stance_classifier.effective_stance(edge.metadata) == "appraisal",
                         facet=facet.name,
                     ))
-            except Exception as e:
-                logger.debug(f"[Insight] graph sweep for {mention!r} failed: {e}")
+            except Exception as e:  # degrades: insight sweep loses graph evidence for this entity mention
+                logger.warning(f"[Insight] graph sweep for {mention!r} failed: {e}")
 
     async def _quoted_phrase_scan() -> None:
         # Quoted cue phrases in the REQUEST itself ("no I mean", "that's
@@ -376,8 +376,8 @@ async def run_sweep(
                     **kw_kwargs,
                 )
             )
-        except Exception as e:
-            logger.debug(f"[Insight] quoted-phrase corpus scan failed: {e}")
+        except Exception as e:  # degrades: insight sweep loses the user's quoted-correction evidence entirely
+            logger.warning(f"[Insight] quoted-phrase corpus scan failed: {e}")
             return
         raw_items: list[EvidenceItem] = []
         for h in hits:
@@ -422,8 +422,8 @@ async def run_sweep(
                     window_scan_collection, chroma_store, coll,
                     date_window, caps["per_facet_cap"] * 2,
                 )
-            except Exception as e:
-                logger.debug(f"[Insight] date-range scan for {coll} failed: {e}")
+            except Exception as e:  # degrades: insight sweep loses date-windowed evidence for this collection
+                logger.warning(f"[Insight] date-range scan for {coll} failed: {e}")
                 continue
             for row in rows or []:
                 metadata = row.get("metadata") or {}
@@ -668,7 +668,7 @@ def fact_triple_is_junk(content: str) -> bool:
     from memory.fact_extractor import _is_junk_object
     try:
         return bool(_is_junk_object(obj, relation))
-    except Exception:
+    except Exception:  # degrades: junk-fact filter fails open, keeps a possibly-junk triple
         return False
 
 

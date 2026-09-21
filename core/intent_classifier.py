@@ -644,7 +644,7 @@ def _get_intent_prototypes():
             try:
                 from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
                 merged += get_store().get_learned("intent", label)
-            except Exception:
+            except Exception:  # degrades: intent prototype misses this label's learned exemplars
                 pass
             from utils.adaptive_exemplars import encode_texts_cached  # lazy import: startup-cost
             vecs = encode_texts_cached(
@@ -654,8 +654,8 @@ def _get_intent_prototypes():
             protos[label] = proto / (np.linalg.norm(proto) + 1e-9)
         _intent_prototype_cache = (_version, protos)
         return protos
-    except Exception as e:
-        logger.debug(f"intent prototypes unavailable: {e}")
+    except Exception as e:  # degrades: semantic intent tier disabled for this turn entirely
+        logger.warning(f"intent prototypes unavailable: {e}")
         return {}
 
 
@@ -680,8 +680,8 @@ def _semantic_intent(query: str):
         if top >= _SEMANTIC_TIER_CONFIG["min_sim"] and \
                 top - second >= _SEMANTIC_TIER_CONFIG["min_margin"]:
             return label, top
-    except Exception as e:
-        logger.debug(f"semantic intent tier skipped: {e}")
+    except Exception as e:  # degrades: semantic intent tier skipped, regex-only routing used
+        logger.warning(f"semantic intent tier skipped: {e}")
     return None
 
 
@@ -709,7 +709,7 @@ def _query_is_ack_shaped(query: str) -> bool:
         from utils.query_checker import is_casual_acknowledgment  # lazy import: patch-point
         if is_casual_acknowledgment(query):
             return True
-    except Exception:
+    except Exception:  # degrades: ack-shape check falls back to bare regex heuristic
         pass
     ql = query.strip().lower()
     return bool(re.match(
@@ -736,8 +736,8 @@ def _learn_intent_exemplar(query: str, label: str, source: str) -> None:
             "intent", label, query, source,
             seed_texts=INTENT_EXEMPLARS.get(label, []),
         )
-    except Exception as e:
-        logger.debug(f"intent exemplar learning skipped: {e}")
+    except Exception as e:  # degrades: adaptive exemplar store misses this confirmed intent example
+        logger.warning(f"intent exemplar learning skipped: {e}")
 
 
 class IntentClassifier:
