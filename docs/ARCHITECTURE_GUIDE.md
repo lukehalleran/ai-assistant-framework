@@ -2459,6 +2459,36 @@ pasted proposal" requests in the actual material instead of a bare topic web
 search (which once returned the Anarchism Wikipedia article and a 1994
 Unix-daemon PDF for a "daemon architecture" request).
 
+**Attachment-sourced, derivative and exported documents** [2026-09-20]: on a
+doc-gen turn with a file attached, the attachment text (from
+`ctx.merged_input`, plus a bounded tail of the conversation) is the source
+material and the topic is the attachment's filename stem — the handler used to
+pass only the raw request, which ran a web search on the request itself.
+`classify_deliverable()` (one-word LLM call, reasoning disabled, any failure →
+`analysis`) separates a document ABOUT the material (the report pipeline) from
+a DERIVATIVE of it — a rewrite / reformat / new version — which
+`compose_from_material()` writes in one call with no outline, citations or
+Sources section, saved under `documents/drafts/`. With two or more
+attachments, `assign_attachment_roles()` may name one as a LAYOUT TEMPLATE: its
+text guides structure only (never facts, never the topic) and its file drives
+styling.
+
+**File**: `knowledge/document_export.py` — `detect_requested_format()` (closed
+format vocabulary, filename-blind, negation-aware) and `export_document()`
+convert the written markdown to docx / pdf / odt / rtf / html / txt beside it;
+after a verified export the intermediate markdown is removed and the index row
+follows the file. Ladders: a `.docx` template → `_build_from_template()` (one
+paragraph per markdown line, each a deep copy of the template's exemplar
+paragraph for its STRUCTURAL role — title / preamble / heading / bold-lead
+entry / bullet / body — so direct formatting, bullets, spacing and right tab
+stops carry over) → pandoc + `_cast_template_styles()` → pandoc with the
+built-in compact reference (`document_generation.export_font` /
+`export_body_pt` / `export_margin_in`); pdf = the same docx through LibreOffice
+headless (private profile), fallback fpdf2; docx without pandoc falls back to a
+minimal python-docx renderer. A failed export reports the reason and keeps the
+markdown. Not yet exporting: the agentic `generate_document` tool and
+insight-mode document saves (markdown only).
+
 **Declared-source trimming**: sources are gathered broadly (notes are always
 pulled in for grounding) but many never get cited. `_select_cited_sources()`
 trims the declared source list — used in the YAML frontmatter, `index.json`,

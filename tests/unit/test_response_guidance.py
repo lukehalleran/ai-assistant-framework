@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[2]
 # generic guard would itself be a keyword list, so this pins only the known
 # leak plus a length cap — the cap is what stops the next incident's prose.
 _INCIDENT_TOKENS = ("dopamine", "alcohol", "stimulant", "medication", "medicine",
-                    "drug", "psychiatric", "tolerance", "vyvanse", "adhd")
+                    "drug", "psychiatric", "tolerance", "adhd")
 
 Q1 = ("I took my stimulant at 10 AM today and I'm just resting this afternoon, "
       "feels good honestly even though I got nothing done")

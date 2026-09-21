@@ -195,7 +195,7 @@
   },
   "harness": {
     "path": "tests/bug_class_guards",
-    "expected_test_cases": 311
+    "expected_test_cases": 312
   },
   "repo_wide_guards": [
     "tests/unit/test_no_git_state_in_tests.py",

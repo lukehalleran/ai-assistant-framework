@@ -66,9 +66,8 @@ installer/output/
 dist/
 
 # --- GENERATED DOCUMENTS ---
-documents/reports/
-documents/summaries/
-documents/index.json
+# Whole tree: any new doc_type dir, index backups, etc. are owner content.
+/documents/
 
 # --- DAEMON SELF-NOTES ---
 daemon_notes/*.md
@@ -136,6 +135,7 @@ CLAUDE_CHANGELOG.md
 docs/HANDOFF_*.md
 docs/*HANDOFF*.md
 docs/**/*handoff*.md
+docs/**/*HANDOFF*.md
 
 # handoff backup dirs written by the commit runner (local only)
 .handoff-backup-*/

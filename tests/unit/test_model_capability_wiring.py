@@ -40,7 +40,8 @@ from models.model_manager import (
 REGISTERED_SLUGS = sorted(set(API_MODEL_ALIASES.values()))
 ALIASES = sorted(API_MODEL_ALIASES)
 REQUIRED_KEYS = frozenset({"reasoning", "vision", "tools", "caching"})
-OPTIONAL_KEYS = frozenset({"forced_top_p"})
+OPTIONAL_KEYS = frozenset({"forced_top_p", "reasoning_mandatory", "forced_tool_choice"})
+OPTIONAL_BOOL_KEYS = ("reasoning_mandatory", "forced_tool_choice")
 CACHING_VALUES = (None, "explicit", "implicit")
 
 
@@ -67,6 +68,11 @@ def registry_problems(aliases, capabilities) -> list:
         for key in ("reasoning", "vision", "tools"):
             if key in caps and type(caps[key]) is not bool:
                 problems.append(f"{slug}: {key} must be True or False, got {caps[key]!r}")
+        for key in OPTIONAL_BOOL_KEYS:
+            if key in caps and type(caps[key]) is not bool:
+                problems.append(f"{slug}: {key} must be True or False, got {caps[key]!r}")
+        if caps.get("reasoning_mandatory") and not caps.get("reasoning"):
+            problems.append(f"{slug}: reasoning_mandatory needs reasoning=True (the request key is only sent then)")
         if caps.get("caching") not in CACHING_VALUES:
             problems.append(f"{slug}: invalid caching value {caps['caching']!r}")
         if "forced_top_p" in caps:
@@ -111,6 +117,9 @@ class TestRegistryHelperControls:
             ({**GOOD, "caching": "sometimes"}, "invalid caching value"),
             ({**GOOD, "forced_top_p": 1.5}, "forced_top_p must be a number"),
             ({**GOOD, "forced_top_p": True}, "forced_top_p must be a number"),
+            ({**GOOD, "reasoning_mandatory": "yes"}, "reasoning_mandatory must be True or False"),
+            ({**GOOD, "forced_tool_choice": 0}, "forced_tool_choice must be True or False"),
+            ({**GOOD, "reasoning": False, "reasoning_mandatory": True}, "reasoning_mandatory needs reasoning=True"),
         ],
     )
     def test_malformed_row_is_reported(self, row, needle):
@@ -122,7 +131,9 @@ class TestRegistryHelperControls:
 def test_classifiers_agree_with_declared_capabilities(slug):
     """Each pure classifier must match the declared capability for every slug.
 
-    Catches drift between a substring allowlist and the declared intent.
+    Since 2026-09-21 a registered slug is answered from its row (the substring
+    heuristics only answer for a slug with no row), so this pins that lookup;
+    the truth of the rows themselves is scripts/verify_model_capabilities_live.py.
     """
     caps = MODEL_CAPABILITIES[slug]
     assert _slug_supports_reasoning(slug) == caps["reasoning"], (
