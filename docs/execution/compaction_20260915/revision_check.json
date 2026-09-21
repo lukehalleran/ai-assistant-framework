@@ -1,0 +1,15 @@
+{
+  "checked_at_utc": "2026-09-16T03:21:44.351732+00:00",
+  "head": "eccd39f66d21efceead1344f29b86ab7dedf20b8",
+  "changed_baseline_files": [
+    "docs/BUG_CLASSES.md"
+  ],
+  "new_tracked_files": [],
+  "missing_tracked_files": [],
+  "baseline_matches": false,
+  "supplemental_hashes_match": false,
+  "note": "Metrics are a frozen measured snapshot; external concurrent changes must be remeasured before implementation.",
+  "changed_supplemental_files": [
+    "CLAUDE.md"
+  ]
+}
