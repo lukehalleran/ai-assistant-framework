@@ -50,6 +50,7 @@ from memory.fact_source import strip_quoted_correspondence
 import utils.temporal_resolver as temporal_resolver
 import re
 from datetime import datetime
+from utils.date_coerce import to_naive_local
 
 logger = get_logger("query_checker")
 
@@ -1606,12 +1607,12 @@ def belongs_to_thread(
     if isinstance(last_time, str):
         try:
             last_time = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
-            time_diff = (datetime.now() - last_time).total_seconds()
+            time_diff = (datetime.now() - to_naive_local(last_time)).total_seconds()
         except Exception:
             # Can't parse timestamp, use conservative time bonus
             time_diff = 3600.0  # Assume 1 hour
     elif isinstance(last_time, datetime):
-        time_diff = (datetime.now() - last_time).total_seconds()
+        time_diff = (datetime.now() - to_naive_local(last_time)).total_seconds()
     else:
         time_diff = 3600.0  # Default
 

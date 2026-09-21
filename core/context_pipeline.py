@@ -59,6 +59,7 @@ from core.intent_classifier import IntentClassifier, IntentResult, IntentType
 from utils.turn_progress import emit as _progress_emit
 from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
 import utils.safe_json as safe_json
+from utils.date_coerce import to_naive_local
 
 if TYPE_CHECKING:
     from utils.topic_manager import TopicManager
@@ -886,7 +887,7 @@ class ContextPipeline:
                 ts = datetime.fromisoformat(ts)
             if not isinstance(ts, datetime):
                 return False
-            return (datetime.now() - ts) > timedelta(minutes=app_config.TONE_STICKINESS_MAX_GAP_MINUTES)
+            return (datetime.now() - to_naive_local(ts)) > timedelta(minutes=app_config.TONE_STICKINESS_MAX_GAP_MINUTES)
         except Exception as e:
             logger.debug(f"[ContextPipeline] tone-stickiness gap check failed: {e}")
             return False

@@ -7,8 +7,10 @@ Module Contract
 - Inputs:
   - coerce_date(value) -> Optional[date]  (accepts datetime/date/ISO string;
     any other shape, or an unparseable string, returns None)
+  - to_naive_local(value) -> datetime  (2026-09-20: project convention is naive
+    LOCAL time; an aware datetime is CONVERTED to local, then stripped)
 - Dependencies: none beyond stdlib.
-- Side effects: none; pure function.
+- Side effects: none; pure functions.
 """
 
 from __future__ import annotations
@@ -28,3 +30,9 @@ def coerce_date(value: Any) -> Optional[date]:
         except ValueError:
             return None
     return None
+
+
+def to_naive_local(value: datetime) -> datetime:
+    """Project convention is naive LOCAL time. An aware datetime is CONVERTED to local, then stripped
+    (never a bare .replace(tzinfo=None), which misreads a UTC value by the UTC offset)."""
+    return value.astimezone().replace(tzinfo=None) if value.tzinfo is not None else value
