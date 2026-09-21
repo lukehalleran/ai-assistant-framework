@@ -1766,6 +1766,53 @@ def _build_conversation_source_material(history, user_text) -> str:
     return f"[CONVERSATION TRANSCRIPT]\n{transcript}\n\n[USER REQUEST]\n{user_text or ''}".strip()
 
 
+# Attachment-sourced document (2026-09-20): "write a new document using info
+# in attachment and applied formatting fixes" with a resume .docx attached ran
+# RESEARCH mode — source_material was ctx.user_text (the raw 180-char request;
+# the attachment text lives only in ctx.merged_input), so the generator
+# web-searched the literal request and saved a report about the PHRASE
+# "please find attached". An attachment on a doc-gen turn IS the material.
+_DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS = 3000
+
+
+def _attachment_source_material(ctx) -> str:
+    """This turn's merged attachment text, or '' when nothing substantial was attached.
+
+    Attachment first (it must survive the generator's provided-material cap),
+    then a bounded tail of the conversation — a request like "with the fixes
+    we discussed applied" points at prior turns, not at the file.
+    """
+    from knowledge.document_generator import DOCUMENT_PROVIDED_MIN_CHARS  # lazy import: startup-cost
+
+    user_text = str(getattr(ctx, "user_text", "") or "")
+    merged = str(getattr(ctx, "merged_input", "") or "")
+    if len(merged) - len(user_text) < DOCUMENT_PROVIDED_MIN_CHARS:
+        return ""
+    transcript = _build_conversation_source_material(getattr(ctx, "history", None), "")
+    transcript = transcript.replace("[USER REQUEST]", "").strip()
+    if len(transcript) > _DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS:
+        transcript = "[CONVERSATION TRANSCRIPT]\n…" + transcript[-_DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS:]
+    return f"{merged}\n\n{transcript}".strip()
+
+
+def _attachment_topic(ctx) -> str:
+    """Filename-derived topic for an attachment-sourced document ('' if unknown).
+
+    The gate's topic is the user's whole imperative; as a filename/search
+    string it is noise ("instead-please-write-a-new-document-…").
+    """
+    registry = getattr(getattr(ctx, "orchestrator", None), "active_documents", None)
+    try:
+        docs = list(registry.documents()) if registry is not None else []
+    except Exception:  # degrades: topic falls back to the gate's string
+        docs = []
+    if not docs:
+        return ""
+    newest = max(docs, key=lambda d: getattr(d, "registered_turn", 0))
+    stem = str(getattr(newest, "display_name", "") or "").rsplit(".", 1)[0]
+    return " ".join(_re.sub(r"[_\-]+", " ", stem).split())
+
+
 async def _run_doc_generation(ctx):
     """Direct document-generation bypass (agentic gate doc_gen_intent).
 
@@ -1807,17 +1854,24 @@ async def _run_doc_generation(ctx):
         # request is grounded in that content rather than a generic web
         # search on the topic string.
         _doc_source = _resolve_doc_source(_doc_gen_intent, getattr(ctx, "user_text", None))
+        _doc_topic = _doc_gen_intent["topic"]
         if _doc_source == "conversation":
             _source_material = _build_conversation_source_material(
                 getattr(ctx, "history", None), getattr(ctx, "user_text", None)
             )
             yield {"role": "assistant", "content": "📝 Summarizing our conversation...", "is_progress": True}
         else:
-            _source_material = getattr(ctx, "user_text", None)
-            yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
+            _source_material = _attachment_source_material(ctx)
+            if _source_material:
+                _doc_source = "attachment"
+                _doc_topic = _attachment_topic(ctx) or _doc_topic
+                yield {"role": "assistant", "content": "📝 Writing from your attachment...", "is_progress": True}
+            else:
+                _source_material = getattr(ctx, "user_text", None)
+                yield {"role": "assistant", "content": f"📝 Researching: {_doc_gen_intent['topic']}...", "is_progress": True}
 
         _doc_result = await _dg.generate(
-            topic=_doc_gen_intent["topic"],
+            topic=_doc_topic,
             doc_type=_doc_gen_intent["doc_type"],
             focus=_doc_gen_intent.get("focus"),
             source_material=_source_material,
