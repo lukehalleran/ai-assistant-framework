@@ -34,19 +34,20 @@ and the tests share this one implementation.
 
 from typing import Any, Dict, Optional
 
+import utils.read_time_markers as read_time_markers
+
 # The error prefix WebSearchManager.search returns when the limiter refuses a
 # search (multi_search repeats it per sub-query). Pinned against the deployed
 # manager by tests/unit/test_sep12_web_evidence_budget.py.
 BUDGET_ERROR_MARKER = "Daily credit limit reached"
 
-BUDGET_NOTICE = (
-    "\n\n> ⚠️ I couldn't run a fresh web search because today's search budget "
-    "is used up, so this answer isn't checked against current sources."
+BUDGET_NOTICE = read_time_markers.delivery_notice(
+    read_time_markers.NOTICE_WEB_BUDGET,
+    " is used up, so this answer isn't checked against current sources.",
 )
-BUDGET_NOTICE_PARTIAL = (
-    "\n\n> ⚠️ I couldn't run every web search this needed because today's "
-    "search budget is used up, so this answer relies only on the sources I "
-    "could already get."
+BUDGET_NOTICE_PARTIAL = read_time_markers.delivery_notice(
+    read_time_markers.NOTICE_WEB_BUDGET_PARTIAL,
+    " is used up, so this answer relies only on the sources I could already get.",
 )
 
 

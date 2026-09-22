@@ -477,8 +477,10 @@ def test_default_config_is_enabled_log_only():
 def test_both_routes_and_the_ingress_capture_are_wired():
     enhanced = inspect.getsource(handlers._run_enhanced)
     agentic = inspect.getsource(handlers._run_agentic_search)
+    pipeline = inspect.getsource(handlers._apply_delivery_revisions)
+    assert "_apply_personal_claim_check_for_delivery(" in pipeline  # 2026-09-22: ONE ordered pipeline
     for src in (enhanced, agentic):
-        assert "_apply_personal_claim_check_for_delivery(" in src
+        assert "_apply_delivery_revisions(" in src
         assert "_start_background_personal_claim(" in src
         assert "personal_claim_task=" in src
     inner = inspect.getsource(handlers._handle_submit_inner)

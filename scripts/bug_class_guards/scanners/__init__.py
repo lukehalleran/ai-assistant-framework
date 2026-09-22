@@ -22,7 +22,7 @@ from typing import Iterable
 from .common import Finding, Leg, LegReceipt, Scanner, ScannerError, ScanResult
 from . import catalog_scanner, dm01_raw_substring, dm16_config_reachability
 from . import dm17_apply_without_guard, dm18_except_returns_empty, dm29_phrase_append
-from . import dm31_live_state_default
+from . import dm31_live_state_default, dm38_machinery_consumers
 
 
 def _entry(module, description: str, mode: str) -> Scanner:
@@ -73,6 +73,11 @@ _SCANNER_LIST = (
     _entry(
         dm31_live_state_default,
         "public function asserts live budget/toggle state via a default",
+        "gate",
+    ),
+    _entry(
+        dm38_machinery_consumers,
+        "audited assistant-turn identity, delivery audit, and prompt render consumers",
         "gate",
     ),
     _entry(

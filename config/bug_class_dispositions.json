@@ -238,13 +238,13 @@
         "text": "if \"(today)\" in rel.lower():",
         "ordinal": 1
       },
-      "source_sha256": "74da5788dc18b311fc2af87497d2c2e87a925df6d65c433bcb80cf984ae29fa9",
+      "source_sha256": "af7ff425d1242db46b455f6b121d20c40f774d1475d7edf43cca2a5bf10b8a07",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
       "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(today)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit); re-reviewed 2026-09-15 by Claude Fable 5.1 at generalization-lane landing (owner-approved): content anchor digest unchanged, only the file hash moved",
-      "review_date": "2026-09-15",
-      "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
+      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit); re-reviewed 2026-09-15 by Claude Fable 5.1 at generalization-lane landing (owner-approved): content anchor digest unchanged, only the file hash moved; re-reviewed 2026-09-22 by Codex: _format_session_header AST unchanged; weekday and notice stripping edits outside accepted anchors; independently re-verified at integration by Claude Fable 5.1 (ast.dump of _format_session_header equal base vs final, file hash af7ff425…; owner approval = the owner-authorized commit of this batch)",
+      "review_date": "2026-09-22",
+      "evidence": "docs/execution/review_20260922/REVIEW.md",
       "request": null
     },
     {
@@ -263,13 +263,13 @@
         "text": "elif \"(yesterday)\" in rel.lower():",
         "ordinal": 1
       },
-      "source_sha256": "74da5788dc18b311fc2af87497d2c2e87a925df6d65c433bcb80cf984ae29fa9",
+      "source_sha256": "af7ff425d1242db46b455f6b121d20c40f774d1475d7edf43cca2a5bf10b8a07",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
       "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(yesterday)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit); re-reviewed 2026-09-15 by Claude Fable 5.1 at generalization-lane landing (owner-approved): content anchor digest unchanged, only the file hash moved",
-      "review_date": "2026-09-15",
-      "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
+      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit); re-reviewed 2026-09-15 by Claude Fable 5.1 at generalization-lane landing (owner-approved): content anchor digest unchanged, only the file hash moved; re-reviewed 2026-09-22 by Codex: _format_session_header AST unchanged; weekday and notice stripping edits outside accepted anchors; independently re-verified at integration by Claude Fable 5.1 (ast.dump of _format_session_header equal base vs final, file hash af7ff425…; owner approval = the owner-authorized commit of this batch)",
+      "review_date": "2026-09-22",
+      "evidence": "docs/execution/review_20260922/REVIEW.md",
       "request": null
     },
     {

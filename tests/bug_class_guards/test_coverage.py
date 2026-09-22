@@ -96,6 +96,9 @@ class TestDm18Roots:
         code, payload, _, _ = run_scan(capsys, tmp_path)
         assert code == 1
         assert leg_receipt(payload, "dm01_raw_substring", "python_source")["available"] is True
+        dm38_leg = leg_receipt(payload, "dm38_machinery_consumers", "dm38_consumers")
+        assert [r["path"] for r in dm38_leg["roots"]] == ["core", "gui", "utils"]
+        assert dm38_leg["required"] is True
         leg = leg_receipt(payload, "dm18_except_returns_empty", "dm18_retrieval")
         assert root_status(leg, "core/prompt") == "missing"
 

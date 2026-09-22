@@ -163,7 +163,7 @@ def base_env(env_extra: dict | None = None, *, drop_pythonpath: bool = True) -> 
     env = dict(os.environ)
     if drop_pythonpath:
         env.pop("PYTHONPATH", None)
-    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES"):
+    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES", "DAEMON_LIVE_REPO_ROOT"):
         env.pop(key, None)
     env["PREPUSH_CHECK"] = "1"
     if _STUB_TOOLS_DIR is not None:
@@ -180,6 +180,14 @@ def base_env(env_extra: dict | None = None, *, drop_pythonpath: bool = True) -> 
     if env_extra:
         env.update(env_extra)
     return env
+
+
+def test_fixture_does_not_inherit_owner_live_root(monkeypatch, tmp_path):
+    """Fixture roots, not the owner's shell, determine daemon-state evidence."""
+    monkeypatch.setenv("DAEMON_LIVE_REPO_ROOT", str(tmp_path / "unrelated-owner-root"))
+    assert "DAEMON_LIVE_REPO_ROOT" not in base_env()
+    explicit = str(tmp_path / "fixture-root")
+    assert base_env({"DAEMON_LIVE_REPO_ROOT": explicit})["DAEMON_LIVE_REPO_ROOT"] == explicit
 
 
 def run_hook(
@@ -664,4 +672,3 @@ def test_r3_pass_3_is_gated_by_a_fresh_probe_and_a_worktree_interpreter_check():
     assert 'if [ "$daemon_state" = "down" ]; then' in text[header:add]
     assert "wt_pyver" in text[add:run] and "refusing to run the non-unit pass" in text[add:run]
     assert text.count("pre_push_support.py daemon-state") == 2
-

@@ -121,8 +121,43 @@ _VERB_STEMS = frozenset({
     "dealing", "struggling", "considering", "taking",
 })
 
+# A lexical stopword is a junk candidate, not proof that a word cannot be a
+# name (for example, May). Preserve named-entity metadata and original casing
+# through every caller. Untyped lowercase candidates use a maintained English
+# lexicon instead of extending an incident-derived list. No POS model is loaded.
+# Named types come from GraphNode's public schema, not a list of people's names.
+_NAMED_ENTITY_TYPES = frozenset({"person", "pet", "place", "organization", "project"})
+_STOP_LEXICON: "frozenset[str] | None" = None
 
-def is_junk_entity(name: str) -> bool:
+
+def _stop_lexicon() -> "frozenset[str]":
+    """spaCy's curated English function-word lexicon (326 entries), loaded
+    once; empty set when spaCy is absent."""
+    global _STOP_LEXICON
+    if _STOP_LEXICON is None:
+        try:
+            from spacy.lang.en.stop_words import STOP_WORDS  # lazy import: startup-cost (imports the spacy package)
+            _STOP_LEXICON = frozenset(w.lower() for w in STOP_WORDS)
+        except Exception:  # degrades: no lexicon → single function words pass as before spaCy was available
+            _STOP_LEXICON = frozenset()
+    return _STOP_LEXICON
+
+
+def _is_single_function_word(n: str, *, entity_type: str = "") -> bool:
+    """Flag untyped lowercase stopwords; abstain on possible proper names.
+
+    Entity types preserve names even after normalization to lowercase. Original
+    capitalization is a conservative fallback when no type is available. This
+    lexical heuristic is deliberately not a universal entity classifier.
+    """
+    if not n or len(n.split()) != 1:
+        return False
+    if entity_type in _NAMED_ENTITY_TYPES or n != n.lower():
+        return False
+    return n.lower() in _stop_lexicon()
+
+
+def is_junk_entity(name: str, *, entity_type: str = "") -> bool:
     """Return True if *name* is a stopword, pronoun, measurement, or other
     non-entity that should never be a graph node.
 
@@ -132,7 +167,8 @@ def is_junk_entity(name: str) -> bool:
     - Wiki enrichment (_link_conversation_entities) to filter matches
     - extract_graph_entities() to filter extraction results
     """
-    n = name.strip().lower()
+    original = name.strip()
+    n = original.lower()
     if not n or len(n) <= 2:
         return True
     if n in _STOPWORDS or n in _JUNK_ENTITIES:
@@ -148,12 +184,14 @@ def is_junk_entity(name: str) -> bool:
     first_word = n.split()[0]
     if first_word in _VERB_STEMS:
         return True
+    if _is_single_function_word(original, entity_type=entity_type):
+        return True
     return False
 
 
-def _is_expansion_junk(name: str) -> bool:
+def _is_expansion_junk(name: str, *, entity_type: str = "") -> bool:
     """Return True if *name* looks like a junk phrase, not a real entity."""
-    return is_junk_entity(name)
+    return is_junk_entity(name, entity_type=entity_type)
 
 
 # Species words a relation can embed ("has_dog", "adopted_kitten"), mapped to
@@ -340,7 +378,7 @@ def rank_expansion_candidates(
         name = node.display_name.strip()
         if not name or name.lower() in _STOPWORDS:
             continue
-        if _is_expansion_junk(name):
+        if _is_expansion_junk(name, entity_type=getattr(node, "entity_type", "")):
             continue
         # Evidence bar: a once-mentioned node is a single extraction event,
         # not an established concept — don't let it steer query expansion.
@@ -465,7 +503,13 @@ def extract_graph_entities(text: str, resolver, graph_memory=None) -> Set[str]:
             entity_ids.add(eid)
 
     # Final junk filter — catch anything that slipped through n-gram matching
-    entity_ids = {eid for eid in entity_ids if not is_junk_entity(eid)}
+    kept = set()
+    for eid in entity_ids:
+        node = graph_memory.get_entity(eid) if graph_memory is not None else None
+        display = getattr(node, "display_name", None) or eid
+        if not is_junk_entity(display, entity_type=getattr(node, "entity_type", "")):
+            kept.add(eid)
+    entity_ids = kept
 
     return entity_ids
 

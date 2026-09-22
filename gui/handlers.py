@@ -124,7 +124,8 @@ from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult, attachment_display_name
 from utils.attachment_audit import audit_attachments, deadline_timezone_note
 from utils.query_checker import is_task_navigation
-from utils.trigger_match import normalize_ws
+from utils.trigger_match import is_negated, normalize_ws
+import utils.read_time_markers as read_time_markers
 from core.active_document import (
     ActiveDocumentRegistry,
     ActivePassage,
@@ -2867,9 +2868,10 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
             _missing.append("semantic search index")
         if not note.indexed:
             _missing.append("notes index")
-        _resp += (
-            f"\n> ⚠️ Saved to disk, but couldn't update the {', '.join(_missing)} — "
-            f"it may not resurface automatically in future sessions."
+        _resp += read_time_markers.delivery_notice(
+            read_time_markers.NOTICE_NOTE_PARTIAL,
+            f" {', '.join(_missing)} — it may not resurface automatically in future sessions.",
+            separator="\n",
         )
     logger.info(f"[ActionGuard] Note saved: {note.path} (fully_persisted={note.fully_persisted})")
 
@@ -3228,6 +3230,131 @@ def _calendar_claim_matches_event(clause: str, event) -> bool:
     return bool(summary_tokens & clause_tokens)
 
 
+def _user_authored_spans(ctx) -> list[str]:
+    """This turn's user text plus the user-authored `query` of each gathered
+    recent turn — never a `response`/`content` field. Fails open to [] on
+    any exception. class: BC-50, BC-58 (2026-09-22 noon-appointment over-fire)."""
+    try:
+        spans = []
+        user_text = getattr(ctx, "user_text_ws", None) or getattr(ctx, "user_text", None)
+        if user_text:
+            spans.append(str(user_text))
+        raw_context = getattr(ctx, "raw_context", None) or {}
+        recents = raw_context.get("recent_conversations") or []
+        for item in recents:
+            if isinstance(item, dict):
+                q = item.get("query")
+                if q:
+                    spans.append(str(q))
+        return spans
+    except Exception:  # degrades: no user-span corroboration; backstop falls back to gathered events only
+        return []
+
+
+def _calendar_claim_segment(text: str, pos: int) -> str:
+    """The clause-sized slice of ``text`` around ``pos``: bounded by sentence
+    punctuation or a coordinating/sequence word, so a clock time elsewhere
+    in a multi-event status message ("took meds at 1030 ... then did the
+    appointment in bed") never attaches to the calendar noun."""
+    bounds = [m.end() for m in _re.finditer(
+        r"[.!?;,\n]|\b(?:and|then|before|after|but|so|while)\b", text, _re.IGNORECASE)]
+    lo = max([b for b in bounds if b <= pos] or [0])
+    hi = min([b for b in bounds if b > pos] or [len(text)])
+    return text[lo:hi]
+
+
+def _calendar_claim_sentence(text: str, pos: int) -> str:
+    starts = [m.end() for m in _re.finditer(r"[.!?\n]", text)]
+    lo = max([b for b in starts if b <= pos] or [0])
+    hi = min([b for b in starts if b > pos] or [len(text)])
+    return text[lo:hi]
+
+
+def _calendar_claim_when(text: str) -> tuple:
+    """(weekdays, clock hours, ISO date) explicitly stated in ``text``, each
+    empty/None when absent — all from deployed parsers, no new vocabulary."""
+    lowered = (text or "").lower()
+    days = {d for d in _WEEKDAY_NAMES if _re.search(rf"\b{d}\b", lowered)}
+    try:
+        hours = set(registry._pool_hours(text or ""))
+    except Exception:  # degrades: no clock agreement check for this text
+        hours = set()
+    try:
+        date_iso, _, _ = action_claim_guard.temporal_resolver.resolve_date_expression(
+            text or "", reference_date=_dt.now().replace(tzinfo=None),
+        )
+    except Exception:  # degrades: no explicit-date agreement check for this text
+        date_iso = None
+    return days, hours, date_iso
+
+
+def _calendar_claim_user_corroborated(clause: str, spans: list[str]) -> bool:
+    """True when a user-authored span ASSERTS one of the CLAUSE'S OWN
+    calendar-noun anchors — the user's own report is evidence for a reply
+    that restates it, exactly like a gathered event is.
+
+    Anchors come from `action_claim_guard._CALENDAR_STRONG_RE` ("appointment",
+    "event", "office hours", "recurring", ...), normalized so plural/spacing
+    variants agree; corroboration keys on the claim's own calendar noun,
+    never on generic token overlap (a shared filler word is never an anchor
+    — structural exclusion, not a maintained word list). A span mention
+    counts only when it is an ASSERTION: not negated (`is_negated` lookback
+    on the anchor), and not inside a question/request/command sentence
+    (deployed `query_checker` shapes) — "can you add an appointment Friday"
+    or "I don't have an appointment" is not evidence that one exists
+    (2026-09-22 review). When the clause claims PERSISTED calendar state
+    (`_CALENDAR_STATE_RE`: "already on your calendar"), the corroborating
+    sentence must itself name the calendar; a report of attending an event
+    does not prove it sits on the calendar. Explicit when-details must agree
+    where BOTH sides state them — weekday (any shared day), explicit date,
+    and a clock time in the anchor's own clause segment (a time elsewhere in
+    a multi-event status message never attaches). No calendar-noun anchor,
+    no spans, or any exception -> False (falls through to the ordinary
+    event-match check). class: BC-50, BC-58 (2026-09-22 noon-appointment
+    over-fire; referee round 2 replaced token overlap with the anchor
+    design; review round 3 added the assertion/negation/persisted-state
+    gates and clause-scoped time agreement)."""
+    try:
+        anchors = {
+            _re.sub(r"\s+", " ", m.group(0)).rstrip("s").lower()
+            for m in action_claim_guard._CALENDAR_STRONG_RE.finditer(clause or "")
+        }
+        if not anchors:
+            return False
+        claim_days, claim_hours, claim_date = _calendar_claim_when(clause or "")
+        persisted = bool(action_claim_guard._CALENDAR_STATE_RE.search(clause or ""))
+        for span in spans or []:
+            span_text = normalize_ws(span or "")
+            if not span_text:
+                continue
+            for m in action_claim_guard._CALENDAR_STRONG_RE.finditer(span_text):
+                anchor = _re.sub(r"\s+", " ", m.group(0)).rstrip("s").lower()
+                if anchor not in anchors:
+                    continue
+                if is_negated(span_text, m.start()):
+                    continue
+                sentence = _calendar_claim_sentence(span_text, m.start())
+                if ("?" in sentence or query_checker.is_question(sentence)
+                        or query_checker.is_command(sentence)
+                        or query_checker.is_request_shaped(sentence)):
+                    continue
+                if persisted and not _re.search(r"\bcalendar\b", sentence, _re.IGNORECASE):
+                    continue
+                segment = _calendar_claim_segment(span_text, m.start())
+                span_days, _, _ = _calendar_claim_when(span_text)
+                _, seg_hours, seg_date = _calendar_claim_when(segment)
+                if claim_days and span_days and not (claim_days & span_days):
+                    continue
+                if claim_date and seg_date and claim_date != seg_date:
+                    continue
+                if claim_hours and seg_hours and not (claim_hours & seg_hours):
+                    continue
+                return True
+        return False
+    except Exception:  # degrades: clause treated as uncorroborated by the user's own words; event-match check decides alone
+        return False
+
+
 async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_kinds, self_repair):
     """Reconcile completion claims in a response against what actually ran.
 
@@ -3315,9 +3442,9 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
                         "[ActionGuard] Reply claims a fresh upload with no "
                         f"active document this session — appending notice (found={_upload_date})"
                     )
-                    suffix += (
-                        "\n\n> ⚠️ No file was uploaded this session; the document "
-                        f"I found was uploaded {_upload_date}."
+                    suffix += read_time_markers.delivery_notice(
+                        read_time_markers.NOTICE_UPLOAD_STALE,
+                        f" I found was uploaded {_upload_date}.",
                     )
     except Exception as e:
         logger.warning(f"[ActionGuard] Fresh-upload claim check failed (non-fatal): {e}")
@@ -3340,18 +3467,36 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
         )
         if _state_claims:
             _cal_events = (getattr(ctx, "raw_context", None) or {}).get("google_calendar") or []
-            if _cal_events and not any(
-                _calendar_claim_matches_event(clause, ev)
-                for clause in _state_claims for ev in _cal_events
-            ):
+            # The user's own report of the same detail this turn (or in a
+            # gathered recent turn) is evidence too — a status update that
+            # mentions "a noon appointment" corroborates the clause even
+            # when this turn's gathered events don't happen to include it
+            # (2026-09-22: this backstop compared ONLY against gathered
+            # events and false-fired on the user's own words). class:
+            # BC-50, BC-58.
+            _user_spans = _user_authored_spans(ctx)
+            _event_unmatched = [
+                c for c in _state_claims
+                if not any(_calendar_claim_matches_event(c, ev) for ev in _cal_events)
+            ]
+            _uncorroborated = [
+                c for c in _event_unmatched
+                if not _calendar_claim_user_corroborated(c, _user_spans)
+            ]
+            if _cal_events and _uncorroborated:
                 logger.warning(
                     "[ActionGuard] Reply claims an existing calendar event "
                     "that matches none of this turn's gathered events — "
                     "appending notice"
                 )
-                suffix += (
-                    "\n\n> ⚠️ I don't see that on your calendar — nothing "
-                    "was created. Say \"add it\" and I'll queue a card."
+                suffix += read_time_markers.delivery_notice(
+                    read_time_markers.NOTICE_CALENDAR_UNSEEN,
+                    " Say \"add it\" and I'll queue a card.",
+                )
+            elif not _uncorroborated and _event_unmatched:
+                logger.info(
+                    "[ActionGuard] Calendar state clause corroborated by "
+                    "the user's own words — no notice"
                 )
     except Exception as e:
         logger.warning(f"[ActionGuard] Calendar state-claim check failed (non-fatal): {e}")
@@ -3844,6 +3989,34 @@ async def _apply_personal_claim_check_for_delivery(ctx, response_text):
         return None
     _, revised = await _apply_personal_claim_check(ctx, response_text, mode=mode)
     return revised
+
+
+async def _apply_delivery_revisions(ctx, response_text, *, source_material=""):
+    """Apply content revisions in delivery order and return the clean body.
+
+    The action-guard suffix is kept by the caller and reattached once after
+    this pipeline. Grounding corrections become the input to the personal
+    claim audit, so a later correction cannot restore the original draft and
+    discard the grounding fix. In log-only mode, each check records the body
+    it actually audits; when no earlier pass revises, that is also the body
+    delivered. class: BC-45, BC-91.
+    """
+    body = response_text
+    try:
+        grounded, _ = await _apply_grounding_check_for_delivery(
+            ctx, body, source_material=source_material,
+        )
+        if grounded:
+            body = grounded
+    except Exception as exc:
+        logger.warning(f"[DeliveryRevision] Grounding check failed (non-fatal): {exc}")
+    try:
+        personal = await _apply_personal_claim_check_for_delivery(ctx, body)
+        if personal:
+            body = personal
+    except Exception as exc:
+        logger.warning(f"[DeliveryRevision] Personal-claim check failed (non-fatal): {exc}")
+    return body
 
 
 def _start_background_personal_claim(ctx, provenance=None):
@@ -4575,6 +4748,10 @@ async def _run_agentic_search(ctx):
         # those tools, so auto-saving would risk a duplicate. External actions are
         # human-in-the-loop (never auto-executed by the loop), so a bare "I sent
         # it" with no proposal is safe to correct.
+        # audits read the pre-suffix reply; the guard notice is machinery, not content (BC-91, BC-45)
+        _pre_suffix = display_output
+        _delivery_body = _pre_suffix
+        _ag_guard_suffix = ""
         try:
             _ag_proposed = action_claim_guard.EXTERNAL if _pending_action_id else set()
             _ag_guard_suffix = await _apply_action_guard(
@@ -4587,16 +4764,10 @@ async def _run_agentic_search(ctx):
         except Exception as _ag_guard_err:
             logger.warning(f"[Handle Submit] Agentic action guard failed (non-fatal): {_ag_guard_err}")
 
-        # ── Factual-grounding floor (same as enhanced path): correct a
-        # confirmably-false claim before the final yield. The verifier gets
-        # the loop's tool-round results as SOURCE MATERIAL — on agentic turns
-        # the response's facts come from retrieved documents the verifier
-        # otherwise never sees (it flagged a correct "Fall 2026" against its
-        # own date prior, live 2026-08-29). Integration path replaces the
-        # whole text (final yield is a bubble replacement); when the
-        # integrator is disabled or fails, build_integrated_fallback (A05b-1)
-        # ships one spliced-or-standalone correction the same way. Either way
-        # display AND final_output stay identical.
+        # ── Grounding and personal-claim revisions: use one ordered pipeline
+        # on the clean body. Its personal-claim pass sees any grounding
+        # correction, while the action-guard notice remains detached until
+        # the pipeline finishes.
         try:
             _ag_source_parts = []
             for _gc_round in (getattr(_agentic_session, 'rounds', None) or []):
@@ -4606,29 +4777,14 @@ async def _run_agentic_search(ctx):
                 if _gc_piece:
                     _ag_source_parts.append(str(_gc_piece)[:2000])
             _ag_source = "\n---\n".join(_ag_source_parts)[:6000]
-            _ag_gc_revised, _ag_gc_suffix = await _apply_grounding_check_for_delivery(
-                ctx, display_output, source_material=_ag_source)
-            if _ag_gc_revised:
-                display_output = _ag_gc_revised
-                final_output = _ag_gc_revised
-        except Exception as _ag_gc_err:
-            logger.warning(f"[Handle Submit] Agentic grounding check failed (non-fatal): {_ag_gc_err}")
-
-        # Personal-event support is independent of tone, planning, and the
-        # factual-grounding prefilter.  In correction mode this runs before
-        # the final chunk is yielded; in log-only mode it schedules a
-        # deferred receipt while preserving the delivered text.
-        try:
-            _ag_pc_revised = await _apply_personal_claim_check_for_delivery(
-                ctx, display_output,
+            _delivery_body = await _apply_delivery_revisions(
+                ctx, _delivery_body, source_material=_ag_source,
             )
-            if _ag_pc_revised:
-                display_output = _ag_pc_revised
-                final_output = _ag_pc_revised
-        except Exception as _ag_pc_err:
-            logger.warning(
-                f"[Handle Submit] Agentic personal claim check failed (non-fatal): {_ag_pc_err}"
-            )
+            display_output = _delivery_body.rstrip() + (_ag_guard_suffix or "")
+            if _delivery_body != _pre_suffix:
+                final_output = _delivery_body.rstrip() + (_ag_guard_suffix or "")
+        except Exception as _ag_revision_err:
+            logger.warning(f"[Handle Submit] Agentic delivery revision failed (non-fatal): {_ag_revision_err}")
         _attach_personal_claim_provenance(_agentic_prov, ctx)
 
         # ── Web-evidence honesty (2026-09-12, review F4): the same receipt and
@@ -5258,6 +5414,10 @@ async def _run_enhanced(ctx):
         # Enhanced is a TOOL-LESS path, so any "Done — saved the note" claim is
         # unbacked. Self-repair note/doc claims; honestly correct external claims
         # that weren't even proposed. (proposed kinds suppressed via the card.)
+        # audits read the pre-suffix reply; the guard notice is machinery, not content (BC-91, BC-45)
+        _pre_suffix = _resp_for_debug
+        _delivery_body = _pre_suffix
+        _guard_suffix = ""
         try:
             _enh_proposed = action_claim_guard.EXTERNAL if _enh_pending_action_id else set()
             _guard_suffix = await _apply_action_guard(
@@ -5270,36 +5430,16 @@ async def _run_enhanced(ctx):
         except Exception as e:
             logger.warning(f"[Handle Submit] Enhanced action guard failed (non-fatal): {e}")
 
-        # ── Factual-grounding floor: catch a confirmably-false claim the
-        # response asserted/endorsed in its own voice. Runs on the FINAL text
-        # (after uncertainty/review retries + action guard) so the verifier
-        # sees exactly what ships. Integration path (2026-08-29) replaces the
-        # text — the final chunk below is a whole-bubble replacement yield, so
-        # display and storage stay identical; when the integrator is disabled
-        # or fails, build_integrated_fallback (A05b-1) ships one spliced-or-
-        # standalone correction through the same replacement path.
+        # Grounding and personal-claim checks share the same sequential
+        # clean-body pipeline as the agentic route. Keep the action-guard
+        # suffix separate until both checks finish.
         try:
-            _gc_revised, _gc_suffix = await _apply_grounding_check_for_delivery(ctx, _resp_for_debug)
-            if _gc_revised:
-                _resp_for_debug = _gc_revised
-                final_output = _gc_revised
-        except Exception as e:
-            logger.warning(f"[Handle Submit] Grounding check failed (non-fatal): {e}")
-
-        # Independent personal-event support boundary. It applies to every
-        # enhanced final answer, including emotional turns with no response
-        # plan. Log-only defers the verifier until after this final yield.
-        try:
-            _pc_revised = await _apply_personal_claim_check_for_delivery(
-                ctx, _resp_for_debug,
-            )
-            if _pc_revised:
-                _resp_for_debug = _pc_revised
-                final_output = _pc_revised
-        except Exception as _pc_err:
-            logger.warning(
-                f"[Handle Submit] Enhanced personal claim check failed (non-fatal): {_pc_err}"
-            )
+            _delivery_body = await _apply_delivery_revisions(ctx, _delivery_body)
+            _resp_for_debug = _delivery_body.rstrip() + (_guard_suffix or "")
+            if _delivery_body != _pre_suffix:
+                final_output = _delivery_body.rstrip() + (_guard_suffix or "")
+        except Exception as _revision_err:
+            logger.warning(f"[Handle Submit] Enhanced delivery revision failed (non-fatal): {_revision_err}")
         _attach_personal_claim_provenance(_enh_prov, ctx)
 
         # ── Web-evidence honesty (2026-09-12, adversarial review F4): a turn

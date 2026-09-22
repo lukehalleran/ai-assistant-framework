@@ -220,3 +220,97 @@ class TestElevatedToneNeverTeaches:
             assert ic._tone_is_elevated(t) is True
         for t in (None, "", "CONVERSATIONAL", "conversational"):
             assert ic._tone_is_elevated(t) is False
+
+
+class TestSTMSelfReportAndCueGuard:
+    """2026-09-22 live incident: STM hands refine_with_stm a free-text
+    PARAPHRASE of the user's turn, not the user's own words. Two failure
+    shapes from the same root cause (paraphrase cue != user's cue):
+    (1) a first-person status update ("I looked yesterday just two but I
+    will check again...") got paraphrased by STM as "Confirm whether to
+    attend..." — the paraphrase's "confirm" hit the FACTUAL_RECALL keyword
+    family and the turn was refined+taught as factual_recall, although the
+    user was reporting, not asking to recall anything;
+    (2) more generally, ANY STM paraphrase can carry a keyword the user
+    never wrote, which then taught the learned-exemplar store a prototype
+    for a query with no actual intent signal in its own text (class:
+    BC-51, BC-52, BC-58)."""
+
+    def test_self_report_never_refines_to_a_recall_target(self):
+        # Live query + live (paraphrased) STM intent, verbatim.
+        query = (
+            "I looked yesterday just two but I will check again before "
+            "I meet up with my dad"
+        )
+        stm_intent = (
+            "Confirm whether to attend the in-person career fair based "
+            "on employer list."
+        )
+        # Precondition asserted directly on the deployed shape predicate —
+        # this is what makes the query a self-report in the first place.
+        from utils.query_checker import is_self_report
+        assert is_self_report(query) is True
+
+        clf = IntentClassifier()
+        regex_result = clf.classify(query)
+        weak = clf._build_result(regex_result.intent, regex_result.confidence)
+        with patch.object(ic, "_learn_intent_exemplar") as teach:
+            refined = clf.refine_with_stm(weak, stm_intent, query=query)
+        # The "confirm" cue lives only in the STM paraphrase; the query
+        # itself is a first-person report, never a recall request.
+        assert refined.intent != IntentType.FACTUAL_RECALL
+        assert refined.intent != IntentType.TEMPORAL_RECALL
+        # No other STM keyword family matches this paraphrase either, so
+        # refinement falls through entirely and the original (regex)
+        # result comes back unchanged.
+        if regex_result.intent == IntentType.GENERAL:
+            assert refined.source != "stm_refined"
+        teach.assert_not_called()
+
+    def test_paraphrase_cue_present_in_query_still_teaches(self):
+        # Regex-unconfident by construction (no bare "recall"-pattern hit),
+        # but the query DOES carry the "recall" cue itself, so the fix's
+        # teaching gate (cue must be in the user's own words) is satisfied.
+        query = "hmm, help me recall the cat name real quick"
+        clf = IntentClassifier()
+        regex_result = clf.classify(query)
+        assert regex_result.confidence < 0.50, (
+            f"query must be regex-unconfident for this to test STM "
+            f"refinement; got {regex_result.confidence}"
+        )
+        weak = clf._build_result(regex_result.intent, regex_result.confidence)
+        refined = clf.refine_with_stm(weak, "Recall the cat's name", query=query)
+        assert refined.intent == IntentType.FACTUAL_RECALL
+        assert refined.source == "stm_refined"
+        assert any(
+            "recall the cat" in t
+            for t in get_store().get_learned("intent", refined.intent.value)
+        )
+
+    def test_paraphrase_only_cue_routes_but_never_teaches(self):
+        # "Confirm the earlier decision" (STM paraphrase) hits the same
+        # FACTUAL_RECALL "confirm" keyword as the live incident, but this
+        # query is a genuine question (not a self-report), so the routing
+        # skip added in this batch does NOT apply here — only the
+        # teaching-gate cue check should suppress learning, isolating that
+        # gate from the self-report skip tested above.
+        query = (
+            "does that track with what happened before, or am I "
+            "misremembering things"
+        )
+        from utils.query_checker import is_self_report
+        assert is_self_report(query) is False
+        clf = IntentClassifier()
+        regex_result = clf.classify(query)
+        weak = clf._build_result(regex_result.intent, regex_result.confidence)
+        with patch.object(ic, "_learn_intent_exemplar") as teach:
+            refined = clf.refine_with_stm(
+                weak, "Confirm the earlier decision", query=query
+            )
+        # Routes (this turn still gets factual_recall@0.60)...
+        assert refined.intent == IntentType.FACTUAL_RECALL
+        assert refined.source == "stm_refined"
+        # ...but "confirm" never appears in the user's own words, so no
+        # exemplar is learned under that label.
+        teach.assert_not_called()
+        assert get_store().get_learned("intent", "factual_recall") == []

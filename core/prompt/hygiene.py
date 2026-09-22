@@ -33,6 +33,7 @@ import re
 import numpy as np
 from typing import Dict, List, Optional, Any
 from utils.logging_utils import get_logger
+import utils.read_time_markers as read_time_markers
 from .formatter import _dedupe_keep_order, _sanitize_embedded_headers
 
 logger = get_logger("prompt_hygiene")
@@ -50,12 +51,18 @@ def _canonical_turn_key(item: Any) -> str:
     and [RELEVANT MEMORIES] in 4 of 8 prompts. Build the same composite for
     both shapes, then canonicalize role labels and whitespace (2026-08-05
     lesson) and key on the first 500 normalized chars.
+
+    Machinery text (read-time markers, delivery notices) never changes a
+    turn's identity (2026-09-22; class: BC-20, BC-91).
     """
     if isinstance(item, dict):
         content = str(item.get("content", "") or "")
+        content = read_time_markers.strip_machinery(content)
         if not content.strip():
             q = str(item.get("query", "") or "").strip()
             r = str(item.get("response", "") or "").strip()
+            q = read_time_markers.strip_machinery(q)
+            r = read_time_markers.strip_machinery(r)
             if q and r:
                 content = f"User: {q}\nAssistant: {r}"
             elif r:
@@ -66,6 +73,7 @@ def _canonical_turn_key(item: Any) -> str:
                 content = ""
     else:
         content = str(item)
+        content = read_time_markers.strip_machinery(content)
 
     normalized = re.sub(r"\bdaemon\s*:", "assistant:", content.strip().lower())
     normalized = re.sub(r"\s+", " ", normalized)

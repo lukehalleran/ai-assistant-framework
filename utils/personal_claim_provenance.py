@@ -12,12 +12,9 @@ import math
 import re
 from typing import Any
 
+from utils.read_time_markers import PERSONAL_CLAIM_MARKER as MARKER, strip_machinery
+
 KEY = "personal_claim_support"
-MARKER = (
-    "[Personal-claim check: this assistant response contains claims with "
-    "insufficient or conflicting user evidence. Treat it as assistant "
-    "interpretation, not a user completion report.]"
-)
 _COUNTS = ("candidate_count", "supported_count", "contradicted_count", "insufficient_count",
            "dropped_claim_count", "dropped_evidence_count", "demoted_count",
            "relocated_count")
@@ -69,7 +66,8 @@ def clean_personal_claim_receipt(value: Any, *, response: str | None = None) -> 
     delivery = value.get("delivery")
     if isinstance(delivery, str) and delivery in {"unchanged", "omitted", "failed_open"}:
         receipt["delivery"] = delivery
-    digest = response_digest(response) if response is not None else value.get("response_sha256")
+    # digest over machinery-free text (BC-91): audits run on the pre-suffix reply
+    digest = response_digest(strip_machinery(response)) if response is not None else value.get("response_sha256")
     if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
         receipt["response_sha256"] = digest
     return receipt
@@ -103,7 +101,8 @@ def annotate_personal_claim_memory(item: Any) -> Any:
     response = item.get("response", item.get("a", metadata.get("response")))
     if not isinstance(response, str) or not response or MARKER in response:
         return item
-    if receipt.get("response_sha256") != response_digest(response):
+    # digest over machinery-free text (BC-91): audits run on the pre-suffix reply
+    if receipt.get("response_sha256") != response_digest(strip_machinery(response)):
         return item
     annotated = response.rstrip() + "\n" + MARKER
     result = dict(item)
