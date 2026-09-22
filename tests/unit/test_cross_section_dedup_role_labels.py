@@ -18,6 +18,8 @@ for both shapes.
 import pytest
 
 from core.prompt.hygiene import ContentHygiene, _canonical_turn_key
+from utils.personal_claim_provenance import MARKER as PERSONAL_CLAIM_MARKER
+from utils.read_time_markers import UNVERIFIED_CLAIM_MARKER
 
 
 class _StubCoordinator:
@@ -134,3 +136,45 @@ def test_canonical_key_shape_independent():
 def test_canonical_key_empty_item():
     assert _canonical_turn_key({}) == ""
     assert _canonical_turn_key({"query": "", "response": ""}) == ""
+
+
+# --- 2026-09-22 regression: read-time machinery must not change a turn's
+# identity (B2, class: BC-20, BC-24, BC-91). `_get_recent_conversations`
+# returns items whose response carries a read-time marker (personal-claim
+# check / unverified-action-claim) or a trailing delivery notice appended
+# AFTER generation; the backfill/top-up path's raw corpus copy of the SAME
+# turn never carries it, so a raw-text key mismatched and the turn
+# re-entered the prompt as a duplicate "relevant memory" (live: a 14K-char
+# paste rendered in both [RECENT CONVERSATION] and [RELEVANT MEMORIES]
+# across three turns, 2026-09-22 13:05-13:15).
+
+_CALENDAR_NOTICE = (
+    "\n\n> ⚠️ I don't see that on your calendar — nothing "
+    "was created. Say \"add it\" and I'll queue a card."
+)
+
+
+def test_canonical_key_ignores_personal_claim_marker_short_turn():
+    raw = {"query": QUERY, "response": RESPONSE}
+    marked = {"query": QUERY, "response": RESPONSE + "\n" + PERSONAL_CLAIM_MARKER}
+    assert _canonical_turn_key(raw) == _canonical_turn_key(marked)
+
+
+def test_canonical_key_ignores_personal_claim_marker_long_turn():
+    long_query = ("This is a long paste-shaped turn. " * 20).strip()
+    assert len(long_query) > 600
+    raw = {"query": long_query, "response": RESPONSE}
+    marked = {"query": long_query, "response": RESPONSE + "\n" + PERSONAL_CLAIM_MARKER}
+    assert _canonical_turn_key(raw) == _canonical_turn_key(marked)
+
+
+def test_canonical_key_ignores_trailing_delivery_notice():
+    raw = {"query": QUERY, "response": RESPONSE}
+    with_notice = {"query": QUERY, "response": RESPONSE + _CALENDAR_NOTICE}
+    assert _canonical_turn_key(raw) == _canonical_turn_key(with_notice)
+
+
+def test_canonical_key_ignores_unverified_action_claim_marker():
+    raw = {"query": QUERY, "response": RESPONSE}
+    marked = {"query": QUERY, "response": RESPONSE + "\n" + UNVERIFIED_CLAIM_MARKER}
+    assert _canonical_turn_key(raw) == _canonical_turn_key(marked)

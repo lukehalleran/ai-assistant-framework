@@ -129,7 +129,7 @@ the suite:
 
 | Lane | Command | What it enforces | Ledgers |
 |---|---|---|---|
-| bug-class contract | `python scripts/check_bug_classes.py scan --root .` (CI and the hook add `--receipt <file>`), then `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider --confcutdir=tests/bug_class_guards tests/bug_class_guards` (with `--junitxml=<file>`), then `python scripts/check_bug_classes.py verify-receipts …` | `config/bug_class_policy.json`: seven pinned scanners (gates: DM-01, DM-17, DM-18, DM-31, catalog; report-only: DM-16, DM-29), every declared input leg and root counted separately, the top-level Python root inventory, a syntax preflight over every declared Python input, and the two-way ratchet | `config/bug_class_baseline.json` (schema 2; each occurrence is `(scanner, path, qualname, kind, SHA-256 of the candidate AST)`) and `config/bug_class_dispositions.json` (one reviewed record per active occurrence, bound to the source file's SHA-256; resolved history kept as `confirmed_fixed`/`false_positive`) |
+| bug-class contract | `python scripts/check_bug_classes.py scan --root .` (CI and the hook add `--receipt <file>`), then `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider --confcutdir=tests/bug_class_guards tests/bug_class_guards` (with `--junitxml=<file>`), then `python scripts/check_bug_classes.py verify-receipts …` | `config/bug_class_policy.json`: eight pinned scanners (gates: DM-01, DM-17, DM-18, DM-31, DM-38, catalog; report-only: DM-16, DM-29), every declared input leg and root counted separately, the top-level Python root inventory, a syntax preflight over every declared Python input, and the two-way ratchet | `config/bug_class_baseline.json` (schema 2; each occurrence is `(scanner, path, qualname, kind, SHA-256 of the candidate AST)`) and `config/bug_class_dispositions.json` (one reviewed record per active occurrence, bound to the source file's SHA-256; resolved history kept as `confirmed_fixed`/`false_positive`) |
 
 Exit 2 means the contract could not be evaluated (policy, registry parity,
 syntax, unreadable input, scanner error, invalid baseline or ledger). Exit 1
@@ -145,9 +145,8 @@ reviewed dispositions. `tests/bug_class_guards/test_enforcement.py` fails if
 the hook or workflow drops the full scan, adds a selector, a baseline write or
 a ledger override, masks a failure, or adds a path filter.
 
-**Scope, stated honestly.** This is a scoped structural lane. 11 of the 78
-catalog classes have a scanner (9 gated, 2 report-only), and every scan lists
-the 67 uncovered classes. DM-29's only input is the untracked
+**Scope, stated honestly.** This is a scoped structural lane. 13 of the 90 catalog classes have a scanner (11 gated, 2 report-only), and every scan lists
+the 77 uncovered classes. DM-29's only input is the untracked
 `CLAUDE_CHANGELOG.md`, so CI reports it *unavailable*, not zero. Python roots
 outside every scanner (`agent_branch`, `eval`, `hooks`, `integrations`, the
 root `conftest.py`, `debug_graph_context.py`) are classified in the policy and

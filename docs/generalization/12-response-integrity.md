@@ -100,7 +100,7 @@ the draft remains visible and retrievable.
 ## Ownership Boundary
 
 G12 should initially use new modules and tests. Integration into
-`gui/handlers.py` happens only after the standalone contract passes review. It
+`gui/handlers.py` for full atomic revision happens only after the standalone contract passes review. The 2026-09-22 containment fixes already update handler consumers and do not close that workstream. It
 must not modify the in-flight tone/escalation/graph batch.
 
 ## Fable Handoff
@@ -109,3 +109,14 @@ When the current batch is checkpointed, provide Fable this document plus a
 synthetic fixture containing only the sanitized case above. Require a diff
 summary, focused tests, and an explicit statement that no suffix-based
 correction path remains on the production route.
+
+> **Status note (2026-09-22):** two deterministic backstops in `gui/handlers.py` (calendar state-claim, no-card) are
+> reviewers under this contract: they append a suffix that is stored and indexed, so acceptance test 6 ("draft and
+> reviewer JSON absent from retrieval results") failed live on 2026-09-22 — a correct restatement of the user's own
+> appointment was "corrected" and the notice re-entered the next prompt as the assistant's words. Two rules made
+> explicit: (1) user-authored evidence must assert the relevant fact; mentioning an event in a request or negation
+> does not establish calendar state; (2) downstream consumers strip machinery via `utils/read_time_markers.py`
+> (BC-91); (3) correction stages consume the previous stage's revised answer, keeping notices separate.
+> This is bounded containment. Deterministic notices still share the persisted response string; stripping them at
+> consumers does not fulfill the stronger storage/indexing contract above. Full G12 remains open, and the
+> two correction modes retain their existing defaults.

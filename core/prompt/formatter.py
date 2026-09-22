@@ -58,12 +58,13 @@ import re
 import base64
 import json
 from typing import Dict, List, Optional, Any, Iterable
-from datetime import datetime
+from datetime import datetime, date as _date
 from pathlib import Path
 from utils.logging_utils import get_logger
 from utils.personal_claim_provenance import annotate_personal_claim_memory
 from core.response_parser import ResponseParser
 from core.action_claim_guard import annotate_unverified_action_claim
+import utils.read_time_markers as read_time_markers
 
 logger = get_logger("prompt_formatter")
 
@@ -586,6 +587,9 @@ class PromptFormatter:
                 # sanitize_for_storage is the storage-boundary defense; this is
                 # the same conservative transform at the retrieval boundary.
                 response = _strip_stored_thinking(response)
+                # a delivery notice is machinery, not the assistant's words —
+                # never re-enters a prompt as content (class: BC-75, BC-91)
+                response = read_time_markers.strip_delivery_notices(response)
                 # 2026-09-10, round 4, B12 (BC-75): flag a stored Daemon
                 # reply that confabulated a pending/completed/existing
                 # action — the DAEMON segment only, never `query`.
@@ -937,6 +941,9 @@ class PromptFormatter:
                     # Fallback to query/response format
                     q = str(mem.get("query", ""))
                     r = str(mem.get("response", ""))
+                    # a delivery notice is machinery, not the assistant's words —
+                    # never re-enters a prompt as content (class: BC-75, BC-91)
+                    r = read_time_markers.strip_delivery_notices(r)
                     # 2026-09-10, round 4, B12 (BC-75): flag a stored Daemon
                     # reply that confabulated a pending/completed/existing
                     # action — the DAEMON segment only, never `q`.
@@ -1620,14 +1627,20 @@ class PromptFormatter:
                 location = event.get("location", "")
 
                 if all_day:
-                    time_str = f"{start} [all day]"
+                    # weekday rendered so the model never does date arithmetic
+                    # (2026-09-22 "fair's Sunday" for a Monday; class: BC-52)
+                    try:
+                        _d = _date.fromisoformat(str(start)[:10])
+                        time_str = f"{start} ({_d.strftime('%a')}) [all day]"
+                    except (ValueError, TypeError):
+                        time_str = f"{start} [all day]"
                 elif start and end:
                     # Format ISO datetimes to readable form
                     try:
                         from datetime import datetime as _dt
                         s_dt = _dt.fromisoformat(start)
                         e_dt = _dt.fromisoformat(end)
-                        date_str = s_dt.strftime("%Y-%m-%d")
+                        date_str = s_dt.strftime("%Y-%m-%d (%a)")
                         s_time = s_dt.strftime("%I:%M %p").lstrip("0")
                         e_time = e_dt.strftime("%I:%M %p").lstrip("0")
                         time_str = f"{date_str} {s_time} – {e_time}"
@@ -1909,6 +1922,9 @@ class PromptFormatter:
                 else:
                     last_q = last_exchange.get("query", "")
                     last_a = last_exchange.get("response", "")
+                    # a delivery notice is machinery, not the assistant's words —
+                    # never re-enters a prompt as content (class: BC-75, BC-91)
+                    last_a = read_time_markers.strip_delivery_notices(last_a)
                     if last_q and last_a:
                         if len(last_a) > 700:
                             last_a = last_a[:400] + "\n[...truncated...]\n" + last_a[-200:]

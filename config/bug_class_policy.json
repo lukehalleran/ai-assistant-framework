@@ -1,118 +1,229 @@
 {
   "schema": 1,
-  "policy_version": "2026-09-13.1",
+  "policy_version": "2026-09-22.1",
   "claim": "Scoped structural-detector ratchet. Each scanner detects only its listed patterns over its declared input legs; report-only scanners never gate. This is not behavioral coverage of the docs/BUG_CLASSES.md classes: every catalog class with no scanner is listed as an explicit coverage gap in each scan report.",
   "paths": {
     "baseline": "config/bug_class_baseline.json",
     "dispositions": "config/bug_class_dispositions.json",
     "catalog": "docs/BUG_CLASSES.md"
   },
-  "walk_exclusions": [".git", "__pycache__", "data", "integration.bak", "node_modules", "venv", "web"],
+  "walk_exclusions": [
+    ".git",
+    "__pycache__",
+    "data",
+    "integration.bak",
+    "node_modules",
+    "venv",
+    "web"
+  ],
   "scanners": [
     {
       "id": "dm01_raw_substring",
       "mode": "gate",
-      "class_ids": ["BC-01", "BC-02"],
+      "class_ids": [
+        "BC-01",
+        "BC-02"
+      ],
       "contract_version": 2,
-      "legs": ["python_source"],
-      "kinds": ["raw_membership"]
+      "legs": [
+        "python_source"
+      ],
+      "kinds": [
+        "raw_membership"
+      ]
     },
     {
       "id": "dm16_config_key_reachability",
       "mode": "report",
-      "class_ids": ["BC-12", "BC-10"],
+      "class_ids": [
+        "BC-12",
+        "BC-10"
+      ],
       "contract_version": 2,
-      "legs": ["dm16_config_yaml", "dm16_app_config", "dm16_schema", "dm16_consumers"],
-      "kinds": ["config_leaf_unreached", "config_yaml_unresolved"]
+      "legs": [
+        "dm16_config_yaml",
+        "dm16_app_config",
+        "dm16_schema",
+        "dm16_consumers"
+      ],
+      "kinds": [
+        "config_leaf_unreached",
+        "config_yaml_unresolved"
+      ]
     },
     {
       "id": "dm17_apply_without_guard",
       "mode": "gate",
-      "class_ids": ["BC-37"],
+      "class_ids": [
+        "BC-37"
+      ],
       "contract_version": 2,
-      "legs": ["dm17_scripts", "dm17_tests"],
-      "kinds": ["apply_without_guard", "apply_guard_unresolved", "test_data_path_literal"]
+      "legs": [
+        "dm17_scripts",
+        "dm17_tests"
+      ],
+      "kinds": [
+        "apply_without_guard",
+        "apply_guard_unresolved",
+        "test_data_path_literal"
+      ]
     },
     {
       "id": "dm18_except_returns_empty",
       "mode": "gate",
-      "class_ids": ["BC-20", "BC-47"],
+      "class_ids": [
+        "BC-20",
+        "BC-47"
+      ],
       "contract_version": 2,
-      "legs": ["dm18_retrieval"],
-      "kinds": ["broad_except_returns_empty"]
+      "legs": [
+        "dm18_retrieval"
+      ],
+      "kinds": [
+        "broad_except_returns_empty"
+      ]
     },
     {
       "id": "dm29_phrase_append_signature",
       "mode": "report",
-      "class_ids": ["BC-76"],
+      "class_ids": [
+        "BC-76"
+      ],
       "contract_version": 2,
-      "legs": ["dm29_changelog"],
-      "kinds": ["phrase_append_signature"]
+      "legs": [
+        "dm29_changelog"
+      ],
+      "kinds": [
+        "phrase_append_signature"
+      ]
     },
     {
       "id": "dm31_live_state_default",
       "mode": "gate",
-      "class_ids": ["BC-78", "BC-11", "BC-12"],
+      "class_ids": [
+        "BC-78",
+        "BC-11",
+        "BC-12"
+      ],
       "contract_version": 2,
-      "legs": ["python_source"],
-      "kinds": ["live_state_literal_default"]
+      "legs": [
+        "python_source"
+      ],
+      "kinds": [
+        "live_state_literal_default"
+      ]
+    },
+    {
+      "id": "dm38_machinery_consumers",
+      "mode": "gate",
+      "class_ids": [
+        "BC-91",
+        "BC-20",
+        "BC-45"
+      ],
+      "contract_version": 2,
+      "legs": [
+        "dm38_consumers"
+      ],
+      "kinds": [
+        "machinery_consumer_bypass"
+      ]
     },
     {
       "id": "catalog",
       "mode": "gate",
-      "class_ids": ["BC-71"],
+      "class_ids": [
+        "BC-71"
+      ],
       "contract_version": 2,
-      "legs": ["catalog_document"],
-      "kinds": ["catalog_diagnostic"]
+      "legs": [
+        "catalog_document"
+      ],
+      "kinds": [
+        "catalog_diagnostic"
+      ]
     }
   ],
   "legs": [
     {
       "id": "python_source",
       "kind": "python_tree",
-      "roots": ["core", "memory", "knowledge", "utils", "gui", "api", "models", "processing", "config", "scripts", "main.py"],
+      "roots": [
+        "core",
+        "memory",
+        "knowledge",
+        "utils",
+        "gui",
+        "api",
+        "models",
+        "processing",
+        "config",
+        "scripts",
+        "main.py"
+      ],
       "required": true,
       "exempt": []
     },
     {
       "id": "dm16_config_yaml",
       "kind": "file",
-      "roots": ["config/config.yaml"],
+      "roots": [
+        "config/config.yaml"
+      ],
       "required": true,
       "exempt": []
     },
     {
       "id": "dm16_app_config",
       "kind": "file",
-      "roots": ["config/app_config.py"],
+      "roots": [
+        "config/app_config.py"
+      ],
       "required": true,
       "exempt": []
     },
     {
       "id": "dm16_schema",
       "kind": "file",
-      "roots": ["config/schema.py"],
+      "roots": [
+        "config/schema.py"
+      ],
       "required": false,
       "exempt": []
     },
     {
       "id": "dm16_consumers",
       "kind": "python_tree",
-      "roots": ["core", "memory", "knowledge", "utils", "gui", "api", "models", "processing", "scripts", "main.py"],
+      "roots": [
+        "core",
+        "memory",
+        "knowledge",
+        "utils",
+        "gui",
+        "api",
+        "models",
+        "processing",
+        "scripts",
+        "main.py"
+      ],
       "required": true,
       "exempt": []
     },
     {
       "id": "dm17_scripts",
       "kind": "python_flat",
-      "roots": ["scripts"],
+      "roots": [
+        "scripts"
+      ],
       "required": true,
       "exempt": []
     },
     {
       "id": "dm17_tests",
       "kind": "python_tree",
-      "roots": ["tests"],
+      "roots": [
+        "tests"
+      ],
       "required": true,
       "exempt": [
         {
@@ -124,78 +235,212 @@
     {
       "id": "dm18_retrieval",
       "kind": "python_tree",
-      "roots": ["memory", "knowledge", "core/prompt", "api"],
+      "roots": [
+        "memory",
+        "knowledge",
+        "core/prompt",
+        "api"
+      ],
       "required": true,
       "exempt": []
     },
     {
       "id": "dm29_changelog",
       "kind": "file",
-      "roots": ["CLAUDE_CHANGELOG.md"],
+      "roots": [
+        "CLAUDE_CHANGELOG.md"
+      ],
       "required": false,
+      "exempt": []
+    },
+    {
+      "id": "dm38_consumers",
+      "kind": "python_tree",
+      "roots": [
+        "core",
+        "gui",
+        "utils"
+      ],
+      "required": true,
       "exempt": []
     },
     {
       "id": "catalog_document",
       "kind": "file",
-      "roots": ["docs/BUG_CLASSES.md"],
+      "roots": [
+        "docs/BUG_CLASSES.md"
+      ],
       "required": true,
       "exempt": []
     }
   ],
   "inventory": {
     "unscanned_python_roots": [
-      {"name": "agent_branch", "reason": "Agent-branch supervision package. No detection-method input includes it at contract v2; classified, not covered."},
-      {"name": "conftest.py", "reason": "Root pytest bootstrap. Outside every detection-method input; classified, not covered."},
-      {"name": "debug_graph_context.py", "reason": "Developer debug script at the repository root. Outside every detection-method input; classified, not covered."},
-      {"name": "eval", "reason": "Prompt-ablation evaluation harness. Outside every detection-method input; classified, not covered."},
-      {"name": "hooks", "reason": "PyInstaller build hooks (hook-*.py, runtime_hook.py) plus the git pre-push hook. Packaging, not runtime source; classified, not covered."},
-      {"name": "integrations", "reason": "Legacy Wikipedia API client. Outside every detection-method input; classified, not covered."}
+      {
+        "name": "agent_branch",
+        "reason": "Agent-branch supervision package. No detection-method input includes it at contract v2; classified, not covered."
+      },
+      {
+        "name": "conftest.py",
+        "reason": "Root pytest bootstrap. Outside every detection-method input; classified, not covered."
+      },
+      {
+        "name": "debug_graph_context.py",
+        "reason": "Developer debug script at the repository root. Outside every detection-method input; classified, not covered."
+      },
+      {
+        "name": "eval",
+        "reason": "Prompt-ablation evaluation harness. Outside every detection-method input; classified, not covered."
+      },
+      {
+        "name": "hooks",
+        "reason": "PyInstaller build hooks (hook-*.py, runtime_hook.py) plus the git pre-push hook. Packaging, not runtime source; classified, not covered."
+      },
+      {
+        "name": "integrations",
+        "reason": "Legacy Wikipedia API client. Outside every detection-method input; classified, not covered."
+      }
     ],
     "non_python_roots": [
-      {"name": ".github"},
-      {"name": ".gradio"},
-      {"name": "assets"},
-      {"name": "docs"},
-      {"name": "installer"},
-      {"name": "web"}
+      {
+        "name": ".github"
+      },
+      {
+        "name": ".gradio"
+      },
+      {
+        "name": "assets"
+      },
+      {
+        "name": "docs"
+      },
+      {
+        "name": "installer"
+      },
+      {
+        "name": "web"
+      }
     ],
     "excluded_roots": [
-      {"name": ".agent_snapshots", "reason": "Agent session snapshots; private, never listed."},
-      {"name": ".cache", "reason": "Local tool cache; never listed."},
-      {"name": ".claude", "reason": "Local agent tooling and worktrees; never listed."},
-      {"name": ".git", "reason": "Repository object store; never listed."},
-      {"name": ".mypy_cache", "reason": "Local tool cache; never listed."},
-      {"name": ".pytest_cache", "reason": "Local tool cache; never listed."},
-      {"name": ".ruff_cache", "reason": "Local tool cache; never listed."},
-      {"name": ".venv", "reason": "Local virtual environment; never listed."},
-      {"name": "__pycache__", "reason": "Bytecode cache; never listed."},
-      {"name": "build", "reason": "Generated packaging output; never listed."},
-      {"name": "chroma", "reason": "Local vector store; private, never listed."},
-      {"name": "chroma_db", "reason": "Local vector store; private, never listed."},
-      {"name": "conversation_logs", "reason": "Local conversation logs; private, never listed."},
-      {"name": "daemon_memory", "reason": "Local memory store; private, never listed."},
-      {"name": "daemon_notes", "reason": "Local self-note store; private, never listed."},
-      {"name": "data", "reason": "Live stores and backups; private, never listed (tracked data/pipeline scripts are also outside every input)."},
-      {"name": "devtools", "reason": "Ignored local developer tools; never listed."},
-      {"name": "dist", "reason": "Generated packaging output; never listed."},
-      {"name": "documents", "reason": "Generated reports and summaries; private, never listed."},
-      {"name": "htmlcov", "reason": "Generated coverage report; never listed."},
-      {"name": "logs", "reason": "Local runtime logs; private, never listed."},
-      {"name": "mutants", "reason": "Ignored mutation-testing output; never listed."},
-      {"name": "node_modules", "reason": "Third-party JavaScript packages; never listed."},
-      {"name": "project", "reason": "Ignored local project scratch; never listed."},
-      {"name": "venv", "reason": "Local virtual environment; never listed."}
+      {
+        "name": ".agent_snapshots",
+        "reason": "Agent session snapshots; private, never listed."
+      },
+      {
+        "name": ".cache",
+        "reason": "Local tool cache; never listed."
+      },
+      {
+        "name": ".claude",
+        "reason": "Local agent tooling and worktrees; never listed."
+      },
+      {
+        "name": ".git",
+        "reason": "Repository object store; never listed."
+      },
+      {
+        "name": ".mypy_cache",
+        "reason": "Local tool cache; never listed."
+      },
+      {
+        "name": ".pytest_cache",
+        "reason": "Local tool cache; never listed."
+      },
+      {
+        "name": ".ruff_cache",
+        "reason": "Local tool cache; never listed."
+      },
+      {
+        "name": ".venv",
+        "reason": "Local virtual environment; never listed."
+      },
+      {
+        "name": "__pycache__",
+        "reason": "Bytecode cache; never listed."
+      },
+      {
+        "name": "build",
+        "reason": "Generated packaging output; never listed."
+      },
+      {
+        "name": "chroma",
+        "reason": "Local vector store; private, never listed."
+      },
+      {
+        "name": "chroma_db",
+        "reason": "Local vector store; private, never listed."
+      },
+      {
+        "name": "conversation_logs",
+        "reason": "Local conversation logs; private, never listed."
+      },
+      {
+        "name": "daemon_memory",
+        "reason": "Local memory store; private, never listed."
+      },
+      {
+        "name": "daemon_notes",
+        "reason": "Local self-note store; private, never listed."
+      },
+      {
+        "name": "data",
+        "reason": "Live stores and backups; private, never listed (tracked data/pipeline scripts are also outside every input)."
+      },
+      {
+        "name": "devtools",
+        "reason": "Ignored local developer tools; never listed."
+      },
+      {
+        "name": "dist",
+        "reason": "Generated packaging output; never listed."
+      },
+      {
+        "name": "documents",
+        "reason": "Generated reports and summaries; private, never listed."
+      },
+      {
+        "name": "htmlcov",
+        "reason": "Generated coverage report; never listed."
+      },
+      {
+        "name": "logs",
+        "reason": "Local runtime logs; private, never listed."
+      },
+      {
+        "name": "mutants",
+        "reason": "Ignored mutation-testing output; never listed."
+      },
+      {
+        "name": "node_modules",
+        "reason": "Third-party JavaScript packages; never listed."
+      },
+      {
+        "name": "project",
+        "reason": "Ignored local project scratch; never listed."
+      },
+      {
+        "name": "venv",
+        "reason": "Local virtual environment; never listed."
+      }
     ],
     "excluded_patterns": [
-      {"pattern": "*.bak", "reason": "Backup copies; private, never listed."},
-      {"pattern": "*backup*", "reason": "Backup directories (for example .handoff-backup-*); private, never listed."},
-      {"pattern": "chroma_db_*", "reason": "Local vector store variants; private, never listed."}
+      {
+        "pattern": "*.bak",
+        "reason": "Backup copies; private, never listed."
+      },
+      {
+        "pattern": "*backup*",
+        "reason": "Backup directories (for example .handoff-backup-*); private, never listed."
+      },
+      {
+        "pattern": "chroma_db_*",
+        "reason": "Local vector store variants; private, never listed."
+      }
     ]
   },
   "harness": {
     "path": "tests/bug_class_guards",
-    "expected_test_cases": 312
+    "expected_test_cases": 326
   },
   "repo_wide_guards": [
     "tests/unit/test_no_git_state_in_tests.py",

@@ -557,3 +557,241 @@ class TestAnchors:
             for finding in scanner.scan(tmp_path).findings:
                 assert finding.kind in scanner.kinds, (scanner.id, finding.kind)
                 assert finding.scanner_id == scanner.id
+
+
+# ---------------------------------------------------------------------------
+# DM-38 / BC-91 — audited machinery consumers + emitter registry (2026-09-22)
+# ---------------------------------------------------------------------------
+
+from bug_class_guards.scanners import dm38_machinery_consumers  # noqa: E402
+
+
+_DM38_BUILDER = """
+def _topup_filler(recents, mems, extra_recent, needed):
+    used = {_canonical_turn_key(r) for r in (recents or [])}
+    used.update(_canonical_turn_key(m) for m in (mems or []))
+    for item in (extra_recent or []):
+        if _canonical_turn_key(item) not in used:
+            pass
+
+def _recency_floor_filler(recent_convos, stored_recent, needed):
+    have_keys = {_canonical_turn_key(r) for r in (recent_convos or [])}
+    for r in (stored_recent or []):
+        key = _canonical_turn_key(r)
+        if key not in have_keys:
+            have_keys.add(key)
+"""
+
+_DM38_HANDLERS = """
+import utils.read_time_markers as read_time_markers
+
+
+async def _apply_delivery_revisions(ctx, response_text, *, source_material=""):
+    body = response_text
+    grounded, _ = await _apply_grounding_check_for_delivery(ctx, body, source_material=source_material)
+    if grounded:
+        body = grounded
+    personal = await _apply_personal_claim_check_for_delivery(ctx, body)
+    if personal:
+        body = personal
+    return body
+
+
+async def _run_agentic_search(ctx):
+    display_output = "draft"
+    _pre_suffix = display_output
+    _delivery_body = _pre_suffix
+    _ag_guard_suffix = ""
+    if _ag_guard_suffix:
+        display_output = display_output.rstrip() + _ag_guard_suffix
+    _delivery_body = await _apply_delivery_revisions(ctx, _delivery_body)
+    display_output = _delivery_body.rstrip() + (_ag_guard_suffix or "")
+    return display_output
+
+
+async def _run_enhanced(ctx):
+    _resp_for_debug = "draft"
+    _resp_for_debug += _format_card(ctx)
+    _pre_suffix = _resp_for_debug
+    _delivery_body = _pre_suffix
+    _guard_suffix = ""
+    if _guard_suffix:
+        _resp_for_debug = _resp_for_debug.rstrip() + _guard_suffix
+    _delivery_body = await _apply_delivery_revisions(ctx, _delivery_body)
+    return _delivery_body.rstrip() + (_guard_suffix or "")
+
+
+def _emit_calendar_notice():
+    return read_time_markers.delivery_notice(read_time_markers.NOTICE_CALENDAR_UNSEEN, " Say add it.")
+"""
+
+_DM38_FORMATTER = """
+class PromptFormatter:
+    def _format_memory(self, mem):
+        response = mem.get("response", "")
+        response = read_time_markers.strip_delivery_notices(response)
+        return response
+
+    def _assemble_prompt(self):
+        def mem_parts(mem):
+            r = str(mem.get("response", ""))
+            r = read_time_markers.strip_delivery_notices(r)
+            return r
+        last_a = recent[0].get("response", "")
+        last_a = read_time_markers.strip_delivery_notices(last_a)
+        return last_a
+"""
+
+# The leaf may (must) hold the prefix literal; every other file may not.
+_DM38_LEAF = """
+DELIVERY_NOTICE_PREFIX = "> ⚠️"
+NOTICE_CALENDAR_UNSEEN = "I don't see that on your calendar — nothing was created."
+DELIVERY_NOTICE_TEXTS = (NOTICE_CALENDAR_UNSEEN,)
+
+
+def delivery_notice(opening, detail=""):
+    return "\\n\\n" + DELIVERY_NOTICE_PREFIX + " " + opening + detail
+"""
+
+
+def _dm38_tree(tmp_path, *, builder=_DM38_BUILDER, handlers=_DM38_HANDLERS,
+               formatter=_DM38_FORMATTER, extra=None):
+    files = {
+        "core/prompt/builder.py": builder,
+        "core/prompt/hygiene.py": "def _canonical_turn_key(item): return str(item)\n",
+        "core/prompt/formatter.py": formatter,
+        "gui/handlers.py": handlers,
+        "utils/read_time_markers.py": _DM38_LEAF,
+    }
+    files.update(extra or {})
+    build_tree(tmp_path, files)
+
+
+def _dm38_findings(tmp_path):
+    result = dm38_machinery_consumers.scan(tmp_path)
+    assert all(f.scanner_id == "dm38_machinery_consumers" for f in result.findings)
+    return result.findings
+
+
+class TestDM38Green:
+    def test_audited_sites_and_registered_emitter_are_clean(self, tmp_path):
+        _dm38_tree(tmp_path)
+        assert _dm38_findings(tmp_path) == []
+
+
+class TestDM38BuilderIdentity:
+    @pytest.mark.parametrize("helper,old,new", [
+        ("_topup_filler", "if _canonical_turn_key(item) not in used:", "if item.get('query', '') not in used:"),
+        ("_recency_floor_filler", "key = _canonical_turn_key(r)", "key = r.get('query', '') + r.get('response', '')"),
+    ])
+    def test_red_when_a_backfill_uses_a_raw_identity(self, tmp_path, helper, old, new):
+        builder = _DM38_BUILDER.replace(old, new)
+        assert builder != _DM38_BUILDER
+        _dm38_tree(tmp_path, builder=builder)
+        findings = _dm38_findings(tmp_path)
+        assert findings and {f.symbol for f in findings} == {helper}
+
+
+class TestDM38DeliveryPipeline:
+    def test_red_when_a_site_passes_the_suffixed_display_value(self, tmp_path):
+        handlers = _DM38_HANDLERS.replace(
+            "_delivery_body = await _apply_delivery_revisions(ctx, _delivery_body)\n    display_output",
+            "_delivery_body = await _apply_delivery_revisions(ctx, display_output)\n    display_output",
+        )
+        assert handlers != _DM38_HANDLERS
+        _dm38_tree(tmp_path, handlers=handlers)
+        findings = _dm38_findings(tmp_path)
+        assert [f.symbol for f in findings] == ["_run_agentic_search"]
+        assert "delivery-suffixed or unproven" in findings[0].excerpt
+
+    def test_red_when_a_site_calls_a_checker_directly(self, tmp_path):
+        handlers = _DM38_HANDLERS.replace(
+            "    _delivery_body = await _apply_delivery_revisions(ctx, _delivery_body)\n    return",
+            "    await _apply_grounding_check_for_delivery(ctx, _pre_suffix)\n"
+            "    _delivery_body = await _apply_delivery_revisions(ctx, _delivery_body)\n    return",
+        )
+        assert handlers != _DM38_HANDLERS
+        _dm38_tree(tmp_path, handlers=handlers)
+        findings = _dm38_findings(tmp_path)
+        assert [f.symbol for f in findings] == ["_run_enhanced"]
+        assert "bypassing the ordered" in findings[0].excerpt
+
+    def test_red_when_a_site_drops_the_pipeline(self, tmp_path):
+        handlers = _DM38_HANDLERS.replace(
+            "    _delivery_body = await _apply_delivery_revisions(ctx, _delivery_body)\n    return",
+            "    return",
+        )
+        assert handlers != _DM38_HANDLERS
+        _dm38_tree(tmp_path, handlers=handlers)
+        findings = _dm38_findings(tmp_path)
+        assert [f.symbol for f in findings] == ["_run_enhanced"]
+        assert "no longer routes" in findings[0].excerpt
+
+    def test_red_when_the_second_revision_reads_the_original_draft(self, tmp_path):
+        handlers = _DM38_HANDLERS.replace(
+            "personal = await _apply_personal_claim_check_for_delivery(ctx, body)",
+            "personal = await _apply_personal_claim_check_for_delivery(ctx, response_text)",
+        )
+        assert handlers != _DM38_HANDLERS
+        _dm38_tree(tmp_path, handlers=handlers)
+        findings = _dm38_findings(tmp_path)
+        assert [f.symbol for f in findings] == ["_apply_delivery_revisions"]
+        assert "sequential revisions must compose" in findings[0].excerpt
+
+    def test_red_when_the_pipeline_drops_a_checker(self, tmp_path):
+        handlers = _DM38_HANDLERS.replace(
+            "    personal = await _apply_personal_claim_check_for_delivery(ctx, body)\n"
+            "    if personal:\n        body = personal\n",
+            "",
+        )
+        assert handlers != _DM38_HANDLERS
+        _dm38_tree(tmp_path, handlers=handlers)
+        findings = _dm38_findings(tmp_path)
+        assert [f.symbol for f in findings] == ["_apply_delivery_revisions"]
+        assert "no longer runs the audited _apply_personal_claim_check_for_delivery" in findings[0].excerpt
+
+    def test_red_when_the_pipeline_receives_a_suffixed_name(self, tmp_path):
+        handlers = _DM38_HANDLERS.replace(
+            "    grounded, _ = await _apply_grounding_check_for_delivery(ctx, body,",
+            "    body = body + _guard_notice\n"
+            "    grounded, _ = await _apply_grounding_check_for_delivery(ctx, body,",
+        )
+        assert handlers != _DM38_HANDLERS
+        _dm38_tree(tmp_path, handlers=handlers)
+        findings = _dm38_findings(tmp_path)
+        assert findings and {f.symbol for f in findings} == {"_apply_delivery_revisions"}
+
+
+class TestDM38Render:
+    @pytest.mark.parametrize("variable,old,new", [
+        ("response", "        response = read_time_markers.strip_delivery_notices(response)\n", ""),
+        ("r", "            r = read_time_markers.strip_delivery_notices(r)\n", ""),
+        ("last_a", "        last_a = read_time_markers.strip_delivery_notices(last_a)\n", ""),
+    ])
+    def test_red_when_a_render_bypasses_the_notice_stripper(self, tmp_path, variable, old, new):
+        formatter = _DM38_FORMATTER.replace(old, new)
+        assert formatter != _DM38_FORMATTER
+        _dm38_tree(tmp_path, formatter=formatter)
+        findings = _dm38_findings(tmp_path)
+        assert findings and all(variable in f.excerpt for f in findings)
+
+
+class TestDM38EmitterRegistry:
+    def test_red_when_a_notice_literal_appears_outside_the_leaf(self, tmp_path):
+        _dm38_tree(tmp_path, extra={
+            "core/some_guard.py": 'NEW_NOTICE = "\\n\\n> ⚠️ Heads up — something new happened."\n',
+        })
+        findings = _dm38_findings(tmp_path)
+        assert [(f.path, f.symbol) for f in findings] == [("core/some_guard.py", "<module>")]
+        assert "delivery-notice literal outside utils/read_time_markers.py" in findings[0].excerpt
+
+    def test_red_when_an_emitter_passes_an_unregistered_opening(self, tmp_path):
+        handlers = _DM38_HANDLERS.replace(
+            "read_time_markers.delivery_notice(read_time_markers.NOTICE_CALENDAR_UNSEEN, ",
+            'read_time_markers.delivery_notice("I don\'t see that anywhere", ',
+        )
+        assert handlers != _DM38_HANDLERS
+        _dm38_tree(tmp_path, handlers=handlers)
+        findings = _dm38_findings(tmp_path)
+        assert [f.symbol for f in findings] == ["_emit_calendar_notice"]
+        assert "registered NOTICE_* constant" in findings[0].excerpt

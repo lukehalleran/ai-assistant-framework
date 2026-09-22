@@ -26,9 +26,10 @@ re-explaining. The rules of the road are in §3–§5; this section is the index
   `/usr/bin/rm` only for your own clone-local files.
 - A live probe is wrapped `[test]…[/test]` or it becomes a profile fact.
 - Creating a new clone: `git clone` into `~/daemon_exec/<name>`, check out a new branch, then run
-  `git remote set-url --push origin DISABLED` and `cp hooks/pre-push .git/hooks/pre-push && chmod +x
-  .git/hooks/pre-push` — a clone never copies hooks on its own (2026-09-16: a push went out
-  unverified from a clone with no hook installed).
+  `git remote set-url --push origin DISABLED`, install both `hooks/pre-push` and
+  `hooks/pre-commit-privacy` as executable `.git/hooks/pre-push` and `.git/hooks/pre-commit`,
+  and provide the owner-local `config/privacy_terms.local.txt`. A clone never copies hooks
+  or private configuration on its own. Keep that term list untracked.
 - Every owner-facing command is ONE short line to copy-paste; a long `gh`/`git remote` line goes
   into a helper script under `~/daemon_checkpoints` instead (2026-09-20: a wrapped paste lost a space).
 - The pre-push hook's full unit pass is the real test — a batch's targeted run is not (2026-09-20:
@@ -278,14 +279,16 @@ Principles:
    the repo root (git against a `tmp_path` repo stays allowed), and
    `hooks/pre-push` (installed as `.git/hooks/pre-push`) refuses a push from a
    dirty tracked tree or with untracked `.py` files, then mirrors the CI privacy
-   guard and ruff and runs the changed test files + the five repo-wide guards
-   — in one pytest process under `MemoryMax=6G`, 2 GiB below the §3 cap the
-   non-unit batch needs. A push range that touches non-unit test files
-   therefore gets SIGKILLed, not failed (2026-09-10: the T01 repair push, 24
-   files, killed at ~40%; the ten non-unit files alone peak at 5.97 GB under
-   6G and pass under 8G at 7.1 GB). For such a push: Daemon down, run the
-   hook's selection by hand under the 8G wrapper with durable output, then
-   `SKIP_PREPUSH=1 git push` citing that output (`docs/TEST_LANES.md` §4).
+   guard and ruff, verifies the structural class scan and its receipts, then
+   runs changed unit tests plus the five repo-wide guards and a full unit pass
+   under `MemoryMax=6G`. The non-unit remainder runs separately under 8G in a
+   pristine worktree only when the live-root probe reports the Daemon down.
+   The hook resolves a local origin or `DAEMON_LIVE_REPO_ROOT`; an unknown state
+   skips that remainder and is not full verification. All these pytest passes
+   exclude `slow`, `benchmark` and `semantic`. Required CI additionally runs
+   the provisioned two-boot smoke contract explicitly and rejects skipped evidence.
+   Keep the Daemon down for local non-unit verification, with durable output
+   (`docs/TEST_LANES.md` §4); do not treat a skipped pass as green evidence.
    Failed-before evidence is a recorded result in the handoff doc, never an
    assertion. The only way to make a red landing literally impossible is
    GitHub branch protection. The owner adopted it on 2026-09-13; §3a.8 has the
@@ -393,6 +396,12 @@ team shape for any multi-step task:
    probes the deployed function before the change is called done. The
    afternoon of 2026-09-05 caught an over-firing rule this way.
 
+Before taking over another session's lane, verify its current ownership using
+live agents/processes and the latest timestamped state, or ask the owner. An old
+`STATE` block and empty batch directory are not evidence that its session died.
+The 2026-09-22 collision put two executor sets on the same files; preserve both
+trees and reconcile diffs before trusting either handoff.
+
 Budget signals:
 
 - At the **20 % weekly-credit warning** on the Claude plan: frontier keeps
@@ -459,7 +468,7 @@ batch size, not in the loop.
    Beside them, `hooks/pre-push` and CI also run the bug-class contract
    (`python scripts/check_bug_classes.py scan --root .`, its stdlib-only lane
    `tests/bug_class_guards`, and `verify-receipts`; `docs/TEST_LANES.md` §4).
-   The scan checks the pinned policy (seven scanners, every input leg and root,
+   The scan checks the pinned policy (registered scanners, every input leg and root,
    the top-level Python inventory, a syntax preflight). It then ratchets the
    gate scanners in both directions against `config/bug_class_baseline.json`.
    Each baseline occurrence needs a reviewed record in
@@ -467,7 +476,7 @@ batch size, not in the loop.
 
    Fixed debt is REMOVED from the baseline and kept as `confirmed_fixed`
    history. An edited file with accepted debt fails until the class-guard
-   owner re-reviews it. Current gates are DM-01/17/18/31 plus catalog
+   owner re-reviews it. Current gates are DM-01/17/18/31/38 plus catalog
    structure; DM-16/29 are report-only.
 
    This is a scoped structural ratchet, not coverage of every known class;

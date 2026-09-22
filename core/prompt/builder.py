@@ -105,7 +105,7 @@ from .formatter import (
 from .summarizer import LLMSummarizer
 from .token_manager import TokenManager, USER_PROFILE_MAX_TOKENS
 from .base import _FallbackMemoryCoordinator
-from .hygiene import ContentHygiene
+from .hygiene import ContentHygiene, _canonical_turn_key
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
 import hashlib as _hashlib
 from utils.async_results import classify_gather_results
@@ -382,6 +382,68 @@ def select_floor_topup(stored, have_contents, needed):
         if content and content not in have:
             add.append(s)
             have.add(content)
+        if len(add) >= needed:
+            break
+    return add
+
+
+def _topup_filler(recents, mems, extra_recent, needed):
+    """Return (filler[:needed], skipped_count): extra_recent items whose
+    _canonical_turn_key is not already present in recents or mems.
+
+    One key for every consumer of a turn's identity (class: BC-20, BC-24,
+    BC-91). The top-up used to dedup on the raw `query + response` text
+    (lowercased, stripped) — which diverges from `_canonical_turn_key` when
+    a `recent_conversations`/`memories` item carries a read-time marker
+    (personal-claim check / unverified-action-claim) or a trailing delivery
+    notice that the backfill's raw corpus copy of the SAME turn never has.
+    Only marked turns then mismatched their raw counterpart and re-entered
+    the prompt as a duplicate "relevant memory" (2026-09-22 live: a 14K-char
+    paste rendered in both [RECENT CONVERSATION] and [RELEVANT MEMORIES]
+    across three turns). `_canonical_turn_key` strips that machinery text
+    before keying, so the same turn collides regardless of which copy
+    carries the marker.
+    """
+    used = {_canonical_turn_key(r) for r in (recents or [])}
+    used.update(_canonical_turn_key(m) for m in (mems or []))
+
+    filler = []
+    skipped_count = 0
+    for item in (extra_recent or []):
+        if _canonical_turn_key(item) not in used:
+            filler.append(item)
+        else:
+            skipped_count += 1
+
+    return filler[:max(0, needed)], skipped_count
+
+
+def _recency_floor_filler(recent_convos, stored_recent, needed):
+    """Return up to `needed` items from `stored_recent` not already present
+    in `recent_convos`, keyed by `_canonical_turn_key`.
+
+    Second site of the same bug as `_topup_filler` (class: BC-20, BC-24,
+    BC-91) — the pre-budget "Recent conversations floor"
+    (core/prompt/builder.py, Step "Complete recency candidates BEFORE
+    budgeting") re-fetches recent conversations and used to dedup against
+    the already-present `recent_convos` on a raw `query + response` string;
+    a copy of the same turn carrying a read-time marker (or a trailing
+    delivery notice) mismatched its raw counterpart from the fresh fetch
+    and was re-added as a duplicate. Keeps the original early-break +
+    incremental-`have_keys` behavior (a duplicate WITHIN `stored_recent`
+    itself is also caught).
+    """
+    if needed <= 0:
+        return []
+    have_keys = {_canonical_turn_key(r) for r in (recent_convos or [])}
+    add = []
+    for r in (stored_recent or []):
+        if not isinstance(r, dict):
+            continue
+        key = _canonical_turn_key(r)
+        if key not in have_keys:
+            add.append(r)
+            have_keys.add(key)
         if len(add) >= needed:
             break
     return add
@@ -1832,24 +1894,11 @@ class UnifiedPromptBuilder:
                 if len(mems) < target_mems:
                     # Pull extra recent conversations beyond the ones already shown
                     extra_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT + target_mems)
-                    # Build keys for already used items
-                    def _key(x):
-                        return (str(x.get("query", "")) + str(x.get("response", ""))).strip().lower()
-
-                    # CRITICAL: Check against BOTH recent_conversations AND existing memories to avoid duplicates
-                    used = {_key(r) for r in recents}
-                    used.update({_key(m) for m in mems})  # Also check against existing memories!
-
-                    # Keep only items not already in either section
-                    filler = []
-                    skipped_count = 0
-                    for item in extra_recent:
-                        if _key(item) not in used:
-                            filler.append(item)
-                        else:
-                            skipped_count += 1
-
                     needed = max(0, target_mems - len(mems))
+                    # Dedup against BOTH recent_conversations AND existing memories,
+                    # keyed by _canonical_turn_key so a marked copy of a turn (e.g. the
+                    # personal-claim-check marker) collides with its raw counterpart.
+                    filler, skipped_count = _topup_filler(recents, mems, extra_recent, needed)
                     if needed:
                         mems.extend(filler[:needed])
                         context["memories"] = mems
@@ -1966,16 +2015,10 @@ class UnifiedPromptBuilder:
                         logger.debug(f"Failed to fetch recent conversations for floor: {e}")
                         stored_recent = []
                     if stored_recent:
-                        def _recent_key(x):
-                            return (str(x.get("query", "")) + str(x.get("response", ""))).strip().lower()
-                        have_keys = {_recent_key(r) for r in recent_convos}
-                        add_recent = []
-                        for r in stored_recent:
-                            if isinstance(r, dict) and _recent_key(r) not in have_keys:
-                                add_recent.append(r)
-                                have_keys.add(_recent_key(r))
-                            if len(add_recent) >= needed_recent:
-                                break
+                        # Dedup via _canonical_turn_key so a marked copy of a turn
+                        # (e.g. the personal-claim-check marker) collides with its
+                        # raw counterpart in the fresh stored_recent fetch.
+                        add_recent = _recency_floor_filler(recent_convos, stored_recent, needed_recent)
                         if add_recent:
                             context['recent_conversations'] = (context.get('recent_conversations') or []) + add_recent
                             logger.info(f"[RECENCY FLOOR] Added {len(add_recent)} conversation candidates (had {len(recent_convos)}, floor={_recent_floor})")

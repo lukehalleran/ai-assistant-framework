@@ -1291,6 +1291,11 @@ class MemoryStorage:
         """
         o = obj.strip().lower()
 
+        # Use the same lexical gate as subjects and read-time graph consumers.
+        # Preserve original casing so ambiguous names do not become stopwords.
+        if graph_utils._is_single_function_word(obj.strip()):
+            return False
+
         # Too short or too long
         if len(o) < 2 or len(o) > 60:
             return False
@@ -1357,7 +1362,8 @@ class MemoryStorage:
             # Filter junk subjects (pronouns, stopwords, numbers) — these
             # should never become graph nodes. "user" is exempt; user-scoped
             # role subjects are deliberate, not junk.
-            if subj.lower() != "user" and not _is_role_subject and graph_utils.is_junk_entity(subj):
+            if (subj.lower() != "user" and not _is_role_subject
+                    and graph_utils.is_junk_entity(subj, entity_type=entity_type)):
                 logger.debug(f"[MemoryStorage] Graph skip junk subject: '{subj}'")
                 return
 

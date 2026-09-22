@@ -49,6 +49,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 from utils.logging_utils import get_logger
+from utils.query_checker import is_self_report
 from config import app_config
 
 logger = get_logger("intent_classifier")
@@ -898,6 +899,23 @@ class IntentClassifier:
         # Find the best matching IntentType from STM keywords
         for pattern, intent_type in _STM_KEYWORD_PATTERNS:
             if pattern.search(stm_lower):
+                # Shape guard (2026-09-22): an LLM-paraphrased STM intent can
+                # carry a recall cue ("confirm", "recall"...) that exists only
+                # in the PARAPHRASE, not the user's own words — e.g. "Confirm
+                # whether to attend..." paraphrasing a first-person status
+                # update ("I looked yesterday..."). A first-person self-report
+                # is never itself a recall request; skip this pattern so a
+                # non-recall family cue in the same paraphrase can still match.
+                if (
+                    intent_type in (IntentType.FACTUAL_RECALL, IntentType.TEMPORAL_RECALL)
+                    and query
+                    and is_self_report(query)
+                ):
+                    logger.debug(
+                        "STM refinement skipped: recall target on a first-person "
+                        f"self-report (stm_intent='{stm_intent}')"
+                    )
+                    continue
                 # STM refinement assigns moderate confidence: 0.60 default —
                 # enough to reach the 0.60 routing floors (heavy-topic skip),
                 # deliberately below the 0.75 agentic-veto floor.
@@ -914,9 +932,27 @@ class IntentClassifier:
                 # intent from STM context, but its own text carries no intent
                 # signal, so as a prototype it poisons the semantic tier.
                 # Teach only substantive queries.
+                # Recall family: a derived label teaches only when the
+                # user's own words carry the cue (2026-09-22; class: BC-51,
+                # BC-52, BC-58) — the STM paraphrase can invent a recall cue
+                # ("confirm", "recall"...) the user never wrote (a
+                # first-person status update paraphrased as "Confirm
+                # whether..."), and that cue-free query would then poison the
+                # learned-exemplar store under the wrong label. Scoped to
+                # FACTUAL_RECALL/TEMPORAL_RECALL only: every other family's
+                # teaching is already corroborated by the tone channel — an
+                # emotional_support exemplar taught from "honestly today just
+                # broke me a little" is valid even though "emotional" only
+                # appears in the STM paraphrase, because the vent shape
+                # itself (not the paraphrase's wording) is the signal.
                 _wc = len((query or "").split())
+                _recall_cue_ok = (
+                    intent_type not in (IntentType.FACTUAL_RECALL, IntentType.TEMPORAL_RECALL)
+                    or bool(query and pattern.search(query.lower()))
+                )
                 if (query and not _tone_is_elevated(tone_level)
-                        and _wc >= 6 and not _query_is_ack_shaped(query)):
+                        and _wc >= 6 and not _query_is_ack_shaped(query)
+                        and _recall_cue_ok):
                     _learn_intent_exemplar(query, intent_type.value, "stm_refined")
                 return refined
 

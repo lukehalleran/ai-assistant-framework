@@ -36,10 +36,10 @@ def _live_policy() -> dict:
 
 
 class TestPinnedContract:
-    def test_policy_declares_exactly_the_seven_reviewed_scanners(self):
+    def test_policy_declares_exactly_the_eight_reviewed_scanners(self):
         entries = _live_policy()["scanners"]
         declared = {e["id"]: (e["mode"], tuple(e["class_ids"])) for e in entries}
-        assert len(entries) == len(declared) == 7
+        assert len(entries) == len(declared) == 8
         assert declared == EXPECTED_SCANNERS
 
     def test_registry_implements_exactly_the_pinned_scanners(self):

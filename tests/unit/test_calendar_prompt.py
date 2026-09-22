@@ -139,8 +139,18 @@ class TestGoogleCalendarFormatter:
         ]
         ctx = self._make_context(google_calendar=events)
         result = fmt._assemble_prompt(ctx, "hello")
-        assert "[all day]" in result
+        assert "2026-05-28 (Thu) [all day]" in result
         assert "PTO" in result
+
+    def test_timed_event_shows_weekday(self):
+        fmt = self._get_formatter()
+        events = [
+            {"summary": "Career Fair", "start": "2026-09-28T15:00:00",
+             "end": "2026-09-28T16:00:00", "all_day": False, "location": ""},
+        ]
+        ctx = self._make_context(google_calendar=events)
+        result = fmt._assemble_prompt(ctx, "hello")
+        assert "(Mon)" in result
 
     def test_location_included_when_present(self):
         fmt = self._get_formatter()
