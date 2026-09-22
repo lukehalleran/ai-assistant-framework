@@ -5,7 +5,6 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml/badge.svg)](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml)
 [![Tests](https://img.shields.io/badge/tests-12%2C513-brightgreen.svg)](#testing)
-[![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
 > ~338K lines of Python (≈260K code) across 1,038 files | 14 ChromaDB collections | 12,513 tests | 23 agentic tool types (22 in-loop) | solo-built part-time over ~15 months
 
@@ -13,7 +12,7 @@ Daemon is built around persistent memory, evaluated retrieval, knowledge-graph c
 
 It is a stateful agent architecture, not a chatbot wrapper: every query passes through context analysis, intent classification, parallel retrieval, gating, scoring, prompt assembly, generation, and post-response state updates.
 
-*Solo architected and maintained by Luke U_handle. AI coding assistants were used as development tools, but architecture, review, testing, integration decisions, and commits are human-directed — which is why GitHub lists `@claude` as a contributor.*
+*Solo architected and maintained by Luke ([@lukehalleran](https://github.com/lukehalleran)). AI coding assistants were used as development tools, but architecture, review, testing, integration decisions, and commits are human-directed — which is why GitHub lists `@claude` as a contributor.*
 
 ---
 
@@ -26,7 +25,7 @@ It is a stateful agent architecture, not a chatbot wrapper: every query passes t
 - **Literature-backed synthesis** — narrows a large conceptual space into evidence-backed *candidate* connections and validates them against independent corpora (candidates, not discoveries)
 - **Human-gated self-improvement** — structured code proposals + isolated agent-branch experiments; the machine may propose and evaluate, **only a human may merge**
 - **Prompt-section ablation eval system** — snapshot, replay, variant generation, blind pairwise judging, objective checks
-- **Docker deployment** + **desktop installer** (PyInstaller + Inno Setup)
+- **Desktop packaging** (PyInstaller spec + Inno Setup installer script) — a Dockerfile and compose file are present, but both predate the FastAPI server and are being rebuilt (see [Docker](#docker-being-rebuilt))
 
 ---
 
@@ -96,7 +95,7 @@ Images are ingested through OpenCLIP ViT-B/32 → vision-LLM caption → entity 
 
 Retrieval quality is **measured, not asserted** — no scoring or weight change ships without a before/after benchmark run.
 
-- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2). Two suites: (1) synthetic adversarial cases (openly distributed), and (2) owner-local cases sampled from personal ChromaDB (not distributed — contains personal memory and skips cleanly when absent). Latest rerun (2026-07-23) on the synthetic suite: **283/296 cases pass (95.6%)**; combined **MRR 0.84** (R@1 0.78) over 280 retrieval cases. Historically measured (2026-05-17 baseline snapshot, MRR 0.89, 305/305 on the combined dataset) and retained in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md) for regression tracking.
+- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2). Two suites: (1) synthetic adversarial cases (openly distributed), and (2) owner-local cases sampled from personal ChromaDB (not distributed — contains personal memory and skips cleanly when absent). Latest rerun (2026-09-20) across both suites: **273/296 cases pass (92.2%)**; combined **MRR 0.84** (R@1 0.79) over 280 retrieval cases — retrieval is flat against the 2026-07-23 rerun (283/296); the ten newly failing cases fail only a stale intent-label assertion, not retrieval. Historically measured (2026-05-17 baseline snapshot, MRR 0.89, 305/305 on the combined dataset) and retained in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md) for regression tracking.
 - **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
 - **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
 
@@ -236,12 +235,8 @@ python main.py cli    # CLI mode
 python main.py wizard # First-run onboarding wizard
 ```
 
-### Docker
-```bash
-docker-compose up -d   # OUT OF DATE: maps + healthchecks :7860 (legacy Gradio) while the default `gui`
-                       # command now serves FastAPI on 127.0.0.1:8000 inside the container —
-                       # docs/HANDOFF_20260909_audit_followups.md row 10
-```
+### Docker (being rebuilt)
+The committed `Dockerfile` and `docker-compose.yml` predate the 2026-07-14 FastAPI migration: they build the legacy Gradio app, map and health-check port 7860, and do not copy the `api/` package or build the React frontend. Use the source install above until the compose path is rebuilt for the FastAPI server ([docs/DOCKER_README.md](docs/DOCKER_README.md) describes the legacy image).
 
 ### Desktop executable
 ```bash
@@ -449,12 +444,12 @@ export WIKI_DATA_ROOT=~/daemon-wiki-data
 
 ## Configuration
 
-Central config: `config/config.yaml` (68 top-level sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
+Central config: `config/config.yaml` (69 top-level sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
 
 ```yaml
 memory:
   prompt_max_recent: 10
-  semantic_retrieval_limit: 100
+  semantic_retrieval_limit: 40
 gating:
   cosine_similarity_threshold: 0.15
   score_weights: { relevance: 0.30, recency: 0.22, truth: 0.18,
@@ -496,7 +491,7 @@ This turns today's shutdown-only processing into a first-class **background cogn
 
 ## Status
 
-Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, benchmarks, Docker, and desktop packaging — are implemented and tested. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
+Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, and benchmarks — are implemented and tested. The Docker image and the PyInstaller desktop build predate the 2026-07-14 FastAPI migration and are being rebuilt against it. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
 
 A few subsystems are research/developer features rather than always-on defaults, and degrade gracefully when their data is absent:
 

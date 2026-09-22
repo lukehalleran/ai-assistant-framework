@@ -1,5 +1,7 @@
 # Docker Deployment Guide
 
+> **Status (2026-09-21): this image predates the 2026-07-14 FastAPI migration.** It builds the legacy Gradio app on port 7860, does not copy the `api/` package, and does not build the React frontend, so `docker-compose up` does not serve the current web UI. The compose path is being rebuilt for the FastAPI server; until then install from source (README → Quick Start). Everything below describes the legacy image.
+
 Complete guide for containerized deployment of Daemon RAG Agent.
 
 ## Quick Start
