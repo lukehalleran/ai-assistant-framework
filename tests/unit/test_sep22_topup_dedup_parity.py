@@ -37,7 +37,7 @@ from core.prompt.builder import _recency_floor_filler, _topup_filler
 from core.prompt.gatherer_memory import _annotate_memory_item_claim
 from utils.personal_claim_provenance import KEY, clean_personal_claim_receipt
 
-QUERY = "I was taking about 900 mg a day for a week or so."
+QUERY = "I was walking about nine thousand steps a day for a week or so."
 RESPONSE = "That's a completely reasonable line to hold, and honestly a responsible one."
 
 
