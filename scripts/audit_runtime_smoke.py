@@ -95,6 +95,13 @@ async def run(orch, run_dir, captured):
 def main():
     import yaml
     run_dir = Path(tempfile.mkdtemp(prefix="daemon-runtime-audit-"))
+    # BC-10/BC-58 (Lane 1 Subgoal C, 2026-09-22): utils.bootstrap.get_app_dir()
+    # resolves via Path(__file__).parent.parent, NOT cwd/CORPUS_FILE's env
+    # convention, so without this a sys.path-insert-without-copy harness like
+    # this one silently reads (and, on a save, writes) the LIVE checkout's
+    # real data/user_profile.json. See C_agentB_generic_config_audit.md
+    # FINDING B1.
+    os.environ["USER_PROFILE_PATH"] = str(run_dir / "data" / "user_profile.json")
     cfg = yaml.safe_load((REPO / "config/config.yaml").read_text())
     # Disable optional integrations and maintenance. The main request pipeline,
     # embeddings, Chroma, corpus, file parser, HTTP adapter and renderer are real.

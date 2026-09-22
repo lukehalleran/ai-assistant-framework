@@ -308,20 +308,27 @@ async def test_source_material_reaches_verifier_prompt():
 # ---------------------------------------------------------------------------
 
 def test_enhanced_path_wired():
+    # 2026-09-22 (BC-45/BC-91): both sites route through ONE ordered pipeline,
+    # `_apply_delivery_revisions`; the grounding call lives inside it and its
+    # revised body replaces the delivered text (whole-bubble replacement).
     src = inspect.getsource(handlers._run_enhanced)
-    assert "_apply_grounding_check" in src
-    assert "_gc_revised, _gc_suffix" in src
-    assert "final_output = _gc_revised" in src
+    assert "_apply_delivery_revisions(" in src
+    assert "_apply_grounding_check" not in src  # no direct call bypassing the pipeline
+    assert "final_output = _delivery_body" in src
+    pipeline = inspect.getsource(handlers._apply_delivery_revisions)
+    assert "_apply_grounding_check_for_delivery(" in pipeline
     # A05b-1: the suffix-append branch is retired — no dead code left behind.
-    assert '.rstrip() + _gc_suffix' not in src
+    assert '.rstrip() + _gc_suffix' not in src and "_gc_suffix" not in pipeline
 
 
 def test_agentic_path_wired():
     src = inspect.getsource(handlers._run_agentic_search)
-    assert "_apply_grounding_check" in src
-    assert "_ag_gc_revised, _ag_gc_suffix" in src
-    assert "final_output = _ag_gc_revised" in src
+    assert "_apply_delivery_revisions(" in src
+    assert "_apply_grounding_check" not in src
+    assert "final_output = _delivery_body" in src
     assert "source_material=_ag_source" in src
+    pipeline = inspect.getsource(handlers._apply_delivery_revisions)
+    assert "source_material=source_material" in pipeline
     # A05b-1: the suffix-append branch is retired — no dead code left behind.
     assert '.rstrip() + _ag_gc_suffix' not in src
 

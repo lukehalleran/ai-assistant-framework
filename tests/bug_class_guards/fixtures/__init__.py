@@ -717,7 +717,7 @@ DISPOSITIONS_PATH = "config/bug_class_dispositions.json"
 ANCHOR = "bug-class-anchor/1"
 REVIEW_DATE = "2026-09-13"
 
-# The seven reviewed scanners. A different mode, class list or scanner set is
+# The eight reviewed scanners. A different mode, class list or scanner set is
 # a contract change: this pin, the policy and the registry move together.
 EXPECTED_SCANNERS = {
     "dm01_raw_substring": ("gate", ("BC-01", "BC-02")),
@@ -726,6 +726,7 @@ EXPECTED_SCANNERS = {
     "dm18_except_returns_empty": ("gate", ("BC-20", "BC-47")),
     "dm29_phrase_append_signature": ("report", ("BC-76",)),
     "dm31_live_state_default": ("gate", ("BC-78", "BC-11", "BC-12")),
+    "dm38_machinery_consumers": ("gate", ("BC-91", "BC-20", "BC-45")),
     "catalog": ("gate", ("BC-71",)),
 }
 
@@ -738,6 +739,7 @@ EXPECTED_SCANNER_LEGS = {
     "dm18_except_returns_empty": ("dm18_retrieval",),
     "dm29_phrase_append_signature": ("dm29_changelog",),
     "dm31_live_state_default": ("python_source",),
+    "dm38_machinery_consumers": ("dm38_consumers",),
     "catalog": ("catalog_document",),
 }
 
@@ -758,6 +760,7 @@ EXPECTED_LEGS = {
     "dm17_tests": ("python_tree", ("tests",), True),
     "dm18_retrieval": ("python_tree", DM18_ROOTS, True),
     "dm29_changelog": ("file", ("CLAUDE_CHANGELOG.md",), False),
+    "dm38_consumers": ("python_tree", ("core", "gui", "utils"), True),
     "catalog_document": ("file", ("docs/BUG_CLASSES.md",), True),
 }
 

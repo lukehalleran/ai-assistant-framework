@@ -59,6 +59,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+import utils.read_time_markers as read_time_markers
 import utils.temporal_resolver as temporal_resolver
 from utils.trigger_match import normalize_ws
 
@@ -1244,9 +1245,9 @@ def card_claim_needs_action_context(text: str) -> bool:
     return True
 
 
-NO_CARD_NOTICE = (
-    "\n\n> ⚠️ Heads up — there's no card to approve: nothing was actually queued "
-    "this turn. Ask me again (or say \"try again\") and I'll queue it for real."
+NO_CARD_NOTICE = read_time_markers.delivery_notice(
+    read_time_markers.NOTICE_NO_CARD,
+    " this turn. Ask me again (or say \"try again\") and I'll queue it for real.",
 )
 
 
@@ -1543,7 +1544,7 @@ def claims_calendar_state(reply: str) -> list[str]:
 # earlier today." — [RECENT CONVERSATION] item 5, unflagged — became the
 # SOURCE the next turn's reply cited for "you had me save that exact note
 # yesterday ... the recurring ... calendar event ... is on there".
-_UNVERIFIED_CLAIM_MARKER = "[unverified action claim]"
+_UNVERIFIED_CLAIM_MARKER = read_time_markers.UNVERIFIED_CLAIM_MARKER
 
 #: Public alias (2026-09-11, round 5, B13 sibling) — a hard-char-capped
 #: digest (core.agentic.controller._compute_recent_conversation_digest)
@@ -1658,7 +1659,8 @@ def build_correction_notice(external_unbacked: list[DetectedAction]) -> str:
         if label not in kinds:
             kinds.append(label)
     joined = kinds[0] if len(kinds) == 1 else (", ".join(kinds[:-1]) + f" or {kinds[-1]}")
-    return (
-        f"\n\n> ⚠️ Heads up — I didn't actually {joined}. That needs an explicit "
-        f"action step, which didn't run this turn. Want me to do it now?"
+    return read_time_markers.delivery_notice(
+        read_time_markers.NOTICE_NOT_ACTUALLY_DONE,
+        f" {joined}. That needs an explicit action step, which didn't run this turn. "
+        "Want me to do it now?",
     )

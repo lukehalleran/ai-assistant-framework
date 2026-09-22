@@ -84,6 +84,44 @@ jobs:
           python -m pip check
           python -c 'import open_clip, torch, torchvision; assert torch.__version__.startswith("2.7.1+cpu"); assert torchvision.__version__.startswith("0.22.1+cpu"); assert not torch.cuda.is_available()'
 
+      - name: Provision models required by the isolated-runtime smoke
+        run: |
+          set -euo pipefail
+          mkdir -p receipts
+          env -u PYTHONPATH DISABLE_FS_GUARD=1 PYTHONDONTWRITEBYTECODE=1 \
+            python -s scripts/prepare_smoke_model_cache.py --receipt receipts/smoke-models.json
+
+      - name: Run required isolated-runtime two-boot smoke
+        env:
+          DAEMON_SMOKE_REQUIRED: "1"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          CHROMA_DEVICE: cpu
+        run: |
+          set -euo pipefail
+          env -u PYTHONPATH DISABLE_FS_GUARD=1 PYTHONDONTWRITEBYTECODE=1 \
+            python -s -m pytest -q -x -p no:cacheprovider \
+              --junitxml=receipts/isolated-runtime-smoke.xml \
+              tests/smoke/test_fresh_clone_contract.py
+
+      - name: Verify isolated-runtime smoke receipt
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          env -u PYTHONPATH DISABLE_FS_GUARD=1 PYTHONDONTWRITEBYTECODE=1 \
+            python -s scripts/verify_smoke_junit.py receipts/isolated-runtime-smoke.xml
+
+      - name: Upload isolated-runtime smoke evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-runtime-smoke
+          path: |
+            receipts/isolated-runtime-smoke.xml
+            receipts/smoke-models.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Privacy guard (test fixtures/docs for medication dosages and fixture size)
         run: |
           set -euo pipefail
