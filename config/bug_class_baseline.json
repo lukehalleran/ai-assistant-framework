@@ -516,22 +516,6 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "memory/llm_fact_extractor.py",
-      "symbol": "LLMFactExtractor.extract_triples",
-      "kind": "broad_except_returns_empty",
-      "digest": "22f9437f13b777108ad5018af5104eaa694276b29bc877a142771c3a4cc81d62",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/llm_fact_extractor.py",
-      "symbol": "LLMFactExtractor.extract_triples",
-      "kind": "broad_except_returns_empty",
-      "digest": "d9296a83efb75fd8ddfe568480f3126c0e62876be02375286c0461e1dec522ed",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "memory/memory_retriever.py",
       "symbol": "MemoryRetriever._keyword_anchor_memories",
       "kind": "broad_except_returns_empty",
