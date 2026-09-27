@@ -78,13 +78,23 @@ PROVIDERS: Dict[str, Dict[str, Callable]] = {
 
 def provider_coverage() -> Dict[str, object]:
     """Which providers a search actually covers — {'searched': [names],
-    'unconnected': {name: reason}}. Deterministic and cheap (config flags +
-    is_configured disk checks, no network). Consumers append this to email
+    'unconnected': {name: reason}}, plus an optional 'failed': {name: reason}
+    key (present ONLY when at least one configured provider could not run —
+    keeping the two-key shape when nothing failed, since existing consumers
+    read `set(cov)` directly). Deterministic and cheap (config flags +
+    is_configured disk checks, no network — the failure reason itself was
+    recorded by an earlier real call). Consumers append this to email
     answers so a NEGATIVE result is honestly scoped: "no reply from Morgan"
     means nothing when her mail lives in a provider we never looked at
-    (2026-09-01 live finding — advisor emails in unconnected Outlook)."""
+    (2026-09-01 live finding — advisor emails in unconnected Outlook).
+
+    2026-09-27 (BC-47, BC-78, BC-69, BC-71): a CONFIGURED provider whose auth
+    broke (revoked/expired token) must never be folded into 'searched' —
+    that read as "we looked, nothing there" for five live replies while
+    Gmail's own search never ran after the token was revoked ~09-23."""
     searched: List[str] = []
     unconnected: Dict[str, str] = {}
+    failed: Dict[str, str] = {}
     for provider_name, registry_row in PROVIDERS.items():
         try:
             if not registry_row["enabled"]():
@@ -92,12 +102,20 @@ def provider_coverage() -> Dict[str, object]:
                 continue
             provider = registry_row["factory"]()
             if provider.is_configured():
-                searched.append(provider_name)
+                reason_fn = getattr(provider, "unavailable_reason", None)
+                reason = reason_fn() if callable(reason_fn) else None
+                if reason:
+                    failed[provider_name] = reason
+                else:
+                    searched.append(provider_name)
             else:
                 unconnected[provider_name] = "not connected"
         except Exception:
             unconnected[provider_name] = "unavailable"
-    return {"searched": searched, "unconnected": unconnected}
+    result: Dict[str, object] = {"searched": searched, "unconnected": unconnected}
+    if failed:
+        result["failed"] = failed
+    return result
 
 
 def coverage_note() -> str:
@@ -106,11 +124,18 @@ def coverage_note() -> str:
     cov = provider_coverage()
     searched = cov["searched"]
     unconnected = cov["unconnected"]
+    # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): name a FAILED provider
+    # distinctly from one that was never connected — "FAILED" tells the
+    # model+user the account exists and the search attempt broke.
+    failed = cov.get("failed") or {}
     parts = []
     if searched:
         parts.append("Searched: " + ", ".join(n.capitalize() for n in searched))
-    else:
+    elif not failed:
         parts.append("No email accounts connected")
+    if failed:
+        parts.append("; ".join(
+            f"{n.capitalize()} search FAILED: {reason}" for n, reason in failed.items()))
     if unconnected:
         parts.append("; ".join(
             f"{n.capitalize()} {reason}" for n, reason in unconnected.items()))

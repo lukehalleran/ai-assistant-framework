@@ -53,10 +53,10 @@ class CorpusManager:
     """Manages the conversation corpus (short-term memory)"""
 
     def __init__(self, corpus_file: str = None):
-        if corpus_file is None:
-                from config.app_config import CORPUS_FILE
-                corpus_file=CORPUS_FILE
-        self.corpus_file = corpus_file or CORPUS_FILE
+        if not corpus_file:
+            import config.app_config as app_config  # lazy import: live-config (CORPUS_FILE is env-derived; tests set it at call time)
+            corpus_file = app_config.CORPUS_FILE
+        self.corpus_file = corpus_file
         # Allow runtime override of max via env/config; can be adjusted at runtime for testing
         try:
             self.max_entries = int(os.getenv("CORPUS_MAX_ENTRIES", str(CORPUS_MAX_ENTRIES)))

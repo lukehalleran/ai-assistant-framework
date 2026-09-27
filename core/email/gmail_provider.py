@@ -27,6 +27,37 @@ logger = get_logger("gmail_provider")
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 _MAX_CONCURRENT_FETCHES = 5
 
+# 2026-09-27 (BC-47, BC-78, BC-69, BC-71): the last reason this PROCESS's
+# Gmail search/recent could not run (transport-level — auth failures live on
+# the GoogleAuthManager singleton instead, see `unavailable_reason` below).
+# Module-level, not per-instance: `registry.build_enabled_providers()` and
+# `provider_coverage()` each build a FRESH GmailProvider(), so instance state
+# would never survive between the call that hit the failure and the call
+# that reports it.
+_LAST_FAILURE: Optional[str] = None
+
+
+def _record_failure(reason: str) -> None:
+    global _LAST_FAILURE
+    _LAST_FAILURE = reason
+
+
+def _clear_failure() -> None:
+    global _LAST_FAILURE
+    _LAST_FAILURE = None
+
+
+def _auth_failure_reason(auth) -> str:
+    """`auth.auth_failure` when it is a genuine non-empty string, else a
+    generic fallback. Defends `_LAST_FAILURE` against ever being poisoned by
+    a non-string (a partially-stubbed test double's unset attribute reads as
+    a truthy Mock, not the `Optional[str]` the real property returns).
+    2026-09-27 (BC-47, BC-78, BC-69, BC-71)."""
+    reason = getattr(auth, "auth_failure", None)
+    if isinstance(reason, str) and reason:
+        return reason
+    return "Gmail token refresh failed (unknown reason)"
+
 
 class GmailProvider:
     """Gmail provider adapter — fetches message metadata via Gmail API v1."""
@@ -97,10 +128,34 @@ class GmailProvider:
                 ),
             }
 
+        # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): config+token+scope can all
+        # look fine while the token is actually revoked/expired-unrefreshable
+        # — that only surfaces once a real search attempts the refresh.
+        reason = self.unavailable_reason()
+        if reason:
+            return {"available": False, "detail": reason}
+
         return {
             "available": True,
             "detail": "Gmail configured and authenticated",
         }
+
+    def unavailable_reason(self) -> Optional[str]:
+        """Why the last Gmail search/recent call could not run, or None.
+
+        Auth-singleton state (persists across the fresh instances the
+        registry builds per call) takes precedence over this process's own
+        last transport failure. 2026-09-27 (BC-47, BC-78, BC-69, BC-71)."""
+        from core.actions.google_auth import get_google_auth  # lazy import: cycle
+
+        auth = get_google_auth()
+        auth_reason = getattr(auth, "auth_failure", None) if auth is not None else None
+        # A partially-stubbed test double's unset attribute reads back as a
+        # truthy Mock, not the `Optional[str]` the real property returns —
+        # only trust it when it is actually a string.
+        if isinstance(auth_reason, str) and auth_reason:
+            return auth_reason
+        return _LAST_FAILURE
 
     async def search(
         self,
@@ -129,6 +184,11 @@ class GmailProvider:
         creds = auth.get_credentials()
         if creds is None:
             logger.warning("[Gmail] Token refresh failed")
+            # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): a failed refresh is a
+            # FAILURE, not silence — `auth.auth_failure` already carries the
+            # specific reason (permanent vs transient); fall back to a
+            # generic one only if the auth manager somehow has none.
+            _record_failure(_auth_failure_reason(auth))
             return []
 
         # Sanitize query: strip problematic characters and collapse whitespace
@@ -161,7 +221,12 @@ class GmailProvider:
                     f"[Gmail] search list error: "
                     f"HTTP {list_resp.status_code} — {err_body}"
                 )
+                _record_failure(f"Gmail API error: HTTP {list_resp.status_code}")
                 return []
+
+            # A 200 means the call itself succeeded — clear any stale
+            # transport failure before we even know if there are hits.
+            _clear_failure()
 
             data = list_resp.json()
             messages = data.get("messages", [])
@@ -189,6 +254,7 @@ class GmailProvider:
 
         except Exception as e:
             logger.warning(f"[Gmail] search failed: {e}")
+            _record_failure(f"Gmail search failed: {e}")
             return []
 
     async def recent(
@@ -216,6 +282,7 @@ class GmailProvider:
         creds = auth.get_credentials()
         if creds is None:
             logger.warning("[Gmail] Token refresh failed")
+            _record_failure(_auth_failure_reason(auth))
             return []
 
         # Query: newer_than + exclude low-signal categories
@@ -243,7 +310,10 @@ class GmailProvider:
                     f"[Gmail] recent list error: "
                     f"HTTP {list_resp.status_code} — {err_body}"
                 )
+                _record_failure(f"Gmail API error: HTTP {list_resp.status_code}")
                 return []
+
+            _clear_failure()
 
             data = list_resp.json()
             messages = data.get("messages", [])
@@ -271,6 +341,7 @@ class GmailProvider:
 
         except Exception as e:
             logger.warning(f"[Gmail] recent failed: {e}")
+            _record_failure(f"Gmail recent failed: {e}")
             return []
 
     async def _fetch_message_metadata(

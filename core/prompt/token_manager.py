@@ -71,6 +71,18 @@ PRIORITY_ORDER = [
     ("user_profile",          9),  # Critical identity context, naturally bounded (~1-3K)
     ("narrative_state",       8),  # Temporal grounding - high priority, capped at 500 tokens
     ("recent_conversations",  7),
+    # 2026-09-27 (BC-46, BC-30, BC-51): [EARLIER TODAY] recall-timeline lines
+    # a truncated [RECENT CONVERSATION] window dropped (temporal_recall-only,
+    # capped at 40 short lines) + the scalar session-truth values backing the
+    # truncated-header honesty fix and the [TIME CONTEXT] "session began"
+    # line. The scalars cost only a few tokens each (str() of a bool/int/
+    # timestamp); rows exist to keep formatter↔PRIORITY_ORDER parity green
+    # (test_budget_meters_rendered_sections.py fails on any unmetered
+    # rendered-key read, scalar or not).
+    ("session_timeline",        7),
+    ("recent_window_truncated", 7),
+    ("session_turns_total",     7),
+    ("session_started_at",      7),
     ("graph_context",         7),  # Knowledge graph entities, small (~200-800 tokens)
     ("unresolved_threads",    7),  # Continuity threads, small (~100-500 tokens)
     ("semantic_chunks",       6),

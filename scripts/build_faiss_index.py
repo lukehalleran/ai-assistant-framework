@@ -4,7 +4,7 @@ Build FAISS IVFPQ index from Wikipedia embeddings.
 
 Two input modes:
   1. Stream from tar.zst (no extraction needed — recommended):
-     python scripts/build_faiss_index.py --tar /run/media/lukeh/T9/wiki_embeddings.tar.zst
+     python scripts/build_faiss_index.py --tar "$WIKI_DATA_ROOT"/wiki_embeddings.tar.zst
 
   2. From extracted parquet directory (legacy):
      python scripts/build_faiss_index.py
@@ -39,8 +39,22 @@ from pathlib import Path
 # Standalone invocation also needs the repository's shared atomic writer.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+def _wiki_data_root() -> str:
+    """Parent of wiki_data/: env WIKI_DATA_ROOT, else config wiki.data_root
+    (owner path in config.local.yaml), else a neutral home default.
+    2026-09-27: no owner mount path in code (BC-59)."""
+    env = os.environ.get("WIKI_DATA_ROOT")
+    if env:
+        return os.path.expanduser(env)
+    try:
+        import config.app_config as app_config  # lazy import: startup-cost (standalone script; config only when env unset)
+        return app_config.WIKI_DATA_ROOT
+    except ImportError:
+        return os.path.expanduser("~/daemon-wiki-data")
+
+
 # ── Paths ──────────────────────────────────────────────────────────
-_DATA_ROOT       = os.environ.get("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
+_DATA_ROOT       = _wiki_data_root()
 _WIKI_OUT        = os.path.join(_DATA_ROOT, "wiki_data")
 EMBED_FILE       = os.path.join(_WIKI_OUT, "embeddings_mmap.dat")
 METADATA_FILE    = os.path.join(_WIKI_OUT, "metadata.parquet")

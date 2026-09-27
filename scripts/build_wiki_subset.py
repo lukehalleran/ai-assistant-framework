@@ -7,7 +7,7 @@ builds a small FAISS index that fits in 16 GB RAM.
 
 Usage:
     # Stream from tar.zst (works before full build finishes):
-    python scripts/build_wiki_subset.py --from-tar /run/media/lukeh/T9/wiki_embeddings.tar.zst
+    python scripts/build_wiki_subset.py --from-tar "$WIKI_DATA_ROOT"/wiki_embeddings.tar.zst
 
     # Filter from full build output (faster, needs full build done):
     python scripts/build_wiki_subset.py --from-build
@@ -43,7 +43,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # ── Paths ──────────────────────────────────────────────────────────
-_DATA_ROOT = os.environ.get("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
+def _wiki_data_root() -> str:
+    """Parent of wiki_data/: env WIKI_DATA_ROOT, else config wiki.data_root
+    (owner path in config.local.yaml), else a neutral home default.
+    2026-09-27: no owner mount path in code (BC-59)."""
+    env = os.environ.get("WIKI_DATA_ROOT")
+    if env:
+        return os.path.expanduser(env)
+    try:
+        import config.app_config as app_config  # lazy import: startup-cost (standalone script; config only when env unset)
+        return app_config.WIKI_DATA_ROOT
+    except ImportError:
+        return os.path.expanduser("~/daemon-wiki-data")
+
+
+_DATA_ROOT = _wiki_data_root()
 _DEFAULT_OUT = os.path.join(_DATA_ROOT, "wiki_data_subset")
 _DEFAULT_TAR = os.path.join(_DATA_ROOT, "wiki_embeddings.tar.zst")
 _FULL_BUILD  = os.path.join(_DATA_ROOT, "wiki_data")

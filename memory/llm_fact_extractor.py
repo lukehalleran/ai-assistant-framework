@@ -65,6 +65,17 @@ Contract
   Evaluative pronoun/role subjects ("she is abusive") are re-scoped via
   scope_unresolved_referent to user-owned strings, never fuzzy-bound to a
   named entity. Output triples carry "stance"; gen max_tokens 900→1100.
+MESSAGE-TIME DATE RESOLUTION (2026-09-27, BC-58/BC-51): the prompt used to
+tell the LLM "today's date is <extraction time>" and resolve relative dates
+("tomorrow") itself — wrong whenever the shutdown run happens hours after the
+turn was said ("finish it tomorrow" at 21:13 on the 26th was resolved against
+the 27th, landing a day late). Each rendered message now carries its own
+turn timestamp (`- [Sat 2026-09-26 21:13] ...`), the prompt tells the model
+to copy relative words VERBATIM, and `_attach_source_excerpts` forwards the
+matched evidence's turn time as the triple's `timestamp` (joined via
+memory.fact_source's turn_id, falling back to extraction time — logged —
+only when unjoinable). `UserProfile.add_fact` then resolves the relative
+words against that real timestamp, not against now().
 """
 
 from __future__ import annotations
@@ -79,8 +90,20 @@ from utils.logging_utils import get_logger
 from memory.user_profile_schema import ProfileCategory, categorize_relation
 from collections import defaultdict
 from utils.ordered_slice import newest_first as _ordered_newest_first
+from utils.date_coerce import to_naive_local
+import utils.temporal_resolver as temporal_resolver
 
 logger = get_logger("llm_facts")
+
+
+class FactExtractionError(RuntimeError):
+    """The extraction LLM call failed or returned nothing parseable.
+
+    2026-09-27 (BC-47, owner-directed fix of two accepted-debt records):
+    extract_triples used to return ``[]`` here, which the shutdown pipeline
+    could not tell apart from "the session contained no facts". Raising lets
+    the caller's existing ``[SHUTDOWN-LLM-FAILURE]`` path report a LOST
+    extraction instead of a clean zero."""
 
 
 def _snake(s: str) -> str:
@@ -103,6 +126,39 @@ def _is_ephemeral_relation(rel: str) -> bool:
 def _is_boolean_noise(obj: str) -> bool:
     """Reject facts where the object is just 'true'/'false'/'yes'/'no'."""
     return obj.strip().lower() in {"true", "false", "yes", "no"}
+
+
+def _format_turn_timestamp(ts_val: Any) -> str | None:
+    """Best-effort render of a raw per-entry timestamp candidate (ISO string
+    or datetime) as ``"Sat 2026-09-26 21:13"`` for the prompt (2026-09-27,
+    BC-58). ``None`` when unparseable/absent — that one entry then renders
+    with no bracket, and date resolution for it falls back to extraction
+    time (an accepted, logged approximation; see _attach_source_excerpts)."""
+    if ts_val is None:
+        return None
+    if isinstance(ts_val, datetime):
+        dt = ts_val
+    else:
+        try:
+            dt = datetime.fromisoformat(str(ts_val))
+        except (ValueError, TypeError):
+            return None
+    return dt.strftime("%a %Y-%m-%d %H:%M")
+
+
+def _parse_turn_datetime(ts_val: Any) -> datetime | None:
+    """ISO string / datetime → naive-local datetime for date resolution
+    (2026-09-27, BC-58); None when absent or unparseable (caller → now())."""
+    if isinstance(ts_val, datetime):
+        dt = ts_val
+    elif ts_val:
+        try:
+            dt = datetime.fromisoformat(str(ts_val))
+        except (ValueError, TypeError):
+            return None
+    else:
+        return None
+    return to_naive_local(dt)
 
 
 def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
@@ -372,14 +428,23 @@ class LLMFactExtractor:
 
         msgs = []
         total = 0
-        for entry, _ts in ordered:  # newest first — oldest drop off
+        for entry, ts in ordered:  # newest first — oldest drop off
             if total + len(entry) + 10 > self.max_input_chars:
                 break
-            msgs.append(entry)
+            msgs.append((entry, ts))
             total += len(entry) + 10
         msgs.reverse()  # render chronologically
 
-        joined = "\n".join(f"- {m}" for m in msgs)
+        # 2026-09-27 (BC-58): prefix each line with the message's OWN
+        # timestamp so the model resolves a relative date ("tomorrow")
+        # against the moment it was SAID, not the moment this shutdown run
+        # happens to execute. No parseable timestamp for an entry → render
+        # it bare (see _format_turn_timestamp / _attach_source_excerpts).
+        rendered_lines = []
+        for entry, ts in msgs:
+            ts_str = _format_turn_timestamp(ts)
+            rendered_lines.append(f"- [{ts_str}] {entry}" if ts_str else f"- {entry}")
+        joined = "\n".join(rendered_lines)
 
         # Build existing facts section if provided
         existing_facts_section = ""
@@ -512,7 +577,7 @@ RULES:
 - Confidence: 0.9+ for direct statements, 0.7-0.8 for inferred, <0.7 for uncertain
 - Do NOT extract questions or hypotheticals
 - IMPORTANT: If the user introduces themselves, extract identity facts. A job title the user STATES ("I'm a nurse", "I work as a data analyst") is `occupation`; what they are building or doing is `works_on`. Never derive a role or title from an activity ("testing the app", "monitoring myself").
-- TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Monday", "the following day"), resolve them to absolute dates in the object field. Example: "I work tomorrow" on 2026-03-12 → object: "work on Thu 2026-03-13"
+- TEMPORAL: Each message above is timestamped [weekday YYYY-MM-DD HH:MM] — the moment the user actually said it. When the user mentions a relative date ("tomorrow", "next Monday", "the following day"), copy those words VERBATIM into the object field — do NOT resolve them to an absolute date yourself. A deterministic step downstream resolves them against THAT MESSAGE's own timestamp, not today and not whichever message happens to be newest. Example: message "[Sat 2026-09-26 21:13] I work tomorrow" → object: "work tomorrow" (leave "tomorrow" exactly as written; do not compute a date).
 - Do NOT extract transient/ephemeral state that changes constantly:
   * current_activity, current_mood, current_feeling, feeling, feels
   * woke_at, walked_to, showered, tidied, will_drive_to, greeting
@@ -525,7 +590,9 @@ USER MESSAGES (newest last):
 {messages}
 
 JSON:"""
-        today_str = datetime.now().strftime("%A, %Y-%m-%d")
+        # 2026-09-27: no more "today" anchor here — TEMPORAL resolution is
+        # per-message now (see the rule text above and _format_turn_timestamp),
+        # so extraction time never enters date resolution at all.
         # Learned relations: recurring non-core relations promoted from this
         # user's own history (memory.learned_relations) join the PREFER list
         # automatically — the vocabulary grows itself instead of waiting for
@@ -543,7 +610,6 @@ JSON:"""
             logger.debug(f"[LLM Facts] learned relations unavailable: {e}")
         prompt = prompt_template.format(
             messages=joined,
-            today=today_str,
             existing_facts=existing_facts_section,
             core_relations_text=", ".join(CORE_RELATIONS),
             learned_relations_line=learned_line,
@@ -574,12 +640,10 @@ JSON:"""
                 top_p=1.0,
             )
         except Exception as e:
-            logger.warning(f"[LLM Facts] generate_once failed: {e}")
-            return []
+            raise FactExtractionError(f"generate_once failed: {e}") from e
 
         if not isinstance(text, str) or not text.strip():
-            logger.warning("[LLM Facts] generate_once returned empty or non-string response")
-            return []
+            raise FactExtractionError("generate_once returned an empty or non-string response")
 
         # Log the raw response for debugging
         logger.info(f"[LLM Facts] Raw LLM response: {text[:500]}")
@@ -589,8 +653,7 @@ JSON:"""
 
         # Check for stub response indicating API client issue
         if raw.startswith("[API unavailable]"):
-            logger.warning(f"[LLM Facts] API client not available - got stub response: {raw[:100]}")
-            return []
+            raise FactExtractionError(f"API client not available (stub response): {raw[:100]}")
 
         try:
             start = raw.find("[")
@@ -598,15 +661,12 @@ JSON:"""
             if start >= 0 and end > start:
                 raw = raw[start:end + 1]
             else:
-                logger.warning(f"[LLM Facts] No JSON array found in response: {text[:200]}")
-                return []
+                raise FactExtractionError(f"no JSON array in response: {text[:200]}")
             data = json.loads(raw)
-            if not isinstance(data, list):
-                logger.warning(f"[LLM Facts] JSON parsed but not a list: {type(data)}")
-                return []
-        except Exception as e:
-            logger.warning(f"[LLM Facts] JSON parse failed: {e} - Response was: {text[:200]}")
-            return []
+        except json.JSONDecodeError as e:
+            raise FactExtractionError(f"JSON parse failed: {e} - response was: {text[:200]}") from e
+        if not isinstance(data, list):
+            raise FactExtractionError(f"JSON parsed but not a list: {type(data).__name__}")
 
         triples: List[Dict[str, str]] = []
         seen = set()
@@ -691,5 +751,29 @@ JSON:"""
                 triple["event_date"] = evidence.event_date
             if evidence.observed_at:
                 triple["observed_at"] = evidence.observed_at
+            # E3 (2026-09-27, BC-58/BC-51): the stored fact's timestamp is
+            # the SOURCE MESSAGE's own turn time, not shutdown extraction
+            # time — UserProfile.add_fact resolves any relative date word
+            # left in the object ("tomorrow") against exactly this value.
+            # Only trust it when the provenance join actually found a real
+            # turn_id; with no turn to anchor to, fall back to the caller's
+            # extraction-time default (leave "timestamp" unset) and log it.
+            _ref_dt = None
+            if evidence.turn_id:
+                triple["timestamp"] = evidence.observed_at
+                _ref_dt = _parse_turn_datetime(evidence.observed_at)
+            else:
+                logger.info(
+                    f"[LLM Facts] No source turn timestamp for "
+                    f"{triple.get('relation')}={triple.get('object', '')[:60]!r}; "
+                    f"fact timestamp falls back to extraction time"
+                )
+            # Resolve the verbatim relative words HERE, once, so every
+            # consumer of the triple (facts-collection text, graph edge,
+            # profile) sees the same absolute date — not only add_fact.
+            _obj = triple.get("object", "")
+            if _obj and temporal_resolver.has_temporal_reference(_obj):
+                triple["object"] = temporal_resolver.resolve_temporal_references(
+                    _obj, reference_date=_ref_dt or datetime.now())
             kept.append(triple)
         triples[:] = kept

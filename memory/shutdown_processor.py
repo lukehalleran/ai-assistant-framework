@@ -43,7 +43,15 @@ Module Contract
     2026-08-23: forwards each triple's "stance" and a capture_tone derived by
     _capture_tone_for_triple (joins the triple's object/subject back to the
     session corpus entry's is_heavy_topic flag; unmatched → "unknown") into
-    fact metadata + graph edge metadata
+    fact metadata + graph edge metadata;
+    2026-09-27 (E3, BC-58): conv_pairs are stamped with each turn's own
+    "turn_id" so LLMFactExtractor can render per-message timestamps and
+    resolve relative dates ("tomorrow") against the message's own time, not
+    shutdown-extraction time; each surviving triple's "timestamp" (the
+    matched source message's turn time) is forwarded to both ChromaDB and
+    UserProfile.add_fact, which resolves the relative word deterministically
+    against it — falls back to extraction time (logged) only when the
+    provenance join found no turn_id to anchor to
   - _extract_behavioral_patterns(session_conversations) — cross-turn habit detection;
     single LLM call identifies recurring cross-domain behaviors the user exhibits
     but never states explicitly (e.g., "codes at the gym"). Stores as profile facts.
@@ -809,6 +817,13 @@ class ShutdownProcessor:
                 for _pk in ("source_role", "source_turn_id", "source_support", "source_anchor"):
                     if t.get(_pk) not in (None, ""):
                         src_dict[_pk] = str(t[_pk])[:80]
+                # E3 (2026-09-27, BC-58): the triple's own turn time (set by
+                # LLMFactExtractor._attach_source_excerpts from the matched
+                # source message, never shutdown extraction time) overrides
+                # chroma_store.add_fact's default now()-stamp, same as the
+                # profile-facts path below (add_facts_batch reads this key).
+                if t.get("timestamp"):
+                    src_dict["timestamp"] = t["timestamp"]
                 if t.get("source_turn_index") is not None:
                     try:
                         src_dict["source_turn_index"] = int(t["source_turn_index"])

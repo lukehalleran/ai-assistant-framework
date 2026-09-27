@@ -4386,6 +4386,10 @@ async def _run_agentic_search(ctx):
         _gate_modes = getattr(_gate_decision, "modes", []) or []
         _gate_forced_action = getattr(_gate_decision, "forced_action", None)
         _forced_action = registry.detect_action_intent(user_text_ws) or _gate_forced_action
+        # Tool-thread continuation (2026-09-27, BC-58/BC-74/BC-04/BC-15):
+        # threaded to the controller the same way forced_action is above —
+        # see core.agentic.tool_thread and gate._prior_tool_followup.
+        _gate_tool_continuation = getattr(_gate_decision, "tool_continuation", None)
         _fastpath_ok = (
             app_config.AGENTIC_FETCH_FASTPATH
             and ((bool(_url_in_current_msg) and _remainder_words <= 12)
@@ -4395,6 +4399,7 @@ async def _run_agentic_search(ctx):
             and not getattr(_gate_decision, "self_note_intent", None)
             and not getattr(_gate_decision, "insight_intent", None)
             and not _forced_action
+            and not _gate_tool_continuation
         )
 
         # Run agentic search loop with RAG context
@@ -4417,6 +4422,7 @@ async def _run_agentic_search(ctx):
             gate_modes=_gate_modes,
             forced_action=_gate_forced_action,
             action_query_ws=user_text_ws,
+            tool_continuation=_gate_tool_continuation,
         )
 
         async def _agentic_next():
