@@ -426,11 +426,18 @@ async def _handle_api_key(
         if not orchestrator.model_manager.reinitialize_clients(key):
             raise Exception("Failed to initialize API clients")
 
+        # 2026-09-27 (BC-89): if the user picks a reasoning-capable model
+        # later, a small max_tokens budget without disable_reasoning can be
+        # spent entirely in the reasoning channel, returning empty — which
+        # this smoke test already treats as failure below, but for the wrong
+        # reason ("key didn't work" instead of "model needs headroom").
+        # Headroom + disable_reasoning=True forces the visible "OK" through.
         test_response = await orchestrator.model_manager.generate_once(
             prompt="Say 'OK' if you can read this.",
             model_name="gpt-4o-mini",
-            max_tokens=10,
-            temperature=0.0
+            max_tokens=64,
+            temperature=0.0,
+            disable_reasoning=True,
         )
 
         if not test_response or not test_response.strip():
@@ -682,15 +689,21 @@ Or type **skip** if you don't want to use Obsidian."""
 
 
 def _get_wiki_index_prompt() -> str:
-    """Get the Wikipedia knowledge index prompt message."""
+    """Get the Wikipedia knowledge index prompt message.
+
+    2026-09-27 (BC-71): this used to spell out a fake
+    ``github.com/lukeh/daemon/releases`` URL — the real repository has a
+    different owner/name and the wizard's own value drifted from it. Point at
+    the Releases page generically instead of hardcoding a path that can go
+    stale again.
+    """
     return """**Optional: Wikipedia Knowledge Base**
 
 This is a big one. I can tap into a **pre-built index of 6.5 million Wikipedia articles** (40 million semantic vectors) to draw on real-world knowledge when answering your questions — science, history, people, concepts, current events, and more.
 
 Without this, I still work great using the LLM's built-in knowledge. But with the index, I can **cite specific sources**, make **cross-domain connections** between your personal knowledge and the wider world, and give much more grounded, factual answers.
 
-The index is a separate ~2GB download. You can get it from the **Daemon GitHub Releases page**:
-**github.com/lukeh/daemon/releases** — look for `daemon-wiki-index-v1.zip`
+The index is a separate ~2GB download. You can get it from the project's **GitHub Releases page** — look for `daemon-wiki-index-v1.zip`.
 
 Download it, extract the folder somewhere, and paste the **full path** below (e.g. `C:\\Users\\You\\daemon-wiki-index`).
 

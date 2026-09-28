@@ -8,6 +8,9 @@ Purpose:
       - OPENAI_API_KEY missing/placeholder → WARNING (chat will return
         [AUTH ERROR]; local-model setups are legitimate, so not fatal)
       - TAVILY_API_KEY missing             → NOTE (web search disabled)
+      - Google token expired, no refresh   → WARNING (2026-09-27, BC-47,
+        BC-58, BC-70, BC-72: disk-only check, no network — every downstream
+        Gmail/Calendar/Contacts read would otherwise silently read empty)
       - spaCy en_core_web_sm missing       → NOTE (fact extraction degrades
         to regex-only; core paths already guard this lazily)
 
@@ -95,6 +98,30 @@ def _check_web_search_key(result: PreflightResult) -> None:
         )
 
 
+def _check_google_token(result: PreflightResult) -> None:
+    """Disk-only: an existing Google token file that is expired with no
+    refresh token cannot recover itself — every downstream Gmail/Calendar/
+    Contacts read would otherwise silently return no results until the
+    owner re-authorizes. `token_expired_no_refresh` is documented disk-only
+    (no network call), matching this module's startup-safety contract.
+    2026-09-27 (BC-47, BC-58, BC-70, BC-72)."""
+    try:
+        from core.actions.google_auth import get_google_auth  # lazy import: patch-point
+    except ImportError:
+        return
+
+    auth = get_google_auth()
+    if auth is None:
+        return  # not configured — nothing to check
+
+    if auth.token_expired_no_refresh:
+        result.warnings.append(
+            "Google token file exists but is expired with no refresh token — "
+            "Gmail/Calendar/Contacts reads will silently return no results "
+            "until you re-authorize: python scripts/reauth_google.py"
+        )
+
+
 def _check_spacy_model(result: PreflightResult) -> None:
     # The model installs as an importable package; find_spec avoids the
     # cost of importing spaCy itself here.
@@ -112,7 +139,7 @@ def run_preflight() -> PreflightResult:
     """Run all startup checks. Never raises; returns findings."""
     result = PreflightResult()
     for check in (_check_data_dir_writable, _check_llm_key,
-                  _check_web_search_key, _check_spacy_model):
+                  _check_web_search_key, _check_google_token, _check_spacy_model):
         try:
             check(result)
         except Exception as e:  # a broken check must not block startup itself

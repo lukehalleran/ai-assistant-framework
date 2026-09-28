@@ -236,10 +236,17 @@ _DELIBERATION_OPERATION_RE = re.compile(
 # elsewhere in the sentence. The personal anchor is still mandatory (record
 # noun family only, not the free-standing analysis/assessment/comparison
 # family _PERSONAL_RECORD_RE also recognizes).
+# 2026-09-27 (BC-03, sibling of the 09-08 F4 fix on
+# _IMPLICIT_PERSONAL_COMPARISON_RE): `.{0,N}` with DOTALL let this span cross
+# a sentence boundary and land its verb requirement in the NEXT sentence —
+# a personal-record anchor with no operation verb anywhere in ITS OWN
+# sentence could still match off a "shows"/"says" elsewhere in the message.
+# `[^.?!\n]{0,60}` (no DOTALL) keeps the window inside one sentence, same as
+# _IMPLICIT_PERSONAL_COMPARISON_RE.
 _RECORD_ESTABLISHES_RE = re.compile(
     r"\bwhat\s+(?:my|our)\s+(?:record|history|notes?|data|corpus|messages?|logs?)\b"
-    r".{0,60}\b(?:establish\w*|show\w*|says?|indicat\w+|support\w*|suggest\w*|can\s+tell)\b",
-    re.IGNORECASE | re.DOTALL,
+    r"[^.?!\n]{0,60}\b(?:establish\w*|show\w*|says?|indicat\w+|support\w*|suggest\w*|can\s+tell)\b",
+    re.IGNORECASE,
 )
 _NON_INSIGHT_LOOKUP_RE = re.compile(
     r"^\s*(?:how\s+many\s+times\s+has\b|"
@@ -268,14 +275,20 @@ _IMPLICIT_PERSONAL_COMPARISON_RE = re.compile(
     r"\bwhat\s+tends?\s+to\s+happen\s+when\s+i\b",
     re.IGNORECASE,
 )
+# 2026-09-27 (BC-03, sibling of the 09-08 F4 fix): same DOTALL-span-crosses-
+# sentences defect as _RECORD_ESTABLISHES_RE above — a personal-record noun
+# in one sentence and an external-source noun in an unrelated LATER sentence
+# used to satisfy this "mixed personal+external evidence" test. Both arms now
+# use `[^.?!\n]{0,180}` (no DOTALL) so the pairing must sit in the same
+# sentence.
 _PERSONAL_PLUS_EXTERNAL_RE = re.compile(
     r"\b(?:history|record|notes?|data|everything\s+i(?:'ve|\s+have)\s+said)\b"
-    r".{0,180}\b(?:pub\s*med|wikipedia|wiki|web|internet|research|stud(?:y|ies)|"
+    r"[^.?!\n]{0,180}\b(?:pub\s*med|wikipedia|wiki|web|internet|research|stud(?:y|ies)|"
     r"literature|arxiv|wolfram)\b|"
     r"\b(?:pub\s*med|wikipedia|wiki|web|internet|research|stud(?:y|ies)|"
-    r"literature|arxiv|wolfram)\b.{0,180}"
+    r"literature|arxiv|wolfram)\b[^.?!\n]{0,180}"
     r"\b(?:my\s+)?(?:history|record|notes?|data)\b",
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
 
 

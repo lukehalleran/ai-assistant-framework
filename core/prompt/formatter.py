@@ -889,6 +889,20 @@ class PromptFormatter:
             know_parts.append(f"obsidian={_on_off(getattr(cfg, 'OBSIDIAN_ENABLED', False))}{obs_suffix}")
             ref_docs = context.get("reference_docs", []) or []
             know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{_suffix('reference_docs', ref_docs)}")
+            # Wiki semantic index (FAISS) — 2026-09-27 (BC-70): a missing/
+            # unmounted external index is a process-wide DISABLED state, not
+            # a per-turn failure. `_get_semantic_chunks` (gatherer_knowledge.py)
+            # reports this exact state via reason "index_not_loaded" whether
+            # it short-circuited on `index_available()` or a real search
+            # call found the index absent — either way this renders the same
+            # dedicated label instead of repeating "Could not check this
+            # turn: semantic" forever for what is really an OFF switch (the
+            # generic catch-all below still applies to a genuine transient
+            # semantic failure, e.g. "timeout"/"in_flight").
+            _sem_outcome = outcomes.get("semantic")
+            if isinstance(_sem_outcome, dict) and _sem_outcome.get("reason") == "index_not_loaded":
+                shown_names.add("semantic")
+                know_parts.append("semantic=OFF(index not found)")
             web_enabled = bool(getattr(cfg, "WEB_SEARCH_ENABLED", False))
             web_label = _on_off(web_enabled)
             if web_enabled:
@@ -938,7 +952,30 @@ class PromptFormatter:
                 and info.get("status") in ("failed", "unavailable")
             )
             if not_checked_others:
-                lines.append("Could not check this turn: " + ", ".join(not_checked_others))
+                # 2026-09-27 (BC-47, BC-58, BC-70, BC-72): "relevant_emails"
+                # is the ONE name here allowed to carry its reason — that
+                # reason comes from registry.provider_coverage()'s CURATED,
+                # human-safe vocabulary (already meant to reach the model —
+                # the [RELEVANT EMAILS] section renders the same text),
+                # never the raw `_section_outcomes` reason/exception string
+                # every other name here carries (which must stay unrendered
+                # — see test_reason_labels_never_appear_in_output).
+                _rendered = []
+                for _name in not_checked_others:
+                    if _name == "relevant_emails":
+                        try:
+                            from core.email.registry import provider_coverage  # lazy import: cycle
+                            _failed = provider_coverage().get("failed") or {}
+                        except Exception:
+                            # degrades: a broken coverage lookup falls back to
+                            # the bare catch-all name (pre-existing shape),
+                            # losing the reason annotation for this turn only.
+                            _failed = {}
+                        if _failed:
+                            _rendered.append(f"{_name} ({'; '.join(_failed.values())})")
+                            continue
+                    _rendered.append(_name)
+                lines.append("Could not check this turn: " + ", ".join(_rendered))
 
             return "\n".join(lines)
 
@@ -1738,7 +1775,23 @@ class PromptFormatter:
 
         # Relevant emails from Gmail/Outlook (cue-gated + distress-suppressed)
         relevant_emails = context.get("relevant_emails", []) or []
-        if relevant_emails:
+        _email_outcome = (context.get("_section_outcomes") or {}).get("relevant_emails")
+        _email_search_failed = (
+            isinstance(_email_outcome, dict)
+            and _email_outcome.get("status") in ("failed", "unavailable")
+        )
+        if not relevant_emails and _email_search_failed:
+            # 2026-09-27 (BC-47, BC-58, BC-70, BC-72): a failed fetch (e.g. a
+            # revoked/expired token) must not read the same as a genuine
+            # empty inbox — render the failure instead of staying silent.
+            _reason = (_email_outcome.get("reason") or "").strip() or "search could not run"
+            sections.append(
+                f"[RELEVANT EMAILS] n=0\n"
+                f"Email search FAILED this turn ({_reason}). No messages were "
+                "retrieved — this is NOT the same as an empty inbox; tell the "
+                "user the search could not run rather than that nothing was found."
+            )
+        elif relevant_emails:
             email_lines: list[str] = []
             for i, email in enumerate(relevant_emails, start=1):
                 date_str = email.get("date", "")[:10]  # ISO date only

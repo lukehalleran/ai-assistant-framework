@@ -573,14 +573,22 @@ class ProposalFilter:
             )
 
             try:
+                # 2026-09-27 (BC-89): a reasoning-capable model can spend a
+                # tiny max_tokens budget entirely in its reasoning channel and
+                # return an empty string; `"A" in choice` on an empty string
+                # is False, so the call SUCCEEDS and `b` silently wins every
+                # comparison instead of raising into the fallback below.
+                # Headroom + disable_reasoning=True forces the visible letter
+                # through.
                 response = await self._model_manager.generate_once(
                     prompt,
                     model_name=CODE_PROPOSALS_LLM_RANKING_MODEL,
                     system_prompt="You are a senior software architect evaluating proposals. Be concise.",
-                    max_tokens=4,
+                    max_tokens=64,
                     temperature=0.1,
+                    disable_reasoning=True,
                 )
-                choice = response.strip().upper()
+                choice = (response or "").strip().upper()
                 winner = a if "A" in choice else b
             except Exception as e:
                 logger.warning(f"[ProposalFilter] LLM pairwise comparison failed: {e}")

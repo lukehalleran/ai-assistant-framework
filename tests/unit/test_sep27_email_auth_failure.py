@@ -436,7 +436,7 @@ class TestExecuteEmailSearchFailedText:
 
         ex = ToolExecutor.__new__(ToolExecutor)
         return asyncio.run(
-            ToolExecutor._execute_email_search(ex, "Aidvantage. Search that", 60))
+            ToolExecutor._execute_email_search(ex, "Northwind. Search that", 60))
 
     def test_auth_failure_never_reads_as_empty_inbox(self, monkeypatch):
         out = self._run(
