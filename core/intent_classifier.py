@@ -257,6 +257,58 @@ _PROFILES: Dict[IntentType, dict] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Sentence-scoped temporal-adverb recall check (2026-09-27, BC-04)
+# ═══════════════════════════════════════════════════════════════════════════
+# The TEMPORAL_RECALL adverb pattern below (formerly a single whole-message
+# regex) required a question cue ('?' or a recall word) ANYWHERE in the
+# message and a temporal adverb ANYWHERE in the message — never that they
+# share a sentence. re.DOTALL let '.*' span sentence breaks, so a '?' ending
+# an unrelated LATER sentence satisfied the lookahead: "agi last year super
+# low. Definitely under 20k I would say?" classified temporal_recall@0.85 off
+# the adverb in sentence 1 and the '?' in sentence 2. Both must now fall in
+# the SAME sentence.
+_TEMPORAL_ADVERB_CUE_RE = re.compile(
+    r"\?|\b(?:remember|recall|remind|what (?:did|were|was|happened)"
+    r"|when (?:did|was|were)|how long|did (?:i|we|you)|have (?:i|we)|was it)\b",
+    re.IGNORECASE,
+)
+_TEMPORAL_ADVERB_PHRASE_RE = re.compile(
+    r"\b(?:last (?:week|month|time|session|night|year)|yesterday"
+    r"|a few (?:days|weeks|months) ago|earlier today|the other day)\b",
+    re.IGNORECASE,
+)
+# Sentence terminator (keeps the punctuation with the sentence it ends, so a
+# trailing '?' stays attached to ITS sentence, not the one before it) or a
+# newline (a pasted multi-line message has no terminating punctuation at all).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _temporal_adverb_recall_shaped(text: str) -> bool:
+    """True when some SINGLE sentence of `text` carries both a recall/
+    question cue and a temporal adverb phrase — the sentence-scoped
+    replacement for the old whole-message lookahead (see module comment
+    above)."""
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        if not sentence:
+            continue
+        if _TEMPORAL_ADVERB_CUE_RE.search(sentence) and _TEMPORAL_ADVERB_PHRASE_RE.search(sentence):
+            return True
+    return False
+
+
+class _CallablePattern:
+    """Minimal `.search()` shim so a Python-level predicate can sit in the
+    `_PATTERNS` list next to compiled regexes — the classify() loop only
+    calls `pattern.search(text)` and checks the result for truthiness."""
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def search(self, text: str):
+        return text if self._fn(text) else None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Regex Pattern Bank
 # ═══════════════════════════════════════════════════════════════════════════
 # Each entry: (compiled_regex, IntentType, confidence_boost)
@@ -340,14 +392,9 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
     # profile pulled 20 turns + 8 summaries into a pet anecdote. They count
     # only when the message is question/recall-shaped; the inherently-recall
     # cues below are unchanged.
-    _add(
-        r"^(?=.*(?:\?|\b(?:remember|recall|remind|what (?:did|were|was|happened)"
-        r"|when (?:did|was|were)|how long|did (?:i|we|you)|have (?:i|we)|was it)\b))"
-        r".*\b(last (week|month|time|session|night|year)|yesterday"
-        r"|a few (days|weeks|months) ago|earlier today|the other day)\b",
-        IntentType.TEMPORAL_RECALL, 0.85,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
+    # Sentence-scoped (2026-09-27, BC-04): a callable predicate, not a single
+    # whole-message regex — see _temporal_adverb_recall_shaped above for why.
+    patterns.append((_CallablePattern(_temporal_adverb_recall_shaped), IntentType.TEMPORAL_RECALL, 0.85))
     _add(
         r"\b(remember when|what (did|were) we (talk|discuss|chat)"
         r"|what have (i|we) been|(my|our|chat|conversation|message) history"
@@ -359,6 +406,15 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         r"|(my|our) \w+( \w+)? (over time|progression)"
         r"|how (has|have|did) (my|our) .{0,40}(changed?|progress(ed)?|trended?) over time"
         r"|how (long|much) (have|has) (i|we|my|our|it been)|used to)\b",
+        IntentType.TEMPORAL_RECALL, 0.85,
+    )
+    # Wh-time question about the user's OWN past act (2026-09-27, BC-46,
+    # BC-30) — a grammatical shape, not a phrase list. Live: "what time did i
+    # sit down" classified GENERAL (no recall pattern covered "what time"),
+    # so [RECENT CONVERSATION]'s 10-turn window was answered from its own
+    # truncated edge instead of routing to the session-truth/timeline fix.
+    _add(
+        r"^(?:.*\b)?(?:what time|when) (?:did|do|was|were|have) (?:i|we)\b",
         IntentType.TEMPORAL_RECALL, 0.85,
     )
 

@@ -248,16 +248,14 @@ class UserProfile:
         if relation != original_relation:
             logger.debug(f"[UserProfile] Canonicalized relation: {original_relation} → {relation}")
 
-        # Resolve relative temporal references ("tomorrow" → "Thu 2026-03-13")
-        if temporal_resolver.has_temporal_reference(value):
-            ref_date = timestamp if isinstance(timestamp, datetime) else datetime.now()
-            value = temporal_resolver.resolve_temporal_references(value, reference_date=ref_date)
-
-        # Re-categorize after canonicalization (unless explicitly provided)
-        if category is None:
-            category = categorize_relation(relation)
-
-        # Use provided timestamp or default to now
+        # Use provided timestamp or default to now. Parsed BEFORE the
+        # relative-reference resolution below (2026-09-27, BC-58): a caller
+        # forwarding an ISO STRING (e.g. the shutdown LLM extractor's source-
+        # message time) used to reach the isinstance(timestamp, datetime)
+        # check below still as a str, so a relative word ("tomorrow") in the
+        # value silently resolved against extraction time (now()) instead of
+        # the message's own time — correct only by accident for callers that
+        # already passed a datetime object.
         if timestamp is None:
             timestamp = datetime.now()
         elif isinstance(timestamp, str):
@@ -266,6 +264,15 @@ class UserProfile:
                 timestamp = datetime.fromisoformat(timestamp)
             except (ValueError, AttributeError):
                 timestamp = datetime.now()
+
+        # Resolve relative temporal references ("tomorrow" → "Thu 2026-03-13")
+        if temporal_resolver.has_temporal_reference(value):
+            ref_date = timestamp if isinstance(timestamp, datetime) else datetime.now()
+            value = temporal_resolver.resolve_temporal_references(value, reference_date=ref_date)
+
+        # Re-categorize after canonicalization (unless explicitly provided)
+        if category is None:
+            category = categorize_relation(relation)
 
         # Deterministic stance backstop: even when the caller passes none, a
         # thick-evaluative value on a user fact is an appraisal (single source

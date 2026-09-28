@@ -10,7 +10,8 @@ Module Contract
     Full-featured prompt assembler (moved from UnifiedPromptBuilder). Assembles all sections
     into final prompt string with numbered entries, timestamp-first formatting, web citation IDs,
     feature inventory, codebase changes, STM summary, and eval snapshot capture.
-    Section order: RECENT CONVERSATION → RELEVANT MEMORIES → RECENT SUMMARIES →
+    Section order: RECENT CONVERSATION → EARLIER TODAY (temporal_recall only) →
+    RELEVANT MEMORIES → RECENT SUMMARIES →
     SEMANTIC SUMMARIES → RECENT REFLECTIONS → SEMANTIC REFLECTIONS → BACKGROUND KNOWLEDGE →
     WEB SEARCH RESULTS → RELEVANT INFORMATION → DREAMS → USER'S PERSONAL NOTES →
     USER UPLOADED ITEMS → VISUAL MEMORIES → DAEMON DOCUMENTATION → PROJECT COMMIT HISTORY →
@@ -214,8 +215,17 @@ def _format_summary_section(items: list, header: str, apply_staleness: bool = Tr
 # Session boundary detection for conversation rendering
 # ---------------------------------------------------------------------------
 
+# Single source for the session-boundary gap (2026-09-27, BC-46/BC-51):
+# builder.py's session-truth probe (how far back the CURRENT session
+# actually started, beyond the [RECENT CONVERSATION] display window) must
+# apply the EXACT same rule the render loop below uses, or the two could
+# disagree about where a session starts.
+SESSION_BOUNDARY_GAP_HOURS = 2.0
+
+
 def _detect_session_boundary(
-    ts_prev: Optional[datetime], ts_current: Optional[datetime], gap_hours: float = 2.0
+    ts_prev: Optional[datetime], ts_current: Optional[datetime],
+    gap_hours: float = SESSION_BOUNDARY_GAP_HOURS,
 ) -> bool:
     """
     Detect whether two consecutive conversation entries cross a session boundary.
@@ -264,7 +274,10 @@ def _session_time_span(span: Optional[tuple]) -> str:
         return ""
 
 
-def _format_session_header(ts: datetime, span: Optional[tuple] = None) -> str:
+def _format_session_header(
+    ts: datetime, span: Optional[tuple] = None,
+    truncation: Optional[tuple] = None,
+) -> str:
     """
     Format a session boundary header with relative day label.
 
@@ -273,9 +286,21 @@ def _format_session_header(ts: datetime, span: Optional[tuple] = None) -> str:
     day stay distinguishable (2026-09-05: a 16:06 turn and the 11:16–13:45
     block both rendered "--- Session: Today (Sat, Sep 5) ---").
 
+    ``truncation`` = (shown_n, total_n, started_at) (2026-09-27, BC-46/
+    BC-51): the [RECENT CONVERSATION] window is a DISPLAY cap (config
+    ``prompt_max_recent``), not a session boundary — when builder.py's probe
+    found more turns in this (still-open) session than fit the window, the
+    window's oldest SHOWN entry is only the window's edge, not the session's
+    actual start. Renders "showing the last N of M turns (session began
+    HH:MM)" instead of the span suffix, so the model is never left presenting
+    the edge as the start (09-26 21:05 "what time did i sit down" answered
+    from a 10-turn window that began at 20:42, missing an 18:23 entry two
+    hours earlier in the SAME session).
+
     Examples:
         --- Session: Today (Sat, May 17) ---
         --- Session: Today (Sat, May 17), 11:16–13:45 ---
+        --- Session: Today (Sat, Sep 26), showing the last 10 of 70 turns (session began 18:23) ---
         --- Session: Yesterday (Fri, May 16) ---
         --- Session: 3 days ago (Wed, May 14) ---
     """
@@ -287,16 +312,26 @@ def _format_session_header(ts: datetime, span: Optional[tuple] = None) -> str:
         # and the date for the header
         day_name = ts.strftime("%a, %b %-d")
         if "(today)" in rel.lower():
-            return f"--- Session: Today ({day_name}){suffix} ---"
+            day_label = "Today"
         elif "(yesterday)" in rel.lower():
-            return f"--- Session: Yesterday ({day_name}){suffix} ---"
+            day_label = "Yesterday"
         else:
             # Extract "N days ago" from the relative label
             import re
             m = re.search(r'\((\d+\s+days?\s+ago)\)', rel, re.IGNORECASE)
-            if m:
-                return f"--- Session: {m.group(1).capitalize()} ({day_name}){suffix} ---"
-            return f"--- Session: {day_name}{suffix} ---"
+            day_label = m.group(1).capitalize() if m else None
+
+        if truncation:
+            shown_n, total_n, started_at = truncation
+            started_str = started_at.strftime("%H:%M") if started_at else "an earlier time"
+            prefix = f"{day_label} ({day_name})" if day_label else day_name
+            return (
+                f"--- Session: {prefix}, showing the last {shown_n} of "
+                f"{total_n} turns (session began {started_str}) ---"
+            )
+        if day_label:
+            return f"--- Session: {day_label} ({day_name}){suffix} ---"
+        return f"--- Session: {day_name}{suffix} ---"
     except Exception:
         return f"--- Session: {ts.strftime('%Y-%m-%d') if ts else 'Unknown'} ---"
 
@@ -538,8 +573,20 @@ class PromptFormatter:
             pass  # Personality file not found or unreadable
         return ""
 
-    def _get_time_context(self) -> str:
-        """Get current time context for the prompt."""
+    def _get_time_context(
+        self,
+        session_started_at: Optional[datetime] = None,
+        session_turns_total: Optional[int] = None,
+    ) -> str:
+        """Get current time context for the prompt.
+
+        ``session_started_at``/``session_turns_total`` (2026-09-27, BC-46/
+        BC-51): when builder.py has probed the CURRENT session's true start
+        + turn count (beyond the [RECENT CONVERSATION] display window), say
+        so here too — this was the model's only other honest signal for
+        "how long have we been at this", and without it the truncated
+        window's edge read as the whole story.
+        """
         now = datetime.now()
         lines = [f"Current time: {now.strftime('%A, %Y-%m-%d %H:%M:%S')}"]
 
@@ -549,6 +596,12 @@ class PromptFormatter:
             time_since_session = self.time_manager.elapsed_since_last_session()
             lines.append(f"Time since last message: {time_since_msg}")
             lines.append(f"Time since last session: {time_since_session}")
+
+        if session_started_at and session_turns_total:
+            lines.append(
+                f"Current session began: {session_started_at.strftime('%a %H:%M')} "
+                f"({session_turns_total} turns so far)"
+            )
 
         return "\n".join(lines)
 
@@ -1029,6 +1082,15 @@ class PromptFormatter:
             _spans = _session_spans(recent)
         except Exception:
             _spans = {}
+        # Session-truth (2026-09-27, BC-46/BC-51): the render window above is
+        # a DISPLAY cap, not a session boundary — when builder.py's probe
+        # found more turns in the CURRENT (still-open) session than fit the
+        # window, the FIRST header (the block containing the newest, most
+        # recent turn) must say so instead of presenting the window's oldest
+        # SHOWN entry as the session start.
+        _recent_truncated = bool(context.get("recent_window_truncated"))
+        _session_total = context.get("session_turns_total")
+        _session_started = context.get("session_started_at")
         for i, mem in enumerate(recent, start=1):
             content, ts_str = mem_parts(mem)
             if i <= 3 or i > len(recent) - 3:
@@ -1038,7 +1100,12 @@ class PromptFormatter:
             entry_ts = _parse_entry_timestamp(mem)
             if _detect_session_boundary(prev_ts, entry_ts):
                 if entry_ts:
-                    recent_lines.append(_format_session_header(entry_ts, span=_spans.get(i)))
+                    if i == 1 and _recent_truncated and _session_total:
+                        recent_lines.append(_format_session_header(
+                            entry_ts, truncation=(len(recent), _session_total, _session_started),
+                        ))
+                    else:
+                        recent_lines.append(_format_session_header(entry_ts, span=_spans.get(i)))
             if entry_ts:
                 prev_ts = entry_ts
 
@@ -1046,6 +1113,17 @@ class PromptFormatter:
         if recent_lines:
             logger.debug(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len([l for l in recent_lines if not l.startswith('---')])} formatted entries")
             sections.append(f"[RECENT CONVERSATION] n={len([l for l in recent_lines if not l.startswith('---')])}\n" + "\n\n".join(recent_lines))
+
+        # Earlier-today recall timeline (2026-09-27, BC-46/BC-30): builder.py
+        # only populates this key for a temporal_recall-shaped query — one
+        # line per same-day USER turn the truncated window above dropped, so
+        # a recall question isn't answered from the window's edge.
+        session_timeline = context.get("session_timeline") or []
+        if session_timeline:
+            sections.append(
+                f"[EARLIER TODAY — your messages not shown above] n={len(session_timeline)}\n"
+                + "\n".join(session_timeline)
+            )
 
         # Relevant memories
         memories = context.get("memories", []) or []
@@ -1763,7 +1841,9 @@ class PromptFormatter:
 
         # Time context
         # MOVED: Placed here (right before STM and query) for temporal grounding with high attention
-        time_ctx = self._get_time_context()
+        time_ctx = self._get_time_context(
+            context.get("session_started_at"), context.get("session_turns_total"),
+        )
         if time_ctx:
             sections.append(f"[TIME CONTEXT]\n{time_ctx}")
 

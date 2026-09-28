@@ -36,6 +36,7 @@ except Exception:
 
 from utils.logging_utils import get_logger
 from utils.retrieval_outcome import OutcomeList
+import config.app_config as app_config
 logger = get_logger("knowledge.semantic_search")
 
 # ------------------------
@@ -43,7 +44,7 @@ logger = get_logger("knowledge.semantic_search")
 # ------------------------
 EMBED_MODEL = os.getenv("SEM_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-_DATA_ROOT = os.getenv("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
+_DATA_ROOT = app_config.WIKI_DATA_ROOT  # 2026-09-27: config-owned (BC-59/BC-88), no owner path in code
 INDEX_PATH = os.getenv("FAISS_INDEX_PATH", os.path.join(_DATA_ROOT, "wiki_data", "vector_index_ivf.faiss"))
 META_PATH = os.getenv("FAISS_META_PATH", os.path.join(_DATA_ROOT, "wiki_data", "metadata.parquet"))
 

@@ -100,6 +100,7 @@ Module Contract
 import logging
 import os
 import re
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 import re as _re_gate
@@ -109,6 +110,8 @@ from utils.trigger_match import compile_keyword_matcher as _compile_keyword_matc
 from utils.trigger_match import find_hits as _find_trigger_hits
 from utils.trigger_match import is_negated as _trigger_is_negated
 from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
+from utils.date_coerce import to_naive_local as _to_naive_local
+from core.agentic import tool_thread
 
 logger = logging.getLogger("agentic_gate")
 
@@ -165,6 +168,18 @@ class AgenticDecision:
     # routed then; this records the unmet need for the delivery-time notice
     # (utils.web_evidence_receipt). None = no blocked need.
     web_evidence_blocked: Optional[str] = None
+    # Tool-thread continuation (2026-09-27, BC-58, BC-74, BC-04, BC-15): set
+    # when this turn is a recognized follow-up to the PRIOR turn's read-tool
+    # call(s) (email_search, web_search, search_memory, file tools) — e.g.
+    # "Aidvantage. Search that" naming the email cue after an email_search,
+    # or an affirmation of an offer to run one more search. Shape:
+    # {"prior_calls": [{"tool": str, "args": {...}}, ...],
+    #  "accepted_offer": str | None}. Handlers pass it to the controller
+    # (same seam as forced_action, core.agentic.tool_thread), which prepends
+    # a [TOOL CONTINUATION] note to the FIRST decision round so the model
+    # re-runs the relevant tool with the arguments amended by this message
+    # instead of a fresh, memory-less classification.
+    tool_continuation: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -885,6 +900,33 @@ async def evaluate_agentic_gate(
             veto_exempt=True,
             forced_action=_offer_action,
             reason=_offer_reason,
+        )
+
+    # ── Tool-thread continuation (2026-09-27, BC-58, BC-74, BC-04, BC-15) ─
+    # A follow-up to the PRIOR turn's read-tool call(s) (email_search,
+    # web_search, search_memory, file tools) reaches the tool loop again
+    # instead of falling through to plain chat, where the model has no
+    # memory of what it searched and confabulates ("must be in Outlook").
+    # Checked here — after the write-action offer arm above (which keeps
+    # precedence: an offer to CREATE something always wins over a stale
+    # read-tool thread) and before the Tier 1-4 arms below, since this is
+    # itself an explicit continuation, not material for fresh classification.
+    _tool_continuation = (
+        _prior_tool_followup(user_text, corpus_manager)
+        if _explicit_action is None else None
+    )
+    if _tool_continuation is not None:
+        logger.info(
+            "[Agentic Gate] Tool-thread continuation — routing to tools "
+            f"with prior calls: {_tool_continuation.get('prior_calls')}"
+        )
+        return AgenticDecision(
+            should_trigger=True,
+            modes=["tools"],
+            skip_initial_search=True,
+            veto_exempt=True,
+            tool_continuation=_tool_continuation,
+            reason="tool-thread continuation",
         )
 
     modes: List[str] = []
@@ -1977,6 +2019,146 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[s
     except Exception as e:
         logger.debug(f"[Agentic Gate] Offer-continuation check failed (non-fatal): {e}")
         return None, False
+
+
+def _entry_age_s(entry) -> Optional[float]:
+    """Seconds since ``entry``'s stored timestamp, or None when unknown.
+    Both sides naive-local (convert THEN strip) — a naive stored timestamp
+    minus an aware now() raised TypeError and silently disabled the age cap."""
+    ts = _entry_timestamp(entry)
+    if ts is None:
+        return None
+    try:
+        return (_to_naive_local(datetime.now()) - _to_naive_local(ts)).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+_TOOL_CONT_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _last_offer_question(prev_response: str) -> Optional[str]:
+    """The previous reply's LAST sentence, trimmed to 300 chars, if it is a
+    question — the offer a terse affirmation ("yes please") on the next
+    turn is accepting. None when the reply doesn't end on a question."""
+    text = (prev_response or "").strip()
+    if not text or not text.endswith("?"):
+        return None
+    sentences = [s.strip() for s in _TOOL_CONT_SENTENCE_SPLIT_RE.split(text) if s.strip()]
+    if not sentences or not sentences[-1].endswith("?"):
+        return None
+    return sentences[-1][:300]
+
+
+def _is_prior_tool_narration(text: str, cue_start: int) -> bool:
+    """True when ``text`` is the user narrating their OWN email action
+    around the matched cue position (``cue_start``) rather than continuing
+    an email_search thread. Reuses core.actions.registry._match_is_self_narration
+    (the same self-narration test detect_action_intent applies) at the
+    cue's own position; falls back to the plain negation check if the
+    registry helper is ever unavailable. Under-fires by design (BC-76: no
+    invented vocabulary) — it catches a subject directly adjacent to the
+    cue ("I email them every week"); an inflected past tense with a verb
+    between the subject and the cue ("I already sent an email") is left to
+    the surrounding negation/request-shape checks, never a phrase list."""
+    try:
+        from core.actions.registry import _match_is_self_narration  # lazy import: cycle
+        return _match_is_self_narration(text, cue_start)
+    except ImportError:
+        return _email_intent_negated(text.lower())
+
+
+def _carries_prior_tool_cue(user_text: str, prior_calls: List[Dict[str, Any]]) -> bool:
+    """True when ``user_text`` carries the un-negated cue noun of a READ
+    tool that ran in ``prior_calls``. Reuses the existing email cue
+    regex/negation check (gate.py Tier 1, "email search intent") for
+    email_search — no new vocabulary is invented for any other tool
+    (under-fires by design, BC-76: no phrase-list additions)."""
+    tools_ran = {c.get("tool") for c in (prior_calls or [])}
+    if "email_search" not in tools_ran:
+        return False
+    lower = user_text.lower()
+    m = _EMAIL_NOUN_RE.search(lower)
+    if not m or _trigger_is_negated(lower, m.start()):
+        return False
+    return not _is_prior_tool_narration(user_text, m.start())
+
+
+TOOL_CONTINUATION_MAX_AGE_S = 1800
+
+
+def _prior_tool_followup(user_text: str, corpus_manager) -> Optional[Dict[str, Any]]:
+    """tool_continuation dict when ``user_text`` continues the thread of the
+    read tool(s) the PRIOR turn dispatched (2026-09-27, BC-58, BC-74, BC-04,
+    BC-15). Evaluated right after _prior_turn_offer_action (which keeps
+    precedence for a WRITE-action offer) and before the Tier 1-4 arms.
+    Returns None on any doubt — the normal tiers then run unchanged.
+
+    Fires when core.agentic.tool_thread.recent_read_tool_calls() has
+    entries within TOOL_CONTINUATION_MAX_AGE_S and the current message is
+    one of:
+      (a) an affirmation (registry.is_offer_affirmation) of an offer — the
+          previous stored reply's LAST sentence is a question;
+      (b) a terse (<=12 words) request-shaped follow-up (_is_request_shaped);
+      (c) the current message names the un-negated cue noun of a tool that
+          ran in the prior calls (email_search only — see
+          _carries_prior_tool_cue) and is not the user narrating a past
+          send of their own ("I emailed her yesterday").
+
+    Also fires (a)-shaped when the tracked record is EMPTY but the
+    PREVIOUS stored corpus entry's own response_mode is "agentic-search"
+    and the offer question itself carries the email cue or the existing
+    search-signal check: Round 1's own trigger-seeded web search runs
+    OUTSIDE the DISPATCH_TABLE chokepoint tool_thread records through, so
+    a turn that ran ONLY that initial web search leaves no trackable read
+    call even though it plainly was agentic (the offer-question text is
+    the only surviving evidence in that case).
+    """
+    if not user_text or corpus_manager is None:
+        return None
+    try:
+        from core.actions.registry import is_offer_affirmation  # lazy import: cycle
+        recent = corpus_manager.get_recent_memories(1)
+    except Exception as e:  # degrades: tool-thread continuation skipped this turn; normal tiers run
+        logger.debug(f"[Agentic Gate] Tool-continuation check failed (non-fatal): {e}")
+        return None
+    if not recent:
+        return None
+    prev = recent[0]
+    prev_response = (prev.get("response", "") or "")
+    prev_mode = (prev.get("response_mode", "") or "").lower()
+    prior_calls = tool_thread.recent_read_tool_calls(TOOL_CONTINUATION_MAX_AGE_S)
+    _offer = _last_offer_question(prev_response)
+
+    if prior_calls:
+        if _offer and is_offer_affirmation(user_text):
+            return {"prior_calls": prior_calls, "accepted_offer": _offer}
+        _words = user_text.split()
+        # Request shape is judged PER SENTENCE: `_is_request_shaped` is
+        # head-anchored, and the live follow-up put the new search term
+        # first ("<Term>. Search that") — the imperative is the 2nd sentence.
+        if len(_words) <= 12 and any(
+                _is_request_shaped(s.strip())
+                for s in _TOOL_CONT_SENTENCE_SPLIT_RE.split(user_text) if s.strip()):
+            return {"prior_calls": prior_calls, "accepted_offer": None}
+        if _carries_prior_tool_cue(user_text, prior_calls):
+            return {"prior_calls": prior_calls, "accepted_offer": None}
+        return None
+
+    # Extension: no trackable read-tool record survived (Round-1 web search
+    # bypasses the chokepoint), but the prior turn's own ground-truth mode
+    # says it went agentic, and the offer question it asked names a tool
+    # cue on its own.
+    if prev_mode == "agentic-search" and _offer and is_offer_affirmation(user_text):
+        _age = _entry_age_s(prev)
+        if _age is not None and _age > TOOL_CONTINUATION_MAX_AGE_S:
+            return None
+        _offer_lower = _offer.lower()
+        _m = _EMAIL_NOUN_RE.search(_offer_lower)
+        _email_cue = bool(_m and not _trigger_is_negated(_offer_lower, _m.start()))
+        if _email_cue or _SEARCH_SIGNAL_HIT(_offer_lower):
+            return {"prior_calls": [], "accepted_offer": _offer}
+    return None
 
 
 # One-shot cross-turn slot for a tone-deferred request. Armed by

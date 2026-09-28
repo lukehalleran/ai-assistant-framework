@@ -1,6 +1,6 @@
 """Comprehensive tests for LLMFactExtractor to boost coverage."""
 import pytest
-from memory.llm_fact_extractor import LLMFactExtractor, _snake, _normalize_triple
+from memory.llm_fact_extractor import FactExtractionError, LLMFactExtractor, _snake, _normalize_triple
 from models.model_manager import ModelManager
 
 
@@ -198,8 +198,10 @@ async def test_extract_triples_with_model_failure(llm_extractor, monkeypatch):
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_error)
 
-    result = await llm_extractor.extract_triples(["Test message"])
-    assert result == []
+    # 2026-09-27 (BC-47): a failed extraction raises instead of reading as zero facts.
+    with pytest.raises(FactExtractionError):
+        await llm_extractor.extract_triples(["Test message"])
+
 
 
 @pytest.mark.asyncio
@@ -210,8 +212,10 @@ async def test_extract_triples_with_invalid_json(llm_extractor, monkeypatch):
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_invalid)
 
-    result = await llm_extractor.extract_triples(["Test message"])
-    assert result == []
+    # 2026-09-27 (BC-47): a failed extraction raises instead of reading as zero facts.
+    with pytest.raises(FactExtractionError):
+        await llm_extractor.extract_triples(["Test message"])
+
 
 
 @pytest.mark.asyncio
@@ -222,8 +226,10 @@ async def test_extract_triples_with_non_list_json(llm_extractor, monkeypatch):
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_dict)
 
-    result = await llm_extractor.extract_triples(["Test message"])
-    assert result == []
+    # 2026-09-27 (BC-47): a failed extraction raises instead of reading as zero facts.
+    with pytest.raises(FactExtractionError):
+        await llm_extractor.extract_triples(["Test message"])
+
 
 
 @pytest.mark.asyncio
@@ -343,8 +349,10 @@ async def test_extract_triples_empty_string_response(llm_extractor, monkeypatch)
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_empty)
 
-    result = await llm_extractor.extract_triples(["Test"])
-    assert result == []
+    # 2026-09-27 (BC-47): a failed extraction raises instead of reading as zero facts.
+    with pytest.raises(FactExtractionError):
+        await llm_extractor.extract_triples(["Test"])
+
 
 
 @pytest.mark.asyncio
@@ -355,5 +363,7 @@ async def test_extract_triples_none_response(llm_extractor, monkeypatch):
 
     monkeypatch.setattr(llm_extractor.mm, "generate_once", mock_generate_none)
 
-    result = await llm_extractor.extract_triples(["Test"])
-    assert result == []
+    # 2026-09-27 (BC-47): a failed extraction raises instead of reading as zero facts.
+    with pytest.raises(FactExtractionError):
+        await llm_extractor.extract_triples(["Test"])
+

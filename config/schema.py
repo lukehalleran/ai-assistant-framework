@@ -1047,6 +1047,9 @@ class WikiSection(BaseModel):
     max_chars: int = Field(default=15000, ge=100)
     max_sentences: int = Field(default=0, ge=0)
     timeout_s: float = Field(default=1.2, gt=0.0)
+    # Parent directory of wiki_data/ (FAISS index + metadata parquet).
+    # Owner-specific paths belong in config.local.yaml, never in code.
+    data_root: str = "~/daemon-wiki-data"
 
 
 class PathsSection(BaseModel):
