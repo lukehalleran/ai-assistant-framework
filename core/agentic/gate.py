@@ -111,6 +111,7 @@ import re as _re_gate2
 from utils.trigger_match import compile_keyword_matcher as _compile_keyword_matcher
 from utils.trigger_match import find_hits as _find_trigger_hits
 from utils.trigger_match import is_negated as _trigger_is_negated
+from utils.test_envelope import inner_text as _test_envelope_inner
 from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
 from utils.date_coerce import to_naive_local as _to_naive_local
 from core.agentic import tool_thread
@@ -176,11 +177,20 @@ class AgenticDecision:
     # "Northwind. Search that" naming the email cue after an email_search,
     # or an affirmation of an offer to run one more search. Shape:
     # {"prior_calls": [{"tool": str, "args": {...}}, ...],
-    #  "accepted_offer": str | None}. Handlers pass it to the controller
-    # (same seam as forced_action, core.agentic.tool_thread), which prepends
-    # a [TOOL CONTINUATION] note to the FIRST decision round so the model
-    # re-runs the relevant tool with the arguments amended by this message
-    # instead of a fresh, memory-less classification.
+    #  "accepted_offer": str | None, "target_tool": str | None}.
+    # target_tool (2026-09-27, plan F/X1 — the live probe found the note
+    # below alone insufficient: a model that NARRATES tool intent in prose
+    # instead of emitting a real call/marker slipped through it entirely,
+    # unbacked-claim text shipping as the reply) is the read tool the
+    # controller should FORCE on round 1 — "email_search" when the prior
+    # calls include it or the accepted offer itself carries the un-negated
+    # email cue noun, otherwise the last prior call's own tool, None when
+    # unknown (prompt-only, as before this batch). Handlers pass the whole
+    # dict to the controller (same seam as forced_action,
+    # core.agentic.tool_thread), which prepends a [TOOL CONTINUATION] note
+    # to the FIRST decision round AND, when target_tool is set, forces that
+    # tool via tool_choice/tools_override (native) or an XML marker
+    # directive (XML) — see run_agentic_search's round loop.
     tool_continuation: Optional[Dict[str, Any]] = None
 
 
@@ -1053,6 +1063,11 @@ async def evaluate_agentic_gate(
     _email_search_cue = bool(
         _email_search_match
         and not _trigger_is_negated(_lower, _email_search_match.start())
+        # 2026-09-27 (plan F/X1 item 5, live probe #2): negation checked
+        # only at the EMAIL NOUN's own position — "Don't search yet, just
+        # ask me whether I want you to search my email" negates the
+        # REQUEST VERB, many tokens before the noun, and slipped through.
+        and not _negated_request_verb_present(user_text)
     )
     if (not needs_tools and _email_search_cue
             and _is_info_seeking(user_text)
@@ -1872,6 +1887,56 @@ def _is_request_shaped(text: str) -> bool:
     return bool(_REQUEST_SHAPED_RE.search((text or "").strip()))
 
 
+# Probe-envelope awareness (2026-09-27, plan F/X1 item 4): a live owner probe
+# wraps its text in "[test]...[/test]" so the fact extractors skip it (a
+# whole-line form has been recognized since — see memory.fact_source; the
+# inline form is a sibling batch's new module, utils.test_envelope, landing
+# concurrently in this same tree). The RAW, still-enveloped text is what
+# stays STORED — but a shape/affirmation judge that only ever sees the raw
+# text misreads "[test]yes please[/test]" as garbage instead of the plain
+# affirmation it says (2026-09-27 live probe #3: is_offer_affirmation was
+# False on the enveloped text, True on "yes please" alone). Import lazily
+# and fall back to the raw text unchanged when the module isn't there yet
+# or on any error — never a second regex reimplementing its grammar here.
+def _envelope_inner_text(text: str) -> str:
+    """The text INSIDE a `[test]...[/test]` probe envelope, or `text`
+    unchanged when there is none."""
+    return _test_envelope_inner(text) or text
+
+
+# Bare request-VERB scan (2026-09-27, plan F/X1 item 5) — the SAME verb
+# vocabulary _REQUEST_SHAPED_RE already declares (BC-76: no new word list),
+# reused WITHOUT its head-anchor/ack-filler-prefix shape so a verb can be
+# found anywhere in the message. Matching this alone says nothing about
+# request shape (that is still _is_request_shaped's job) — it only locates
+# a verb's own position for the negation-lookback check below.
+_REQUEST_VERB_RE = re.compile(
+    r"\b(?:check|look|pull|show|run|search|find|read|open|list|"
+    r"verify|fetch|grab|review|summarize|summarise|scan|test|compare)\b",
+    re.IGNORECASE,
+)
+
+
+def _negated_request_verb_present(text: str) -> bool:
+    """True when some occurrence of a request verb in `text` is ITSELF
+    negated — "Don't search yet, just ask me whether I want you to search
+    my email…" (2026-09-27 live probe #2) fired the Tier-1 email arm
+    because its own negation check only looked BACK from the EMAIL NOUN's
+    position; "don't" scoped the REQUEST VERB ("search") eleven tokens
+    earlier, well outside that lookback window, and was never seen. This
+    reuses utils.trigger_match.is_negated at each verb match's own
+    position (same 5-token lookback doctrine as every other negation check
+    in this module) instead of inventing a second window. Judged on the
+    envelope-inner text (`_envelope_inner_text`) so the literal word "test"
+    inside a "[test]...[/test]" probe tag — itself one of the reused verbs
+    — can never coincidentally participate."""
+    lower = _envelope_inner_text(text or "").lower()
+    return any(
+        _trigger_is_negated(lower, m.start())
+        for m in _REQUEST_VERB_RE.finditer(lower)
+    )
+
+
 def _entry_timestamp(entry) -> Optional[object]:
     """Aware datetime of a corpus entry's ``timestamp`` (naive = local), or None."""
     from datetime import datetime
@@ -2070,16 +2135,23 @@ _TOOL_CONT_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def _last_offer_question(prev_response: str) -> Optional[str]:
-    """The previous reply's LAST sentence, trimmed to 300 chars, if it is a
-    question — the offer a terse affirmation ("yes please") on the next
-    turn is accepting. None when the reply doesn't end on a question."""
+    """The LAST sentence of the previous reply that ends in "?", trimmed to
+    300 chars — the offer a terse affirmation ("yes please") on the next
+    turn is accepting. NOT necessarily the reply's own final sentence
+    (2026-09-27, plan F/X1 item 3, live probe #3): a live reply read "...
+    specifically before you go digging in Outlook? Running that now" — an
+    unbacked-claim tail (BC-44) sits AFTER the true offer question, so
+    requiring the whole reply to end on "?" missed it entirely. Scans every
+    sentence and returns the last one ending in "?"; None when the reply
+    carries no question sentence at all."""
     text = (prev_response or "").strip()
-    if not text or not text.endswith("?"):
+    if not text:
         return None
     sentences = [s.strip() for s in _TOOL_CONT_SENTENCE_SPLIT_RE.split(text) if s.strip()]
-    if not sentences or not sentences[-1].endswith("?"):
-        return None
-    return sentences[-1][:300]
+    for s in reversed(sentences):
+        if s.endswith("?"):
+            return s[:300]
+    return None
 
 
 def _is_prior_tool_narration(text: str, cue_start: int) -> bool:
@@ -2105,18 +2177,41 @@ def _carries_prior_tool_cue(user_text: str, prior_calls: List[Dict[str, Any]]) -
     tool that ran in ``prior_calls``. Reuses the existing email cue
     regex/negation check (gate.py Tier 1, "email search intent") for
     email_search — no new vocabulary is invented for any other tool
-    (under-fires by design, BC-76: no phrase-list additions)."""
+    (under-fires by design, BC-76: no phrase-list additions). Also honors a
+    negated REQUEST VERB anywhere in the message (2026-09-27, plan F/X1
+    item 5 — same gap as the Tier-1 arm: "Don't search yet, ... my email"
+    negates the verb, not the noun)."""
     tools_ran = {c.get("tool") for c in (prior_calls or [])}
     if "email_search" not in tools_ran:
         return False
     lower = user_text.lower()
     m = _EMAIL_NOUN_RE.search(lower)
-    if not m or _trigger_is_negated(lower, m.start()):
+    if not m or _trigger_is_negated(lower, m.start()) or _negated_request_verb_present(user_text):
         return False
     return not _is_prior_tool_narration(user_text, m.start())
 
 
 TOOL_CONTINUATION_MAX_AGE_S = 1800
+
+
+def _continuation_target_tool(
+    prior_calls: List[Dict[str, Any]], offer_text: Optional[str] = None,
+) -> Optional[str]:
+    """The read tool a forced round 1 should re-run for this continuation
+    (2026-09-27, plan F/X1 item 1): "email_search" when the prior calls
+    include it, or (prior_calls empty) the accepted offer itself carries
+    the un-negated email cue noun; otherwise the LAST prior call's own
+    tool; None when nothing is known — the controller then stays
+    prompt-only, exactly as before this batch."""
+    tools_ran = [c.get("tool") for c in (prior_calls or [])]
+    if "email_search" in tools_ran:
+        return "email_search"
+    if offer_text:
+        _low = offer_text.lower()
+        _m = _EMAIL_NOUN_RE.search(_low)
+        if _m and not _trigger_is_negated(_low, _m.start()):
+            return "email_search"
+    return tools_ran[-1] if tools_ran else None
 
 
 def _prior_tool_followup(user_text: str, corpus_manager) -> Optional[Dict[str, Any]]:
@@ -2130,12 +2225,17 @@ def _prior_tool_followup(user_text: str, corpus_manager) -> Optional[Dict[str, A
     entries within TOOL_CONTINUATION_MAX_AGE_S and the current message is
     one of:
       (a) an affirmation (registry.is_offer_affirmation) of an offer — the
-          previous stored reply's LAST sentence is a question;
+          previous stored reply had a question sentence (_last_offer_question,
+          not necessarily its own final sentence);
       (b) a terse (<=12 words) request-shaped follow-up (_is_request_shaped);
       (c) the current message names the un-negated cue noun of a tool that
           ran in the prior calls (email_search only — see
           _carries_prior_tool_cue) and is not the user narrating a past
           send of their own ("I emailed her yesterday").
+    Shape/affirmation judging happens on the text INSIDE a
+    "[test]...[/test]" probe envelope when present (_envelope_inner_text,
+    plan F/X1 item 4) — the ``user_text`` recorded in the returned dict and
+    threaded elsewhere stays the raw, still-enveloped string.
 
     Also fires (a)-shaped when the tracked record is EMPTY but the
     PREVIOUS stored corpus entry's own response_mode is "agentic-search"
@@ -2145,6 +2245,12 @@ def _prior_tool_followup(user_text: str, corpus_manager) -> Optional[Dict[str, A
     a turn that ran ONLY that initial web search leaves no trackable read
     call even though it plainly was agentic (the offer-question text is
     the only surviving evidence in that case).
+
+    Every returned dict carries "target_tool" (see _continuation_target_tool)
+    — the controller forces that tool on round 1 instead of merely hinting
+    at it in prose (2026-09-27 live probe #1: a model narrated tool intent
+    and never actually called/emitted anything, then shipped a raw XML
+    marker as its final reply).
     """
     if not user_text or corpus_manager is None:
         return None
@@ -2161,27 +2267,39 @@ def _prior_tool_followup(user_text: str, corpus_manager) -> Optional[Dict[str, A
     prev_mode = (prev.get("response_mode", "") or "").lower()
     prior_calls = tool_thread.recent_read_tool_calls(TOOL_CONTINUATION_MAX_AGE_S)
     _offer = _last_offer_question(prev_response)
+    # See _envelope_inner_text: judge shape on the probe-inner text, keep
+    # the raw (possibly enveloped) `user_text` for everything else.
+    _judge_text = _envelope_inner_text(user_text)
 
     if prior_calls:
-        if _offer and is_offer_affirmation(user_text):
-            return {"prior_calls": prior_calls, "accepted_offer": _offer}
-        _words = user_text.split()
+        if _offer and is_offer_affirmation(_judge_text):
+            return {
+                "prior_calls": prior_calls, "accepted_offer": _offer,
+                "target_tool": _continuation_target_tool(prior_calls, _offer),
+            }
+        _words = _judge_text.split()
         # Request shape is judged PER SENTENCE: `_is_request_shaped` is
         # head-anchored, and the live follow-up put the new search term
         # first ("<Term>. Search that") — the imperative is the 2nd sentence.
         if len(_words) <= 12 and any(
                 _is_request_shaped(s.strip())
-                for s in _TOOL_CONT_SENTENCE_SPLIT_RE.split(user_text) if s.strip()):
-            return {"prior_calls": prior_calls, "accepted_offer": None}
-        if _carries_prior_tool_cue(user_text, prior_calls):
-            return {"prior_calls": prior_calls, "accepted_offer": None}
+                for s in _TOOL_CONT_SENTENCE_SPLIT_RE.split(_judge_text) if s.strip()):
+            return {
+                "prior_calls": prior_calls, "accepted_offer": None,
+                "target_tool": _continuation_target_tool(prior_calls),
+            }
+        if _carries_prior_tool_cue(_judge_text, prior_calls):
+            return {
+                "prior_calls": prior_calls, "accepted_offer": None,
+                "target_tool": _continuation_target_tool(prior_calls),
+            }
         return None
 
     # Extension: no trackable read-tool record survived (Round-1 web search
     # bypasses the chokepoint), but the prior turn's own ground-truth mode
     # says it went agentic, and the offer question it asked names a tool
     # cue on its own.
-    if prev_mode == "agentic-search" and _offer and is_offer_affirmation(user_text):
+    if prev_mode == "agentic-search" and _offer and is_offer_affirmation(_judge_text):
         _age = _entry_age_s(prev)
         if _age is not None and _age > TOOL_CONTINUATION_MAX_AGE_S:
             return None
@@ -2189,7 +2307,10 @@ def _prior_tool_followup(user_text: str, corpus_manager) -> Optional[Dict[str, A
         _m = _EMAIL_NOUN_RE.search(_offer_lower)
         _email_cue = bool(_m and not _trigger_is_negated(_offer_lower, _m.start()))
         if _email_cue or _SEARCH_SIGNAL_HIT(_offer_lower):
-            return {"prior_calls": [], "accepted_offer": _offer}
+            return {
+                "prior_calls": [], "accepted_offer": _offer,
+                "target_tool": _continuation_target_tool([], _offer),
+            }
     return None
 
 

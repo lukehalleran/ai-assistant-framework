@@ -41,13 +41,20 @@ Module Contract:
   - strip_agentic_tool_tags(text) → str: Strip leaked agentic tool-call markup —
     <tool>...</tool> blocks AND the hallucinated <DAEMON: tool_name>...</DAEMON> envelope
     (last-resort guard; the agentic recovery parser normally unwraps and executes these)
+  - strip_tool_markers(text) → (clean, found): Strip any RAW agentic tool-call marker
+    (e.g. "<email_search>...</email_search>") that leaked into a DELIVERED reply —
+    built directly on core.agentic.protocols.XMLMarkerHandler's own compiled per-tag
+    patterns (never a second, independently-maintained tag list). `found` names each
+    tag whose marker matched. Applied at the agentic/enhanced delivered-reply
+    chokepoint (gui/handlers.py) alongside the narration-shaped-final guard: a marker
+    the controller "recovered" but never executed must never ship as the reply.
   - strip_prompt_artifacts(text) → str: Remove echoed prompt section headers
 - Side effects: None (pure functions)
 """
 
 import re
 import logging
-from typing import Tuple
+from typing import List, Tuple
 
 logger = logging.getLogger("response_parser")
 
@@ -709,6 +716,68 @@ class ResponseParser:
             return cleaned.strip()
         except Exception:
             return text
+
+    # Suffixes a protocols.py XMLMarkerHandler pattern attribute name may
+    # carry before the tag name itself — stripped (longest first) to derive
+    # a readable tag label for `found` (e.g. "EMAIL_SEARCH_NESTED_PATTERN"
+    # -> "email_search").
+    _MARKER_PATTERN_SUFFIXES = (
+        "_NESTED_PATTERN", "_ATTR_PATTERN", "_SELF_PATTERN", "_PATTERN",
+    )
+
+    @staticmethod
+    def strip_tool_markers(text: str) -> Tuple[str, List[str]]:
+        """Strip any RAW agentic tool-call marker that leaked into a
+        DELIVERED reply, returning ``(clean, found)``.
+
+        2026-09-27 (BC-91, BC-46, BC-44): a live probe asked the email tool
+        to search, the controller narrated instead of calling it, and the
+        final synthesis emitted ``<email_search>Navient</email_search>`` as
+        plain text — protocols.py logged "Recovered 2 XML tool marker(s)"
+        but nothing executed them, and the raw marker shipped as the reply.
+        gui/handlers.py's own hand-written tag list (``_AGENTIC_OUTER_TAGS``)
+        never covered ``email_search`` (nor ``lookup_contact``/``pattern_scan``/
+        ``propose_action``/``pubmed``) — a second, independently-maintained
+        regex set drifted out of sync with the grammar the agentic recovery
+        parser actually understands.
+
+        Built directly on ``core.agentic.protocols.XMLMarkerHandler``'s own
+        compiled per-tag ``*_PATTERN`` class attributes — the SAME grammar,
+        never a copy of it — so a new tool marker protocols.py learns to
+        recover is automatically covered here too. ``found`` names each tag
+        whose marker matched (e.g. ``["email_search"]``), for the caller to
+        decide whether to attempt a regenerate or fall back to an honest
+        delivery notice.
+        """
+        if not isinstance(text, str) or not text or '<' not in text:
+            return text or '', []
+        from core.agentic.protocols import XMLMarkerHandler  # lazy import: cycle (core.agentic package __init__ pulls in controller.py, which imports this module)
+
+        cleaned = text
+        found: List[str] = []
+        try:
+            for attr_name in sorted(dir(XMLMarkerHandler)):
+                if not attr_name.endswith('_PATTERN'):
+                    continue
+                pattern = getattr(XMLMarkerHandler, attr_name, None)
+                if not isinstance(pattern, re.Pattern):
+                    continue
+                if not pattern.search(cleaned):
+                    continue
+                tag = attr_name
+                for suffix in ResponseParser._MARKER_PATTERN_SUFFIXES:
+                    if tag.endswith(suffix):
+                        tag = tag[: -len(suffix)]
+                        break
+                tag = tag.lower()
+                if tag not in found:
+                    found.append(tag)
+                cleaned = pattern.sub('', cleaned)
+            if found:
+                cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+            return cleaned, found
+        except Exception:
+            return text, []
 
     @staticmethod
     def strip_prompt_artifacts(text: str) -> str:

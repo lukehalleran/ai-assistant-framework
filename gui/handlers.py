@@ -183,6 +183,7 @@ import utils.personal_claim_provenance as personal_claim_provenance
 import utils.privacy_redaction as privacy_redaction
 import utils.query_checker as query_checker
 import utils.retrieval_outcome as retrieval_outcome
+import utils.test_envelope as test_envelope
 import utils.topic_manager as topic_manager
 import utils.web_evidence_receipt as web_evidence_receipt
 DEFAULT_SYSTEM_PROMPT = load_system_prompt()
@@ -3999,7 +4000,7 @@ async def _apply_personal_claim_check_for_delivery(ctx, response_text):
     return revised
 
 
-async def _apply_delivery_revisions(ctx, response_text, *, source_material=""):
+async def _apply_delivery_revisions(ctx, response_text, *, source_material="", regenerate_fn=None):
     """Apply content revisions in delivery order and return the clean body.
 
     The action-guard suffix is kept by the caller and reattached once after
@@ -4008,8 +4009,56 @@ async def _apply_delivery_revisions(ctx, response_text, *, source_material=""):
     discard the grounding fix. In log-only mode, each check records the body
     it actually audits; when no earlier pass revises, that is also the body
     delivered. class: BC-45, BC-91.
+
+    Raw tool-marker guard (2026-09-27, BC-91/BC-46/BC-44) runs FIRST, before
+    grounding/personal-claim read the body: a marker like "<email_search>X
+    </email_search>" that protocols.py's recovery parser logged as
+    "recovered" but the controller never actually executed is machinery-
+    shaped garbage, not a checkable claim, and must never ship as the
+    delivered reply (the live incident: the model narrated "Running that
+    now" beside the raw XML and the marker shipped verbatim). `regenerate_fn`
+    (an async, no-arg callable), when given — agentic mode only, where a
+    fresh no-tool-context answer can be requested — is tried ONCE; its
+    output replaces the body only if regenerating actually cleared the
+    marker(s). Otherwise the cleaned text is what grounding/personal-claim
+    audit — same as the action-guard suffix, the notice itself is machinery,
+    not a checkable claim, so it is held in `_marker_notice` and reattached
+    only after both checks, never handed to a checker.
     """
     body = response_text
+    _marker_notice = ""
+    try:
+        cleaned, found = ResponseParser.strip_tool_markers(body)
+        if found:
+            logger.warning(
+                f"[DeliveryRevision] Raw tool marker(s) {found} leaked into "
+                f"the reply — attempting recovery"
+            )
+            recovered = None
+            if regenerate_fn is not None:
+                try:
+                    recovered = await regenerate_fn()
+                except Exception as exc:
+                    logger.warning(f"[DeliveryRevision] Tool-marker recovery failed (non-fatal): {exc}")
+            recovered_clean, recovered_found = (
+                ResponseParser.strip_tool_markers(recovered) if recovered else ("", [])
+            )
+            if recovered and not recovered_found:
+                body = recovered
+                ctx.telemetry["tool_marker_recovered"] = True
+            else:
+                if recovered:
+                    _fallback_clean = recovered_clean
+                else:
+                    _fallback_clean = cleaned
+                body = _fallback_clean
+                _marker_notice = read_time_markers.delivery_notice(
+                    read_time_markers.NOTICE_TOOL_NOT_RUN,
+                    " — ask again and I'll run it.",
+                )
+                ctx.telemetry["tool_marker_notice"] = True
+    except Exception as exc:
+        logger.warning(f"[DeliveryRevision] Tool-marker guard failed (non-fatal): {exc}")
     try:
         grounded, _ = await _apply_grounding_check_for_delivery(
             ctx, body, source_material=source_material,
@@ -4024,6 +4073,8 @@ async def _apply_delivery_revisions(ctx, response_text, *, source_material=""):
             body = personal
     except Exception as exc:
         logger.warning(f"[DeliveryRevision] Personal-claim check failed (non-fatal): {exc}")
+    if _marker_notice:
+        body = (body.rstrip() + _marker_notice).strip()
     return body
 
 
@@ -4793,6 +4844,7 @@ async def _run_agentic_search(ctx):
             _ag_source = "\n---\n".join(_ag_source_parts)[:6000]
             _delivery_body = await _apply_delivery_revisions(
                 ctx, _delivery_body, source_material=_ag_source,
+                regenerate_fn=agentic_controller.regenerate_final_answer,
             )
             display_output = _delivery_body.rstrip() + (_ag_guard_suffix or "")
             if _delivery_body != _pre_suffix:
@@ -6150,8 +6202,19 @@ async def _handle_submit_inner(
     # `user_text`/`merged_input` keep their REAL whitespace — storage,
     # display, and content-type/lyrics detection (which reads
     # ctx.user_text, never analysis_text) depend on real line breaks.
-    user_text_ws = normalize_ws(user_text)
-    analysis_text = normalize_ws(analysis_text)
+    #
+    # [test]...[/test] envelope unwrap (2026-09-27, BC-58): an owner probe
+    # like "[test]Navient. Search that[/test]" is the whole message, so
+    # every predicate downstream of THIS chokepoint — gate, intent, tone,
+    # STM — was judging shape against the raw marker-bearing text instead
+    # of what the probe actually said. utils.test_envelope.inner_text is
+    # the identity function on ordinary (non-enveloped) text, so this is a
+    # no-op on every live-user turn; the STORED query (`ctx.user_text` /
+    # `ctx.merged_input`, set below from the un-unwrapped `user_text`/
+    # `merged_input`) keeps the envelope so memory.fact_source's extractors
+    # still skip the turn as test-origin.
+    user_text_ws = normalize_ws(test_envelope.inner_text(user_text))
+    analysis_text = normalize_ws(test_envelope.inner_text(analysis_text))
 
     # Persist uploads to ChromaDB in background (fire-and-forget)
     if files_result.images:

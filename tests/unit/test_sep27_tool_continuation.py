@@ -261,6 +261,7 @@ class TestPriorToolFollowup:
         assert result == {
             "prior_calls": [{"tool": "email_search", "args": {"query": "loan", "window_days": 60}}],
             "accepted_offer": None,
+            "target_tool": "email_search",
         }
 
     def test_shape_b_live_order_term_then_imperative(self):
@@ -288,6 +289,7 @@ class TestPriorToolFollowup:
         assert result == {
             "prior_calls": [{"tool": "email_search", "args": {"query": "loan", "window_days": 14}}],
             "accepted_offer": None,
+            "target_tool": "email_search",
         }
 
     def test_shape_a_affirmation_of_offer_with_recorded_calls(self):

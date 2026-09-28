@@ -48,6 +48,10 @@ NOTICE_UPLOAD_STALE = "No file was uploaded this session; the document"
 NOTICE_NOTE_PARTIAL = "Saved to disk, but couldn't update the"
 NOTICE_WEB_BUDGET = "I couldn't run a fresh web search because today's search budget"
 NOTICE_WEB_BUDGET_PARTIAL = "I couldn't run every web search this needed because today's search budget"
+# 2026-09-27 (BC-91, BC-46, BC-44): a raw tool marker (e.g. "<email_search>
+# ...</email_search>") that leaked into a delivered reply, unexecuted —
+# see core.response_parser.strip_tool_markers.
+NOTICE_TOOL_NOT_RUN = "Heads up — that search didn't actually run"
 DELIVERY_NOTICE_TEXTS = (
     NOTICE_NO_CARD,
     NOTICE_NOT_ACTUALLY_DONE,
@@ -56,6 +60,7 @@ DELIVERY_NOTICE_TEXTS = (
     NOTICE_NOTE_PARTIAL,
     NOTICE_WEB_BUDGET,
     NOTICE_WEB_BUDGET_PARTIAL,
+    NOTICE_TOOL_NOT_RUN,
 )
 
 
