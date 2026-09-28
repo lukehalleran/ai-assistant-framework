@@ -460,22 +460,6 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/document_generator.py",
-      "symbol": "DocumentGenerator._search_collection",
-      "kind": "broad_except_returns_empty",
-      "digest": "be9ebe69d9d31bf26fd8752b14a9b6b35eab8d5c45925eeda3a678d983377e9b",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/document_generator.py",
-      "symbol": "DocumentGenerator._search_web",
-      "kind": "broad_except_returns_empty",
-      "digest": "28b3d64b0d020bf3609e40e5a504cb644e4070779eed157d5c079b7db201f4d0",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "knowledge/graph_walk_generator.py",
       "symbol": "GraphWalkGenerator._articulate_and_package",
       "kind": "broad_except_returns_empty",
