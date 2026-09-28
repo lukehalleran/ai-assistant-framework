@@ -33,6 +33,8 @@ Module Contract
     conversation written up (Tier-3 regex intents omit the key; handlers'
     deterministic backstop covers them).
   - knowledge.daemon_notes_manager.detect_self_note_intent (self-note detection)
+  - core.email.registry.provider_coverage (2026-09-27, Tier-4 needs_email_search
+    gate: only routes to tools when a provider is actually configured)
   All imports are lazy (inside the function) with try/except guards.
 - Side effects: None. Pure decision logic + one optional async LLM call.
 - Email-by-name patterns: Tier 1 TOOL_KEYWORDS includes contact lookup keywords
@@ -171,7 +173,7 @@ class AgenticDecision:
     # Tool-thread continuation (2026-09-27, BC-58, BC-74, BC-04, BC-15): set
     # when this turn is a recognized follow-up to the PRIOR turn's read-tool
     # call(s) (email_search, web_search, search_memory, file tools) — e.g.
-    # "Aidvantage. Search that" naming the email cue after an email_search,
+    # "Northwind. Search that" naming the email cue after an email_search,
     # or an affirmation of an offer to run one more search. Shape:
     # {"prior_calls": [{"tool": str, "args": {...}}, ...],
     #  "accepted_offer": str | None}. Handlers pass it to the controller
@@ -1549,6 +1551,36 @@ async def evaluate_agentic_gate(
                         # "research"/None = research the topic externally.
                         "source": getattr(trigger_decision, 'document_source', '') or None,
                     }
+                elif getattr(trigger_decision, 'needs_email_search', False) is True:
+                    # Strict `is True` (not truthy) — a test double that never
+                    # set this new attribute auto-vivifies a Mock on access,
+                    # which is truthy but not `is True` (mirrors the
+                    # needs_pattern_analysis mock-safety pattern above).
+                    # 2026-09-27 (BC-15, BC-58): Tier-4 had no email output —
+                    # "Northwind. Search that" (an email follow-up naming a
+                    # topic, not the word "email") fell through to the web
+                    # arm and searched the public internet for the content of
+                    # the user's own inbox. Tier-1's _email_search_cue only
+                    # fires on a word-bounded email/inbox/gmail/outlook noun
+                    # IN THIS MESSAGE, so a resolved follow-up needs the
+                    # LLM's own read of the conversation. Route to tools
+                    # (email_search is one of the tools the loop can pick)
+                    # only when a provider is actually configured — with
+                    # none configured, nothing could search anyway and this
+                    # would just dead-end an ambiguous guess instead of
+                    # falling through to ordinary generation.
+                    from core.email.registry import provider_coverage
+                    _email_cov = provider_coverage()
+                    if _email_cov.get("searched") or _email_cov.get("failed"):
+                        logger.info("[Agentic Gate] LLM detected email search intent")
+                        should_trigger = True
+                        needs_tools = True
+                        search_terms = []
+                    else:
+                        logger.debug(
+                            "[Agentic Gate] LLM email-search suppressed — "
+                            "no configured email provider"
+                        )
 
                 logger.debug(
                     f"[Agentic Gate] LLM trigger: should_search={should_trigger}, "

@@ -53,6 +53,7 @@ class CorpusManager:
     """Manages the conversation corpus (short-term memory)"""
 
     def __init__(self, corpus_file: str = None):
+        self._written_this_process: list = []
         if not corpus_file:
             import config.app_config as app_config  # lazy import: live-config (CORPUS_FILE is env-derived; tests set it at call time)
             corpus_file = app_config.CORPUS_FILE
@@ -146,6 +147,11 @@ class CorpusManager:
         except Exception as e:
             logger.error(f"Error saving corpus: {e}")
 
+    def written_this_process(self, entry) -> bool:
+        """True when ``entry`` was appended by THIS process (not loaded from
+        disk at startup). Identity check over the last few writes."""
+        return any(e is entry for e in self._written_this_process)
+
     def add_entry(
         self,
         query: str,
@@ -220,6 +226,11 @@ class CorpusManager:
                 entry["personal_claim_support"] = receipt
 
         self.corpus.append(entry)
+        # Entries THIS process wrote (2026-09-27, BC-46/BC-58): resend-dedup
+        # must never serve a reply stored by a previous process (a restart
+        # within the resend window). Identity refs, bounded, in-memory only.
+        self._written_this_process.append(entry)
+        del self._written_this_process[:-32]
         self._episodic_cache = None  # Invalidate cache
 
         # Trim if too large (preserve most recent max_entries)

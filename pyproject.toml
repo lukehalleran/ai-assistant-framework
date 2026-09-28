@@ -44,7 +44,52 @@ select = [
     "F811", # redefined-while-unused (shadowed test/function definitions)
     "F601", "F602",  # is-comparisons to str/int literals
     "B002", "B006",  # ++n typo, mutable default args
+    # 2026-09-27 (FOLLOWUPS #180, BC-69/BC-71): a print() in app code is a
+    # silent-failure risk — it bypasses logging levels/handlers, so anything
+    # watching logs (or a frozen build with no console) never sees it. Scoped
+    # to app dirs only, via per-file-ignores below: dev tooling and documented
+    # CLI/banner paths print by design and are exempted there; the remaining
+    # 260 pre-existing app-code sites are grandfathered per-file so the rule
+    # only fails on NEW prints going forward, not the backlog.
+    "T201", # print found
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Dev tooling, not the shipped app (same split pyright already draws for
+# `scripts`/`tests`/`agent_branch` above): prints to the terminal by design.
+"scripts/**" = ["T201"]
+"tests/**" = ["T201"]
+"docs/**" = ["T201"]
+"hooks/**" = ["T201"]
+"agent_branch/**" = ["T201"]        # self-improvement proposal harness (goal_runner/workers), own console reporting
+"debug_graph_context.py" = ["T201"] # standalone root-level debug script, not an app module
+
+# Documented CLI/banner paths (the "two documented exceptions" in FOLLOWUPS
+# #180): console output IS the interface here, not a logging gap.
+"main.py" = ["T201"]            # CLI entry point (`python main.py cli`) — menus/banners
+"gui/launch.py" = ["T201"]      # startup banners, printed before the GUI/logger exist
+"utils/bootstrap.py" = ["T201"] # frozen-executable bootstrap — runs before logging is configured
+"utils/startup.py" = ["T201"]   # same: pre-logging startup diagnostics
+"eval/run_phase2.py" = ["T201"] # eval ablation harness console reports
+"eval/run_phase4.py" = ["T201"]
+"eval/run_phase5.py" = ["T201"]
+"eval/run_phase6.py" = ["T201"]
+"eval/harness.py" = ["T201"]
+
+# Pre-existing debt inside real app modules — not fixed by this batch (FOLLOWUPS
+# #180 is lint-gate-only, class BC-69/BC-71); grandfathered so `ruff check .`
+# stays green today while the rule still catches new prints elsewhere.
+"core/actions/google_auth.py" = ["T201"]
+"core/email/outlook_auth.py" = ["T201"]
+"knowledge/WikiManager.py" = ["T201"]
+"knowledge/web_search_manager.py" = ["T201"]
+"models/model_manager.py" = ["T201"]
+"models/tokenizer_manager.py" = ["T201"]
+"utils/fs_snapshot.py" = ["T201"]
+"utils/keyword_matcher.py" = ["T201"]
+"utils/preflight.py" = ["T201"]
+"utils/query_rewriter.py" = ["T201"]
+"utils/web_search_trigger.py" = ["T201"]
 
 [tool.pyright]
 # Static lane (docs/PLAN_20260916_typecheck_lane.md). Default ("standard") checking

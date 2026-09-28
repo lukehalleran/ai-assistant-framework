@@ -2104,7 +2104,12 @@ class KnowledgeRetrievalMixin:
         """Fetch upcoming Google Calendar events for prompt injection.
 
         Returns list of event dicts (summary, start, end, all_day, location).
-        All failures return [] silently — calendar is best-effort context.
+        An auth/API failure returns `OutcomeList.unavailable(reason)` instead
+        of a silent `[]` — 2026-09-27 (BC-47, BC-58): a revoked/expired
+        Google token must never read the same as "no upcoming events" (the
+        E1 Gmail incident's sibling case — `fetch_upcoming_events()` itself
+        still returns `[]`; `unavailable_reason()` is the new hook this
+        reads to tell the two apart).
         """
         try:
             from config.app_config import GOOGLE_CALENDAR_ENABLED  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
@@ -2115,7 +2120,10 @@ class KnowledgeRetrievalMixin:
             return []
 
         try:
-            from core.actions.google_calendar import fetch_upcoming_events  # lazy import: cycle
+            from core.actions.google_calendar import (  # lazy import: cycle
+                fetch_upcoming_events,
+                unavailable_reason as _calendar_unavailable_reason,
+            )
             # Pass the configured lookahead — the YAML knob existed but was
             # never forwarded, so the function's 7-day default ruled and a
             # Sep 9 appointment was invisible on Sep 1 ("Fetched 0 upcoming
@@ -2125,10 +2133,14 @@ class KnowledgeRetrievalMixin:
                 max_events=max_events,
                 lookahead_days=GOOGLE_CALENDAR_LOOKAHEAD_DAYS,
             )
+            if not events:
+                _reason = _calendar_unavailable_reason()
+                if _reason:
+                    return OutcomeList.unavailable(_reason)
             return events
         except Exception as e:  # degrades: prompt loses upcoming Google Calendar events context
             logger.warning(f"[ContextGatherer] Google Calendar fetch failed: {e}")
-            return []
+            return OutcomeList.failed(type(e).__name__)
 
     async def get_relevant_emails(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
         """Fetch relevant emails from Gmail/Outlook when query has email cues or contacts.
@@ -2198,6 +2210,23 @@ class KnowledgeRetrievalMixin:
             )
 
             if not messages:
+                # 2026-09-27 (BC-47, BC-58, BC-70, BC-72): an empty result
+                # from a genuinely-connected provider is "no matching
+                # emails"; an empty result because the search never RAN
+                # (revoked token, etc.) is not — `provider_coverage()`'s
+                # 'failed' key is the same chokepoint E1's
+                # `_execute_email_search` reads, so both surfaces agree.
+                try:
+                    from core.email.registry import provider_coverage  # lazy import: cycle
+                    _failed = provider_coverage().get("failed") or {}
+                except Exception:
+                    # degrades: a broken coverage lookup falls back to "no
+                    # provider failure", masking the very silent-failure this
+                    # branch exists to catch — never worse than the old
+                    # always-[] behavior, so fail closed to plain empty.
+                    _failed = {}
+                if _failed:
+                    return OutcomeList.unavailable("; ".join(_failed.values()))
                 return []
 
             # Contact-identity preference (2026-09-01): a name-string match is

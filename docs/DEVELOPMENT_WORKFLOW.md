@@ -15,6 +15,9 @@ re-explaining. The rules of the road are in §3–§5; this section is the index
 
 - **Never** commit, amend, push, delete or overwrite `data/`, restart the Daemon, or apply a
   store script. Draft the commit message and a runner (§3a.7); the owner types the two lines.
+- **List before delete** (2026-09-27): before any delete, show the owner the exact file list and
+  get a yes — never sweep a folder, even on an explicit cleanup request. A cleanup instruction
+  authorizes the class of action, not the specific files; the list is the approval artifact.
 - Work in a clone under `~/daemon_exec/` (never the live checkout `~/Daemon_v1` — the running
   Daemon deploys whatever is on disk there), with the push URL disabled until the owner enables it.
 - Every python invocation from a clone is `env -u PYTHONPATH DISABLE_FS_GUARD=1 DAEMON_TEST_MODE=1

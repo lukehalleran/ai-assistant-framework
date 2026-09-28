@@ -1,7 +1,7 @@
 """Tool-thread continuation (2026-09-27, session-audit plan E2).
 
 Evidence (PLAN_20260927_session_audit_fixes.md, section "E2"):
-  1. "Aidvantage. Search that" (prior turn ran email_search 60d) -> web
+  1. "Northwind. Search that" (prior turn ran email_search 60d) -> web
      search: the email Tier-1 arm needs an email noun in the CURRENT
      message; Tier 4 has no email output. class: BC-58, BC-15.
   2. "Yes please" after a reply ending "Want me to run one more Gmail
@@ -21,7 +21,7 @@ Per the plan doctrine: neutral fixture words are used throughout (never the
 live vendor/servicer names) — "gmail"/"outlook"/"email"/"inbox" are
 pre-existing generic, categorized terms already used by the deployed
 email-cue regex (gate.py Tier 1), not owner vocabulary. Some live phrasings
-(e.g. "Aidvantage. Search that") don't literally satisfy the SAME arm once
+(e.g. "Northwind. Search that") don't literally satisfy the SAME arm once
 reworded with a neutral entity name (the request-shape regex is head-
 anchored), so fixtures below are reshaped to exercise each arm's actual
 mechanism rather than copying the incident text verbatim.

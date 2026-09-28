@@ -31,6 +31,14 @@ Typical record fields (all optional — record what the turn produced):
   response_len, model, session_id, prepare_elapsed_s, wall_elapsed_s,
   pre_prepare_elapsed_s, grounding_verifier_elapsed_s, grounding_status,
   phase_timings, task_timings (seconds; finite, rounded, at most 20 keys), has_images.
+  doc_gen_prompt_tokens, doc_gen_system_tokens, doc_gen_total_tokens (2026-09-27,
+  BC-45/BC-72): real counts from DocumentGenerator's per-run debug summary
+  (knowledge/document_generator.py GeneratedDocument.prompt_tokens/
+  system_tokens/total_tokens, populated by _debug_prompt_summary) — a
+  doc-generation turn's caller should record these instead of the hardcoded
+  zeros the debug record previously showed. Small integers only: the raw
+  prompt/source text itself is never recorded here (same discipline as
+  response_plan below — this module logs decisions/counts, not content).
 """
 
 from __future__ import annotations

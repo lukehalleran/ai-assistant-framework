@@ -2007,7 +2007,10 @@ async def _run_doc_generation(ctx):
             f"{_template_line}"
             f"- **Path**: `{_doc_result.path}`\n"
             f"- **Type**: {_doc_result.doc_type}\n"
-            f"- **Sources**: {len(_doc_result.sources)}\n"
+            f"- **Sources**: {len(_doc_result.sources)}"
+            + (f" (search failed: {', '.join(_doc_result.source_failures)})"
+               if getattr(_doc_result, 'source_failures', None) else "")
+            + "\n"
             f"- **Sections**: {_doc_result.sections_count}\n"
             f"- **Words**: {_doc_result.word_count}\n"
         )
@@ -2034,14 +2037,19 @@ async def _run_doc_generation(ctx):
         # chunk with no "debug" key at all, so api/chat_service.py's
         # `is_final = "debug" in chunk` check never fired — a session whose
         # turns were all doc-gen never got a debug_records entry and
-        # Provenance 404'd. Mirror _run_raw's pattern exactly (token counts
-        # are zeroed rather than counted — this path never builds a metered
-        # prompt/system_prompt the way the LLM-generation paths do).
+        # Provenance 404'd. Mirror _run_raw's pattern.
         _doc_model = getattr(orchestrator.model_manager, 'get_active_model_name', lambda: None)()
+        # 2026-09-27 (BC-72): the generator now records the prompts it
+        # actually sent (GeneratedDocument.debug_*); fall back to the source
+        # material / zeros only for paths that made no LLM call.
         debug_record = _build_debug_record(
-            mode='doc-generation', user_text=ctx.user_text, prompt=_source_material,
-            system_prompt=None, response=_doc_response, model=_doc_model,
-            prompt_tokens=0, system_tokens=0, total_tokens=0,
+            mode='doc-generation', user_text=ctx.user_text,
+            prompt=getattr(_doc_result, 'debug_prompt', None) or _source_material,
+            system_prompt=getattr(_doc_result, 'debug_system_prompt', None),
+            response=_doc_response, model=_doc_model,
+            prompt_tokens=int(getattr(_doc_result, 'prompt_tokens', 0) or 0),
+            system_tokens=int(getattr(_doc_result, 'system_tokens', 0) or 0),
+            total_tokens=int(getattr(_doc_result, 'total_tokens', 0) or 0),
             citations=[], orchestrator=orchestrator,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
             extra={"storage_failed": label} if label else None,
@@ -5782,15 +5790,24 @@ def _resend_serve_appropriate(user_text, stored_reply, history) -> bool:
 
 def _recent_completed_duplicate(orchestrator, norm_query: str):
     """Return the stored response of an identical turn completed within the
-    resend window, else None. Read-only over the newest corpus entries."""
+    resend window, else None. Read-only over the newest corpus entries,
+    scoped to entries this process itself wrote when the store can tell."""
     try:
         corpus = getattr(
             getattr(orchestrator, "memory_system", None), "corpus_manager", None,
         )
-        entries = list(getattr(corpus, "corpus", []) or [])[-5:]
+        raw_entries = getattr(corpus, "corpus", None) or []
+        # Process scope (2026-09-27, BC-46/BC-58): after a restart, an
+        # identical question inside the resend window was served the reply
+        # stored by the PREVIOUS process. A store that can say which entries
+        # this process wrote is consulted; one that cannot keeps the old
+        # text+time match.
+        _own = getattr(corpus, "written_this_process", None)
         now = _dt.now()
-        for entry in reversed(entries):
+        for entry in reversed(list(raw_entries)[-5:]):
             if not isinstance(entry, dict):
+                continue
+            if callable(_own) and not _own(entry):
                 continue
             stored_norm = " ".join(str(entry.get("query") or "").lower().split())
             if stored_norm != norm_query:

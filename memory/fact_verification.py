@@ -395,12 +395,18 @@ class FactVerifier:
         )
 
         try:
+            # 2026-09-27 (BC-89): reasoning-capable models spend a tiny budget
+            # entirely in the reasoning channel and return an empty string,
+            # which the except-less empty-answer path below silently reads as
+            # "no verdict" (falls through to the default below). Headroom +
+            # disable_reasoning=True forces the visible letter through.
             raw = await self._model_manager.generate_once(
                 prompt,
                 model_name=FACT_VERIFICATION_MODEL,
                 system_prompt="You are a fact verification assistant. Reply with exactly one letter.",
-                max_tokens=4,
+                max_tokens=64,
                 temperature=0.0,
+                disable_reasoning=True,
             )
             answer = (raw or "").strip().upper()[:1]
         except Exception as e:

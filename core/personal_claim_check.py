@@ -362,6 +362,21 @@ def _is_completion_kind(kind: str) -> bool:
     )
 
 
+# Omission scope (2026-09-27, BC-46/BC-84; S10 roll-up): claims that assert
+# nothing about what the user did or has — discussion, advice, quotes, causal
+# explanation — are recorded but never excised. Everything else (completion,
+# event, plan, cancellation, …: statements about the user's own state) stays
+# omission-eligible — the 09-15 incident was a PLAN claim ("a cover letter
+# waiting for tomorrow"). "other" stays eligible: the auditor uses it for
+# personal-state sentences too ("nothing left today that can't wait").
+_NON_PERSONAL_KINDS = frozenset({"discussion", "suggestion", "quote", "causal"})
+
+
+def _omission_eligible_kind(kind: str) -> bool:
+    tokens = [t for t in re.split(r"[\s/_,-]+", kind.lower()) if t]
+    return bool(tokens) and not all(t in _NON_PERSONAL_KINDS for t in tokens)
+
+
 class _DropClaim(ValueError):
     """This claim cannot be used; the rest of the audit still can."""
 
@@ -568,7 +583,15 @@ async def audit_personal_claims(
     model_manager: Any,
     *,
     model_name: str | None = None,
-    timeout_s: float = 5.0,
+    # 2026-09-27 (BC-47): matches config.yaml personal_claim_check.timeout_s,
+    # which callers always pass explicitly -- this default only documents the
+    # measured budget for a direct call. S10/personal_claim_rollup.md (378
+    # production checks against the code's actual model default, gpt-4o-mini)
+    # found the checked-only p90 was already 4.711s against the old 5.0s
+    # ceiling -- not a long tail, the typical successful call -- while 37.3%
+    # of ALL checks timed out outright (pure waste, zero signal). 6.5s is
+    # that measured p90 plus a ~1.8s margin.
+    timeout_s: float = 6.5,
     max_tokens: int = 900,
     overlap_threshold: float = DEFAULT_LOCATE_OVERLAP,
     min_claim_tokens: int = DEFAULT_LOCATE_MIN_TOKENS,
@@ -647,7 +670,22 @@ def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
 
 
 def omit_unsupported_claims(response: str, result: PersonalClaimResult) -> str:
-    """Remove whole sentences containing exact unsupported claim spans.
+    """Remove whole sentences containing exact unsupported personal claim spans.
+
+    Omission scope is completion-kind only (2026-09-27, BC-46/BC-84/BC-47;
+    S10/personal_claim_rollup.md, 378 production checks): 79% of successfully
+    checked replies had >=1 unsupported claim, but a 10-sample manual review
+    found 7/10 were discussion/advice/explanatory sentences (a news-story
+    opinion, interview-prep advice, a statistics explanation) that the
+    auditor's necessarily broad system prompt classifies as claims about
+    "another person" or "another episode" even though they assert nothing
+    about what the user did -- ``_is_completion_kind`` already isolates
+    exactly this distinction for the demotion path above, so it gates
+    omission too. A discussion/plan/suggestion/other-kind claim is still
+    recorded on the receipt (contradicted/insufficient counts, never
+    silently dropped) -- it is just never physically removed from the
+    response text, because the checker cannot fabricate a replacement for
+    a sentence that was never an unverifiable personal-completion claim.
 
     Callers opt into this function only in correction mode.  Checker failures
     are fail-open and preserve the response.  No negation or replacement event
@@ -660,6 +698,8 @@ def omit_unsupported_claims(response: str, result: PersonalClaimResult) -> str:
     removals: list[tuple[int, int]] = []
     for claim in result.claims:
         if claim.get("status") not in _UNSUPPORTED:
+            continue
+        if not _omission_eligible_kind(_as_text(claim.get("kind"))):
             continue
         claim_text = claim.get("text")
         if not isinstance(claim_text, str):
