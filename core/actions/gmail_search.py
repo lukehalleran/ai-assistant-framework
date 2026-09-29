@@ -118,6 +118,8 @@ async def search_gmail_contacts(
 
     if not auth.has_scope(GMAIL_READONLY_SCOPE):
         logger.warning("[GmailSearch] Missing scope: gmail.readonly")
+        # 2026-09-28 (BC-47, BC-58): missing scope = unavailable, not "no match".
+        _record_failure("Gmail scope missing (gmail.readonly): re-authorize with: python scripts/reauth_google.py")
         return []
 
     creds = auth.get_credentials()

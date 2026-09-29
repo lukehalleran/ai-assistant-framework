@@ -219,7 +219,7 @@ class TestSettingsRoutes:
         assert orch.config["features"]["disable_llm_summaries"] is True
         # Persisted to the scratch config.yaml
         import yaml
-        data = yaml.safe_load(open(tmp_path / "config" / "config.yaml"))
+        data = yaml.safe_load(open(tmp_path / "config" / "config.local.yaml"))  # 2026-09-28: settings persist to the untracked local override
         assert data["features"]["best_of_latency_budget_s"] == 5.0
 
     @pytest.mark.asyncio
@@ -322,7 +322,7 @@ class TestSettingsRoutes:
         assert app_cfg.SYNTHESIS_POOLED_CANDIDATES_PER_SESSION == 4
         assert orch.config["synthesis_pooled"]["enabled"] is False
         import yaml
-        data = yaml.safe_load(open(tmp_path / "config" / "config.yaml"))
+        data = yaml.safe_load(open(tmp_path / "config" / "config.local.yaml"))  # 2026-09-28: settings persist to the untracked local override
         assert data["synthesis_pooled"] == {"enabled": False, "candidates_per_session": 4}
         assert data["synthesis_generator"]["enabled"] is False
 
@@ -364,7 +364,7 @@ class TestSettingsRoutes:
         assert app_cfg.CODE_PROPOSALS_MAX_PER_SESSION == 2
         assert orch.config["code_proposals"]["enabled"] is False
         import yaml
-        data = yaml.safe_load(open(tmp_path / "config" / "config.yaml"))
+        data = yaml.safe_load(open(tmp_path / "config" / "config.local.yaml"))  # 2026-09-28: settings persist to the untracked local override
         assert data["code_proposals"] == {"enabled": False, "max_per_session": 2}
 
 
