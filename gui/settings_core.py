@@ -10,17 +10,18 @@ Purpose:
 Each apply_* function:
     - mutates the live orchestrator (config dict / model_manager / consolidator)
       exactly as the original Gradio closure did,
-    - persists to config/config.yaml via save_settings(),
+    - persists to config/config.local.yaml via save_settings(),
     - returns {"ok": bool, "persisted": bool, "message": str}.
       ok=False → validation error, nothing changed.
       ok=True, persisted=False → runtime applied but the YAML write failed.
 
 Inputs:  orchestrator + primitive values.
 Outputs: result dicts; get_settings_snapshot() for populating either UI.
-Side effects: orchestrator mutation, config/config.yaml writes,
+Side effects: orchestrator mutation, config/config.local.yaml writes (config.yaml is never written),
     SUMMARY_EVERY_N env var (summary cadence only — historical behavior).
 """
 
+import copy
 import os
 from pathlib import Path
 from typing import Callable, Optional
@@ -28,36 +29,88 @@ from typing import Callable, Optional
 import yaml
 
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_text
 
 logger = get_logger("settings_core")
 
 
 # ---- persistence -----------------------------------------------------------
 
+def _read_yaml_dict(path: Path) -> dict:
+    """Strict-ish read of one YAML file: missing -> {}; unparseable/non-dict RAISES
+    (a save must never overwrite a local file it could not read)."""
+    if not path.exists():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} is not a YAML mapping")
+    return data
+
+
+def _merge(base: dict, override: dict) -> dict:
+    """Recursive merge of override into base (in place); scalars/lists replace."""
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _merge(base[k], v)
+        else:
+            base[k] = copy.deepcopy(v)
+    return base
+
+
+def _diff(old: dict, new: dict) -> dict:
+    """Keys of `new` whose value differs from `old` (nested dicts recurse)."""
+    out = {}
+    for k, v in new.items():
+        if k not in old:
+            out[k] = copy.deepcopy(v)
+        elif isinstance(v, dict) and isinstance(old[k], dict):
+            d = _diff(old[k], v)
+            if d:
+                out[k] = d
+        elif v != old[k]:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
 def load_settings() -> dict:
-    """Load persisted settings from config/config.yaml (best-effort)."""
+    """Load persisted settings: config/config.yaml deep-merged with the gitignored
+    config/config.local.yaml (the same view app_config builds at startup), so a value
+    saved by the UI is what the UI shows after a restart. Best-effort."""
     try:
-        cfg_path = Path("config") / "config.yaml"
-        if cfg_path.exists():
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-    except (IOError, OSError, ImportError):
+        data = _read_yaml_dict(Path("config") / "config.yaml")
+        try:
+            _merge(data, _read_yaml_dict(Path("config") / "config.local.yaml"))
+        except (ValueError, yaml.YAMLError):
+            logger.warning("config.local.yaml unreadable; settings view uses config.yaml only")
+        return data
+    except (IOError, OSError, ImportError, ValueError, yaml.YAMLError):
         pass
     return {}
 
 
 def save_settings(updater: Callable[[dict], None]):
-    """Read-modify-write config/config.yaml. Returns (ok, error_or_None)."""
+    """Apply `updater` to the merged settings view and persist ONLY the changed keys
+    into config/config.local.yaml. Returns (ok, error_or_None).
+
+    2026-09-28 (BC-26/BC-37): this used to read-modify-write the COMMITTED
+    config/config.yaml with yaml.safe_dump — every comment stripped, the tracked file
+    dirtied, `git pull` blocked. config.yaml is never written now.
+    """
     try:
-        cfg_path = Path("config") / "config.yaml"
-        data = {}
-        if cfg_path.exists():
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        updater(data)
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cfg_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(data, f, sort_keys=False)
+        cfg_dir = Path("config")
+        local_path = cfg_dir / "config.local.yaml"
+        base = _read_yaml_dict(cfg_dir / "config.yaml")
+        local = _read_yaml_dict(local_path)  # raises on corrupt: never clobber it
+        merged = _merge(copy.deepcopy(base), local)
+        before = copy.deepcopy(merged)
+        updater(merged)
+        _merge(local, _diff(before, merged))
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(str(local_path),
+                          yaml.safe_dump(local, sort_keys=False, allow_unicode=True))
         return True, None
     except Exception as e:
         return False, str(e)

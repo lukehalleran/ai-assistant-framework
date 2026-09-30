@@ -112,6 +112,7 @@ from utils.trigger_match import compile_keyword_matcher as _compile_keyword_matc
 from utils.trigger_match import find_hits as _find_trigger_hits
 from utils.trigger_match import is_negated as _trigger_is_negated
 from utils.test_envelope import inner_text as _test_envelope_inner
+from utils.url_detect import contains_url
 from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
 from utils.date_coerce import to_naive_local as _to_naive_local
 from core.agentic import tool_thread
@@ -762,7 +763,8 @@ async def evaluate_agentic_gate(
     _lower = user_text.lower().strip()
     _lower_normalized = _re_gate.sub(r"\s+", " ", _lower).strip()
     _words = _lower.split()
-    _has_url = 'http://' in _lower or 'https://' in _lower
+    # 2026-09-28 (BC-01): shared boundary-aware matcher, not a substring test.
+    _has_url = contains_url(_lower)
 
     # ── Deferred-request affirmation (2026-08-21) ────────────────────
     # If the PREVIOUS turn tone-deferred a request-shaped query (the model

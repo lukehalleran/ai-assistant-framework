@@ -264,6 +264,9 @@ async def _search_api(
 
     if not auth.has_scope(scope):
         logger.warning(f"[GoogleContacts] Missing scope: {scope}")
+        # 2026-09-28 (BC-47, BC-58): a token without the contacts scope is
+        # an UNAVAILABLE lookup (re-consent needed), not "no such contact".
+        _last_error = f"Google Contacts scope missing ({endpoint}): re-authorize with: python scripts/reauth_google.py"
         return []
 
     creds = auth.get_credentials()
@@ -323,6 +326,9 @@ async def _search_api(
 
     except Exception as e:
         logger.warning(f"[GoogleContacts] Search failed ({endpoint}): {e}")
+        # 2026-09-28 (BC-47, BC-58): a transport exception is a FAILURE the
+        # unavailable_reason() hook must see, not a silent empty result.
+        _last_error = f"Google Contacts search failed ({endpoint}): {type(e).__name__}"
         return []
 
 

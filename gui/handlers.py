@@ -4401,6 +4401,15 @@ async def _run_agentic_search(ctx):
             ctx.telemetry["agentic_answer_call"] = str(
                 getattr(_agentic_session, "answer_call", "") or ""
             )
+        # Tool-call receipts (2026-09-28, BC-72): what each tool did this
+        # turn (name + status + machine reason), from the controller's own
+        # dispatch record — visible in turn_records.jsonl, not only the log.
+        if _agentic_session is not None:
+            _tr = getattr(_agentic_session, "tool_receipts", None)
+            ctx.telemetry["tool_calls"] = list(_tr) if isinstance(_tr, list) else []
+            _pf = getattr(_agentic_session, "providers_failed", None)
+            if isinstance(_pf, dict) and _pf:
+                ctx.telemetry["providers_failed"] = dict(_pf)
         _write_turn_telemetry(
             ctx, 'agentic-search', _agentic_session_id,
             model_name if 'model_name' in dir() else None,

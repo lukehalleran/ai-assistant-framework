@@ -1417,6 +1417,12 @@ class ToolExecutor:
             from core.actions.google_contacts import resolve_contact  # lazy import: cycle
             results = await resolve_contact(name, max_results=10)
             if not results:
+                # 2026-09-28 (BC-47): a dead login is not "no contact".
+                from core.actions import google_contacts, gmail_search  # lazy import: cycle
+                _why = google_contacts.unavailable_reason() or gmail_search.unavailable_reason()
+                if _why:
+                    return (f"[CONTACT LOOKUP FAILED — {_why}. Tell the user the lookup "
+                            "could not run; do not say the contact does not exist.]")
                 return f"[No contacts found matching '{name}']"
             lines = [f"[CONTACTS LOOKUP] '{name}'"]
             for r in results:

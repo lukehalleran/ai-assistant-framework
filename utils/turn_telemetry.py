@@ -117,6 +117,28 @@ def _sanitize_value(
     return str(value)[:_max_str_len]
 
 
+_TOOL_STATUSES = frozenset({"ok", "empty", "failed", "unavailable"})
+_MAX_TOOL_CALLS = 30
+_MAX_DETAIL_LEN = 120
+
+
+def sanitize_tool_calls(value: Any) -> list:
+    """Bounded [{tool, status, detail}] — machine fields only (2026-09-28, BC-72)."""
+    out = []
+    if not isinstance(value, (list, tuple)):
+        return out
+    for item in value[:_MAX_TOOL_CALLS]:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", ""))
+        out.append({
+            "tool": str(item.get("tool", ""))[:60],
+            "status": status if status in _TOOL_STATUSES else "ok",
+            "detail": str(item.get("detail", "") or "")[:_MAX_DETAIL_LEN],
+        })
+    return out
+
+
 def record_turn(record: Dict[str, Any]) -> bool:
     """Append one turn record as a JSON line. Never raises.
 
@@ -148,12 +170,24 @@ def record_turn(record: Dict[str, Any]) -> bool:
                 if isinstance(value, dict):
                     payload[key_str] = _sanitize_timings(value)
                 continue
+            if key_str == "tool_calls":
+                continue  # sanitized below; always present
+            if key_str == "providers_failed":
+                if isinstance(value, dict) and value:
+                    payload[key_str] = {
+                        str(k)[:40]: str(v)[:_MAX_DETAIL_LEN] for k, v in list(value.items())[:10]
+                    }
+                continue
             payload[key_str] = _sanitize_value(
                 value,
                 _max_str_len=(
                     _MAX_PLAN_STR_LEN if key_str == "response_plan" else _MAX_STR_LEN
                 ),
             )
+
+        # Tool-call receipts (2026-09-28, BC-72): always present; [] on a
+        # turn that dispatched no tool.
+        payload["tool_calls"] = sanitize_tool_calls((record or {}).get("tool_calls"))
 
         path = TURN_TELEMETRY_PATH
         parent = os.path.dirname(path)

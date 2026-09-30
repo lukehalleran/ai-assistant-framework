@@ -1279,15 +1279,75 @@ def _kind_to_action_type(kind, clause: str) -> Optional[ActionType]:
             return ActionType.CALENDAR_UPDATE_EVENT
         return ActionType.CALENDAR_CREATE_EVENT
     if kind == ActionKind.EMAIL:
-        return ActionType.SEND_EMAIL
+        return (None if _offer_clause_is_read_only(ActionType.SEND_EMAIL, clause)
+                else ActionType.SEND_EMAIL)
     if kind == ActionKind.MESSAGE:
-        return (ActionType.SEND_DISCORD if _OFFER_DISCORD_RE.search(clause)
-                else ActionType.SEND_TELEGRAM)
+        at = (ActionType.SEND_DISCORD if _OFFER_DISCORD_RE.search(clause)
+              else ActionType.SEND_TELEGRAM)
+        return None if _offer_clause_is_read_only(at, clause) else at
     if kind == ActionKind.GITHUB:
-        if _OFFER_PR_RE.search(clause) and not _OFFER_ISSUE_RE.search(clause):
-            return ActionType.GITHUB_COMMENT_PR
-        return ActionType.GITHUB_CREATE_ISSUE
+        at = (ActionType.GITHUB_COMMENT_PR
+              if _OFFER_PR_RE.search(clause) and not _OFFER_ISSUE_RE.search(clause)
+              else ActionType.GITHUB_CREATE_ISSUE)
+        return None if _offer_clause_is_read_only(at, clause) else at
     return None
+
+
+# 2026-09-28 (class: BC-04, BC-58): an offer resolves to a WRITE ActionType only
+# when its clause carries that action's own write verb. Live 09-28 17:39: "do
+# you want me to search your email for the SAVE plan deadline notice?" + "yes
+# please" forced send_email (any EMAIL-kind clause mapped to SEND_EMAIL) — a
+# card to the owner's own inbox. The verb set is DERIVED from the action's
+# declared intent patterns (the leading verb group), so a new spec verb needs no
+# second list here. Read offers (search/check/find) return None and fall to the
+# read-tool continuation. Bare "email" is a verb only in verb position
+# ("to email Sam"), never as the noun in "your email".
+_EMAIL_AS_VERB_RE = re.compile(
+    r"\b(?:to|and|then|just|ll|can|will|me)\s+(?:e-?mail)\b(?!\s+(?:for|about|from)\b)",
+    re.IGNORECASE)
+_WRITE_VERB_CACHE: Dict[ActionType, re.Pattern] = {}
+
+
+def _write_verb_re(action_type: ActionType) -> Optional["re.Pattern"]:
+    cached = _WRITE_VERB_CACHE.get(action_type)
+    if cached is not None:
+        return cached
+    spec = ACTION_SPECS.get(action_type)
+    verbs: list[str] = []
+    for pat in (spec.intent_patterns if spec else ()):
+        m = re.match(r"\\b\(([^)]+)\)\\b", pat)
+        if m:
+            verbs.extend(v.strip() for v in m.group(1).split("|"))
+    verbs = [v for v in verbs if v and v not in ("email", "e-mail")]
+    if not verbs:
+        return None
+    rx = re.compile(r"\b(?:" + "|".join(re.escape(v) for v in verbs) + r")\b", re.IGNORECASE)
+    _WRITE_VERB_CACHE[action_type] = rx
+    return rx
+
+
+# A READ offer ("search/check/find/look through your email") is not a write
+# offer. Categorized read-verb family (the read-tool vocabulary), never
+# incident words. Rule: a clause is read-only when it carries a read verb and
+# NONE of the action's write verbs — so every write offer that resolved before
+# ("reply to his email", "shoot her an email", "text X on telegram") still
+# resolves; only a pure read offer falls through to the read-tool continuation.
+_OFFER_READ_VERB_RE = re.compile(
+    r"\b(?:search(?:ing)?|check(?:ing)?|look(?:ing)?\s+(?:through|in|at|for|up)|find|"
+    r"pull\s+up|dig\s+(?:through|up)|scan|go\s+through|re-?check|read\s+(?:through|your|the))\b",
+    re.IGNORECASE)
+
+
+def _offer_clause_is_read_only(action_type: ActionType, clause: str) -> bool:
+    text = clause or ""
+    if not _OFFER_READ_VERB_RE.search(text):
+        return False
+    rx = _write_verb_re(action_type)
+    if rx is not None and rx.search(text):
+        return False
+    if action_type == ActionType.SEND_EMAIL and _EMAIL_AS_VERB_RE.search(text):
+        return False
+    return True
 
 
 def offer_action_type(response_text: str) -> Optional[ActionType]:

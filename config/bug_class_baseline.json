@@ -12,14 +12,6 @@
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "2c1438c716fed306a889d7d79fa8d63f1424a0b84161e6ba3620bd25f0415166",
-      "excerpt": "_has_url = 'http://' in _lower or 'https://' in _lower"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "core/insight/coordinator.py",
       "symbol": "_event_from_row",
       "kind": "raw_membership",

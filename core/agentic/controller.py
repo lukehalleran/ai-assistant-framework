@@ -236,6 +236,48 @@ _WRITE_DISPATCH_HANDLERS = frozenset({
 })
 
 
+# Tool-result status markers are machine text the tools themselves emit;
+# matched as a word, not a raw substring (DM-01).
+_TOOL_UNAVAILABLE_RE = re.compile(r"\bunavailable\b", re.IGNORECASE)
+
+
+def _classify_tool_result(result: Any) -> "tuple[str, str]":
+    """(status, machine detail) for a dispatched tool's result — 2026-09-28
+    (BC-72). Read off the formatted text the tool already produced; never a
+    re-run. Detail carries no query text: only failed-provider reasons."""
+    text = str(getattr(result, "formatted_context", "") or "").strip()
+    head = text[:200]
+    if not text:
+        return "empty", ""
+    if "SEARCH FAILED" in head:
+        return "failed", "no mailbox searched"
+    if _TOOL_UNAVAILABLE_RE.search(head):
+        return "unavailable", ""
+    if head.startswith("[No ") or head.startswith("No results found"):
+        return "empty", ""
+    return "ok", ""
+
+
+def _note_tool_receipt(session: Any, tool: str, status: str, detail: str = "") -> None:
+    """Append one {tool,status,detail} receipt to ``session.tool_receipts``
+    (and, for email, the failed-provider map). Never raises."""
+    try:
+        if session is None:
+            return
+        receipts = getattr(session, "tool_receipts", None)
+        if not isinstance(receipts, list):
+            receipts = []
+            session.tool_receipts = receipts
+        receipts.append({"tool": str(tool)[:60], "status": status, "detail": str(detail or "")[:120]})
+        if tool == "email_search":
+            from core.email.registry import provider_coverage  # lazy import: cycle
+            failed = provider_coverage().get("failed") or {}
+            if failed:
+                session.providers_failed = {str(k)[:40]: str(v)[:120] for k, v in failed.items()}
+    except Exception:  # degrades: turn-record receipt lost, turn unaffected
+        return
+
+
 def _read_tool_call_record(decision: "SearchDecision", handler_name: str) -> Optional[Dict[str, Any]]:
     """``{"tool": name, "args": {...}}`` for a dispatched READ tool, or None
     for a WRITE dispatch or an unrecognized decision shape. Mirrors
@@ -2248,7 +2290,19 @@ class AgenticSearchController:
                         self._read_tool_calls_this_turn = []
                     self._read_tool_calls_this_turn.append(_record)
                 handler = getattr(self, handler_name, None) or getattr(self._tool_executor, handler_name)
-                return await handler(*arg_builder(decision, round_number, crisis_level, sandbox_session))
+                # Turn-record receipts (2026-09-28, BC-72): name + outcome of
+                # every dispatched tool, kept on the session for the turn
+                # record. Observation only — the handler's result/exception
+                # passes through unchanged.
+                _tool_name = (_record or {}).get("tool") or handler_name.replace("_dispatch_", "", 1)
+                try:
+                    _res = await handler(*arg_builder(decision, round_number, crisis_level, sandbox_session))
+                except BaseException as _exc:
+                    _note_tool_receipt(session, _tool_name, "failed", type(_exc).__name__)
+                    raise
+                _status, _detail = _classify_tool_result(_res)
+                _note_tool_receipt(session, _tool_name, _status, _detail)
+                return _res
         return _ToolResult(
             decision=decision, round_data=None,
             formatted_context="", start_events=[], end_events=[],

@@ -36,14 +36,14 @@
       },
       "ordinal": 1,
       "legacy": null,
-      "source_sha256": "caa64f2c19a0e42dcad3033dcdad9b270f22b49aee20ddc783885ed7a9ad9a3e",
-      "status": "accepted_debt",
+      "source_sha256": "00f5dab0188db9a91918fce4094c40b19874548196fa26266355d5eade46b7a7",
+      "status": "confirmed_fixed",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: URL-scheme detection; substring is the intended semantics. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-28 (owner-approved, CGR-20260927-003): file edited by the follow-up tool-call branch (fix/sep27-followup-tool-calls); this record's anchored construct is byte-identical and the scan reports no new findings. Follow-up: replace with the shared URL helper when gate.py is next touched.",
-      "reviewer": "Owner (dialogue re-review 2026-09-28); evidence prepared by Claude Opus 5.5",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: URL-scheme detection; substring is the intended semantics. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-28 (owner-approved, CGR-20260927-003): file edited by the follow-up tool-call branch (fix/sep27-followup-tool-calls); this record's anchored construct is byte-identical and the scan reports no new findings. Follow-up: replace with the shared URL helper when gate.py is next touched. Confirmed fixed 2026-09-28 (owner-approved, CGR-20260928-001): the substring check was replaced by utils.url_detect.contains_url (a scheme regex at a token boundary; same scheme-only semantics), so the raw-membership construct no longer exists.",
+      "reviewer": "Owner (dialogue decision 2026-09-28: fixed); fix and evidence by Claude Opus 5.5",
       "review_date": "2026-09-28",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20260928-001"
     },
     {
       "anchor": {

@@ -224,6 +224,13 @@ async def _resolve_recipient(name: str) -> tuple:
         return None, f"Could not resolve '{name}' to an email address: {e}"
 
     if not matches:
+        # 2026-09-28 (BC-47): a dead login is not "no matches".
+        _why = google_contacts.unavailable_reason()
+        if _why:
+            return None, (
+                f"Could not resolve '{name}' to an email address: contact lookup "
+                f"is unavailable ({_why})."
+            )
         return None, (
             f"Could not resolve '{name}' to an email address. "
             f"No matches found in Google Contacts."
