@@ -271,7 +271,10 @@ class TestSessionTruthFromProbe:
     def test_shown_count_equal_to_total_is_not_truncated(self):
         from core.prompt.builder import _session_truth_from_probe
 
-        now = datetime.now()
+        # Pinned to midday: a real now() within 15 min after midnight put the
+        # 6 turns across a calendar day, which is itself a session boundary
+        # (CI failure 2026-09-30 00:10 UTC, PR #42).
+        now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
         ts_list = [now - timedelta(minutes=3 * i) for i in range(6)]
         probe = self._probe(ts_list)
 
