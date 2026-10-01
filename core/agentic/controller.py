@@ -241,11 +241,17 @@ _WRITE_DISPATCH_HANDLERS = frozenset({
 _TOOL_UNAVAILABLE_RE = re.compile(r"\bunavailable\b", re.IGNORECASE)
 
 
+_WRAPPER_HEAD_RE = re.compile(r"^(?:-{3,}[ \t]*\n)?\s*\*\*Round \d+:[^\n]*\*\*[ \t]*\n")
+
+
 def _classify_tool_result(result: Any) -> "tuple[str, str]":
     """(status, machine detail) for a dispatched tool's result — 2026-09-28
     (BC-72). Read off the formatted text the tool already produced; never a
     re-run. Detail carries no query text: only failed-provider reasons."""
     text = str(getattr(result, "formatted_context", "") or "").strip()
+    # 2026-09-30 (BC-72/BC-58): tool handlers wrap their text in "\n---\n**Round N: ...**\n...\n---\n";
+    # drop the leading wrapper so the empty-result check sees the body, not "---".
+    text = _WRAPPER_HEAD_RE.sub("", text, count=1).strip()
     head = text[:200]
     if not text:
         return "empty", ""

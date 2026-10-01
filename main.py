@@ -496,7 +496,10 @@ async def inspect_summaries():
 _shutdown_requested = False
 _process_exiting = False        # set by the real exit paths; ends the idle monitor loop
 _exit_shutdown_handled = False  # an exit path has run (or deliberately skipped) the tasks
-_last_flush_done_at = 0.0       # wall time the last shutdown-task run finished (0 = never)
+_last_flush_done_at = 0.0       # START time of the last SUCCESSFUL shutdown-task run (0 = never)
+_flush_run_started_at = 0.0     # start time of the run in flight (2026-09-30, BC-47/BC-30)
+_flush_run_ok = True            # cleared by _fail_shutdown_run(); read by _end_shutdown_run()
+_last_failed_flush_at = 0.0     # end time of the last FAILED run; idle retries wait for new activity
 _orchestrator_ref = None
 _last_activity_time = time.time()
 _idle_check_interval = int(os.getenv("IDLE_CHECK_INTERVAL_MINUTES", "30"))  # Default 30 minutes
@@ -549,21 +552,37 @@ _shutdown_owner_thread = None   # ident of the thread that owns the in-flight ru
 
 def _begin_shutdown_run() -> bool:
     """Claim the in-flight slot. False when another run is already in flight."""
-    global _shutdown_requested, _shutdown_owner_thread
+    global _shutdown_requested, _shutdown_owner_thread, _flush_run_started_at, _flush_run_ok
     with _shutdown_state_lock:
         if _shutdown_requested:
             return False
         _shutdown_requested = True
+        _flush_run_started_at = time.time()
+        _flush_run_ok = True
         _shutdown_owner_thread = threading.get_ident()
         _shutdown_done.clear()
         return True
 
 
-def _end_shutdown_run() -> None:
-    """Release the in-flight slot and record when the run finished."""
-    global _shutdown_requested, _shutdown_owner_thread, _last_flush_done_at
+def _fail_shutdown_run() -> None:
+    """Mark the in-flight run as not having covered the session (it raised, or
+    was a no-op) so `_end_shutdown_run()` leaves the flush stamp where it was."""
+    global _flush_run_ok
     with _shutdown_state_lock:
-        _last_flush_done_at = time.time()
+        _flush_run_ok = False
+
+
+def _end_shutdown_run(success: "bool | None" = None) -> None:
+    """Release the in-flight slot. On success the flush stamp becomes the run's
+    START time (2026-09-30, BC-47/BC-30): a turn that arrived DURING the run was
+    not covered by it, and a failed/no-op run covered nothing, so neither may
+    advance the stamp. ``success=None`` reads the flag `_fail_shutdown_run` sets."""
+    global _shutdown_requested, _shutdown_owner_thread, _last_flush_done_at, _last_failed_flush_at
+    with _shutdown_state_lock:
+        if (_flush_run_ok if success is None else success):
+            _last_flush_done_at = _flush_run_started_at
+        else:
+            _last_failed_flush_at = time.time()
         _shutdown_requested = False
         _shutdown_owner_thread = None
         _shutdown_done.set()
@@ -572,6 +591,16 @@ def _end_shutdown_run() -> None:
 def _activity_since_last_flush() -> bool:
     """True when a user turn arrived after the last completed run (or none has run yet)."""
     return _last_flush_done_at == 0.0 or _last_activity_time > _last_flush_done_at
+
+
+def _idle_flush_due(idle_minutes: float) -> bool:
+    """Idle monitor's flush decision. A failed run no longer advances the flush
+    stamp (2026-09-30, BC-47), so without the last clause the idle loop would
+    re-run a failing LLM sequence every interval: after a failure it waits for
+    new activity (the exit-time run still retries once)."""
+    return (idle_minutes >= _idle_timeout_minutes
+            and _activity_since_last_flush()
+            and _last_failed_flush_at <= _last_activity_time)
 
 
 def _run_shutdown_tasks(orchestrator):
@@ -590,6 +619,7 @@ def _run_shutdown_tasks(orchestrator):
         asyncio.run(_do_shutdown_async(orchestrator, session_convos, session_summaries))
 
     except Exception as e:
+        _fail_shutdown_run()  # 2026-09-30: a failed run must not mark the session flushed (BC-47)
         logger.error(f"[Shutdown] Task execution failed: {e}")
     finally:
         _end_shutdown_run()
@@ -767,12 +797,14 @@ async def run_shutdown_tasks_async(orchestrator):
             # An idle flush already covered everything; re-running would
             # reflect on the same turns twice. Logged, never silent.
             logger.info("[Shutdown] No user activity since the last completed session flush — nothing new to process")
+            _fail_shutdown_run()  # no-op run: the stamp must not move (2026-09-30)
             return
         logger.info("[Shutdown] Running reflection and summary tasks (lifespan)...")
         _mark_session_end(orchestrator)
         session_convos, session_summaries = _gather_session_state(orchestrator)
         await _do_shutdown_async(orchestrator, session_convos, session_summaries)
     except Exception as e:
+        _fail_shutdown_run()  # 2026-09-30: a failed run must not mark the session flushed (BC-47)
         logger.error(f"[Shutdown] Task execution failed: {e}")
     finally:
         _end_shutdown_run()
@@ -820,7 +852,7 @@ def _idle_monitor_thread():
         # Flush only when there is something new: `_last_activity_time` is no
         # longer reset after a flush (that reset would read as fresh activity
         # and re-run the whole LLM sequence every idle hour on the same turns).
-        if idle_minutes >= _idle_timeout_minutes and _activity_since_last_flush():
+        if _idle_flush_due(idle_minutes):
             logger.info(f"[Idle Monitor] GUI idle for {idle_minutes:.1f} minutes, running shutdown tasks...")
             if _orchestrator_ref:
                 _run_shutdown_tasks(_orchestrator_ref)

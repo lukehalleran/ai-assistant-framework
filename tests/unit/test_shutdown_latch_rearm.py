@@ -54,6 +54,7 @@ def main_mod(monkeypatch):
     monkeypatch.setattr(main, "_process_exiting", False)
     monkeypatch.setattr(main, "_exit_shutdown_handled", False)
     monkeypatch.setattr(main, "_last_flush_done_at", 0.0)
+    monkeypatch.setattr(main, "_last_failed_flush_at", 0.0)  # 2026-09-30: failed-run idle guard
     monkeypatch.setattr(main, "_last_activity_time", time.time())
     monkeypatch.setattr(main, "_orchestrator_ref", None)
     monkeypatch.setattr(main, "_shutdown_owner_thread", None)
