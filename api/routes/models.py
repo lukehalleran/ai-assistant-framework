@@ -1,10 +1,8 @@
 """Model listing + active-model switch (mirrors the Gradio selector in gui/launch.py)."""
 
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException, Request
-import yaml
 
+from gui import settings_core
 from api.schemas import ActiveModelRequest, ModelListResponse
 from utils.logging_utils import get_logger
 
@@ -42,16 +40,13 @@ async def set_active_model(req: ActiveModelRequest, request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to switch model: {e}")
 
-    # Persist to config.yaml (same best-effort pattern as the Gradio selector)
+    # 2026-09-30 (BC-26/BC-37): persist to config.local.yaml via the same writer
+    # Settings uses — never rewrite the committed config.yaml.
     try:
-        cfg_path = Path("config") / "config.yaml"
-        data = {}
-        if cfg_path.exists():
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        data.setdefault("models", {})["active"] = name
-        with open(cfg_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(data, f, sort_keys=False)
+        ok, err = settings_core.save_settings(
+            lambda d: d.setdefault("models", {}).update({"active": name}))
+        if not ok:
+            logger.warning(f"[API] Model switch persist failed (runtime switch OK): {err}")
     except Exception as e:
         logger.warning(f"[API] Model switch persisted-to-yaml failed (runtime switch OK): {e}")
 
