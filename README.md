@@ -5,7 +5,6 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml/badge.svg)](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml)
 [![Tests](https://img.shields.io/badge/tests-12%2C513-brightgreen.svg)](#testing)
-[![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](https://www.docker.com/)
 
 > ~338K lines of Python (≈260K code) across 1,038 files | 14 ChromaDB collections | 12,513 tests | 23 agentic tool types (22 in-loop) | solo-built part-time over ~15 months
 
@@ -13,7 +12,7 @@ Daemon is built around persistent memory, evaluated retrieval, knowledge-graph c
 
 It is a stateful agent architecture, not a chatbot wrapper: every query passes through context analysis, intent classification, parallel retrieval, gating, scoring, prompt assembly, generation, and post-response state updates.
 
-*Solo architected and maintained by Luke U_handle. AI coding assistants were used as development tools, but architecture, review, testing, integration decisions, and commits are human-directed — which is why GitHub lists `@claude` as a contributor.*
+*Solo architected and maintained by Luke ([@lukehalleran](https://github.com/lukehalleran)). AI coding assistants were used as development tools, but architecture, review, testing, integration decisions, and commits are human-directed — which is why GitHub lists `@claude` as a contributor.*
 
 ---
 
@@ -26,7 +25,7 @@ It is a stateful agent architecture, not a chatbot wrapper: every query passes t
 - **Literature-backed synthesis** — narrows a large conceptual space into evidence-backed *candidate* connections and validates them against independent corpora (candidates, not discoveries)
 - **Human-gated self-improvement** — structured code proposals + isolated agent-branch experiments; the machine may propose and evaluate, **only a human may merge**
 - **Prompt-section ablation eval system** — snapshot, replay, variant generation, blind pairwise judging, objective checks
-- **Docker deployment** + **desktop installer** (PyInstaller + Inno Setup)
+- **Desktop packaging** (PyInstaller spec + Inno Setup installer script) — the executable build has not yet been redone since the FastAPI migration; a Dockerfile + compose file for the FastAPI server are included (see [Docker](#docker))
 
 ---
 
@@ -96,11 +95,11 @@ Images are ingested through OpenCLIP ViT-B/32 → vision-LLM caption → entity 
 
 Retrieval quality is **measured, not asserted** — no scoring or weight change ships without a before/after benchmark run.
 
-- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2). Two suites: (1) synthetic adversarial cases (openly distributed), and (2) owner-local cases sampled from personal ChromaDB (not distributed — contains personal memory and skips cleanly when absent). Latest rerun (2026-07-23) on the synthetic suite: **283/296 cases pass (95.6%)**; combined **MRR 0.84** (R@1 0.78) over 280 retrieval cases. Historically measured (2026-05-17 baseline snapshot, MRR 0.89, 305/305 on the combined dataset) and retained in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md) for regression tracking.
+- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2). Two suites: (1) synthetic adversarial cases (openly distributed), and (2) owner-local cases sampled from personal ChromaDB (not distributed — contains personal memory and skips cleanly when absent). Latest rerun (2026-09-20) across both suites: **273/296 cases pass (92.2%)**; combined **MRR 0.84** (R@1 0.79) over 280 retrieval cases — retrieval is flat against the 2026-07-23 rerun (283/296); the ten newly failing cases fail only a stale intent-label assertion, not retrieval. Historically measured (2026-05-17 baseline snapshot, MRR 0.89, 305/305 on the combined dataset) and retained in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md) for regression tracking.
 - **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
 - **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
 
-> Benchmark numbers are versioned in [docs/BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md). All metrics are reproducible locally — no benchmark claim ships without a runnable test.
+> Benchmark numbers are versioned in [docs/BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md). Every benchmark claim has a runnable test; a fresh clone reproduces the synthetic suite, while the real-memory suite is owner-local (it samples personal memory and skips cleanly when absent).
 
 ---
 
@@ -210,7 +209,7 @@ User Query
 ### Prerequisites
 - Python 3.11 (pyproject pins `>=3.11,<3.12`; the systemd timer templates assume a pyenv 3.11.8 env)
 - 4 GB RAM minimum (8 GB recommended; 16 GB if running the synthesis pipeline)
-- At least one LLM API key (OpenAI, Anthropic, DeepSeek, Google, or an OpenRouter-routed model)
+- An [OpenRouter](https://openrouter.ai) API key — all models (OpenAI, Anthropic, DeepSeek, Google, Kimi, …) are routed through OpenRouter
 
 ### Installation
 ```bash
@@ -221,14 +220,18 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 
-# Set at least one provider key
-export OPENAI_API_KEY=sk-your-key-here
-# Or: export ANTHROPIC_API_KEY=sk-ant-...   (or create a .env file)
+# Build the React web UI (without it, :8000 serves only the API + /admin)
+cd web && npm ci && npm run build && cd ..
+
+# Your OpenRouter key goes in OPENAI_API_KEY (the setup wizard can also write it to .env)
+export OPENAI_API_KEY=sk-or-...
 ```
 
 ### Launch
 ```bash
 python main.py        # Web UI (recommended) -> http://127.0.0.1:8000 (FastAPI + React SPA; Gradio dev tabs at /admin)
+                      # the very FIRST run opens the setup wizard at http://localhost:7860 instead;
+                      # finish it, then run `python main.py` again for the web UI on :8000
 python main.py --legacy-gui  # standalone Gradio -> http://localhost:7860
                       # remote launches: run inside tmux/screen or a systemd unit — a dropped SSH
                       # session sends SIGHUP, which now triggers the normal clean shutdown
@@ -237,11 +240,7 @@ python main.py wizard # First-run onboarding wizard
 ```
 
 ### Docker
-```bash
-docker-compose up -d   # OUT OF DATE: maps + healthchecks :7860 (legacy Gradio) while the default `gui`
-                       # command now serves FastAPI on 127.0.0.1:8000 inside the container —
-                       # docs/HANDOFF_20260909_audit_followups.md row 10
-```
+The `Dockerfile` (multi-stage: builds the React SPA, serves FastAPI on :8000, `/health` check) and `docker-compose.yml` were rebuilt for the FastAPI server on 2026-09-27; a full end-to-end container run has not been re-verified since, so the source install above is the tested path. See [docs/DOCKER_README.md](docs/DOCKER_README.md).
 
 ### Desktop executable
 ```bash
@@ -315,7 +314,7 @@ Owner-specific personal vocabulary lives in a **gitignored** `config/config.loca
 - **Not AGI**, and not an autonomous self-modifying system — the machine proposes and evaluates; a human merges.
 - **Not a truth-discovery machine** — synthesis surfaces *candidate* connections, not facts. Final validation is human.
 - **Not a cloud-hosted memory product** — memory lives on your disk, not a service.
-- **Not a benchmark claim without local tests** — every metric in this README is reproducible from `tests/`.
+- **Not a benchmark claim without local tests** — every metric in this README has a runnable test in `tests/` (the real-memory benchmark suite is owner-local; the synthetic suite ships).
 
 Daemon proposes, retrieves, validates, and queues; humans remain responsible for truth judgments and code merges.
 
@@ -449,12 +448,12 @@ export WIKI_DATA_ROOT=~/daemon-wiki-data
 
 ## Configuration
 
-Central config: `config/config.yaml` (68 top-level sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
+Central config: `config/config.yaml` (69 top-level sections) → Pydantic v2 validation (`config/schema.py`) → ~500 module-level constants (`config/app_config.py`) with environment-variable overrides. The active model is multi-provider and config-selectable.
 
 ```yaml
 memory:
   prompt_max_recent: 10
-  semantic_retrieval_limit: 100
+  semantic_retrieval_limit: 40
 gating:
   cosine_similarity_threshold: 0.15
   score_weights: { relevance: 0.30, recency: 0.22, truth: 0.18,
@@ -496,7 +495,7 @@ This turns today's shutdown-only processing into a first-class **background cogn
 
 ## Status
 
-Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, benchmarks, Docker, and desktop packaging — are implemented and tested. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
+Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, and benchmarks — are implemented and tested. The PyInstaller desktop build predates the 2026-07-14 FastAPI migration and is being rebuilt against it; the Docker files were rebuilt on 2026-09-27 and await an end-to-end container check. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
 
 A few subsystems are research/developer features rather than always-on defaults, and degrade gracefully when their data is absent:
 
@@ -529,4 +528,4 @@ A few subsystems are research/developer features rather than always-on defaults,
 | RAM | ~500 MB | ~1.5 GB (≈2.6 GB with Wikipedia index loaded) |
 | GPU VRAM | — | 2–8 GB (optional) |
 
-**Storage:** ChromaDB ~50 MB · Wikipedia FAISS index + metadata ~14.5 GB (optional) · logs ~1 MB/day.
+**Storage:** ChromaDB grows with use (hundreds of MB after months of daily conversations) · Wikipedia FAISS index + metadata ~14.5 GB (optional) · logs ~1 MB/day.
