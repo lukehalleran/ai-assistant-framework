@@ -1361,6 +1361,7 @@ if __name__ == "__main__":
             from memory.corpus_manager import CorpusManager
             from memory.memory_consolidator import MemoryConsolidator
             from models.model_manager import ModelManager
+            from utils.date_coerce import to_naive_local
 
             async def refresh_narrative_context():
                 """Manually regenerate the narrative context from Obsidian notes + corpus."""
@@ -1407,7 +1408,9 @@ if __name__ == "__main__":
                             continue
                     if isinstance(ts, datetime):
                         if ts.tzinfo is not None:
-                            ts = ts.replace(tzinfo=None)
+                            # 2026-09-27 BC-21: convert-then-strip, never a bare
+                            # .replace(tzinfo=None) (misreads a UTC value by the UTC offset).
+                            ts = to_naive_local(ts)
                         if ts >= weekly_cutoff:
                             corpus_weeklies.append(s)
                         elif ts >= monthly_cutoff:

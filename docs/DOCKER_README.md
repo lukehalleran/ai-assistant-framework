@@ -2,13 +2,27 @@
 
 Complete guide for containerized deployment of Daemon RAG Agent.
 
+> **2026-09-27:** this image was rebuilt against the live app (class: BC-71 documentation
+> drift, BC-82 validated-only-under-dev-config). The 2026-07-14 FastAPI migration had never
+> been carried into the Dockerfile/compose files: `api/` wasn't copied (the default `gui`
+> mode is `api.app.create_app()` — the container 404'd at import time), no React SPA was
+> built into the image, everything was wired to the legacy Gradio port 7860 instead of the
+> FastAPI default (8000), and only one of the four models the runtime actually loads offline
+> was pre-downloaded. All of that is fixed below. See `~/Daemon_v1/FOLLOWUPS.md` ("Docker NOT
+> ready") for the original finding.
+
 ## Quick Start
 
 ### Prerequisites
 
-- Docker 20.10+ and Docker Compose 2.0+
+- Docker 20.10+ and Docker Compose 2.0+ (or Podman + podman-compose — the Dockerfile and
+  compose file are engine-agnostic)
 - 8GB+ RAM recommended
 - 10GB+ disk space for image and data
+- Network access during the build: the image pulls Python + Node base layers, `pip install`s
+  torch/transformers/sentence-transformers, runs `npm ci`, and pre-downloads four Hugging
+  Face/spaCy models. None of this is optional — see "Offline Mode" below for *why* it all
+  has to happen at build time.
 
 ### 1. Setup Environment
 
@@ -19,7 +33,8 @@ cp .env.example .env
 # Edit .env and add your API key
 nano .env  # or vim, emacs, etc.
 
-# Required: OPENAI_API_KEY=your_key_here
+# Required: OPENAI_API_KEY=your_key_here (or another provider's key — see
+# config/config.yaml `models:` and the FAQ below)
 ```
 
 ### 2. Build and Run
@@ -43,6 +58,7 @@ docker build -t daemon-rag-agent:latest .
 
 # Run container
 docker run -d \
+  -p 8000:8000 \
   -p 7860:7860 \
   --env-file .env \
   --name daemon-rag \
@@ -52,43 +68,65 @@ docker run -d \
 
 ### 3. Access Application
 
-- **Web GUI**: http://localhost:7860
-- **Health Check**: http://localhost:7860/health
+- **Web UI (React SPA)**: http://localhost:8000/
+- **Admin UI (Gradio dev tabs)**: http://localhost:8000/admin
+- **Health Check**: http://localhost:8000/health
+- **First run only**: a fresh `/app/data` volume has no user profile yet, so the container
+  launches the setup wizard as a *standalone Gradio app* on port 7860
+  (`gui/launch.py::check_first_run`) instead of the FastAPI server — open
+  http://localhost:7860/ to complete it. Once a profile exists, subsequent starts serve the
+  FastAPI+SPA app on 8000 as above. `--legacy-gui` (see "Common Commands") also uses 7860.
 
 ## Architecture
 
 ### Multi-Stage Build
 
-The Dockerfile uses a two-stage build for optimal image size:
+The Dockerfile is a four-stage build:
 
-**Stage 1: Builder** (~2GB)
+**Stage 1: `frontend-builder`** (Node 20)
+- `npm ci` + `npm run build` in `web/` (Vite + React + TypeScript + Mantine)
+- Produces `web/dist`, copied into the runtime stage; nothing from this stage ships in the
+  final image except that one directory
+
+**Stage 2: `python-base`**
+- Shared `python:3.11-slim` + env vars for the builder and runtime stages below (kept as its
+  own stage so it can be built/validated on its own without paying for the heavy stage 3 pip
+  install — see "CI/CD Integration")
+
+**Stage 3: `builder`** (~2GB, from `python-base`)
 - Installs build dependencies (gcc, g++, git)
-- Compiles Python packages (torch, transformers)
-- Downloads spaCy language model
-- Pre-downloads sentence-transformers embedding model
-- Creates virtual environment
+- Compiles Python packages (torch, transformers, sentence-transformers)
+- Downloads the spaCy `en_core_web_sm` language model
+- Pre-downloads all four models the runtime loads offline (see "Offline Mode")
+- Creates a virtual environment at `/opt/venv`
 
-**Stage 2: Runtime** (~1.5GB)
+**Stage 4: runtime** (~1.5GB, from `python-base`)
 - Minimal Python 3.11-slim base
-- Copies only compiled dependencies
-- Copies pre-downloaded models for offline mode
+- Copies only the compiled venv from `builder`
+- Copies the pre-downloaded model cache from `builder`
+- Copies `web/dist` from `frontend-builder`
+- Copies the application code, **including `api/`** (the FastAPI package — a prior version
+  of this image omitted it, since it predated the FastAPI migration)
 - Runs as non-root `daemon` user
-- Includes health check endpoint
+- `HEALTHCHECK` against `/health` on port 8000
 
 ### Directory Structure (Container)
 
 ```
 /app/
+├── api/                    # FastAPI app (routers, launch_auth, app.py)
 ├── core/                   # Application code
 ├── memory/
 ├── models/
-├── gui/
+├── gui/                    # Gradio dev UI (mounted at /admin) + wizard
+├── web/
+│   └── dist/               # Built React SPA (served at /)
 ├── config/
 ├── data/                   # Persistent volume mount
-│   ├── corpus_v4.json     # Conversation memory
-│   ├── chroma_db_v4_v2/   # Vector database
+│   ├── corpus_v4.json      # Conversation memory
+│   ├── chroma_db_v4/       # Vector database
 │   └── cache/
-│       └── huggingface/   # Pre-downloaded models
+│       └── huggingface/    # Pre-downloaded models
 ├── conversation_logs/      # Optional volume mount
 ├── main.py
 └── docker-entrypoint.sh
@@ -116,8 +154,9 @@ docker-compose down                  # Stop services
 docker-compose restart daemon-gui    # Restart services
 docker-compose logs -f daemon-gui    # View logs
 docker-compose ps                    # Check status
-curl http://localhost:7860/health    # Test health endpoint
+curl http://localhost:8000/health    # Test health endpoint
 docker-compose run --rm daemon-gui cli  # Interactive CLI mode
+docker-compose run --rm daemon-gui --legacy-gui  # Standalone Gradio on 7860
 docker-compose down -v               # Remove all data (volumes)
 ```
 
@@ -130,7 +169,7 @@ docker-compose logs -f daemon-gui
 
 **Check health status**
 ```bash
-curl http://localhost:7860/health
+curl http://localhost:8000/health
 ```
 
 **Interactive CLI mode**
@@ -141,7 +180,7 @@ docker-compose run --rm daemon-gui cli
 **Restart with fresh data**
 ```bash
 docker-compose down -v  # Remove volumes
-docker-compose up -d    # Start fresh
+docker-compose up -d    # Start fresh (re-runs the first-run wizard on :7860)
 ```
 
 **Access container shell**
@@ -174,12 +213,17 @@ OPENAI_API_KEY=sk-...
 # Mode: "user" (streamlined) or "dev" (all features)
 DAEMON_MODE=user
 
-# Prompt token budget (default 10000 from config.yaml)
+# Prompt token budget (default 10000; floor 8000, ceiling 16000 — config.yaml token_budget)
 PROMPT_TOKEN_BUDGET=10000
 
-# Paths (inside container)
+# FastAPI server (compose already pins these; restate here for a plain `docker run`)
+DAEMON_API_HOST=0.0.0.0
+DAEMON_API_PORT=8000
+
+# Paths (inside container — pinned in docker-compose.yml's `environment:` block so they
+# agree with docker-entrypoint.sh's own directory pre-check; see that file's comments)
 CORPUS_FILE=/app/data/corpus_v4.json
-CHROMA_PATH=/app/data/chroma_db_v4_v2
+CHROMA_PATH=/app/data/chroma_db_v4
 
 # ChromaDB device
 CHROMA_DEVICE=cpu  # or 'cuda' for GPU
@@ -202,12 +246,13 @@ deploy:
 
 ### Port Configuration
 
-Default port mapping: `7860:7860`
+Default port mappings: `8000:8000` (FastAPI + SPA, primary) and `7860:7860` (first-run
+wizard / `--legacy-gui` fallback only — see "Access Application" above).
 
-**To change external port:**
+**To change the external port:**
 ```yaml
 ports:
-  - "8080:7860"  # Access at http://localhost:8080
+  - "8080:8000"  # Access the SPA at http://localhost:8080
 ```
 
 ## GPU Support
@@ -258,16 +303,27 @@ docker-compose up -d
 
 ## Offline Mode
 
-The image is built with **offline mode enabled** for Hugging Face models:
-- `HF_HUB_OFFLINE=1` prevents network calls to Hugging Face Hub
-- `all-MiniLM-L6-v2` embedding model pre-downloaded during build
-- Model weights baked into image (~440MB)
+The image is built with **offline mode enabled** (`HF_HUB_OFFLINE=1`) for every model the
+runtime loads:
+
+| Model | Used for | Source |
+|---|---|---|
+| `all-MiniLM-L6-v2` | tone/topic/web-trigger embeddings; wiki + semantic-chunk gate paths | `models/model_manager.py` (shared `ModelManager` SentenceTransformer) |
+| `BAAI/bge-small-en-v1.5` | ChromaDB store embedder + the memory gate's scoring model | `memory/storage/multi_collection_chroma_store.py:186` |
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` | gate reranker (top-K rerank after cosine filtering) | `processing/gate_system.py:741` |
+| `gpt2` | token-count fallback tokenizer | `models/tokenizer_manager.py:97` |
+
+All four are pre-downloaded in the `builder` stage and their weights are copied into
+`/app/data/cache/huggingface` in the runtime stage — a prior version of this image only
+pre-downloaded `all-MiniLM-L6-v2`, so every other model silently failed to load under
+`HF_HUB_OFFLINE=1` at runtime (the container never surfaced this as a build error, only as
+degraded behavior later — see the class: BC-71 note at the top of this file).
 
 This ensures:
-- ✅ No internet required for embeddings
-- ✅ Faster startup (no download wait)
-- ✅ Reproducible deployments
-- ✅ Air-gapped deployment support
+- No internet required for embeddings/reranking/tokenization at runtime
+- Faster startup (no download wait)
+- Reproducible deployments
+- Air-gapped deployment support (once built — the *build* itself needs network)
 
 ## Health Checks
 
@@ -276,41 +332,23 @@ This ensures:
 Built into container, runs every 30s:
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:7860/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 ```
+
+`api/app.py` registers a minimal, dependency-free `{"status": "ok"}` `/health` route (no
+orchestrator or API-key check — it answers as soon as the process is listening). The
+detailed `utils.health_check.get_health_status()` payload (corpus/ChromaDB/orchestrator/API
+key checks) is only wired onto the legacy `--legacy-gui` Gradio app, not the default path.
 
 ### Manual Health Check
 
 ```bash
-curl http://localhost:7860/health
+curl http://localhost:8000/health
 ```
 
 **Response (healthy):**
 ```json
-{
-  "status": "healthy",
-  "timestamp": "2025-11-29T12:34:56.789012",
-  "checks": {
-    "corpus_file": {
-      "status": "ok",
-      "exists": true,
-      "path": "/app/data/corpus_v4.json"
-    },
-    "chromadb": {
-      "status": "ok",
-      "exists": true,
-      "path": "/app/data/chroma_db_v4_v2"
-    },
-    "orchestrator": {
-      "status": "ok",
-      "initialized": true
-    },
-    "api_key": {
-      "status": "ok",
-      "configured": true
-    }
-  }
-}
+{"status": "ok"}
 ```
 
 ## Troubleshooting
@@ -331,13 +369,17 @@ docker-compose logs daemon-gui
 
 **Verify endpoint:**
 ```bash
-docker-compose exec daemon-gui curl http://localhost:7860/health
+docker-compose exec daemon-gui curl http://localhost:8000/health
 ```
 
 **Common causes:**
 - Application still starting (wait 60s)
-- Gradio not binding correctly (check `GRADIO_SERVER_NAME=0.0.0.0`)
-- Port mismatch (verify `GRADIO_PORT=7860`)
+- First run: the container is on the setup wizard (port 7860), not the FastAPI app — see
+  "Access Application" above; the 8000 healthcheck will keep failing until the wizard
+  finishes and the container is restarted into normal `gui` mode
+- FastAPI not binding correctly (check `DAEMON_API_HOST=0.0.0.0` — the app's own config
+  default is loopback-only, which Docker's port mapping cannot reach)
+- Port mismatch (verify `DAEMON_API_PORT=8000`)
 
 ### Out of Memory
 
@@ -379,7 +421,8 @@ PROMPT_TOKEN_BUDGET=8000
 
 **Fix:**
 ```bash
-# Container runs as daemon:daemon (UID 999)
+# Container runs as daemon:daemon (system UID/GID — allocated by
+# `useradd -r`/`groupadd -r`, not a fixed 999)
 # Ensure host volumes have correct permissions
 
 docker-compose down
@@ -394,8 +437,20 @@ docker-compose up -d  # Will recreate with correct permissions
 # Rebuild with verbose output
 docker-compose build --no-cache --progress=plain
 
-# Check builder stage completed:
-# Look for: "Downloading (…)MiniLM-L6-v2/.gitattributes"
+# Check the builder stage completed all four model downloads — look for the
+# four `RUN python -c "..."` steps in the Dockerfile succeeding, not just the
+# first (all-MiniLM-L6-v2).
+```
+
+### Frontend Build Issues
+
+**If the SPA doesn't load (`/` falls back to "API + /admin only" in the logs):**
+```bash
+# Rebuild the frontend-builder stage explicitly
+docker-compose build --no-cache --progress=plain daemon-gui
+
+# Confirm `npm run build` succeeded and web/dist/index.html exists inside the image:
+docker-compose run --rm --entrypoint /bin/bash daemon-gui -c "ls -la /app/web/dist"
 ```
 
 ## Production Deployment
@@ -406,6 +461,9 @@ docker-compose build --no-cache --progress=plain
 - [ ] Use `.env` file, not hardcoded secrets
 - [ ] Enable TLS/HTTPS via reverse proxy
 - [ ] Restrict network access (firewall rules)
+- [ ] Set `api.allowed_hosts` (config.yaml) to any real external hostname you expose
+      the app under — the Host-header trust check otherwise only accepts loopback names
+      (`localhost`/`127.0.0.1`/`::1`); see `api/launch_auth.py`
 - [ ] Regular security updates (`docker-compose pull`)
 - [ ] Monitor logs for anomalies
 - [ ] Backup volumes regularly
@@ -418,16 +476,16 @@ server {
     server_name daemon.example.com;
 
     location / {
-        proxy_pass http://localhost:7860;
+        proxy_pass http://localhost:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # WebSocket support for Gradio
+        # Streaming (SSE) support for the chat endpoint
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection "";
+        proxy_buffering off;
     }
 }
 ```
@@ -519,9 +577,15 @@ services:
       - ./memory:/app/memory
       - ./models:/app/models
       - ./gui:/app/gui
+      - ./api:/app/api
     environment:
       PYTHONUNBUFFERED: 1
 ```
+
+Note: this mounts *Python* source only. The SPA under `/app/web/dist` is baked in at build
+time by the `frontend-builder` stage — for live frontend editing, run `cd web && npm run
+dev` on the host instead (it proxies `/api` to `:8000`, see the top-level `CLAUDE.md`
+Commands section) rather than trying to hot-reload inside the container.
 
 **Reload on change:**
 ```bash
@@ -538,11 +602,7 @@ docker-compose run --rm --entrypoint /bin/bash daemon-gui
 
 **Test health check:**
 ```bash
-docker-compose exec daemon-gui python -c "
-from utils.health_check import get_health_status
-import json
-print(json.dumps(get_health_status(), indent=2))
-"
+docker-compose exec daemon-gui curl -s http://localhost:8000/health
 ```
 
 ## CI/CD Integration
@@ -570,13 +630,13 @@ jobs:
 
       - name: Run health check test
         run: |
-          docker run -d --name test -p 7860:7860 \
+          docker run -d --name test -p 8000:8000 \
             -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
             daemon-rag-agent:${{ github.sha }}
 
           sleep 60  # Wait for startup
 
-          curl -f http://localhost:7860/health || exit 1
+          curl -f http://localhost:8000/health || exit 1
 
           docker stop test
 
@@ -588,6 +648,15 @@ jobs:
           docker push yourusername/daemon-rag-agent:latest
 ```
 
+A cheap syntax-only smoke test that needs no more than the base image (useful for a
+resource-capped CI runner, or before spending the ~10-20 minutes the full build takes):
+```bash
+docker build --target python-base -t daemon-rag-agent:base-check .
+docker rmi daemon-rag-agent:base-check
+```
+This validates the Dockerfile parses and the base image pulls, without paying for the
+`pip install`/`npm ci`/model-download stages.
+
 ## FAQ
 
 ### Q: Can I run without Docker?
@@ -595,8 +664,7 @@ jobs:
 
 ### Q: How much disk space is needed?
 **A:** ~10GB total:
-- Image: ~1.5GB
-- Models: ~600MB
+- Image: ~2GB (Python deps + four pre-downloaded models + the built SPA)
 - Data volumes: variable (starts ~100MB, grows with conversations)
 
 ### Q: Can I use other LLM providers?
@@ -619,18 +687,17 @@ docker-compose up -d
 ```yaml
 services:
   daemon-gui-1:
-    ports: ["7860:7860"]
+    ports: ["8000:8000"]
     volumes: ["daemon-data-1:/app/data"]
 
   daemon-gui-2:
-    ports: ["7861:7860"]
+    ports: ["8001:8000"]
     volumes: ["daemon-data-2:/app/data"]
 ```
 
 ## Support
 
-- **Issues**: https://github.com/yourusername/daemon-rag-agent/issues
-- **Discussions**: https://github.com/yourusername/daemon-rag-agent/discussions
+- **Issues**: see the project's GitHub Issues page
 - **Documentation**: See `README.md` and `CLAUDE.md`
 
 ## License

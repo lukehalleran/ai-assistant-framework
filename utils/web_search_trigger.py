@@ -37,6 +37,11 @@ Module Contract:
       normalized to ""|"research"|"conversation" in LLMSearchTriggerResponse.parse,
       consumed by the agentic gate's Tier-4 doc_gen_intent and gui/handlers'
       _resolve_doc_source (which also has a deterministic regex backstop)
+    - needs_email_search + email_query — an email-read intent with NO email
+      noun in the current message (Tier-1's narrow e-mail/inbox/gmail/outlook
+      cue can't see it), e.g. "Northwind. Search that" after a prior
+      email_search turn [NEW 2026-09-27]; the agentic gate routes it to tools
+      mode (email_search offered) only when a provider is actually configured
 - Adaptive anchors [NEW 2026-08-03]:
   - _get_search_anchors() merges learned exemplars (utils.adaptive_exemplars,
     domain "web_search") into the semantic anchor sets: "search_worthy" → positive,
@@ -200,6 +205,14 @@ class WebSearchDecision:
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
     document_source: str = ""  # "research" (external lookup) | "conversation" (summarize THIS conversation) | ""
+    # 2026-09-27 (BC-15, BC-58): an email request with no email noun in THIS
+    # message ("Northwind. Search that" after a prior email_search, or any
+    # other email-shaped follow-up the Tier-1 narrow arm's word-bounded
+    # e-mail/inbox/gmail/outlook cue can't see) used to fall through to the
+    # ordinary web branch and search the public internet for the content of
+    # the user's own inbox. Mirrors needs_document_generation's shape.
+    needs_email_search: bool = False  # LLM detected an email-read intent
+    email_query: str = ""  # optimized query for the email search, if any
     # Evidence need vs. paid-search capability (2026-09-12, adversarial
     # review F3/F4). The budget veto used to erase the need together with the
     # search: should_search=False read exactly like "no evidence wanted", so
@@ -232,8 +245,9 @@ _REQUIRED_TRIGGER_FIELDS = ("should_search", "search_terms")
 _TRIGGER_BOOL_FIELDS = (
     "needs_memory_search", "needs_knowledge_search",
     "needs_document_generation", "needs_pattern_analysis",
+    "needs_email_search",
 )
-_TRIGGER_STR_FIELDS = ("reason", "document_topic", "document_type")
+_TRIGGER_STR_FIELDS = ("reason", "document_topic", "document_type", "email_query")
 _TRIGGER_WHITELIST_STR_FIELDS = ("search_depth", "document_source")
 
 
@@ -297,6 +311,8 @@ class LLMSearchTriggerResponse:
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
     document_source: str = ""  # "research" | "conversation" | ""
+    needs_email_search: bool = False  # Whether query wants the user's own email read/searched
+    email_query: str = ""  # Optimized query for the email search, if any
 
     @classmethod
     def parse(cls, json_str: str) -> Optional['LLMSearchTriggerResponse']:
@@ -381,6 +397,8 @@ class LLMSearchTriggerResponse:
             document_topic=str(data.get("document_topic", "")),
             document_type=str(data.get("document_type", "")),
             document_source=document_source,
+            needs_email_search=bool(data.get("needs_email_search", False)),
+            email_query=str(data.get("email_query", "")),
         )
 
 
@@ -1546,6 +1564,20 @@ PATTERN DELIBERATION CRITERIA (needs_pattern_analysis):
   self-reflection without a request to examine the record, or general factual
   questions about patterns in populations.
 
+EMAIL SEARCH CRITERIA (needs_email_search):
+- TRUE if: the user wants their OWN email/inbox read, searched, or checked for
+  something — including a follow-up that names a topic/sender/subject but not
+  the word "email" itself, when the conversation above already established an
+  email search is what's being continued or refined (e.g. after searching the
+  inbox for a topic, the user names a related term and says "search that").
+- Examples: "check my inbox for the delivery confirmation", "did Maren ever
+  reply", "Northwind. Search that" (right after an email search), "anything
+  from the registrar in my email"
+- FALSE if: the user wants to SEND/write/draft an email (an action, not a
+  read), a general web search, or a memory/notes/document search with no
+  connection to the user's own mailbox.
+- When TRUE, also set email_query to the topic/sender/subject to search for.
+
 DOCUMENT GENERATION CRITERIA (needs_document_generation):
 - TRUE if: the user wants a document SAVED to disk — a report, summary, or research document written and stored as a file
 - Examples: "write a report about climate change", "create a document about AI", "save a summary on quantum computing", "prepare a report on economic trends", "make me a research document about X", "generate a report and save it", "draft a report about Y", "I need a written report on Z"
@@ -1568,7 +1600,9 @@ OUTPUT (JSON only, no markdown):
   "needs_document_generation": true or false,
   "document_topic": "topic for document (only if needs_document_generation is true)",
   "document_type": "report or summary (only if needs_document_generation is true)",
-  "document_source": "research or conversation (only if needs_document_generation is true)"
+  "document_source": "research or conversation (only if needs_document_generation is true)",
+  "needs_email_search": true or false,
+  "email_query": "topic/sender/subject to search for (only if needs_email_search is true)"
 }}
 
 GUIDELINES:
@@ -1577,7 +1611,7 @@ GUIDELINES:
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
 - If not searching, return empty search_terms and num_searches: 0
-- At most one of should_search, needs_memory_search, needs_knowledge_search, needs_pattern_analysis, needs_document_generation should be true. A mixed personal pattern request owns the turn via needs_pattern_analysis and records its required evidence channels inside the later frozen plan.
+- At most one of should_search, needs_memory_search, needs_knowledge_search, needs_pattern_analysis, needs_document_generation, needs_email_search should be true. A mixed personal pattern request owns the turn via needs_pattern_analysis and records its required evidence channels inside the later frozen plan.
 
 JSON:"""
 
@@ -2329,6 +2363,8 @@ async def _analyze_for_web_search_llm(
         document_topic=llm_response.document_topic,
         document_type=llm_response.document_type,
         document_source=llm_response.document_source,
+        needs_email_search=llm_response.needs_email_search,
+        email_query=llm_response.email_query,
     )
 
     # Cache the result to avoid duplicate LLM calls within same request

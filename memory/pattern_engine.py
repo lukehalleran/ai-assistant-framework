@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field
 import yaml
 
 import memory.utils as utils
+from utils.date_coerce import to_naive_local
 from utils.logging_utils import get_logger
 
 logger = get_logger("pattern_engine")
@@ -566,12 +567,14 @@ def run_longitudinal_scan(
 # ---------------------------------------------------------------------------
 
 def _parse_ts(value) -> Optional[datetime]:
+    # 2026-09-27 BC-21: convert-then-strip via to_naive_local, never a bare
+    # .replace(tzinfo=None) (misreads a UTC value by the UTC offset).
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None) if value.tzinfo else value
+        return to_naive_local(value)
     if isinstance(value, str) and value:
         try:
             dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            return dt.replace(tzinfo=None) if dt.tzinfo else dt
+            return to_naive_local(dt)
         except (ValueError, TypeError):
             return None
     return None

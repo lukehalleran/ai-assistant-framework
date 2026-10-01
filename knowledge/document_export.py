@@ -63,6 +63,14 @@ _FONT_DIRS = (
     "/usr/share/fonts/dejavu-sans-fonts", "/usr/share/fonts/truetype/dejavu",
     "/usr/share/fonts/TTF", "/Library/Fonts", "C:/Windows/Fonts",
 )
+# 2026-09-27 (BC-45, BC-72): DocumentGenerator names files
+# "{slug}-{YYYY-MM-DD}.md" or "{slug}-{YYYY-MM-DD}-{n}.md" on collision
+# (_write_versioned_file). Exporting an already-versioned md ("…-2.md")
+# used to append ANOTHER "-N" onto the whole stem on collision, stacking
+# suffixes ("…-2-2.docx") instead of a single incremented one. This matches
+# only a version marker that follows the full date (never the date's own
+# day-of-month digits, which also end in "-\d+").
+_DOC_DATED_VERSION_RE = re.compile(r"^(?P<base>.+-\d{4}-\d{2}-\d{2})-(?P<n>\d+)$")
 
 
 class DocumentExportError(RuntimeError):
@@ -93,11 +101,19 @@ def strip_frontmatter(markdown: str) -> str:
 
 
 def _versioned(path: Path) -> Path:
+    """Never overwrite. Derives the candidate from the md stem and versions
+    it ONCE — a stem the generator already versioned ("resume-2026-09-20-2")
+    increments that existing marker on collision ("…-2026-09-20-3") rather
+    than appending a second one ("…-2026-09-20-2-2")."""
     if not path.exists():
         return path
-    n = 2
+    match = _DOC_DATED_VERSION_RE.match(path.stem)
+    if match:
+        base, n = match.group("base"), int(match.group("n")) + 1
+    else:
+        base, n = path.stem, 2
     while True:
-        candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+        candidate = path.with_name(f"{base}-{n}{path.suffix}")
         if not candidate.exists():
             return candidate
         n += 1

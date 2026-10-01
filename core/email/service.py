@@ -73,6 +73,17 @@ class EmailService:
             return copy.deepcopy(hit[1])
         return None
 
+    def _any_provider_failed(self) -> bool:
+        """2026-09-27 (BC-47, BC-78, BC-69, BC-71): a provider whose auth
+        broke this call must never have its [] cached as a genuine empty
+        result — the failure can clear (reauth, retry) before the TTL does,
+        and the next call must re-probe, not serve a stale miss."""
+        for p in self.providers:
+            reason_fn = getattr(p, "unavailable_reason", None)
+            if callable(reason_fn) and reason_fn():
+                return True
+        return False
+
     async def search(self, query: str, *, window_days: int = 30,
                      limit: int = 20) -> List[EmailMessage]:
         limit = max(0, int(limit))
@@ -86,7 +97,8 @@ class EmailService:
             for p in self.providers
         ])
         merged = merged[:limit]
-        self._cache[key] = (time.monotonic(), copy.deepcopy(merged))
+        if not self._any_provider_failed():
+            self._cache[key] = (time.monotonic(), copy.deepcopy(merged))
         return copy.deepcopy(merged)
 
     async def recent(self, *, window_days: int = 7,
@@ -102,7 +114,8 @@ class EmailService:
             for p in self.providers
         ])
         merged = merged[:limit]
-        self._cache[key] = (time.monotonic(), copy.deepcopy(merged))
+        if not self._any_provider_failed():
+            self._cache[key] = (time.monotonic(), copy.deepcopy(merged))
         return copy.deepcopy(merged)
 
     async def health(self) -> Dict[str, dict]:

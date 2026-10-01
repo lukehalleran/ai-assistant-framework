@@ -110,6 +110,7 @@ from core.agentic.types import (
     SearchRequest,
     SearchRound,
     _ToolResult,
+    AGENTIC_SYSTEM_PROMPT_INJECTION,
     LOW_QUALITY_HINT_TEMPLATE,
     MAX_RELAXATION_HINT,
 )
@@ -120,6 +121,7 @@ from core.agentic.protocols import (
 )
 from core.agentic.formatters import AgenticFormatter
 from core.agentic.tools import LazySandboxSession, ToolExecutor
+from core.agentic import tool_thread
 from core.action_claim_guard import UNVERIFIED_CLAIM_MARKER
 from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
@@ -221,6 +223,243 @@ def _pending_cards_note(action_verb: str = "call propose_action") -> str:
         _t = getattr(p.action_type, "value", p.action_type)
         lines.append(f"- {_t}: {p.summary or p.action_id}")
     return "[PENDING CARDS]\n" + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool-thread continuation (2026-09-27, BC-58/BC-74/BC-04/BC-15)
+# ---------------------------------------------------------------------------
+# WRITE dispatches are never recorded as a "read tool" — a continuation must
+# never re-arm a write (propose_action, create_daemon_note) with amended
+# arguments unreviewed; only a research/lookup tool is worth re-running.
+_WRITE_DISPATCH_HANDLERS = frozenset({
+    "_dispatch_action_proposal", "_dispatch_create_daemon_note",
+})
+
+
+# Tool-result status markers are machine text the tools themselves emit;
+# matched as a word, not a raw substring (DM-01).
+_TOOL_UNAVAILABLE_RE = re.compile(r"\bunavailable\b", re.IGNORECASE)
+
+
+def _classify_tool_result(result: Any) -> "tuple[str, str]":
+    """(status, machine detail) for a dispatched tool's result — 2026-09-28
+    (BC-72). Read off the formatted text the tool already produced; never a
+    re-run. Detail carries no query text: only failed-provider reasons."""
+    text = str(getattr(result, "formatted_context", "") or "").strip()
+    head = text[:200]
+    if not text:
+        return "empty", ""
+    if "SEARCH FAILED" in head:
+        return "failed", "no mailbox searched"
+    if _TOOL_UNAVAILABLE_RE.search(head):
+        return "unavailable", ""
+    if head.startswith("[No ") or head.startswith("No results found"):
+        return "empty", ""
+    return "ok", ""
+
+
+def _note_tool_receipt(session: Any, tool: str, status: str, detail: str = "") -> None:
+    """Append one {tool,status,detail} receipt to ``session.tool_receipts``
+    (and, for email, the failed-provider map). Never raises."""
+    try:
+        if session is None:
+            return
+        receipts = getattr(session, "tool_receipts", None)
+        if not isinstance(receipts, list):
+            receipts = []
+            session.tool_receipts = receipts
+        receipts.append({"tool": str(tool)[:60], "status": status, "detail": str(detail or "")[:120]})
+        if tool == "email_search":
+            from core.email.registry import provider_coverage  # lazy import: cycle
+            failed = provider_coverage().get("failed") or {}
+            if failed:
+                session.providers_failed = {str(k)[:40]: str(v)[:120] for k, v in failed.items()}
+    except Exception:  # degrades: turn-record receipt lost, turn unaffected
+        return
+
+
+def _read_tool_call_record(decision: "SearchDecision", handler_name: str) -> Optional[Dict[str, Any]]:
+    """``{"tool": name, "args": {...}}`` for a dispatched READ tool, or None
+    for a WRITE dispatch or an unrecognized decision shape. Mirrors
+    DISPATCH_TABLE's own predicates rather than re-deriving them from
+    ``handler_name`` alone, so this stays in sync if a row's predicate ever
+    changes. Deliberately covers the tools whose args are meaningful to
+    "run again with amended arguments" — email_search, web_search,
+    search_memory, and the file/reference tools; computation (wolfram) and
+    code execution (sandbox) are not continuation targets in this sense."""
+    if handler_name in _WRITE_DISPATCH_HANDLERS:
+        return None
+    if getattr(decision, "wants_email_search", False):
+        return {"tool": "email_search", "args": {
+            "query": decision.email_query, "window_days": decision.email_window_days,
+        }}
+    if getattr(decision, "wants_search", False) and decision.search_query:
+        return {"tool": "web_search", "args": {"query": decision.search_query}}
+    if getattr(decision, "wants_memory_search", False) and decision.memory_query:
+        return {"tool": "search_memory", "args": {
+            "query": decision.memory_query, "collection": decision.memory_collection,
+        }}
+    if getattr(decision, "wants_file_read", False) and decision.file_read_path:
+        return {"tool": "file_read", "args": {"path": decision.file_read_path}}
+    if getattr(decision, "wants_file_grep", False) and decision.file_grep_pattern:
+        return {"tool": "file_grep", "args": {"pattern": decision.file_grep_pattern}}
+    if getattr(decision, "wants_file_list", False) and decision.file_list_path:
+        return {"tool": "file_list", "args": {"path": decision.file_list_path}}
+    if getattr(decision, "wants_full_document", False) and decision.full_document_title:
+        return {"tool": "get_full_document", "args": {"title": decision.full_document_title}}
+    if getattr(decision, "wants_git_stats", False) and decision.git_stats_query:
+        return {"tool": "git_stats", "args": {"query": decision.git_stats_query}}
+    if getattr(decision, "wants_github", False) and decision.github_query:
+        return {"tool": "github", "args": {"query": decision.github_query}}
+    if getattr(decision, "wants_stackexchange", False) and decision.stackexchange_query:
+        return {"tool": "stackexchange", "args": {"query": decision.stackexchange_query}}
+    if getattr(decision, "wants_arxiv", False) and decision.arxiv_query:
+        return {"tool": "arxiv", "args": {"query": decision.arxiv_query}}
+    if getattr(decision, "wants_pubmed", False) and decision.pubmed_query:
+        return {"tool": "pubmed", "args": {"query": decision.pubmed_query}}
+    if getattr(decision, "wants_hackernews", False) and decision.hackernews_query:
+        return {"tool": "hackernews", "args": {"query": decision.hackernews_query}}
+    if getattr(decision, "wants_recall_image", False) and decision.recall_image_query:
+        return {"tool": "recall_image", "args": {"query": decision.recall_image_query}}
+    if getattr(decision, "wants_lookup_contact", False) and decision.lookup_contact_name:
+        return {"tool": "lookup_contact", "args": {"name": decision.lookup_contact_name}}
+    return None
+
+
+def _describe_tool_call(call: Dict[str, Any]) -> str:
+    """``tool(arg=val, ...)`` rendering of one recorded read-tool call for
+    the [TOOL CONTINUATION] prompt block."""
+    name = call.get("tool", "tool")
+    args = call.get("args") or {}
+    args_str = ", ".join(f"{k}={v!r}" for k, v in args.items() if v is not None)
+    return f"{name}({args_str})" if args_str else f"{name}()"
+
+
+def _build_tool_continuation_prompt(tool_continuation: Dict[str, Any]) -> str:
+    """[TOOL CONTINUATION] block prepended to the FIRST decision round when
+    the gate recognized this turn as a follow-up to the prior turn's
+    read-tool call(s) — see core.agentic.tool_thread and
+    gate._prior_tool_followup. Prompt-only guidance, ALWAYS added regardless
+    of whether this round also FORCES tool_continuation["target_tool"] (see
+    the round loop's read-tool force below, 2026-09-27 plan F/X1) — a live
+    probe found the note alone insufficient: a misbehaving model narrated
+    tool intent in prose instead of emitting a real call/marker, and the
+    unbacked claim shipped as the final reply. The force is the backstop;
+    this note is still the model's first, cheapest signal of what changed."""
+    prior_calls = tool_continuation.get("prior_calls") or []
+    calls_desc = "; ".join(_describe_tool_call(c) for c in prior_calls) or "a tool"
+    lines = [
+        "\n\n[TOOL CONTINUATION]",
+        f"The previous turn ran: {calls_desc}.",
+    ]
+    offer = tool_continuation.get("accepted_offer")
+    if offer:
+        lines.append(
+            f'The previous reply offered: "{offer}". The user accepted it — carry it out now.'
+        )
+    lines.append(
+        "The user's message continues that thread: run the relevant tool again with "
+        "the arguments amended by the user's message (new terms, wider window, the "
+        "account they name)."
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Forced read-tool round (2026-09-27, plan F/X1, BC-46/BC-49/BC-44)
+# ---------------------------------------------------------------------------
+# tool_continuation["target_tool"] (gate._continuation_target_tool) names the
+# read tool round 1 should re-run. Unlike the prompt-only note above, this
+# actually forces it — mirroring the existing forced-WRITE-action machinery
+# (_force_propose_pending) rather than inventing a parallel mechanism: native
+# protocol narrows tools_override to the one tool and names it in tool_choice
+# (resolve_tool_choice, applied at the model_manager request boundary,
+# already downgrades an unforceable route to "auto" — the narrowed tool list
+# still leaves the model nothing else to call); XML protocol has no real
+# tool_choice, so it gets the tool's OWN documented marker syntax (pulled
+# from the same AGENTIC_SYSTEM_PROMPT_INJECTION text the handler already
+# renders, never a second hand-written template) plus an emit-now directive.
+
+# Four read tools are tracked under one name (tool_thread's own contract —
+# the same string _read_tool_call_record records under) but declared under a
+# "search_<x>" native function name.
+_NATIVE_TOOL_NAME_ALIASES: Dict[str, str] = {
+    "stackexchange": "search_stackexchange",
+    "arxiv": "search_arxiv",
+    "pubmed": "search_pubmed",
+    "hackernews": "search_hackernews",
+}
+
+
+def _native_tool_definition(handler: BaseProtocolHandler, target_tool: str) -> Optional[Dict[str, Any]]:
+    """The native tool-call schema dict for `target_tool` from
+    `handler.get_tools()`, looked up BY NAME so a schema edit anywhere can
+    never drift out of sync with the forced round. None when the tool isn't
+    offered this turn (e.g. its availability flag is off) — the caller then
+    leaves the round unforced, same as an unresolved target_tool."""
+    tools = handler.get_tools() or []
+    name = _NATIVE_TOOL_NAME_ALIASES.get(target_tool, target_tool)
+    for t in tools:
+        if isinstance(t, dict) and (t.get("function") or {}).get("name") == name:
+            return t
+    return None
+
+
+# XML marker tag for each tool_thread tool name that the XML-markers
+# protocol actually documents (AGENTIC_SYSTEM_PROMPT_INJECTION) — the write
+# action (propose_action) and the free-API research tools with no tracked
+# continuation use (wolfram, sandbox, pattern_scan, recall_image,
+# lookup_contact, the four search_* aliases above) are deliberately absent;
+# an unlisted target_tool simply leaves the round unforced under XML.
+_XML_TOOL_TAG_BY_NAME: Dict[str, str] = {
+    "web_search": "search",
+    "search_memory": "memory",
+    "email_search": "email_search",
+    "file_read": "file_read",
+    "file_grep": "file_grep",
+    "file_list": "file_list",
+    "get_full_document": "get_full_document",
+    "git_stats": "git_stats",
+    "github": "github",
+    "fetch_url": "fetch_url",
+}
+
+_XML_TOOL_DOC_BLOCK_SPLIT_RE = re.compile(r"\n(?=\d+\.\s+\*\*)")
+
+
+def _xml_tool_doc_block(tag: str) -> Optional[str]:
+    """The numbered doc paragraph for XML marker `<tag>` extracted straight
+    out of AGENTIC_SYSTEM_PROMPT_INJECTION — the SAME text the XML handler
+    already renders into the system prompt every round — so a forced round
+    can never hand the model a hand-written marker template that has
+    drifted from the real docs. None when `tag` has no documented marker."""
+    blocks = _XML_TOOL_DOC_BLOCK_SPLIT_RE.split(AGENTIC_SYSTEM_PROMPT_INJECTION)
+    needles = (f"<{tag} ", f"<{tag}>", f"<{tag}/")
+    for block in blocks:
+        if any(n in block for n in needles):
+            return block.strip()
+    return None
+
+
+def _build_xml_tool_force_prompt(target_tool: str) -> Optional[str]:
+    """[TOOL EXECUTION DIRECTIVE] appended to round 1's prompt (XML-markers
+    protocol) when the gate resolved a continuation target_tool — the model
+    has no real tool_choice to force, so it gets the tool's own documented
+    marker syntax plus an explicit emit-now instruction. None (nothing
+    appended, round stays unforced) when `target_tool` has no XML marker
+    form documented."""
+    tag = _XML_TOOL_TAG_BY_NAME.get(target_tool)
+    if not tag:
+        return None
+    doc = _xml_tool_doc_block(tag)
+    if not doc:
+        return None
+    return (
+        "[TOOL EXECUTION DIRECTIVE]\n"
+        f"{doc}\n\n"
+        f'Emit the <{tag}> marker now with the arguments amended by the '
+        f"user's message — no prose, markers only."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +785,7 @@ class AgenticSearchController:
         gate_modes: Optional[List[str]] = None,
         forced_action: Optional[str] = None,
         action_query_ws: Optional[str] = None,
+        tool_continuation: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Execute the agentic search loop.
@@ -576,6 +816,19 @@ class AgenticSearchController:
                 extraction) so a client-side soft line-wrap or attached-file
                 content can never defeat those deterministic checks. Falls
                 back to `query` when not supplied (every pre-existing caller).
+            tool_continuation (2026-09-27, BC-58/BC-74/BC-04/BC-15): the
+                gate's tool-thread continuation dict — {"prior_calls": [...],
+                "accepted_offer": str|None, "target_tool": str|None} — when
+                this turn is a recognized follow-up to the PRIOR turn's
+                read-tool call(s) (see core.agentic.tool_thread and
+                gate._prior_tool_followup). A [TOOL CONTINUATION] note is
+                prepended to the FIRST decision round only; when
+                target_tool is set (plan F/X1, 2026-09-27) that round ALSO
+                FORCES it — tools_override+tool_choice on the native
+                protocol, an XML marker directive on the XML protocol — the
+                same once-only, round-1 treatment forced_action's
+                write-action force gets, and never together with it in the
+                same round (the write force keeps precedence).
 
         Yields:
             ProgressEvent: Status updates for UI
@@ -589,6 +842,14 @@ class AgenticSearchController:
         self._last_final_system_prompt = None
         self._last_final_model = None
         self._action_query_ws = action_query_ws if action_query_ws is not None else query
+        # Tool-thread continuation (2026-09-27, BC-58/BC-74/BC-04/BC-15): every
+        # READ tool dispatched THIS turn, recorded at the single dispatch
+        # chokepoint (_dispatch_single_inner) and written to
+        # core.agentic.tool_thread in the `finally` block below — including
+        # an empty list, so a turn that dispatches nothing (or only a WRITE
+        # action) can never leave a stale record for the gate to misread on
+        # the next turn as a continuing search thread.
+        self._read_tool_calls_this_turn: List[Dict[str, Any]] = []
         protocol = self.detect_protocol(model_name)
         session = AgenticSearchSession(
             query=query,
@@ -1006,6 +1267,25 @@ class AgenticSearchController:
                     logger.warning(
                         f"[AgenticSearch] Unknown forced_action {forced_action!r} ignored")
             _force_propose_pending = _forced_action is not None
+            # Tool-thread continuation (2026-09-27, BC-58/BC-74/BC-04/BC-15):
+            # prepend a [TOOL CONTINUATION] note to the FIRST decision round
+            # only, consumed exactly once below — mutually exclusive with a
+            # forced WRITE action in practice (the gate returns one or the
+            # other; see gate._prior_tool_followup), but never gated on it
+            # here so neither drops the other's guidance if that ever changes.
+            _tool_continuation_pending = tool_continuation is not None
+            # Read-tool force (2026-09-27, plan F/X1, BC-46/BC-49/BC-44): when
+            # the gate resolved a specific tool for this continuation
+            # (target_tool), force it on round 1 exactly once — the note
+            # above is prompt-only and a misbehaving model can (and did,
+            # live) ignore it entirely while narrating tool intent in prose.
+            # Never together with a forced WRITE action in the same round;
+            # the write force (_force_propose_pending) keeps precedence —
+            # applied in the round loop below, after that block runs.
+            _read_tool_target = (
+                (tool_continuation or {}).get("target_tool") if tool_continuation else None
+            )
+            _read_tool_force_pending = _read_tool_target is not None
             if _forced_action:
                 # Forced action rounds need more than the tiny general-purpose
                 # recent-turn digest. Follow-ups such as "create the calendar
@@ -1139,6 +1419,54 @@ class AgenticSearchController:
                             f"narrate or answer in prose; markers only.{_reject_note}"
                         )
                     _force_propose_pending = False  # force on this round only
+
+                # Read-tool force (2026-09-27, plan F/X1, BC-46/BC-49/BC-44):
+                # once only, round 1, and NEVER together with a forced WRITE
+                # action this same round — `_this_round_forced_type` is None
+                # exactly when the block above did NOT just force
+                # propose_action, so the write force keeps precedence without
+                # a second flag to keep in sync.
+                if _read_tool_force_pending and _this_round_forced_type is None:
+                    if getattr(handler, "propose_action_tool", None) is not None:
+                        # Native-tools protocol: narrow the offered tools to
+                        # exactly the resolved one and name it — mirrors the
+                        # forced-write-action pattern above (tools_override +
+                        # tool_choice; resolve_tool_choice at the
+                        # model_manager request boundary downgrades an
+                        # unforceable route to "auto", but the narrowed tool
+                        # list still leaves nothing else to call).
+                        _tool_def = _native_tool_definition(handler, _read_tool_target)
+                        if _tool_def is not None:
+                            _tool_name = _tool_def["function"]["name"]
+                            _round_tool_choice = {"type": "function", "function": {"name": _tool_name}}
+                            _round_tools_override = [_tool_def]
+                            logger.info(
+                                f"[AgenticSearch] Tool-thread continuation — forcing "
+                                f"{_tool_name} on round 1"
+                            )
+                    else:
+                        # XML-markers protocol: no real tool_choice to force —
+                        # append the tool's own documented marker syntax with
+                        # an emit-now directive.
+                        _xml_force = _build_xml_tool_force_prompt(_read_tool_target)
+                        if _xml_force:
+                            _round_prompt = _round_prompt + "\n\n" + _xml_force
+                            logger.info(
+                                f"[AgenticSearch] Tool-thread continuation — forcing the "
+                                f"{_read_tool_target} XML marker on round 1"
+                            )
+                _read_tool_force_pending = False  # round 1 only, whether or not it applied
+
+                # Tool-thread continuation (2026-09-27, BC-58/BC-74/BC-04/
+                # BC-15): appended after the forced-action block above (never
+                # clobbered by its `_round_system_prompt = augmented_system_prompt
+                # + (...)` reassignment) so the note survives regardless of
+                # whether this round is ALSO forcing a write action.
+                if _tool_continuation_pending:
+                    _round_system_prompt = _round_system_prompt + _build_tool_continuation_prompt(
+                        tool_continuation
+                    )
+                    _tool_continuation_pending = False  # once only, first round
 
                 # Receipt (2026-09-06, A5): hash of the LAST iteration prompt
                 # actually sent to _get_model_decision. Overwritten every
@@ -1890,7 +2218,11 @@ class AgenticSearchController:
             # Sandbox session is persistent — do NOT close it here.
             # It will be reused across agentic runs within the conversation.
             # Cleanup happens via close_sandbox() at shutdown or on timeout.
-            pass
+            # Tool-thread continuation (2026-09-27): overwrite the slot with
+            # THIS turn's read-tool record regardless of how the loop ended
+            # (normal completion, error fallback, or an early exit) — "loop
+            # end" per core.agentic.tool_thread's contract.
+            tool_thread.record_read_tool_calls(self._read_tool_calls_this_turn)
 
     # ------------------------------------------------------------------
     # Parallel dispatch infrastructure
@@ -1945,8 +2277,32 @@ class AgenticSearchController:
                 decision.daemon_note_user_requested = True
         for predicate, handler_name, arg_builder in DISPATCH_TABLE:
             if predicate(decision):
+                # Tool-thread continuation (2026-09-27, BC-58/BC-74/BC-04/
+                # BC-15): record every READ tool dispatched here — the
+                # single chokepoint both routers share — so the NEXT turn's
+                # gate call can recognize a follow-up to it. `hasattr` guard:
+                # a controller built via __new__() (bypassing __init__ and
+                # run_agentic_search, e.g. test_tool_wiring_parity.py) has
+                # no turn in progress to record against.
+                _record = _read_tool_call_record(decision, handler_name)
+                if _record is not None:
+                    if not hasattr(self, "_read_tool_calls_this_turn"):
+                        self._read_tool_calls_this_turn = []
+                    self._read_tool_calls_this_turn.append(_record)
                 handler = getattr(self, handler_name, None) or getattr(self._tool_executor, handler_name)
-                return await handler(*arg_builder(decision, round_number, crisis_level, sandbox_session))
+                # Turn-record receipts (2026-09-28, BC-72): name + outcome of
+                # every dispatched tool, kept on the session for the turn
+                # record. Observation only — the handler's result/exception
+                # passes through unchanged.
+                _tool_name = (_record or {}).get("tool") or handler_name.replace("_dispatch_", "", 1)
+                try:
+                    _res = await handler(*arg_builder(decision, round_number, crisis_level, sandbox_session))
+                except BaseException as _exc:
+                    _note_tool_receipt(session, _tool_name, "failed", type(_exc).__name__)
+                    raise
+                _status, _detail = _classify_tool_result(_res)
+                _note_tool_receipt(session, _tool_name, _status, _detail)
+                return _res
         return _ToolResult(
             decision=decision, round_data=None,
             formatted_context="", start_events=[], end_events=[],

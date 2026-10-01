@@ -87,6 +87,7 @@ from typing import Any, Literal, Optional
 
 from config import app_config
 from utils.logging_utils import get_logger
+from utils.retrieval_outcome import RetrievalError
 from utils.trigger_match import DEFAULT_NEGATION_WINDOW_TOKENS as _NEGATION_LOOKBACK_TOKENS
 from utils.trigger_match import is_negated as _is_negated
 
@@ -223,6 +224,22 @@ class GeneratedDocument:
     sections_count: int = 0
     word_count: int = 0
     model: str = ""
+    # 2026-09-27 (BC-45, BC-72): the doc-gen debug record showed prompt/
+    # system/total = 0 tokens with PROMPT = the bare query — none of the
+    # generator's real research/outline/draft prompts reached it. These carry
+    # the actual prompt(s) sent to the LLM for this document + real token
+    # counts, so a caller building the debug record has honest data instead
+    # of zeros. Empty/zero for save_prewritten's no-LLM callers (accurate —
+    # there is no generator prompt to show).
+    debug_prompt: str = ""
+    debug_system_prompt: str = ""
+    prompt_tokens: int = 0
+    system_tokens: int = 0
+    total_tokens: int = 0
+    # 2026-09-27 (BC-47, CGR-20260927-002): source searches that FAILED (not
+    # "found nothing") while researching this document, e.g. ["web"] — a
+    # provider outage used to read as zero sources.
+    source_failures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -252,12 +269,55 @@ class DocumentGenerator:
         repo_root: str | Path | None = None,
     ):
         self.model_manager = model_manager
+        self._source_failures: list[str] = []
         self.web_search_manager = web_search_manager
         self.chroma_store = chroma_store
 
         root = Path(repo_root) if repo_root else Path(".")
         self.output_dir = Path(output_dir) if output_dir else root / app_config.DOCUMENT_OUTPUT_DIR
         self.repo_root = root.resolve()
+
+        # 2026-09-27 (BC-45, BC-72): real LLM calls made while producing THE
+        # CURRENT document (outline/draft/derivative — not routing-only calls
+        # like classify_deliverable), for the debug-record summary below.
+        # Reset at the top of generate()/compose_from_material(); a fresh
+        # DocumentGenerator is created per turn (see gui/handlers.py), so this
+        # never leaks across documents.
+        self._llm_calls: list[dict[str, str]] = []
+
+    def _record_llm_call(self, label: str, prompt: str, system_prompt: Optional[str]) -> None:
+        """Track one real generate_once() prompt/system_prompt pair for the
+        doc-gen debug record (see _debug_prompt_summary)."""
+        self._llm_calls.append({
+            "label": label, "prompt": prompt or "", "system_prompt": system_prompt or "",
+        })
+
+    def _debug_prompt_summary(self) -> tuple[str, str, int, int, int]:
+        """Aggregate this run's recorded LLM calls into the fields
+        GeneratedDocument exposes for the doc-gen debug record: real prompt/
+        system text (labelled per call) and real token counts against the
+        active model. Never raises — a counting failure degrades to the same
+        char//4 estimate gui.handlers._safe_count_tokens uses, never a crash.
+        """
+        if not self._llm_calls:
+            return "", "", 0, 0, 0
+        prompt_text = "\n\n".join(
+            f"[{c['label']}]\n{c['prompt']}" for c in self._llm_calls if c["prompt"]
+        )
+        system_text = "\n\n".join(
+            f"[{c['label']}]\n{c['system_prompt']}" for c in self._llm_calls if c["system_prompt"]
+        )
+        model_name = getattr(self.model_manager, "default_model", "") or ""
+        try:
+            from models.tokenizer_manager import TokenizerManager  # lazy import: startup-cost
+            tm = TokenizerManager(self.model_manager)
+            prompt_tokens = sum(tm.count_tokens(c["prompt"], model_name) for c in self._llm_calls)
+            system_tokens = sum(tm.count_tokens(c["system_prompt"], model_name) for c in self._llm_calls)
+        except Exception as e:  # degrades: char/4 estimate, same as gui.handlers._safe_count_tokens
+            logger.debug(f"[DocGen] Token counting failed, using estimate: {e}")
+            prompt_tokens = len(prompt_text) // 4
+            system_tokens = len(system_text) // 4
+        return prompt_text, system_text, prompt_tokens, system_tokens, prompt_tokens + system_tokens
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -297,6 +357,10 @@ class DocumentGenerator:
 
         if doc_type not in ("report", "summary"):
             raise ValueError(f"Invalid doc_type: {doc_type!r}. Must be 'report' or 'summary'.")
+
+        # 2026-09-27 (BC-45, BC-72): fresh per generate() call — see _record_llm_call.
+        self._llm_calls = []
+        self._source_failures = []
 
         if max_sections is None:
             max_sections = (
@@ -388,6 +452,9 @@ class DocumentGenerator:
         }
         self._update_index(index_entry)
 
+        debug_prompt, debug_system_prompt, prompt_tokens, system_tokens, total_tokens = (
+            self._debug_prompt_summary()
+        )
         result = GeneratedDocument(
             path=str(path),
             title=title,
@@ -399,6 +466,12 @@ class DocumentGenerator:
             sections_count=sections_count,
             word_count=word_count,
             model=model_name,
+            debug_prompt=debug_prompt,
+            debug_system_prompt=debug_system_prompt,
+            prompt_tokens=prompt_tokens,
+            source_failures=list(self._source_failures),
+            system_tokens=system_tokens,
+            total_tokens=total_tokens,
         )
 
         logger.info(
@@ -526,6 +599,9 @@ class DocumentGenerator:
         LAYOUT TEMPLATE (see assign_attachment_roles) rather than content —
         its structure guides the draft, its placeholder facts must not.
         """
+        # 2026-09-27 (BC-45, BC-72): fresh per call — see _record_llm_call.
+        self._llm_calls = []
+        self._source_failures = []
         system_prompt = "You are a careful document editor. Output the finished document only."
         template_block = ""
         template_rule = ""
@@ -588,6 +664,7 @@ class DocumentGenerator:
         )
         if _looks_like_llm_error(body) or not (body or "").strip():
             raise RuntimeError("derivative document generation returned no usable content")
+        self._record_llm_call("derivative", prompt, system_prompt)
         return self.save_prewritten(
             body.strip() + "\n", topic=topic, doc_type="draft",
             source_types=["provided"],
@@ -641,6 +718,13 @@ class DocumentGenerator:
         }
         self._update_index(index_entry)
 
+        # 2026-09-27 (BC-45, BC-72): whatever this instance recorded before
+        # calling save_prewritten (compose_from_material's derivative prompt)
+        # carries onto the saved document; a direct save_prewritten caller
+        # (insight mode — no LLM call on this instance) gets honest zeros.
+        debug_prompt, debug_system_prompt, prompt_tokens, system_tokens, total_tokens = (
+            self._debug_prompt_summary()
+        )
         result = GeneratedDocument(
             path=str(path),
             title=resolved_title,
@@ -651,6 +735,12 @@ class DocumentGenerator:
             created_at=now,
             sections_count=len(re.findall(r"^#{1,3}\s", markdown, re.MULTILINE)),
             word_count=word_count,
+            debug_prompt=debug_prompt,
+            debug_system_prompt=debug_system_prompt,
+            prompt_tokens=prompt_tokens,
+            source_failures=list(self._source_failures),
+            system_tokens=system_tokens,
+            total_tokens=total_tokens,
         )
         logger.info(f"[DocGen] Saved prewritten {doc_type}: '{resolved_title}' -> {path}")
         return result
@@ -783,7 +873,8 @@ class DocumentGenerator:
 
         for label, result in zip(labels, results):
             if isinstance(result, Exception):
-                logger.warning(f"[DocGen] {label} search failed: {result}")
+                logger.warning(f"[DocGen] {label} search failed: {result!r}")
+                self._source_failures.append(label)
                 continue
             if isinstance(result, list):
                 sources.extend(result)
@@ -814,8 +905,9 @@ class DocumentGenerator:
             return sources
 
         except Exception as e:
-            logger.warning(f"[DocGen] Web search failed: {e}")
-            return []
+            # 2026-09-27 (BC-47): a failed search is not "no sources" —
+            # raise; _gather_sources records it in source_failures.
+            raise RetrievalError(source="web", reason=type(e).__name__) from e
 
     async def _search_collection(
         self, collection: str, query: str, source_type: str,
@@ -849,8 +941,7 @@ class DocumentGenerator:
             return sources
 
         except Exception as e:
-            logger.warning(f"[DocGen] {collection} search failed: {e}")
-            return []
+            raise RetrievalError(source=collection, reason=type(e).__name__) from e
 
     def _dedupe_and_rank(self, sources: list[DocumentSource]) -> list[DocumentSource]:
         """Deduplicate by URL/title and rank by relevance, capped at max."""
@@ -959,12 +1050,14 @@ class DocumentGenerator:
             f"- Output only the outline, no other text\n"
         )
 
+        system_prompt = "You are a research analyst creating document outlines. Output structured outlines only."
         result = await self.model_manager.generate_once(
             prompt,
-            system_prompt="You are a research analyst creating document outlines. Output structured outlines only.",
+            system_prompt=system_prompt,
             max_tokens=1000,
             temperature=0.3,
         )
+        self._record_llm_call("outline", prompt, system_prompt)
         return result or ""
 
     async def _draft_report(
@@ -992,12 +1085,17 @@ class DocumentGenerator:
         # Budget is doubled to account for reasoning tokens consumed by models
         # with native reasoning (e.g. Claude with effort=medium).
         max_tokens = app_config.DOCUMENT_REPORT_TOKEN_BUDGET * 2
+        system_prompt = (
+            "You are a research writer producing well-cited markdown reports. "
+            "Output the report only. Write ALL sections from the outline — do not stop early."
+        )
         result = await self.model_manager.generate_once(
             prompt,
-            system_prompt="You are a research writer producing well-cited markdown reports. Output the report only. Write ALL sections from the outline — do not stop early.",
+            system_prompt=system_prompt,
             max_tokens=max_tokens,
             temperature=0.4,
         )
+        self._record_llm_call("draft", prompt, system_prompt)
         return result or ""
 
     async def _draft_summary(
@@ -1022,12 +1120,17 @@ class DocumentGenerator:
         )
 
         max_tokens = app_config.DOCUMENT_SUMMARY_TOKEN_BUDGET * 2
+        system_prompt = (
+            "You are a research writer producing concise, well-cited markdown summaries. "
+            "Output the summary only."
+        )
         result = await self.model_manager.generate_once(
             prompt,
-            system_prompt="You are a research writer producing concise, well-cited markdown summaries. Output the summary only.",
+            system_prompt=system_prompt,
             max_tokens=max_tokens,
             temperature=0.4,
         )
+        self._record_llm_call("draft", prompt, system_prompt)
         return result or ""
 
     # ------------------------------------------------------------------

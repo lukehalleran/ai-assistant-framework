@@ -6,6 +6,7 @@ Module Contract
   Used as a fallback when Google Contacts returns no matches.
 - Public interface:
   - search_gmail_contacts(query, max_results) -> List[Dict]
+  - unavailable_reason() -> Optional[str]
   - clear_cache() -> None
 - Dependencies: httpx, email.utils, core.actions.google_auth
 - Side effects: HTTP GET to Gmail API (read-only, gmail.readonly scope).
@@ -32,6 +33,51 @@ _CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # Limit concurrent message fetches to avoid rate limiting
 _MAX_CONCURRENT_FETCHES = 5
+
+# 2026-09-27 (BC-47, BC-58): the last reason this PROCESS's Gmail contact
+# search could not run — same shape as core/email/gmail_provider.py's
+# `_LAST_FAILURE` (E1). `search_gmail_contacts()` itself still returns `[]`
+# on any failure (unchanged contract); `unavailable_reason()` is the
+# SEPARATE hook a consumer reads to tell "no matching contacts" apart from
+# "the search never ran".
+_LAST_FAILURE: Optional[str] = None
+
+
+def _record_failure(reason: str) -> None:
+    global _LAST_FAILURE
+    _LAST_FAILURE = reason
+
+
+def _clear_failure() -> None:
+    global _LAST_FAILURE
+    _LAST_FAILURE = None
+
+
+def _auth_failure_reason(auth) -> str:
+    """`auth.auth_failure` when it is a genuine non-empty string, else a
+    generic fallback — defends against a partially-stubbed test double
+    whose unset attribute reads back as a truthy Mock, not the
+    `Optional[str]` the real property returns. 2026-09-27 (BC-47, BC-58)."""
+    reason = getattr(auth, "auth_failure", None)
+    if isinstance(reason, str) and reason:
+        return reason
+    return "Gmail token refresh failed (unknown reason)"
+
+
+def unavailable_reason() -> Optional[str]:
+    """Why the last Gmail contact search could not run, or None.
+
+    Auth-singleton state (`auth.auth_failure`) takes precedence over this
+    process's own last transport failure — same precedence as
+    core/email/gmail_provider.py's `unavailable_reason()`.
+    2026-09-27 (BC-47, BC-58)."""
+    from core.actions.google_auth import get_google_auth  # lazy import: cycle
+
+    auth = get_google_auth()
+    auth_reason = getattr(auth, "auth_failure", None) if auth is not None else None
+    if isinstance(auth_reason, str) and auth_reason:
+        return auth_reason
+    return _LAST_FAILURE
 
 
 async def search_gmail_contacts(
@@ -72,11 +118,17 @@ async def search_gmail_contacts(
 
     if not auth.has_scope(GMAIL_READONLY_SCOPE):
         logger.warning("[GmailSearch] Missing scope: gmail.readonly")
+        # 2026-09-28 (BC-47, BC-58): missing scope = unavailable, not "no match".
+        _record_failure("Gmail scope missing (gmail.readonly): re-authorize with: python scripts/reauth_google.py")
         return []
 
     creds = auth.get_credentials()
     if not creds:
         logger.warning("[GmailSearch] Token refresh failed")
+        # 2026-09-27 (BC-47, BC-58): a failed refresh is a FAILURE, not
+        # silence — `auth.auth_failure` already carries the specific
+        # reason (permanent vs transient); follow the E1 shape.
+        _record_failure(_auth_failure_reason(auth))
         return []
 
     try:
@@ -100,7 +152,12 @@ async def search_gmail_contacts(
             except Exception:
                 err_body = "(no body)"
             logger.warning(f"[GmailSearch] API error: HTTP {resp.status_code} — {err_body}")
+            _record_failure(f"Gmail API error: HTTP {resp.status_code}")
             return []
+
+        # A 200 means the call itself succeeded — clear any stale transport
+        # failure before we even know if there are hits.
+        _clear_failure()
 
         data = resp.json()
         messages = data.get("messages", [])
@@ -159,6 +216,7 @@ async def search_gmail_contacts(
 
     except Exception as e:
         logger.warning(f"[GmailSearch] Search failed: {e}")
+        _record_failure(f"Gmail search failed: {e}")
         return []
 
 
@@ -214,3 +272,4 @@ def clear_cache() -> None:
     """Clear the Gmail search cache."""
     _cache.clear()
     _cache_ts.clear()
+    _clear_failure()

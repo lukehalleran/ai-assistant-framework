@@ -22,6 +22,22 @@ from utils.logging_utils import get_logger
 
 logger = get_logger("outlook_provider")
 
+# 2026-09-27 (BC-47, BC-78, BC-69, BC-71): same shape as gmail_provider's
+# `_LAST_FAILURE` — module-level because the registry builds a fresh
+# OutlookProvider() per call, so per-instance state would never survive
+# between the call that hit the failure and the call that reports it.
+_LAST_FAILURE: Optional[str] = None
+
+
+def _record_failure(reason: str) -> None:
+    global _LAST_FAILURE
+    _LAST_FAILURE = reason
+
+
+def _clear_failure() -> None:
+    global _LAST_FAILURE
+    _LAST_FAILURE = None
+
 
 class OutlookProvider:
     """Outlook provider adapter — fetches message metadata via Microsoft Graph API."""
@@ -86,7 +102,20 @@ class OutlookProvider:
                 ),
             }
 
+        # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): token exists and has a
+        # refresh_token yet the last actual call still failed (e.g. the
+        # refresh POST itself was rejected) — report that, not "available".
+        reason = self.unavailable_reason()
+        if reason:
+            return {"available": False, "detail": reason}
+
         return {"available": True, "detail": "Outlook configured and authenticated"}
+
+    def unavailable_reason(self) -> Optional[str]:
+        """Why the last Outlook search/recent call could not run, or None.
+        Module-level state (see `_LAST_FAILURE`). 2026-09-27 (BC-47, BC-78,
+        BC-69, BC-71)."""
+        return _LAST_FAILURE
 
     async def search(
         self,
@@ -115,6 +144,13 @@ class OutlookProvider:
         token = auth.get_access_token()
         if token is None:
             logger.warning("[Outlook] Could not get access token")
+            # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): failed refresh/expiry
+            # is a FAILURE, not a silent empty result — same class as Gmail's
+            # revoked-token incident.
+            _record_failure(
+                "Outlook token refresh failed or expired — re-authenticate: "
+                "python scripts/auth_outlook.py"
+            )
             return []
 
         # Sanitize query for Graph $search
@@ -150,7 +186,10 @@ class OutlookProvider:
             if resp.status_code != 200:
                 err_body = resp.text[:500] if resp.text else "(no body)"
                 logger.warning(f"[Outlook] search error: HTTP {resp.status_code} — {err_body}")
+                _record_failure(f"Outlook API error: HTTP {resp.status_code}")
                 return []
+
+            _clear_failure()
 
             data = resp.json()
             messages = data.get("value", [])
@@ -176,6 +215,7 @@ class OutlookProvider:
 
         except Exception as e:
             logger.warning(f"[Outlook] search failed: {e}")
+            _record_failure(f"Outlook search failed: {e}")
             return []
 
     async def recent(self, *, window_days: int = 7, limit: int = 25) -> List[EmailMessage]:
@@ -198,6 +238,10 @@ class OutlookProvider:
         token = auth.get_access_token()
         if token is None:
             logger.warning("[Outlook] Could not get access token")
+            _record_failure(
+                "Outlook token refresh failed or expired — re-authenticate: "
+                "python scripts/auth_outlook.py"
+            )
             return []
 
         # Calculate cutoff date
@@ -227,7 +271,10 @@ class OutlookProvider:
             if resp.status_code != 200:
                 err_body = resp.text[:500] if resp.text else "(no body)"
                 logger.warning(f"[Outlook] recent error: HTTP {resp.status_code} — {err_body}")
+                _record_failure(f"Outlook API error: HTTP {resp.status_code}")
                 return []
+
+            _clear_failure()
 
             data = resp.json()
             messages = data.get("value", [])
@@ -244,6 +291,7 @@ class OutlookProvider:
 
         except Exception as e:
             logger.warning(f"[Outlook] recent failed: {e}")
+            _record_failure(f"Outlook recent failed: {e}")
             return []
 
     def _parse_message(self, msg: dict) -> Optional[EmailMessage]:

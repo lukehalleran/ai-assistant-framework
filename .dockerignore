@@ -40,6 +40,17 @@ venv/
 ENV/
 env/
 
+# ============================================================================
+# FRONTEND BUILD ARTIFACTS (2026-09-27, class: BC-71)
+# ============================================================================
+# The frontend-builder stage runs `npm ci && npm run build` from web/ inside
+# the image itself — a locally-installed node_modules/ or a stale local
+# web/dist/ must never ride along in the build context (huge, and would
+# shadow the stage's own npm install / build output on a bind-mount dev flow).
+web/node_modules/
+web/dist/
+web/.vite/
+
 # PyInstaller
 *.manifest
 *.spec

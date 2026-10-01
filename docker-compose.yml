@@ -18,8 +18,14 @@ services:
       dockerfile: Dockerfile
 
     # Port mappings
+    # 2026-09-27 (class: BC-71): the default "gui" mode serves FastAPI + the
+    # built SPA on 8000 (config/app_config.py API_HOST/API_PORT), not the
+    # legacy Gradio 7860. 7860 is still mapped because a FIRST RUN (no
+    # profile yet, gui/launch.py::check_first_run) or an explicit
+    # `--legacy-gui` falls back to standalone Gradio on that port.
     ports:
-      - "7860:7860"  # Gradio web interface
+      - "8000:8000"  # FastAPI + React SPA (primary)
+      - "7860:7860"  # First-run setup wizard / --legacy-gui fallback only
 
     # Environment variables
     # Load from .env file in project root
@@ -28,7 +34,13 @@ services:
 
     # Additional environment overrides
     environment:
-      # Gradio server settings
+      # FastAPI server (0.0.0.0 so Docker's port mapping can reach the
+      # process; the app's own config default is loopback-only, see the
+      # Dockerfile comment on DAEMON_API_HOST)
+      DAEMON_API_HOST: 0.0.0.0
+      DAEMON_API_PORT: 8000
+
+      # Legacy/first-run Gradio server settings
       GRADIO_SERVER_NAME: 0.0.0.0
       GRADIO_PORT: 7860
 
@@ -38,6 +50,14 @@ services:
       # Hugging Face offline mode (models pre-downloaded in image)
       HF_HUB_OFFLINE: 1
       HF_HOME: /app/data/cache/huggingface
+
+      # Pinned so the entrypoint's directory pre-check and the app's actual
+      # config/config.yaml default (memory.corpus_file/chroma_path) agree —
+      # 2026-09-27: docker-entrypoint.sh's own fallback default names a
+      # `chroma_db_v4_v2` path that no longer matches config.yaml
+      # (`chroma_db_v4`); setting it here overrides that stale fallback.
+      CORPUS_FILE: /app/data/corpus_v4.json
+      CHROMA_PATH: /app/data/chroma_db_v4
 
     # Volume mounts for persistent data
     volumes:
@@ -66,7 +86,7 @@ services:
 
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -155,7 +175,7 @@ volumes:
 #   docker-compose run --rm daemon-gui cli
 #
 # Access health check:
-#   curl http://localhost:7860/health
+#   curl http://localhost:8000/health
 #
 # Inspect volumes:
 #   docker volume ls
@@ -170,9 +190,11 @@ volumes:
 #
 # Optional overrides:
 #   - CORPUS_FILE (default: /app/data/corpus_v4.json)
-#   - CHROMA_PATH (default: /app/data/chroma_db_v4_v2)
+#   - CHROMA_PATH (default: /app/data/chroma_db_v4 — pinned above; see the
+#     comment on the `environment:` block for why)
 #   - MODEL_MAX_TOKENS (default: 4096)
-#   - PROMPT_TOKEN_BUDGET (default: 2048)
+#   - PROMPT_TOKEN_BUDGET (default: 10000; floor 8000, ceiling 16000 —
+#     config.yaml token_budget)
 #
 # See .env.example for full list of 105+ configuration options
 #

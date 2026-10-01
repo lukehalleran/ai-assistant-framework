@@ -37,6 +37,21 @@ SCOPES = [
 _instance: "GoogleAuthManager | None" = None
 
 
+def _is_invalid_grant(exc: Exception) -> bool:
+    """True iff the RefreshError payload's `error` field equals
+    "invalid_grant" (google-auth's `_handle_error_response` raises
+    `RefreshError(error_details, response_data, retryable=...)` when the
+    token endpoint returns JSON; `response_data["error"]` is the OAuth2
+    error code). Equality, never a substring match, and never on the
+    message string — a transient 5xx error's TEXT could legitimately
+    contain the words without meaning the grant was revoked.
+    2026-09-27 (BC-47, BC-78, BC-69, BC-71)."""
+    for arg in getattr(exc, "args", ()) or ():
+        if isinstance(arg, dict) and arg.get("error") == "invalid_grant":
+            return True
+    return False
+
+
 def get_google_auth() -> "GoogleAuthManager | None":
     """Return a shared GoogleAuthManager, or None if unconfigured.
 
@@ -87,6 +102,12 @@ class GoogleAuthManager:
         self._token_path = Path(token_path)
         self._scopes = scopes or SCOPES
         self._credentials = None
+        # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): the last refresh failure,
+        # so a revoked/expired token reads as a FAILURE to callers instead of
+        # silently degrading to "no credentials" (which downstream code was
+        # reporting as a genuine empty search result). (reason, permanent,
+        # token_mtime_at_failure) or None; see `auth_failure`.
+        self._refresh_failure: Optional[tuple] = None
 
     @property
     def is_configured(self) -> bool:
@@ -108,6 +129,44 @@ class GoogleAuthManager:
             return False
         return bool(getattr(creds, "expired", False)) and not creds.refresh_token
 
+    @property
+    def auth_failure(self) -> Optional[str]:
+        """The last refresh-failure reason, or None when healthy.
+
+        2026-09-27 (BC-47, BC-78, BC-69, BC-71): the failure is scoped to the
+        token file's mtime at the time it happened — a re-auth (`_save_token`)
+        rewrites the file, so a stale recorded failure never outlives the
+        token that caused it.
+        """
+        if self._refresh_failure is None:
+            return None
+        reason, _permanent, recorded_mtime = self._refresh_failure
+        try:
+            current_mtime = (
+                self._token_path.stat().st_mtime
+                if self._token_path.exists()
+                else None
+            )
+        except OSError:
+            current_mtime = None
+        if current_mtime != recorded_mtime:
+            self._refresh_failure = None
+            return None
+        return reason
+
+    def _record_refresh_failure(self, reason: str, permanent: bool) -> None:
+        """Remember a refresh failure, pinned to the token file's current
+        mtime (see `auth_failure`). 2026-09-27 (BC-47, BC-78, BC-69, BC-71)."""
+        try:
+            mtime = (
+                self._token_path.stat().st_mtime
+                if self._token_path.exists()
+                else None
+            )
+        except OSError:
+            mtime = None
+        self._refresh_failure = (reason, permanent, mtime)
+
     def get_credentials(self):
         """Load credentials, refreshing if expired.
 
@@ -128,8 +187,23 @@ class GoogleAuthManager:
                 logger.info("[GoogleAuth] Token refreshed successfully")
             except Exception as e:
                 logger.warning(f"[GoogleAuth] Token refresh failed: {e}")
+                # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): a revoked/expired
+                # grant is PERMANENT (re-auth required) and unrecoverable by
+                # retrying; anything else (network blip, 5xx) is transient.
+                # Live incident: Gmail token revoked ~09-23, every downstream
+                # reader saw `None` and reported a silent empty result.
+                if _is_invalid_grant(e):
+                    reason = (
+                        "Gmail/Google authorization expired or was revoked — "
+                        "re-authorize with: python scripts/reauth_google.py"
+                    )
+                    self._record_refresh_failure(reason, permanent=True)
+                else:
+                    reason = f"Google token refresh failed ({type(e).__name__})"
+                    self._record_refresh_failure(reason, permanent=False)
                 return None
 
+        self._refresh_failure = None
         self._credentials = creds
         return creds
 
@@ -228,6 +302,12 @@ class GoogleAuthManager:
         # atomic so a crash mid-write can't truncate an existing token file.
         atomic_write_json(self._token_path, token_data, ensure_ascii=True, mode=0o600)
         logger.debug(f"[GoogleAuth] Token saved to {self._token_path}")
+        # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): a fresh token write means
+        # any previously recorded refresh failure no longer applies — covers
+        # the successful-refresh path and a fresh `authenticate()` consent,
+        # both of which call this method. `auth_failure`'s mtime check would
+        # already self-clear on the next read; this just makes it immediate.
+        self._refresh_failure = None
 
     def _load_token(self):
         """Load credentials from token file. Returns Credentials or None."""

@@ -64,7 +64,7 @@ TARGET_CALLEE = "generate_once"
 
 # Lowered whenever a site is fixed (disable_reasoning=True added, or the
 # budget raised past the threshold); raised by nobody. See module docstring.
-MAX_SMALL_BUDGET_SITES = 4  # ratchet: only goes down (5 measured 2026-09-20; _refine_topic fixed same night)
+MAX_SMALL_BUDGET_SITES = 0  # ratchet: only goes down (5 measured 2026-09-20; last 4 fixed 2026-09-27)
 DOCUMENT_GENERATOR_MAX = 0  # _refine_topic fixed 2026-09-20 (disable_reasoning=True)
 CEILING_SLACK = 0  # a ratchet with slack lets new sites in
 

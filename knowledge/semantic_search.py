@@ -12,6 +12,9 @@ Public API:
     semantic_search_with_neighbors(query: str, k: int = 8) -> List[Dict[str, Any]]
         - Returns top-k results with fields:
           'text'/'content', 'source'/'namespace', 'similarity', 'timestamp', 'title'
+    index_available() -> bool
+        - Cached, load-free check: is the index usable right now?
+          (2026-09-27, BC-70)
 
 This module is intentionally self-contained so it can be imported early
 without heavy side-effects. Actual heavy resources are loaded on first use.
@@ -36,6 +39,7 @@ except Exception:
 
 from utils.logging_utils import get_logger
 from utils.retrieval_outcome import OutcomeList
+import config.app_config as app_config
 logger = get_logger("knowledge.semantic_search")
 
 # ------------------------
@@ -43,7 +47,7 @@ logger = get_logger("knowledge.semantic_search")
 # ------------------------
 EMBED_MODEL = os.getenv("SEM_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-_DATA_ROOT = os.getenv("WIKI_DATA_ROOT", "/run/media/lukeh/T9")
+_DATA_ROOT = app_config.WIKI_DATA_ROOT  # 2026-09-27: config-owned (BC-59/BC-88), no owner path in code
 INDEX_PATH = os.getenv("FAISS_INDEX_PATH", os.path.join(_DATA_ROOT, "wiki_data", "vector_index_ivf.faiss"))
 META_PATH = os.getenv("FAISS_META_PATH", os.path.join(_DATA_ROOT, "wiki_data", "metadata.parquet"))
 
@@ -429,6 +433,41 @@ def is_faiss_available() -> bool:
         return True
     # Not loaded yet — check if the files exist
     return bool(faiss and os.path.exists(INDEX_PATH) and os.path.exists(META_PATH))
+
+
+# Cached availability check for hot per-turn callers (2026-09-27, BC-70).
+# `is_faiss_available()` above is already cheap (two `os.path.exists`
+# stats), but a caller gating task scheduling on every single turn still
+# means a stat pair every turn, forever, while an external index stays
+# unmounted. A short TTL means a newly-mounted index is noticed within the
+# recheck window with no process restart, while a disabled turn skips even
+# the stat calls for the rest of that window.
+_availability_cache: Dict[str, Any] = {"value": None, "ts": 0.0}
+_AVAILABILITY_RECHECK_S = 60.0
+
+
+def index_available() -> bool:
+    """Whether the wiki FAISS index is usable, WITHOUT triggering a load.
+
+    Consumed by core/prompt/gatherer_knowledge.py's `_get_semantic_chunks`
+    to skip the in-flight-guard + executor + SEM_TIMEOUT_S wait outright
+    when the index is a known-DISABLED state (missing/unmounted external
+    index) rather than a per-turn hiccup — `SemanticSearchIndex.search()`
+    already reports exactly this state every call via its "index_not_loaded"
+    outcome; this is the cheap pre-check that lets a caller skip the call
+    itself instead of paying for it every single turn.
+    """
+    idx = get_index()
+    if idx.loaded:
+        return True
+    now = time.time()
+    cached = _availability_cache.get("value")
+    if cached is not None and (now - _availability_cache.get("ts", 0.0)) < _AVAILABILITY_RECHECK_S:
+        return cached
+    available = bool(faiss and os.path.exists(INDEX_PATH) and os.path.exists(META_PATH))
+    _availability_cache["value"] = available
+    _availability_cache["ts"] = now
+    return available
 
 
 # Optional: admin hook to force reload at runtime (if you update files on disk)

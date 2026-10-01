@@ -1417,6 +1417,12 @@ class ToolExecutor:
             from core.actions.google_contacts import resolve_contact  # lazy import: cycle
             results = await resolve_contact(name, max_results=10)
             if not results:
+                # 2026-09-28 (BC-47): a dead login is not "no contact".
+                from core.actions import google_contacts, gmail_search  # lazy import: cycle
+                _why = google_contacts.unavailable_reason() or gmail_search.unavailable_reason()
+                if _why:
+                    return (f"[CONTACT LOOKUP FAILED — {_why}. Tell the user the lookup "
+                            "could not run; do not say the contact does not exist.]")
                 return f"[No contacts found matching '{name}']"
             lines = [f"[CONTACTS LOOKUP] '{name}'"]
             for r in results:
@@ -1488,16 +1494,6 @@ class ToolExecutor:
             service = get_email_service()
             window_days = window_days or app_config.EMAIL_DEFAULT_WINDOW_DAYS
 
-            # Coverage disclosure (2026-09-01): a negative answer is only as
-            # honest as its scope — name the providers actually searched and
-            # the ones not connected (advisor mail in unconnected Outlook
-            # read as "no reply" without this).
-            try:
-                from core.email.registry import coverage_note  # lazy import: cycle
-                _coverage = coverage_note()
-            except Exception:
-                _coverage = ""
-
             # Counting/volume questions (2026-09-01): "how many emails am I
             # getting" against a 20-result cap is not a count. Fetch wide,
             # report the true in-window total, list only the newest few.
@@ -1511,6 +1507,37 @@ class ToolExecutor:
                 messages = await service.search(query, window_days=window_days, limit=app_config.EMAIL_MAX_RESULTS)
             else:
                 messages = await service.recent(window_days=window_days, limit=app_config.EMAIL_MAX_RESULTS)
+
+            # Coverage disclosure (2026-09-01, hardened 2026-09-27 BC-47/
+            # BC-78/BC-69/BC-71): computed AFTER the fetch, never before —
+            # a provider whose auth broke (revoked/expired token) only KNOWS
+            # that once the real search attempted it. Computing coverage
+            # first meant a search that never ran still rendered "Searched:
+            # Gmail" (2026-09-23 revoked-token incident: five replies said
+            # "searched Gmail, came up empty" and one guessed Outlook).
+            try:
+                from core.email.registry import provider_coverage, coverage_note  # lazy import: cycle
+                _cov = provider_coverage()
+                _coverage = coverage_note()
+            except Exception:
+                _cov = {}
+                _coverage = ""
+
+            searched = _cov.get("searched") or []
+            failed = _cov.get("failed") or {}
+
+            if not messages and not searched and failed:
+                # No mailbox actually ran a query — an empty inbox and a
+                # broken search must never render the same way. Do not guess
+                # the mail lives elsewhere; name what actually broke.
+                reasons = "; ".join(
+                    f"{name.capitalize()}: {reason}" for name, reason in failed.items())
+                return (
+                    "[EMAIL SEARCH FAILED — no mailbox was searched. "
+                    f"{reasons}. Tell the user the search could not run and what fixes it. "
+                    "Do not describe this as an empty inbox and do not guess that the "
+                    "email is in another account.]"
+                )
 
             if not messages:
                 return (

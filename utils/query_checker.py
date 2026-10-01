@@ -1110,7 +1110,10 @@ async def analyze_query_async(q: str, model_manager=None) -> QueryAnalysis:
                 is_meta_conversational=analysis.is_meta_conversational,
             )
         except Exception as e:
-            logger.debug(f"[QueryChecker] LLM heavy topic classification failed: {e}")
+            # 2026-09-27 (BC-70): a bare `{e}` renders EMPTY for exceptions
+            # whose str() is blank (e.g. some timeout/cancellation types),
+            # leaving no clue in the log which failure mode this was.
+            logger.debug(f"[QueryChecker] LLM heavy topic classification failed: {type(e).__name__}: {e}")
 
     return analysis
 

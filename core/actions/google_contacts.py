@@ -7,6 +7,7 @@ Module Contract
   - search_contacts(query, max_results) -> List[Dict]: Search saved contacts.
   - search_other_contacts(query, max_results) -> List[Dict]: Search other/auto contacts.
   - resolve_contact(name, max_results) -> List[Dict]: Combined: saved first, then other.
+  - unavailable_reason() -> Optional[str]
   - clear_cache() -> None
 - Dependencies: httpx, core.actions.google_auth
 - Side effects: HTTP GET to Google People API (read-only).
@@ -49,6 +50,36 @@ _ERROR_MESSAGE_MAX_CHARS = 160
 def get_last_error() -> Optional[str]:
     """The most recent Google Contacts API error string (endpoint + Google's
     own status/message), or None if no call has failed yet this process."""
+    return _last_error
+
+
+def _auth_failure_reason(auth) -> str:
+    """`auth.auth_failure` when it is a genuine non-empty string, else a
+    generic fallback — defends against a partially-stubbed test double
+    whose unset attribute reads back as a truthy Mock, not the
+    `Optional[str]` the real property returns. 2026-09-27 (BC-47, BC-58)."""
+    reason = getattr(auth, "auth_failure", None)
+    if isinstance(reason, str) and reason:
+        return reason
+    return "Google Contacts token refresh failed (unknown reason)"
+
+
+def unavailable_reason() -> Optional[str]:
+    """Why the last Google Contacts search could not run, or None.
+
+    Auth-singleton state (`auth.auth_failure`) takes precedence over the
+    last recorded API-level error (`get_last_error()`, unchanged) — same
+    precedence as core/email/gmail_provider.py's `unavailable_reason()`.
+    2026-09-27 (BC-47, BC-58): the credentials-None readers at `_warmup()`
+    and `_search_api()` previously fell straight to `[]` with no failure
+    recorded at all — a revoked/expired token read exactly like "no
+    matching contacts"."""
+    from core.actions.google_auth import get_google_auth  # lazy import: cycle
+
+    auth = get_google_auth()
+    auth_reason = getattr(auth, "auth_failure", None) if auth is not None else None
+    if isinstance(auth_reason, str) and auth_reason:
+        return auth_reason
     return _last_error
 
 
@@ -178,12 +209,18 @@ def clear_cache() -> None:
 
 async def _warmup(auth) -> None:
     """Send an initial empty-query request as recommended by People API docs."""
-    global _warmed_up
+    global _warmed_up, _last_error
     if _warmed_up:
         return
 
     creds = auth.get_credentials()
     if not creds:
+        # 2026-09-27 (BC-47, BC-58): a failed refresh is a FAILURE, not
+        # silence — follow the E1 shape. The real search call right after
+        # this (in `_search_api`) hits the SAME `get_credentials()` call
+        # and will itself return early too, so nothing is lost by
+        # recording it here as well.
+        _last_error = _auth_failure_reason(auth)
         return
 
     try:
@@ -211,6 +248,7 @@ async def _search_api(
     source_label: str,
 ) -> List[Dict]:
     """Shared implementation for saved and other contacts search."""
+    global _last_error
     normalized = query.strip().lower()
     cache_key = (endpoint, normalized)
 
@@ -226,11 +264,18 @@ async def _search_api(
 
     if not auth.has_scope(scope):
         logger.warning(f"[GoogleContacts] Missing scope: {scope}")
+        # 2026-09-28 (BC-47, BC-58): a token without the contacts scope is
+        # an UNAVAILABLE lookup (re-consent needed), not "no such contact".
+        _last_error = f"Google Contacts scope missing ({endpoint}): re-authorize with: python scripts/reauth_google.py"
         return []
 
     creds = auth.get_credentials()
     if not creds:
         logger.warning("[GoogleContacts] Token refresh failed")
+        # 2026-09-27 (BC-47, BC-58): a failed refresh is a FAILURE, not
+        # silence — `auth.auth_failure` already carries the specific
+        # reason (permanent vs transient); follow the E1 shape.
+        _last_error = _auth_failure_reason(auth)
         return []
 
     # Warmup on first real call
@@ -263,7 +308,6 @@ async def _search_api(
             )
 
         if resp.status_code != 200:
-            global _last_error
             detail = _describe_api_error(resp)
             _last_error = f"HTTP {resp.status_code} ({endpoint}) — {detail}"
             logger.warning(f"[GoogleContacts] API error: HTTP {resp.status_code} ({endpoint}) — {detail}")
@@ -282,6 +326,9 @@ async def _search_api(
 
     except Exception as e:
         logger.warning(f"[GoogleContacts] Search failed ({endpoint}): {e}")
+        # 2026-09-28 (BC-47, BC-58): a transport exception is a FAILURE the
+        # unavailable_reason() hook must see, not a silent empty result.
+        _last_error = f"Google Contacts search failed ({endpoint}): {type(e).__name__}"
         return []
 
 

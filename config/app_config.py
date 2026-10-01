@@ -335,6 +335,13 @@ WIKI_MAX_CHARS_DEFAULT: int = int(WIKI_CFG.get("max_chars", 15000))
 # 0 (or <=0) disables sentence clipping; intro/full selection is handled elsewhere
 WIKI_MAX_SENTENCES_DEFAULT: int = int(WIKI_CFG.get("max_sentences", 0))
 WIKI_TIMEOUT_DEFAULT: float = float(WIKI_CFG.get("timeout_s", 1.2))
+# Wiki FAISS data root (2026-09-27, BC-59/BC-88): the parent of wiki_data/.
+# Was an owner-mount default hardcoded in knowledge/semantic_search.py and two
+# build scripts. Env WIKI_DATA_ROOT still wins; the owner's real path lives in
+# the gitignored config.local.yaml (wiki.data_root). A missing index is the
+# existing "wiki disabled" state, never a crash.
+WIKI_DATA_ROOT: str = os.path.expanduser(
+    os.getenv("WIKI_DATA_ROOT") or str(WIKI_CFG.get("data_root") or "~/daemon-wiki-data"))
 
 # --------------------------------------------------------------------
 # Web Search Configuration (Tavily API)

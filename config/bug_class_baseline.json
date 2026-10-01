@@ -12,14 +12,6 @@
     },
     {
       "scanner": "dm01_raw_substring",
-      "path": "core/agentic/gate.py",
-      "symbol": "evaluate_agentic_gate",
-      "kind": "raw_membership",
-      "digest": "2c1438c716fed306a889d7d79fa8d63f1424a0b84161e6ba3620bd25f0415166",
-      "excerpt": "_has_url = 'http://' in _lower or 'https://' in _lower"
-    },
-    {
-      "scanner": "dm01_raw_substring",
       "path": "core/insight/coordinator.py",
       "symbol": "_event_from_row",
       "kind": "raw_membership",
@@ -460,22 +452,6 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/document_generator.py",
-      "symbol": "DocumentGenerator._search_collection",
-      "kind": "broad_except_returns_empty",
-      "digest": "be9ebe69d9d31bf26fd8752b14a9b6b35eab8d5c45925eeda3a678d983377e9b",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "knowledge/document_generator.py",
-      "symbol": "DocumentGenerator._search_web",
-      "kind": "broad_except_returns_empty",
-      "digest": "28b3d64b0d020bf3609e40e5a504cb644e4070779eed157d5c079b7db201f4d0",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "knowledge/graph_walk_generator.py",
       "symbol": "GraphWalkGenerator._articulate_and_package",
       "kind": "broad_except_returns_empty",
@@ -513,22 +489,6 @@
       "kind": "broad_except_returns_empty",
       "digest": "06b14c5d38043759254a0256e6857143b53219fd5923344c4c4fe186504cba8c",
       "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/llm_fact_extractor.py",
-      "symbol": "LLMFactExtractor.extract_triples",
-      "kind": "broad_except_returns_empty",
-      "digest": "22f9437f13b777108ad5018af5104eaa694276b29bc877a142771c3a4cc81d62",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/llm_fact_extractor.py",
-      "symbol": "LLMFactExtractor.extract_triples",
-      "kind": "broad_except_returns_empty",
-      "digest": "d9296a83efb75fd8ddfe568480f3126c0e62876be02375286c0461e1dec522ed",
-      "excerpt": "return []"
     },
     {
       "scanner": "dm18_except_returns_empty",

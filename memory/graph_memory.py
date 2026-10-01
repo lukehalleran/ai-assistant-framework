@@ -69,6 +69,7 @@ import networkx as nx
 
 from memory.graph_models import GraphEdge, GraphNode
 import memory.relation_classifier as relation_classifier
+from utils.date_coerce import to_naive_local
 from utils.logging_utils import get_logger
 import utils.safe_json as safe_json
 from utils.safe_json import atomic_write_json
@@ -591,7 +592,9 @@ class GraphMemory:
             return False
         try:
             if ts.tzinfo is not None:
-                ts = ts.replace(tzinfo=None)
+                # 2026-09-27 BC-21: convert-then-strip via to_naive_local, never a
+                # bare .replace(tzinfo=None) (misreads a UTC value by the UTC offset).
+                ts = to_naive_local(ts)
             age_hours = ((now or datetime.now()) - ts).total_seconds() / 3600.0
         except (TypeError, AttributeError):
             return False

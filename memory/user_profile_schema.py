@@ -847,12 +847,18 @@ async def categorize_relation_deep(
             f"preferences, hobbies, study, finance, relationships, goals\n\n"
             f"Reply with ONLY the category name, one word."
         )
+        # 2026-09-27 (BC-89): a reasoning-capable model can spend a small
+        # max_tokens budget entirely in its reasoning channel and return an
+        # empty string; the ValueError fallback below then silently caches
+        # PREFERENCES forever for a relation that was never really classified.
+        # Headroom + disable_reasoning=True forces the visible word through.
         response = await model_manager.generate_once(
             prompt=prompt,
             model_name="gpt-4o-mini",
             system_prompt="You classify user profile facts into categories. Reply with one word only.",
-            max_tokens=10,
+            max_tokens=64,
             temperature=0.0,
+            disable_reasoning=True,
         )
         cat_str = (response or "").strip().lower().rstrip(".")
         try:

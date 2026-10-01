@@ -234,7 +234,14 @@ personal_claim_check:      # 2026-09-15: post-generation support check for claim
   enabled: true
   mode: log_only          # log_only records support; correct buffers delivery and omits unsupported claim sentences
   model: null             # null -> response_planning.review_model
-  timeout_s: 5.0
+  timeout_s: 6.5          # 2026-09-27 (BC-47): S10/personal_claim_rollup.md measured 378 production checks
+                          # against the code's actual model default (response_planning.review_model =
+                          # gpt-4o-mini) -- checked-only p90 was already 4.711s against the prior 5.0s
+                          # ceiling (the typical successful call, not a long tail), and 37.3% of ALL checks
+                          # timed out outright with zero signal. 6.5s = measured p90 + ~1.8s margin. A
+                          # pinned faster model was not chosen: the default is already the cheap/fast review
+                          # tier used elsewhere (grounding_check), and this check has not yet been evaluated
+                          # for `correct` mode -- adding a second model dependency now is not warranted.
   max_tokens: 900
   max_evidence_chars: 12000
 email_integration:

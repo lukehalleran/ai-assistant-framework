@@ -24,8 +24,10 @@ residence, employment, preference, relationship) — a matching verb/noun cue.
 Entity facts need the named subject and the object in one span.  There is
 intentionally NO "last message" fallback.
 
-Leaf module: imports only stdlib and ``utils.temporal_resolver`` (a shared,
-dependency-free date helper) — never from the rest of the package.
+Leaf module: imports only stdlib, ``utils.temporal_resolver`` (a shared,
+dependency-free date helper), and ``utils.test_envelope`` (2026-09-27, the
+shared [test]...[/test] structural parser — also stdlib-only) — never from
+the rest of the package.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from datetime import date, datetime, timedelta
 import re
 from typing import Any, Iterable, Iterator, Mapping
 
+from utils import test_envelope
 from utils.temporal_resolver import resolve_date_expression
 
 
@@ -654,38 +657,36 @@ _EMAIL_CLOSING_RE = re.compile(
 )
 _SIGNATURE_MAX_LINES = 8
 
-# [test]...[/test] convention (2026-09-06, B3): an operator-marked
-# synthetic/replay turn — same treatment as [relay:...]...[/relay]. Detected
-# structurally by the bracket markers only; nothing infers "test" from
-# wording, repetition, or a medication name.
-_TEST_BLOCK_OPEN_RE = re.compile(r"^\s*\[test\]\s*$", re.IGNORECASE)
-_TEST_BLOCK_CLOSE_RE = re.compile(r"^\s*\[/test\]\s*$", re.IGNORECASE)
+# [test]...[/test] convention (2026-09-06, B3; inline form 2026-09-27,
+# BC-58): an operator-marked synthetic/replay turn — same treatment as
+# [relay:...]...[/relay]. Detected structurally by the bracket markers
+# only (utils.test_envelope, the shared parser for BOTH the whole-line
+# block form and the inline form — an un-marked probe like
+# "[test]Navient. Search that[/test]" used to be invisible here); nothing
+# infers "test" from wording, repetition, or a medication name.
 
 
 def quoted_correspondence_lines(text: str) -> set[int]:
     """Indexes of lines that sit inside a pasted email block (greeting →
     closing → signature run), a [relay:...]...[/relay] block, or a
-    [test]...[/test] block.  Empty set when no complete block exists."""
+    [test]...[/test] envelope (inline or whole-line).  Empty set when no
+    complete block exists."""
     lines = (text or "").splitlines()
     inside: set[int] = set()
     # Workflow relay convention: agent output is quoted evidence even when
     # its first-person sentences have no Markdown blockquote markers.
     # A closing marker lets the user resume speaking after a relayed block.
     in_relay = False
-    # [test] convention: an operator-marked synthetic/replay turn — the
-    # content inside is neither claim evidence nor prose commentary.
-    in_test = False
     for index, line in enumerate(lines):
         if re.match(r"^\s*\[relay:\s*[^\]]+\]", line, re.IGNORECASE):
             in_relay = True
-        if _TEST_BLOCK_OPEN_RE.match(line):
-            in_test = True
-        if in_relay or in_test:
+        if in_relay:
             inside.add(index)
         if re.match(r"^\s*\[/relay\]\s*$", line, re.IGNORECASE):
             in_relay = False
-        if _TEST_BLOCK_CLOSE_RE.match(line):
-            in_test = False
+    # [test] convention: an operator-marked synthetic/replay turn — the
+    # content inside is neither claim evidence nor prose commentary.
+    inside |= test_envelope.envelope_line_indices(text)
     i = 0
     while i < len(lines):
         if not _EMAIL_GREETING_RE.match(lines[i]):
@@ -725,20 +726,15 @@ def strip_quoted_correspondence(text: str) -> str:
 
 
 def contains_test_block(text: str) -> bool:
-    """True when ``text`` contains a COMPLETE ``[test]...[/test]`` block
-    (2026-09-06, B3) — an operator-marked synthetic/replay turn. Storage
-    tags provenance from this (``origin="test"``); extraction ignores the
-    block's content entirely (it is stripped like quoted correspondence, so
-    genuine commentary outside the block still yields facts). Detected
-    structurally by the bracket markers only — nothing infers "test" from
-    wording, repetition, or a medication name."""
-    opened = False
-    for line in (text or "").splitlines():
-        if _TEST_BLOCK_OPEN_RE.match(line):
-            opened = True
-        elif opened and _TEST_BLOCK_CLOSE_RE.match(line):
-            return True
-    return False
+    """True when ``text`` contains a COMPLETE ``[test]...[/test]`` envelope
+    (2026-09-06, B3; inline form recognised 2026-09-27, BC-58) — an
+    operator-marked synthetic/replay turn. Storage tags provenance from
+    this (``origin="test"``); extraction ignores the envelope's content
+    entirely (it is stripped like quoted correspondence, so genuine
+    commentary outside the envelope still yields facts). Detected
+    structurally by the bracket markers only (``utils.test_envelope``) —
+    nothing infers "test" from wording, repetition, or a medication name."""
+    return test_envelope.has_envelope(text)
 
 
 # A period after a title/common abbreviation is not a sentence boundary

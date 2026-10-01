@@ -33,7 +33,7 @@ Narrative Context System (2026-01-17, updated 2026-03-10 for 3-tier):
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from datetime import date as _date
 from datetime import timedelta as _timedelta
 from typing import List, Dict, Any, Optional
@@ -304,15 +304,13 @@ class MemoryConsolidator:
         Returns True if a new summary was stored.
         """
         try:
-            # 1) Throttle by time
-            last = getattr(corpus_manager, "get_last_summary_meta", lambda: None)()
-            if last and isinstance(last, dict):
-                ts = last.get("timestamp")
-                if ts and isinstance(ts, datetime):
-                    if datetime.now() - ts < timedelta(minutes=self.min_gap_minutes):
-                        logger.debug("[Consolidation] Skipped (min gap not elapsed)")
-                        return False
-
+            # 2026-09-27 BC-21/BC-58: the time-throttle branch that used to live here
+            # called `corpus_manager.get_last_summary_meta`, a method no CorpusManager
+            # implementation ever defined — `getattr(..., lambda: None)()` always
+            # returned None, so the gap check below never ran. Removed as dead code
+            # rather than implemented: min_gap_minutes has no timestamped source to
+            # throttle against without a real get_last_summary_meta on CorpusManager,
+            # which is out of scope here (memory/corpus_manager.py is not in this batch).
             # 2) Count since last summary
             num_since_fn = getattr(corpus_manager, "count_exchanges_since_last_summary", None)
             if callable(num_since_fn):

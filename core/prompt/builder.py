@@ -77,7 +77,7 @@ import traceback
 import uuid
 import asyncio
 import asyncio as _asyncio
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.context_pipeline import ContextResult
@@ -101,6 +101,7 @@ from .context_gatherer import (
 from .formatter import (
     PromptFormatter, _parse_bool, _dedupe_keep_order, _sanitize_embedded_headers,
     _staleness_prefix, _is_multimodal_model, _load_upload_image,
+    _parse_entry_timestamp, _detect_session_boundary, SESSION_BOUNDARY_GAP_HOURS,
 )
 from .summarizer import LLMSummarizer
 from .token_manager import TokenManager, USER_PROFILE_MAX_TOKENS
@@ -321,6 +322,17 @@ def _compute_token_budget(model_manager) -> int:
 # - Facts: 15 semantic + 15 recent
 # - Summaries: 10 (hybrid)
 # - Reflections: 10 (hybrid)
+# Session-truth probe (2026-09-27, BC-46/BC-51/BC-30): how far back to look,
+# BEYOND the [RECENT CONVERSATION] display window (PROMPT_MAX_RECENT below),
+# to find the CURRENT session's true start/turn-count and to build the
+# temporal_recall "earlier today" timeline. A display cap is not a session
+# boundary — see _session_truth_from_probe / _today_timeline_from_probe.
+SESSION_PROBE_LIMIT = _cfg_int("session_probe_limit", 200)
+SESSION_TIMELINE_MAX_LINES = _cfg_int("session_timeline_max_lines", 40)
+# Confidence floor for the temporal_recall-only [EARLIER TODAY] timeline —
+# matches the plan's "conf >= 0.6" acceptance bar.
+SESSION_TIMELINE_MIN_CONFIDENCE = 0.6
+
 PROMPT_MAX_RECENT = _cfg_int("prompt_max_recent", 15)
 PROMPT_MAX_MEMS = _cfg_int("prompt_max_mems", 15)
 PROMPT_MAX_FACTS = _cfg_int("prompt_max_facts", 30)
@@ -714,6 +726,108 @@ def _apply_self_report_trim(
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Session truth (2026-09-27, BC-46/BC-51/BC-30)
+# ---------------------------------------------------------------------------
+# [RECENT CONVERSATION] shows the last PROMPT_MAX_RECENT turns — a DISPLAY
+# cap, not a session boundary. A live turn (09-26 21:05 "what time did i sit
+# down") was answered from a 10-turn window that happened to be one
+# continuous (no internal gap) session; the true answer (18:23) sat two
+# hours earlier, outside the window, and the render loop's session header
+# presented the window's oldest SHOWN entry as if it were the session start.
+# These helpers probe further back (SESSION_PROBE_LIMIT, bypassing
+# _get_recent_conversations' semantic-search fallback, which this probe must
+# never trigger) so the builder can say so honestly and, for a recall-shaped
+# query, surface the turns the window dropped.
+
+def _fetch_session_probe(memory_coordinator, limit: int) -> List[Dict[str, Any]]:
+    """Read up to `limit` episodic corpus entries (newest-first) directly off
+    corpus_manager — the SAME call `_get_recent_conversations` makes, but
+    without its "not enough? run a semantic query" fallback, which a probe
+    used only to locate a session boundary/turn count must never trigger."""
+    corpus_manager = getattr(memory_coordinator, "corpus_manager", None)
+    if corpus_manager is None or not hasattr(corpus_manager, "get_recent_memories"):
+        return []
+    try:
+        return corpus_manager.get_recent_memories(count=limit) or []
+    except (AttributeError, TypeError, KeyError, ValueError, IndexError) as e:
+        # degrades: no session-truth honesty or [EARLIER TODAY] timeline this
+        # turn; [RECENT CONVERSATION] itself still renders unchanged. Narrow
+        # on purpose (2026-09-27, DM-18) — a malformed corpus entry must not
+        # be confused with an unrelated crash by swallowing everything.
+        logger.debug(f"[BUILD_PROMPT] session probe failed: {e}")
+        return []
+
+
+def _session_truth_from_probe(
+    probe: List[Dict[str, Any]], shown_count: int, now: Optional[datetime] = None
+) -> Tuple[bool, Optional[int], Optional[datetime]]:
+    """Walk `probe` (newest-first) newest→oldest applying the SAME boundary
+    rule the formatter's render loop uses (SESSION_BOUNDARY_GAP_HOURS) to
+    find the CURRENT (still-open) session's true turn count + start time.
+
+    Returns (recent_window_truncated, session_turns_total, session_started_at).
+    `recent_window_truncated` is True exactly when the current session holds
+    more turns than fit the rendered [RECENT CONVERSATION] window — the
+    condition formatter._format_session_header's `truncation=` argument and
+    the [TIME CONTEXT] "Current session began" line both key off.
+    """
+    if not probe:
+        return False, None, None
+    # A gap between NOW and the newest stored turn is itself a session
+    # boundary: the probe then holds only PREVIOUS sessions, and this turn
+    # opens a new one — never report the old session's start as current.
+    _newest_ts = _parse_entry_timestamp(probe[0]) if isinstance(probe[0], dict) else None
+    if _newest_ts is not None and _detect_session_boundary(
+            _newest_ts, now or datetime.now(), SESSION_BOUNDARY_GAP_HOURS):
+        return False, None, None
+    prev_ts: Optional[datetime] = None
+    total = 0
+    started_at: Optional[datetime] = None
+    for idx, entry in enumerate(probe):
+        ts = _parse_entry_timestamp(entry)
+        if idx > 0 and _detect_session_boundary(prev_ts, ts, SESSION_BOUNDARY_GAP_HOURS):
+            break
+        total += 1
+        if ts is not None:
+            started_at = ts
+            prev_ts = ts
+    return total > shown_count, total, started_at
+
+
+def _today_timeline_from_probe(
+    probe: List[Dict[str, Any]], shown_keys: set, cap: int = SESSION_TIMELINE_MAX_LINES
+) -> List[str]:
+    """One line per USER turn from TODAY's corpus not already in the shown
+    [RECENT CONVERSATION] window — a recall-shaped question ("what time did
+    i sit down") needs same-day turns a truncated display window dropped.
+    `shown_keys` are _canonical_turn_key(...) values for the rendered window,
+    so an already-visible turn is never repeated. Keeps the `cap` entries
+    CLOSEST to now (BC-18: a bare items[:cap] on this newest-first probe
+    would silently keep the WRONG end — the cap oldest, not the cap nearest
+    the shown window), then renders oldest→newest.
+    """
+    today = datetime.now().date()
+    candidates: List[Tuple[datetime, str]] = []
+    for entry in probe:
+        if not isinstance(entry, dict):
+            continue
+        ts = _parse_entry_timestamp(entry)
+        if ts is None or ts.date() != today:
+            continue
+        if _canonical_turn_key(entry) in shown_keys:
+            continue
+        query = str(entry.get("query") or "").strip()
+        if not query:
+            continue
+        candidates.append((ts, query))
+    if not candidates:
+        return []
+    capped = _ordered_newest_first(candidates, ts_key=lambda pair: pair[0])[:cap]
+    capped.sort(key=lambda pair: pair[0])
+    return [f"{ts.strftime('%H:%M')} {query[:90]}" for ts, query in capped]
+
+
 class UnifiedPromptBuilder:
     """
     Unified prompt builder that coordinates all prompt building functionality.
@@ -999,6 +1113,7 @@ class UnifiedPromptBuilder:
                           retrieval_overrides: Optional[Dict[str, int]] = None,
                           weight_overrides: Optional[Dict[str, float]] = None,
                           intent_type: Optional[str] = None,
+                          intent_confidence: Optional[float] = None,
                           **kwargs) -> Dict[str, Any]:
         """
         Build a complete prompt context for the given user input.
@@ -1019,6 +1134,9 @@ class UnifiedPromptBuilder:
                 SELF_REPORT_RETRIEVAL_TRIM / _apply_self_report_trim).
             weight_overrides: Optional dict of {weight_name: value} to override
                 global SCORE_WEIGHTS. Used by intent classifier.
+            intent_confidence: Optional classifier confidence (0.0-1.0) paired
+                with intent_type (2026-09-27) — gates the temporal_recall
+                "earlier today" timeline (session_timeline) at >= 0.6.
 
         Returns:
             Dict containing the built prompt context with sections like:
@@ -1785,8 +1903,32 @@ class UnifiedPromptBuilder:
                         query = mem.get('query', '')[:80]
                         logger.debug(f"[DEBUG RECENT] Item {i+1} (last): ts={ts}, query={query}...")
 
+            # Session truth (2026-09-27, BC-46/BC-51/BC-30): recent_convos
+            # above is a DISPLAY window (config prompt_max_recent), not a
+            # session boundary. Probe further back to say honestly whether
+            # the CURRENT session holds more turns than fit it, and — for a
+            # temporal_recall-shaped query — surface today's turns the
+            # window dropped.
+            _session_probe = _fetch_session_probe(self.memory_coordinator, SESSION_PROBE_LIMIT) if recent_convos else []
+            _sess_truncated, _sess_total, _sess_started = (
+                _session_truth_from_probe(_session_probe, len(recent_convos))
+                if _session_probe else (False, None, None)
+            )
+            _session_timeline: List[str] = []
+            if (
+                _session_probe
+                and (intent_type or "").lower() == "temporal_recall"
+                and (intent_confidence or 0.0) >= SESSION_TIMELINE_MIN_CONFIDENCE
+            ):
+                _shown_keys = {_canonical_turn_key(m) for m in recent_convos}
+                _session_timeline = _today_timeline_from_probe(_session_probe, _shown_keys)
+
             context = {
                 "recent_conversations": recent_convos,
+                "recent_window_truncated": _sess_truncated,
+                "session_turns_total": _sess_total,
+                "session_started_at": _sess_started,
+                "session_timeline": _session_timeline,
                 "memories": gathered_memories,
                 "user_profile": gathered.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
                 "narrative_state": narrative_state,  # Temporal grounding (synthesized life context)
@@ -2242,9 +2384,14 @@ class UnifiedPromptBuilder:
 
         # Extract intent type for web search gating
         _intent_type = None
+        _intent_confidence = None
         if context.intent is not None:
             _it = getattr(context.intent, 'intent_type', None)
             _intent_type = getattr(_it, 'value', str(_it)) if _it else None
+            # 2026-09-27 (BC-46, BC-30): confidence gates the temporal_recall
+            # "earlier today" timeline (session_timeline) — a low-confidence
+            # classification must not pull same-day turns into the prompt.
+            _intent_confidence = getattr(context.intent, 'confidence', None)
 
         # Bounded analysis query (item 2): fall back to the short original
         # (pre-merge) user text when processed_query is pathologically long
@@ -2276,6 +2423,7 @@ class UnifiedPromptBuilder:
             retrieval_overrides=retrieval_overrides,
             weight_overrides=weight_overrides,
             intent_type=_intent_type,
+            intent_confidence=_intent_confidence,
             _suppress_reference_docs=context.has_files,
             _gate_threshold_override=gate_threshold_override,
             _uploaded_filenames=getattr(context, 'uploaded_filenames', None),

@@ -10,7 +10,8 @@ Module Contract
     Full-featured prompt assembler (moved from UnifiedPromptBuilder). Assembles all sections
     into final prompt string with numbered entries, timestamp-first formatting, web citation IDs,
     feature inventory, codebase changes, STM summary, and eval snapshot capture.
-    Section order: RECENT CONVERSATION → RELEVANT MEMORIES → RECENT SUMMARIES →
+    Section order: RECENT CONVERSATION → EARLIER TODAY (temporal_recall only) →
+    RELEVANT MEMORIES → RECENT SUMMARIES →
     SEMANTIC SUMMARIES → RECENT REFLECTIONS → SEMANTIC REFLECTIONS → BACKGROUND KNOWLEDGE →
     WEB SEARCH RESULTS → RELEVANT INFORMATION → DREAMS → USER'S PERSONAL NOTES →
     USER UPLOADED ITEMS → VISUAL MEMORIES → DAEMON DOCUMENTATION → PROJECT COMMIT HISTORY →
@@ -214,8 +215,17 @@ def _format_summary_section(items: list, header: str, apply_staleness: bool = Tr
 # Session boundary detection for conversation rendering
 # ---------------------------------------------------------------------------
 
+# Single source for the session-boundary gap (2026-09-27, BC-46/BC-51):
+# builder.py's session-truth probe (how far back the CURRENT session
+# actually started, beyond the [RECENT CONVERSATION] display window) must
+# apply the EXACT same rule the render loop below uses, or the two could
+# disagree about where a session starts.
+SESSION_BOUNDARY_GAP_HOURS = 2.0
+
+
 def _detect_session_boundary(
-    ts_prev: Optional[datetime], ts_current: Optional[datetime], gap_hours: float = 2.0
+    ts_prev: Optional[datetime], ts_current: Optional[datetime],
+    gap_hours: float = SESSION_BOUNDARY_GAP_HOURS,
 ) -> bool:
     """
     Detect whether two consecutive conversation entries cross a session boundary.
@@ -264,7 +274,10 @@ def _session_time_span(span: Optional[tuple]) -> str:
         return ""
 
 
-def _format_session_header(ts: datetime, span: Optional[tuple] = None) -> str:
+def _format_session_header(
+    ts: datetime, span: Optional[tuple] = None,
+    truncation: Optional[tuple] = None,
+) -> str:
     """
     Format a session boundary header with relative day label.
 
@@ -273,9 +286,21 @@ def _format_session_header(ts: datetime, span: Optional[tuple] = None) -> str:
     day stay distinguishable (2026-09-05: a 16:06 turn and the 11:16–13:45
     block both rendered "--- Session: Today (Sat, Sep 5) ---").
 
+    ``truncation`` = (shown_n, total_n, started_at) (2026-09-27, BC-46/
+    BC-51): the [RECENT CONVERSATION] window is a DISPLAY cap (config
+    ``prompt_max_recent``), not a session boundary — when builder.py's probe
+    found more turns in this (still-open) session than fit the window, the
+    window's oldest SHOWN entry is only the window's edge, not the session's
+    actual start. Renders "showing the last N of M turns (session began
+    HH:MM)" instead of the span suffix, so the model is never left presenting
+    the edge as the start (09-26 21:05 "what time did i sit down" answered
+    from a 10-turn window that began at 20:42, missing an 18:23 entry two
+    hours earlier in the SAME session).
+
     Examples:
         --- Session: Today (Sat, May 17) ---
         --- Session: Today (Sat, May 17), 11:16–13:45 ---
+        --- Session: Today (Sat, Sep 26), showing the last 10 of 70 turns (session began 18:23) ---
         --- Session: Yesterday (Fri, May 16) ---
         --- Session: 3 days ago (Wed, May 14) ---
     """
@@ -287,16 +312,26 @@ def _format_session_header(ts: datetime, span: Optional[tuple] = None) -> str:
         # and the date for the header
         day_name = ts.strftime("%a, %b %-d")
         if "(today)" in rel.lower():
-            return f"--- Session: Today ({day_name}){suffix} ---"
+            day_label = "Today"
         elif "(yesterday)" in rel.lower():
-            return f"--- Session: Yesterday ({day_name}){suffix} ---"
+            day_label = "Yesterday"
         else:
             # Extract "N days ago" from the relative label
             import re
             m = re.search(r'\((\d+\s+days?\s+ago)\)', rel, re.IGNORECASE)
-            if m:
-                return f"--- Session: {m.group(1).capitalize()} ({day_name}){suffix} ---"
-            return f"--- Session: {day_name}{suffix} ---"
+            day_label = m.group(1).capitalize() if m else None
+
+        if truncation:
+            shown_n, total_n, started_at = truncation
+            started_str = started_at.strftime("%H:%M") if started_at else "an earlier time"
+            prefix = f"{day_label} ({day_name})" if day_label else day_name
+            return (
+                f"--- Session: {prefix}, showing the last {shown_n} of "
+                f"{total_n} turns (session began {started_str}) ---"
+            )
+        if day_label:
+            return f"--- Session: {day_label} ({day_name}){suffix} ---"
+        return f"--- Session: {day_name}{suffix} ---"
     except Exception:
         return f"--- Session: {ts.strftime('%Y-%m-%d') if ts else 'Unknown'} ---"
 
@@ -538,8 +573,20 @@ class PromptFormatter:
             pass  # Personality file not found or unreadable
         return ""
 
-    def _get_time_context(self) -> str:
-        """Get current time context for the prompt."""
+    def _get_time_context(
+        self,
+        session_started_at: Optional[datetime] = None,
+        session_turns_total: Optional[int] = None,
+    ) -> str:
+        """Get current time context for the prompt.
+
+        ``session_started_at``/``session_turns_total`` (2026-09-27, BC-46/
+        BC-51): when builder.py has probed the CURRENT session's true start
+        + turn count (beyond the [RECENT CONVERSATION] display window), say
+        so here too — this was the model's only other honest signal for
+        "how long have we been at this", and without it the truncated
+        window's edge read as the whole story.
+        """
         now = datetime.now()
         lines = [f"Current time: {now.strftime('%A, %Y-%m-%d %H:%M:%S')}"]
 
@@ -549,6 +596,12 @@ class PromptFormatter:
             time_since_session = self.time_manager.elapsed_since_last_session()
             lines.append(f"Time since last message: {time_since_msg}")
             lines.append(f"Time since last session: {time_since_session}")
+
+        if session_started_at and session_turns_total:
+            lines.append(
+                f"Current session began: {session_started_at.strftime('%a %H:%M')} "
+                f"({session_turns_total} turns so far)"
+            )
 
         return "\n".join(lines)
 
@@ -836,6 +889,20 @@ class PromptFormatter:
             know_parts.append(f"obsidian={_on_off(getattr(cfg, 'OBSIDIAN_ENABLED', False))}{obs_suffix}")
             ref_docs = context.get("reference_docs", []) or []
             know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{_suffix('reference_docs', ref_docs)}")
+            # Wiki semantic index (FAISS) — 2026-09-27 (BC-70): a missing/
+            # unmounted external index is a process-wide DISABLED state, not
+            # a per-turn failure. `_get_semantic_chunks` (gatherer_knowledge.py)
+            # reports this exact state via reason "index_not_loaded" whether
+            # it short-circuited on `index_available()` or a real search
+            # call found the index absent — either way this renders the same
+            # dedicated label instead of repeating "Could not check this
+            # turn: semantic" forever for what is really an OFF switch (the
+            # generic catch-all below still applies to a genuine transient
+            # semantic failure, e.g. "timeout"/"in_flight").
+            _sem_outcome = outcomes.get("semantic")
+            if isinstance(_sem_outcome, dict) and _sem_outcome.get("reason") == "index_not_loaded":
+                shown_names.add("semantic")
+                know_parts.append("semantic=OFF(index not found)")
             web_enabled = bool(getattr(cfg, "WEB_SEARCH_ENABLED", False))
             web_label = _on_off(web_enabled)
             if web_enabled:
@@ -885,7 +952,30 @@ class PromptFormatter:
                 and info.get("status") in ("failed", "unavailable")
             )
             if not_checked_others:
-                lines.append("Could not check this turn: " + ", ".join(not_checked_others))
+                # 2026-09-27 (BC-47, BC-58, BC-70, BC-72): "relevant_emails"
+                # is the ONE name here allowed to carry its reason — that
+                # reason comes from registry.provider_coverage()'s CURATED,
+                # human-safe vocabulary (already meant to reach the model —
+                # the [RELEVANT EMAILS] section renders the same text),
+                # never the raw `_section_outcomes` reason/exception string
+                # every other name here carries (which must stay unrendered
+                # — see test_reason_labels_never_appear_in_output).
+                _rendered = []
+                for _name in not_checked_others:
+                    if _name == "relevant_emails":
+                        try:
+                            from core.email.registry import provider_coverage  # lazy import: cycle
+                            _failed = provider_coverage().get("failed") or {}
+                        except Exception:
+                            # degrades: a broken coverage lookup falls back to
+                            # the bare catch-all name (pre-existing shape),
+                            # losing the reason annotation for this turn only.
+                            _failed = {}
+                        if _failed:
+                            _rendered.append(f"{_name} ({'; '.join(_failed.values())})")
+                            continue
+                    _rendered.append(_name)
+                lines.append("Could not check this turn: " + ", ".join(_rendered))
 
             return "\n".join(lines)
 
@@ -1029,6 +1119,15 @@ class PromptFormatter:
             _spans = _session_spans(recent)
         except Exception:
             _spans = {}
+        # Session-truth (2026-09-27, BC-46/BC-51): the render window above is
+        # a DISPLAY cap, not a session boundary — when builder.py's probe
+        # found more turns in the CURRENT (still-open) session than fit the
+        # window, the FIRST header (the block containing the newest, most
+        # recent turn) must say so instead of presenting the window's oldest
+        # SHOWN entry as the session start.
+        _recent_truncated = bool(context.get("recent_window_truncated"))
+        _session_total = context.get("session_turns_total")
+        _session_started = context.get("session_started_at")
         for i, mem in enumerate(recent, start=1):
             content, ts_str = mem_parts(mem)
             if i <= 3 or i > len(recent) - 3:
@@ -1038,7 +1137,12 @@ class PromptFormatter:
             entry_ts = _parse_entry_timestamp(mem)
             if _detect_session_boundary(prev_ts, entry_ts):
                 if entry_ts:
-                    recent_lines.append(_format_session_header(entry_ts, span=_spans.get(i)))
+                    if i == 1 and _recent_truncated and _session_total:
+                        recent_lines.append(_format_session_header(
+                            entry_ts, truncation=(len(recent), _session_total, _session_started),
+                        ))
+                    else:
+                        recent_lines.append(_format_session_header(entry_ts, span=_spans.get(i)))
             if entry_ts:
                 prev_ts = entry_ts
 
@@ -1046,6 +1150,17 @@ class PromptFormatter:
         if recent_lines:
             logger.debug(f"[DEBUG RECENT] Adding [RECENT CONVERSATION] section with {len([l for l in recent_lines if not l.startswith('---')])} formatted entries")
             sections.append(f"[RECENT CONVERSATION] n={len([l for l in recent_lines if not l.startswith('---')])}\n" + "\n\n".join(recent_lines))
+
+        # Earlier-today recall timeline (2026-09-27, BC-46/BC-30): builder.py
+        # only populates this key for a temporal_recall-shaped query — one
+        # line per same-day USER turn the truncated window above dropped, so
+        # a recall question isn't answered from the window's edge.
+        session_timeline = context.get("session_timeline") or []
+        if session_timeline:
+            sections.append(
+                f"[EARLIER TODAY — your messages not shown above] n={len(session_timeline)}\n"
+                + "\n".join(session_timeline)
+            )
 
         # Relevant memories
         memories = context.get("memories", []) or []
@@ -1660,7 +1775,23 @@ class PromptFormatter:
 
         # Relevant emails from Gmail/Outlook (cue-gated + distress-suppressed)
         relevant_emails = context.get("relevant_emails", []) or []
-        if relevant_emails:
+        _email_outcome = (context.get("_section_outcomes") or {}).get("relevant_emails")
+        _email_search_failed = (
+            isinstance(_email_outcome, dict)
+            and _email_outcome.get("status") in ("failed", "unavailable")
+        )
+        if not relevant_emails and _email_search_failed:
+            # 2026-09-27 (BC-47, BC-58, BC-70, BC-72): a failed fetch (e.g. a
+            # revoked/expired token) must not read the same as a genuine
+            # empty inbox — render the failure instead of staying silent.
+            _reason = (_email_outcome.get("reason") or "").strip() or "search could not run"
+            sections.append(
+                f"[RELEVANT EMAILS] n=0\n"
+                f"Email search FAILED this turn ({_reason}). No messages were "
+                "retrieved — this is NOT the same as an empty inbox; tell the "
+                "user the search could not run rather than that nothing was found."
+            )
+        elif relevant_emails:
             email_lines: list[str] = []
             for i, email in enumerate(relevant_emails, start=1):
                 date_str = email.get("date", "")[:10]  # ISO date only
@@ -1763,7 +1894,9 @@ class PromptFormatter:
 
         # Time context
         # MOVED: Placed here (right before STM and query) for temporal grounding with high attention
-        time_ctx = self._get_time_context()
+        time_ctx = self._get_time_context(
+            context.get("session_started_at"), context.get("session_turns_total"),
+        )
         if time_ctx:
             sections.append(f"[TIME CONTEXT]\n{time_ctx}")
 
