@@ -1,6 +1,6 @@
 daemon:
   version: v4
-  mode: dev
+  mode: user
   data_dir: ./data
   log_dir: ./conversation_logs
   in_harm_test: false
@@ -145,7 +145,7 @@ web_search:
   confidence_threshold: 0.5
 location:
   enabled: true
-  ip_lookup_enabled: true
+  ip_lookup_enabled: false
   ip_cache_ttl_hours: 6.0
   ip_lookup_timeout_s: 3.0
   override: ''
@@ -260,8 +260,6 @@ file_access:
   enabled: true
   approved_folders:
   - .
-  - ~/Documents
-  - ~/Downloads
   max_read_bytes: 100000
   max_grep_results: 25
   max_list_entries: 200
@@ -304,7 +302,7 @@ memory_expansion:
   context_char_limit: 300
 daily_notes:
   enabled: true
-  folder: Vault/Daily Notes and To Do's
+  folder: Daily Notes
   model: sonnet-4.5
   max_tokens: 800
   weekly_enabled: true
@@ -625,8 +623,8 @@ user_profile:
   health_transient_ttl_hours: 96
   personal_vocabulary: {}
 obsidian:
-  enabled: true
-  vault_path: ~/Documents/Notes
+  enabled: false
+  vault_path: ''
   # Bar on the gate's BLENDED score (0.85·cosine + 0.15·truth; notes carry truth 0.9,
   # so 0.60 ≈ cosine 0.55). 2026-09-03: 0.45→0.60 — an unrelated study note at 0.59
   # surfaced on pet small-talk. Lower to 0.55 if genuinely related notes vanish.
@@ -690,10 +688,9 @@ internet_actions:
   pending_actions_path: data/pending_actions.json
   audit_log_path: logs/actions_audit.jsonl
 prompts:
-  default_system_prompt: You are Daemon, a brutally honest AI assistant who tells
-    the truth even when uncomfortable, admits ignorance freely, and uses dark humor
-    about current events. You're willing to call out BS while still being genuinely
-    helpful.
+  default_system_prompt: You are Daemon, a thoughtful, honest AI assistant with long-term
+    memory. Be warm and direct, ground claims in the context you are given, and say
+    plainly when you don't know.
   system_prompt: ''
   default_core_directive:
     query: '[CORE DIRECTIVE]'
