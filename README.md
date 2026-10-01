@@ -25,7 +25,7 @@ It is a stateful agent architecture, not a chatbot wrapper: every query passes t
 - **Literature-backed synthesis** — narrows a large conceptual space into evidence-backed *candidate* connections and validates them against independent corpora (candidates, not discoveries)
 - **Human-gated self-improvement** — structured code proposals + isolated agent-branch experiments; the machine may propose and evaluate, **only a human may merge**
 - **Prompt-section ablation eval system** — snapshot, replay, variant generation, blind pairwise judging, objective checks
-- **Desktop packaging** (PyInstaller spec + Inno Setup installer script) — a Dockerfile and compose file are present, but both predate the FastAPI server and are being rebuilt (see [Docker](#docker-being-rebuilt))
+- **Desktop packaging** (PyInstaller spec + Inno Setup installer script) — the executable build has not yet been redone since the FastAPI migration; a Dockerfile + compose file for the FastAPI server are included (see [Docker](#docker))
 
 ---
 
@@ -99,7 +99,7 @@ Retrieval quality is **measured, not asserted** — no scoring or weight change 
 - **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
 - **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
 
-> Benchmark numbers are versioned in [docs/BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md). All metrics are reproducible locally — no benchmark claim ships without a runnable test.
+> Benchmark numbers are versioned in [docs/BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md). Every benchmark claim has a runnable test; a fresh clone reproduces the synthetic suite, while the real-memory suite is owner-local (it samples personal memory and skips cleanly when absent).
 
 ---
 
@@ -209,7 +209,7 @@ User Query
 ### Prerequisites
 - Python 3.11 (pyproject pins `>=3.11,<3.12`; the systemd timer templates assume a pyenv 3.11.8 env)
 - 4 GB RAM minimum (8 GB recommended; 16 GB if running the synthesis pipeline)
-- At least one LLM API key (OpenAI, Anthropic, DeepSeek, Google, or an OpenRouter-routed model)
+- An [OpenRouter](https://openrouter.ai) API key — all models (OpenAI, Anthropic, DeepSeek, Google, Kimi, …) are routed through OpenRouter
 
 ### Installation
 ```bash
@@ -220,14 +220,18 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 
-# Set at least one provider key
-export OPENAI_API_KEY=sk-your-key-here
-# Or: export ANTHROPIC_API_KEY=sk-ant-...   (or create a .env file)
+# Build the React web UI (without it, :8000 serves only the API + /admin)
+cd web && npm ci && npm run build && cd ..
+
+# Your OpenRouter key goes in OPENAI_API_KEY (the setup wizard can also write it to .env)
+export OPENAI_API_KEY=sk-or-...
 ```
 
 ### Launch
 ```bash
 python main.py        # Web UI (recommended) -> http://127.0.0.1:8000 (FastAPI + React SPA; Gradio dev tabs at /admin)
+                      # the very FIRST run opens the setup wizard at http://localhost:7860 instead;
+                      # finish it, then run `python main.py` again for the web UI on :8000
 python main.py --legacy-gui  # standalone Gradio -> http://localhost:7860
                       # remote launches: run inside tmux/screen or a systemd unit — a dropped SSH
                       # session sends SIGHUP, which now triggers the normal clean shutdown
@@ -235,8 +239,8 @@ python main.py cli    # CLI mode
 python main.py wizard # First-run onboarding wizard
 ```
 
-### Docker (being rebuilt)
-The committed `Dockerfile` and `docker-compose.yml` predate the 2026-07-14 FastAPI migration: they build the legacy Gradio app, map and health-check port 7860, and do not copy the `api/` package or build the React frontend. Use the source install above until the compose path is rebuilt for the FastAPI server ([docs/DOCKER_README.md](docs/DOCKER_README.md) describes the legacy image).
+### Docker
+The `Dockerfile` (multi-stage: builds the React SPA, serves FastAPI on :8000, `/health` check) and `docker-compose.yml` were rebuilt for the FastAPI server on 2026-09-27; a full end-to-end container run has not been re-verified since, so the source install above is the tested path. See [docs/DOCKER_README.md](docs/DOCKER_README.md).
 
 ### Desktop executable
 ```bash
@@ -310,7 +314,7 @@ Owner-specific personal vocabulary lives in a **gitignored** `config/config.loca
 - **Not AGI**, and not an autonomous self-modifying system — the machine proposes and evaluates; a human merges.
 - **Not a truth-discovery machine** — synthesis surfaces *candidate* connections, not facts. Final validation is human.
 - **Not a cloud-hosted memory product** — memory lives on your disk, not a service.
-- **Not a benchmark claim without local tests** — every metric in this README is reproducible from `tests/`.
+- **Not a benchmark claim without local tests** — every metric in this README has a runnable test in `tests/` (the real-memory benchmark suite is owner-local; the synthetic suite ships).
 
 Daemon proposes, retrieves, validates, and queues; humans remain responsible for truth judgments and code merges.
 
@@ -491,7 +495,7 @@ This turns today's shutdown-only processing into a first-class **background cogn
 
 ## Status
 
-Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, and benchmarks — are implemented and tested. The Docker image and the PyInstaller desktop build predate the 2026-07-14 FastAPI migration and are being rebuilt against it. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
+Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, and benchmarks — are implemented and tested. The PyInstaller desktop build predates the 2026-07-14 FastAPI migration and is being rebuilt against it; the Docker files were rebuilt on 2026-09-27 and await an end-to-end container check. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
 
 A few subsystems are research/developer features rather than always-on defaults, and degrade gracefully when their data is absent:
 
@@ -524,4 +528,4 @@ A few subsystems are research/developer features rather than always-on defaults,
 | RAM | ~500 MB | ~1.5 GB (≈2.6 GB with Wikipedia index loaded) |
 | GPU VRAM | — | 2–8 GB (optional) |
 
-**Storage:** ChromaDB ~50 MB · Wikipedia FAISS index + metadata ~14.5 GB (optional) · logs ~1 MB/day.
+**Storage:** ChromaDB grows with use (hundreds of MB after months of daily conversations) · Wikipedia FAISS index + metadata ~14.5 GB (optional) · logs ~1 MB/day.
