@@ -14,7 +14,7 @@ import {
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import { api } from '../../api/client'
-import type { SettingsSnapshot } from '../../api/types'
+import { NO_AVAILABILITY, type Availability, type SettingsSnapshot } from '../../api/types'
 
 // Settings (Gradio tab → SPA, 2026-07-14): same six sections, same semantics —
 // each Apply mutates the running orchestrator AND persists to config.yaml via
@@ -31,7 +31,11 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-export default function SettingsPage() {
+export default function SettingsPage({
+  availability = NO_AVAILABILITY,
+}: {
+  availability?: Availability
+}) {
   const [snap, setSnap] = useState<SettingsSnapshot | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -168,62 +172,72 @@ export default function SettingsPage() {
         </Section>
 
         <Section title="🔍 Web search (Tavily API)">
-          <Switch
-            label="Enable web search"
-            checked={wsEnabled}
-            onChange={(e) => setWsEnabled(e.currentTarget.checked)}
-          />
-          <NumberInput
-            label="Daily credit limit (Tavily free tier ≈ 33/day)"
-            min={10}
-            max={500}
-            step={10}
-            value={wsLimit}
-            onChange={(v) => setWsLimit(Number(v) || 100)}
-          />
-          <Group>
-            <Button
-              size="xs"
-              loading={busy === 'web-search'}
-              onClick={() => apply('web-search', { enabled: wsEnabled, daily_credit_limit: wsLimit })}
-            >
-              Apply web search settings
-            </Button>
-          </Group>
+          {availability.web_search_key ? (
+            <>
+            <Switch
+              label="Enable web search"
+              checked={wsEnabled}
+              onChange={(e) => setWsEnabled(e.currentTarget.checked)}
+            />
+            <NumberInput
+              label="Daily credit limit (Tavily free tier ≈ 33/day)"
+              min={10}
+              max={500}
+              step={10}
+              value={wsLimit}
+              onChange={(v) => setWsLimit(Number(v) || 100)}
+            />
+            <Group>
+              <Button
+                size="xs"
+                loading={busy === 'web-search'}
+                onClick={() => apply('web-search', { enabled: wsEnabled, daily_credit_limit: wsLimit })}
+              >
+                Apply web search settings
+              </Button>
+            </Group>
+            </>
+          ) : (
+            <Text size="sm" c="dimmed">
+              Web search needs a Tavily API key (TAVILY_API_KEY in .env).
+            </Text>
+          )}
         </Section>
 
-        <Section title="🥊 Best-of / duel mode">
-          <Switch
-            label="Enable duel mode (two models + judge)"
-            checked={duelEnabled}
-            onChange={(e) => setDuelEnabled(e.currentTarget.checked)}
-          />
-          <Group grow>
-            <Select
-              label="Model 1"
-              data={snap.model_choices}
-              value={duelM1}
-              onChange={setDuelM1}
-              searchable
+        {availability.dev_mode && (
+          <Section title="🥊 Best-of / duel mode">
+            <Switch
+              label="Enable duel mode (two models + judge)"
+              checked={duelEnabled}
+              onChange={(e) => setDuelEnabled(e.currentTarget.checked)}
             />
-            <Select
-              label="Model 2"
-              data={snap.model_choices}
-              value={duelM2}
-              onChange={setDuelM2}
-              searchable
-            />
-          </Group>
-          <Group>
-            <Button
-              size="xs"
-              loading={busy === 'duel'}
-              onClick={() => apply('duel', { enabled: duelEnabled, model_1: duelM1, model_2: duelM2 })}
-            >
-              Apply duel settings
-            </Button>
-          </Group>
-        </Section>
+            <Group grow>
+              <Select
+                label="Model 1"
+                data={snap.model_choices}
+                value={duelM1}
+                onChange={setDuelM1}
+                searchable
+              />
+              <Select
+                label="Model 2"
+                data={snap.model_choices}
+                value={duelM2}
+                onChange={setDuelM2}
+                searchable
+              />
+            </Group>
+            <Group>
+              <Button
+                size="xs"
+                loading={busy === 'duel'}
+                onClick={() => apply('duel', { enabled: duelEnabled, model_1: duelM1, model_2: duelM2 })}
+              >
+                Apply duel settings
+              </Button>
+            </Group>
+          </Section>
+        )}
 
         <Section title="✂️ Max tokens (length / speed)">
           <NumberInput
@@ -312,77 +326,81 @@ export default function SettingsPage() {
           </Group>
         </Section>
 
-        <Section title="💤 Synthesis dreaming (shutdown LLM step — API cost)">
-          <Switch
-            label="Enable synthesis dreaming"
-            description="Generates cross-domain synthesis candidates at shutdown (LLM calls incl. the Opus coherence judge)"
-            checked={synEnabled}
-            onChange={(e) => setSynEnabled(e.currentTarget.checked)}
-          />
-          <Text size="xs" c="dimmed">
-            Candidates per shutdown: {synCount}
-          </Text>
-          <Slider
-            min={1}
-            max={20}
-            step={1}
-            value={synCount}
-            onChange={setSynCount}
-            marks={[
-              { value: 1, label: '1' },
-              { value: 8, label: '8' },
-              { value: 20, label: '20' },
-            ]}
-          />
-          <Divider my={4} style={{ visibility: 'hidden' }} />
-          <Group>
-            <Button
-              size="xs"
-              loading={busy === 'synthesis'}
-              onClick={() =>
-                apply('synthesis', { enabled: synEnabled, candidates_per_session: synCount })
-              }
-            >
-              Apply synthesis settings
-            </Button>
-          </Group>
-        </Section>
+        {availability.dev_mode && (
+          <Section title="💤 Synthesis dreaming (shutdown LLM step — API cost)">
+            <Switch
+              label="Enable synthesis dreaming"
+              description="Generates cross-domain synthesis candidates at shutdown (LLM calls incl. the Opus coherence judge)"
+              checked={synEnabled}
+              onChange={(e) => setSynEnabled(e.currentTarget.checked)}
+            />
+            <Text size="xs" c="dimmed">
+              Candidates per shutdown: {synCount}
+            </Text>
+            <Slider
+              min={1}
+              max={20}
+              step={1}
+              value={synCount}
+              onChange={setSynCount}
+              marks={[
+                { value: 1, label: '1' },
+                { value: 8, label: '8' },
+                { value: 20, label: '20' },
+              ]}
+            />
+            <Divider my={4} style={{ visibility: 'hidden' }} />
+            <Group>
+              <Button
+                size="xs"
+                loading={busy === 'synthesis'}
+                onClick={() =>
+                  apply('synthesis', { enabled: synEnabled, candidates_per_session: synCount })
+                }
+              >
+                Apply synthesis settings
+              </Button>
+            </Group>
+          </Section>
+        )}
 
-        <Section title="🛠️ Code proposals (shutdown LLM step — API cost)">
-          <Switch
-            label="Enable code proposals"
-            description="Generates goal-directed code proposals at shutdown (LLM calls)"
-            checked={propEnabled}
-            onChange={(e) => setPropEnabled(e.currentTarget.checked)}
-          />
-          <Text size="xs" c="dimmed">
-            Max proposals per shutdown: {propCount}
-          </Text>
-          <Slider
-            min={1}
-            max={10}
-            step={1}
-            value={propCount}
-            onChange={setPropCount}
-            marks={[
-              { value: 1, label: '1' },
-              { value: 5, label: '5' },
-              { value: 10, label: '10' },
-            ]}
-          />
-          <Divider my={4} style={{ visibility: 'hidden' }} />
-          <Group>
-            <Button
-              size="xs"
-              loading={busy === 'proposals'}
-              onClick={() =>
-                apply('proposals', { enabled: propEnabled, max_per_session: propCount })
-              }
-            >
-              Apply proposal settings
-            </Button>
-          </Group>
-        </Section>
+        {availability.dev_mode && (
+          <Section title="🛠️ Code proposals (shutdown LLM step — API cost)">
+            <Switch
+              label="Enable code proposals"
+              description="Generates goal-directed code proposals at shutdown (LLM calls)"
+              checked={propEnabled}
+              onChange={(e) => setPropEnabled(e.currentTarget.checked)}
+            />
+            <Text size="xs" c="dimmed">
+              Max proposals per shutdown: {propCount}
+            </Text>
+            <Slider
+              min={1}
+              max={10}
+              step={1}
+              value={propCount}
+              onChange={setPropCount}
+              marks={[
+                { value: 1, label: '1' },
+                { value: 5, label: '5' },
+                { value: 10, label: '10' },
+              ]}
+            />
+            <Divider my={4} style={{ visibility: 'hidden' }} />
+            <Group>
+              <Button
+                size="xs"
+                loading={busy === 'proposals'}
+                onClick={() =>
+                  apply('proposals', { enabled: propEnabled, max_per_session: propCount })
+                }
+              >
+                Apply proposal settings
+              </Button>
+            </Group>
+          </Section>
+        )}
       </Stack>
     </ScrollArea>
   )
