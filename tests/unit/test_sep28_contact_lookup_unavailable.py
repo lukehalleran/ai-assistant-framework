@@ -28,6 +28,11 @@ def healthy_login(monkeypatch):
     monkeypatch.setattr(google_contacts, "resolve_contact", _no_matches)
     monkeypatch.setattr(google_contacts, "unavailable_reason", lambda: None)
     monkeypatch.setattr(gmail_search, "unavailable_reason", lambda: None)
+    # 2026-09-30: a healthy login is also an AUTHENTICATED one (D1d checks it
+    # before calling an empty lookup "no contacts found").
+    import core.actions.google_auth as google_auth
+    monkeypatch.setattr(google_auth, "get_google_auth",
+                        lambda: type("_Auth", (), {"is_authenticated": True})())
 
 
 @pytest.mark.asyncio

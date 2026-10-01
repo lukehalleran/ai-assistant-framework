@@ -24,9 +24,10 @@ Module Contract
 
 import importlib
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from core.actions.types import ActionType
@@ -330,6 +331,71 @@ def enabled_action_types() -> Tuple[ActionType, ...]:
     return tuple(at for at, spec in ACTION_SPECS.items() if is_action_enabled(spec))
 
 
+def _calendar_backend_ready() -> bool:
+    """Same checks get_runtime_action_health reports for the calendar backend."""
+    from core.actions.google_auth import get_google_auth  # lazy import: cycle
+    auth = get_google_auth()
+    if auth is None or not auth.is_authenticated:
+        return False
+    if getattr(auth, "token_expired_no_refresh", False):
+        return False
+    from core.actions.google_calendar_create import CALENDAR_EVENTS_SCOPE  # lazy import: cycle
+    return bool(auth.has_scope(CALENDAR_EVENTS_SCOPE))
+
+
+_GH_READY_CACHE: Dict[str, Any] = {"at": 0.0, "ok": False}
+
+
+def _github_write_ready() -> bool:
+    """`gh auth status` is a subprocess — cache it for a minute."""
+    now = time.monotonic()
+    if now - float(_GH_READY_CACHE["at"]) > 60.0 or not _GH_READY_CACHE["at"]:
+        from core.actions.github_write import _gh_available  # lazy import: cycle
+        _GH_READY_CACHE["ok"] = bool(_gh_available())
+        _GH_READY_CACHE["at"] = now
+    return bool(_GH_READY_CACHE["ok"])
+
+
+def _backend_configured(at: ActionType) -> bool:
+    """Is the credential/backend for this action type present right now?"""
+    import config.app_config as cfg  # lazy import: live-config
+    if at == ActionType.SEND_EMAIL:
+        if getattr(cfg, "INTERNET_ACTIONS_SMTP_HOST", "") and getattr(cfg, "INTERNET_ACTIONS_SMTP_USER", ""):
+            return True
+        from core.actions.google_auth import get_google_auth  # lazy import: cycle
+        auth = get_google_auth()
+        return auth is not None and bool(auth.is_authenticated)
+    if at == ActionType.SEND_TELEGRAM:
+        return bool(getattr(cfg, "INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN", "")
+                    and getattr(cfg, "INTERNET_ACTIONS_TELEGRAM_CHAT_ID", ""))
+    if at == ActionType.SEND_DISCORD:
+        return bool(getattr(cfg, "INTERNET_ACTIONS_DISCORD_WEBHOOK_URL", ""))
+    if at in (ActionType.GITHUB_CREATE_ISSUE, ActionType.GITHUB_COMMENT_PR):
+        return _github_write_ready()
+    if at in (ActionType.CALENDAR_CREATE_EVENT, ActionType.CALENDAR_UPDATE_EVENT,
+              ActionType.CALENDAR_DELETE_EVENT):
+        return _calendar_backend_ready()
+    return True
+
+
+def configured_action_types() -> List[str]:
+    """Enabled action types whose credential/backend is present RIGHT NOW.
+
+    2026-09-30 (BC-46, BC-58, BC-72): propose_action used to offer every
+    enabled write action regardless of credentials, so a fresh install
+    advertised email/telegram/discord it could not send. Only the OFFER
+    narrows — executors stay registered for every ActionType.
+    """
+    out: List[str] = []
+    for at in enabled_action_types():
+        try:
+            if _backend_configured(at):
+                out.append(at.value)
+        except Exception:  # degrades: an unreadable backend probe reads as not configured (never offered)
+            continue
+    return out
+
+
 def get_runtime_action_health() -> str:
     """Authoritative runtime status for proposal actions and Calendar OAuth.
 
@@ -342,11 +408,20 @@ def get_runtime_action_health() -> str:
         import config.app_config as cfg  # lazy import: live-config (enable flags read at call time — see module doc)
         if not getattr(cfg, "INTERNET_ACTIONS_ENABLED", False):
             return "propose_action: DISABLED (internet actions not enabled)"
-        names = [at.value for at in enabled_action_types()]
-        action_list = ", ".join(names) if names else "(no actions enabled)"
-        lines = [
-            f"propose_action: AVAILABLE ({action_list} — requires user confirmation)"
-        ]
+        names = configured_action_types()
+        _missing = [at.value for at in enabled_action_types() if at.value not in names]
+        if not names:
+            lines = [
+                "propose_action: NOT OFFERED (no action backend is configured"
+                + (f"; not configured: {', '.join(_missing)}" if _missing else "")
+                + ")"
+            ]
+        else:
+            lines = [
+                f"propose_action: AVAILABLE ({', '.join(names)} — requires user confirmation)"
+            ]
+            if _missing:
+                lines.append(f"propose_action not configured: {', '.join(_missing)}")
 
         # Contacts (2026-09-08, B6): a bare "HTTP 403" told the owner
         # nothing about whether the People API is simply not enabled for

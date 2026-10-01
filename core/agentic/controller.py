@@ -895,10 +895,25 @@ class AgenticSearchController:
         file_access_available = self.file_access_manager is not None and self.file_access_manager.is_available()
         git_stats_available = self.git_stats_manager is not None and self.git_stats_manager.is_available()
         github_available = self.github_manager is not None and self.github_manager.is_available()
-        fetch_url_available = self.web_search_manager is not None and self.web_search_manager.is_available()
+        # 2026-09-30 (BC-46, BC-58, BC-72): web_search is offered only when it
+        # can work now; fetch_url needs the Settings toggle but NOT the
+        # Tavily key (the local direct-fetch layer is keyless and
+        # `fetch_url_content` degrades to it).
+        web_search_available = self.web_search_manager is not None and self.web_search_manager.is_available()
+        fetch_url_available = web_search_available or (
+            self.web_search_manager is not None
+            and bool(getattr(self.web_search_manager, "is_enabled", lambda: False)())
+            and hasattr(self.web_search_manager, "_direct_fetch")
+        )
         email_search_available = self._email_search_is_available()
+        _configured_actions: List[str] = []
         try:
             actions_available = app_config.INTERNET_ACTIONS_ENABLED
+            if actions_available:
+                from core.actions.registry import configured_action_types  # lazy import: cycle
+                _configured_actions = configured_action_types()
+                # 2026-09-30: offered only when at least one backend is configured
+                actions_available = bool(_configured_actions)
         except (ImportError, AttributeError):
             actions_available = False
         handler = get_protocol_handler(
@@ -912,6 +927,8 @@ class AgenticSearchController:
             fetch_url_available=fetch_url_available,
             actions_available=actions_available,
             email_search_available=email_search_available,
+            web_search_available=web_search_available,
+            configured_action_types=_configured_actions,
         )
 
         # Augment system prompt for agentic mode
@@ -931,9 +948,9 @@ class AgenticSearchController:
 
         # Inject internet actions availability
         try:
-            if app_config.INTERNET_ACTIONS_ENABLED:
-                from core.actions.registry import enabled_action_types  # lazy import: cycle
-                _action_types = ", ".join(at.value for at in enabled_action_types())
+            if actions_available:
+                # 2026-09-30 (BC-46, BC-58): advertise only configured types
+                _action_types = ", ".join(_configured_actions)
                 augmented_system_prompt += (
                     "\n\n[AVAILABLE ACTIONS]\n"
                     "You can propose write actions requiring user confirmation via the propose_action tool.\n"
@@ -1570,7 +1587,7 @@ class AgenticSearchController:
                                 ),
                             )
                         ]
-                    elif fetch_url_available:
+                    elif web_search_available:  # 2026-09-30: was fetch_url_available (now keyless-true)
                         # Web-routed session: substitute web search
                         logger.warning(
                             f"[AgenticSearch] Decision round timed out with zero "

@@ -47,6 +47,7 @@ Dependencies:
     - core.agentic.types (SearchProtocol, SearchDecision, tool definitions)
 """
 
+import copy
 import json
 import logging
 import re
@@ -195,7 +196,7 @@ class NativeToolsHandler(BaseProtocolHandler):
     Parses tool_calls from LLM response to detect search, Wolfram, and sandbox requests.
     """
 
-    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False, actions_available: bool = False, email_search_available: bool = False):
+    def __init__(self, wolfram_available: bool = False, sandbox_available: bool = False, memory_available: bool = False, file_access_available: bool = False, git_stats_available: bool = False, github_available: bool = False, fetch_url_available: bool = False, actions_available: bool = False, email_search_available: bool = False, web_search_available: Optional[bool] = None, configured_action_types: Optional[List[str]] = None):
         from core.agentic.types import (  # lazy import: cycle
             SEARCH_TOOL_DEFINITION,
             DONE_TOOL_DEFINITION,
@@ -243,6 +244,14 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.generate_document_tool = GENERATE_DOCUMENT_TOOL_DEFINITION
         self.create_daemon_note_tool = CREATE_DAEMON_NOTE_TOOL_DEFINITION
         self.propose_action_tool = PROPOSE_ACTION_TOOL_DEFINITION
+        if configured_action_types:
+            # 2026-09-30 (BC-46, BC-58): the OFFERED enum narrows to the action
+            # types whose backend is configured right now — a filtered COPY,
+            # never a mutation of the module constant (executors untouched).
+            _tool = copy.deepcopy(PROPOSE_ACTION_TOOL_DEFINITION)
+            _enum = _tool["function"]["parameters"]["properties"]["action_type"]
+            _enum["enum"] = [t for t in _enum["enum"] if t in set(configured_action_types)]
+            self.propose_action_tool = _tool
         self.email_search_tool = EMAIL_SEARCH_TOOL_DEFINITION
         self.wolfram_available = wolfram_available
         self.sandbox_available = sandbox_available
@@ -253,6 +262,10 @@ class NativeToolsHandler(BaseProtocolHandler):
         self.fetch_url_available = fetch_url_available
         self.actions_available = actions_available
         self.email_search_available = email_search_available
+        # 2026-09-30 (BC-46, BC-58): None (unspecified) keeps direct constructors
+        # (tests, legacy callers) offering web_search as before; the
+        # controller passes the live availability.
+        self.web_search_available = True if web_search_available is None else bool(web_search_available)
 
     def parse_response(
         self, response: Any, forced_action_type: Optional[str] = None
@@ -932,7 +945,9 @@ class NativeToolsHandler(BaseProtocolHandler):
 
     def get_tools(self) -> List[Dict]:
         """Return tool definitions for API calls."""
-        tools = [self.search_tool, self.done_tool]
+        # 2026-09-30 (BC-46, BC-58): web_search is offered only when it can
+        # work right now (toggle on + key present), like every other tool.
+        tools = [self.search_tool, self.done_tool] if self.web_search_available else [self.done_tool]
         if self.wolfram_available:
             tools.append(self.wolfram_tool)
         if self.sandbox_available:
@@ -980,7 +995,7 @@ class NativeToolsHandler(BaseProtocolHandler):
 
         The tools themselves describe their purpose.
         """
-        tool_list = ["web_search"]
+        tool_list = ["web_search"] if self.web_search_available else []
         if self.wolfram_available:
             tool_list.append("wolfram_alpha")
         if self.sandbox_available:
@@ -1933,6 +1948,8 @@ def get_protocol_handler(
     fetch_url_available: bool = False,
     actions_available: bool = False,
     email_search_available: bool = False,
+    web_search_available: Optional[bool] = None,
+    configured_action_types: Optional[List[str]] = None,
 ) -> BaseProtocolHandler:
     """
     Factory function to get appropriate protocol handler.
@@ -1963,6 +1980,8 @@ def get_protocol_handler(
             fetch_url_available=fetch_url_available,
             actions_available=actions_available,
             email_search_available=email_search_available,
+            web_search_available=web_search_available,
+            configured_action_types=configured_action_types,
         )
     else:
         return XMLMarkerHandler()
