@@ -257,7 +257,7 @@ class ToolExecutor:
             else:
                 lines.append(
                     "wiki_knowledge (FAISS 41M vectors): UNAVAILABLE "
-                    "(index files not found — drive may be disconnected). "
+                    "(wiki index not installed — see README 'Wikipedia data'). "
                     "Only sparse ChromaDB wiki_knowledge is available as fallback."
                 )
         except Exception:
@@ -295,10 +295,11 @@ class ToolExecutor:
 
         # Visual memory
         try:
-            if app_config.VISUAL_MEMORY_ENABLED and self.chroma_store:
-                lines.append("recall_image: READY (visual memory enabled; shared Chroma store injected)")
-            elif app_config.VISUAL_MEMORY_ENABLED:
-                lines.append("recall_image: UNAVAILABLE (visual memory enabled but no Chroma store)")
+            # 2026-09-30 (BC-46, BC-58): recall_image is deliberately NOT in the
+            # offered tool list (visual memories arrive via context), so the
+            # health block must not call it READY.
+            if app_config.VISUAL_MEMORY_ENABLED:
+                lines.append("recall_image: NOT OFFERED (visual memories arrive via context)")
             else:
                 lines.append("recall_image: DISABLED")
         except Exception:
@@ -452,6 +453,33 @@ class ToolExecutor:
             round_number=round_number,
             metadata={"query": decision.search_query, "reason": decision.search_reason}
         )]
+
+        # 2026-09-30 (BC-47, BC-58, BC-72): an unavailable search (no key /
+        # toggled off / client error) is "not configured", never "no results"
+        # — checked BEFORE dispatch + compression.
+        _ws = self.web_search_manager
+        if _ws is None or not _ws.is_available():
+            _text = "[Web search unavailable — not configured]"
+            round_data = SearchRound(
+                round_number=round_number,
+                request=SearchRequest(
+                    query=decision.search_query,
+                    reason=decision.search_reason,
+                    round_number=round_number,
+                ),
+                results=None,
+                duration_ms=0.0,
+            )
+            round_data.summary = _text
+            return _ToolResult(
+                decision=decision,
+                round_data=round_data,
+                formatted_context=self.formatter.format_search_context(
+                    round_number, decision.search_query, _text
+                ),
+                start_events=start_events,
+                end_events=[],
+            )
 
         start_time = time.time()
         include_domains = [decision.search_site] if decision.search_site else None
@@ -1423,6 +1451,12 @@ class ToolExecutor:
                 if _why:
                     return (f"[CONTACT LOOKUP FAILED — {_why}. Tell the user the lookup "
                             "could not run; do not say the contact does not exist.]")
+                # 2026-09-30 (BC-47, BC-58): no Google account connected is "not
+                # configured", never "no contact matched".
+                from core.actions.google_auth import get_google_auth  # lazy import: cycle
+                _auth = get_google_auth()
+                if _auth is None or not _auth.is_authenticated:
+                    return "[Contact lookup unavailable — Google account not connected]"
                 return f"[No contacts found matching '{name}']"
             lines = [f"[CONTACTS LOOKUP] '{name}'"]
             for r in results:

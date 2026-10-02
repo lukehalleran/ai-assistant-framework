@@ -95,6 +95,20 @@ export interface ProposalsSettings {
   max_per_session: number
 }
 
+// Server-computed capability flags (gui/settings_core._availability). The SPA
+// hides surfaces that cannot work on this install; unknown/loading = all false.
+export interface Availability {
+  web_search_key: boolean
+  vault: boolean
+  dev_mode: boolean
+}
+
+export const NO_AVAILABILITY: Availability = {
+  web_search_key: false,
+  vault: false,
+  dev_mode: false,
+}
+
 export interface SettingsSnapshot {
   streaming: StreamingSettings
   web_search: WebSearchSettings
@@ -105,6 +119,7 @@ export interface SettingsSnapshot {
   synthesis: SynthesisSettings
   proposals: ProposalsSettings
   model_choices: string[]
+  availability?: Availability
 }
 
 export interface SettingsApplyResult {

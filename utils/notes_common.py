@@ -16,6 +16,7 @@ Module Contract
 - Side effects: none; pure data + a pure function.
 """
 
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import yaml
@@ -49,3 +50,28 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
             body = parts[2].strip()
 
     return frontmatter, body
+
+
+# ---------------------------------------------------------------------------
+# Daily-notes base directory (single resolver for all three generators)
+# ---------------------------------------------------------------------------
+
+def daily_notes_base() -> Path:
+    """Directory that holds daily notes (and the weekly/monthly folders under it).
+
+    Obsidian enabled AND the vault directory exists -> <vault>/<DAILY_NOTES_FOLDER>
+    (the historical behaviour). Otherwise -> <data root>/notes/<DAILY_NOTES_FOLDER>,
+    where the data root is the directory of CORPUS_FILE (relative paths resolve
+    against the repo root, never the launch CWD). Reads live config values.
+    """
+    from config import app_config  # lazy import: live-config
+
+    folder = app_config.DAILY_NOTES_FOLDER
+    if app_config.OBSIDIAN_ENABLED:
+        vault = Path(app_config.OBSIDIAN_VAULT_PATH).expanduser()
+        if vault.is_dir():
+            return vault / folder
+    corpus = Path(app_config.CORPUS_FILE or "./data/corpus.json").expanduser()
+    if not corpus.is_absolute():
+        corpus = Path(__file__).resolve().parent.parent / corpus
+    return corpus.parent / "notes" / folder

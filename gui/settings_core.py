@@ -134,6 +134,21 @@ def model_choices(orchestrator) -> list:
         return []
 
 
+def _availability() -> dict:
+    """2026-09-30 (D2c): read-only capability flags for the SPA — live reads."""
+    import config.app_config as app_cfg  # lazy import: live-config
+    try:
+        vault = bool(app_cfg.OBSIDIAN_ENABLED) and Path(
+            str(app_cfg.OBSIDIAN_VAULT_PATH or "")).expanduser().is_dir()
+    except (OSError, ValueError):
+        vault = False
+    return {
+        "web_search_key": bool(getattr(app_cfg, "WEB_SEARCH_API_KEY", "")),
+        "vault": vault,
+        "dev_mode": getattr(app_cfg, "DAEMON_MODE", "user") == "dev",
+    }
+
+
 def get_settings_snapshot(orchestrator) -> dict:
     """Current values for every settings section (file values, live fallbacks)."""
     settings = load_settings()
@@ -152,6 +167,8 @@ def get_settings_snapshot(orchestrator) -> dict:
     gens = list(feat.get("best_of_generator_models", []) or [])
     return {
         "streaming": {
+            # 2026-09-30 (D2b): enable_best_of fallback (True) still DISAGREES with shipped
+            # False but test_api_debug_settings pins it — left for the owner.
             "disable_best_of": not bool(feat.get("enable_best_of", True)),
             "disable_query_rewrite": not bool(feat.get("enable_query_rewrite", True)),
             "disable_llm_summaries": bool(feat.get("disable_llm_summaries", False)),
@@ -167,8 +184,8 @@ def get_settings_snapshot(orchestrator) -> dict:
             "model_2": gens[1] if len(gens) > 1 else None,
         },
         "tokens": {
-            "best_of_max_tokens": int(feat.get("best_of_max_tokens", 128)),
-            "judge_max_tokens": int(feat.get("best_of_selector_max_tokens", 64)),
+            "best_of_max_tokens": int(feat.get("best_of_max_tokens", 8816)),
+            "judge_max_tokens": int(feat.get("best_of_selector_max_tokens", 80)),
             "streaming_max_tokens": int(
                 models_cfg.get("default_max_tokens",
                                getattr(mm, "default_max_tokens", 2048) or 2048)
@@ -184,10 +201,11 @@ def get_settings_snapshot(orchestrator) -> dict:
             "candidates_per_session": int(syn.get("candidates_per_session", 8)),
         },
         "proposals": {
-            "enabled": bool(props.get("enabled", True)),
+            "enabled": bool(props.get("enabled", False)),
             "max_per_session": int(props.get("max_per_session", 5)),
         },
         "model_choices": model_choices(orchestrator),
+        "availability": _availability(),
     }
 
 

@@ -225,8 +225,8 @@ def get_daily_note_path(target_date: date, vault_path: Optional[Path] = None) ->
     """
     if vault_path is None:
         try:
-            from config.app_config import OBSIDIAN_VAULT_PATH, DAILY_NOTES_FOLDER  # lazy import: live-config
-            base = Path(OBSIDIAN_VAULT_PATH).expanduser() / DAILY_NOTES_FOLDER
+            from utils.notes_common import daily_notes_base  # lazy import: live-config
+            base = daily_notes_base()
         except ImportError:
             return None
     else:
@@ -383,7 +383,16 @@ class DailyNotesGenerator:
             self.max_tokens = 800
             self.tag_generation_enabled = True
 
-        self.output_dir = self.vault_path / self.daily_folder
+        # Explicit vault_path override keeps vault/folder; otherwise the shared
+        # resolver (vault when Obsidian is on + present, else the data root).
+        if vault_path:
+            self.output_dir = self.vault_path / self.daily_folder
+        else:
+            try:
+                from utils.notes_common import daily_notes_base  # lazy import: live-config
+                self.output_dir = daily_notes_base()
+            except Exception:  # degrades: falls back to vault/folder layout
+                self.output_dir = self.vault_path / self.daily_folder
         logger.debug(f"[DailyNotes] Initialized: vault={self.vault_path}, folder={self.daily_folder}")
 
     @property

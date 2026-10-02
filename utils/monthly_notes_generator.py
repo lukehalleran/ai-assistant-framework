@@ -163,7 +163,16 @@ class MonthlyNotesGenerator:
             self.max_tokens = 2000
             self.tag_generation_enabled = True
 
-        self.output_dir = self.vault_path / self.daily_folder
+        # Explicit vault_path override keeps vault/folder; otherwise the shared
+        # resolver (vault when Obsidian is on + present, else the data root).
+        if vault_path:
+            self.output_dir = self.vault_path / self.daily_folder
+        else:
+            try:
+                from utils.notes_common import daily_notes_base  # lazy import: live-config
+                self.output_dir = daily_notes_base()
+            except Exception:  # degrades: falls back to vault/folder layout
+                self.output_dir = self.vault_path / self.daily_folder
         logger.debug(f"[MonthlyNotes] Initialized: vault={self.vault_path}, folder={self.daily_folder}")
 
     @property

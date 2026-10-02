@@ -24,6 +24,7 @@ import {
 } from './api/client'
 import { captureDebugBaseline } from './api/debugSession'
 import { useChatStream } from './api/useChatStream'
+import { NO_AVAILABILITY, type Availability } from './api/types'
 import ActivityLog from './components/chat/ActivityLog'
 import ChatInput from './components/chat/ChatInput'
 import MessageList from './components/chat/MessageList'
@@ -47,6 +48,8 @@ export default function App() {
   const [syncing, setSyncing] = useState(false)
   // One poll loop at a time; the newest controller owns the `syncing` flag.
   const syncPollRef = useRef<AbortController | null>(null)
+  // One GET /api/settings at load; all-false (hidden) until it answers.
+  const [availability, setAvailability] = useState<Availability>(NO_AVAILABILITY)
   const [models, setModels] = useState<string[]>([])
   const [activeModel, setActiveModel] = useState<string | null>(null)
   // Mobile: sidebar collapses into a burger-toggled drawer so chat gets the screen
@@ -65,7 +68,16 @@ export default function App() {
         setActiveModel(m.active)
       })
       .catch(() => {})
+    api
+      .getSettings()
+      .then((snap) => setAvailability({ ...NO_AVAILABILITY, ...(snap.availability ?? {}) }))
+      .catch(() => {})
   }, [])
+
+  // Curation is a dev surface: never leave the user parked on a hidden view.
+  useEffect(() => {
+    if (!availability.dev_mode && view === 'curation') setView('chat')
+  }, [availability.dev_mode, view])
 
   useEffect(() => {
     if (chat.error) {
@@ -122,6 +134,7 @@ export default function App() {
   // sees the in-flight job (and polls it) or an outcome finished within the
   // last two minutes, instead of nothing.
   useEffect(() => {
+    if (!availability.vault) return
     const { controller, done } = beginSyncWatch()
     api
       .getNotesSyncStatus(controller.signal)
@@ -135,7 +148,7 @@ export default function App() {
       .catch(() => {})
       .finally(done)
     return () => controller.abort()
-  }, [])
+  }, [availability.vault])
 
   const syncNotes = async () => {
     const { controller, done } = beginSyncWatch()
@@ -220,7 +233,7 @@ export default function App() {
               { value: 'chat', label: '💬 Chat' },
               { value: 'debug', label: '🔎 Debug' },
               { value: 'provenance', label: '🧾 Prov.' },
-              { value: 'curation', label: '🧹' },
+              ...(availability.dev_mode ? [{ value: 'curation', label: '🧹' }] : []),
               { value: 'settings', label: '⚙️' },
             ]}
           />
@@ -241,7 +254,7 @@ export default function App() {
             onChange={(e) => setFastMode(e.currentTarget.checked)}
           />
           <Switch
-            label="Raw GPT (bypass memory)"
+            label="Raw mode (bypass memory)"
             checked={rawMode}
             onChange={(e) => setRawMode(e.currentTarget.checked)}
           />
@@ -250,18 +263,20 @@ export default function App() {
             checked={citations}
             onChange={(e) => setCitations(e.currentTarget.checked)}
           />
-          <Button
-            variant="outline"
-            color="gray"
-            size="xs"
-            loading={syncing}
-            onClick={() => {
-              syncNotes()
-              closeNav()
-            }}
-          >
-            📝 Sync notes
-          </Button>
+          {availability.vault && (
+            <Button
+              variant="outline"
+              color="gray"
+              size="xs"
+              loading={syncing}
+              onClick={() => {
+                syncNotes()
+                closeNav()
+              }}
+            >
+              📝 Sync notes
+            </Button>
+          )}
           <Button
             variant="outline"
             color="gray"
@@ -273,9 +288,11 @@ export default function App() {
           >
             🧹 Clear chat
           </Button>
-          <Text size="xs" c="dimmed">
-            Dev tabs live at <a href="/admin">/admin</a>
-          </Text>
+          {availability.dev_mode && (
+            <Text size="xs" c="dimmed">
+              Dev tabs live at <a href="/admin">/admin</a>
+            </Text>
+          )}
         </Stack>
       </AppShell.Navbar>
 
@@ -289,8 +306,8 @@ export default function App() {
         <Suspense fallback={null}>
           {view === 'debug' && <DebugPage />}
           {view === 'provenance' && <ProvenancePage />}
-          {view === 'settings' && <SettingsPage />}
-          {view === 'curation' && <CurationPage />}
+          {view === 'settings' && <SettingsPage availability={availability} />}
+          {view === 'curation' && availability.dev_mode && <CurationPage />}
         </Suspense>
         {/* minWidth/overflowX clamp: a long unbroken line anywhere in the chat
             column must shrink within the viewport, never widen the page */}

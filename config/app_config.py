@@ -383,7 +383,7 @@ WEB_SEARCH_CREDITS_PATH: str = os.getenv("WEB_SEARCH_CREDITS_PATH", str(WEB_SEAR
 # IP geolocation (background-refreshed, cached) → profile lives_in fact.
 LOCATION_CFG = config.get("location", {})
 LOCATION_ENABLED: bool = bool(LOCATION_CFG.get("enabled", True))
-LOCATION_IP_LOOKUP_ENABLED: bool = bool(LOCATION_CFG.get("ip_lookup_enabled", True))
+LOCATION_IP_LOOKUP_ENABLED: bool = bool(LOCATION_CFG.get("ip_lookup_enabled", False))
 LOCATION_IP_CACHE_TTL_HOURS: float = float(LOCATION_CFG.get("ip_cache_ttl_hours", 6.0))
 LOCATION_IP_LOOKUP_TIMEOUT_S: float = float(LOCATION_CFG.get("ip_lookup_timeout_s", 3.0))
 LOCATION_OVERRIDE: str = os.getenv("DAEMON_USER_LOCATION", str(LOCATION_CFG.get("override", "") or ""))
@@ -2097,7 +2097,10 @@ if DAEMON_MODE == "user":
     SYNTHESIS_AUDIT_ENABLED = False
     REFERENCE_DOCS_AUTO_SEED = False
     REFERENCE_DOCS_ENABLED = False
-    CROSS_DEDUP_AUTO_EXECUTE = True  # User mode: auto-execute dedup on shutdown
+    # 2026-09-30: was True ("auto-execute dedup on shutdown") — a silent shutdown
+    # delete, against the never-auto-delete rule; latent only because the committed
+    # default mode was dev. Dedup stays a dry-run preview in every mode.
+    CROSS_DEDUP_AUTO_EXECUTE = False
     logger.info("DAEMON_MODE=user — proposals, synthesis, and reference docs disabled")
 else:
     CROSS_DEDUP_AUTO_EXECUTE = False  # Dev mode: dry-run only, manual execution from GUI
