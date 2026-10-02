@@ -13,7 +13,7 @@ Module Contract
   - get_pending() -> List[CodeProposal]  [status=pending_review]
   - get_pending_and_approved() -> List[CodeProposal]  [pending_review + approved]
   - update_status(proposal_id, new_status, notes) -> bool  [delete-and-re-add]
-  - check_similarity(proposal, threshold) -> Tuple[bool, float, Optional[str]]  [dedup check]
+  - check_similarity(proposal, threshold) -> Optional[str]  [dedup check; raises RetrievalError on failure]
   - update_tracking_metadata(proposal_id, detection_result) -> bool  [implementation tracking fields]
   - get_for_dedup(limit) -> str  [serialized context string for dedup during proposal generation]
 - Key behaviors:
@@ -70,6 +70,18 @@ class ProposalStore:
                 return False
 
         return True
+
+    def _collection_handle(self):
+        """Resolve the proposals collection handle, opening it if still lazy.
+
+        Prefers the store's ``_get_collection`` accessor (the raw
+        ``collections`` dict holds a None placeholder until first access, the
+        RefDocs 08-02 class); falls back to the dict for stores without it.
+        """
+        getter = getattr(self.chroma_store, "_get_collection", None)
+        if callable(getter):
+            return getter(COLLECTION_NAME)
+        return self.chroma_store.collections.get(COLLECTION_NAME)
 
     def store_proposal(self, proposal: CodeProposal) -> Optional[str]:
         """
@@ -360,7 +372,13 @@ class ProposalStore:
                 Defaults to config value.
 
         Returns:
-            ID of the similar existing proposal if found, None otherwise
+            ID of the similar existing proposal if found; None for the
+            deliberate "not configured" skip or a genuine "no duplicate".
+
+        Raises:
+            RetrievalError: the check was attempted and failed. A failed
+                check is "unknown", never "no duplicate" — callers must not
+                admit the proposal as non-duplicate on it.
         """
         if not self._ensure_collection():
             return None
@@ -373,7 +391,7 @@ class ProposalStore:
                 threshold = 0.70
 
         try:
-            coll = self.chroma_store.collections.get(COLLECTION_NAME)
+            coll = self._collection_handle()
             if coll is None or coll.count() == 0:
                 return None
 
@@ -418,7 +436,9 @@ class ProposalStore:
 
         except Exception as e:
             logger.error(f"[ProposalStore] check_similarity failed: {e}")
-            return None
+            raise RetrievalError(
+                source="proposal_store", reason=f"similarity:{type(e).__name__}"
+            ) from e
 
     def update_tracking_metadata(self, proposal_id: str, detection_result) -> bool:
         """
@@ -512,6 +532,14 @@ class ProposalStore:
 
         Returns a text block that can be included in generation prompts to
         avoid generating proposals that already exist.
+
+        Returns:
+            The context block; "" for the deliberate "not configured" skip or
+            a genuinely empty collection.
+
+        Raises:
+            RetrievalError: the list failed. A failed read is "unknown", not
+                "nothing exists yet" (which would invite duplicate proposals).
         """
         if not self._ensure_collection():
             return ""
@@ -539,5 +567,7 @@ class ProposalStore:
             return "\n".join(lines)
 
         except Exception as e:
-            logger.debug(f"[ProposalStore] get_for_dedup failed: {e}")
-            return ""
+            logger.error(f"[ProposalStore] get_for_dedup failed: {e}")
+            raise RetrievalError(
+                source="proposal_store", reason=f"dedup:{type(e).__name__}"
+            ) from e
