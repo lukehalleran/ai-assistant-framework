@@ -116,11 +116,18 @@ def _thread_context_is_stale(thread_ctx: dict, now: Optional[datetime] = None) -
         return False
 
 
+# Word bound for "this message answers the assistant's pending question" when
+# deciding whether to assert a thread shift (wider than the retrieval-routing
+# bound of 6: a two-clause answer is still an answer).
+_ANSWER_CONTINUATION_MAX_WORDS = 14
+
+
 def _thread_topic_shifted(
     thread_topic: str,
     current_topic: str,
     original_query: str,
     stm_reference_type: Optional[str] = None,
+    last_assistant_response: Optional[str] = None,
 ) -> bool:
     """Whether the [THREAD CONTEXT] injection should assert a topic shift.
 
@@ -148,6 +155,15 @@ def _thread_topic_shifted(
         return False
     if (stm_reference_type or "").strip().lower() in ("recall", "clarification", "correction"):
         return False
+    # A short reply that directly answers the assistant's own pending
+    # question ("No it's for me. I don't want to move" after "does he need
+    # you there?") continues the thread by construction (2026-10-02, BC-08).
+    if last_assistant_response:
+        if is_continuation_answer(
+            original_query or "", last_assistant_response,
+            max_words=_ANSWER_CONTINUATION_MAX_WORDS,
+        ):
+            return False
     return not _topics_related(thread_topic, current_topic)
 
 
@@ -204,7 +220,7 @@ from core.truth_event_handler import get_recent_profile_facts as _ext_get_recent
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
 gate_system.wikipedia_api = wiki_api  # This sets it globally
-from utils.query_checker import is_deictic, THREAD_TIME_HARD_CUTOFF
+from utils.query_checker import is_deictic, is_continuation_answer, THREAD_TIME_HARD_CUTOFF
 
 
 class _SimplePromptBuilder:
@@ -1380,8 +1396,17 @@ class DaemonOrchestrator:
             # conversational continuity." because a greeting read as a
             # fragment continuation and "general" read as related.
             _session_start = self._is_session_start() or _thread_context_is_stale(thread_ctx)
+            _last_ex = getattr(context, "last_exchange", None)
+            _last_resp = ""
+            if isinstance(_last_ex, dict):
+                _last_resp = str(
+                    _last_ex.get("response") or _last_ex.get("assistant")
+                    or (_last_ex.get("content", "") if _last_ex.get("role") == "assistant" else "")
+                    or ""
+                )
             _shifted = thread_topic and _thread_topic_shifted(
-                thread_topic, topic_str, context.original_query, stm_reference_type=_stm_ref
+                thread_topic, topic_str, context.original_query, stm_reference_type=_stm_ref,
+                last_assistant_response=_last_resp,
             )
             # Neutral-divergence branch (2026-09-05): _thread_topic_shifted
             # correctly refuses to assert a shift when STM classified this
