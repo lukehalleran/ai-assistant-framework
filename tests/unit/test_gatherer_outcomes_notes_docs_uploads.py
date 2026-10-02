@@ -36,6 +36,17 @@ from core.prompt.gatherer_knowledge import KnowledgeRetrievalMixin
 from tests.unit.test_independent_prompt_audit import full_builder, retrieval_limits
 from utils.retrieval_outcome import OutcomeList, outcome_status
 
+
+@pytest.fixture(autouse=True)
+def _usable_web_and_vault(monkeypatch, tmp_path):
+    """referee-authorized setup-only edit 2026-10-02: the feature inventory
+    reports usable availability, so tests that enable web search / obsidian
+    also provide a key / an existing vault dir."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setattr("config.app_config.WEB_SEARCH_API_KEY", "test-key")
+    monkeypatch.setattr("config.app_config.OBSIDIAN_VAULT_PATH", str(vault))
+
 # Distinctive markers so a privacy assertion proves absence, not luck.
 PRIVATE_EXC_TEXT = "leaked exception detail F7AQX9"
 PRIVATE_QUERY = "sensitive question about TITLEF7AQX9 health"

@@ -35,7 +35,7 @@ class TestProfileSchema:
         # Verify all expected categories are defined
         expected = ["identity", "education", "career", "projects", "health",
                    "fitness", "preferences", "hobbies", "study", "finance",
-                   "relationships", "goals"]
+                   "relationships", "goals", "living_situation"]
         actual = [cat.value for cat in ProfileCategory]
         assert set(actual) == set(expected)
 

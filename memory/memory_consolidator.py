@@ -416,20 +416,18 @@ Prioritize recent daily notes for current state, weekly for active threads, mont
 Do NOT make up information not present in the summaries."""
 
     def _get_obsidian_notes_path(self) -> Optional[str]:
-        """Get the path to Obsidian daily notes folder."""
+        """Get the path to the daily notes folder (None when it does not exist).
+
+        2026-10-02: resolved by the shared `daily_notes_base()` (vault when
+        Obsidian is enabled and present, else <data root>/notes/<folder>)
+        instead of a hard-coded vault layout.
+        """
         try:
-            from config.app_config import OBSIDIAN_VAULT_PATH  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
-            vault_path = Path(OBSIDIAN_VAULT_PATH).expanduser()
-            notes_path = vault_path / "Vault" / "Daily Notes and To Do's"
-            if notes_path.exists():
-                return str(notes_path)
-            # Fallback: try without "Vault" subfolder
-            notes_path = vault_path / "Daily Notes and To Do's"
-            if notes_path.exists():
-                return str(notes_path)
-            return None
+            from utils.notes_common import daily_notes_base  # lazy import: live-config
+            notes_path = daily_notes_base()
+            return str(notes_path) if notes_path.exists() else None
         except Exception as e:
-            logger.debug(f"[NarrativeSynthesis] Could not get Obsidian path: {e}")
+            logger.debug(f"[NarrativeSynthesis] Could not get notes path: {e}")
             return None
 
     def _read_obsidian_weekly_summaries(self, limit: int = 2) -> List[Dict]:

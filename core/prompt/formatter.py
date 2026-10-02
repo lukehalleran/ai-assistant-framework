@@ -862,6 +862,16 @@ class PromptFormatter:
                     return f"({len(items)}{f' {unit}' if unit else ''})"
                 return ""
 
+            _avail_cache: Dict[str, Any] = {}
+
+            def _avail() -> Dict[str, Any]:
+                """Real availability (key present / vault dir exists), read
+                live from the same helper the Settings snapshot uses."""
+                if not _avail_cache:
+                    from gui.settings_core import _availability  # lazy import: layering (read-only reuse)
+                    _avail_cache.update(_availability())
+                return _avail_cache
+
             lines = []
 
             # Memory category
@@ -886,7 +896,14 @@ class PromptFormatter:
                 obs_suffix = f"({len(notes)} notes)"
             else:
                 obs_suffix = ""
-            know_parts.append(f"obsidian={_on_off(getattr(cfg, 'OBSIDIAN_ENABLED', False))}{obs_suffix}")
+            # 2026-10-02 (BC-46, BC-71, BC-58): ON means USABLE, not merely
+            # configured — enabled with no vault directory is OFF(no vault).
+            obs_enabled = bool(getattr(cfg, 'OBSIDIAN_ENABLED', False))
+            if obs_enabled and not _avail().get("vault", False):
+                obs_label, obs_suffix = "OFF(no vault)", ""
+            else:
+                obs_label = _on_off(obs_enabled)
+            know_parts.append(f"obsidian={obs_label}{obs_suffix}")
             ref_docs = context.get("reference_docs", []) or []
             know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{_suffix('reference_docs', ref_docs)}")
             # Wiki semantic index (FAISS) — 2026-09-27 (BC-70): a missing/
@@ -905,6 +922,9 @@ class PromptFormatter:
                 know_parts.append("semantic=OFF(index not found)")
             web_enabled = bool(getattr(cfg, "WEB_SEARCH_ENABLED", False))
             web_label = _on_off(web_enabled)
+            if web_enabled and not _avail().get("web_search_key", False):
+                web_enabled = False
+                web_label = "OFF(not configured)"
             if web_enabled:
                 decision = context.get("web_search_decision")
                 if isinstance(decision, dict):
