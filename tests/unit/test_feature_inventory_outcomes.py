@@ -21,6 +21,17 @@ import pytest
 
 from core.prompt.formatter import PromptFormatter
 
+
+@pytest.fixture(autouse=True)
+def _usable_web_and_vault(monkeypatch, tmp_path):
+    """referee-authorized setup-only edit 2026-10-02: the feature inventory
+    reports usable availability, so tests that enable web search / obsidian
+    also provide a key / an existing vault dir."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setattr("config.app_config.WEB_SEARCH_API_KEY", "test-key")
+    monkeypatch.setattr("config.app_config.OBSIDIAN_VAULT_PATH", str(vault))
+
 # Every config flag _build_feature_inventory reads, defaulted False so every
 # test is deterministic regardless of this checkout's config/env.
 _FLAG_DEFAULTS = {
