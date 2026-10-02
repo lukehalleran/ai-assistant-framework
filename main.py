@@ -46,7 +46,8 @@ import logging
 # Windowless mode (console=False): redirect stdout/stderr to log file
 # so print() calls don't crash and we get a debug log if something fails
 if getattr(sys, 'frozen', False) and sys.stdout is None:
-    _log_path = os.path.join(os.environ.get('APPDATA', '.'), 'Daemon', 'daemon_startup.log')
+    from utils.bootstrap import get_user_data_dir as _get_user_data_dir  # lazy import: layering (frozen-only; bootstrap must precede every other Daemon import)
+    _log_path = os.path.join(_get_user_data_dir(), 'daemon_startup.log')
     os.makedirs(os.path.dirname(_log_path), exist_ok=True)
     sys.stdout = open(_log_path, 'w', encoding='utf-8')
     sys.stderr = sys.stdout
@@ -78,7 +79,7 @@ else:
 from dotenv import load_dotenv
 if getattr(sys, 'frozen', False):
     # In frozen mode, load .env from user data directory
-    env_path = os.path.join(os.environ.get('APPDATA', ''), 'Daemon', '.env')
+    env_path = os.path.join(_user_data_dir, '.env')
     load_dotenv(env_path, override=True)
 else:
     # override=True ensures .env takes precedence over shell environment variables
