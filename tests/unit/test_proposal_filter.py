@@ -577,9 +577,13 @@ class TestCompositeScoring:
 
 class TestFullPipelineCompositeOrdering:
     @pytest.mark.asyncio
-    async def test_high_priority_outranks_low(self):
+    async def test_high_priority_outranks_low(self, monkeypatch):
         """High-priority proposal should rank above low-priority even with equal gate scores."""
         from core.prompt.proposal_filter import ProposalFilter
+
+        # Ranking test: pin the enable flag instead of inheriting the committed
+        # daemon.mode (user mode force-disables proposals — 2026-09-30).
+        monkeypatch.setattr("config.app_config.CODE_PROPOSALS_PROMPT_ENABLED", True)
 
         pf = ProposalFilter()
 
