@@ -204,7 +204,9 @@ class LocationResolver:
             with open(self.profile_path, "r", encoding="utf-8") as f:
                 profile = json.load(f)
             candidates = [
-                e for e in profile.get("categories", {}).get("identity", [])
+                # lives_in moved identity -> living_situation (2026-10-02); read both
+                e for cat in ("identity", "living_situation")
+                for e in profile.get("categories", {}).get(cat, [])
                 if e.get("relation") == "lives_in"
                 and _PLACE_RE.match(str(e.get("value", "")).strip())
             ]

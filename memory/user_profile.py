@@ -31,7 +31,7 @@ Module Contract
   - Automatic categorization via user_profile_schema
   - Quick profile for identity fields (name, location, age)
   - Chronological raw_log like ChatGPT's memory system
-  - UPDATED: Hybrid fact retrieval - 2/3 semantic (keyword overlap), 1/3 recent per category
+  - UPDATED: Hybrid fact retrieval - 2/3 semantic (embedding cosine over relation+value text, word-overlap fallback), 1/3 recent per category
 - Side effects:
   - Writes to data/user_profile.json on save()
   - Thread-safe with lock for concurrent access
@@ -63,6 +63,71 @@ import config.app_config as app_config
 from memory.truth_scorer import TruthScorer
 
 logger = get_logger("user_profile")
+
+# Relevance floor for the cosine ranking in UserProfile.get_relevant_facts
+# (2026-10-02). Measured with the shared all-MiniLM embedder over fixture
+# fact texts ("relation words: value"): the best UNRELATED fact for a query
+# scored -0.05..0.20 (e.g. "pet name: ..." vs "what should I cook tonight" =
+# 0.196) while genuinely on-topic facts scored 0.17-0.55 even for a terse,
+# context-free reply. 0.15 sits under the on-topic band and drops the pure
+# noise that used to hold "semantic" slots at overlap 0; a fact below it can
+# still surface through the recency slots.
+RELEVANCE_COSINE_FLOOR = 0.15
+_FACT_EMB_CACHE_MAX = 4096
+_fact_emb_cache: Dict[str, Any] = {}   # fact text -> normalized vector
+_query_emb_cache: Dict[str, Any] = {}  # last query text -> vector (1 entry)
+
+
+def _profile_embedder():
+    """The shared, already-loaded sentence embedder, or None when unusable.
+
+    Reuses ModelManager._get_cached_embedder() — the SAME accessor
+    user_profile_schema's embedding categorizer uses — so no model is loaded
+    here. A stub embedder (all-zero vectors) counts as unavailable."""
+    embedder = None
+    try:
+        from models.model_manager import ModelManager  # lazy import: startup-cost + layering (heavy model stack)
+        embedder = ModelManager._get_cached_embedder()
+    except Exception as e:  # degrades: no embedder, ranking falls back to word overlap
+        logger.debug(f"[UserProfile] embedder unavailable, using overlap ranking: {e}")
+    return embedder
+
+
+def _fact_text(fact: Dict) -> str:
+    """Natural-language text of a fact: relation (underscores split) + value."""
+    rel = str(fact.get("relation", "")).replace("_", " ").strip()
+    return f"{rel}: {fact.get('value', '')}"
+
+
+def _embed_cached(texts: List[str], cache: Dict[str, Any], embedder):
+    """Return one vector per text, encoding only the cache misses in a batch."""
+    missing = [t for t in dict.fromkeys(texts) if t not in cache]
+    if missing:
+        vecs = embedder.encode(missing, convert_to_numpy=True, normalize_embeddings=True)
+        if len(cache) + len(missing) > _FACT_EMB_CACHE_MAX:
+            cache.clear()
+        for t, v in zip(missing, vecs):
+            cache[t] = v
+    return [cache[t] for t in texts]
+
+
+def _cosine_scores(query: str, facts: List[Dict]) -> Optional[List[float]]:
+    """Cosine of the query against each fact's text, or None if unavailable."""
+    embedder = _profile_embedder()
+    if embedder is None or not facts:
+        return None
+    try:
+        import numpy as np  # lazy import: startup-cost
+        if query not in _query_emb_cache:
+            _query_emb_cache.clear()  # one entry: every category scores the same query
+        q_vec = _embed_cached([query], _query_emb_cache, embedder)[0]
+        f_vecs = _embed_cached([_fact_text(f) for f in facts], _fact_emb_cache, embedder)
+        q = np.asarray(q_vec, dtype=float)
+        if not float(np.linalg.norm(q)):
+            return None  # stub embedder: all-zero vectors carry no signal
+        return [float(np.dot(q, np.asarray(v, dtype=float))) for v in f_vecs]
+    except Exception:  # degrades: embedding failed, ranking falls back to word overlap
+        return None
 
 
 def profile_shape_error(data) -> str:
@@ -296,7 +361,33 @@ class UserProfile:
 
         with self._lock:
             cat_key = category.value
-            facts_list = self.profile["categories"][cat_key]
+            # setdefault: a profile saved before a category existed (e.g.
+            # living_situation, 2026-10-02) has no list for it yet.
+            facts_list = self.profile["categories"].setdefault(cat_key, [])
+
+            # A relation re-homed to a new category (lives_in: identity →
+            # living_situation) may still have its facts under the old one.
+            # Confirm/supersede THERE so a legacy value can't stay current
+            # beside the new one; the fact keeps its stored category.
+            legacy_home = user_profile_schema.LEGACY_CATEGORY_HOMES.get(relation)
+            if legacy_home is not None and legacy_home != category:
+                legacy_list = self.profile["categories"].get(legacy_home.value, [])
+                legacy_exact = any(
+                    isinstance(e, dict) and e.get("relation") == relation
+                    and str(e.get("value", "")).lower() == value.lower()
+                    for e in legacy_list
+                )
+                if legacy_exact:
+                    facts_list = legacy_list  # confirmation lands on the legacy fact
+                else:
+                    for e in legacy_list:
+                        if (isinstance(e, dict) and e.get("relation") == relation
+                                and e.get("is_current", True)):
+                            e["is_current"] = False
+                            e["truth_score"] = TruthScorer.apply_correction(
+                                float(e.get("truth_score", 0.7)))
+                            if not e.get("fact_id"):
+                                e["fact_id"] = str(uuid.uuid4())
 
             # Find existing facts with same canonical relation
             exact_match_idx = None  # same canonical relation AND value
@@ -732,25 +823,34 @@ class UserProfile:
         semantic_count = max(1, int(limit * 0.67))
         recent_count = max(1, limit - semantic_count)
 
-        # Get semantic matches (simple keyword overlap for now)
         query_lower = query.lower()
         query_words = set(query_lower.split())
 
+        # Relevance = embedding cosine of the query vs "relation words: value"
+        # (2026-10-02). The old score was raw word overlap with the relation's
+        # underscores UNSPLIT, so "apartment_condition" could never match a
+        # housing query and every housing fact scored 0. Without a usable
+        # embedder, fall back to word overlap with the relation split on "_".
+        cosines = _cosine_scores(query, high_conf)
         scored = []
-        for fact in high_conf:
-            value = fact.get("value", "").lower()
-            relation = fact.get("relation", "").lower()
+        if cosines is not None:
+            for fact, cos in zip(high_conf, cosines):
+                if cos >= RELEVANCE_COSINE_FLOOR:
+                    scored.append((cos, fact))
+        else:
+            for fact in high_conf:
+                value = str(fact.get("value", "")).lower()
+                relation = str(fact.get("relation", "")).lower().replace("_", " ")
+                fact_words = set(value.split()) | set(relation.split())
+                overlap = len(query_words & fact_words)
+                if overlap:
+                    scored.append((overlap / max(1, len(query_words)), fact))
 
-            # Simple keyword overlap score
-            fact_words = set(value.split()) | set(relation.split())
-            overlap = len(query_words & fact_words)
-            semantic_score = overlap / max(1, len(query_words))
-
-            scored.append((semantic_score, fact))
-
-        # Sort by semantic score, take top 2/3
+        # Sort by relevance, take top 2/3. Facts below the floor take no
+        # relevance slot; the slots they would have held go to recency.
         scored.sort(key=lambda x: x[0], reverse=True)
         semantic_facts = [f[1] for f in scored[:semantic_count]]
+        recent_count = max(recent_count, limit - len(semantic_facts))
 
         # Get most recent facts not already in semantic set
         semantic_ids = {id(f) for f in semantic_facts}

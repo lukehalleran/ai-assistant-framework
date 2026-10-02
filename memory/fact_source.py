@@ -25,8 +25,10 @@ Entity facts need the named subject and the object in one span.  There is
 intentionally NO "last message" fallback.
 
 Leaf module: imports only stdlib, ``utils.temporal_resolver`` (a shared,
-dependency-free date helper), and ``utils.test_envelope`` (2026-09-27, the
-shared [test]...[/test] structural parser — also stdlib-only) — never from
+dependency-free date helper), ``utils.test_envelope`` (2026-09-27, the
+shared [test]...[/test] structural parser — also stdlib-only), and
+``memory.user_profile_schema`` (2026-10-02, stdlib-only at import time — only
+for ``RESIDENCE_RELATIONS``, the single residence-relation set) — never from
 the rest of the package.
 """
 
@@ -37,6 +39,7 @@ from datetime import date, datetime, timedelta
 import re
 from typing import Any, Iterable, Iterator, Mapping
 
+from memory.user_profile_schema import RESIDENCE_RELATIONS
 from utils import test_envelope
 from utils.temporal_resolver import resolve_date_expression
 
@@ -81,11 +84,27 @@ _POSSESSIVE_PROPER_RE = re.compile(r"\b[A-Z][a-z]+(?:'s|’s)\b")
 # "My brother moved to Boston" — the grammatical subject is the relative.
 # Pets are deliberately NOT in this list: "my cat Biscuit" IS the ownership
 # evidence the pet relations require.
-_RELATIVE_SUBJECT_RE = re.compile(
-    r"^\s*(?:my|our)\s+(?:brother|sister|mom|mother|dad|father|parents?|friend|buddy|partner|"
+_RELATIVE_NOUNS = (
+    r"brother|sister|mom|mother|dad|father|parents?|friend|buddy|partner|"
     r"girlfriend|boyfriend|wife|husband|ex|boss|coworker|co-worker|roommate|therapist|doctor|"
     r"psychiatrist|advisor|professor|teacher|cousin|aunt|uncle|grandma|grandpa|grandmother|"
-    r"grandfather|kid|son|daughter|neighbou?r|manager|landlord|coach|nurse|dentist)\b",
+    r"grandfather|kid|son|daughter|neighbou?r|manager|landlord|coach|nurse|dentist"
+)
+_RELATIVE_SUBJECT_RE = re.compile(
+    rf"^\s*(?:my|our)\s+(?:{_RELATIVE_NOUNS})\b",
+    re.IGNORECASE,
+)
+# A place POSSESSED by another person: "my dad's", "her mom's place", "Alex's".
+# Used for residence relations — the user is not the resident of such a place.
+_OTHER_PERSON_PLACE_RE = re.compile(
+    rf"\b(?:(?i:(?:my|our|his|her|their)\s+(?:{_RELATIVE_NOUNS}))|(?!(?:It|That|There|Here|What|Let|Who|Where|How|When)(?:'s|\u2019s))[A-Z][a-z]+)(?:'s|\u2019s)(?=\s|$|[.,;!?])",
+)
+# An explicit first-person resident assertion ("I live", "we're living",
+# "I moved", "I'm based") — the user as the one who resides.
+_FIRST_PERSON_RESIDENT_RE = re.compile(
+    r"\b(?:i|we)(?:\s+(?:now|currently|just|still|recently|actually))?\s*"
+    r"(?:live|lived|living|reside|resided|residing|moved|relocated|"
+    r"(?:am|'m|\u2019m|are|'re|\u2019re)\s+(?:now\s+)?(?:living|based|located|from))\b",
     re.IGNORECASE,
 )
 # A TitleCase sentence opener followed by one of these reads as a third-party
@@ -867,6 +886,23 @@ def _pet_ownership_supported(span: str, relation: str) -> bool:
     return bool(re.search(pattern, span, flags=re.IGNORECASE))
 
 
+def _residence_resident_is_user(clause: str, object_val: str) -> bool:
+    """For a residence relation: is the USER the resident of the place?
+
+    A place possessed by another person that precedes the object ("my dad's
+    on Saturday, which is on Bartlet", "my mom's place in Dallas") describes
+    THEIR residence, never the user's — unless the clause also carries an
+    explicit first-person resident assertion before the place ("I live at my dad's
+    in Dallas"). Generic: a possessive-other-person head, not a name list.
+    """
+    pos = clause.lower().find((object_val or "").lower()) if object_val else -1
+    head = clause if pos < 0 else clause[:pos]
+    possessive = _OTHER_PERSON_PLACE_RE.search(head)
+    if not possessive:
+        return True
+    return bool(_FIRST_PERSON_RESIDENT_RE.search(head))
+
+
 def _relation_cue_supported(span: str, relation: str) -> bool:
     """Where the relation name itself makes a claim, the span needs a cue."""
     cues = _RELATION_CUE_RES.get(relation)
@@ -1025,6 +1061,10 @@ def find_supporting_user_span(
                     if anchor is None:
                         continue
                     if not _relation_cue_supported(span, relation):
+                        continue
+                    if relation in RESIDENCE_RELATIONS and not _residence_resident_is_user(
+                        object_clause, object_val
+                    ):
                         continue
             elif is_scoped_referent:
                 anchor = "scoped_referent"

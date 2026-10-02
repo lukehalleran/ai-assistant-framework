@@ -21,7 +21,7 @@ Module Contract
   - ProfileIdentity dataclass instances (name, pronouns)
   - Dictionary representations of facts, preferences, and identity
 - Key behaviors:
-  - Maps relations to 12 profile categories (identity, education, career, projects, health, fitness, preferences, hobbies, study, finance, relationships, goals)
+  - Maps relations to 13 profile categories (identity, education, career, projects, health, fitness, preferences, hobbies, study, finance, relationships, living_situation, goals)
   - Provides heuristic fallbacks for unknown relations (pattern matching)
   - Serializes/deserializes facts with full metadata (confidence, timestamp, supersedes)
   - Manages schema versioning for future migrations
@@ -55,6 +55,10 @@ class ProfileCategory(str, Enum):
     STUDY = "study"
     FINANCE = "finance"
     RELATIONSHIPS = "relationships"
+    # 2026-10-02: where/how the user lives (residence, household, housing
+    # condition/stress, moving, rent). These used to scatter across identity /
+    # relationships / goals / hobbies, so a housing turn found none of them.
+    LIVING_SITUATION = "living_situation"
     GOALS = "goals"
 
 # Mapping of relations to their natural categories
@@ -67,7 +71,6 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "age": ProfileCategory.IDENTITY,
     "birthday": ProfileCategory.IDENTITY,
     "location": ProfileCategory.IDENTITY,
-    "lives_in": ProfileCategory.IDENTITY,
     "timezone": ProfileCategory.IDENTITY,
     "belief": ProfileCategory.IDENTITY,
     "belief_system": ProfileCategory.IDENTITY,
@@ -188,6 +191,18 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "dating_app_usage": ProfileCategory.RELATIONSHIPS,
     "language_exchange": ProfileCategory.RELATIONSHIPS,
 
+    # Living situation (2026-10-02). Direct entries for the common relations;
+    # the housing/moving/rent/lease/landlord families are caught by
+    # _PREFIX_CATEGORY_MAP so invented variants (housing_stress,
+    # moving_out_timeline, rent_amount) land here too.
+    "lives_in": ProfileCategory.LIVING_SITUATION,
+    "living_with": ProfileCategory.LIVING_SITUATION,
+    "roommate": ProfileCategory.LIVING_SITUATION,
+    "living_arrangement": ProfileCategory.LIVING_SITUATION,
+    "living_duration": ProfileCategory.LIVING_SITUATION,
+    "home_location": ProfileCategory.LIVING_SITUATION,
+    "apartment_condition": ProfileCategory.LIVING_SITUATION,
+
     # Goals
     "goal": ProfileCategory.GOALS,
     "plan": ProfileCategory.GOALS,
@@ -196,6 +211,18 @@ RELATION_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "priority": ProfileCategory.GOALS,
     "main_priority": ProfileCategory.GOALS,
     "aspiration": ProfileCategory.GOALS,
+}
+
+# Residence relations: the subset of LIVING_SITUATION that asserts WHO resides
+# WHERE. fact_source uses this to require that the USER is the resident of the
+# span's place (a place possessed by another person never supports them).
+RESIDENCE_RELATIONS = frozenset({"lives_in", "living_with", "home_location"})
+
+# Relations that were stored under a different category before they were
+# re-homed. add_fact scans the old home too so a confirmation/correction of a
+# legacy fact still supersedes it instead of leaving two "current" values.
+LEGACY_CATEGORY_HOMES: Dict[str, "ProfileCategory"] = {
+    "lives_in": ProfileCategory.IDENTITY,
 }
 
 @dataclass
@@ -422,6 +449,12 @@ _PREFIX_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "dad": ProfileCategory.RELATIONSHIPS, "mom": ProfileCategory.RELATIONSHIPS,
     "friend": ProfileCategory.RELATIONSHIPS, "partner": ProfileCategory.RELATIONSHIPS,
     "date": ProfileCategory.RELATIONSHIPS, "dating": ProfileCategory.RELATIONSHIPS,
+    # Living situation
+    "housing": ProfileCategory.LIVING_SITUATION, "moving": ProfileCategory.LIVING_SITUATION,
+    "rent": ProfileCategory.LIVING_SITUATION, "rental": ProfileCategory.LIVING_SITUATION,
+    "lease": ProfileCategory.LIVING_SITUATION, "landlord": ProfileCategory.LIVING_SITUATION,
+    "living": ProfileCategory.LIVING_SITUATION, "apartment": ProfileCategory.LIVING_SITUATION,
+    "roommate": ProfileCategory.LIVING_SITUATION, "household": ProfileCategory.LIVING_SITUATION,
     # Finance
     "financial": ProfileCategory.FINANCE, "budget": ProfileCategory.FINANCE,
     "insurance": ProfileCategory.FINANCE, "paycheck": ProfileCategory.FINANCE,
@@ -444,6 +477,18 @@ _PREFIX_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     "school": ProfileCategory.EDUCATION, "degree": ProfileCategory.EDUCATION,
     "program": ProfileCategory.EDUCATION,
 }
+
+
+def is_living_situation_relation(relation: str) -> bool:
+    """Deterministic LIVING_SITUATION membership (direct map + prefix family only —
+    never the cache or embedding layers). Single source for consumers that must
+    not load a model, e.g. relation_classifier's TTL decision (2026-10-02)."""
+    rel = (relation or "").lower().strip()
+    if rel in RELATION_CATEGORY_MAP:
+        return RELATION_CATEGORY_MAP[rel] is ProfileCategory.LIVING_SITUATION
+    prefix = rel.split("_", 1)[0]
+    return _PREFIX_CATEGORY_MAP.get(prefix) is ProfileCategory.LIVING_SITUATION
+
 
 # Household chores / task-completion activity relations (2026-09-02). The
 # embedding layer had guessed CAREER for laundry_done / cleaned_up / cleans_up
@@ -497,6 +542,11 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
         "family", "relationship", "brother", "sister", "parent", "dad", "mom",
         "friend", "partner", "dating", "boyfriend", "girlfriend", "spouse",
         "fiance", "roommate", "colleague",
+    },
+    ProfileCategory.LIVING_SITUATION: {
+        "housing", "apartment", "house", "home", "living", "lives", "lease",
+        "landlord", "rent", "roommate", "move", "moving", "tenant", "mortgage",
+        "household", "residence", "unliveable", "unlivable",
     },
     ProfileCategory.FINANCE: {
         "financial", "money", "budget", "insurance", "paycheck", "debt",
@@ -667,6 +717,10 @@ _CATEGORY_EXEMPLARS: Dict[ProfileCategory, List[str]] = {
     ProfileCategory.RELATIONSHIPS: [
         "family member", "friend name", "partner", "brother name",
         "dating status", "relationship with", "roommate", "spouse",
+    ],
+    ProfileCategory.LIVING_SITUATION: [
+        "housing situation", "apartment condition", "living arrangement",
+        "landlord", "rent amount", "moving out", "who I live with", "home address",
     ],
     ProfileCategory.FINANCE: [
         "financial situation", "budget amount", "insurance status", "paycheck",
@@ -844,7 +898,7 @@ async def categorize_relation_deep(
             f"Classify this user profile fact relation into exactly one category.\n\n"
             f"Relation: {natural}\n"
             f"Categories: identity, education, career, projects, health, fitness, "
-            f"preferences, hobbies, study, finance, relationships, goals\n\n"
+            f"preferences, hobbies, study, finance, relationships, living_situation, goals\n\n"
             f"Reply with ONLY the category name, one word."
         )
         # 2026-09-27 (BC-89): a reasoning-capable model can spend a small

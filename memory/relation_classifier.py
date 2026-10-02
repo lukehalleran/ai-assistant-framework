@@ -69,6 +69,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from memory.user_profile_schema import is_living_situation_relation
+
 # --------------------------------------------------------------------------
 # Standard-ephemeral patterns (lifted verbatim from user_profile so profile
 # classification of non-health relations is unchanged).
@@ -278,6 +280,11 @@ def ephemeral_ttl_hours(relation: str) -> Optional[float]:
         return None
     rel = relation.lower().strip()
     if rel in _DURABLE_OVERRIDES:  # permanent conditions / disabilities never expire
+        return None
+    # 2026-10-02: where/how the user lives is a standing circumstance, not a
+    # transient state — "apartment_condition" matched the "_condition" suffix and
+    # aged out in 24h, so an unliveable-home fact never reached the prompt.
+    if is_living_situation_relation(rel):
         return None
     if _is_health_transient(rel):
         return _health_transient_ttl_hours()
