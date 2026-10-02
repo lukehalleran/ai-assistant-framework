@@ -500,22 +500,6 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.check_similarity",
-      "kind": "broad_except_returns_empty",
-      "digest": "fb860842117860de84578e6a771891841d1c967e52d899ffea0c5e1eda7b2383",
-      "excerpt": "return None"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/proposal_store.py",
-      "symbol": "ProposalStore.get_for_dedup",
-      "kind": "broad_except_returns_empty",
-      "digest": "8aae9b14a8ec049acbe6e5321e4f3a485025eb53b0e05018e59ae19e2d9b9687",
-      "excerpt": "return \"\""
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "memory/shutdown_processor.py",
       "symbol": "ShutdownProcessor._extract_procedural_skills",
       "kind": "broad_except_returns_empty",

@@ -213,14 +213,14 @@
         "text": "elif \"/\" in pronouns_lower:",
         "ordinal": 1
       },
-      "source_sha256": "8a921c1349fec0c3ae6686848fdb991e562a4a549ceaab22ef8c33c981fdcc5f",
+      "source_sha256": "f375d3eaaf882eba9ec62597f2f919db0c1914e1479a323097ce4f9d1380d420",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit); re-reviewed 2026-09-15 by Claude Fable 5.1 at generalization-lane landing (owner-approved): content anchor digest unchanged, only the file hash moved",
-      "review_date": "2026-09-15",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-02",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261002-001"
     },
     {
       "anchor": {
@@ -238,14 +238,14 @@
         "text": "if \"(today)\" in rel.lower():",
         "ordinal": 1
       },
-      "source_sha256": "72dae7f7f6038211df97287324a937d98d927d9bc32d343846b9df3ed7a75ea0",
+      "source_sha256": "ba06ca7b8eddc708b9bcb24abd49acf90e176ddbd5eeb16aebe4b57c1b667c85",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(today)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-09-27); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-09-27",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(today)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-02",
       "evidence": "docs/execution/review_20260922/REVIEW.md",
-      "request": null
+      "request": "CGR-20261002-001"
     },
     {
       "anchor": {
@@ -263,14 +263,14 @@
         "text": "elif \"(yesterday)\" in rel.lower():",
         "ordinal": 1
       },
-      "source_sha256": "72dae7f7f6038211df97287324a937d98d927d9bc32d343846b9df3ed7a75ea0",
+      "source_sha256": "ba06ca7b8eddc708b9bcb24abd49acf90e176ddbd5eeb16aebe4b57c1b667c85",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(yesterday)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-09-27); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-09-27",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(yesterday)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-02",
       "evidence": "docs/execution/review_20260922/REVIEW.md",
-      "request": null
+      "request": "CGR-20261002-001"
     },
     {
       "anchor": {
@@ -3159,14 +3159,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "6b1fb236901856294c45f50c1490e9d037ffee36791a622649432ecd8cba9a7e",
-      "status": "accepted_debt",
+      "source_sha256": "1c82f3a1316fceb69eedd1766b5bc17fec6ee79d7f7be24e2c30d9ffd9950ba9",
+      "status": "confirmed_fixed",
       "assessment": "uncertain",
-      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: A failed similarity check reads as 'no duplicate', so a duplicate proposal can be admitted.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit); re-reviewed 2026-09-15 by Claude Fable 5.1 at generalization-lane landing (owner-approved): content anchor digest unchanged, only the file hash moved",
-      "review_date": "2026-09-15",
+      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: A failed similarity check reads as 'no duplicate', so a duplicate proposal can be admitted. Confirmed fixed 2026-10-02 (owner-approved, CGR-20261002-001): the broad except now raises a typed RetrievalError (reason 'similarity:<Exc>') instead of returning None (read as no duplicate); callers fail closed (generation skipped for that run). Tests: tests/unit/test_oct02_proposal_store_outcomes.py.",
+      "reviewer": "Owner (dialogue decision 2026-10-02: fix); fix by executor, evidence by Claude Opus 5.5",
+      "review_date": "2026-10-02",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261002-001"
     },
     {
       "anchor": {
@@ -3184,14 +3184,14 @@
         "text": "return \"\"",
         "ordinal": 1
       },
-      "source_sha256": "6b1fb236901856294c45f50c1490e9d037ffee36791a622649432ecd8cba9a7e",
-      "status": "accepted_debt",
+      "source_sha256": "1c82f3a1316fceb69eedd1766b5bc17fec6ee79d7f7be24e2c30d9ffd9950ba9",
+      "status": "confirmed_fixed",
       "assessment": "uncertain",
-      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: The dedup context string is empty on failure.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit); re-reviewed 2026-09-15 by Claude Fable 5.1 at generalization-lane landing (owner-approved): content anchor digest unchanged, only the file hash moved",
-      "review_date": "2026-09-15",
+      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: The dedup context string is empty on failure. Confirmed fixed 2026-10-02 (owner-approved, CGR-20261002-001): the broad except now raises a typed RetrievalError (reason 'dedup:<Exc>') instead of returning an empty dedup context; callers fail closed (generation skipped for that run). Tests: tests/unit/test_oct02_proposal_store_outcomes.py.",
+      "reviewer": "Owner (dialogue decision 2026-10-02: fix); fix by executor, evidence by Claude Opus 5.5",
+      "review_date": "2026-10-02",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261002-001"
     },
     {
       "anchor": {
@@ -3609,14 +3609,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "9a1e11190180baa0dbdcb369f45d8c84523cccf0fe3c9677db2450d26636e233",
+      "source_sha256": "faa952eebadeef991344d55a62fcbf764a606f664cda6a0b6a7f0c3353594d72",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means the embedding layer is unavailable; the categorizer falls through to its next layer. This path does not log. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-09-27); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-09-27",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means the embedding layer is unavailable; the categorizer falls through to its next layer. This path does not log. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-02",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261002-001"
     },
     {
       "anchor": {
