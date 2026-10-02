@@ -39,6 +39,7 @@ USAGE in main.py:
 """
 
 import sys
+import fnmatch
 import os
 import shutil
 import json
@@ -99,6 +100,32 @@ def get_resource_path(relative_path: str) -> str:
     else:
         # Development mode
         return os.path.join(get_app_dir(), relative_path)
+
+
+def resolve_bundled_path(path: str) -> str:
+    """
+    Resolve a configured bundled-resource path (e.g. the SPA's ``web/dist``).
+
+    Absolute paths pass through untouched. A relative path resolves through
+    ``get_resource_path`` (``<_internal>/<path>`` frozen, repo root in dev) so
+    it never depends on the launch cwd. This is the ONE place frozen resource
+    resolution lives; callers must not test ``sys._MEIPASS`` themselves.
+    """
+    if os.path.isabs(path):
+        return path
+    return os.path.normpath(get_resource_path(path))
+
+
+def has_bundled_clip_weights() -> bool:
+    """True when the frozen build ships CLIP weights in its HF cache dir."""
+    models_dir = os.path.join(get_app_dir(), '_internal', 'models')
+    try:
+        return any(
+            fnmatch.fnmatch(name.lower(), 'models--*clip*')
+            for name in os.listdir(models_dir)
+        )
+    except OSError:  # degrades: no models dir -> treated as no bundled CLIP
+        return False
 
 
 def get_user_data_dir() -> str:
@@ -383,6 +410,25 @@ def setup_environment() -> str:
         os.environ.setdefault('SURFACING_HISTORY_PATH', os.path.join(user_dir, 'surfacing_history.json'))
         os.environ.setdefault('WEB_SEARCH_CREDITS_PATH', os.path.join(user_dir, 'web_search_credits.json'))
 
+        # Stores/logs whose config defaults are cwd-relative ("data/...",
+        # "logs/...") -- without these a frozen app writes into the install
+        # dir / launch cwd. Same env-before-app_config pattern as above.
+        os.environ.setdefault('DAEMON_DATA_DIR', user_dir)
+        os.environ.setdefault('NARRATIVE_CONTEXT_PATH', os.path.join(user_dir, 'narrative_context.txt'))
+        os.environ.setdefault('FILE_UPLOAD_IMAGE_DIR', os.path.join(user_dir, 'uploads'))
+        os.environ.setdefault('TURN_TELEMETRY_PATH', os.path.join(user_dir, 'logs', 'turn_records.jsonl'))
+        os.environ.setdefault('PENDING_ACTIONS_STORE_PATH', os.path.join(user_dir, 'pending_actions.json'))
+        os.environ.setdefault('INTERNET_ACTIONS_AUDIT_LOG', os.path.join(user_dir, 'logs', 'actions_audit.jsonl'))
+        os.environ.setdefault('GOOGLE_TOKEN_PATH', os.path.join(user_dir, 'google_token.json'))
+        os.environ.setdefault('WIKIDATA_PERSIST_PATH', os.path.join(user_dir, 'wikidata_cache.json'))
+        os.environ.setdefault('VISUAL_MEMORY_INDEX_PATH', os.path.join(user_dir, 'clip_index.faiss'))
+        os.environ.setdefault('VISUAL_MEMORY_META_PATH', os.path.join(user_dir, 'clip_metadata.json'))
+
+        # CLIP (~350 MB) is not bundled: without weights, visual memory would
+        # try a network download at first image. An explicit user env wins.
+        if not has_bundled_clip_weights():
+            os.environ.setdefault('VISUAL_MEMORY_ENABLED', '0')
+
         # Bundled resource paths
         os.environ.setdefault('SYSTEM_PROMPT_PATH', get_resource_path('core/system_prompt.txt'))
         os.environ.setdefault('CONFIG_PATH', get_resource_path('config/config.yaml'))
@@ -405,6 +451,12 @@ def setup_environment() -> str:
             os.environ.setdefault('TRANSFORMERS_CACHE', hf_cache)
             os.environ.setdefault('HF_HUB_CACHE', hf_cache)
             os.environ.setdefault('HF_HUB_OFFLINE', '1')  # Use bundled models only
+
+        # tiktoken encoding file staged by scripts/stage_frozen_models.py
+        # (otherwise tiktoken tries a network download on first use)
+        tiktoken_cache = os.path.join(get_app_dir(), '_internal', 'tiktoken')
+        if os.path.isdir(tiktoken_cache):
+            os.environ.setdefault('TIKTOKEN_CACHE_DIR', tiktoken_cache)
 
     return user_dir
 

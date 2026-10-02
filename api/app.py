@@ -29,6 +29,7 @@ from api.launch_auth import (
 from api.routes import actions, chat, curation, debug, files, models, settings, system
 from api.state import AppState
 from config import app_config
+from utils.bootstrap import resolve_bundled_path
 from utils.logging_utils import get_logger
 
 logger = get_logger("api_app")
@@ -179,11 +180,13 @@ def mount_admin_and_frontend(app: FastAPI, orchestrator) -> FastAPI:
         logger.error(f"[API] Gradio /admin mount failed: {e}")
 
     try:
-        if app_config.API_SERVE_FRONTEND and os.path.isdir(app_config.FRONTEND_DIST_DIR):
+        # Live attr read, resolved against the repo root / frozen bundle (never the cwd).
+        frontend_dist = resolve_bundled_path(app_config.FRONTEND_DIST_DIR)
+        if app_config.API_SERVE_FRONTEND and os.path.isdir(frontend_dist):
             from fastapi.responses import HTMLResponse  # lazy import: startup-cost
             from fastapi.staticfiles import StaticFiles  # lazy import: startup-cost
 
-            index_path = os.path.join(app_config.FRONTEND_DIST_DIR, "index.html")
+            index_path = os.path.join(frontend_dist, "index.html")
             if os.path.isfile(index_path):
                 # Only delivery channel for the token: a plain GET can't carry a
                 # custom header, and LaunchAuthMiddleware already Host-checked
@@ -209,8 +212,8 @@ def mount_admin_and_frontend(app: FastAPI, orchestrator) -> FastAPI:
 
             # Registered after "/" above, which claims the exact path; this
             # Mount only ever answers other asset paths — public/inert.
-            app.mount("/", StaticFiles(directory=app_config.FRONTEND_DIST_DIR, html=True), name="frontend")
-            logger.info(f"[API] Frontend served from {app_config.FRONTEND_DIST_DIR}")
+            app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+            logger.info(f"[API] Frontend served from {frontend_dist}")
         else:
             logger.info("[API] No frontend build found (web/dist) — API + /admin only")
     except Exception as e:

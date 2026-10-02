@@ -28,11 +28,13 @@ Module Contract
 """
 import os
 import re
+import sys
 import yaml
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
 from utils.logging_utils import get_logger
+from utils.bootstrap import resolve_bundled_path
 
 logger = get_logger("config")
 
@@ -210,7 +212,7 @@ config = validate_config(config)
 
 # Extract commonly used values
 VERSION = config.get("daemon", {}).get("version")
-DEFAULT_DATA_DIR = config.get("daemon", {}).get("data_dir")
+DEFAULT_DATA_DIR = os.getenv("DAEMON_DATA_DIR", config.get("daemon", {}).get("data_dir"))
 CORPUS_FILE = config.get("memory", {}).get("corpus_file")
 CHROMA_PATH = config.get("memory", {}).get("chroma_path")
 
@@ -230,7 +232,9 @@ logger.info(f"Final CHROMA_PATH: {CHROMA_PATH}")
 
 # Create data directories if needed
 Path(DEFAULT_DATA_DIR).mkdir(parents=True, exist_ok=True)
-Path(CHROMA_PATH).mkdir(parents=True, exist_ok=True)
+# Env wins here too (frozen builds set CHROMA_PATH before this import) so the
+# cwd-relative default is not created next to the executable.
+Path(os.getenv("CHROMA_PATH", CHROMA_PATH)).mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------------------
 # Export all config values
@@ -947,7 +951,7 @@ FILE_UPLOAD_ALLOWED_EXTENSIONS = list(config.get("security", {}).get("file_uploa
 FILE_UPLOAD_CSV_FORMULA_PREFIXES = tuple(config.get("security", {}).get("file_upload_csv_formula_prefixes", ['=', '+', '-', '@', '\t', '\r', '\n']))
 
 # Directory for persisted upload images (created on demand)
-FILE_UPLOAD_IMAGE_DIR = str(config.get("paths", {}).get("upload_image_dir", "data/uploads"))
+FILE_UPLOAD_IMAGE_DIR = os.getenv("FILE_UPLOAD_IMAGE_DIR", str(config.get("paths", {}).get("upload_image_dir", "data/uploads")))
 # Maximum user uploads to surface in prompt
 PROMPT_MAX_USER_UPLOADS = int(config.get("memory", {}).get("prompt_max_user_uploads", 5))
 
@@ -1107,7 +1111,7 @@ INTENT_STYLE_INSTRUCTIONS_ENABLED = bool(int(os.getenv("INTENT_STYLE_INSTRUCTION
 # checks) for offline routing/classification accuracy analysis.
 TURN_TELEMETRY_CFG = config.get("turn_telemetry", {}) or {}
 TURN_TELEMETRY_ENABLED: bool = bool(TURN_TELEMETRY_CFG.get("enabled", True))
-TURN_TELEMETRY_PATH: str = str(TURN_TELEMETRY_CFG.get("path", "logs/turn_records.jsonl"))
+TURN_TELEMETRY_PATH: str = os.getenv("TURN_TELEMETRY_PATH", str(TURN_TELEMETRY_CFG.get("path", "logs/turn_records.jsonl")))
 TURN_TELEMETRY_ENABLED = bool(int(os.getenv("TURN_TELEMETRY_ENABLED", "1" if TURN_TELEMETRY_ENABLED else "0")))
 
 # --------------------------------------------------------------------
@@ -1223,6 +1227,11 @@ API_PORT: int = int(os.getenv("DAEMON_API_PORT", API_CFG.get("port", 8000)))
 API_CORS_ORIGINS: list = list(API_CFG.get("cors_origins", ["http://localhost:5173"]))
 API_SERVE_FRONTEND: bool = bool(API_CFG.get("serve_frontend", True))
 FRONTEND_DIST_DIR: str = str(API_CFG.get("frontend_dist_dir", "web/dist"))
+if getattr(sys, "frozen", False):
+    # Frozen: the SPA ships inside the bundle (<_internal>/web/dist). In dev the
+    # configured relative value is kept as-is and api/app.py resolves it against
+    # the repo root (bootstrap.resolve_bundled_path), never the launch cwd.
+    FRONTEND_DIST_DIR = resolve_bundled_path(FRONTEND_DIST_DIR)
 # A01b: exact hostnames/IPs trusted as a Host header beyond loopback (e.g. a Tailscale address).
 API_ALLOWED_HOSTS: list = list(API_CFG.get("allowed_hosts", []) or [])
 
@@ -1680,10 +1689,10 @@ INTERNET_ACTIONS_PLAYWRIGHT_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("playw
 INTERNET_ACTIONS_PLAYWRIGHT_TIMEOUT: int = int(INTERNET_ACTIONS_CFG.get("playwright_timeout_s", 30))
 INTERNET_ACTIONS_TTL: int = int(INTERNET_ACTIONS_CFG.get("action_ttl_seconds", 300))
 INTERNET_ACTIONS_MAX_PENDING: int = int(INTERNET_ACTIONS_CFG.get("max_pending_actions", 5))
-PENDING_ACTIONS_STORE_PATH: str = str(
+PENDING_ACTIONS_STORE_PATH: str = os.getenv("PENDING_ACTIONS_STORE_PATH", str(
     INTERNET_ACTIONS_CFG.get("pending_actions_path", "data/pending_actions.json")
-)
-INTERNET_ACTIONS_AUDIT_LOG: str = str(INTERNET_ACTIONS_CFG.get("audit_log_path", "logs/actions_audit.jsonl"))
+))
+INTERNET_ACTIONS_AUDIT_LOG: str = os.getenv("INTERNET_ACTIONS_AUDIT_LOG", str(INTERNET_ACTIONS_CFG.get("audit_log_path", "logs/actions_audit.jsonl")))
 
 # Google OAuth2 (env var overrides for secrets)
 INTERNET_ACTIONS_GOOGLE_CLIENT_ID: str = str(
@@ -1692,9 +1701,9 @@ INTERNET_ACTIONS_GOOGLE_CLIENT_ID: str = str(
 INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET: str = str(
     INTERNET_ACTIONS_CFG.get("google_client_secret", "") or os.getenv("GOOGLE_CLIENT_SECRET", "")
 )
-INTERNET_ACTIONS_GOOGLE_TOKEN_PATH: str = str(
+INTERNET_ACTIONS_GOOGLE_TOKEN_PATH: str = os.getenv("GOOGLE_TOKEN_PATH", str(
     INTERNET_ACTIONS_CFG.get("google_token_path", "data/google_token.json")
-)
+))
 GOOGLE_CALENDAR_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("google_calendar_enabled", False))
 GOOGLE_CALENDAR_ENABLED = bool(int(os.getenv("GOOGLE_CALENDAR_ENABLED", "1" if GOOGLE_CALENDAR_ENABLED else "0")))
 GOOGLE_CALENDAR_MAX_EVENTS: int = int(INTERNET_ACTIONS_CFG.get("google_calendar_max_events", 10))
@@ -1894,7 +1903,7 @@ SYNTHESIS_AUDIT_MIN_GRADED: int = int(SYNTHESIS_AUDIT_CFG.get("min_graded", 10))
 # --------------------------------------------------------------------
 WIKIDATA_CFG = config.get("wikidata_import", {})
 WIKIDATA_IMPORT_ENABLED: bool = bool(WIKIDATA_CFG.get("enabled", True))
-WIKIDATA_PERSIST_PATH: str = str(WIKIDATA_CFG.get("persist_path", "data/wikidata_cache.json"))
+WIKIDATA_PERSIST_PATH: str = os.getenv("WIKIDATA_PERSIST_PATH", str(WIKIDATA_CFG.get("persist_path", "data/wikidata_cache.json")))
 WIKIDATA_ENTITIES_PER_DOMAIN: int = int(WIKIDATA_CFG.get("entities_per_domain", 5000))
 WIKIDATA_MAX_TOTAL: int = int(WIKIDATA_CFG.get("max_total_entities", 50000))
 WIKIDATA_SPARQL_BATCH_SIZE: int = int(WIKIDATA_CFG.get("sparql_batch_size", 500))
@@ -1985,8 +1994,8 @@ VISUAL_MEMORY_CLIP_PRETRAINED: str = str(VISUAL_MEMORY_CFG.get("clip_pretrained"
 VISUAL_MEMORY_MAX_IMAGES: int = int(VISUAL_MEMORY_CFG.get("max_images_prompt", 3))
 VISUAL_MEMORY_CAPTION_MODEL: str = str(VISUAL_MEMORY_CFG.get("caption_model", "gpt-4o-mini"))
 VISUAL_MEMORY_CAPTION_TIMEOUT: float = float(VISUAL_MEMORY_CFG.get("caption_timeout_s", 10.0))
-VISUAL_MEMORY_INDEX_PATH: str = str(VISUAL_MEMORY_CFG.get("index_path", "data/clip_index.faiss"))
-VISUAL_MEMORY_META_PATH: str = str(VISUAL_MEMORY_CFG.get("meta_path", "data/clip_metadata.json"))
+VISUAL_MEMORY_INDEX_PATH: str = os.getenv("VISUAL_MEMORY_INDEX_PATH", str(VISUAL_MEMORY_CFG.get("index_path", "data/clip_index.faiss")))
+VISUAL_MEMORY_META_PATH: str = os.getenv("VISUAL_MEMORY_META_PATH", str(VISUAL_MEMORY_CFG.get("meta_path", "data/clip_metadata.json")))
 VISUAL_MEMORY_SIMILARITY_THRESHOLD: float = float(VISUAL_MEMORY_CFG.get("similarity_threshold", 0.20))
 VISUAL_MEMORY_INGEST_ON_UPLOAD: bool = bool(VISUAL_MEMORY_CFG.get("ingest_on_upload", True))
 VISUAL_MEMORY_INGEST_ON_OBSIDIAN_SYNC: bool = bool(VISUAL_MEMORY_CFG.get("ingest_on_obsidian_sync", True))
