@@ -15,6 +15,7 @@ Module Contract:
     - Dependencies: None (pure stdlib)
 """
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -24,6 +25,28 @@ from typing import Any, Dict, List, Optional, Set
 from utils.logging_utils import get_logger
 
 logger = get_logger("file_access_manager")
+
+# 2026-09-30: credential files are never readable/greppable/listable, even
+# inside an approved folder (the repo root is approved, and .env / OAuth token
+# files pass the folder + extension checks).  Matched on the RESOLVED path's
+# basename (fnmatch, case-insensitive) and on any path component.
+_SECRET_NAME_PATTERNS = (
+    ".env", ".env.*", "*.env", ".netrc", ".git-credentials", ".pgpass",
+    "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*", "id_ecdsa*",
+    "*token*.json", "*credential*", "*secret*", "config.local.yaml",
+    "privacy_terms.local.txt", "*.local.yaml",
+)
+_SECRET_DIR_NAMES = frozenset({".ssh", ".gnupg", ".aws", ".git"})
+
+
+def _is_secret_path(resolved: Path) -> bool:
+    """True if the (already resolved) path names a credential file or sits in a credential dir."""
+    name = resolved.name.lower()
+    if any(fnmatch.fnmatchcase(name, pat) for pat in _SECRET_NAME_PATTERNS):
+        return True
+    if any(part in _SECRET_DIR_NAMES for part in resolved.parts):
+        return True
+    return "/.config/gh/" in resolved.as_posix() + "/"
 
 
 class FileAccessManager:
@@ -80,6 +103,11 @@ class FileAccessManager:
         ):
             raise PermissionError(
                 f"File type {resolved.suffix} not in allowed extensions"
+            )
+
+        if _is_secret_path(resolved):
+            raise PermissionError(
+                f"Access denied: {resolved.name} is a protected credential file"
             )
 
         return resolved
@@ -167,10 +195,15 @@ class FileAccessManager:
                     cmd.append("-i")
                 if context_lines > 0:
                     cmd.append(f"-C{context_lines}")
+                cmd.append("-Z")  # NUL after the filename: unambiguous path parsing
                 cmd.append(f"--include={file_glob}")
                 # Exclude common non-useful dirs
                 for excl in ["__pycache__", ".git", "venv", ".venv", "node_modules", "data"]:
                     cmd.append(f"--exclude-dir={excl}")
+                for excl in sorted(_SECRET_DIR_NAMES):
+                    cmd.append(f"--exclude-dir={excl}")
+                for excl in _SECRET_NAME_PATTERNS:
+                    cmd.append(f"--exclude={excl}")
                 cmd.extend([pattern, str(search_dir)])
 
                 result = subprocess.run(
@@ -183,6 +216,16 @@ class FileAccessManager:
                     for line in result.stdout.splitlines():
                         if len(all_matches) >= self.max_grep_results * 3:
                             break
+                        if "\0" in line:
+                            fpath, rest = line.split("\0", 1)
+                            # Mandatory post-filter (2026-09-30): exclusion globs
+                            # are case-sensitive; resolve symlinks before judging.
+                            if _is_secret_path(Path(fpath).resolve()):
+                                continue
+                            sep = re.match(r"\d+(.)", rest)
+                            line = fpath + (sep.group(1) if sep else ":") + rest
+                        elif line != "--":
+                            continue
                         all_matches.append(line)
             except subprocess.TimeoutExpired:
                 logger.warning(f"[FileAccess] Grep timed out in {search_dir}")
@@ -230,6 +273,8 @@ class FileAccessManager:
                     part.startswith(".") or part in ("__pycache__", "venv", ".venv", "node_modules")
                     for part in parts
                 ):
+                    continue
+                if _is_secret_path(p.resolve()):
                     continue
 
                 kind = "dir" if p.is_dir() else "file"
