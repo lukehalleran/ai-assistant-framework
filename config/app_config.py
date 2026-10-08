@@ -1989,7 +1989,7 @@ WIKI_ENRICHMENT_ENABLED = bool(int(os.getenv(
 # --------------------------------------------------------------------
 VISUAL_MEMORY_CFG = config.get("visual_memory", {})
 VISUAL_MEMORY_ENABLED: bool = bool(VISUAL_MEMORY_CFG.get("enabled", False))
-VISUAL_MEMORY_CLIP_MODEL: str = str(VISUAL_MEMORY_CFG.get("clip_model", "ViT-B-32"))
+VISUAL_MEMORY_CLIP_MODEL: str = str(VISUAL_MEMORY_CFG.get("clip_model", "ViT-B-32-quickgelu"))
 VISUAL_MEMORY_CLIP_PRETRAINED: str = str(VISUAL_MEMORY_CFG.get("clip_pretrained", "openai"))
 VISUAL_MEMORY_MAX_IMAGES: int = int(VISUAL_MEMORY_CFG.get("max_images_prompt", 3))
 VISUAL_MEMORY_CAPTION_MODEL: str = str(VISUAL_MEMORY_CFG.get("caption_model", "gpt-4o-mini"))

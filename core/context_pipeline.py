@@ -230,7 +230,7 @@ def stm_skip_shape(user_input: str, is_small_talk: bool = False, max_words: int 
         if len(text.split()) > max_words:
             return False
         return bool(is_greeting_opener(text) or is_casual_acknowledgment(text))
-    except Exception:
+    except Exception:  # degrades: stm_skip_shape returns False, so greeting turns still run STM
         return False
 
 
@@ -450,7 +450,7 @@ class ContextPipeline:
                     _bn = _upload_basename(_f)
                     if _bn:
                         uploaded_filenames.append(_bn)
-                except Exception:
+                except Exception:  # degrades: uploads gatherer may re-retrieve a chunk already in the query
                     pass
 
         # Stage 4a: Intent Classification (regex-first, no LLM, <1ms)
@@ -711,7 +711,7 @@ class ContextPipeline:
                 primary = prev_topic
                 try:
                     self.topic_manager.last_topic = prev_topic
-                except Exception:
+                except Exception:  # degrades: topic manager keeps its previous last_topic label
                     pass
 
             # Get all topics (primary + any extracted entities)
@@ -882,7 +882,7 @@ class ContextPipeline:
                 f"(from {ts.isoformat(timespec='minutes')})"
             )
             return level
-        except Exception as e:
+        except Exception as e:  # degrades: saved tone carryover is ignored and the session starts without sticky tone
             logger.debug(f"[ContextPipeline] tone-state load skipped: {e}")
             return None
 
@@ -894,8 +894,8 @@ class ContextPipeline:
                 {"level": str(level_str), "trigger": str(trigger or ""),
                  "ts": datetime.now().isoformat()},
             )
-        except Exception as e:
-            logger.debug(f"[ContextPipeline] tone-state persist skipped: {e}")
+        except Exception as e:  # degrades: tone state is not saved, so a restart loses the distress carryover
+            logger.warning(f"[ContextPipeline] tone-state persist skipped: {type(e).__name__}")
 
     def _should_reset_tone_stickiness(self, recent_memories) -> bool:
         """
@@ -920,7 +920,7 @@ class ContextPipeline:
             if not isinstance(ts, datetime):
                 return False
             return (datetime.now() - to_naive_local(ts)) > timedelta(minutes=app_config.TONE_STICKINESS_MAX_GAP_MINUTES)
-        except Exception as e:
+        except Exception as e:  # degrades: tone-stickiness gap check fails closed and keeps the carried tone
             logger.debug(f"[ContextPipeline] tone-stickiness gap check failed: {e}")
             return False
 

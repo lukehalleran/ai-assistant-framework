@@ -2259,14 +2259,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "39a33ffbf65b7c5ee4576f11a013ca289ff849a172efb0560611754d4cb12a3f",
+      "source_sha256": "54cf407d5af6ce686724e5d31774157582911e1bfab59155fc117bfd650b26cc",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means no embedding (Optional contract).",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means no embedding (Optional contract). Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-004): file edited for the CLIP ViT-B-32-quickgelu fix (fallback model name + model_name/pretrained recording); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-08); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-08",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261008-004"
     },
     {
       "anchor": {
@@ -2284,14 +2284,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "39a33ffbf65b7c5ee4576f11a013ca289ff849a172efb0560611754d4cb12a3f",
+      "source_sha256": "54cf407d5af6ce686724e5d31774157582911e1bfab59155fc117bfd650b26cc",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means no embedding (Optional contract).",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means no embedding (Optional contract). Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-004): file edited for the CLIP ViT-B-32-quickgelu fix (fallback model name + model_name/pretrained recording); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-08); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-08",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261008-004"
     },
     {
       "anchor": {

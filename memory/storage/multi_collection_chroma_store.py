@@ -205,7 +205,7 @@ class MultiCollectionChromaStore:
             'proposals': None,           # Goal-directed code change proposals
             'threads': None,             # Open threads (commitments, deadlines, questions)
             'synthesis_results': None,   # Cross-domain synthesis insights from graph walks
-            'visual_memories': None,     # CLIP-embedded image metadata for visual recall
+            'visual_memories': None,     # image caption+metadata (CLIP vectors live in FAISS only)
             'daemon_self_notes': None,   # Daemon's own working notes for future sessions
         }
 

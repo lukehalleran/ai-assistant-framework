@@ -247,8 +247,8 @@ async def _background_store_interaction(
                 if current is not None and getattr(current, "cancelling", lambda: 0)():
                     raise
                 logger.warning("[PersonalClaim] checker cancelled; continuing without verification")
-            except Exception as exc:
-                logger.debug(f"[PersonalClaim] storage wait failed: {exc}")
+            except Exception as exc:  # degrades: storage proceeds without the personal-claim receipt status
+                logger.warning(f"[PersonalClaim] storage wait failed: {type(exc).__name__}")
         try:
             memory_id = await orchestrator.memory_system.store_interaction(
                 query=merged_input,
@@ -632,7 +632,7 @@ def _attach_agentic_provenance(provenance, orchestrator):
             provenance["omitted_sections"] = ap.get("omitted_sections", [])
             provenance["reuse_skipped_reason"] = ap.get("reuse_skipped_reason", "")
             provenance["seeded_base_web"] = ap.get("seeded_base_web", False)
-    except Exception as e:
+    except Exception as e:  # degrades: debug record omits the agentic provenance rounds
         logger.debug(f"[Handlers] Could not get agentic provenance: {e}")
 
 
@@ -675,7 +675,7 @@ def _build_agentic_answer_call_extra(orchestrator, model_name) -> dict:
             'answer_prompt_tokens': answer_prompt_tokens,
             'answer_prompt_hash': answer_prompt_hash,
         }
-    except Exception as e:
+    except Exception as e:  # degrades: answer-call receipt omits the agentic extra fields
         logger.debug(f"[Handlers] Could not build agentic answer-call extra: {e}")
         return {}
 
@@ -705,7 +705,7 @@ def _gate_debug_summary(gate_decision) -> str:
         if getattr(gate_decision, "deferred_request", None):
             parts.append("deferred_request")
         return " | ".join(parts)
-    except Exception:
+    except Exception:  # degrades: gate debug summary shows blank instead of the gate reason
         return ""
 
 
@@ -745,7 +745,7 @@ def _build_debug_record(
             plan_audit = plan.audit_record()
             if isinstance(provenance, dict):
                 provenance["response_plan"] = plan_audit
-    except Exception as e:
+    except Exception as e:  # degrades: debug record omits the response-plan audit
         logger.debug(f"[Handlers] Could not attach response-plan audit: {e}")
     record = {
         'mode': mode,
@@ -850,7 +850,8 @@ def _sanitize_response_text(text):
     try:
         from core.prompt import _truncate_at_spurious_turns  # lazy import: startup-cost
         text = _truncate_at_spurious_turns(text)
-    except Exception:
+    except Exception as e:  # degrades: spurious-turn truncation skipped so fabricated turns can reach the user
+        logger.warning(f"[Handlers] spurious-turn truncation failed; text passed through: {type(e).__name__}")
         pass
     return text
 
@@ -957,7 +958,7 @@ def _track_storage_task(ctx, value):
             record = getattr(ctx, "debug_record", None)
             if isinstance(record, dict):
                 record["storage_failed"] = label
-        except Exception as exc:
+        except Exception as exc:  # degrades: storage receipt is not attached to the deferred turn row
             logger.debug(f"[Telemetry] storage receipt skipped: {exc}")
 
     value.add_done_callback(_record_receipt)
@@ -1072,8 +1073,8 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
             telemetry_task=_telemetry_task,
         )
         run_post_response_hooks(hook_ctx)
-    except Exception as e:
-        logger.debug(f"[Telemetry] post-response hooks skipped: {e}")
+    except Exception as e:  # degrades: post-response detectors and telemetry hooks are lost for this turn
+        logger.warning(f"[Telemetry] post-response hooks skipped: {type(e).__name__}")
 
 
 def _attach_agentic_tool_receipts(ctx, session) -> None:
@@ -2229,7 +2230,7 @@ async def _run_insight_mode(ctx):
         _expander = None
         try:
             _expander = memory_expander.MemoryExpander(_chroma)
-        except Exception:
+        except Exception:  # degrades: insight sweep runs without the memory expander
             pass
 
         _is_pattern = intent.kind == "pattern_temporal"
@@ -2275,7 +2276,7 @@ async def _run_insight_mode(ctx):
                     if app_config.EMAIL_INTEGRATION_ENABLED:
                         _email_rows = await service.get_email_service().recent(
                             window_days=intent.window_days or 30, limit=200)
-            except Exception as _e:
+            except Exception as _e:  # degrades: email rows are missing from insight pattern analysis
                 logger.debug(f"[Insight Mode] email pattern prefetch skipped: {_e}")
                 _email_rows = None
             _wsm = getattr(getattr(getattr(orchestrator, "prompt_builder", None), "context_gatherer", None), "web_search_manager", None)
@@ -2356,6 +2357,7 @@ async def _run_insight_mode(ctx):
                         from knowledge.wolfram_manager import WolframManager  # lazy import: startup-cost
                         _wolfram_manager = WolframManager()
                 except Exception as _wolfram_init_error:
+                    # degrades: wolfram adapter is missing from insight deliberation
                     logger.debug(
                         f"[Insight] Wolfram adapter unavailable: {_wolfram_init_error}"
                     )
@@ -2886,8 +2888,8 @@ def _get_pending_proposal_store(orchestrator):
             store = pending_proposal.PendingProposalStore(ttl_turns=app_config.PENDING_PROPOSAL_TTL_TURNS)
             orchestrator._pending_proposal_store = store
         return store
-    except Exception as e:
-        logger.debug(f"[ActionGuard] pending-proposal store unavailable: {e}")
+    except Exception as e:  # degrades: pending-proposal store unavailable so offers cannot be captured or executed
+        logger.warning(f"[ActionGuard] pending-proposal store unavailable: {type(e).__name__}")
         return None
 
 
@@ -2913,8 +2915,8 @@ def _recent_conversation_text(orchestrator) -> str:
                 if resp:
                     parts.append(resp)
             return "\n\n".join(parts)[:4000]
-    except Exception as e:
-        logger.debug(f"[ActionGuard] recent-conversation lookup failed: {e}")
+    except Exception as e:  # degrades: action-claim guard sees no recent conversation text
+        logger.warning(f"[ActionGuard] recent-conversation lookup failed: {type(e).__name__}")
     return ""
 
 
@@ -3018,8 +3020,8 @@ def _capture_proposal(orchestrator, response_text):
         )
         store.capture(proposal)
         logger.info(f"[ActionGuard] Captured pending note proposal: {proposal.title!r}")
-    except Exception as e:
-        logger.debug(f"[ActionGuard] Proposal capture failed (non-fatal): {e}")
+    except Exception as e:  # degrades: note offer is not captured so a later affirmation cannot save it
+        logger.warning(f"[ActionGuard] Proposal capture failed (non-fatal): {type(e).__name__}")
 
 
 async def _self_repair_note(ctx, detected):
@@ -3203,7 +3205,8 @@ def _pending_proposal_kinds(orchestrator):
         p = store.peek() if store is not None else None
         if p is not None:
             kinds.add(p.kind)
-    except Exception:
+    except Exception as e:  # degrades: note offer invisible to action-claim guard
+        logger.warning(f"[ActionGuard] pending note-offer kind lookup failed: {type(e).__name__}")
         pass
     try:
         _cm = getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None)
@@ -3213,7 +3216,8 @@ def _pending_proposal_kinds(orchestrator):
             _kind = registry.action_kind_of(_offer) if _offer is not None else None
             if _kind is not None:
                 kinds.add(_kind)
-    except Exception:
+    except Exception as e:  # degrades: external offer invisible to action-claim guard
+        logger.warning(f"[ActionGuard] previous-reply external offer lookup failed: {type(e).__name__}")
         pass
     return kinds
 
@@ -3229,7 +3233,7 @@ def _newest_upload_date(ctx):
     dated (fail open: no correction notice without evidence)."""
     try:
         uploads = (getattr(ctx, "raw_context", None) or {}).get("user_uploads") or []
-    except Exception:
+    except Exception:  # degrades: newest upload date unknown so the stale-upload notice is skipped
         return None
     dates = []
     for item in uploads:
@@ -3306,7 +3310,7 @@ def _calendar_claim_matches_event(clause: str, event) -> bool:
     start = event.get("start") or ""
     try:
         weekday_name = _dt.fromisoformat(str(start)).strftime("%A").lower()
-    except Exception:
+    except Exception:  # degrades: weekday corroboration is skipped for this calendar event
         weekday_name = ""
     if stated_days and weekday_name not in stated_days:
         return False
@@ -3714,7 +3718,7 @@ def _start_background_grounding(ctx):
         except asyncio.CancelledError:
             ctx.telemetry["grounding_status"] = "cancelled"
             raise
-        except Exception as exc:
+        except Exception as exc:  # degrades: background grounding verdict is lost and status stays failed
             ctx.telemetry["grounding_status"] = "failed"
             logger.debug(f"[GroundingCheck] background check failed: {exc}")
 
@@ -3929,7 +3933,7 @@ def _personal_claim_receipt(result, *, delivery="unchanged", status=None, reason
     try:
         receipt_fn = getattr(result, "receipt", None)
         receipt = receipt_fn() if callable(receipt_fn) else {}
-    except Exception:
+    except Exception:  # degrades: personal-claim receipt falls back to an empty receipt
         receipt = {}
     if not isinstance(receipt, dict):
         receipt = {}
@@ -3956,7 +3960,7 @@ def _personal_claim_receipt(result, *, delivery="unchanged", status=None, reason
     receipt["delivery"] = delivery
     try:
         clean = personal_claim_provenance.clean_personal_claim_receipt(receipt)
-    except Exception:
+    except Exception:  # degrades: personal-claim receipt cleaning falls back to an empty receipt
         clean = {}
     if not clean:
         clean = {
@@ -4182,7 +4186,7 @@ def _start_background_personal_claim(ctx, provenance=None):
                 task.result()
         except asyncio.CancelledError:
             pass
-        except Exception as exc:
+        except Exception as exc:  # degrades: background personal-claim receipt is not attached to the turn
             logger.debug(f"[PersonalClaim] background receipt skipped: {exc}")
         record = getattr(ctx, "debug_record", None)
         if isinstance(record, dict):
@@ -4259,8 +4263,8 @@ def _failed_action_to_retry(user_text):
         if store.get_pending() is not None:
             return None
         return store.most_recent_failed()
-    except Exception as e:
-        logger.debug(f"[Actions] Retry lookup failed (non-fatal): {e}")
+    except Exception as e:  # degrades: failed-action lookup returns nothing to retry
+        logger.warning(f"[Actions] Retry lookup failed (non-fatal): {type(e).__name__}")
         return None
 
 
@@ -5105,7 +5109,8 @@ async def _run_enhanced(ctx):
                 "required; never promise that merely sending another chat message will "
                 "execute it. Never state it is already done."
             )
-    except Exception:
+    except Exception as e:  # degrades: enhanced pass loses the action-honesty prompt guard
+        logger.warning(f"[Handle Submit] ACTION HONESTY block append failed: {type(e).__name__}")
         pass
     _t_prepare_start = ctx.t_prepare_start
     _t_prepare_elapsed = ctx.t_prepare_elapsed
@@ -5756,7 +5761,7 @@ async def _run_enhanced(ctx):
                     try:
                         _store_prov = debug_record.get('provenance') if isinstance(debug_record, dict) else None
                         _store_mode = debug_record.get('mode', 'enhanced') if isinstance(debug_record, dict) else 'enhanced'
-                    except Exception:
+                    except Exception:  # degrades: stored provenance falls back to the default enhanced mode
                         pass
                 if _store_prov is None:
                     _store_prov = {
@@ -5964,7 +5969,7 @@ def _resend_serve_appropriate(user_text, stored_reply, history) -> bool:
     try:
         if registry.detect_action_intent(user_text or "") is not None:
             return False
-    except Exception:
+    except Exception:  # degrades: resend action-intent check skipped so a stored reply may be served
         pass
     try:
         head = (stored_reply or "").strip()[:120]
@@ -5973,7 +5978,7 @@ def _resend_serve_appropriate(user_text, stored_reply, history) -> bool:
                 if (isinstance(msg, dict) and msg.get("role") == "assistant"
                         and head in str(msg.get("content") or "")):
                     return False
-    except Exception:
+    except Exception:  # degrades: resend history cross-check skipped so a stored reply may be served
         pass
     return True
 
@@ -6017,7 +6022,7 @@ def _recent_completed_duplicate(orchestrator, norm_query: str, file_names=None):
             if 0 <= age < _COMPLETED_RESEND_WINDOW_S:
                 return response
         return None
-    except Exception:
+    except Exception:  # degrades: completed-duplicate lookup returns none so a resend reruns the turn
         return None
 
 # Line-anchored SPA/client error artifacts that leak into resent messages.
@@ -6179,7 +6184,7 @@ async def _handle_submit_inner(
         _tm = getattr(orchestrator, 'time_manager', None)
         if _tm is not None:
             _tm.mark_query_time()
-    except Exception as e:
+    except Exception as e:  # degrades: pacing metrics miss this query time mark
         logger.debug(f"[Handle Submit] mark_query_time failed: {e}")
 
     # Process files using security-hardened FileProcessor
@@ -6197,7 +6202,7 @@ async def _handle_submit_inner(
         active_doc_registry = ActiveDocumentRegistry()
         try:
             setattr(orchestrator, 'active_documents', active_doc_registry)
-        except Exception as e:
+        except Exception as e:  # degrades: active-document registry is not attached to the orchestrator
             logger.debug(f"[ActiveDocument] Could not attach registry to orchestrator: {e}")
 
     # Deterministic attachment audit + deadline-timezone notes (2026-09-04,
@@ -6224,8 +6229,8 @@ async def _handle_submit_inner(
             if _dl_note:
                 _notes.append(_dl_note)
             _attachment_note = "\n".join(_notes)
-        except Exception as e:
-            logger.debug(f"[Handle Submit] attachment/deadline audit failed: {e}")
+        except Exception as e:  # degrades: attachment and deadline notes are omitted from this turn
+            logger.warning(f"[Handle Submit] attachment/deadline audit failed: {type(e).__name__}")
 
         # Register every text attachment from THIS turn in the session's
         # active-document registry (2026-09-08, B5) — same (name, sha256)
@@ -6249,7 +6254,7 @@ async def _handle_submit_inner(
                     f"[ActiveDocument] Registered '{_registered.display_name}' "
                     f"({len(_registered.items)} numbered items, turn={_reg_turn})"
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: attachment is not registered for document navigation
                 logger.debug(f"[ActiveDocument] Registration failed for an attachment: {e}")
         if _registered_this_turn:
             _active_doc_telemetry["registered"] = _registered_this_turn
@@ -6324,7 +6329,7 @@ async def _handle_submit_inner(
                     f"[ActiveDocument] Navigation exhausted: "
                     f"{_nav.document.display_name} item {_nav.requested}/{_nav.count}"
                 )
-    except Exception as e:
+    except Exception as e:  # degrades: active-document navigation resolution is skipped this turn
         logger.debug(f"[ActiveDocument] Navigation resolution failed: {e}")
 
     analysis_text = user_text
@@ -6527,6 +6532,7 @@ async def _handle_submit_inner(
                     _gate_decision.reason = "insight-mode: direct detector override"
                     logger.info("[Handle Submit] Direct insight detector override")
             except Exception as _insight_override_error:
+                # degrades: explicit insight override is skipped so the turn takes the normal path
                 logger.debug("[Handle Submit] Insight override failed: %s", _insight_override_error)
         should_use_agentic = _gate_decision.should_trigger
         search_terms = _gate_decision.search_terms
@@ -6594,7 +6600,7 @@ async def _handle_submit_inner(
                         "bring the offer up again."
                     )
                     ctx.telemetry["insight_offer_armed"] = True
-            except Exception as _io_err:
+            except Exception as _io_err:  # degrades: insight offer is not armed this turn
                 logger.debug(f"[Handle Submit] Insight offer check failed: {_io_err}")
 
         # --- Insight / evidence-assembly mode (owns the turn) ---

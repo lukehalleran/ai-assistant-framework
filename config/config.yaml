@@ -552,7 +552,7 @@ graph_walk:
   personal_return_bias: 2.0
 visual_memory:
   enabled: true
-  clip_model: ViT-B-32
+  clip_model: ViT-B-32-quickgelu
   clip_pretrained: openai
   max_images_prompt: 3
   caption_model: gpt-4o-mini

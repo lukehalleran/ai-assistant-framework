@@ -116,6 +116,6 @@ def conditional_instruction_tail(prompt_ctx: Dict[str, Any]) -> str:
         if _decision_support_applies(prompt_ctx):
             from core.response_guidance import DECISION_SUPPORT_GROUNDING  # lazy import: cycle
             tail += "\n" + DECISION_SUPPORT_GROUNDING.rstrip() + "\n"
-    except Exception:
+    except Exception:  # degrades: decision-support grounding block is omitted from the prompt tail
         pass
     return tail
