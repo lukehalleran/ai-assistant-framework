@@ -70,6 +70,12 @@ PRIORITY_ORDER = [
     ("stm_summary",          10),  # Highest priority - STM context should never be trimmed
     ("user_profile",          9),  # Critical identity context, naturally bounded (~1-3K)
     ("narrative_state",       8),  # Temporal grounding - high priority, capped at 500 tokens
+    # 2026-10-08 (BC-24): equal-priority sections are admitted in LIST order, so
+    # the small time-sensitive ones sit BEFORE history — a 20-turn
+    # recent_conversations + session_timeline filled 9,987 of the 10,000 budget
+    # and emptied the calendar and threads (they are small; history flexes).
+    ("google_calendar",       7),  # Real-time calendar events, small + time-sensitive
+    ("unresolved_threads",    7),  # Continuity threads, small (~100-500 tokens)
     ("recent_conversations",  7),
     # 2026-09-27 (BC-46, BC-30, BC-51): [EARLIER TODAY] recall-timeline lines
     # a truncated [RECENT CONVERSATION] window dropped (temporal_recall-only,
@@ -84,14 +90,12 @@ PRIORITY_ORDER = [
     ("session_turns_total",     7),
     ("session_started_at",      7),
     ("graph_context",         7),  # Knowledge graph entities, small (~200-800 tokens)
-    ("unresolved_threads",    7),  # Continuity threads, small (~100-500 tokens)
     ("semantic_chunks",       6),
     ("personal_notes",        6),  # User's Obsidian notes - high priority
     ("user_uploads",          6),  # User explicitly uploaded content
     ("reference_docs",        5),  # User uploaded reference documents
     ("memories",              5),
     ("web_search_results",    8),  # Real-time web content — high priority, user explicitly asked for current info
-    ("google_calendar",       7),  # Real-time calendar events, small + time-sensitive
     ("relevant_emails",       7),  # Relevant emails from Gmail/Outlook, small + real-time
     ("upcoming_schedule",     7),  # Gated schedule events, small
     ("disambiguation_notes",  6),  # Cross-session phrase disambiguation, small
@@ -114,6 +118,11 @@ PRIORITY_ORDER = [
     ("codebase_changes",      2),  # First message only, session diff
     ("wiki",                  1),
 ]
+
+# Small, time-sensitive sections: metered before history in the first pass
+# (list position in PRIORITY_ORDER) and trimmed last among their priority ties
+# in the second pass.
+_SMALL_TIME_SENSITIVE = frozenset({"google_calendar", "unresolved_threads"})
 
 # Context keys that are inputs/intermediates the formatter never renders —
 # excluded from both metering and the true-total visibility log so unrendered
@@ -545,7 +554,13 @@ class TokenManager:
             for _pass in range(3):
                 if usage <= self.token_budget:
                     break
-                for name, prio in sorted(priority_order, key=lambda x: x[1]):  # low → high
+                # Ties: the small time-sensitive rows trim LAST (they sit early
+                # in list order for the first pass, which would otherwise make
+                # them the FIRST tied rows trimmed here).
+                for name, prio in sorted(
+                    priority_order,
+                    key=lambda x: (x[1], x[0] in _SMALL_TIME_SENSITIVE),
+                ):  # low → high
                     v = trimmed.get(name)
                     if not v:
                         continue
@@ -579,6 +594,19 @@ class TokenManager:
 
         logger.debug(f"[PROMPT] Token budget: {usage}/{self.token_budget}")
         self._prompt_token_usage = usage
+
+        # 2026-10-08 (BC-25, BC-47): name the sections this budget EMPTIED
+        # (non-empty in, empty out). Downstream consumers (the agentic reuse
+        # gate) cannot tell "never retrieved" from "retrieved then trimmed
+        # away" on the post-budget context alone. '_'-prefixed: never rendered
+        # or metered (see the true-total loop below).
+        _emptied = sorted(
+            name for name, _ in PRIORITY_ORDER
+            if name != "stm_summary" and context.get(name) and not trimmed.get(name)
+        )
+        if _emptied:
+            trimmed["_budget_emptied"] = _emptied
+            logger.info(f"[TOKEN BUDGET] Sections emptied by budget: {_emptied}")
 
         # Visibility-only true total for anything still outside PRIORITY_ORDER
         # (visual_memories, note_images, …) plus the deliberately-unmetered
