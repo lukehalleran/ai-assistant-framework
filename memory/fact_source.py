@@ -699,18 +699,29 @@ class EvidenceSpan:
     observed_at: str = field(default="", compare=False)
 
 
+def authored_text(message: Any) -> str:
+    """The user-authored text of a message dict (the ONE authorship chokepoint).
+
+    ``user_text`` (2026-09-05) is the user's OWN typed text for a turn whose
+    ``query`` is the merged user-text + attachment blob (corpus entries store
+    the merged form so retrieval renders attachments). When the key is present
+    it is authoritative EVEN WHEN EMPTY: an attachment-only turn has no
+    authored words, and falling back to ``query`` would hand the attachment
+    text (a CV, a transcript) to the extractors as if the user had written it.
+    Only a message with no ``user_text`` key falls back to ``query`` / ``user``.
+    """
+    if not isinstance(message, Mapping):
+        return str(message or "")
+    ut = message.get("user_text")
+    if "user_text" in message and isinstance(ut, str):
+        return ut
+    return str(message.get("query") or message.get("user") or "")
+
+
 def _message_text_and_id(message: Any) -> tuple[str, str] | None:
     """Return only the user-authored portion of a supported message shape."""
     if isinstance(message, Mapping):
-        # `user_text` (2026-09-05) is the user's OWN typed text for a turn whose
-        # `query` is the merged user-text + attachment blob (corpus entries
-        # store the merged form so retrieval renders attachments). Attachment
-        # content — lecture transcripts, CSV rows, PDFs — is not user-authored
-        # evidence, so the provenance join reads the raw text when present.
-        authored = message.get("user_text") if "user_text" in message else (
-            message.get("query") or message.get("user") or ""
-        )
-        text = str(authored or "").strip()
+        text = authored_text(message).strip()
         turn_id = str(
             message.get("turn_id")
             or message.get("interaction_id")

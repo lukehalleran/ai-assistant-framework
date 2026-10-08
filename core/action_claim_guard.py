@@ -187,6 +187,17 @@ _ACTION_VERB = re.compile(
     re.IGNORECASE,
 )
 
+# 2026-10-08: "Want me to draft a reply?" — the assistant's habitual reply
+# offer — has no _ACTION_VERB, so the offer clause was never detected and the
+# user's "yes" had no route. Used ONLY by detect_offer_clauses; the action KIND
+# still comes from a channel noun found by the existing kind logic (a bare
+# "draft a reply" with no channel in the reply stays kind-less -> no action).
+_OFFER_REPLY_RE = re.compile(
+    r"\b(?:draft(?:ing)?\s+(?:a|an|the|your)?\s*(?:reply|response)|"
+    r"(?:reply|respond)\s+(?:to|back)\b)",
+    re.IGNORECASE,
+)
+
 # Assertive completion cues. Any match (with a kind keyword present, and no
 # proposal/question framing) marks the clause as a completion claim.
 _COMPLETION_PATTERNS: list[re.Pattern] = [
@@ -419,7 +430,9 @@ def detect_offer_clauses(text: str) -> list[str]:
     for sent in _split_sentences(_strip_quoted_and_drafts(text)):
         is_question = sent.rstrip().endswith("?")
         has_marker = bool(_PROPOSAL_MARKER.search(sent))
-        if (has_marker or is_question) and _ACTION_VERB.search(sent):
+        if (has_marker or is_question) and (
+            _ACTION_VERB.search(sent) or _OFFER_REPLY_RE.search(sent)
+        ):
             out.append(sent)
     return out
 

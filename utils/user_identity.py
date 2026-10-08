@@ -11,14 +11,14 @@ Resolution order:
      highest confidence wins. Falls back to the quick_profile `name` key.
   3. Fallback to "the user" if all sources fail.
 
-Validation: a plausible name is 1-3 tokens, alphabetic+apostrophe/hyphen,
-starts uppercase. Junk values fall through to the fallback.
+Validation: a plausible name is 1-3 tokens, letters (any script) +
+apostrophe/hyphen, each opening with a non-lowercase letter. Junk values fall through to the fallback.
 """
 
 import json
 import os
-import re
 import threading
+import unicodedata
 from typing import Optional
 
 from utils.bootstrap import get_user_profile_path
@@ -28,10 +28,32 @@ logger = get_logger("user_identity")
 
 USER_NAME_OVERRIDE = os.getenv("DAEMON_USER_NAME", "").strip()
 
-# A plausible user name: 1-3 tokens, alphabetic/apostrophe/hyphen, opens uppercase.
-_PLAUSIBLE_NAME_RE = re.compile(
-    r"^[A-Z][\w'\-]*(?:\s+[A-Z][\w'\-]*){0,2}$"
-)
+_NAME_JOINERS = frozenset("_'\u2019-")
+
+
+def _is_plausible_name(v: str) -> bool:
+    """A plausible user name: 1-3 whitespace-separated tokens, each opening with
+    a letter that is not lowercase (caseless scripts pass), the rest letters /
+    digits / ``_'’-`` / combining marks. Structural, not ASCII-only (2026-10-08:
+    "Łukasz", "Élodie", "王芳", "김민준" and NFD "Zoë" were all rejected).
+    Control and format characters (bidi overrides, zero-width joiners) are
+    rejected anywhere."""
+    if not isinstance(v, str):
+        return False
+    v = unicodedata.normalize("NFC", v)
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in v):
+        return False
+    tokens = v.split()
+    if not 1 <= len(tokens) <= 3:
+        return False
+    for tok in tokens:
+        if not (tok[0].isalpha() and not tok[0].islower()):
+            return False
+        for c in tok[1:]:
+            if not (c.isalnum() or c in _NAME_JOINERS
+                    or unicodedata.category(c).startswith("M")):
+                return False
+    return True
 
 
 class UserIdentityResolver:
@@ -45,7 +67,7 @@ class UserIdentityResolver:
 
     def get_display_name(self) -> str:
         if USER_NAME_OVERRIDE:
-            if _PLAUSIBLE_NAME_RE.match(USER_NAME_OVERRIDE):
+            if _is_plausible_name(USER_NAME_OVERRIDE):
                 return USER_NAME_OVERRIDE
             logger.debug(
                 f"[UserIdentity] env override {USER_NAME_OVERRIDE!r} does not "
@@ -91,7 +113,7 @@ class UserIdentityResolver:
                 if rel != "name":
                     continue
                 val = str(fact.get("value", "")).strip()
-                if not _PLAUSIBLE_NAME_RE.match(val):
+                if not _is_plausible_name(val):
                     continue
                 conf = float(fact.get("confidence", 0.0) or 0.0)
                 candidates.append((-conf, val))
@@ -99,7 +121,7 @@ class UserIdentityResolver:
             candidates.sort()
             return candidates[0][1]
         quick = str((profile.get("quick_profile", {}) or {}).get("name", "")).strip()
-        if quick and _PLAUSIBLE_NAME_RE.match(quick):
+        if quick and _is_plausible_name(quick):
             return quick
         return None
 
