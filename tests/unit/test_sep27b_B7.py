@@ -187,3 +187,33 @@ class TestDockerComposeDataPathsAgreeWithConfig:
             f"docker-compose.yml's CHROMA_PATH override must match "
             f"config.yaml's memory.chroma_path ({configured_path!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-08 batch 4 (class: BC-71): docker-entrypoint.sh itself. It is a
+# shell script, so these are string assertions on the file text (not a run).
+# ---------------------------------------------------------------------------
+
+ENTRYPOINT_PATH = REPO_ROOT / "docker-entrypoint.sh"
+
+
+class TestDockerEntrypointAgreesWithConfig:
+    @pytest.fixture(scope="class")
+    def entrypoint_text(self) -> str:
+        return ENTRYPOINT_PATH.read_text(encoding="utf-8")
+
+    def test_chroma_fallback_default_matches_config(self, entrypoint_text):
+        import yaml
+
+        cfg = yaml.safe_load((REPO_ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+        configured_path = cfg["memory"]["chroma_path"].lstrip("./")
+        assert f'CHROMA_PATH="${{CHROMA_PATH:-/app/{configured_path}}}"' in entrypoint_text
+        assert "chroma_db_v4_v2" not in entrypoint_text
+
+    def test_banner_names_the_api_server_variables(self, entrypoint_text):
+        from config.app_config import API_PORT
+
+        assert "${DAEMON_API_HOST" in entrypoint_text
+        assert "${DAEMON_API_PORT:-%d}" % API_PORT in entrypoint_text
+        health = [l for l in entrypoint_text.splitlines() if l.startswith('echo "Health check')]
+        assert health and "DAEMON_API_PORT" in health[0] and "GRADIO_PORT" not in health[0]

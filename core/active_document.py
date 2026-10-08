@@ -224,6 +224,9 @@ def _resolve_target_number(lower_text: str, document: ActiveDocument) -> Optiona
     return None
 
 
+_ONE_LETTER_WORDS = frozenset({"a", "i"})
+
+
 def _name_mentioned(lower_text: str, display_name: str) -> bool:
     """Case-insensitive filename mention, with or without its extension.
 
@@ -238,7 +241,11 @@ def _name_mentioned(lower_text: str, display_name: str) -> bool:
         return False
     stem = os.path.splitext(name)[0]
     candidates = {name}
-    if stem:
+    # A bare stem that is itself an English one-letter word ("a", "i") is the
+    # article/pronoun far more often than the file: "write a report" must not
+    # select a.docx, while "next question in B please" still selects B.docx
+    # (2026-10-08, class: BC-01). Such files match only by full name.
+    if stem and stem not in _ONE_LETTER_WORDS:
         candidates.add(stem)
     for candidate in candidates:
         pattern = r"(?<![a-z0-9])" + re.escape(candidate) + r"(?![a-z0-9])"

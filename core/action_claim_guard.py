@@ -231,8 +231,7 @@ _COMPLETION_PATTERNS: list[re.Pattern] = [
 # "he's"/"you've"/"they'll"; up to two intervening words absorb adverbs ("they
 # just created"). Note: \byou\b does NOT match the possessive "your" (no boundary
 # before the trailing "r"), so "added that to your calendar" is unaffected.
-_OTHER_SUBJECT_CLAIM = re.compile(
-    r"\b(?:he|she|they|you)(?:'(?:s|d|ve|ll|re))?\s+(?:\w+\s+){0,2}?"
+_OTHER_SUBJECT_VERBS = (
     r"(?:e-?mailed|e-?mails|e-?mailing|"
     r"sent|sends|sending|"
     r"saved|saves|saving|"
@@ -249,9 +248,55 @@ _OTHER_SUBJECT_CLAIM = re.compile(
     r"dropped|drops|dropping|"
     r"texted|texts|texting|"
     r"messaged|messages|messaging|"
-    r"put|puts|putting)\b",
+    r"put|puts|putting)\b"
+)
+
+_OTHER_SUBJECT_CLAIM = re.compile(
+    r"\b(?:he|she|they|you)(?:'(?:s|d|ve|ll|re))?\s+(?:\w+\s+){0,2}?"
+    + _OTHER_SUBJECT_VERBS,
     re.IGNORECASE,
 )
+
+# 2026-10-08 (batch 4): a NAMED third party as the clause subject ("Sam emailed
+# you about the deadline.") narrates that person's action exactly like the
+# pronoun arm above — but the pronoun arm never saw it, so the clause flowed on
+# as the assistant's own narrated email action. The subject is a case-SENSITIVE
+# TitleCase word (the verb alternation is the SAME list as the pronoun arm,
+# matched case-insensitively via a scoped flag). It is a lookahead so adjacent
+# candidates ("Yesterday Sam emailed") are each tried. The gap may not run
+# through a coordinator/preposition, so "Just emailed Sam and saved the note"
+# (Daemon's own two-part claim) is never read as Sam's action, nor through a
+# be-verb ("Note is saved." is a passive claim about a thing, not a person).
+_NAMED_SUBJECT_CLAIM = re.compile(
+    r"(?<![\w'’])([A-Z][a-z]+)(?=\s+"
+    r"(?:(?!(?i:and|or|but|then|to|for|with|from|about|"
+    r"is|are|was|were|am|be|been|being)\b)\w+\s+){0,2}?(?i:"
+    + _OTHER_SUBJECT_VERBS + r"))"
+)
+
+# TitleCase only because it opens the sentence — discourse/adverb words are not
+# subjects. Closed class; any word ending in "ly" is also excluded, and so is a
+# sentence-initial verb from the claim-verb list itself ("Sent Sam the notes"),
+# and an action-kind noun ("Email sent to the team." — the thing, not a person).
+_NON_SUBJECT_OPENERS = frozenset(
+    {"just", "already", "also", "then", "so", "now", "yesterday", "today",
+     "earlier", "finally", "ok", "okay", "done", "sure", "yes"}
+)
+_CLAIM_VERB_WORD = re.compile(_OTHER_SUBJECT_VERBS + r"$", re.IGNORECASE)
+
+
+def _has_named_subject_claim(clause: str) -> bool:
+    for m in _NAMED_SUBJECT_CLAIM.finditer(clause):
+        word = m.group(1)
+        low = word.lower()
+        if low in _NON_SUBJECT_OPENERS or low.endswith("ly"):
+            continue
+        if _CLAIM_VERB_WORD.match(low):
+            continue
+        if _detect_kind(word) is not None:
+            continue  # "Email sent to the team." — the thing acted on, not a person
+        return True
+    return False
 
 # First-person self-claim marker. If present anywhere in the clause, the assistant
 # IS asserting its own action even when a third party is also mentioned, so the
@@ -325,7 +370,11 @@ def _is_third_party_narration(clause: str) -> bool:
     """
     if _FIRST_PERSON_CLAIM.search(clause):
         return False
-    return bool(_OTHER_SUBJECT_CLAIM.search(clause) or _SECOND_PERSON_SUBJECT.search(clause))
+    return bool(
+        _OTHER_SUBJECT_CLAIM.search(clause)
+        or _SECOND_PERSON_SUBJECT.search(clause)
+        or _has_named_subject_claim(clause)
+    )
 
 
 def is_first_person_claim(text: str) -> bool:
