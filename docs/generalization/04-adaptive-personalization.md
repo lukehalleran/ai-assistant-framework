@@ -1,5 +1,7 @@
 # G04: Adaptive Personalization
 
+Status (2026-10-08): not_started as scheduled work. 1.0 track, unscheduled.
+
 ## Objective
 
 Start from population-neutral behavior, learn an individual user's stable needs,

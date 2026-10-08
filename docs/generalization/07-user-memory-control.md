@@ -1,5 +1,7 @@
 # G07: User Memory Control
 
+Status (2026-10-08): not_started as scheduled work. Beta track: data-wipe instructions only (Workplan Phase 3). 1.0 track, parked: full deletion cascade and memory-storage policy (C03/C04 move to pre-public release).
+
 ## Objective
 
 Give the user understandable and complete control over what Daemon remembers,

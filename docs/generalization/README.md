@@ -8,12 +8,39 @@ release requirements, and connects unit tests, class guards, and turn probes.
 
 Target window: 18-24 months
 
+> **Superseded 2026-10-08:** the 18-24 month window applies to the 1.0 track
+> only, which is now unscheduled (see "Tracks" below). The original text is kept
+> as history.
+
 Primary target: a single-user Windows desktop executable for adult users who
 communicate primarily in typed American English.
 
 This directory turns the existing owner-shape audit into an implementation and
 validation program. It does not claim that universal generalization is possible.
 The target is a bounded, testable product claim backed by external evidence.
+
+## Tracks (2026-10-08)
+
+Source: the 2026-10-08 generalization-plan review (owner-approved
+realignment). This directory describes a 1.0 vision; it was never the
+next-step plan for one part-time developer.
+
+- **Beta track = [docs/WORKPLAN_2_hardening_executable_beta.md](../WORKPLAN_2_hardening_executable_beta.md).**
+  The 5-friend hosted beta (`HOSTED_TRANSITION`, Linux-first executable) is the
+  only scheduled work. Its tester gate is the Workplan Phase 3 list.
+- **1.0 track - unscheduled.** Everything else in this directory (the waves,
+  the Windows-first all-local product claim, the master definition of done).
+  Revisit after at least 10 real users.
+
+Parked (1.0 track, no schedule): G10 local-model migration; G09 external
+accessibility testing; G05 evaluation tiers E3-E5 plus counterfactual fairness;
+G08 signing, updater, rollback, and model packs; G03 central egress broker and
+DPAPI secrets; G07 full deletion cascade; G11 encrypted incident area; C07
+evidence registry. Why: one part-time developer; the cost is not justified
+before real-user evidence exists.
+
+Each `0N-*.md` document carries a one-line `Status (2026-10-08)` under its
+title naming its track, using the status values under "Program controls".
 
 ## Fixed assumptions
 
@@ -283,6 +310,10 @@ Each validated requirement stores:
 7. Revalidation triggers, including model or runtime upgrades.
 
 ### Change allocation
+
+> **Superseded 2026-10-08:** the 70/20/10 split below is withdrawn with the
+> 18-24 month window; effort follows the Workplan 2 beta track. Original text
+> kept as history.
 
 Until Wave 3 is complete, reserve most development capacity for consolidation:
 
