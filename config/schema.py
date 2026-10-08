@@ -496,7 +496,7 @@ class ReferenceDocsSection(BaseModel):
 class VisualMemorySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = False
-    clip_model: str = "ViT-B-32"
+    clip_model: str = "ViT-B-32-quickgelu"
     clip_pretrained: str = "openai"
     max_images_prompt: int = Field(default=3, ge=0)
     caption_model: str = "gpt-4o-mini"

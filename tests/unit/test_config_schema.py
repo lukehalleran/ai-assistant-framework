@@ -319,7 +319,7 @@ class TestVisualMemorySection:
         from config.schema import VisualMemorySection
         vm = VisualMemorySection()
         assert vm.enabled is False
-        assert vm.clip_model == "ViT-B-32"
+        assert vm.clip_model == "ViT-B-32-quickgelu"
         assert vm.similarity_threshold == 0.20
 
     def test_threshold_range(self):

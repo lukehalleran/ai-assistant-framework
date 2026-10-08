@@ -53,6 +53,8 @@ class CLIPManager:
         self._preprocess = None
         self._tokenizer = None
         self._device = "cpu"
+        self.model_name = None  # set after a successful load (re-embed script asserts it)
+        self.pretrained = None
         self.loaded = False
         self._available = True  # False if open_clip not installed
         self._load_lock = threading.Lock()
@@ -88,7 +90,7 @@ class CLIPManager:
             model_name = VISUAL_MEMORY_CLIP_MODEL
             pretrained = VISUAL_MEMORY_CLIP_PRETRAINED
         except ImportError:
-            model_name = "ViT-B-32"
+            model_name = "ViT-B-32-quickgelu"
             pretrained = "openai"
 
         try:
@@ -105,6 +107,8 @@ class CLIPManager:
             self._model = model
             self._preprocess = preprocess
             self._tokenizer = open_clip.get_tokenizer(model_name)
+            self.model_name = model_name
+            self.pretrained = pretrained
             self.loaded = True
 
             logger.info(f"[CLIPManager] Model loaded successfully (dim={self.EMBEDDING_DIM})")
