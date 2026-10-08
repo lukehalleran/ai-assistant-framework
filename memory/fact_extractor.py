@@ -72,6 +72,7 @@ from typing import List, Dict, Tuple, Optional
 from memory.fact_source import classify_claim_time, supporting_excerpt
 from memory.memory_interface import MemoryNode, MemoryType
 import memory.stance_classifier as stance_classifier
+from memory.user_profile_schema import is_living_situation_relation
 from utils.logging_utils import get_logger, log_and_time
 import utils.temporal_resolver as temporal_resolver
 
@@ -227,6 +228,18 @@ _CLAUSE_OBJECT_RE = re.compile(
     r"\b(?:is|are|was|were|will|would|going|picking|providing|taking|coming|getting|"
     r"said|told|texted|called|wants|needs|has to|have to)\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b"
 )
+# 2026-10-02: a residence/household relation whose object is ONLY a bare generic
+# dwelling noun or deictic ("home", "the house", "my place", "here") names no
+# place at all (live: home_location="home"). Categorized-generic: dwelling nouns
+# + deictics, optional article/possessive. Scope = the living-situation relation
+# set owned by user_profile_schema (not copied here).
+_DWELLING_NOUNS = (
+    r"home|house|place|apartment|apt|flat|condo|room|dorm|residence|"
+    r"household|spot|pad|here|there"
+)
+_BARE_DWELLING_RE = re.compile(
+    r"^(?:(?:the|a|an|my|our|his|her|their|your)\s+)?(?:" + _DWELLING_NOUNS + r")[.!]?$"
+)
 _NEGATION_OK_RELATION_SUFFIXES = ("_communication", "_status", "_access", "_availability")
 
 
@@ -237,6 +250,8 @@ def _is_junk_object(obj: str, rel: str) -> bool:
     o = (obj or "").strip().lower()
     r = (rel or "").strip().lower()
     if not o:
+        return True
+    if is_living_situation_relation(r) and _BARE_DWELLING_RE.match(o):
         return True
     if r in _TEMPORAL_OK_RELATIONS:
         return False
