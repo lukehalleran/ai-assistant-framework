@@ -1,5 +1,7 @@
 # G10: Local Model Migration
 
+Status (2026-10-08): not_started as scheduled work. 1.0 track, parked (the beta is `HOSTED_TRANSITION`).
+
 ## Objective
 
 Remove hosted inference from the Daemon runtime role by role while preserving

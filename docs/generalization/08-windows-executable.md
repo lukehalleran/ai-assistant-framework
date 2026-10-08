@@ -1,5 +1,7 @@
 # G08: Windows Executable and Release Engineering
 
+Status (2026-10-08): in_progress. Beta track: Linux-first executable per Workplan Phase 2 (build + binary smoke pending). 1.0 track, parked: signing, updater, rollback, model packs, Windows VM matrix.
+
 ## Objective
 
 Deliver Daemon as a signed, reproducible, single-user Windows 11 x64 application
@@ -8,8 +10,18 @@ and uninstalls without repository access or a Python development environment.
 
 ## Current gap
 
-The tracked `daemon.spec` is present, but packages the legacy Gradio assets
-and does not include `web/dist`. Existing installer documentation also assumes
+> **Updated 2026-10-08:** the 2026-09-13 text below is stale on one point.
+> `daemon.spec` now fails early if `web/dist/index.html` is missing and
+> bundles `web/dist` (commit `19c313b`, 2026-10-02, "packaging: frozen-aware
+> paths; spec bundles SPA + offline models"); it still bundles the Gradio
+> assets alongside the SPA (the `/admin` tabs). Still pending (reported by the
+> 10-08 review and Workplan Phase 2, not re-verified here): the Linux build
+> itself and a smoke run against the resulting binary (P3), and the Windows
+> clean-machine matrix (parked, 1.0 track).
+
+The tracked `daemon.spec` is present, but packaged the legacy Gradio assets
+and did not include `web/dist` (as of 2026-09-13). Existing installer
+documentation also assumes
 hosted API keys. The current React/FastAPI application and future local-model
 sidecar need a validated packaging baseline; the spec's presence is not
 clean-machine release evidence. See the
