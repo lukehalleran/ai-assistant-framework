@@ -1,5 +1,7 @@
 # G02: Owner-Neutral Runtime
 
+Status (2026-10-08): in_progress. Beta track: neutral personality (F08, still open) as a Workplan Phase 3 gate item. F02 (profile path/timezone) is closed; F09 (ASCII-initial display names) and the remainder are 1.0 track, unscheduled.
+
 ## Objective
 
 Make one codebase behave correctly for an arbitrary fresh user without relying

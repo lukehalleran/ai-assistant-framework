@@ -1,5 +1,7 @@
 # G11: Dogfooding, Incidents, and Claude Fable Development
 
+Status (2026-10-08): in_progress. Beta track: only the Workplan Phase 3 telemetry roll-up and sensor. 1.0 track, parked: encrypted incident area.
+
 ## Objective
 
 Turn daily owner use into a disciplined defect-discovery and regression process

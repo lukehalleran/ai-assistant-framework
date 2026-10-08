@@ -146,6 +146,51 @@ it does not assert a regression from a previously qualified release.
 | F16 / release gap | No unified inference-role gateway/qualification registry; hosted and local generation coexist (`models/model_manager.py:404`) | G10: role/call-site inventory, qualified artifacts, explicit local failure, and network-denied validation. Model-slug parity is narrower. |
 | F17 / evidence gap | Existing eval is a prompt-ablation corpus without cohort/consent/subgroup fields (`eval/corpus.py:67`); no inspected E3–E5 population evidence | G01/G05: machine-readable product/eval contracts, separate owner/synthetic/held-out evidence. No population claim follows from this sweep. |
 
+### Status updates (2026-10-08)
+
+Line references are against master `5198387`. The findings table above is kept
+as the 2026-09-13 record; these lines override its "gap" wording.
+
+- **F01 - Status (2026-10-08): closed.** `LaunchAuthMiddleware`
+  (`api/launch_auth.py:208`) is installed by `api/app.py:146`; added by
+  `4a75901` ("generalization lane: typed failure outcomes, launch auth,
+  real-name scrub", 2026-09-15).
+- **F02 - Status (2026-10-08): closed (timezone and profile path).**
+  `utils/timezone_resolver.py:80-105` reads the Windows registry zone key via a
+  lazy `winreg` import, and `get_timezone()` (`:149-153`) returns `None` instead
+  of silently choosing Central (BC-59). The identity, location, institution and
+  timezone resolvers now default their profile path through
+  `utils.bootstrap.get_user_profile_path()` (`utils/user_identity.py:41`,
+  `utils/timezone_resolver.py:144`, `utils/institution_resolver.py:135`,
+  `utils/location_resolver.py:44`). Last touched by `4a75901`. A non-Central
+  Windows event-time run was not re-executed for this note.
+- **F03 - Status (2026-10-08): closed.** `_invalid_verdict_reason`
+  (`core/grounding_check.py:528-540`) rejects any `false_claim_present` that is
+  not `isinstance(..., bool)` and `_parse_verdict` (`:555`) abstains on a
+  violation; added by `4a75901`.
+- **F04 - Status (2026-10-08): partly closed.** The grounding-correction path
+  returns one replacement text with an always-empty suffix slot
+  (`_apply_grounding_check`, `gui/handlers.py:3660-3694`, A05b-1) and stays
+  `log_only` by default (`config/config.yaml:208-210`). The deterministic
+  action-claim and calendar notices still append a stored suffix
+  (`gui/handlers.py:4827-4862`); see the G12 "Current behaviour" note.
+- **F06 - Status (2026-10-08): open.** `core/orchestrator.py:382` still writes
+  `"query": (ctx.user_input or "")[:300]` into the turn record, and
+  `utils/telemetry_schema.py` does not exist.
+- **F07 - Status (2026-10-08): closed (default only).** `config/config.yaml:148`
+  sets `location.ip_lookup_enabled: false`. A no-network OFFLINE-mode test was
+  not checked, so the privacy-mode part of the finding stays 1.0 track.
+- **F08 - Status (2026-10-08): open.** `config/prompts/default_personality.txt`
+  still assumes an established friendship and a gendered user ("When he's
+  casual, be casual back", line 46). Workplan Phase 3 gate item.
+- **F09 - Status (2026-10-08): open.** `utils/user_identity.py:33` still opens
+  the name pattern with `[A-Z]` (ASCII uppercase only).
+- **F15 - Status (2026-10-08): closed (spec); build pending.** `daemon.spec:45-57`
+  fails early without `web/dist/index.html` and bundles `web/dist`; commit
+  `19c313b` (2026-10-02). The fresh-clone smoke runs in CI
+  (`.github/workflows/tests.yml:87-105`, `tests/smoke/`). The Linux build and
+  binary smoke (P3) and any Windows run remain pending.
+
 G11 also lacks the planned user feedback/incident-bundle workflow and private
 canary export gate. G13's top status note correctly marks its older body as
 historical: graph filtering has production call sites, and an integrator exists;

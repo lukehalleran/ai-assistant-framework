@@ -1,5 +1,7 @@
 # G09: Accessibility and Communication Generalization
 
+Status (2026-10-08): not_started as scheduled work. 1.0 track, unscheduled; external accessibility testing is parked.
+
 ## Objective
 
 Make the Windows application and assistant interaction usable across supported
