@@ -534,7 +534,10 @@ class MemoryCoordinator:
         }
 
         for name, collection in self.chroma_store.collections.items():
-            stats['chroma_collections'][name] = collection.count()
+            # The store keeps None placeholders until a collection opens.
+            stats['chroma_collections'][name] = (
+                collection.count() if collection is not None else "unopened"
+            )
 
         logger.info(f"[DEBUG] Memory state: {stats}")
         return stats

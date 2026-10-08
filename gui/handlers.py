@@ -1074,9 +1074,27 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
         logger.debug(f"[Telemetry] post-response hooks skipped: {e}")
 
 
+def _attach_agentic_tool_receipts(ctx, session) -> None:
+    """Copy an agentic session's tool receipts (+ failed providers) into the
+    turn telemetry (2026-09-28, BC-72). Shared by the agentic-search closure
+    and the enhanced-mode silent retry (2026-10-08, BC-72/BC-58: that retry
+    ran tools but its receipts never reached turn_records). Never raises."""
+    try:
+        telemetry = getattr(ctx, "telemetry", None)
+        if session is None or not isinstance(telemetry, dict):
+            return
+        _tr = getattr(session, "tool_receipts", None)
+        telemetry["tool_calls"] = list(_tr) if isinstance(_tr, list) else []
+        _pf = getattr(session, "providers_failed", None)
+        if isinstance(_pf, dict) and _pf:
+            telemetry["providers_failed"] = dict(_pf)
+    except Exception as e:  # degrades: this turn's tool receipts are missing from the turn record
+        logger.debug(f"[Telemetry] tool receipt attach failed: {e}")
+
+
 async def _silent_agentic_retry(
     orchestrator, merged_input, system_prompt, model_name,
-    raw_context, original_response, hint, log_prefix,
+    raw_context, original_response, hint, log_prefix, *, ctx=None,
 ):
     """Run a silent agentic retry and compare against the original response.
 
@@ -1089,6 +1107,7 @@ async def _silent_agentic_retry(
         retry_system = hint + "\n\n" + (system_prompt or "")
 
         retry_response = ""
+        _before = getattr(agentic, "_last_session", None)
         async for item in agentic.run_agentic_search(
             query=merged_input,
             system_prompt=retry_system,
@@ -1101,6 +1120,14 @@ async def _silent_agentic_retry(
                 pass
             else:
                 retry_response += item
+
+        # Receipts are recorded whether the retry is accepted or rejected —
+        # the tools ran either way. Identity check: a stale session from an
+        # earlier turn is never attributed to this one.
+        if ctx is not None:
+            _after = getattr(agentic, "_last_session", None)
+            if _after is not None and _after is not _before:
+                _attach_agentic_tool_receipts(ctx, _after)
 
         if not retry_response.strip():
             logger.warning(
@@ -2020,6 +2047,8 @@ async def _run_doc_generation(ctx):
         logger.info(f"[Handle Submit] Document generated: {_doc_result.path}")
 
         # Store interaction
+        # Resend record (BC-58): bypass store sites never reached _dispatch_storage.
+        _register_completed_turn(orchestrator, ctx.user_text, _doc_response, getattr(ctx, "file_names", None))
         label = None
         if orchestrator.memory_system:
             try:
@@ -2886,6 +2915,7 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
         )
     logger.info(f"[ActionGuard] Note saved: {note.path} (fully_persisted={note.fully_persisted})")
 
+    _register_completed_turn(orchestrator, ctx.user_text, _resp, getattr(ctx, "file_names", None))
     label = None
     if orchestrator.memory_system:
         try:
@@ -4222,6 +4252,7 @@ async def _run_action_retry(ctx, failed):
             f"identical details, nothing changed.{_why_line} Approve the card and it runs again."
             + _format_action_proposal_card(new)
         )
+        _register_completed_turn(orchestrator, ctx.user_text, _resp, getattr(ctx, "file_names", None))
         label = None
         if orchestrator.memory_system:
             try:
@@ -4406,12 +4437,7 @@ async def _run_agentic_search(ctx):
         # Tool-call receipts (2026-09-28, BC-72): what each tool did this
         # turn (name + status + machine reason), from the controller's own
         # dispatch record — visible in turn_records.jsonl, not only the log.
-        if _agentic_session is not None:
-            _tr = getattr(_agentic_session, "tool_receipts", None)
-            ctx.telemetry["tool_calls"] = list(_tr) if isinstance(_tr, list) else []
-            _pf = getattr(_agentic_session, "providers_failed", None)
-            if isinstance(_pf, dict) and _pf:
-                ctx.telemetry["providers_failed"] = dict(_pf)
+        _attach_agentic_tool_receipts(ctx, _agentic_session)
         _write_turn_telemetry(
             ctx, 'agentic-search', _agentic_session_id,
             model_name if 'model_name' in dir() else None,
@@ -5337,7 +5363,7 @@ async def _run_enhanced(ctx):
                         _uf_clean, _uf_think = await _silent_agentic_retry(
                             orchestrator, merged_input, system_prompt,
                             model_name, raw_context, final_output,
-                            _uf_hint, "UNCERTAINTY FALLBACK",
+                            _uf_hint, "UNCERTAINTY FALLBACK", ctx=ctx,
                         )
                         if _uf_clean is not None:
                             final_output = _uf_clean
