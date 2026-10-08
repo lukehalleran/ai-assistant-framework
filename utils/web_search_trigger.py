@@ -1775,13 +1775,22 @@ def terms_lack_resolved_referent(query: str, terms) -> bool:
     if not terms or not query_depends_on_context(query):
         return False
     from core.agentic.gate import _TEMPORAL_GENERIC_TOKENS  # lazy import: cycle
+    from memory.graph_utils import _stop_lexicon  # lazy import: layering (utils/ does not load memory/ at import)
+    words = re.findall(r"[a-z]+", query.lower())
     own = set()
-    for t in re.findall(r"[a-z]+", query.lower()):
+    for t in words:
         own.add(t)
         if t.endswith("s"):
             own.add(t[:-1])
     filler = (_PRIVATE_GUARD_TIME_STOP_TOKENS | _TEMPORAL_GENERIC_TOKENS
               | _SEARCH_PADDING_TOKENS)
+    # A referential query that names its own subject ("did they release the
+    # court transcript yet") is resolved by its own words; only a query whose
+    # content is mostly the referent ("President one of them") is judged.
+    # Without spaCy's stop lexicon every word counts, so the guard fails open.
+    stop = _stop_lexicon()
+    if len({t for t in words if len(t) > 1 and t not in stop and t not in filler}) >= 2:
+        return False
     for term in terms:
         for t in re.findall(r"[a-z]+", str(term).lower()):
             if t not in own and t not in filler and t.rstrip("s") not in own:

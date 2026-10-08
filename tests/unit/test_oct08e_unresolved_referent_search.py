@@ -26,6 +26,13 @@ def test_terms_with_resolved_subject_pass():
         T6_QUERY, ["Trump comments Cornell Jane Doe case"]) is False
 
 
+def test_referential_query_that_names_its_subject_is_untouched():
+    # pre-push 2026-10-08: test_sep12_search_identity_scope's "did they
+    # release the court transcript yet" -> ["court transcript release"].
+    assert wst.terms_lack_resolved_referent(
+        "did they release the court transcript yet", ["court transcript release"]) is False
+
+
 def test_non_referential_query_is_untouched():
     assert wst.terms_lack_resolved_referent(
         "president election results", ["president election results October 2026"]) is False
