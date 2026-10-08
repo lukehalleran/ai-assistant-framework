@@ -182,6 +182,7 @@ import knowledge.reference_docs_manager as reference_docs_manager
 import knowledge.research_search as research_search
 import knowledge.visual_memory_pipeline as visual_memory_pipeline
 import memory.memory_expander as memory_expander
+import memory.pending_turns as pending_turns
 import utils as utils
 import utils.ordered_slice as ordered_slice
 import utils.personal_claim_provenance as personal_claim_provenance
@@ -292,6 +293,13 @@ async def _background_store_interaction(
         return storage_failed_label
     except Exception as e:
         logger.error(f"[HANDLE_SUBMIT] Background storage failed: {e}")
+    finally:
+        # Landed or failed: the turn is no longer "pending" (readers see the
+        # corpus entry, or nothing). TTL covers a crashed task.
+        pending_turns.forget(
+            getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None),
+            merged_input,
+        )
 
 
 async def wait_for_pending_storage(timeout: float = 10.0):
@@ -924,6 +932,9 @@ def _dispatch_storage(
     if personal_claim_task is not None:
         store_kwargs["personal_claim_task"] = personal_claim_task
     _register_completed_turn(orchestrator, user_text, response_to_store, file_names)
+    _pending_turn_owner = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
+    if _pending_turn_owner is not None:
+        pending_turns.register(_pending_turn_owner, merged_input, response_to_store, user_text)
     task = asyncio.create_task(_background_store_interaction(**store_kwargs))
     _pending_storage_tasks.add(task)
     task.add_done_callback(_pending_storage_tasks.discard)

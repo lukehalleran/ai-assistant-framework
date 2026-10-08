@@ -54,6 +54,7 @@ from utils.query_checker import (
     extract_rare_proper_nouns,
     extract_data_tokens,
     has_present_state_report,
+    is_casual_acknowledgment,
     is_request_shaped,
     keyword_tokens,
 )
@@ -76,6 +77,85 @@ def _word_in_text(word: str, text: str) -> bool:
         return re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", text, re.IGNORECASE) is not None
     except re.error:
         return False
+
+
+_FIDELITY_QUOTE_CLIP = 200
+
+
+def _fidelity_content_tokens(text: str) -> List[str]:
+    """Lowercased alphanumeric tokens of ``text`` minus the maintained English
+    function-word lexicon (the one graph_utils already uses; empty when spaCy
+    is absent, which only makes the check under-fire)."""
+    from memory.graph_utils import _stop_lexicon  # lazy import: layering (memory package stays out of STM module load)
+    stop = _stop_lexicon()
+    out: List[str] = []
+    for tok in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        if len(tok) >= 3 and tok not in stop and tok not in out:
+            out.append(tok)
+    return out
+
+
+def apply_fidelity_fallback(
+    user_query: str,
+    parsed: Dict[str, Any],
+    recent_memories: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Deterministic STM fidelity check (2026-10-08, class: BC-08, BC-46).
+
+    The summary LLM can anchor on the PREVIOUS exchange and describe it
+    instead of the current message (live: "President one of them" summarized
+    as the prior turn's topic; the prompt rule lost to the model prior). When
+    NONE of the query's content tokens appear in topic + user_question +
+    intent AND a content token of that summary appears in an EARLIER user
+    message of the window but not in the current query (positive evidence it
+    is anchored elsewhere; a paraphrase with no shared word is NOT enough),
+    the summary is about some other message: replace user_question
+    with a verbatim quote and demote reference_type to "unclear". Mutates
+    ``parsed``; returns True when the fallback fired. Under-fires by design
+    (empty/unscored summaries, token-less queries and pure acknowledgments
+    are left alone)."""
+    if not isinstance(parsed, dict):
+        return False
+    query = (user_query or "").strip()
+    summary = " ".join(
+        str(parsed.get(k) or "") for k in ("topic", "user_question", "intent")
+    ).strip().lower()
+    if not query or not summary:
+        return False
+    tokens = _fidelity_content_tokens(query)
+    if not tokens:
+        return False
+    if len(tokens) < 2 and is_casual_acknowledgment(query):
+        return False
+    for tok in tokens:
+        if _word_in_text(tok, summary):
+            return False
+        # Inflection tolerance: "searching" in the summary for "search".
+        if len(tok) >= 4 and re.search(r"(?<!\w)" + re.escape(tok), summary):
+            return False
+    # Positive evidence of mis-anchoring (referee 2026-10-08): a faithful
+    # summary may paraphrase with no shared word ("stimulant" -> "Medication
+    # check-in"); only a summary whose own words come from an EARLIER user
+    # message (and not from the current one) is about that other message.
+    query_words = set(tokens)
+    earlier = " ".join(
+        str((m.get("user_text") or m.get("query") or "")) for m in (recent_memories or [])
+        if isinstance(m, dict)
+    ).lower()
+    if not any(
+        t not in query_words and _word_in_text(t, earlier)
+        for t in _fidelity_content_tokens(summary)
+    ):
+        return False
+    clipped = query[:_FIDELITY_QUOTE_CLIP]
+    parsed["user_question"] = f'User said: "{clipped}"'
+    parsed["reference_type"] = "unclear"
+    parsed["stm_fidelity_override"] = True
+    logger.info(
+        f"[STM] fidelity fallback: summary shares no content token with the "
+        f"current message (tokens={tokens[:6]})"
+    )
+    return True
 
 
 def _sentence_initial_candidates(user_query: str) -> List[str]:
@@ -690,6 +770,12 @@ Return JSON only, no markdown or extra text:"""
                     )
             except Exception:
                 pass
+            # Fidelity fallback (2026-10-08): the summary must be about THIS
+            # message. Runs last so it sees the final state of every override.
+            try:
+                apply_fidelity_fallback(user_query, parsed, recent_memories)
+            except Exception as e:  # degrades: summary kept as the LLM wrote it
+                logger.debug(f"[STMAnalyzer] fidelity check failed: {e}")
             logger.debug(f"[STMAnalyzer] Analysis complete: topic={parsed.get('topic')}, tone={parsed.get('tone')}")
             return parsed
 

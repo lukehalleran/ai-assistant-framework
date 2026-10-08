@@ -39,6 +39,7 @@ import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import memory.pending_turns as pending_turns
 from utils.logging_utils import get_logger, log_and_time
 from utils.safe_json import atomic_write_json, atomic_write_text, load_critical_json
 from utils.personal_claim_provenance import clean_personal_claim_receipt
@@ -251,9 +252,42 @@ class CorpusManager:
             self._episodic_cache = sorted(episodic, key=lambda x: x.get('timestamp', datetime.min), reverse=True)
         return self._episodic_cache
 
+    def _episodic_with_pending(self) -> List[Dict]:
+        """READ-path view: delivered-but-not-yet-stored turns (memory.pending_turns)
+        ahead of the cached episodic list, deduped against the corpus tail
+        (same normalized query, close timestamp). Never cached, never saved."""
+        cached = self._get_episodic_sorted()
+        try:
+            pend = pending_turns.pending_entries(self)
+            if not pend:
+                return cached
+            tail = [(" ".join(str(e.get("query") or "").lower().split()), e.get("timestamp"))
+                    for e in cached[:5]]
+
+            def _dup(p):
+                pq = " ".join(str(p["query"]).lower().split())
+                for q, ts in tail:
+                    if q != pq:
+                        continue
+                    if isinstance(ts, str):
+                        try:
+                            ts = datetime.fromisoformat(ts)
+                        except ValueError:
+                            return True
+                    try:
+                        return abs((ts - p["timestamp"]).total_seconds()) < pending_turns.PENDING_TURN_TTL_S
+                    except Exception:  # degrades: unparseable stored timestamp counts as the same turn
+                        return True
+                return False
+
+            fresh = [p for p in pend if not _dup(p)]
+            return fresh + cached if fresh else cached
+        except Exception:  # degrades: readers see the stored corpus only
+            return cached
+
     def get_recent_memories(self, count: int = 3) -> List[Dict]:
         """Get most recent episodic conversation memories (excludes summaries and reflections)"""
-        cached = self._get_episodic_sorted()
+        cached = self._episodic_with_pending()
         result = cached[:count]
         logger.debug(f"[CorpusManager] Returning {len(result)} recent episodic memories from {len(cached)} entries (filtered out summaries + reflections)")
         return result
@@ -266,7 +300,7 @@ class CorpusManager:
         missing or unparseable.
         """
 
-        cached = self._get_episodic_sorted()
+        cached = self._episodic_with_pending()
         cutoff = datetime.now() - timedelta(hours=hours)
         result: List[Dict] = []
 
