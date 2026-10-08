@@ -30,12 +30,14 @@ Module Contract
 """
 
 import json
+import re
 import time
 from datetime import datetime
 from typing import List, Optional, Tuple
 
 from utils.logging_utils import get_logger
-from memory.thread_models import OpenThread, ThreadType, ThreadStatus
+from memory import fact_source
+from memory.thread_models import DisputedResolution, OpenThread, ThreadType, ThreadStatus
 
 logger = get_logger("thread_extractor")
 
@@ -72,6 +74,7 @@ Rules:
 - Output ONLY a valid JSON array, no other text
 - If no open threads exist, output []
 - Maximum 5 threads per session
+- GROUNDING: lines starting "Assistant:" are context only, never evidence. A thread must be grounded in what the USER said; an assistant statement is never a source for a commitment, deadline, date or time. Keep a time zone exactly as the user wrote it (e.g. "2:30 EST") — never convert it.
 - TEMPORAL: Today's date is {today}. When the user mentions relative dates ("tomorrow", "next Tuesday", "this weekend"), resolve them to absolute dates in deadline_date AND in the summary. Example: "I have an exam tomorrow" on 2026-05-19 → deadline_date: "2026-05-20", summary: "User has an exam on Tue 2026-05-20"
 
 ALREADY TRACKED (open threads that already exist — do NOT re-extract these tasks):
@@ -91,6 +94,8 @@ A thread is resolved when:
 - The topic was fully addressed in this conversation
 - The user explicitly cancels or drops the commitment
 
+A thread is DISPUTED (not resolved) when the user says its premise is wrong or was never true (e.g. "that's not a standing meeting", "I never agreed to that") — it was neither done nor cancelled.
+
 Existing open threads:
 {threads_json}
 
@@ -99,11 +104,13 @@ Recent conversation:
 
 For each resolved thread, output this JSON format. Output a JSON array:
 [
-  {{"thread_id": "the-thread-id", "resolution": "brief description of how it was resolved"}}
+  {{"thread_id": "the-thread-id", "resolution": "brief description of how it was resolved", "outcome": "resolved|disputed"}}
 ]
 
 Rules:
 - Only mark threads as resolved if there is clear evidence in the conversation
+- Lines starting "Assistant:" are context only; the user's own words are the evidence
+- Use "outcome": "disputed" only when the USER disputes the thread's premise; otherwise "resolved"
 - Do NOT mark a thread resolved just because it wasn't mentioned
 - The thread list may contain DUPLICATES — several entries describing the same underlying task in different words (e.g. "Homework due Friday" and "Last 2 homework questions"). When the conversation resolves a task, output EVERY thread that task resolves, not just the single closest match.
 - Output ONLY a valid JSON array, no other text
@@ -131,6 +138,81 @@ def _build_conversation_text(session_conversations: List[dict], max_chars: int =
     if len(text) > max_chars:
         text = text[-max_chars:]
     return text
+
+
+# ---------------------------------------------------------------------------
+# User-authored provenance for new threads (2026-10-08, BC-75/BC-51)
+# ---------------------------------------------------------------------------
+
+_MONTH_DAY_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+    r"sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})\b",
+    re.IGNORECASE,
+)
+_WEEKDAY_TOKEN_RE = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tues|thurs|thur)\b",
+    re.IGNORECASE,
+)
+_CLOCK_RE = re.compile(
+    r"\b(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?m\b\.?)?", re.IGNORECASE)
+_ZONES = "EST|EDT|CST|CDT|MST|MDT|PST|PDT|AKST|AKDT|HST|UTC|GMT|ET|CT|MT|PT"
+_ZONE_TIME_RE = re.compile(
+    rf"\b(\d{{1,2}}(?::\d{{2}})?)\s*(?:[AaPp]\.?[Mm]\.?)?\s*({_ZONES})\b")
+_PROVENANCE_TYPES = frozenset({ThreadType.DEADLINE, ThreadType.COMMITMENT})
+_EXCERPT_CHARS = 200
+
+
+def _clock_key(hour: str, minute: Optional[str]) -> str:
+    return f"{int(hour)}:{minute or '00'}"
+
+
+def _date_time_tokens(text: str) -> set:
+    """Weekday names, month-day pairs and clock times found in text."""
+    out = set()
+    for m in _WEEKDAY_TOKEN_RE.finditer(text or ""):
+        out.add("wd:" + m.group(1).lower()[:3])
+    for m in _MONTH_DAY_RE.finditer(text or ""):
+        out.add(f"md:{m.group(1).lower()[:3]}{int(m.group(2))}")
+    for m in _CLOCK_RE.finditer(text or ""):
+        if m.group(2) or m.group(3):  # "2:30" / "2pm" — never a bare number
+            out.add("t:" + _clock_key(m.group(1), m.group(2)))
+    return out
+
+
+def _user_support(topic: str, summary: str, user_texts: List[str]) -> Optional[Tuple[str, str]]:
+    """(excerpt, zone) when USER text supports the thread, else None.
+
+    Supported = a date/time token of the thread (weekday, month-day, clock
+    time) OR >=2 of its topic's key words (all of them when it has fewer)
+    appears in a user line. ``zone`` is a time-zone abbreviation the user
+    wrote next to one of the thread's clock times ("" when none).
+    """
+    thread_tokens = _date_time_tokens(f"{topic} {summary}")
+    topic_words = fact_source._tokens(topic)
+    need = min(2, len(topic_words))
+    lines = [ln.strip() for t in user_texts for ln in t.splitlines() if ln.strip()]
+    excerpt = ""
+    for ln in lines:
+        if thread_tokens & _date_time_tokens(ln):
+            excerpt = ln
+            break
+    if not excerpt and need:
+        for ln in lines:
+            if len(topic_words & fact_source._tokens(ln)) >= need:
+                excerpt = ln
+                break
+    if not excerpt:
+        return None
+    zone = ""
+    for ln in lines:
+        for m in _ZONE_TIME_RE.finditer(ln):
+            mm = re.match(r"(\d{1,2})(?::(\d{2}))?", m.group(1))
+            if "t:" + _clock_key(mm.group(1), mm.group(2)) in thread_tokens:
+                zone = m.group(2)
+                break
+        if zone:
+            break
+    return excerpt[:_EXCERPT_CHARS], zone
 
 
 class ThreadExtractionError(RuntimeError):
@@ -261,6 +343,7 @@ class ThreadExtractor:
             raise ThreadExtractionError(f"unparseable response ({len(raw)} chars)")
         threads = []
         now = time.time()
+        user_texts = [text for _i, text, _tid in fact_source.iter_user_messages(session_conversations)]
 
         for item in items[:5]:  # cap at 5
             try:
@@ -276,9 +359,23 @@ class ThreadExtractor:
                 if deadline and deadline.lower() in ("null", "none", ""):
                     deadline = None
 
+                topic = item.get("topic", "Unknown thread")[:200]
+                summary = item.get("summary", "")[:1000]
+                support = _user_support(topic, summary, user_texts)
+                if thread_type in _PROVENANCE_TYPES and support is None:
+                    logger.info(
+                        f"[ThreadExtractor] dropped assistant-only thread "
+                        f"(type={thread_type.value})"
+                    )
+                    continue
+                source_excerpt, zone = support or ("", "")
+                if zone and not re.search(rf"\b{zone}\b", f"{topic} {summary}"):
+                    summary = f"{summary[:1000 - 20 - len(zone)]} ({zone} as written)"
+
                 thread = OpenThread(
-                    topic=item.get("topic", "Unknown thread")[:200],
-                    summary=item.get("summary", "")[:1000],
+                    topic=topic,
+                    summary=summary,
+                    source_summary=source_excerpt,
                     thread_type=thread_type,
                     urgency=max(0.0, min(1.0, float(item.get("urgency", 0.5)))),
                     mentioned_at=now,
@@ -373,6 +470,8 @@ class ThreadExtractor:
         for item in items:
             thread_id = item.get("thread_id", "")
             resolution = item.get("resolution", "")
+            if str(item.get("outcome", "")).lower() == "disputed":
+                resolution = DisputedResolution(resolution)
             if thread_id and thread_id in valid_ids:
                 resolutions.append((thread_id, resolution))
 

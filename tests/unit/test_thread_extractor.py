@@ -268,7 +268,8 @@ class TestExtractNewThreads:
             })
         mm = _mock_model_manager(json.dumps(items))
         extractor = ThreadExtractor(model_manager=mm)
-        convos = _make_conversations([("I have many things to do", "Sounds busy!")])
+        # 2026-10-08 (BC-75): threads need user-authored support
+        convos = _make_conversations([("I have many things to do, one thread at a time", "Sounds busy!")])
         threads = await extractor.extract_new_threads(convos)
         assert len(threads) == 5
 
@@ -282,18 +283,19 @@ class TestExtractNewThreads:
         through to the OpenThread constructor unchanged.
         """
         items = [
-            {"topic": "T1", "summary": "S1", "thread_type": "commitment",
+            {"topic": "T1", "summary": "S1 Thursday", "thread_type": "commitment",
              "urgency": 0.5, "resolution_hint": "done", "deadline_date": None},
-            {"topic": "T2", "summary": "S2", "thread_type": "commitment",
+            {"topic": "T2", "summary": "S2 Thursday", "thread_type": "commitment",
              "urgency": 0.5, "resolution_hint": "done", "deadline_date": "null"},
-            {"topic": "T3", "summary": "S3", "thread_type": "commitment",
+            {"topic": "T3", "summary": "S3 Thursday", "thread_type": "commitment",
              "urgency": 0.5, "resolution_hint": "done", "deadline_date": "none"},
-            {"topic": "T4", "summary": "S4", "thread_type": "commitment",
+            {"topic": "T4", "summary": "S4 Thursday", "thread_type": "commitment",
              "urgency": 0.5, "resolution_hint": "done", "deadline_date": ""},
         ]
         mm = _mock_model_manager(json.dumps(items))
         extractor = ThreadExtractor(model_manager=mm)
-        convos = _make_conversations([("Stuff to do", "OK")])
+        # 2026-10-08 (BC-75): threads need user-authored support
+        convos = _make_conversations([("Stuff to do on Thursday", "OK")])
         threads = await extractor.extract_new_threads(convos)
         assert len(threads) == 4
         # None, "null", and "none" are normalised to None
@@ -316,7 +318,8 @@ class TestExtractNewThreads:
         ]
         mm = _mock_model_manager(json.dumps(items))
         extractor = ThreadExtractor(model_manager=mm)
-        convos = _make_conversations([("Test", "OK")])
+        # 2026-10-08 (BC-75): threads need user-authored support
+        convos = _make_conversations([("Low and High priority things", "OK")])
         threads = await extractor.extract_new_threads(convos)
         assert len(threads) == 2
         assert threads[0].urgency == 0.0
@@ -338,7 +341,8 @@ class TestExtractNewThreads:
         ]
         mm = _mock_model_manager(json.dumps(items))
         extractor = ThreadExtractor(model_manager=mm)
-        convos = _make_conversations([("Various things", "Sure")])
+        # 2026-10-08 (BC-75): threads need user-authored support
+        convos = _make_conversations([("Various things: commit now, deadline soon", "Sure")])
         threads = await extractor.extract_new_threads(convos)
         assert len(threads) == 4
         assert threads[0].thread_type == ThreadType.COMMITMENT
