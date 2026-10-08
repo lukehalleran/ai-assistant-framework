@@ -286,7 +286,7 @@ CEILING_SLACK = 25
 # 2026-09-19 and are pinned separately by test_env_default_single_source.py
 # (not re-asserted here -- do not add them back without re-measuring).
 KNOWN_CONFLICTING_DEFAULTS = frozenset({
-    "APPDATA", "OPENAI_API_KEY", "WIKI_BUDGET_S", "WORKER_OBJECTIVE",
+    "OPENAI_API_KEY", "WIKI_BUDGET_S", "WORKER_OBJECTIVE",
 })
 
 
@@ -482,8 +482,8 @@ class TestConflictGuardGeneralizes:
         finding (proves the test isn't just always failing)."""
         core = tmp_path / "core"
         core.mkdir()
-        (core / "a.py").write_text('import os\nos.getenv("APPDATA", "")\n')
-        (core / "b.py").write_text('import os\nos.getenv("APPDATA", ".")\n')
+        (core / "a.py").write_text('import os\nos.getenv("WIKI_BUDGET_S", "")\n')
+        (core / "b.py").write_text('import os\nos.getenv("WIKI_BUDGET_S", ".")\n')
 
         sites = _scan_repo(tmp_path)
         measured = set(_conflicting_defaults(sites))

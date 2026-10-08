@@ -4,7 +4,7 @@
 
 This guide covers building Daemon as a standalone desktop executable using PyInstaller and packaging it with Inno Setup.
 
-**Build Status**: v1.0.0 built and tested on Windows 11 (2026-04-02).
+**Build Status**: Linux-first packaging fixes landed 2026-10-02 (SPA + models bundled, CLIP off); not yet built end to end. Windows v1.0.0 was last verified 2026-04-02, before the FastAPI migration.
 
 ## Prerequisites
 
@@ -14,19 +14,50 @@ This guide covers building Daemon as a standalone desktop executable using PyIns
 4. **spaCy model**: `python -m spacy download en_core_web_sm`
 5. **Inno Setup 6** (for installer): https://jrsoftware.org/issetup.html
 
-## Quick Build
+## Quick Build (Linux first)
+
+Run from the repo root, in order. Linux is the primary, current path.
 
 ```bash
-# Clean previous builds
-rm -rf build/ dist/
+# 1. venv + dependencies (+ spaCy model, see Prerequisites)
+python3.11 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt pyinstaller
 
-# Build executable (takes 10-20 minutes)
+# 2. Build the React SPA (daemon.spec refuses to run without web/dist/index.html)
+cd web && npm ci && npm run build && cd ..
+
+# 3. Stage the offline models (bge-small, all-MiniLM-L6-v2, ms-marco cross-encoder
+#    + tiktoken cl100k_base, ~305 MB) from your local HF cache into build/
+python scripts/stage_frozen_models.py            # dry-run: shows what it would copy
+python scripts/stage_frozen_models.py --apply
+
+# 4. Freeze (10-20 minutes)
 pyinstaller daemon.spec --clean --noconfirm
 
-# Build installer (requires Inno Setup 6)
-cd installer
-build_installer.bat
+# 5. Run
+dist/Daemon/Daemon
 ```
+
+Notes:
+- Step 3 needs the three models already in `~/.cache/huggingface/hub` (run Daemon
+  once from source with network, or `huggingface_hub.snapshot_download`). The
+  script names any missing model. Without `build/models` the spec only warns, and
+  the frozen app has no offline embedder (HF is forced offline in the build).
+- **CLIP / visual memory is OFF in the build**: the ~350 MB weights are not
+  bundled, so `bootstrap` sets `VISUAL_MEMORY_ENABLED=0` unless CLIP weights are
+  present in `_internal/models`. An explicit env var still wins.
+- **First run:** the wizard is still the legacy Gradio page (http://localhost:7860);
+  after setup the app serves the SPA at http://127.0.0.1:8000 (Gradio dev tabs at `/admin`).
+- User data lives in `~/.daemon/` (see User Data Directory), never the install dir.
+
+## Windows (not yet re-verified since the FastAPI migration)
+
+The last verified Windows build (v1.0.0, 2026-04-02) predates the FastAPI/SPA
+frontend and the model/SPA bundling above. The steps are the same in PowerShell
+(`venv\Scripts\activate`, `python scripts\stage_frozen_models.py --apply`,
+`pyinstaller daemon.spec --clean --noconfirm`), followed by
+`installer\build_installer.bat` for the Inno Setup installer. Treat the
+installer sections below as unverified until a Windows build is re-tested.
 
 ## Build Output
 
@@ -44,7 +75,8 @@ installer/output/
 
 | File | Purpose |
 |------|---------|
-| `daemon.spec` | PyInstaller configuration (one-dir mode) |
+| `daemon.spec` | PyInstaller configuration (one-dir mode); bundles `web/dist`, `build/models`, `build/tiktoken` |
+| `scripts/stage_frozen_models.py` | Copies the offline HF models + tiktoken file into `build/` |
 | `utils/bootstrap.py` | Frozen executable bootstrap (paths, migration) |
 | `utils/startup.py` | Progress tracking during startup |
 | `hooks/hook-*.py` | Custom PyInstaller hooks for complex packages |

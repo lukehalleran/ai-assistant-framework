@@ -14,7 +14,8 @@ Key decisions:
 - NO UPX: Disabled to avoid breaking torch/numpy DLLs
 - EXTERNAL DATA NOT BUNDLED: Wiki/FAISS data (100GB+) is optional
 
-Updated: 2026-05-18 (full audit — added missing hiddenimports, collect_submodules for project packages)
+Updated: 2026-10-02 (bundles SPA + staged models, build guard, generated runtime hook in build/).
+Prior: 2026-05-18 (full audit — added missing hiddenimports, collect_submodules for project packages)
 Based on audit results (2025-12-12):
 - Total startup: ~12-17s (splash screen essential)
 - Heaviest imports: sentence_transformers (4.1s), torch (1.8s)
@@ -42,7 +43,19 @@ spec_dir = os.path.dirname(os.path.abspath(SPEC))
 # DATA FILES TO BUNDLE
 # =============================================================================
 
+# Build guard: the React SPA must be built before freezing, or the frozen app
+# serves only the /admin Gradio tabs. Fail early with the fix, not at runtime.
+_spa_index = os.path.join(spec_dir, 'web', 'dist', 'index.html')
+if not os.path.isfile(_spa_index):
+    raise SystemExit(
+        "web/dist/index.html is missing - build the SPA first: "
+        "`cd web && npm ci && npm run build` (see docs/BUILD_GUIDE.md)."
+    )
+
 datas = [
+    # React SPA (served by FastAPI at /; resolved via bootstrap.resolve_bundled_path)
+    ('web/dist', 'web/dist'),
+
     # Core application files
     ('core/system_prompt.txt', 'core'),
     ('config/config.yaml', 'config'),
@@ -61,6 +74,16 @@ datas = [
     ('assets/daemon_icon.png', 'assets'),
     ('assets/splash.png', 'assets'),
 ]
+
+# Embedding models + tiktoken encoding staged by scripts/stage_frozen_models.py.
+# bootstrap (frozen) points HF_HUB_CACHE at _internal/models and
+# TIKTOKEN_CACHE_DIR at _internal/tiktoken when these dirs exist.
+for _staged, _dest in (('build/models', 'models'), ('build/tiktoken', 'tiktoken')):
+    if os.path.isdir(os.path.join(spec_dir, _staged)):
+        datas.append((_staged, _dest))
+    else:
+        print(f"Warning: {_staged} not staged - run scripts/stage_frozen_models.py "
+              f"--apply, or the frozen app has no offline models.")
 
 # Collect package data files
 # spaCy model - this may not work if installed via spacy download
@@ -114,6 +137,19 @@ except Exception:
 # groovy (version.txt)
 try:
     datas += collect_data_files('groovy')
+except Exception:
+    pass
+
+# python-docx ships default.docx / template parts opened at runtime (not imports)
+try:
+    datas += collect_data_files('docx')
+except Exception:
+    pass
+
+# pdfminer (pdfplumber's parser, transitive) loads CMap resource files at
+# runtime, which static analysis cannot see
+try:
+    datas += collect_data_files('pdfminer')
 except Exception:
     pass
 
@@ -248,14 +284,6 @@ hiddenimports = [
     'networkx.readwrite',
     'networkx.readwrite.json_graph',
 
-    # NumPy internals
-    'numpy.core._multiarray_umath',
-    'numpy.core._dtype_ctypes',
-
-    # pkg_resources
-    'pkg_resources.py2_warn',
-    'pkg_resources._vendor',
-
     # LLM providers
     'openai',
 
@@ -315,7 +343,9 @@ for pkg in ['chromadb', 'gradio', 'sentence_transformers', 'tiktoken',
 # inside functions that PyInstaller's static analysis cannot trace)
 for pkg in ['core', 'core.prompt', 'core.agentic', 'memory', 'memory.storage',
             'knowledge', 'models', 'processing', 'utils', 'gui', 'gui.tabs',
-            'config', 'eval', 'integrations']:
+            'config', 'eval', 'integrations',
+            # FastAPI app + routers: SPA entry point, imported lazily by main.py
+            'api', 'api.routes']:
     try:
         hiddenimports += collect_submodules(pkg)
     except Exception:
@@ -384,8 +414,8 @@ if sys.platform == 'win32':
         pass  # Already set
 '''
 
-# Write runtime hook
-runtime_hook_path = os.path.join(spec_dir, 'hooks', 'runtime_hook.py')
+# Generated into build/ (gitignored) - never rewrite the tracked hooks/ tree
+runtime_hook_path = os.path.join(spec_dir, 'build', 'runtime_hook_generated.py')
 os.makedirs(os.path.dirname(runtime_hook_path), exist_ok=True)
 with open(runtime_hook_path, 'w') as f:
     f.write(runtime_hook_content)
