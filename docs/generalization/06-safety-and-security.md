@@ -1,5 +1,7 @@
 # G06: Safety and Security
 
+Status (2026-10-08): in_progress. Beta track: loopback launch auth landed (F01 closed). Remaining threat triage and red teams are 1.0 track, unscheduled.
+
 ## Objective
 
 Protect a private, memory-bearing, tool-using desktop agent against unintended

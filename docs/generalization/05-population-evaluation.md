@@ -1,5 +1,7 @@
 # G05: Population Evaluation
 
+Status (2026-10-08): not_started as scheduled work. 1.0 track, unscheduled; evaluation tiers E3-E5 and counterfactual fairness are parked.
+
 ## Objective
 
 Replace owner-only confidence with reproducible evidence across external users,

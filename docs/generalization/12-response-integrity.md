@@ -1,5 +1,7 @@
 # G12: Response Integrity and Atomic Revision
 
+Status (2026-10-08): in_progress. Beta track: the grounding verifier stays `log_only` by default (`config/config.yaml` `grounding_check.mode`). Full atomic revision across display/storage/indexing is 1.0 track, unscheduled.
+
 > **Status note (2026-09-04, appended without rewriting the doc below):**
 > the suffix-based correction path this document describes as unresolved was
 > replaced by an in-prose integrator on 2026-08-29 (`integrate_grounding_correction()`
@@ -15,6 +17,19 @@
 > answer, no visible/stored contradiction) is what "correct" mode restores
 > to once precision is re-measured; it is not itself invalidated by the
 > log-only default.
+
+> **Current behaviour (2026-10-08, from `gui/handlers.py`):** the header note
+> above and the 09-22 note below are both right about different paths.
+> Grounding corrections no longer use a suffix: `_apply_grounding_check`
+> returns a whole-bubble replacement (integrator rewrite, else
+> `build_integrated_fallback`), its suffix slot is always `""` (A05b-1, commit
+> `4a75901`), and `grounding_check.mode` defaults to `log_only`, so nothing
+> ships either way until `correct` mode is chosen. The deterministic
+> action-claim and calendar backstops (`_apply_action_guard`,
+> `delivery_notice`) still append a notice that is stored and indexed;
+> consumers strip it at read time via `utils/read_time_markers.py`. The
+> "no suffix-based correction path remains" requirement is therefore met for
+> grounding corrections and not met for those deterministic notices.
 
 This workstream is intentionally separate from tone, escalation, graph, and
 agentic-routing changes. It addresses a specific production failure: a factual

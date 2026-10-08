@@ -1,5 +1,7 @@
 # G01: Product Contract
 
+Status (2026-10-08): in_progress. Beta track: the hosted-disclosure wording (A06, Workplan Phase 3 gate). The rest (claims review, hardware tiers, claim expiry) is 1.0 track, unscheduled. No `HOSTED_TRANSITION` string exists in `*.py`/`*.ts`/`*.tsx` at 5198387.
+
 ## Objective
 
 Define exactly who Daemon serves, what it does in each privacy mode, what it does

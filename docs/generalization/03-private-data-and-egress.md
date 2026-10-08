@@ -1,5 +1,7 @@
 # G03: Private Local Data and Egress
 
+Status (2026-10-08): in_progress. Beta track: A06 consent/disclosure and A07 content-free telemetry (F06 still open). 1.0 track, parked: central egress broker and DPAPI secrets.
+
 ## Objective
 
 Keep personal information under the user's control, make every off-device

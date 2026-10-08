@@ -670,6 +670,18 @@ stable population claim, require G05 E4 or E5 evidence and the G01 claims
 review. Code completion, a green synthetic probe suite, and owner-canary
 success remain separate facts.
 
+> **Note (2026-10-08) - tester gate narrowed.** The tester gate for the
+> 5-friend hosted beta is the Workplan Phase 3 list in
+> `docs/WORKPLAN_2_hardening_executable_beta.md`: A06 consent/disclosure, A07
+> content-free telemetry, F08 neutral personality, data-wipe instructions (plus
+> the cost and store-compatibility items added there the same day). C03/C04
+> (memory storage policy, deletion cascade/previews) and the independent
+> privacy review move to **pre-public release**. The "Before external testers"
+> paragraph above is kept as the original wording; the rest of its list
+> (A01/A02, A03 compatibility, C05 smoke, G06 triage) is not re-scoped here.
+> Source: the 2026-10-08 plan review; see `docs/generalization/README.md`
+> "Tracks".
+
 ## Ready-to-paste parent brief
 
 ~~~text
