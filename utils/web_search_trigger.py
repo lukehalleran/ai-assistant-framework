@@ -85,7 +85,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
-from utils.query_checker import is_personal_doc_search, is_note_save_request
+from utils.query_checker import is_personal_doc_search, is_note_save_request, is_request_shaped
 from utils.trigger_match import (
     is_negated as _trigger_is_negated,
     compile_keyword_matcher,
@@ -1268,6 +1268,34 @@ def _looks_like_pattern_candidate(query: str) -> bool:
     return not is_personal_state_statement(text)
 
 
+_CONVERSATIONAL_OPENERS: Tuple[str, ...] = (
+    "hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "sure",
+    "yes", "no", "yeah", "nah",
+)
+_CONVERSATIONAL_OPENER_MATCHER = compile_keyword_matcher(_CONVERSATIONAL_OPENERS)
+
+
+def _starts_with_conversational_opener(query_lower: str) -> bool:
+    """True when the text OPENS with one of the opener words as a whole word.
+    The shared matcher also accepts inflected forms ("his" for 'hi'), so a
+    hit counts only when the matched text is the opener itself."""
+    for hit in _CONVERSATIONAL_OPENER_MATCHER.iter_hits(query_lower):
+        if (hit.start == 0 and hit.end - hit.start == len(hit.keyword)
+                and (hit.end == len(query_lower) or not query_lower[hit.end].isalnum())):
+            return True
+    return False
+
+
+def _opener_query_is_request(query: str, query_lower: str) -> bool:
+    """Request-shaped, or a non-negated explicit lookup verb (the gate's
+    EXPLICIT_SEARCH_KEYWORDS plus this module's explicit phrases)."""
+    if is_request_shaped(query):
+        return True
+    from core.agentic.gate import _EXPLICIT_SEARCH_HIT  # lazy import: layering (gate imports this module)
+    return (has_non_negated_hit(query_lower, _EXPLICIT_SEARCH_HIT)
+            or has_non_negated_hit(query_lower, _EXPLICIT_SEARCH_PHRASES_MATCHER))
+
+
 def quick_prefilter_should_skip(query: str) -> bool:
     """
     Quick pre-filter to skip LLM for obvious non-search queries.
@@ -1291,12 +1319,14 @@ def quick_prefilter_should_skip(query: str) -> bool:
         if pattern in query_lower:
             return True
 
-    # Very short conversational queries
-    if len(query_lower) < 20 and any(
-        query_lower.startswith(p) for p in
-        ("hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no", "yeah", "nah")
-    ):
-        return True
+    # Very short conversational queries. The opener must be a WHOLE word
+    # (2026-10-08, BC-01: raw startswith skipped "north korea news" /
+    # "history of rome" / "hire trends"), and an opener-led query that is
+    # request-shaped or carries a non-negated lookup verb ("okay google it",
+    # "yeah search it") is a request, never a pleasantry (BC-05).
+    if len(query_lower) < 20 and _starts_with_conversational_opener(query_lower):
+        if not _opener_query_is_request(query, query_lower):
+            return True
 
     # Long pastes (song lyrics, articles, etc.) without explicit search phrases
     # are almost never search requests — skip LLM to save time and avoid Tavily 400s.
@@ -1719,6 +1749,46 @@ def terms_are_private_sphere_generic(terms, anchors=None) -> bool:
     return True
 
 
+# Search-padding words an elliptical-query term is stuffed with when the model
+# could not resolve the referent ("President news October 2026"). Sibling of
+# the gate's _TEMPORAL_GENERIC_TOKENS filler — together with it and the time
+# tokens above they define "adds nothing": a term made only of these plus the
+# query's OWN words names no subject the user's message did not already have.
+_SEARCH_PADDING_TOKENS = frozenset({
+    "latest", "current", "currently", "recent", "recently", "now", "breaking",
+    "statements", "statement", "comments", "comment", "reports", "report",
+    "coverage", "headlines", "headline", "story", "stories", "reaction",
+    "reactions", "response", "responses", "one", "ones",
+})
+
+
+def terms_lack_resolved_referent(query: str, terms) -> bool:
+    """True when the query is referential ("one of them", "what about that")
+    and NO proposed term carries a content word that is neither in the query
+    nor time/news/padding filler — i.e. the model never resolved the referent
+    and the search would be generic ("President news October 2026"; live
+    2026-10-08, 6 credits). Deterministic parse-layer guard beside
+    terms_are_private_sphere_generic: suppression only, never teaches
+    no_search. A resolved subject ("Trump comments Cornell Jane Doe case")
+    has a content word the query lacks and passes; a non-referential query is
+    never judged here."""
+    if not terms or not query_depends_on_context(query):
+        return False
+    from core.agentic.gate import _TEMPORAL_GENERIC_TOKENS  # lazy import: cycle
+    own = set()
+    for t in re.findall(r"[a-z]+", query.lower()):
+        own.add(t)
+        if t.endswith("s"):
+            own.add(t[:-1])
+    filler = (_PRIVATE_GUARD_TIME_STOP_TOKENS | _TEMPORAL_GENERIC_TOKENS
+              | _SEARCH_PADDING_TOKENS)
+    for term in terms:
+        for t in re.findall(r"[a-z]+", str(term).lower()):
+            if t not in own and t not in filler and t.rstrip("s") not in own:
+                return False
+    return True
+
+
 # 2026-10-08 (class: BC-47, BC-72): the classifier answered (non-empty) but the
 # answer did not parse. Distinct from None (empty response / timeout / error =
 # "unavailable") so the fallback decision's reason names what actually happened.
@@ -1855,6 +1925,14 @@ async def _classify_with_llm_unified(
                         "[WebSearchTrigger] Search suppressed — every term is "
                         "anchor+private-sphere-generic; the user's own "
                         f"arrangements are not on the web: {parsed.search_terms}"
+                    )
+                    parsed.should_search = False
+                    parsed.search_terms = []
+                elif terms_lack_resolved_referent(query, parsed.search_terms):
+                    # Suppression only — never teaches no_search (BC-46/BC-25).
+                    logger.info(
+                        "[WebSearchTrigger] unresolved referent — search "
+                        f"suppressed: {parsed.search_terms}"
                     )
                     parsed.should_search = False
                     parsed.search_terms = []

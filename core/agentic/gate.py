@@ -1010,6 +1010,15 @@ async def evaluate_agentic_gate(
             else:
                 logger.debug("[Agentic Gate] Tier 1: explicit web search keyword detected")
 
+    # Bare imperative lookup ("search it", "google it"): the referent lives in
+    # the prior exchange, so route to web search with NO seed terms — the loop
+    # distills its own query from the conversation (2026-10-08, BC-58).
+    if (not needs_web_search and _is_bare_lookup_imperative(user_text)
+            and paid_search_block_reason() is None
+            and _build_recent_context(corpus_manager)):
+        needs_web_search = True
+        logger.debug("[Agentic Gate] Tier 1: bare lookup imperative on prior exchange")
+
     if _hit_non_negated(_lower, _TOOL_HIT):
         needs_tools = True
         # Log the trigger — this arm fired SILENTLY for months; the 09-01
@@ -1887,6 +1896,35 @@ REQUEST_CONTINUATION_MAX_WORDS = 30
 
 def _is_request_shaped(text: str) -> bool:
     return bool(_REQUEST_SHAPED_RE.search((text or "").strip()))
+
+
+# A bare imperative lookup ("search it", "yeah look that up", "google it"):
+# a non-negated lookup verb whose object is only a pronoun or absent. Verb
+# vocabulary = EXPLICIT_SEARCH_KEYWORDS' own words (BC-76: no new list) plus
+# the web trigger's "google". Structural: EVERY token must be an ack/filler,
+# a lookup-verb word or a pronoun/particle — any real object word makes it an
+# ordinary request.
+_LOOKUP_VERB_TOKENS = frozenset(
+    w for kw in EXPLICIT_SEARCH_KEYWORDS if kw.split()[0] in ("search", "look")
+    for w in kw.split() if w != "up"
+) | {"google", "lookup"}
+_BARE_OBJECT_TOKENS = frozenset({
+    "it", "that", "this", "them", "those", "these", "one", "up", "out",
+    "online", "now", "again", "please", "for", "me", "the", "web",
+    "alright", "cool", "hey", "so", "then", "well", "just",
+})
+
+
+def _is_bare_lookup_imperative(text: str) -> bool:
+    toks = re.findall(r"[a-z']+", (text or "").lower())
+    verbs = [i for i, t in enumerate(toks) if t in _LOOKUP_VERB_TOKENS]
+    if not verbs or len(toks) > 8:
+        return False
+    if any(t not in _LOOKUP_VERB_TOKENS and t not in _BARE_OBJECT_TOKENS
+           and t not in FILLER_WORDS for t in toks):
+        return False
+    low = " ".join(toks)
+    return not _trigger_is_negated(low, low.index(toks[verbs[0]]))
 
 
 # Probe-envelope awareness (2026-09-27, plan F/X1 item 4): a live owner probe

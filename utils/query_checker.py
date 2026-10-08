@@ -316,6 +316,16 @@ def is_continuation_answer(q: str, last_assistant_response: str, max_words: int 
     # A request ("show me the diff", "can you...") is an action, not a bare answer.
     if any(m in ql for m in _REQUEST_MARKERS):
         return False
+    # A request-shaped imperative ("Yeah search it") is an action, not an
+    # answer (2026-10-08): the sibling is_casual_acknowledgment got this
+    # guard on 2026-08-22; this predicate never did, so an explicit search
+    # request after a question-ending reply rode the light path (no web task).
+    try:
+        from core.agentic.gate import _is_request_shaped  # lazy import: cycle
+        if _is_request_shaped(q):
+            return False
+    except Exception:  # degrades: request-shape guard skipped, old behaviour
+        pass
     return True
 
 
