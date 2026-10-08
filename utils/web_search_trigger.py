@@ -1718,6 +1718,42 @@ def terms_are_private_sphere_generic(terms, anchors=None) -> bool:
     return True
 
 
+# 2026-10-08 (class: BC-47, BC-72): the classifier answered (non-empty) but the
+# answer did not parse. Distinct from None (empty response / timeout / error =
+# "unavailable") so the fallback decision's reason names what actually happened.
+_TRIGGER_UNPARSEABLE = object()
+
+
+def _heuristic_veto_decision(
+    heuristic_result: "WebSearchDecision", reason_suffix: str,
+) -> Optional["WebSearchDecision"]:
+    """The heuristic's ACTIVE-suppression veto as a decision, or None.
+
+    Only a heuristic with an active reason to suppress (a matched
+    suppression/static pattern) vetoes; confidence 0.0 with "No strong
+    indicators" means no opinion, not a confident "no". ``reason_suffix`` says
+    whether the LLM was consulted ("LLM overridden") or not ("LLM not
+    consulted"). Callers cache the returned decision.
+    """
+    has_active_suppression = (
+        heuristic_result.matched_patterns  # matched a suppression pattern
+        or "static topic" in heuristic_result.reason  # matched static topics
+    )
+    if not has_active_suppression or heuristic_result.should_search:
+        return None
+    return WebSearchDecision(
+        should_search=False,
+        depth=WebSearchDepth.QUICK,
+        confidence=heuristic_result.confidence,
+        reason=f"Heuristic veto ({heuristic_result.reason}); {reason_suffix}",
+        matched_keywords=heuristic_result.matched_keywords,
+        matched_patterns=heuristic_result.matched_patterns,
+        search_terms=[],
+        num_searches=0,
+        source="heuristic",
+    )
+
+
 async def _classify_with_llm_unified(
     query: str,
     model_manager,
@@ -1785,6 +1821,9 @@ async def _classify_with_llm_unified(
 
         logger.debug(f"[WebSearchTrigger] LLM raw response: {response[:200]}...")
         parsed = LLMSearchTriggerResponse.parse(response)
+        if parsed is None:
+            logger.debug("[WebSearchTrigger] LLM response did not parse")
+            return _TRIGGER_UNPARSEABLE
         if parsed:
             if parsed.search_terms:
                 # Backstop: the prompt forbids localizing institution/account
@@ -2244,6 +2283,19 @@ async def _analyze_for_web_search_llm(
         _llm_trigger_cache[cache_key] = (now, heuristic_result)
         return heuristic_result
 
+    # 2026-10-08 (class: BC-05): a heuristic with an ACTIVE suppression and no
+    # pattern-analysis candidate would veto whatever the LLM says (below) — so
+    # decide it BEFORE paying for the LLM call.
+    if not pattern_candidate:
+        _pre_veto = _heuristic_veto_decision(heuristic_result, "LLM not consulted")
+        if _pre_veto is not None:
+            logger.debug(
+                f"[WebSearchTrigger] Heuristic veto before LLM: active suppression "
+                f"(reason={heuristic_result.reason})"
+            )
+            _llm_trigger_cache[cache_key] = (time.time(), _pre_veto)
+            return _pre_veto
+
     # Try LLM classification — shared with any concurrent same-key caller
     # (the agentic gate and the prompt builder's web task run in parallel).
     llm_response = await _classify_with_llm_unified_shared(
@@ -2256,10 +2308,12 @@ async def _analyze_for_web_search_llm(
     )
 
     # If LLM failed, fall back to heuristics
-    if llm_response is None:
+    if llm_response is None or llm_response is _TRIGGER_UNPARSEABLE:
         logger.debug("[WebSearchTrigger] LLM failed, falling back to heuristics")
+        _prefix = ("Classifier output unparseable; " if llm_response is _TRIGGER_UNPARSEABLE
+                   else "Classifier unavailable; ")
         return replace(heuristic_result, source="fallback",
-                       reason="Classifier unavailable; " + heuristic_result.reason)
+                       reason=_prefix + heuristic_result.reason)
 
     # A mixed longitudinal request owns the turn. Do not let the ordinary web
     # confidence blend or a personal-topic search veto erase this independent
@@ -2288,25 +2342,11 @@ async def _analyze_for_web_search_llm(
     # to suppress (matched a suppression/static pattern). A confidence of 0.0
     # with "No strong indicators" means the heuristic has no opinion — not a
     # confident "no" — so it should not block the LLM.
-    has_active_suppression = (
-        heuristic_result.matched_patterns  # matched a suppression pattern
-        or "static topic" in heuristic_result.reason  # matched static topics
-    )
-    if has_active_suppression and not heuristic_result.should_search:
+    veto_result = _heuristic_veto_decision(heuristic_result, "LLM overridden")
+    if veto_result is not None:
         logger.debug(
             f"[WebSearchTrigger] Heuristic veto: active suppression detected "
             f"(reason={heuristic_result.reason}), LLM wanted search={llm_response.should_search} but heuristic says no"
-        )
-        veto_result = WebSearchDecision(
-            should_search=False,
-            depth=WebSearchDepth.QUICK,
-            confidence=heuristic_result.confidence,
-            reason=f"Heuristic veto ({heuristic_result.reason}); LLM overridden",
-            matched_keywords=heuristic_result.matched_keywords,
-            matched_patterns=heuristic_result.matched_patterns,
-            search_terms=[],
-            num_searches=0,
-            source="heuristic"
         )
         _llm_trigger_cache[cache_key] = (time.time(), veto_result)
         return veto_result

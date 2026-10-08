@@ -519,16 +519,15 @@ def _mark_session_end(orchestrator):
 
 
 def _gather_session_state(orchestrator):
-    """Collect this session's conversation buffer + last summaries for shutdown processing."""
+    """Collect the last summaries for shutdown processing.
+
+    The session's conversations are NOT gathered here: ConversationLogger has
+    no ``buffer`` (the old ``hasattr`` read was dead since it was written), so
+    ``session_convos`` is always ``[]`` and the shutdown processor takes the
+    session window from the corpus (entries with ts >= session_start).
+    """
     session_convos = []
     session_summaries = []
-
-    try:
-        logger_obj = getattr(orchestrator, "conversation_logger", None)
-        if logger_obj and hasattr(logger_obj, "buffer"):
-            session_convos = list(logger_obj.buffer)
-    except (AttributeError, TypeError):
-        pass
 
     try:
         pb = getattr(orchestrator, "prompt_builder", None)
@@ -1763,13 +1762,8 @@ if __name__ == "__main__":
             elif not _activity_since_last_flush():
                 print("[Shutdown] No user activity since the last completed session flush, skipping.")
             elif orchestrator:
-                # If your conversation logger exposes a buffer of [{'query','response'}, ...]
-                try:
-                    logger_obj = getattr(orchestrator, "conversation_logger", None)
-                    if logger_obj and hasattr(logger_obj, "buffer"):
-                        session_convos = list(logger_obj.buffer)
-                except (AttributeError, TypeError):
-                    pass
+                # session_convos stays []: the shutdown processor reads the
+                # session window from the corpus (ts >= session_start).
 
                 # Pull any summaries collected in this run if you keep them
                 try:

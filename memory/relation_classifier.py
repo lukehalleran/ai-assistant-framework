@@ -241,6 +241,19 @@ def supersession_key(relation: str, value: str) -> Optional[str]:
     return " ".join(tokens) or None
 
 
+def supersedes_on_new_value(relation: str, new_value: str, existing_value: str) -> bool:
+    """True when a NEW ``new_value`` of the (canonical) ``relation`` retires a
+    differing CURRENT ``existing_value``. Single-valued relations: always.
+    Multi-valued relations: only when both values share a (non-None)
+    supersession key. The ONE rule ``UserProfile.add_fact`` applies and the
+    ``add_profile_fact.py`` dry-run previews (2026-10-08, class: BC-70, BC-58).
+    """
+    if not is_multi_valued_relation(relation):
+        return True
+    new_key = supersession_key(relation, new_value)
+    return new_key is not None and supersession_key(relation, existing_value) == new_key
+
+
 def dose_value_lacks_referent(relation: str, value: str) -> bool:
     """True when ``relation`` is a dose relation and ``value`` names no
     referent (a bare "200 mg"): paired with whichever medication_name is

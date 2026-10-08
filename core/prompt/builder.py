@@ -117,6 +117,7 @@ import eval.schema as schema
 import eval.section_registry as section_registry
 import utils.turn_progress as turn_progress
 import memory.valence as valence
+import knowledge.semantic_search as semantic_index
 
 logger = get_logger("prompt_builder")
 
@@ -1473,10 +1474,17 @@ class UnifiedPromptBuilder:
                 )
 
             # Semantic chunks
+            # 2026-10-08 (class: BC-70): a known-absent wiki index (unmounted
+            # external drive) is a DISABLED state, not a per-turn hiccup — do
+            # not schedule the task (in-flight guard + executor + timeout wait
+            # every turn); record the same outcome the search itself reports.
             if eff_max_semantic > 0:
-                tasks["semantic"] = asyncio.create_task(
-                    _timed_task("semantic", self.context_gatherer._get_semantic_chunks(user_input, max_results=eff_max_semantic))
-                )
+                if semantic_index.index_available():
+                    tasks["semantic"] = asyncio.create_task(
+                        _timed_task("semantic", self.context_gatherer._get_semantic_chunks(user_input, max_results=eff_max_semantic))
+                    )
+                else:
+                    section_outcomes["semantic"] = {"status": "unavailable", "reason": "index_not_loaded"}
 
             # Reflections (separated into recent + semantic)
             if eff_max_reflections_r > 0 or eff_max_reflections_s > 0:
