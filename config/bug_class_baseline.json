@@ -508,22 +508,6 @@
     },
     {
       "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_extractor.py",
-      "symbol": "ThreadExtractor.detect_resolutions",
-      "kind": "broad_except_returns_empty",
-      "digest": "0b9a0de7d2f53f1c957215401d9a76dfe2c91b78e8c80eb4ecb55748d7d376cd",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
-      "path": "memory/thread_extractor.py",
-      "symbol": "ThreadExtractor.extract_new_threads",
-      "kind": "broad_except_returns_empty",
-      "digest": "a4bf7da64cf429c973e82021e5d301c712292dc4b1431da278046e67ec7a0cc5",
-      "excerpt": "return []"
-    },
-    {
-      "scanner": "dm18_except_returns_empty",
       "path": "memory/user_profile_schema.py",
       "symbol": "_get_exemplar_embeddings",
       "kind": "broad_except_returns_empty",

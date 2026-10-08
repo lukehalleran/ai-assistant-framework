@@ -384,3 +384,85 @@ class TestBackgroundStoreReceipt:
         assert MARKER not in text
         # Exactly one of the two logged entries carries the line.
         assert text.count("Storage failed:") == 1
+
+
+# ---------------------------------------------------------------------------
+# 5. Bypass store sites record the completed turn for the resend check
+#    (2026-10-08, BC-58): only _dispatch_storage used to call
+#    _register_completed_turn, so an identical resend of a doc-gen / self-note /
+#    retry turn inside the window re-ran it instead of serving the stored reply.
+# ---------------------------------------------------------------------------
+
+_LONG_QUERY = "please do this exact thing for me right now"  # >= _INFLIGHT_MIN_CHARS
+
+
+def _norm(text):
+    return " ".join(text.lower().split())
+
+
+@pytest.fixture
+def _clean_completed_turns():
+    import gui.handlers as handlers
+    handlers._COMPLETED_TURNS.clear()
+    yield handlers
+    handlers._COMPLETED_TURNS.clear()
+
+
+class TestBypassResendRecord:
+    def _ok_store(self):
+        return SimpleNamespace(store_interaction=AsyncMock(return_value="mem-1"))
+
+    def test_doc_generation_registers_completed_turn(self, _clean_completed_turns):
+        handlers = _clean_completed_turns
+        ctx = _doc_ctx(self._ok_store())
+        ctx.user_text = _LONG_QUERY
+        final = _only_final(_run_doc_gen(ctx))
+        got = handlers._recent_completed_duplicate(ctx.orchestrator, _norm(_LONG_QUERY))
+        assert got == final["content"].strip()
+
+    def test_self_note_registers_completed_turn(self, _clean_completed_turns):
+        handlers = _clean_completed_turns
+        ctx = _note_ctx(self._ok_store())
+        ctx.user_text = _LONG_QUERY
+        final = _only_final(_run_self_note(ctx))
+        got = handlers._recent_completed_duplicate(ctx.orchestrator, _norm(_LONG_QUERY))
+        assert got == final["content"].strip()
+
+    def test_action_retry_registers_completed_turn(self, _clean_completed_turns):
+        handlers = _clean_completed_turns
+        ctx = _retry_ctx(self._ok_store())
+        ctx.user_text = _LONG_QUERY
+        final = _only_final(_run_retry(ctx))
+        got = handlers._recent_completed_duplicate(ctx.orchestrator, _norm(_LONG_QUERY))
+        assert got == final["content"].strip()
+
+    def test_pending_proposal_note_registers_completed_turn(self, _clean_completed_turns):
+        handlers = _clean_completed_turns
+        from core import action_claim_guard
+        ctx = _note_ctx(self._ok_store())
+        ctx.user_text = _LONG_QUERY
+        proposal = SimpleNamespace(
+            kind=action_claim_guard.ActionKind.NOTE, title="Note title",
+            body="body text", category="implementation",
+        )
+        dnm = MagicMock()
+        dnm.create_note = AsyncMock(return_value=_note_result())
+        dnm._generate_summary = AsyncMock(return_value="A summary.")
+        with patch.object(handlers, "_write_turn_telemetry", lambda *a, **k: None), \
+             patch.object(handlers, "_get_session_id", lambda *a: "s1"), \
+             patch("knowledge.daemon_notes_manager.DaemonNotesManager", return_value=dnm):
+            async def _collect():
+                return [c async for c in handlers._run_pending_proposal(ctx, proposal)]
+            final = _only_final(asyncio.run(_collect()))
+        got = handlers._recent_completed_duplicate(ctx.orchestrator, _norm(_LONG_QUERY))
+        assert got == final["content"].strip()
+
+    def test_failed_store_still_registers_what_the_user_saw(self, _clean_completed_turns):
+        """The resend record is about delivery, not storage: a store failure
+        (receipt set) must not leave the delivered turn unrecorded."""
+        handlers = _clean_completed_turns
+        ctx = _doc_ctx(SimpleNamespace(store_interaction=_failing_store()))
+        ctx.user_text = _LONG_QUERY
+        final = _only_final(_run_doc_gen(ctx))
+        got = handlers._recent_completed_duplicate(ctx.orchestrator, _norm(_LONG_QUERY))
+        assert got == final["content"].strip()

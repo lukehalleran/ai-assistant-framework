@@ -429,13 +429,11 @@ class UserProfile:
             # retired kavarin, 'Thai food' and a pain episode this way).
             # Only values sharing the new value's referent key (the same drug's
             # dose) are revisions of one another; with no key, nothing is.
-            if same_relation_current and relation_classifier.is_multi_valued_relation(relation):
-                new_key = relation_classifier.supersession_key(relation, value)
+            if same_relation_current:
                 same_relation_current = [
                     i for i in same_relation_current
-                    if new_key is not None
-                    and relation_classifier.supersession_key(
-                        relation, facts_list[i].get("value", "")) == new_key
+                    if relation_classifier.supersedes_on_new_value(
+                        relation, value, facts_list[i].get("value", ""))
                 ]
 
             fact_dict = fact.to_dict()

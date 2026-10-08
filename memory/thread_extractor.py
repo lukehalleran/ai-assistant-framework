@@ -133,10 +133,23 @@ def _build_conversation_text(session_conversations: List[dict], max_chars: int =
     return text
 
 
-def _parse_json_array(raw: str) -> List[dict]:
-    """Robust JSON array parsing with find("[") / rfind("]") pattern."""
+class ThreadExtractionError(RuntimeError):
+    """The LLM call failed or returned nothing parseable.
+
+    Distinct from a successful "no threads" ([]): the caller (shutdown) logs
+    the failure instead of reading it as an empty session (BC-47). Messages
+    never carry response text (privacy).
+    """
+
+
+def _parse_json_array_strict(raw: Optional[str]) -> Optional[List[dict]]:
+    """Robust JSON array parsing with find("[") / rfind("]") pattern.
+
+    Returns None when no array can be parsed; a parsed EMPTY array is [] (a
+    genuine "nothing found").
+    """
     if not raw or not raw.strip():
-        return []
+        return None
 
     text = raw.strip()
 
@@ -152,7 +165,7 @@ def _parse_json_array(raw: str) -> List[dict]:
     start = text.find("[")
     end = text.rfind("]")
     if start == -1 or end == -1 or end <= start:
-        return []
+        return None
 
     try:
         parsed = json.loads(text[start:end + 1])
@@ -161,7 +174,12 @@ def _parse_json_array(raw: str) -> List[dict]:
     except json.JSONDecodeError:
         pass
 
-    return []
+    return None
+
+
+def _parse_json_array(raw: str) -> List[dict]:
+    """Lenient wrapper: unparseable input reads as []."""
+    return _parse_json_array_strict(raw) or []
 
 
 class ThreadExtractor:
@@ -193,6 +211,10 @@ class ThreadExtractor:
 
         Returns:
             List of new OpenThread objects
+
+        Raises:
+            ThreadExtractionError: the LLM call failed or its response was
+                empty/unparseable (distinct from a genuine empty list).
         """
         if not self.model_manager or not hasattr(self.model_manager, "generate_once"):
             return []
@@ -226,13 +248,17 @@ class ThreadExtractor:
                 temperature=0.0,
             )
         except Exception as e:
-            logger.warning(f"[ThreadExtractor] LLM extraction failed: {e}")
-            return []
+            logger.warning(f"[ThreadExtractor] LLM extraction failed: {type(e).__name__}")
+            raise ThreadExtractionError(
+                f"generate_once failed: {type(e).__name__}"
+            ) from e
 
         if not raw:
-            return []
+            raise ThreadExtractionError("generate_once returned an empty response")
 
-        items = _parse_json_array(raw)
+        items = _parse_json_array_strict(raw)
+        if items is None:
+            raise ThreadExtractionError(f"unparseable response ({len(raw)} chars)")
         threads = []
         now = time.time()
 
@@ -284,6 +310,9 @@ class ThreadExtractor:
 
         Returns:
             List of (thread_id, resolution_description) tuples
+
+        Raises:
+            ThreadExtractionError: as for extract_new_threads().
         """
         if not self.model_manager or not hasattr(self.model_manager, "generate_once"):
             return []
@@ -325,13 +354,17 @@ class ThreadExtractor:
                 temperature=0.0,
             )
         except Exception as e:
-            logger.warning(f"[ThreadExtractor] LLM resolution detection failed: {e}")
-            return []
+            logger.warning(f"[ThreadExtractor] LLM resolution detection failed: {type(e).__name__}")
+            raise ThreadExtractionError(
+                f"generate_once failed: {type(e).__name__}"
+            ) from e
 
         if not raw:
-            return []
+            raise ThreadExtractionError("generate_once returned an empty response")
 
-        items = _parse_json_array(raw)
+        items = _parse_json_array_strict(raw)
+        if items is None:
+            raise ThreadExtractionError(f"unparseable response ({len(raw)} chars)")
         resolutions = []
 
         # Build set of valid thread IDs for validation

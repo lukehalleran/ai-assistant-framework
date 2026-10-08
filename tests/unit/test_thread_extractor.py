@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from memory.thread_extractor import (
+    ThreadExtractionError,
     ThreadExtractor,
     _build_conversation_text,
     _parse_json_array,
@@ -233,23 +234,23 @@ class TestExtractNewThreads:
     @pytest.mark.asyncio
     @patch("memory.thread_extractor.EXTRACTION_PROMPT", _SAFE_EXTRACTION_PROMPT)
     async def test_handles_llm_returning_invalid_json(self):
-        """13. Returns empty list when LLM returns unparseable text."""
+        """13. Raises (not a silent []) when LLM returns unparseable text."""
         mm = _mock_model_manager("Sorry, I can't do that right now.")
         extractor = ThreadExtractor(model_manager=mm)
         convos = _make_conversations([("Hello", "Hi")])
-        threads = await extractor.extract_new_threads(convos)
-        assert threads == []
+        with pytest.raises(ThreadExtractionError):
+            await extractor.extract_new_threads(convos)
 
     @pytest.mark.asyncio
     @patch("memory.thread_extractor.EXTRACTION_PROMPT", _SAFE_EXTRACTION_PROMPT)
     async def test_handles_llm_call_exception(self):
-        """14. Returns empty list when the LLM call raises an exception."""
+        """14. Raises ThreadExtractionError when the LLM call raises."""
         mm = MagicMock()
         mm.generate_once = AsyncMock(side_effect=RuntimeError("API timeout"))
         extractor = ThreadExtractor(model_manager=mm)
         convos = _make_conversations([("Hello", "Hi")])
-        threads = await extractor.extract_new_threads(convos)
-        assert threads == []
+        with pytest.raises(ThreadExtractionError):
+            await extractor.extract_new_threads(convos)
 
     @pytest.mark.asyncio
     @patch("memory.thread_extractor.EXTRACTION_PROMPT", _SAFE_EXTRACTION_PROMPT)
@@ -361,12 +362,12 @@ class TestExtractNewThreads:
     @pytest.mark.asyncio
     @patch("memory.thread_extractor.EXTRACTION_PROMPT", _SAFE_EXTRACTION_PROMPT)
     async def test_returns_empty_when_llm_returns_none(self):
-        """Returns empty list when generate_once returns None/empty."""
+        """Raises (not a silent []) when generate_once returns None/empty."""
         mm = _mock_model_manager(None)
         extractor = ThreadExtractor(model_manager=mm)
         convos = _make_conversations([("Hello", "Hi")])
-        threads = await extractor.extract_new_threads(convos)
-        assert threads == []
+        with pytest.raises(ThreadExtractionError):
+            await extractor.extract_new_threads(convos)
 
 
 # ===========================================================================
@@ -445,14 +446,14 @@ class TestDetectResolutions:
 
     @pytest.mark.asyncio
     async def test_handles_llm_call_exception(self):
-        """24. Returns empty list when the LLM call raises an exception."""
+        """24. Raises ThreadExtractionError when the LLM call raises."""
         mm = MagicMock()
         mm.generate_once = AsyncMock(side_effect=ConnectionError("Network down"))
         extractor = ThreadExtractor(model_manager=mm)
         open_threads = _make_open_threads(1)
         convos = _make_conversations([("Test", "OK")])
-        resolutions = await extractor.detect_resolutions(convos, open_threads)
-        assert resolutions == []
+        with pytest.raises(ThreadExtractionError):
+            await extractor.detect_resolutions(convos, open_threads)
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_conversations_empty(self):

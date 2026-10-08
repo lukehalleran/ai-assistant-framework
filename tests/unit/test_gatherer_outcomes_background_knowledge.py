@@ -378,6 +378,7 @@ class TestThroughBuilder:
     async def test_busy_semantic_slot_marks_section_unavailable_in_flight(self, monkeypatch):
         import core.prompt.gatherer_knowledge as gk
         monkeypatch.setattr(gk, "_WIKI_SEM_INFLIGHT", threading.Semaphore(0))
+        monkeypatch.setattr("knowledge.semantic_search.index_available", lambda: True)
 
         builder = full_builder(
             monkeypatch, [{"query": "hi", "response": "hello"}], budget=10000)

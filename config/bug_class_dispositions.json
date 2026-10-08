@@ -3484,14 +3484,14 @@
         "text": "return []",
         "ordinal": 1
       },
-      "source_sha256": "4729e1b1686fe04db7b0c4ec996900da26949cd7f9ead5af1e5b3fede2c05550",
-      "status": "accepted_debt",
+      "source_sha256": "4dd4a12dcbbd3e24ff43a791542af1328c4419f9981139cade532e7b7295210e",
+      "status": "confirmed_fixed",
       "assessment": "uncertain",
-      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: Resolution detection failure reads as nothing resolved.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: Resolution detection failure reads as nothing resolved. Fixed 2026-10-08 (owner-approved, CGR-20261008-002): the call/empty/unparseable paths now raise ThreadExtractionError (a parsed [] still means no threads); the sole caller ShutdownProcessor._process_open_threads gathers with return_exceptions=True and logs '[Shutdown] Thread extraction failed'. The anchored broad-except-returns-empty construct is gone.",
+      "reviewer": "Owner (dialogue decision 2026-10-08: fix); fix by executor, evidence by Claude Opus 5.5",
+      "review_date": "2026-10-08",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261008-002"
     },
     {
       "anchor": {
@@ -3509,14 +3509,14 @@
         "text": "return []",
         "ordinal": 1
       },
-      "source_sha256": "4729e1b1686fe04db7b0c4ec996900da26949cd7f9ead5af1e5b3fede2c05550",
-      "status": "accepted_debt",
+      "source_sha256": "4dd4a12dcbbd3e24ff43a791542af1328c4419f9981139cade532e7b7295210e",
+      "status": "confirmed_fixed",
       "assessment": "uncertain",
-      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: Thread extraction failure reads as no new threads.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: Thread extraction failure reads as no new threads. Fixed 2026-10-08 (owner-approved, CGR-20261008-002): the call/empty/unparseable paths now raise ThreadExtractionError (a parsed [] still means no threads); the sole caller ShutdownProcessor._process_open_threads gathers with return_exceptions=True and logs '[Shutdown] Thread extraction failed'. The anchored broad-except-returns-empty construct is gone.",
+      "reviewer": "Owner (dialogue decision 2026-10-08: fix); fix by executor, evidence by Claude Opus 5.5",
+      "review_date": "2026-10-08",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261008-002"
     },
     {
       "anchor": {

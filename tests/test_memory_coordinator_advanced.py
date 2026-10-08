@@ -392,19 +392,6 @@ def test_get_dreams(memory_coordinator):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: debug_memory_state (memory_coordinator.py) iterates "
-        "chroma_store.collections and calls collection.count() on every "
-        "value, but MultiCollectionChromaStore.collections holds raw None "
-        "placeholders for any of the 14 collections not yet lazily opened "
-        "via _get_collection() (multi_collection_chroma_store.py:188-201). "
-        "A single store_interaction() call only opens 'conversations', so "
-        "debug_memory_state() raises AttributeError: 'NoneType' object has "
-        "no attribute 'count' on the very next collection in the dict."
-    ),
-)
 async def test_debug_memory_state(memory_coordinator):
     """debug_memory_state should report a stats dict without crashing, even
     when most of the 14 chroma collections haven't been lazily opened yet."""
@@ -414,6 +401,9 @@ async def test_debug_memory_state(memory_coordinator):
 
     assert stats["corpus_entries"] == 1
     assert isinstance(stats["chroma_collections"], dict)
+    # Collections not yet lazily opened are None placeholders in the store;
+    # they are reported, not crashed on (BC-20).
+    assert "unopened" in stats["chroma_collections"].values()
 
 
 @pytest.mark.asyncio

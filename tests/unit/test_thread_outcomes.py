@@ -346,3 +346,60 @@ class TestShutdownOpenThreadsReadDegrade:
         assert thread_store.enforce_cap.called
         assert "Stored 1 new thread(s), 1 failed" in caplog.text
         assert MARKER not in caplog.text
+
+
+# === ThreadExtractor failure is not "no threads" (2026-10-08, BC-47) ===
+
+class TestExtractorFailureIsNotEmpty:
+    @pytest.mark.asyncio
+    async def test_failed_extraction_logged_not_silent_and_pass_completes(
+        self, monkeypatch, caplog
+    ):
+        """A failing extraction LLM call used to return [] (indistinguishable
+        from 'no threads'); it now raises, the shutdown pass logs the failure
+        (no response/exception text), stores nothing and still enforces the cap."""
+        from memory.thread_extractor import ThreadExtractionError  # noqa: F401
+        monkeypatch.setattr("config.app_config.THREAD_SURFACING_ENABLED", True)
+        thread_store = SimpleNamespace(
+            list_open_threads=MagicMock(return_value=[]),
+            store_thread=MagicMock(), enforce_cap=MagicMock(return_value=0),
+            touch_thread=MagicMock(), resolve_thread=MagicMock(),
+        )
+        proc = _make_processor(thread_store)
+        proc.model_manager = SimpleNamespace(
+            generate_once=AsyncMock(side_effect=RuntimeError(MARKER)))
+        with caplog.at_level("INFO"):
+            await proc._process_open_threads(list(_SESSION))
+        assert "[Shutdown] Thread extraction failed" in caplog.text
+        assert MARKER not in caplog.text
+        assert not thread_store.store_thread.called
+        assert thread_store.enforce_cap.called
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", [None, "", f"not json {MARKER}", f"{{\"k\": \"{MARKER}\"}}"])
+    async def test_empty_or_unparseable_raises_without_response_text(self, raw, caplog):
+        from memory.thread_extractor import ThreadExtractionError
+        ex = ThreadExtractor(model_manager=SimpleNamespace(
+            generate_once=AsyncMock(return_value=raw)))
+        with caplog.at_level("DEBUG"):
+            with pytest.raises(ThreadExtractionError) as ei:
+                await ex.extract_new_threads(list(_SESSION))
+            with pytest.raises(ThreadExtractionError) as ei2:
+                await ex.detect_resolutions(list(_SESSION), [_make_thread(thread_id="t1")])
+        assert MARKER not in str(ei.value) and MARKER not in str(ei2.value)
+        assert MARKER not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_genuine_empty_array_is_still_no_threads(self):
+        """A parsed EMPTY array is a real 'no threads' answer, not a failure."""
+        ex = ThreadExtractor(model_manager=SimpleNamespace(
+            generate_once=AsyncMock(return_value="[]")))
+        assert await ex.extract_new_threads(list(_SESSION)) == []
+        assert await ex.detect_resolutions(
+            list(_SESSION), [_make_thread(thread_id="t1")]) == []
+
+    def test_strict_parser_distinguishes_empty_from_garbage(self):
+        from memory.thread_extractor import _parse_json_array_strict
+        assert _parse_json_array_strict("[]") == []
+        assert _parse_json_array_strict("garbage") is None
+        assert _parse_json_array_strict(None) is None

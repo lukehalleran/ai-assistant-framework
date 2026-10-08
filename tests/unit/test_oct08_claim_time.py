@@ -89,12 +89,25 @@ class TestHabitPrecedence:
         past (get_category would hide it)."""
         ct = classify_claim_time("I go to the gym Monday Wednesday Friday",
                                  observed_at=OBSERVED)
-        assert ct.kind != "event"
+        assert ct.kind == "habit"
+
+    def test_first_person_present_spread_two_days_is_habit(self):
+        ct = classify_claim_time("I go to the gym Monday and Friday", observed_at=OBSERVED)
+        assert ct.kind == "habit"
+
+    def test_first_person_past_spread_list_is_not_habit(self):
+        ct = classify_claim_time("I worked Monday Wednesday Friday", observed_at=OBSERVED)
+        assert ct.kind != "habit"
 
     def test_first_person_present_consecutive_run_is_not_an_episode(self):
         ct = classify_claim_time("I work Monday Tuesday Wednesday",
                                  observed_at=OBSERVED)
         assert ct.kind != "event"
+
+    def test_first_person_present_consecutive_run_is_neither_event_nor_habit(self):
+        ct = classify_claim_time("I work Monday Tuesday Wednesday",
+                                 observed_at=OBSERVED)
+        assert ct.kind not in ("event", "habit")
 
     def test_first_person_past_consecutive_run_is_an_episode(self):
         ct = classify_claim_time("I was wrecked Saturday Sunday Monday",

@@ -556,12 +556,10 @@ _WEEKDAY_FUTURE_CUE_RE = re.compile(
     r"\b(?:next|coming|will|gonna|going\s+to|tomorrow|plans?|planning)\b|\b\w+['’]ll\b",
     re.IGNORECASE,
 )
-_FIRST_PERSON_SUBJECT_RE = re.compile(r"\b(?:i|we|i['’]m|we['’]re)\b", re.IGNORECASE)
 
 
-def _resolve_weekday_sequence_episode(text: str, observed: datetime) -> date | None:
-    """Most recent date STRICTLY before ``observed``'s date whose weekday is the
-    LAST weekday named, when ``text`` names >= 2 weekdays and no future cue."""
+def _weekday_indices(text: str) -> list[int]:
+    """Weekday indices (Mon=0) named in ``text``, in order of appearance."""
     days: list[int] = []
     for m in _WEEKDAY_NAME_RE.finditer(text):
         word = m.group(1)
@@ -572,6 +570,33 @@ def _resolve_weekday_sequence_episode(text: str, observed: datetime) -> date | N
         if idx is None:
             idx = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}[low]
         days.append(idx)
+    return days
+
+
+# 2026-10-08 (class: BC-04): a first-person SIMPLE-PRESENT clause ("I go to the
+# gym Monday and Friday") naming a SPREAD weekday list is a standing schedule —
+# a habit — even with no "every"/"weekly" cue. A first-person verb ending in
+# "ed" ("I worked Monday Wednesday Friday") reports something that happened.
+_FIRST_PERSON_PRESENT_RE = re.compile(r"\b(?:i|we)\s+([a-z]+)\b", re.IGNORECASE)
+
+
+def _is_spread_weekday_schedule(text: str) -> bool:
+    days = _weekday_indices(text)
+    if len(days) < 2:
+        return False
+    if not any((b - a) % 7 != 1 for a, b in zip(days, days[1:])):
+        return False
+    if not any(not m.group(1).lower().endswith("ed") for m in _FIRST_PERSON_PRESENT_RE.finditer(text)):
+        return False
+    if _PAST_TENSE_CUE_RE.search(text) or _WEEKDAY_FUTURE_CUE_RE.search(text):
+        return False
+    return True
+
+
+def _resolve_weekday_sequence_episode(text: str, observed: datetime) -> date | None:
+    """Most recent date STRICTLY before ``observed``'s date whose weekday is the
+    LAST weekday named, when ``text`` names >= 2 weekdays and no future cue."""
+    days = _weekday_indices(text)
     if len(days) < 2 or _WEEKDAY_FUTURE_CUE_RE.search(text):
         return None
     # Referee (2026-10-08): an episode is a CONSECUTIVE run of days ("Sat Sun
@@ -604,7 +629,8 @@ def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> Cl
     text = span or ""
     observed = observed_at or datetime.now()
 
-    if _HABIT_CUE_RE.search(text) or _SIMPLE_PRESENT_FREQ_RE.search(text):
+    if (_HABIT_CUE_RE.search(text) or _SIMPLE_PRESENT_FREQ_RE.search(text)
+            or _is_spread_weekday_schedule(text)):
         return ClaimTime(kind="habit")
 
     seq_date = _resolve_weekday_sequence_episode(text, observed)
