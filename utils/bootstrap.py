@@ -146,7 +146,17 @@ def get_user_data_dir() -> str:
     - Linux: ~/.daemon
 
     In development mode, returns ./data/ for backward compatibility.
+
+    `DAEMON_DATA_DIR` (non-blank) overrides BOTH modes (2026-10-08, class:
+    BC-83/BC-10): config/app_config.py already honoured it for its own
+    stores, so the bootstrap resolvers (profile path, ensure_directories)
+    were a second, disagreeing data-root authority. The override is returned
+    as an absolute, user-expanded path.
     """
+    override = os.environ.get("DAEMON_DATA_DIR", "").strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+
     if not IS_FROZEN:
         # Development mode: use project's data/ directory
         return os.path.join(get_app_dir(), 'data')

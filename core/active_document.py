@@ -25,6 +25,8 @@ Module Contract
   - split_numbered_items(text) -> list[NumberedItem]
   - ActiveDocumentRegistry: register(), documents(), names(), clear(),
     next_turn(), resolve_navigation()
+  - select_source_document(documents, user_text, *, declared_attachment) ->
+    document | AMBIGUOUS | None  (2026-10-08: prior-turn doc-gen source)
   - format_active_passage(passage) -> str
   - format_ambiguity_note(ambiguous) -> str
   - format_exhausted_note(exhausted) -> str
@@ -243,6 +245,46 @@ def _name_mentioned(lower_text: str, display_name: str) -> bool:
         if re.search(pattern, lower_text):
             return True
     return False
+
+
+class _AmbiguousSource:
+    """Sentinel type: several documents fit and nothing singles one out."""
+
+    def __repr__(self) -> str:
+        return "AMBIGUOUS"
+
+
+AMBIGUOUS = _AmbiguousSource()
+
+
+def _mentioned_for_source(lower_text: str, display_name: str) -> bool:
+    """_name_mentioned, except a very short bare stem ("a" from "a.docx") only
+    counts when the full filename appears — otherwise the article in "write a
+    report" would select the document."""
+    if not _name_mentioned(lower_text, display_name):
+        return False
+    name = (display_name or "").lower()
+    return len(os.path.splitext(name)[0]) >= 3 or name in lower_text
+
+
+def select_source_document(documents, user_text: str, *, declared_attachment: bool):
+    """The document a "write a doc from it" request points at, from a PRIOR turn.
+
+    A document whose name the user mentions wins (exactly one -> it, several ->
+    AMBIGUOUS). With no name mentioned, only an explicit declaration that the
+    request is attachment-sourced picks one, and only when it is the sole
+    document (several -> AMBIGUOUS). Anything else -> None. Never chooses the
+    newest on ambiguity (same rule as resolve_navigation). Plain function over
+    a list: anything with ``display_name`` works.
+    """
+    docs = list(documents or [])
+    lower = (user_text or "").lower()
+    named = [d for d in docs if _mentioned_for_source(lower, getattr(d, "display_name", ""))]
+    if named:
+        return named[0] if len(named) == 1 else AMBIGUOUS
+    if declared_attachment and docs:
+        return docs[0] if len(docs) == 1 else AMBIGUOUS
+    return None
 
 
 def _bound_passage(document: ActiveDocument, item: NumberedItem) -> Tuple[str, bool]:
