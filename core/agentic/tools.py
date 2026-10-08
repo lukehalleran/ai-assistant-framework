@@ -314,7 +314,7 @@ class ToolExecutor:
                         " To CREATE an issue or comment on a PR, use propose_action "
                         "(github_create_issue / github_comment_pr) — not this query tool."
                     )
-            except Exception:
+            except Exception:  # degrades: github tool health omits write-action hint
                 pass
             lines.append(gh_line)
         else:
@@ -1988,8 +1988,8 @@ Provide a focused summary with the most important information."""
                     "[Uploaded files in reference_docs — retrieve any of them IN FULL "
                     f"with get_full_document(title=<exact title>): {entries}]"
                 )
-        except Exception as e:
-            logger.debug(f"[AgenticSearch] upload title listing unavailable: {e}")
+        except Exception as e:  # degrades: model told no uploads exist when listing fails
+            logger.warning(f"[AgenticSearch] upload title listing unavailable: {type(e).__name__}")
             text = ""
         self._upload_listing_cache = (time.time(), text)
         return text
@@ -2144,7 +2144,7 @@ Provide a focused summary with the most important information."""
                 )
                 if existing_id:
                     return f"[{existing_id}] Title: {title}\nURL: {url}\n\n{content}"
-            except Exception:
+            except Exception:  # degrades: fetched page not mapped to existing citation id
                 pass  # Citation registration is non-critical
 
             return f"Title: {title}\nURL: {url}\n\n{content}"

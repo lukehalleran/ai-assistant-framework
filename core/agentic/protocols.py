@@ -1427,7 +1427,7 @@ class XMLMarkerHandler(BaseProtocolHandler):
                 pattern_spec=spec, pattern_reason="explicit longitudinal pattern request"))
         for match in self.PATTERN_SCAN_SELF_PATTERN.finditer(text):
             try: spec = json.loads(match.group(1) or match.group(2) or "")
-            except Exception: spec = {}
+            except Exception: spec = {}  # degrades: malformed pattern spec replaced with empty spec
             decisions.append(SearchDecision(wants_pattern_scan=True, pattern_spec=spec))
 
         for match in self.PUBMED_PATTERN.finditer(text):

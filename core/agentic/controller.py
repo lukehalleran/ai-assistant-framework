@@ -210,7 +210,8 @@ def _pending_cards_note(action_verb: str = "call propose_action") -> str:
     try:
         from core.agentic.tools import ToolExecutor  # lazy import: cycle
         pending = ToolExecutor._get_pending_actions_store().get_all_pending()
-    except Exception:
+    except Exception as e:  # degrades: model told no cards pending when store unreadable
+        logger.warning(f"[AgenticSearch] Pending-cards store unreadable, reporting none: {type(e).__name__}")
         pending = []
     if not pending:
         return (
@@ -690,7 +691,7 @@ class AgenticSearchController:
                     logger.info(f"[AgenticSearch] Sandbox session {_drop_reason}, recreating")
                     try:
                         await self._sandbox_session.close()
-                    except Exception:
+                    except Exception:  # degrades: old sandbox session not closed cleanly
                         pass
                 self._sandbox_session = None
 
@@ -719,7 +720,7 @@ class AgenticSearchController:
             try:
                 model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
                 return self.token_manager.get_token_count(text or "", model_name)
-            except Exception:
+            except Exception:  # degrades: token estimate falls back to chars-per-four heuristic
                 pass
         # Fallback: ~4 chars per token
         return len(text or "") // 4
@@ -774,7 +775,7 @@ class AgenticSearchController:
 
             service = get_email_service()
             return any(provider.is_configured() for provider in service.providers)
-        except Exception:
+        except Exception:  # degrades: email search tool hidden when service unavailable
             return False
 
     async def run_agentic_search(
@@ -880,7 +881,7 @@ class AgenticSearchController:
             from utils.query_checker import is_note_save_request  # lazy import: cycle
             if is_note_save_request(self._action_query_ws):
                 session.note_body_override = extract_note_body(self._action_query_ws)
-        except Exception as e:
+        except Exception as e:  # degrades: note body not extracted, model must supply it
             logger.debug(f"[AgenticSearch] Note-body extraction skipped: {e}")
 
         logger.info(
@@ -1234,7 +1235,7 @@ class AgenticSearchController:
                                     f"[AgenticSearch] Seeded {len(_seed_lines)} "
                                     f"pre-gathered base web source(s) into the loop"
                                 )
-                        except Exception as e:
+                        except Exception as e:  # degrades: pre-gathered web results not seeded into loop
                             logger.debug(
                                 f"[AgenticSearch] Pre-gathered web seeding failed "
                                 f"(non-fatal): {e}"
@@ -1697,7 +1698,7 @@ class AgenticSearchController:
                                 # see the run_agentic_search docstring entry
                                 # for action_query_ws.
                                 _wd_bf = resolve_weekday_time(self._action_query_ws)
-                            except Exception as e:
+                            except Exception as e:  # degrades: weekday and time backfill skipped for calendar proposal
                                 logger.debug(
                                     f"[AgenticSearch] Weekday/time backfill failed (non-fatal): {e}"
                                 )
@@ -3573,7 +3574,7 @@ class AgenticSearchController:
                     'Use the create_daemon_note tool to save this note now — '
                     'do not just say you will or that you cannot.'
                 )
-        except Exception:
+        except Exception:  # degrades: note-save tool hint omitted from round prompt
             pass
         # Git-cued document hint (2026-09-10, round 2, A9): the CURRENT or
         # PREVIOUS user turn names a git action AND a doc noun together —
@@ -3907,7 +3908,8 @@ What would you like to do?""")
             _pending = _store.get_pending()
             if _pending:
                 _has_pending_action = True
-        except Exception:
+        except Exception as e:  # degrades: pending action not detected for final prompt
+            logger.warning(f"[AgenticSearch] Pending-action check failed: {type(e).__name__}")
             pass
 
         # Instructions. has_web is keyed off actual WEB sources having been

@@ -709,8 +709,8 @@ def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
         return None
     try:
         recent = corpus_manager.get_recent_memories(max_turns)
-    except Exception as e:
-        logger.debug(f"[Agentic Gate] recent-context build failed (non-fatal): {e}")
+    except Exception as e:  # degrades: web trigger loses recent-conversation context
+        logger.warning(f"[Agentic Gate] recent-context build failed (non-fatal): {type(e).__name__}")
         return None
     if not recent:
         return None
@@ -857,8 +857,8 @@ async def evaluate_agentic_gate(
     try:
         from core.actions.registry import detect_action_intent
         _explicit_action = detect_action_intent(user_text)
-    except Exception as e:
-        logger.debug(f"[Agentic Gate] Action-intent detection failed (non-fatal): {e}")
+    except Exception as e:  # degrades: explicit action intent reads as none this turn
+        logger.warning(f"[Agentic Gate] Action-intent detection failed (non-fatal): {type(e).__name__}")
         _explicit_action = None
     if _explicit_action is not None and _ACTION_DISAVOWAL_RE.search(user_text):
         # The message disavows acting ("I will not send", "in my head",
@@ -1021,7 +1021,7 @@ async def evaluate_agentic_gate(
             from core.actions.registry import is_amendment_cue
             if is_amendment_cue(user_text):
                 supersede_pending_cards(_explicit_action.value, "explicit amendment of the pending proposal")
-        except Exception as e:
+        except Exception as e:  # degrades: pending card not superseded on amendment cue
             logger.debug(f"[Agentic Gate] Amendment supersede failed (non-fatal): {e}")
         logger.debug(
             f"[Agentic Gate] Tier 1: explicit write action detected "
@@ -1159,7 +1159,7 @@ async def evaluate_agentic_gate(
                         f"[Agentic Gate] Tier 2: entity match {matched_entities} "
                         f"but no recall signal — skipping"
                     )
-        except Exception as e:
+        except Exception as e:  # degrades: entity-plus-recall tier-2 routing skipped
             logger.debug(f"[Agentic Gate] Entity match check failed (non-fatal): {e}")
 
     # ── Casual skip filter ────────────────────────────────────────────
@@ -1228,7 +1228,7 @@ async def evaluate_agentic_gate(
                             f"request_continuation={_request_continuation})"
                         )
                         break
-            except Exception as e:
+            except Exception as e:  # degrades: continuation override skipped, casual filter may block tools
                 logger.debug(f"[Agentic Gate] Previous-turn check failed (non-fatal): {e}")
 
     # ── File retrieval continuation (pronoun or affirmation) ──────────
@@ -1292,7 +1292,7 @@ async def evaluate_agentic_gate(
                             "[Agentic Gate] File retrieval continuation — routing to tools"
                         )
                         break
-            except Exception as e:
+            except Exception as e:  # degrades: file-retrieval continuation not routed to tools
                 logger.debug(f"[Agentic Gate] File continuation check failed (non-fatal): {e}")
 
     # ── Insight / evidence-assembly requests (2026-08-23) ─────────────
@@ -1393,7 +1393,7 @@ async def evaluate_agentic_gate(
         if self_note_intent:
             logger.warning(f"[Agentic Gate] Self-note detected: {self_note_intent}")
             needs_tools = True
-    except Exception as e:
+    except Exception as e:  # degrades: self-note intent not detected this turn
         logger.debug(f"[Agentic Gate] Self-note intent check failed: {e}")
 
     # Note-save request (2026-09-10, A3): "jot down a note for this session:
@@ -1949,7 +1949,7 @@ def _entry_timestamp(entry) -> Optional[object]:
         if not isinstance(ts, datetime):
             return None
         return ts if ts.tzinfo else ts.astimezone()
-    except Exception:
+    except Exception:  # degrades: entry timestamp unknown so ordering ignores it
         return None
 
 
@@ -1992,13 +1992,13 @@ def supersede_pending_cards(action_type_value: str, reason: str) -> int:
                 _store.reject(_p.action_id)
                 try:
                     _p.error = f"superseded: {reason}"[:200]
-                except Exception:
+                except Exception:  # degrades: superseded card keeps no error annotation
                     pass
                 n += 1
         if n:
             logger.info(f"[Agentic Gate] Superseded {n} pending {action_type_value} card(s): {reason}")
-    except Exception as e:
-        logger.debug(f"[Agentic Gate] Supersede failed (non-fatal): {e}")
+    except Exception as e:  # degrades: stale pending card may remain after failed supersede
+        logger.warning(f"[Agentic Gate] Supersede failed (non-fatal): {type(e).__name__}")
     return n
 
 
@@ -2081,7 +2081,7 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[s
                         f"{_offer.value} proposal card is already pending")
                     return None, False
             supersede_pending_cards(_offer.value, "amended offer accepted in chat")
-        except Exception as e:
+        except Exception as e:  # degrades: pending-card duplicate check and supersede skipped
             logger.debug(f"[Agentic Gate] Pending-card check failed (non-fatal): {e}")
         if _narrated:
             logger.info(
@@ -2112,7 +2112,7 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[s
                     if _card_sents:
                         record_claim_exemplar(
                             "card_claim", _card_sents[-1], "user_failure_report")
-            except Exception as e:
+            except Exception as e:  # degrades: claim-exemplar teaching skipped this turn
                 logger.debug(f"[Agentic Gate] Claim-exemplar teaching skipped: {e}")
         return _offer.value, _is_clarification
     except Exception as e:
@@ -2356,7 +2356,7 @@ def maybe_arm_insight_offer(query: str, tone_level: Optional[str] = None) -> boo
         from config.app_config import INSIGHT_MODE_ENABLED, INSIGHT_OFFER_ENABLED
         if not (INSIGHT_MODE_ENABLED and INSIGHT_OFFER_ENABLED):
             return False
-    except Exception:
+    except Exception:  # degrades: insight offer never armed when config unreadable
         return False
     if _INSIGHT_OFFERS_THIS_SESSION >= 1:
         return False
@@ -2366,7 +2366,7 @@ def maybe_arm_insight_offer(query: str, tone_level: Optional[str] = None) -> boo
         from core.insight.detector import detect_insight_statement
         if not detect_insight_statement(query):
             return False
-    except Exception:
+    except Exception:  # degrades: insight-statement offer not armed this turn
         return False
     _INSIGHT_OFFER_SLOT.clear()
     _INSIGHT_OFFER_SLOT["statement"] = query.strip()
@@ -2569,6 +2569,6 @@ def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
                 get_store().record(
                     "web_search", "no_search", query, "gate_veto"
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: no_search teaching exemplar not recorded
                 logger.debug(f"[Agentic Gate] no_search learning skipped: {e}")
     return decision

@@ -229,7 +229,7 @@ def _maybe_capture_eval_snapshot(
             )
             if result.returncode == 0:
                 git_hash = result.stdout.strip()
-        except Exception:
+        except Exception:  # degrades: eval snapshot records no git hash
             pass
 
         provenance = schema.PromptProvenance(
@@ -629,7 +629,7 @@ def _is_action_request_query(query: str) -> bool:
     try:
         from core.actions.registry import detect_action_intent  # lazy import: cycle
         return detect_action_intent(query) is not None
-    except Exception:
+    except Exception:  # degrades: action-request check reads False so wiki lookup may run
         return False
 
 
@@ -965,7 +965,7 @@ class UnifiedPromptBuilder:
 
         try:
             model_name = self.model_manager.get_active_model_name() if hasattr(self.model_manager, "get_active_model_name") else "default"
-        except Exception:
+        except Exception:  # degrades: oversized-item compression uses default model name
             model_name = "default"
 
         # Scan all list sections for heavily oversized items
@@ -1177,8 +1177,8 @@ class UnifiedPromptBuilder:
                 _since_dt = getattr(self.time_manager, 'last_session_end_time', None)
                 try:
                     codebase_changes = await self.context_gatherer.get_codebase_changes(_since_dt)
-                except Exception as e:
-                    logger.debug(f"[BUILD_PROMPT] Codebase changes failed: {e}")
+                except Exception as e:  # degrades: first-message prompt omits codebase-changes section
+                    logger.warning(f"[BUILD_PROMPT] Codebase changes failed: {type(e).__name__}")
 
             # Step 1: Analyze the query
             query_analysis = {}
@@ -1392,7 +1392,7 @@ class UnifiedPromptBuilder:
                 chroma.clear_embedding_cache()
                 try:
                     chroma._cached_embed(user_input)
-                except Exception:
+                except Exception:  # degrades: query embedding not pre-cached, each lookup embeds itself
                     pass  # Non-fatal; individual queries will embed as needed
 
             tasks = {}
@@ -1510,7 +1510,7 @@ class UnifiedPromptBuilder:
                 try:
                     from core.agentic.gate import _recall_signal_hit  # lazy import: cycle
                     _notes_allow_rollups = ("?" in user_input) or _recall_signal_hit(user_input.lower())
-                except Exception:
+                except Exception:  # degrades: rollup-notes gate defaults open, extra rollup notes may appear
                     _notes_allow_rollups = True
                 # Negative mood-section notes only when the turn has an emotional
                 # cue: heavy topic, active distress, or negative affect in the
@@ -1523,7 +1523,7 @@ class UnifiedPromptBuilder:
                         or _is_heavy_topic_heuristic(user_input)
                         or valence.negative_affect_score(user_input) >= float(VALENCE_NEGATIVE_THRESHOLD)
                     )
-                except Exception:
+                except Exception:  # degrades: mood-notes gate defaults open, mood notes may surface unprompted
                     _notes_allow_mood = True
                 tasks["personal_notes"] = asyncio.create_task(
                     _timed_task("personal_notes", self.context_gatherer.get_personal_notes(
@@ -1621,7 +1621,7 @@ class UnifiedPromptBuilder:
                         try:
                             await self.context_gatherer.get_proactive_insights(user_input, eff_max_proactive)
                             logger.debug("[BUILD_PROMPT] Proactive insights warmed up for next message")
-                        except Exception as exc:
+                        except Exception as exc:  # degrades: proactive-insight cache stays cold for next message
                             logger.debug(f"[BUILD_PROMPT] Insight warmup failed (non-fatal): {exc}")
 
                     asyncio.create_task(_warmup_insights())
@@ -1649,7 +1649,8 @@ class UnifiedPromptBuilder:
                         _timed_task("google_calendar",
                                     self.context_gatherer.get_google_calendar_events(GOOGLE_CALENDAR_MAX_EVENTS))
                     )
-            except Exception:
+            except Exception as e:  # degrades: calendar section absent, reads as empty schedule
+                logger.warning(f"[BUILD_PROMPT] Google Calendar task not created: {type(e).__name__}")
                 pass
 
             # Relevant emails (passive retrieval, cue-gated + distress-suppressed)
@@ -1664,7 +1665,8 @@ class UnifiedPromptBuilder:
                         _timed_task("relevant_emails",
                                     self.context_gatherer.get_relevant_emails(user_input, _eff_emails))
                     )
-            except Exception:
+            except Exception as e:  # degrades: relevant-emails section absent, reads as empty inbox
+                logger.warning(f"[BUILD_PROMPT] Relevant-emails task not created: {type(e).__name__}")
                 pass
 
             # Daemon self-notes (working context from prior sessions)
@@ -1676,7 +1678,8 @@ class UnifiedPromptBuilder:
                         _timed_task("daemon_self_notes",
                                     self.context_gatherer.get_daemon_self_notes(user_input, DAEMON_NOTES_MAX_PER_PROMPT))
                     )
-            except Exception:
+            except Exception as e:  # degrades: daemon self-notes section absent from prompt
+                logger.warning(f"[BUILD_PROMPT] Daemon self-notes task not created: {type(e).__name__}")
                 pass
 
             # Web search (triggered based on query analysis, suppressed during crisis).
@@ -1690,7 +1693,7 @@ class UnifiedPromptBuilder:
                 _web_conv_ctx = _build_recent_context(
                     getattr(self.memory_coordinator, 'corpus_manager', None)
                 )
-            except Exception as _wc_err:
+            except Exception as _wc_err:  # degrades: web trigger loses recent-conversation context for references
                 logger.debug(f"[BUILD_PROMPT] recent-context for web trigger failed (non-fatal): {_wc_err}")
             if not _local_repo_audit:
                 tasks["web_search"] = asyncio.create_task(
@@ -1793,12 +1796,12 @@ class UnifiedPromptBuilder:
                 # Clear distress flag from gatherer (set before gather)
                 try:
                     self.context_gatherer._distress_active = False
-                except Exception:
+                except Exception:  # degrades: stale distress flag stays set on gatherer
                     pass
                 # Clear same-turn upload filenames (set before gather)
                 try:
                     self.context_gatherer._current_turn_upload_filenames = []
-                except Exception:
+                except Exception:  # degrades: same-turn upload filename list stays set
                     pass
                 # Restore gate threshold (set before gather)
                 if _saved_gate_threshold is not None and _gate_obj is not None:
@@ -2162,7 +2165,8 @@ class UnifiedPromptBuilder:
                     try:
                         stored_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MIN_RECENT_FLOOR * 2)
                     except Exception as e:
-                        logger.debug(f"Failed to fetch recent conversations for floor: {e}")
+                        # degrades: recent-conversation floor top-up skipped, session context may thin
+                        logger.warning(f"Failed to fetch recent conversations for floor: {type(e).__name__}")
                         stored_recent = []
                     if stored_recent:
                         # Dedup via _canonical_turn_key so a marked copy of a turn
@@ -2481,7 +2485,7 @@ class UnifiedPromptBuilder:
             from utils.tone_detector import _check_keyword_crisis  # lazy import: cycle
             if _check_keyword_crisis(user_input) is not None:
                 return False
-        except Exception as e:
+        except Exception as e:  # degrades: continuation answers treated as ordinary turns
             logger.debug(f"[BUILD_PROMPT] continuation crisis-guard failed: {e}")
             return False
         # Cheap peek at the last stored assistant turn (in-memory, no LLM/DB).
@@ -2491,7 +2495,7 @@ class UnifiedPromptBuilder:
             recent = cm.get_recent_memories(count=1) if cm else []
             if recent:
                 last_resp = recent[0].get("response", "") or ""
-        except Exception as e:
+        except Exception as e:  # degrades: continuation answers treated as ordinary turns
             logger.debug(f"[BUILD_PROMPT] continuation-answer peek failed: {e}")
             return False
         from utils.query_checker import is_continuation_answer  # lazy import: cycle
@@ -2556,7 +2560,7 @@ class UnifiedPromptBuilder:
                         f"[AmbiguityDetector] Detected: '{ambiguity.ambiguous_phrase}' "
                         f"in {len(ambiguity.matching_entries)} entries across sessions"
                     )
-            except Exception as e:
+            except Exception as e:  # degrades: cross-session phrase disambiguation note skipped
                 logger.debug(f"[AmbiguityDetector] Detection failed (non-fatal): {e}")
 
             # A short follow-up can follow a huge attachment turn. The light
