@@ -3334,14 +3334,14 @@
         "text": "return",
         "ordinal": 1
       },
-      "source_sha256": "316f854ee7dca81ee1ff5610a44d3e60c8a69cda68d40348145081e12c0ed54b",
+      "source_sha256": "74a3799e69507bf4ddc3019027943313daa8315748582df45853475ef7de9df2",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: Skill extraction is skipped on LLM failure; nothing is persisted. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-09-27); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-09-27",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: Skill extraction is skipped on LLM failure; nothing is persisted. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-003): file edited by the oct08 batch-2 branch (authored-text fact boundary in _extract_session_facts/_extract_llm_facts + an import); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-08); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-08",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261008-003"
     },
     {
       "anchor": {

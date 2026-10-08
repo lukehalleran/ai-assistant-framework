@@ -88,6 +88,7 @@ import os
 
 from utils.logging_utils import get_logger
 from memory.user_profile_schema import ProfileCategory, categorize_relation
+from memory.fact_source import authored_text
 from collections import defaultdict
 from utils.ordered_slice import newest_first as _ordered_newest_first
 from utils.date_coerce import to_naive_local
@@ -389,7 +390,9 @@ class LLMFactExtractor:
                 # `user_text` (2026-09-05) is the user's own typed text on an
                 # attachment turn — the merged `query` also carries the
                 # attachment content, which is not the user's words.
-                q = (m.get("user_text") or m.get("query") or "").strip()
+                # 2026-10-08: an EMPTY user_text (attachment-only turn) is
+                # authoritative — authored_text never falls back to the blob.
+                q = authored_text(m).strip()
                 if not q:
                     continue
                 entry = f"User: {q}"

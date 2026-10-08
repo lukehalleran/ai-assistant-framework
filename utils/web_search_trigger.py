@@ -33,8 +33,9 @@ Module Contract:
     - needs_document_generation + document_topic/document_type/document_source —
       document_source is "research" (research the topic externally) or
       "conversation" (write up THIS conversation's content; sharing cues like
-      "so I can text that to my therapist" mean conversation) [NEW 2026-08-24];
-      normalized to ""|"research"|"conversation" in LLMSearchTriggerResponse.parse,
+      "so I can text that to my therapist" mean conversation) or "attachment"
+      (build it FROM a file the user shared, this turn or earlier; 2026-10-08)
+      [NEW 2026-08-24]; normalized to ""|"research"|"conversation"|"attachment" in LLMSearchTriggerResponse.parse,
       consumed by the agentic gate's Tier-4 doc_gen_intent and gui/handlers'
       _resolve_doc_source (which also has a deterministic regex backstop)
     - needs_email_search + email_query — an email-read intent with NO email
@@ -204,7 +205,7 @@ class WebSearchDecision:
     consult_classifier: bool = False  # Ambiguous shape that must reach the LLM classifier
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
-    document_source: str = ""  # "research" (external lookup) | "conversation" (summarize THIS conversation) | ""
+    document_source: str = ""  # "research" (external lookup) | "conversation" (summarize THIS conversation) | "attachment" (from a shared file) | ""
     # 2026-09-27 (BC-15, BC-58): an email request with no email noun in THIS
     # message ("Northwind. Search that" after a prior email_search, or any
     # other email-shaped follow-up the Tier-1 narrow arm's word-bounded
@@ -310,7 +311,7 @@ class LLMSearchTriggerResponse:
     needs_pattern_analysis: bool = False  # Whether query asks for longitudinal/pattern evaluation
     document_topic: str = ""  # Topic for document generation
     document_type: str = ""  # "report" or "summary"
-    document_source: str = ""  # "research" | "conversation" | ""
+    document_source: str = ""  # "research" | "conversation" | "attachment" | ""
     needs_email_search: bool = False  # Whether query wants the user's own email read/searched
     email_query: str = ""  # Optimized query for the email search, if any
 
@@ -385,7 +386,7 @@ class LLMSearchTriggerResponse:
             search_depth = "quick"
 
         document_source = str(data.get("document_source", "")).strip().lower()
-        if document_source not in ("research", "conversation"):
+        if document_source not in ("research", "conversation", "attachment"):
             document_source = ""
 
         return cls(
@@ -1592,7 +1593,7 @@ DOCUMENT GENERATION CRITERIA (needs_document_generation):
 - Also TRUE if: user references the document writing feature, asks to "try the document feature", or says something like "write that up as a report"
 - FALSE if: user just wants information verbally, asks a question, wants a summary in chat, or says "summarize X" without asking to save/write/create a document
 - When TRUE, also set document_topic to the core topic and document_type to "report" or "summary"
-- When TRUE, also set document_source: "conversation" if the user wants THIS conversation's content written up (e.g. "write up what we just discussed", "summarize these insights so I can send them to my therapist", "put our conversation in a doc") — the source is what was already said, not external research. Use "research" when the user wants a topic researched and written up from external sources ("write a report about climate change"). Sharing cues ("so I can text/send/show that to X") about the current discussion mean "conversation".
+- When TRUE, also set document_source: "conversation" if the user wants THIS conversation's content written up (e.g. "write up what we just discussed", "summarize these insights so I can send them to my therapist", "put our conversation in a doc") — the source is what was already said, not external research. Use "attachment" when the user wants the document built FROM a file they shared, this turn or earlier ("make a clean version of the resume I sent", "turn that PDF into a summary"). Use "research" when the user wants a topic researched and written up from external sources ("write a report about climate change"). Sharing cues ("so I can text/send/show that to X") about the current discussion mean "conversation".
 
 OUTPUT (JSON only, no markdown):
 {{
@@ -1608,7 +1609,7 @@ OUTPUT (JSON only, no markdown):
   "needs_document_generation": true or false,
   "document_topic": "topic for document (only if needs_document_generation is true)",
   "document_type": "report or summary (only if needs_document_generation is true)",
-  "document_source": "research or conversation (only if needs_document_generation is true)",
+  "document_source": "research or conversation or attachment (only if needs_document_generation is true)",
   "needs_email_search": true or false,
   "email_query": "topic/sender/subject to search for (only if needs_email_search is true)"
 }}

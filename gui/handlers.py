@@ -129,6 +129,7 @@ from utils.query_checker import is_task_navigation
 from utils.trigger_match import is_negated, normalize_ws
 import utils.read_time_markers as read_time_markers
 from core.active_document import (
+    AMBIGUOUS,
     ActiveDocumentRegistry,
     ActivePassage,
     Ambiguous,
@@ -136,6 +137,7 @@ from core.active_document import (
     format_active_passage,
     format_ambiguity_note,
     format_exhausted_note,
+    select_source_document,
 )
 import json
 from config import app_config
@@ -1843,11 +1845,48 @@ def _attachment_source_material(ctx, *, exclude_name: str | None = None) -> str:
         merged = str(getattr(ctx, "merged_input", "") or "")
     if len(merged) - len(user_text) < DOCUMENT_PROVIDED_MIN_CHARS:
         return ""
+    return f"{merged}\n\n{_attachment_transcript_tail(ctx)}".strip()
+
+
+def _attachment_transcript_tail(ctx) -> str:
     transcript = _build_conversation_source_material(getattr(ctx, "history", None), "")
     transcript = transcript.replace("[USER REQUEST]", "").strip()
     if len(transcript) > _DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS:
         transcript = "[CONVERSATION TRANSCRIPT]\n…" + transcript[-_DOC_ATTACHMENT_TRANSCRIPT_MAX_CHARS:]
-    return f"{merged}\n\n{transcript}".strip()
+    return transcript
+
+
+def _topic_from_filename(name) -> str:
+    stem = str(name or "").rsplit(".", 1)[0]
+    return " ".join(_re.sub(r"[_\-]+", " ", stem).split())
+
+
+def _active_documents(ctx) -> list:
+    registry = getattr(getattr(ctx, "orchestrator", None), "active_documents", None)
+    try:
+        return list(registry.documents()) if registry is not None else []
+    except Exception:  # degrades: no registry view, callers fall back to research
+        return []
+
+
+def _prior_attachment_material(ctx, *, declared: bool):
+    """(material, topic) from a PRIOR turn's registered document, AMBIGUOUS, or None.
+
+    Only called when this turn attached nothing substantial. Explicit signals
+    only (filename mention, or the trigger declared source="attachment").
+    """
+    from knowledge.document_generator import DOCUMENT_PROVIDED_MIN_CHARS  # lazy import: startup-cost
+
+    doc = select_source_document(
+        _active_documents(ctx), getattr(ctx, "user_text", ""), declared_attachment=declared,
+    )
+    if doc is None or doc is AMBIGUOUS:
+        return doc
+    text = str(getattr(doc, "text", "") or "")
+    if len(text) < DOCUMENT_PROVIDED_MIN_CHARS:
+        return None
+    material = f"{text}\n\n{_attachment_transcript_tail(ctx)}".strip()
+    return material, _topic_from_filename(getattr(doc, "display_name", ""))
 
 
 def _attachment_topic(ctx, *, exclude_name=None) -> str:
@@ -1856,19 +1895,13 @@ def _attachment_topic(ctx, *, exclude_name=None) -> str:
     The gate's topic is the user's whole imperative; as a filename/search
     string it is noise ("instead-please-write-a-new-document-…").
     """
-    registry = getattr(getattr(ctx, "orchestrator", None), "active_documents", None)
-    try:
-        docs = list(registry.documents()) if registry is not None else []
-    except Exception:  # degrades: topic falls back to the gate's string
-        docs = []
     # A layout template is never the document's subject (two-attachment turn:
     # the newest registration could be the template, naming the output after it).
-    docs = [d for d in docs if getattr(d, "display_name", None) != exclude_name]
+    docs = [d for d in _active_documents(ctx) if getattr(d, "display_name", None) != exclude_name]
     if not docs:
         return ""
     newest = max(docs, key=lambda d: getattr(d, "registered_turn", 0))
-    stem = str(getattr(newest, "display_name", "") or "").rsplit(".", 1)[0]
-    return " ".join(_re.sub(r"[_\-]+", " ", stem).split())
+    return _topic_from_filename(getattr(newest, "display_name", ""))
 
 
 async def _run_doc_generation(ctx):
@@ -1950,9 +1983,22 @@ async def _run_doc_generation(ctx):
             # The template's own placeholder facts must never be treated as
             # content — exclude it from the material.
             _source_material = _attachment_source_material(ctx, exclude_name=_template_name)
+            _prior_topic = ""
+            if not _source_material:
+                # Prior-turn attachment (2026-10-08): explicit signals only.
+                _prior = _prior_attachment_material(
+                    ctx, declared=_doc_gen_intent.get("source") == "attachment",
+                )
+                if _prior is AMBIGUOUS:
+                    return  # ctx.handled stays False → normal path asks which file
+                if _prior:
+                    _source_material, _prior_topic = _prior
+                    _template_name = _template_attachment = None
             if _source_material:
                 _doc_source = "attachment"
-                _doc_topic = _attachment_topic(ctx, exclude_name=_template_name) or _doc_topic
+                _doc_topic = (
+                    _prior_topic or _attachment_topic(ctx, exclude_name=_template_name) or _doc_topic
+                )
                 if _template_attachment is not None:
                     _template_text = str(_template_attachment.get("text") or "") or None
                     yield {

@@ -33,6 +33,19 @@ _OTHER_ENV = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _restore_environ():
+    """bs.setup_environment() in frozen mode writes ~25 path variables straight
+    into os.environ via setdefault; monkeypatch.delenv on an ABSENT key records
+    nothing to restore, so they leaked into every later test. A leaked
+    DAEMON_DATA_DIR broke test_profile_path_authority once get_user_data_dir
+    began honouring it (2026-10-08, class: BC-37). Snapshot and restore."""
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
 @pytest.fixture
 def frozen_tree(tmp_path, monkeypatch):
     app = tmp_path / "Daemon"

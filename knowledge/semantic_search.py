@@ -449,13 +449,13 @@ _AVAILABILITY_RECHECK_S = 60.0
 def index_available() -> bool:
     """Whether the wiki FAISS index is usable, WITHOUT triggering a load.
 
-    Consumed by core/prompt/gatherer_knowledge.py's `_get_semantic_chunks`
-    to skip the in-flight-guard + executor + SEM_TIMEOUT_S wait outright
-    when the index is a known-DISABLED state (missing/unmounted external
-    index) rather than a per-turn hiccup — `SemanticSearchIndex.search()`
-    already reports exactly this state every call via its "index_not_loaded"
-    outcome; this is the cheap pre-check that lets a caller skip the call
-    itself instead of paying for it every single turn.
+    Consumed by core/prompt/builder.py, which checks it before scheduling the
+    semantic task (2026-10-08) and records `index_not_loaded` instead. This
+    lets the builder skip the in-flight-guard + executor + SEM_TIMEOUT_S wait
+    outright when the index is a known-DISABLED state (missing/unmounted
+    external index) rather than a per-turn hiccup — `SemanticSearchIndex.
+    search()` already reports exactly this state every call via its
+    "index_not_loaded" outcome; this is the cheap pre-check.
     """
     idx = get_index()
     if idx.loaded:

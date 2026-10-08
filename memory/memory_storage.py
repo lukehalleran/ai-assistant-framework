@@ -1013,8 +1013,11 @@ class MemoryStorage:
 
             # Facts extraction (by default only at shutdown)
             if FACTS_EXTRACT_EACH_TURN:
-                if (response or "").strip() and len(response) >= 8:
-                    await self.extract_and_store_facts(query, response, truth_score)
+                # Authored words only: an attachment-only turn passes
+                # user_text="" and must not mint facts from the merged blob.
+                _facts_query = user_text if isinstance(user_text, str) else query
+                if (response or "").strip() and len(response) >= 8 and (_facts_query or "").strip():
+                    await self.extract_and_store_facts(_facts_query, response, truth_score)
 
             # Consolidation (mid-session unless disabled)
             if not SUMMARIZE_AT_SHUTDOWN_ONLY and self.consolidator:

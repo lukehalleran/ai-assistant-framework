@@ -83,6 +83,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from utils.logging_utils import get_logger
+from memory.fact_source import authored_text
 import json
 import time
 
@@ -554,7 +555,9 @@ class ShutdownProcessor:
 
         for conv in session_recent[:10]:
             try:
-                q = (conv.get('query') or '').strip()
+                # authored_text: an attachment-only turn (user_text == "")
+                # has no authored words — never extract from the blob.
+                q = authored_text(conv).strip()
                 if not q:
                     continue
                 r = (conv.get('response') or '').strip()
@@ -685,7 +688,10 @@ class ShutdownProcessor:
                 # Raw user text for attachment turns (2026-09-05) — the
                 # extractor and provenance join prefer it over the merged blob.
                 ut = e.get('user_text')
-                if isinstance(ut, str) and ut.strip():
+                # Keep it even when EMPTY (attachment-only turn): the empty
+                # key is what tells the extractor "no authored words" instead
+                # of letting it fall back to the merged attachment blob.
+                if isinstance(ut, str):
                     pair["user_text"] = ut.strip()
                 ts = e.get('timestamp')
                 if ts:
