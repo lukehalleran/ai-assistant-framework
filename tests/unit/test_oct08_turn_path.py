@@ -75,7 +75,8 @@ class TestTriggerCompletionCap:
                 query="check the news on the claude id requirement thing",
                 model_manager=mm,
             )
-        assert result is None
+        from utils import web_search_trigger as wst
+        assert result is wst._TRIGGER_UNPARSEABLE
         msgs = [r for r in caplog.records
                 if "JSON parse error" in r.getMessage()]
         assert msgs and msgs[0].levelno == logging.WARNING

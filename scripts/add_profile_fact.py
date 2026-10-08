@@ -56,6 +56,7 @@ def main() -> int:
               "Shut Daemon down first.")
         return 1
 
+    from memory import relation_classifier
     from memory.user_profile import UserProfile
     from memory.user_profile_schema import ProfileCategory, canonicalize_profile_relation, categorize_relation
 
@@ -78,12 +79,23 @@ def main() -> int:
         for f in existing:
             cur = "CURRENT" if f.get("is_current", True) else "historical"
             print(f"  - [{cur}] {f.get('value')!r} (conf {f.get('confidence')}, {f.get('timestamp', '?')})")
+        # The SAME rule add_fact applies (relation_classifier.supersedes_on_new_value):
+        # a multi-valued relation keeps distinct values current side by side.
         current_other = [
             f for f in existing
-            if f.get("is_current", True) and f.get("value", "").lower() != args.value.lower()
+            if f.get("is_current", True) and str(f.get("value", "")).lower() != args.value.lower()
         ]
-        if current_other:
-            print("  → a differing current value exists; --apply will SUPERSEDE it (is_current=False), not delete it.")
+        would_supersede = [
+            f for f in current_other
+            if relation_classifier.supersedes_on_new_value(canonical, args.value, str(f.get("value", "")))
+        ]
+        kept = [f for f in current_other if f not in would_supersede]
+        if would_supersede:
+            print("  → --apply will SUPERSEDE (is_current=False, not delete):")
+            for f in would_supersede:
+                print(f"      - {f.get('value')!r}")
+        if kept:
+            print(f"  → multi-valued relation: --apply ADDS this value alongside {len(kept)} current value(s)")
     else:
         print("\nNo existing facts for this relation — would append as new.")
 

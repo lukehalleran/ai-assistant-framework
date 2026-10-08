@@ -206,7 +206,7 @@ class TestAnalyzeForWebSearchLLMDeployedCaller:
         assert mock_manager.generate_once.called
         assert decision.should_search is False
         assert decision.source == "fallback"
-        assert "Classifier unavailable" in decision.reason
+        assert "Classifier output unparseable" in decision.reason
         assert decision.search_terms in ([], None)
 
     @pytest.mark.asyncio
