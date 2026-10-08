@@ -74,6 +74,7 @@ FIXED_SCRIPTS = [
     "quarantine_facts.py",
     "quarantine_graph_edges.py",
     "reclassify_proposals.py",
+    "reembed_visual_memories.py",
     "stage_frozen_models.py",
     "strip_special_token_artifacts.py",
 ]

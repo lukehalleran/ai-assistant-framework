@@ -169,7 +169,7 @@ def test_rebuild_stays_row_aligned_and_searchable(tmp_path):
         q = fake.encode_image_from_path(str(tmp_path / "images" / f"img{k}.png"))
         _, ids = index.search(q.reshape(1, -1), 1)
         assert int(ids[0][0]) == k
-    assert not Path(str(index_path) + ".tmp").exists()
+    assert not list(index_path.parent.glob(f".{index_path.name}.*.partial"))
 
 
 def test_refuses_when_daemon_running(tmp_path, monkeypatch):

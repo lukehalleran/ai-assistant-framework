@@ -31,7 +31,7 @@ Safety:
     model_name == ViT-B-32-quickgelu.
   - Before the index changes, copies index + metadata (+ a read-only JSONL export of the Chroma
     `visual_memories` collection, best-effort) to data/backups/reembed_visual_preimage_<ts>/.
-  - The new index is written to <path>.tmp, re-read and checked, then os.replace'd; metadata goes
+  - The new index is written to a unique mkstemp sibling, re-read and checked, then os.replace'd; metadata goes
     through utils.safe_json.atomic_write_json. Nothing is ever deleted.
   - A mean old-vs-new cosine below 0.8 prints a loud WARNING in the receipt; the script does NOT
     auto-revert (restore from the backup dir if you disagree).
@@ -48,6 +48,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -289,7 +290,12 @@ def _run(args, manager_factory, chroma_exporter) -> int:
     new_index = faiss.IndexFlatIP(EMBED_DIM)
     if ntotal:
         new_index.add(np.ascontiguousarray(new_vecs))
-    tmp = Path(str(index_path) + ".tmp")
+    # Unique sibling (same filesystem, so os.replace is atomic); never a
+    # derived "<path>.tmp" another writer could share (atomic-writer guard).
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{index_path.name}.", suffix=".partial",
+                                    dir=str(index_path.parent))
+    os.close(fd)
+    tmp = Path(tmp_name)
     faiss.write_index(new_index, str(tmp))
     check = faiss.read_index(str(tmp))
     if check.ntotal != ntotal or check.d != EMBED_DIM:
