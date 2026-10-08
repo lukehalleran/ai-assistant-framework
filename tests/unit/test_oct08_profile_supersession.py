@@ -2,7 +2,7 @@
 
 The 10-08 shutdown extraction retired one current medication when another
 arrived, one food when another arrived, and stored a bare
-medication_dose='200 mg' that any reader pairs with the current drug. These
+medication_dose='20 mg' that any reader pairs with the current drug. These
 tests drive THE deployed ``UserProfile.add_fact`` on a synthetic tmp profile
 (never the live data/ profile).
 
@@ -72,28 +72,28 @@ class TestMultiValuedAppend:
 
 class TestKeyedDoseSupersession:
     def test_same_drug_dose_revision_supersedes(self, profile):
-        profile.add_fact("medication_dose", "kavarin 300 mg", 0.8, "x")
-        profile.add_fact("medication_dose", "200 mg kavarin daily", 0.8, "y")
-        assert _is_current(profile, "medication_dose", "kavarin 300 mg") is False
-        assert _is_current(profile, "medication_dose", "200 mg kavarin daily") is True
+        profile.add_fact("medication_dose", "kavarin 30 mg", 0.8, "x")
+        profile.add_fact("medication_dose", "20 mg kavarin daily", 0.8, "y")
+        assert _is_current(profile, "medication_dose", "kavarin 30 mg") is False
+        assert _is_current(profile, "medication_dose", "20 mg kavarin daily") is True
 
     def test_other_drug_dose_stays_current(self, profile):
-        profile.add_fact("medication_dose", "kavarin 300 mg", 0.8, "x")
-        profile.add_fact("medication_dose", "200 mg kavarin daily", 0.8, "y")
+        profile.add_fact("medication_dose", "kavarin 30 mg", 0.8, "x")
+        profile.add_fact("medication_dose", "20 mg kavarin daily", 0.8, "y")
         profile.add_fact("medication_dose", "Lorvatin 30 mg", 0.8, "z")
         assert _is_current(profile, "medication_dose", "Lorvatin 30 mg") is True
-        assert _is_current(profile, "medication_dose", "200 mg kavarin daily") is True
-        assert _is_current(profile, "medication_dose", "kavarin 300 mg") is False
+        assert _is_current(profile, "medication_dose", "20 mg kavarin daily") is True
+        assert _is_current(profile, "medication_dose", "kavarin 30 mg") is False
 
 
     def test_bare_dose_rejected_and_profile_unchanged(self, profile):
         profile.add_fact("medication_name", "Lorvatin", 0.8, "x")
         before = copy.deepcopy(profile.profile)
-        assert profile.add_fact("medication_dose", "200 mg", 0.8, "So I am taking 200 a day now") is False
+        assert profile.add_fact("medication_dose", "20 mg", 0.8, "So I am taking 20 a day now") is False
         assert profile.profile == before
 
     def test_bare_dose_variants_rejected(self, profile):
-        for v in ("200 mg", "5mg", "2 tablets daily", "once a day"):
+        for v in ("20 mg", "5mg", "2 tablets daily", "once a day"):
             assert profile.add_fact("medication_dose", v, 0.8, "s") is False, v
 
 class TestCase1Recurrent:
@@ -109,23 +109,23 @@ class TestCase1Recurrent:
         assert _is_current(profile, "medication_name", "Lorvatin") is True
 
     def test_recurrent_dose_retires_only_same_key(self, profile):
-        profile.add_fact("medication_dose", "kavarin 300 mg", 0.8, "x")
+        profile.add_fact("medication_dose", "kavarin 30 mg", 0.8, "x")
         profile.add_fact("medication_dose", "Lorvatin 30 mg", 0.8, "y")
-        profile.add_fact("medication_dose", "kavarin 200 mg", 0.8, "z")  # retires 300
-        assert _is_current(profile, "medication_dose", "kavarin 300 mg") is False
-        profile.add_fact("medication_dose", "kavarin 300 mg", 0.8, "back to 300")
-        assert _is_current(profile, "medication_dose", "kavarin 300 mg") is True
-        assert _is_current(profile, "medication_dose", "kavarin 200 mg") is False
+        profile.add_fact("medication_dose", "kavarin 20 mg", 0.8, "z")  # retires 30
+        assert _is_current(profile, "medication_dose", "kavarin 30 mg") is False
+        profile.add_fact("medication_dose", "kavarin 30 mg", 0.8, "back to 30")
+        assert _is_current(profile, "medication_dose", "kavarin 30 mg") is True
+        assert _is_current(profile, "medication_dose", "kavarin 20 mg") is False
         assert _is_current(profile, "medication_dose", "Lorvatin 30 mg") is True
 
 
 class TestClassifierHelpers:
     @pytest.mark.parametrize("value,key", [
-        ("kavarin 300 mg", "kavarin"),
-        ("200 mg kavarin daily", "kavarin"),
+        ("kavarin 30 mg", "kavarin"),
+        ("20 mg kavarin daily", "kavarin"),
         ("30 mg by lorvtn", "lorvtn"),
         ("Lorvatin 30 mg twice a day", "lorvatin"),
-        ("200 mg", None),
+        ("20 mg", None),
         ("", None),
     ])
     def test_supersession_key_dose(self, value, key):
@@ -136,6 +136,6 @@ class TestClassifierHelpers:
         assert rc.supersession_key("lives_in", "Austin") is None
 
     def test_dose_value_lacks_referent(self):
-        assert rc.dose_value_lacks_referent("medication_dose", "200 mg") is True
-        assert rc.dose_value_lacks_referent("medication_dose", "Lorvatin 200 mg") is False
-        assert rc.dose_value_lacks_referent("eats", "200 mg") is False
+        assert rc.dose_value_lacks_referent("medication_dose", "20 mg") is True
+        assert rc.dose_value_lacks_referent("medication_dose", "Lorvatin 20 mg") is False
+        assert rc.dose_value_lacks_referent("eats", "20 mg") is False
