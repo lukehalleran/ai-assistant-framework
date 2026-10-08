@@ -67,6 +67,7 @@ Notes
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from memory.user_profile_schema import is_living_situation_relation
@@ -191,6 +192,62 @@ def is_multi_valued_relation(relation: str) -> bool:
     (never treat same-relation/different-object as a contradiction)."""
     rel = (relation or "").lower().strip()
     return rel in MULTI_VALUED_RELATIONS
+
+
+# --------------------------------------------------------------------------
+# Keyed supersession (2026-10-08, class: BC-51, BC-55). A multi-valued
+# relation keeps several values current at once, but SOME values of a keyed
+# relation are revisions of one another: "kavarin 300 mg" then
+# "200 mg kavarin daily" is ONE medication's dose changing, while
+# "Lorvatin 30 mg" beside it is a second, independent value. The key is the
+# referent (the drug) left after the dose arithmetic/frequency words are
+# stripped. UserProfile.add_fact consumes this: a distinct new value
+# supersedes only current values sharing its key.
+# --------------------------------------------------------------------------
+
+DOSE_RELATIONS = frozenset({"medication_dose"})
+
+# Closed categorized vocabulary of words that describe HOW MUCH / HOW OFTEN
+# rather than WHAT — stripped to leave the referent.
+_DOSE_UNIT_WORDS = frozenset({
+    "mg", "mcg", "g", "ml", "iu", "units", "unit",
+    "tablet", "tablets", "pill", "pills", "capsule", "capsules",
+})
+_DOSE_FREQUENCY_WORDS = frozenset({
+    "per", "day", "daily", "each", "every", "morning", "night", "evening",
+    "am", "pm", "twice", "once", "times", "time",
+})
+_DOSE_FORMULATION_WORDS = frozenset({"ir", "xr", "er", "sr"})
+_DOSE_FILLER_WORDS = frozenset({
+    "a", "an", "dose", "of", "at", "around", "by", "the", "and", "total",
+})
+_DOSE_NON_REFERENT_WORDS = (
+    _DOSE_UNIT_WORDS | _DOSE_FREQUENCY_WORDS | _DOSE_FORMULATION_WORDS | _DOSE_FILLER_WORDS
+)
+
+
+def supersession_key(relation: str, value: str) -> Optional[str]:
+    """Referent key under which a new value of a keyed multi-valued relation
+    supersedes an existing one, or None when the relation is not keyed / no
+    referent remains. Dose relations: lower-cased alphabetic tokens of the
+    value minus dose units/frequency/filler words, joined by a space."""
+    rel = (relation or "").lower().strip()
+    if rel not in DOSE_RELATIONS:
+        return None
+    tokens = [
+        t for t in re.findall(r"[a-z]+", (value or "").lower())
+        if t not in _DOSE_NON_REFERENT_WORDS
+    ]
+    return " ".join(tokens) or None
+
+
+def dose_value_lacks_referent(relation: str, value: str) -> bool:
+    """True when ``relation`` is a dose relation and ``value`` names no
+    referent (a bare "200 mg"): paired with whichever medication_name is
+    current it would read as that drug's dose, which nothing in the source
+    stated."""
+    rel = (relation or "").lower().strip()
+    return rel in DOSE_RELATIONS and supersession_key(rel, value) is None
 
 # --------------------------------------------------------------------------
 # Free-text health-framing patterns (narrative memories — conversations,

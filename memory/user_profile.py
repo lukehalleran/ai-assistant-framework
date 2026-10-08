@@ -282,6 +282,10 @@ class UserProfile:
            previously a re-stated true value could never displace a later junk value).
         2. Same relation, different value: mark existing facts for that relation as is_current=False,
            append new fact with is_current=True and supersedes=old_fact_id.
+           EXCEPTION (2026-10-08): for a MULTI-VALUED relation (relation_classifier.
+           MULTI_VALUED_RELATIONS — medication_name, condition, eats, ...) a distinct value
+           is appended as a NEW fact and supersedes nothing, except current values that
+           share its supersession_key (a revised dose of the same drug).
         3. New relation: append with is_current=True.
 
         Args:
@@ -312,6 +316,15 @@ class UserProfile:
         relation = user_profile_schema.canonicalize_profile_relation(relation, value)
         if relation != original_relation:
             logger.debug(f"[UserProfile] Canonicalized relation: {original_relation} → {relation}")
+
+        # 2026-10-08 (class: BC-55): a dose naming no medication ("200 mg")
+        # would pair with whichever medication_name is current and read as
+        # that drug's dose — reject BEFORE any mutation.
+        if relation_classifier.dose_value_lacks_referent(relation, value):
+            logger.info(
+                f"[UserProfile] Rejected unbound {relation}='{value}' (no medication named)"
+            )
+            return False
 
         # Use provided timestamp or default to now. Parsed BEFORE the
         # relative-reference resolution below (2026-09-27, BC-58): a caller
@@ -409,6 +422,21 @@ class UserProfile:
                     exact_match_idx = i
                 elif existing.get("is_current", True):
                     same_relation_current.append(i)
+
+            # 2026-10-08 (class: BC-16, BC-58): a multi-valued relation keeps
+            # distinct values current side by side — a new medication/
+            # condition/meal does NOT retire the others (the 10-05 shutdown
+            # retired kavarin, 'Thai food' and a pain episode this way).
+            # Only values sharing the new value's referent key (the same drug's
+            # dose) are revisions of one another; with no key, nothing is.
+            if same_relation_current and relation_classifier.is_multi_valued_relation(relation):
+                new_key = relation_classifier.supersession_key(relation, value)
+                same_relation_current = [
+                    i for i in same_relation_current
+                    if new_key is not None
+                    and relation_classifier.supersession_key(
+                        relation, facts_list[i].get("value", "")) == new_key
+                ]
 
             fact_dict = fact.to_dict()
             if stance and stance != "objective":
