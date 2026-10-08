@@ -405,7 +405,15 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         # 'history' anchoring above.
         r"|(my|our) \w+( \w+)? (over time|progression)"
         r"|how (has|have|did) (my|our) .{0,40}(changed?|progress(ed)?|trended?) over time"
-        r"|how (long|much) (have|has) (i|we|my|our|it been)|used to)\b",
+        r"|how (long|much) (have|has) (i|we|my|our|it been)"
+        # 'used to' = first-person HABITUAL-PAST shape only (2026-10-08, BC-04,
+        # BC-29): bare 'used to' matched "the variance you are used to is
+        # Population Variance" (homework) at 0.85 — raised the gate, taught
+        # the exemplar store. Subject (i|we), at most one adverb, then
+        # 'used to' — so "you are used to", "I'm used to", "I got used to",
+        # "getting used to", "be used to" cannot match (no be/get form fits
+        # between subject and 'used to').
+        r"|(i|we) (?:(?:always|never|often|usually|just) )?used to)\b",
         IntentType.TEMPORAL_RECALL, 0.85,
     )
     # Wh-time question about the user's OWN past act (2026-09-27, BC-46,

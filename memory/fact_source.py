@@ -541,12 +541,59 @@ def _resolve_relative_event_anchor(text: str, observed: datetime) -> date | None
     return None
 
 
+# Weekday-sequence episode (2026-10-08, class: BC-52, BC-04): "Saturday Sunday
+# Monday awful migraines etc one cracker a day" names a run of days with no
+# past-tense verb and no "yesterday"-style anchor, so it classified "unknown"
+# and the three-day episode rendered as current state. Two or more weekday
+# names and no future cue = a bounded past episode ending on the LAST day named.
+_WEEKDAY_NAME_RE = re.compile(
+    rf"\b({_WEEKDAY_ALT}|mon|tue|wed|thu|fri|sat|sun)\b", re.IGNORECASE
+)
+# 3-letter forms that are also ordinary English words ("sat in the sun") count
+# only when capitalised.
+_AMBIGUOUS_WEEKDAY_ABBREVS = frozenset({"sat", "sun", "wed"})
+_WEEKDAY_FUTURE_CUE_RE = re.compile(
+    r"\b(?:next|coming|will|gonna|going\s+to|tomorrow|plans?|planning)\b|\b\w+['’]ll\b",
+    re.IGNORECASE,
+)
+_FIRST_PERSON_SUBJECT_RE = re.compile(r"\b(?:i|we|i['’]m|we['’]re)\b", re.IGNORECASE)
+
+
+def _resolve_weekday_sequence_episode(text: str, observed: datetime) -> date | None:
+    """Most recent date STRICTLY before ``observed``'s date whose weekday is the
+    LAST weekday named, when ``text`` names >= 2 weekdays and no future cue."""
+    days: list[int] = []
+    for m in _WEEKDAY_NAME_RE.finditer(text):
+        word = m.group(1)
+        low = word.lower()
+        if low in _AMBIGUOUS_WEEKDAY_ABBREVS and not word[0].isupper():
+            continue
+        idx = _WEEKDAY_INDEX.get(low)
+        if idx is None:
+            idx = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}[low]
+        days.append(idx)
+    if len(days) < 2 or _WEEKDAY_FUTURE_CUE_RE.search(text):
+        return None
+    # Referee (2026-10-08): an episode is a CONSECUTIVE run of days ("Sat Sun
+    # Mon"); a spread list ("Monday Wednesday Friday") is a schedule. And a
+    # first-person present-tense report of a consecutive run ("I work Monday
+    # Tuesday Wednesday") is a standing schedule too — only a past-tense cue or
+    # a verbless fragment (the live shape) marks it as something that happened.
+    if any((b - a) % 7 != 1 for a, b in zip(days, days[1:])):
+        return None
+    if _FIRST_PERSON_SUBJECT_RE.search(text) and not _PAST_TENSE_CUE_RE.search(text):
+        return None
+    today = observed.date()
+    delta = (today.weekday() - days[-1]) % 7 or 7
+    return today - timedelta(days=delta)
+
+
 def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> ClaimTime:
     """Classify what kind of claim ``span`` makes, relative to ``observed_at``
     (defaults to now when the caller has no turn timestamp).
 
-    Order: habit > event (past-tense + temporal anchor) > plan > state >
-    unknown. A past-tense cue with NO temporal anchor is under-classified as
+    Order: habit > event (weekday-sequence episode, or past-tense + temporal
+    anchor) > plan > state > unknown. A past-tense cue with NO temporal anchor is under-classified as
     "unknown" rather than guessed as an event — an anchor is required by
     spec. An explicit calendar date (e.g. "September 5th") resolves via
     ``utils.temporal_resolver.resolve_date_expression``; every other
@@ -559,6 +606,10 @@ def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> Cl
 
     if _HABIT_CUE_RE.search(text) or _SIMPLE_PRESENT_FREQ_RE.search(text):
         return ClaimTime(kind="habit")
+
+    seq_date = _resolve_weekday_sequence_episode(text, observed)
+    if seq_date is not None:
+        return ClaimTime(kind="event", event_date=seq_date, event_date_source="relative")
 
     if _PAST_TENSE_CUE_RE.search(text):
         iso, _basis, _conf = resolve_date_expression(text, reference_date=observed)
@@ -584,6 +635,11 @@ def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> Cl
             return ClaimTime(kind="event", event_date=rel_date, event_date_source="relative")
         if _EVENT_ANCHOR_RE.search(text):
             return ClaimTime(kind="event", event_date=None, event_date_source="none")
+        # A past-tense cue with NO temporal anchor is under-classified as
+        # unknown (docstring contract): do NOT fall through to plan/state — the
+        # span reported something that already happened ("Started getting
+        # stressed … needed to get up early" is not a plan).
+        return ClaimTime(kind="unknown")
 
     if _PLAN_KIND_CUE_RE.search(text):
         return ClaimTime(kind="plan")

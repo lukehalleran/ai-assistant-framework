@@ -119,6 +119,8 @@ from datetime import datetime as _grounding_datetime
 from datetime import datetime as _insight_now
 from typing import Any, Optional
 from core.response_parser import ResponseParser
+import core.response_generator as _response_generator_mod
+import core.context_pipeline as _context_pipeline_mod
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult, attachment_display_name
@@ -142,6 +144,7 @@ import re as _re_draft
 import time as _time_mod
 import time as _time
 import threading
+import weakref
 import core.action_claim_guard as action_claim_guard
 import core.actions.audit as _audit
 import core.actions.audit as audit
@@ -538,17 +541,9 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
         logger.error(f"[PERSIST] Upload persistence failed: {e}")
 
 
-def smart_join(prev: str, new: str) -> str:
-    """
-    Inserts a space between tokens unless the new chunk begins with punctuation or whitespace.
-    Prevents jammed-together words while respecting formatting.
-    """
-    if not prev:
-        return new
-    if prev.endswith((' ', '\n')) or new.startswith((' ', '\n', '.', ',', '?', '!', "'", '"', ")", "’", "”")):
-        return prev + new
-    else:
-        return prev + ' ' + new
+# smart_join lives beside the stream it joins (core/response_generator.py):
+# chunks carry their own separators; see split_at_last_whitespace.
+smart_join = _response_generator_mod.smart_join
 
 
 # ── Extracted helpers for handle_submit ──────────────────────────────
@@ -925,6 +920,7 @@ def _dispatch_storage(
     )
     if personal_claim_task is not None:
         store_kwargs["personal_claim_task"] = personal_claim_task
+    _register_completed_turn(orchestrator, user_text, response_to_store, file_names)
     task = asyncio.create_task(_background_store_interaction(**store_kwargs))
     _pending_storage_tasks.add(task)
     task.add_done_callback(_pending_storage_tasks.discard)
@@ -1454,6 +1450,11 @@ async def _prepare_submit_context(ctx):
     # assembly milestones) stream to the UI instead of canned placeholders.
     _progress_q = utils.turn_progress.begin_turn()
     try:
+        # Hand Stage 3 the attachment parse this turn already did (BC-26/41);
+        # the task below inherits the ContextVar. Cleared in the finally.
+        _context_pipeline_mod.set_precomputed_files(
+            ctx.files, ctx.user_text, ctx.files_result.text_content,
+        )
         prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
             # user_input=ctx.user_text, NOT ctx.merged_input (2026-09-04,
             # homework-attachment turn audit items 1+2): ctx.merged_input is
@@ -1504,6 +1505,7 @@ async def _prepare_submit_context(ctx):
             yield {"role": "assistant", "content": _ev, "is_progress": True}
     finally:
         utils.turn_progress.end_turn()
+        _context_pipeline_mod.clear_precomputed_files()
 
     ctx.t_prepare_elapsed = _time_mod.perf_counter() - ctx.t_prepare_start
 
@@ -5820,6 +5822,61 @@ def has_inflight_turns(max_age_s: float | None = None) -> bool:
 # response). A mid-stream-death resend has no stored entry and runs normally.
 _COMPLETED_RESEND_WINDOW_S = 300.0
 
+# In-process "completed, storing" record (2026-10-08, class: BC-38, BC-43).
+# Storage is a background task that can wait seconds on the personal-claim
+# check, and the in-flight key is popped when handle_submit ends — so for that
+# window neither the in-flight guard nor the corpus-based check saw a turn
+# that had already been DELIVERED (live #41/#42: resend at +4s ran a full
+# second turn). _dispatch_storage is the one post-delivery chokepoint
+# (enhanced / agentic / duel / insight); doc-gen, self-note and action-retry
+# store directly and are NOT covered here.
+_COMPLETED_TURN_CAP = 16
+_COMPLETED_TURNS: list = []   # [(norm, files_key, response, monotonic_ts, owner_ref)]
+_completed_turns_lock = threading.Lock()
+
+
+def _completed_turn_files_key(file_names) -> tuple:
+    return tuple(sorted(str(getattr(n, "name", n)) for n in (file_names or [])))
+
+
+def _register_completed_turn(orchestrator, user_text, response, file_names=None) -> None:
+    """Record a delivered turn so an immediate identical resend is recognised
+    before the corpus write lands. Same normalization as the ingress check;
+    bounded (cap + TTL); scoped to the orchestrator that delivered it (the
+    corpus check is likewise per-store). Never raises."""
+    try:
+        norm = " ".join((user_text or "").lower().split())
+        reply = str(response or "").strip()
+        if len(norm) < _INFLIGHT_MIN_CHARS or not reply:
+            return
+        now = _time.monotonic()
+        key = _completed_turn_files_key(file_names)
+        with _completed_turns_lock:
+            _COMPLETED_TURNS[:] = [
+                e for e in _COMPLETED_TURNS
+                if (now - e[3]) < _COMPLETED_RESEND_WINDOW_S
+                and not (e[0] == norm and e[1] == key and e[4]() is orchestrator)
+            ]
+            try:
+                owner = weakref.ref(orchestrator)
+            except TypeError:
+                owner = (lambda o=orchestrator: o)
+            _COMPLETED_TURNS.append((norm, key, reply, now, owner))
+            del _COMPLETED_TURNS[:-_COMPLETED_TURN_CAP]
+    except Exception as e:  # degrades: resend race window stays open for this turn (corpus check still covers it once stored)
+        logger.debug(f"[Ingress] completed-turn registration failed: {e}")
+
+
+def _in_process_completed_duplicate(orchestrator, norm_query: str, file_names=None):
+    now = _time.monotonic()
+    key = _completed_turn_files_key(file_names)
+    with _completed_turns_lock:
+        for norm, fkey, reply, ts, owner in reversed(_COMPLETED_TURNS):
+            if (norm == norm_query and fkey == key and owner() is orchestrator
+                    and 0 <= (now - ts) < _COMPLETED_RESEND_WINDOW_S):
+                return reply
+    return None
+
 
 def _resend_serve_appropriate(user_text, stored_reply, history) -> bool:
     """Serve the stored reply only for a genuine lost-reply resend
@@ -5849,11 +5906,16 @@ def _resend_serve_appropriate(user_text, stored_reply, history) -> bool:
     return True
 
 
-def _recent_completed_duplicate(orchestrator, norm_query: str):
+def _recent_completed_duplicate(orchestrator, norm_query: str, file_names=None):
     """Return the stored response of an identical turn completed within the
     resend window, else None. Read-only over the newest corpus entries,
-    scoped to entries this process itself wrote when the store can tell."""
+    scoped to entries this process itself wrote when the store can tell;
+    also consults the in-process delivered-turn record (see
+    `_register_completed_turn`) for the window before the corpus write lands."""
     try:
+        _inproc = _in_process_completed_duplicate(orchestrator, norm_query, file_names)
+        if _inproc is not None:
+            return _inproc
         corpus = getattr(
             getattr(orchestrator, "memory_system", None), "corpus_manager", None,
         )
@@ -5949,7 +6011,9 @@ async def handle_submit(
                            "ignoring the duplicate submit.",
             }
             return
-        _stored_reply = _recent_completed_duplicate(orchestrator, _norm)
+        _stored_reply = _recent_completed_duplicate(
+            orchestrator, _norm, [getattr(f, "name", f) for f in (files or [])],
+        )
         if _stored_reply is not None and not _resend_serve_appropriate(
                 user_text, _stored_reply, history):
             logger.info(

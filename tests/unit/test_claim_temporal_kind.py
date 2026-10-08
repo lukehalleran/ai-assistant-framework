@@ -174,7 +174,7 @@ class TestEvidenceSpanForwarding:
     def test_habit_kind_has_no_event_date(self):
         msg = "I take 5mg of Zelphex every night."
         ev = find_supporting_user_span(
-            {"subject": "user", "relation": "medication_dose", "object": "5mg"}, [msg],
+            {"subject": "user", "relation": "medication_dose", "object": "Zelphex 5mg"}, [msg],
         )
         assert ev is not None
         assert ev.claim_kind == "habit"
@@ -232,7 +232,7 @@ class TestRegexPathForwarding:
 
     def test_to_node_attaches_event_kind_and_date(self, extractor):
         node = extractor._to_node(
-            "user", "medication_dose", "5mg", 0.8, "regex",
+            "user", "medication_dose", "Zelphex 5mg", 0.8, "regex",
             "Took an extra 5mg of Zelphex yesterday. Didn't take any today.",
         )
         assert node.metadata["claim_kind"] == "event"
@@ -241,7 +241,7 @@ class TestRegexPathForwarding:
 
     def test_to_node_attaches_habit_kind_with_no_date(self, extractor):
         node = extractor._to_node(
-            "user", "medication_dose", "5mg", 0.8, "regex",
+            "user", "medication_dose", "Zelphex 5mg", 0.8, "regex",
             "I take 5mg of Zelphex every night.",
         )
         assert node.metadata["claim_kind"] == "habit"
@@ -262,7 +262,7 @@ class TestGetCategoryEventFiltering:
     def test_past_event_fact_excluded_by_default(self, profile):
         from memory.user_profile_schema import ProfileCategory
         profile.add_fact(
-            "medication_dose", "5mg", 0.8,
+            "medication_dose", "Zelphex 5mg", 0.8,
             "Took an extra 5mg of Zelphex yesterday.",
             claim_kind="event", event_date="2026-09-05",
         )
@@ -272,7 +272,7 @@ class TestGetCategoryEventFiltering:
     def test_past_event_fact_visible_with_include_historical(self, profile):
         from memory.user_profile_schema import ProfileCategory
         profile.add_fact(
-            "medication_dose", "5mg", 0.8,
+            "medication_dose", "Zelphex 5mg", 0.8,
             "Took an extra 5mg of Zelphex yesterday.",
             claim_kind="event", event_date="2026-09-05",
         )
@@ -321,7 +321,7 @@ class TestGetCategoryEventFiltering:
         date is NOT before today (e.g. a same-day event) is not."""
         from memory.user_profile_schema import ProfileCategory
         profile.add_fact(
-            "medication_dose", "5mg", 0.8, "Felt dizzy this morning.",
+            "medication_dose", "Zelphex 5mg", 0.8, "Felt dizzy this morning.",
             claim_kind="event", event_date=date.today().isoformat(),
         )
         current = profile.get_category(ProfileCategory.HEALTH)
@@ -330,7 +330,7 @@ class TestGetCategoryEventFiltering:
     def test_add_facts_batch_forwards_claim_kind_and_event_date(self, profile):
         from memory.user_profile_schema import ProfileCategory
         added = profile.add_facts_batch([{
-            "relation": "medication_dose", "value": "5mg", "confidence": 0.8,
+            "relation": "medication_dose", "value": "Zelphex 5mg", "confidence": 0.8,
             "source_excerpt": "Took an extra 5mg of Zelphex yesterday.",
             "claim_kind": "event", "event_date": "2026-09-05",
         }])

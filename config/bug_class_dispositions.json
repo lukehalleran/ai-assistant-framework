@@ -213,14 +213,14 @@
         "text": "elif \"/\" in pronouns_lower:",
         "ordinal": 1
       },
-      "source_sha256": "f375d3eaaf882eba9ec62597f2f919db0c1914e1479a323097ce4f9d1380d420",
+      "source_sha256": "42c088a4ba84805f737d200ee0359f81a8e8f88da919cc905ba1973c1f1090c1",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-10-02",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-001): file edited by the oct08 turn-audit branch (one stream accumulator → smart_join, BC-92, plus its import); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-08); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-08",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": "CGR-20261002-001"
+      "request": "CGR-20261008-001"
     },
     {
       "anchor": {

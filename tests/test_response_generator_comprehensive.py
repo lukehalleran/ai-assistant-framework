@@ -326,17 +326,18 @@ async def test_generate_streaming_response_basic(response_generator):
     state = stream_provider(response_generator, ["Synthetic ", "complete ", "answer."])
     chunks = [chunk async for chunk in response_generator.generate_streaming_response("Hello", "synthetic-model")]
     assert chunks and all(isinstance(chunk, str) for chunk in chunks)
-    # The deployed generator yields one word per chunk with the delimiting
-    # space stripped out by its internal `buffer.split(" ")` logic (see
-    # core/response_generator.py) -- real callers reassemble the answer with
-    # their own join convention (core/orchestrator.py's standard streaming
-    # path does `full_response += (chunk + " ")` then `.strip()`, which for
-    # plain word chunks is equivalent to a single space join). A bare
-    # `"".join(chunks)` does not reflect how any deployed caller actually
-    # reconstructs the text and previously masked a real defect (calling the
-    # async-generator-function side_effect directly, which is not awaitable)
-    # by comparing against the wrong joiner.
-    assert " ".join(chunks) == "Synthetic complete answer."
+    # Since 2026-10-08 every chunk carries its own trailing whitespace
+    # (core/response_generator.split_at_last_whitespace), so a plain
+    # concatenation reproduces the model text exactly; the deployed joiner
+    # (smart_join, used by every caller) must agree. The old word-split
+    # contract discarded the spaces and callers re-guessed them, deleting the
+    # space before opening quotes (tests/unit/test_oct08_stream_spacing.py).
+    from core.response_generator import smart_join
+    joined = ""
+    for chunk in chunks:
+        joined = smart_join(joined, chunk)
+    assert joined == "".join(chunks)
+    assert "".join(chunks) == "Synthetic complete answer."
     assert state.closed
 
 
@@ -345,7 +346,7 @@ async def test_generate_streaming_response_with_system(response_generator):
     state = stream_provider(response_generator, ["One. ", "Two. ", "Three. ", "Four."])
     chunks = [chunk async for chunk in response_generator.generate_streaming_response(
         "Hi", "synthetic-model", system_prompt="Be brief")]
-    assert " ".join(chunks) == "One. Two. Three. Four." and state.closed
+    assert "".join(chunks) == "One. Two. Three. Four." and state.closed
     assert response_generator.model_manager.generate_async.call_args.kwargs["system_prompt"] == "Be brief"
 
 

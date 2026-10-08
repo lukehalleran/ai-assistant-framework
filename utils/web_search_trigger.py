@@ -353,7 +353,12 @@ class LLMSearchTriggerResponse:
         try:
             data = json.loads(text)
         except (json.JSONDecodeError, ValueError, TypeError) as e:
-            logger.debug(f"[LLMSearchTriggerResponse] JSON parse error: {e}")
+            # WARNING (was DEBUG): a truncated completion (max_tokens hit
+            # mid-object, 2026-10-07/08) silently became "Classifier unavailable".
+            logger.warning(
+                f"[LLMSearchTriggerResponse] JSON parse error: {e} "
+                f"(raw completion length={len(json_str)} chars)"
+            )
             return None
 
         if not isinstance(data, dict):
@@ -410,7 +415,10 @@ SEARCH_CONFIDENCE_THRESHOLD = float(os.getenv("WEB_SEARCH_CONFIDENCE_THRESHOLD",
 # LLM classification settings
 SEARCH_TRIGGER_MODEL = os.getenv("WEB_SEARCH_TRIGGER_MODEL", "gpt-4o-mini")
 SEARCH_TRIGGER_TIMEOUT = float(os.getenv("WEB_SEARCH_TRIGGER_TIMEOUT", "5.0"))  # Increased from 2.0
-SEARCH_TRIGGER_MAX_TOKENS = int(os.getenv("WEB_SEARCH_TRIGGER_MAX_TOKENS", "150"))
+# 150 -> 400 (2026-10-08): a long "reason" + 4 search_terms hit the 150 cap
+# mid-object twice in the 10-07/08 session (completion=150, JSON cut) and the
+# parse failure fell through to "Classifier unavailable". class: BC-89, BC-47.
+SEARCH_TRIGGER_MAX_TOKENS = int(os.getenv("WEB_SEARCH_TRIGGER_MAX_TOKENS", "400"))
 
 # LLM-first mode settings
 LLM_FIRST_ENABLED = os.getenv("WEB_SEARCH_LLM_FIRST_ENABLED", "true").lower() == "true"

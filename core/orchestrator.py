@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Union, Callable
 from dataclasses import dataclass, field
 from core.response_parser import ResponseParser
+from core.response_generator import smart_join
 from utils.logging_utils import get_logger
 import time
 import asyncio as _aio
@@ -2484,7 +2485,7 @@ class DaemonOrchestrator:
                 max_tokens=response_max_tokens,
                 images=note_images if note_images else None  # Pass images for multimodal models
             ):
-                full_response += (chunk + " ")
+                full_response = smart_join(full_response, chunk)
             full_response = full_response.strip()
 
         _t_gen_elapsed = _time_mod.perf_counter() - _t_gen_start

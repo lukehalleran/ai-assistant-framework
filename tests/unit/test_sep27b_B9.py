@@ -130,5 +130,6 @@ def test_timeout_default_matches_measured_p90_plus_margin():
 def test_deployed_config_timeout_is_the_raised_budget_not_the_old_ceiling():
     """Reads config.app_config's ACTUAL loaded constant (YAML -> schema ->
     app_config), not a re-derivation or a hardcoded historical baseline."""
-    assert app_config.PERSONAL_CLAIM_TIMEOUT_S == 6.5
+    # 2026-10-08 (BC-67): raised 6.5 -> 10.0; 39% of a session's checks timed out at 6.5.
+    assert app_config.PERSONAL_CLAIM_TIMEOUT_S == 10.0
     assert app_config.PERSONAL_CLAIM_TIMEOUT_S > 5.0
