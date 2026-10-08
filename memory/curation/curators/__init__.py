@@ -13,6 +13,7 @@ from memory.curation.curators.error_sentinels import ErrorSentinelCurator
 from memory.curation.curators.graph_temporal_nodes import GraphTemporalNodeCurator
 from memory.curation.curators.junk_facts import JunkFactCurator
 from memory.curation.curators.profile_junk_facts import ProfileJunkFactCurator
+from memory.curation.curators.residence_conflicts import ResidenceConflictCurator
 from memory.curation.curators.stream_artifacts import StreamArtifactCurator
 from memory.curation.curators.temporal_staleness import TemporalStalenessCurator
 
@@ -23,4 +24,5 @@ ALL_CURATORS = [
     TemporalStalenessCurator,
     ProfileJunkFactCurator,
     GraphTemporalNodeCurator,
+    ResidenceConflictCurator,
 ]
