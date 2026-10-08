@@ -42,6 +42,38 @@ import math
 # No config constants imported here; defaults are managed by ModelManager
 logger = get_logger("response_generator")
 
+# Streamed content is cut AFTER the last whitespace character, so every chunk
+# but the stream's tail carries its own trailing separator and concatenation
+# reproduces the model's text exactly. (Before 2026-10-08 the stream was split
+# on " " and the spaces discarded: consumers re-inserted them by guessing,
+# which deleted the space before every opening quote — `points to"less worse,"`
+# on ~25% of stored turns — and collapsed runs of spaces, i.e. indentation.)
+_LAST_WS_RE = re.compile(r"\s(?=\S*$)")
+
+
+def split_at_last_whitespace(buffer: str) -> Tuple[str, str]:
+    """Return ``(emit, keep)``: everything through the last whitespace char,
+    and the trailing partial word still being streamed."""
+    m = _LAST_WS_RE.search(buffer)
+    if not m:
+        return "", buffer
+    return buffer[:m.end()], buffer[m.end():]
+
+
+def smart_join(prev: str, new: str) -> str:
+    """Join one streamed chunk onto the accumulated text.
+
+    Chunks from ``generate_streaming_response`` end with their own whitespace,
+    so they concatenate unchanged. A space is inserted only between two
+    chunks that BOTH lack a separator — producers that yield bare words (test
+    stubs, synthetic markers) — unless the new chunk starts with punctuation.
+    """
+    if not prev:
+        return new
+    if prev.endswith((' ', '\n', '\t')) or new.startswith((' ', '\n', '\t', '.', ',', '?', '!', "'", '"', ")", "’", "”")):
+        return prev + new
+    return prev + ' ' + new
+
 
 class ResponseGenerator:
     """Handles response generation and streaming"""
@@ -274,7 +306,7 @@ class ResponseGenerator:
                                 if buffer.strip():
                                     clean = _strip_special_tokens(buffer)
                                     if clean.strip():
-                                        yield clean.strip()
+                                        yield clean.rstrip()
                                         # Don't return yet — drain the trailing usage chunk so we
                                         # can log cache stats; the stream then ends on its own.
                                         _stream_done = True
@@ -305,19 +337,19 @@ class ResponseGenerator:
                                 clean = _strip_special_tokens(buffer)
                                 if clean.strip():
                                     # Yield remaining content as a single chunk
-                                    yield clean.strip()
+                                    yield clean.rstrip()
                                 # End the generator early
                                 return
 
-                            # Yield word-by-word, keep the last partial word in buffer
-                            if " " in buffer:
-                                words = buffer.split(" ")
-                                for word in words[:-1]:
-                                    if word:
-                                        w = _strip_special_tokens(word)
-                                        if w:
-                                            yield w
-                                buffer = words[-1] if words[-1] else ""
+                            # Yield through the last whitespace (separators kept —
+                            # see split_at_last_whitespace); the partial last word
+                            # stays buffered. Stop markers contain no whitespace,
+                            # so one can never straddle the cut.
+                            _emit, buffer = split_at_last_whitespace(buffer)
+                            if _emit:
+                                w = _strip_special_tokens(_emit)
+                                if w:
+                                    yield w
 
                             # Safety: if we've had many empty chunks in a row, yield buffer content
                             # to prevent UI from appearing frozen
@@ -325,7 +357,7 @@ class ResponseGenerator:
                                 self.logger.warning(f"[STREAMING] {empty_chunk_count} empty chunks, flushing buffer")
                                 clean = _strip_special_tokens(buffer)
                                 if clean.strip():
-                                    yield clean.strip()
+                                    yield clean
                                 buffer = ""
                                 empty_chunk_count = 0
 
@@ -347,7 +379,7 @@ class ResponseGenerator:
                     if buffer.strip():
                         tail = _strip_special_tokens(buffer)
                         if tail.strip():
-                            yield tail.strip()
+                            yield tail.rstrip()
 
                     # Reasoning-only swallow (stream ended cleanly with no content):
                     # retry once with native reasoning disabled to recover the answer.
@@ -395,8 +427,8 @@ class ResponseGenerator:
                 else:
                     content = str(response_generator)
 
-                for word in content.split():
-                    yield word
+                for piece in re.findall(r"\S+\s*", (content or "").lstrip()):
+                    yield piece
 
         except Exception as e:
             self.logger.error(f"[GENERATE] Error: {type(e).__name__}: {str(e)}")

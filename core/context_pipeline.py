@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Protocol, Union, TYPE_CHECKING
 from enum import Enum
 import asyncio
+import contextvars
 import json as _json
 import logging
 import os
@@ -245,6 +246,37 @@ class ContextPipelineProtocol(Protocol):
     ) -> ContextResult:
         """Build context from user input."""
         ...
+
+
+
+# Already-parsed attachment text handed over by the submit handler
+# (2026-10-08, class: BC-26, BC-41). handle_submit parses the attachments
+# once (FileProcessor.process_files_structured) and Stage 3 used to parse the
+# SAME files again (~5s per PDF, doubled on every attachment turn). The
+# handoff rides a ContextVar because the seam (prepare_prompt ->
+# build_context -> build) crosses files this change does not own; a task
+# created after the set() inherits it. Value = (files tuple, suffix) where
+# suffix is everything the processor appended AFTER the user text — it does
+# not depend on the user text, so ``user_input + suffix`` is byte-identical to
+# a fresh ``process_files(user_input, files)``. A different file list (by
+# object identity) falls back to parsing.
+_PRECOMPUTED_FILES: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar(
+    "daemon_precomputed_files", default=None
+)
+
+
+def set_precomputed_files(files: Optional[List[Any]], user_text: str, text_content: str) -> bool:
+    """Publish the handler's already-computed merge for ``files``. Returns
+    False (and publishes nothing) when it cannot be reused safely."""
+    if not files or not isinstance(text_content, str) or not text_content.startswith(user_text or ""):
+        _PRECOMPUTED_FILES.set(None)
+        return False
+    _PRECOMPUTED_FILES.set((tuple(files), text_content[len(user_text or ""):]))
+    return True
+
+
+def clear_precomputed_files() -> None:
+    _PRECOMPUTED_FILES.set(None)
 
 
 class ContextPipeline:
@@ -911,6 +943,13 @@ class ContextPipeline:
         if not self.file_processor:
             logger.warning("FileProcessor not available, skipping file processing")
             return None
+
+        pre = _PRECOMPUTED_FILES.get()
+        if pre is not None and len(pre[0]) == len(files) and all(
+            a is b for a, b in zip(pre[0], files)
+        ):
+            logger.debug("Stage 3 (Files): reusing the handler's attachment parse")
+            return user_input + pre[1]
 
         try:
             combined = await self.file_processor.process_files(user_input, files)

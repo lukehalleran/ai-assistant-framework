@@ -32,6 +32,17 @@ _SENSITIVE_TRANSPORT_LOGGERS = (
 )
 
 
+# Noisy third-party PARSER libraries (2026-10-08, class: BC-69): one PDF parse
+# wrote ~217K pdfminer DEBUG lines — 94% of daemon_debug.log. Not a privacy
+# concern (kept apart from the tuple above so its meaning is unchanged), purely
+# volume; capped at WARNING in configure_logging.
+_NOISY_LIBRARY_LOGGERS = (
+    "pdfminer",
+    "pdfplumber",
+    "PIL",
+)
+
+
 class _SensitiveTransportFilter(logging.Filter):
     """Drop verbose provider/transport records that may contain prompt bodies."""
 
@@ -100,6 +111,9 @@ def configure_logging(
         logging.getLogger(logger_name).setLevel(
             logging.DEBUG if allow_sensitive_http else logging.WARNING
         )
+
+    for logger_name in _NOISY_LIBRARY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     # Console handler
     ch = logging.StreamHandler()

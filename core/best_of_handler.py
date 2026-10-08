@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+from core.response_generator import smart_join
+
 if TYPE_CHECKING:
     from core.response_generator import ResponseGenerator
 
@@ -333,7 +335,7 @@ class BestOfHandler:
         async for chunk in self.response_generator.generate_streaming_response(
             prompt, model_name, system_prompt=system_prompt, max_tokens=max_tokens
         ):
-            full_response += (chunk + " ")
+            full_response = smart_join(full_response, chunk)
         return BestOfResult(
             response=full_response.strip(),
             used_best_of=False,
