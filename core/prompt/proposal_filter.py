@@ -387,7 +387,7 @@ class ProposalFilter:
                 ]
             else:
                 self._commit_cache = []
-        except Exception:
+        except Exception:  # degrades: novelty check sees no recent commits and may pass duplicates
             self._commit_cache = []
 
         return self._commit_cache

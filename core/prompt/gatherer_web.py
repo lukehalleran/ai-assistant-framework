@@ -345,7 +345,7 @@ class WebSearchMixin:
             for depth in depths:
                 try:
                     hit = cache.get(key, depth)
-                except Exception:
+                except Exception:  # degrades: cache read error counts as a miss and web evidence is refetched
                     hit = None
                 if hit is not None and getattr(hit, "has_results", False) is True:
                     return hit

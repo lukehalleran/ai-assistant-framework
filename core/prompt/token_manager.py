@@ -610,6 +610,6 @@ class TokenManager:
                     f"[TOKEN BUDGET] True context total ≈ {usage + unmetered} tokens "
                     f"(metered {usage}/{self.token_budget} + {unmetered} unmetered)"
                 )
-        except Exception as e:
+        except Exception as e:  # degrades: true-total token accounting log line is skipped
             logger.debug(f"[TOKEN BUDGET] True-total accounting failed (non-fatal): {e}")
         return trimmed
