@@ -327,6 +327,12 @@ SAFE_RELATION_ALIASES: Dict[str, str] = {
     "current_feelings": "current_feeling",
     # Medication
     "medications_taken": "medication_taken",
+    # Household (2026-10-02): who the user lives with is ONE single-valued
+    # state; variant names left a stale "lives on my own" current beside a
+    # newer "lives with <person>".
+    "roommate": "living_with", "roommates": "living_with",
+    "relationship_with_roommate": "living_with", "lives_with": "living_with",
+    "living_arrangement": "living_with", "household_members": "living_with",
     # Family
     "family_vacation_experience": "family_vacations",
     "duration_at_dads": "duration_of_stay",

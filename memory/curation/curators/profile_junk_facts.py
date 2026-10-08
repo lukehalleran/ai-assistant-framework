@@ -50,6 +50,8 @@ class ProfileJunkFactCurator:
             SentinelResult(name="negation_exempt_relation_passes",
                            passed=not _is_junk_object("no patient portal",
                                                       "doctor_communication")),
+            SentinelResult(name="bare_dwelling_residence_flags",
+                           passed=_is_junk_object("home", "home_location")),
         ]
 
     def scan(self, stores: StoreBundle) -> List[CurationProposal]:

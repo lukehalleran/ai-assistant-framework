@@ -3609,14 +3609,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "faa952eebadeef991344d55a62fcbf764a606f664cda6a0b6a7f0c3353594d72",
+      "source_sha256": "5059b2f9554003ddc286d115d270f32fadf74fa985245a49cf6bb18c055f0f31",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means the embedding layer is unavailable; the categorizer falls through to its next layer. This path does not log. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means the embedding layer is unavailable; the categorizer falls through to its next layer. This path does not log. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-002): file edited by the residence-hygiene branch (fix/oct02-residence-hygiene; household aliases added to SAFE_RELATION_ALIASES); this record's anchored construct is byte-identical and the scan reports no new findings.",
       "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
       "review_date": "2026-10-02",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": "CGR-20261002-001"
+      "request": "CGR-20261002-002"
     },
     {
       "anchor": {
