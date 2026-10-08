@@ -1035,8 +1035,8 @@ def _events_email(email_rows, since, until, result):
         if not raw_date:
             continue
         try:
-            ts = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
-            ts = ts.replace(tzinfo=None)
+            ts = to_naive_local(
+                datetime.fromisoformat(str(raw_date).replace("Z", "+00:00")))
         except (TypeError, ValueError):
             continue
         if not (since <= ts <= until):

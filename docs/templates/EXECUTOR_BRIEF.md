@@ -37,7 +37,8 @@ Steps:
    (only your files among YOUR changes).
 4. Handoff {runs dir}/{ID}/handoff.md in the block format STATE / CLASS / ACTIONS / PLANNED / CONTINGENCY / WHY /
    OWNER (docs/DEVELOPMENT_WORKFLOW.md §5) + files.txt (one path per line) + commit_message.txt.
-5. CANDIDATE BUG CLASSES: a recurring MECHANISM not in docs/BUG_CLASSES.md (read its index) with ≥2 file:line
+5. LLM-facing code: include a misbehaving-model fake that fails on the base tree (`docs/DEVELOPMENT_WORKFLOW.md` §8).
+6. CANDIDATE BUG CLASSES: a recurring MECHANISM not in docs/BUG_CLASSES.md (read its index) with ≥2 file:line
    instances goes in the handoff. Never edit the catalog yourself.
 
 STOP conditions: any test fails; a debt file would be touched; an edit needs a form the plan does not give;

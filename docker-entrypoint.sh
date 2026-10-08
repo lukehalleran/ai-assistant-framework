@@ -41,7 +41,7 @@ if [ ! -f "$CORPUS_FILE" ]; then
 fi
 
 # Check ChromaDB directory
-CHROMA_PATH="${CHROMA_PATH:-/app/data/chroma_db_v4_v2}"
+CHROMA_PATH="${CHROMA_PATH:-/app/data/chroma_db_v4}"
 if [ ! -d "$CHROMA_PATH" ]; then
     echo -e "${YELLOW}Creating ChromaDB directory${NC}"
     mkdir -p "$CHROMA_PATH"
@@ -62,8 +62,9 @@ echo -e "${GREEN}=====================================${NC}"
 echo -e "${GREEN}Starting Daemon RAG Agent${NC}"
 echo -e "${GREEN}=====================================${NC}"
 echo "Mode: ${1:-gui}"
-echo "Gradio server: ${GRADIO_SERVER_NAME}:${GRADIO_PORT}"
-echo "Health check: http://${GRADIO_SERVER_NAME}:${GRADIO_PORT}/health"
+echo "API server (FastAPI + SPA): ${DAEMON_API_HOST:-127.0.0.1}:${DAEMON_API_PORT:-8000}"
+echo "Health check: http://${DAEMON_API_HOST:-127.0.0.1}:${DAEMON_API_PORT:-8000}/health"
+echo "Gradio (first-run wizard / --legacy-gui only): ${GRADIO_SERVER_NAME}:${GRADIO_PORT}"
 echo -e "${GREEN}=====================================${NC}"
 
 # Execute the main application

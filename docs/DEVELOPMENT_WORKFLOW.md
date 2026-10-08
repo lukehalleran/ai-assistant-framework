@@ -552,3 +552,7 @@ batch size, not in the loop.
   (2026-09-06/07): two days of restarts deployed ~1,600 uncommitted lines,
   and shared hunks then made per-root-cause commits impossible. Commit at
   the batch boundary, before the restart (§3a).
+- Happy-path-only fakes for LLM-facing code (BC-62, BC-63): a test needs at
+  least one MISBEHAVING fake (a model that narrates instead of calling the
+  tool, leaks harness/marker text, or reorders/omits input), and that test
+  must fail on the base tree; a well-behaved fake proves only the happy path.
