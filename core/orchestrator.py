@@ -208,7 +208,7 @@ def _storage_failure_label(exc: Exception) -> str:
 
 from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import CrisisLevel
-from utils.emotional_context import EmotionalContext
+from utils.emotional_context import EmotionalContext, tone_receipt_fields
 from utils.need_detector import NeedType
 from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
 from core.best_of_handler import BestOfHandler
@@ -1772,6 +1772,8 @@ class DaemonOrchestrator:
                 "tone_confidence": getattr(
                     getattr(context, "emotional_context", None), "tone_confidence", None
                 ),
+                # Content-free decision-model tone receipt (tone_dm_*, tone_arbiter_backend).
+                **tone_receipt_fields(getattr(context, "emotional_context", None)),
                 "is_small_talk": bool(getattr(context, "is_small_talk", False)),
                 "web_trigger_should_search": _web_decision.get("triggered"),
                 "web_trigger_source": _web_decision.get("source"),

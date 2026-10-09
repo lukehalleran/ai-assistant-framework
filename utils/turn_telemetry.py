@@ -20,6 +20,15 @@ Module Contract:
 
 Typical record fields (all optional — record what the turn produced):
   query, intent, intent_confidence, intent_source, tone_level,
+  tone_trigger, tone_confidence (which detector path produced the tone, and its
+  confidence), tone_arbiter_backend (llm|jev|llm_after_jev|none),
+  tone_dm_mode (off|shadow|active, as resolved), tone_dm_status (ok|unavailable|
+  invalid|disabled|not_run — never empty), tone_dm_reason, tone_dm_level,
+  tone_dm_p0..tone_dm_p3 (probabilities, 3 dp), tone_dm_decision_confidence,
+  tone_dm_policy, tone_dm_retried, tone_dm_latency_ms, tone_dm_served_model,
+  tone_dm_provider, tone_dm_cost_usd, tone_dm_agrees, tone_dm_deciding_level
+  (2026-10-09 decision-model receipts, BC-72: labels and numbers only — flat
+  scalars built by utils.emotional_context.tone_receipt_fields; no message text),
   is_small_talk, plan_points, plan_tone, response_plan, gate_triggered, gate_modes,
   gate_reason, mode (enhanced|agentic-search|best-of-duel|...),
   web_trigger_should_search, web_trigger_source, web_trigger_reason,
