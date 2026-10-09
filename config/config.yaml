@@ -247,6 +247,23 @@ personal_claim_check:      # 2026-09-15: post-generation support check for claim
                           # for `correct` mode -- adding a second model dependency now is not warranted.
   max_tokens: 900
   max_evidence_chars: 12000
+decision_model:          # 2026-10-08: Jev (TypeSafe) via OpenRouter System One. Default OFF (egress gate D16).
+                         # Endpoint is a code constant, not a key; unknown keys are rejected.
+                         # Role values are QUOTED: YAML 1.1 reads a bare `off` as boolean false.
+  enabled: false         # master switch; false forces every role to off
+  model: typesafe/jev-1.13          # pinned request slug; never ~typesafe/jev-latest
+  served_models: ["typesafe/jev-1.13-20260917"]   # exact served model strings the owner approved
+  provider: "TypeSafe"   # exact provider value expected in responses
+  timeout_s: 1.5         # whole Jev deadline per call, retry included
+  roles:
+    tone_arbiter: "off"  # off | shadow | active (active requires tone_policy)
+    heavy_topic: "off"   # off | shadow | active (active requires heavy_topic_threshold)
+  tone_policy: unset     # unset | argmax | weighted | cumulative
+  tone_policy_params: {}
+  heavy_topic_threshold: null
+  max_state_chars:       # longer state is unavailable/state_too_large, never truncated
+    tone_arbiter: 80000
+    heavy_topic: 80000
 email_integration:
   enabled: true
   gmail_enabled: true
