@@ -127,7 +127,7 @@ def fact_extraction_skip_reason(query: str) -> str:
     """Return a non-empty reason when per-turn fact extraction must be skipped."""
     try:
         ct = content_type_detector.detect_content_type(query or "")
-    except Exception:
+    except Exception:  # degrades: content-type skip check bypassed, facts extracted anyway
         return ""
     if (ct.content_type in _FACT_EXTRACT_SKIP_CONTENT_TYPES
             and float(ct.confidence or 0.0) >= _FACT_EXTRACT_SKIP_CONTENT_MIN_CONF):
@@ -611,7 +611,7 @@ def _detect_project_area(text: str) -> str:
         for area, keywords in (app_config.PROFILE_PERSONAL_PROJECT_AREAS or {}).items():
             if any(str(w).lower() in lower for w in (keywords or [])):
                 return str(area)
-    except Exception:
+    except Exception:  # degrades: fact gets no personal project-area tag
         pass
     if any(w in lower for w in ("school", "course", "study", "homework", "lecture", "exam")):
         return "academic"
@@ -973,7 +973,7 @@ class MemoryStorage:
                         raw_metadata["content_title"] = ct.title_hint
                     if ct.attribution_hint:
                         raw_metadata["content_attribution"] = ct.attribution_hint
-            except Exception:
+            except Exception:  # degrades: stored turn lacks content-type, title, attribution metadata
                 pass  # Non-fatal — content type detection is best-effort
 
             # Provenance metadata (audit trail)
@@ -1064,8 +1064,8 @@ class MemoryStorage:
                     "type": "reflection",
                     "tags": tags
                 })
-        except Exception as e:
-            logger.debug(f"[MemoryStorage] Corpus add_summary failed: {e}")
+        except Exception as e:  # degrades: reflection missing from corpus summary store
+            logger.warning(f"[MemoryStorage] Corpus add_summary failed: {type(e).__name__}")
             logger.debug(f"[MemoryStorage] Traceback:\n{traceback.format_exc()}")
 
         # 2) Chroma (semantic)
@@ -1096,11 +1096,11 @@ class MemoryStorage:
                     and hasattr(self.chroma_store, "create_collection")):
                     try:
                         self.chroma_store.create_collection("reflections")
-                    except Exception:
+                    except Exception:  # degrades: collection create skipped; following add surfaces the failure
                         pass
                 self.chroma_store.add_to_collection("reflections", embedding_text, md)
-        except Exception as e:
-            logger.debug(f"[MemoryStorage] Chroma add_to_collection failed: {e}")
+        except Exception as e:  # degrades: reflection not semantically retrievable though method returns True
+            logger.warning(f"[MemoryStorage] Chroma add_to_collection failed: {type(e).__name__}")
 
         return True
 
@@ -1121,7 +1121,7 @@ class MemoryStorage:
             _turn_is_heavy = None
             try:
                 _turn_is_heavy = bool(query_checker._is_heavy_topic_heuristic(query))
-            except Exception:
+            except Exception:  # degrades: facts get capture_tone unknown instead of elevated/conversational
                 pass
             _skip_reason = fact_extraction_skip_reason(query)
             if _skip_reason:
@@ -1188,7 +1188,7 @@ class MemoryStorage:
                         if (stance_md.get("stance") == "objective"
                                 and _ext_stance in stance_classifier.VALID_STANCES):
                             stance_md["stance"] = _ext_stance
-                except Exception as stance_err:
+                except Exception as stance_err:  # degrades: fact stored without stance or capture-tone metadata
                     logger.debug(f"[MemoryStorage] Stance classification failed: {stance_err}")
 
                 # Build source dict to forward entity metadata to ChromaDB
@@ -1234,11 +1234,13 @@ class MemoryStorage:
                                                 f"as superseded"
                                             )
                                         except Exception as flag_err:
-                                            logger.debug(
-                                                f"[MemoryStorage] Failed to flag old fact: {flag_err}"
+                                            # degrades: conflicting old fact stays current beside its replacement
+                                            logger.warning(
+                                                f"[MemoryStorage] Failed to flag old fact: {type(flag_err).__name__}"
                                             )
                         except Exception as verify_err:
-                            logger.debug(f"[MemoryStorage] Verification failed, proceeding: {verify_err}")
+                            # degrades: fact stored unverified, conflicts neither rejected nor flagged
+                            logger.warning(f"[MemoryStorage] Verification failed, proceeding: {type(verify_err).__name__}")
 
                     result = self.chroma_store.add_fact(
                         fact=fact_text,
@@ -1446,8 +1448,8 @@ class MemoryStorage:
                 fact_id=fact_id,
             )
             logger.debug(f"[MemoryStorage] Graph: {subj_id} --{canon_rel}--> {obj_id}")
-        except Exception as e:
-            logger.debug(f"[MemoryStorage] Graph ingestion failed: {e}")
+        except Exception as e:  # degrades: stored fact gets no knowledge-graph edge
+            logger.warning(f"[MemoryStorage] Graph ingestion failed: {type(e).__name__}")
 
     async def consolidate_and_store_summary(self) -> None:
         """Consolidate recent memories and store the summary"""
@@ -1670,7 +1672,7 @@ class MemoryStorage:
                 if isinstance(ts, str):
                     try:
                         ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    except Exception:
+                    except Exception:  # degrades: summary with unparseable timestamp skipped from timespan window
                         continue
                 if isinstance(ts, datetime):
                     # Handle timezone-aware datetimes
