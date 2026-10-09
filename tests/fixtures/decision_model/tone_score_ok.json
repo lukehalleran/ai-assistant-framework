@@ -1,0 +1,29 @@
+{
+ "model": "typesafe/jev-1.13-20260917",
+ "answers": {
+  "tone": {
+   "type": "score",
+   "score": 1,
+   "legend": {
+    "0": "CONVERSATIONAL: Casual conversation, no distress. Mild or momentary reactions to media/events (\"that movie made me sad\") are CONVERSATIONAL.",
+    "1": "CONCERN: Anxiety, worry, stress, sadness, unhappiness, shame, loneliness, low self-worth, or emotional pain needing support",
+    "2": "MEDIUM: Panic attack, breakdown, severe emotional distress, violent thoughts about self or others",
+    "3": "HIGH: Suicidal ideation, self-harm, severe crisis requiring immediate intervention"
+   },
+   "probabilities": {
+    "0": 0,
+    "1": 1,
+    "2": 0,
+    "3": 0
+   },
+   "confidence": 1
+  }
+ },
+ "usage": {
+  "input_tokens": 459,
+  "output_tokens": 17,
+  "cost": 1.9278e-05
+ },
+ "id": "req_synthetic",
+ "provider": "TypeSafe"
+}
