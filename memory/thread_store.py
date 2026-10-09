@@ -41,7 +41,7 @@ from typing import List, Optional
 
 from utils.logging_utils import get_logger
 from utils.retrieval_outcome import OutcomeList, RetrievalError, StoreWriteError
-from memory.thread_models import OpenThread, ThreadStatus
+from memory.thread_models import DisputedResolution, OpenThread, ThreadStatus
 
 logger = get_logger("thread_store")
 
@@ -457,10 +457,21 @@ class ThreadStore:
                 meta = item.get("metadata") or {}
                 if meta.get("thread_id") == thread_id:
                     thread = OpenThread.from_metadata(meta)
-                    thread.mark_resolved(resolution)
+                    disputed = isinstance(resolution, DisputedResolution)
+                    if disputed:
+                        # The user said the premise was wrong: stale (not
+                        # "resolved" — the task was never done or dropped).
+                        thread.mark_stale()
+                        if resolution:
+                            thread.resolution_hint = str(resolution)[:500]
+                    else:
+                        thread.mark_resolved(resolution)
                     if not self._replace_stored_thread(thread, item):
                         return False
-                    logger.info(f"[ThreadStore] Resolved thread {thread_id}: '{thread.topic}'")
+                    if disputed:
+                        logger.info(f"[ThreadStore] Disputed thread {thread_id} (marked stale)")
+                    else:
+                        logger.info(f"[ThreadStore] Resolved thread {thread_id}: '{thread.topic}'")
                     return True
 
             logger.warning(f"[ThreadStore] Thread {thread_id} not found for resolution")

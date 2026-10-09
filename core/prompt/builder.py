@@ -2302,6 +2302,10 @@ class UnifiedPromptBuilder:
                 "stm_summary": context.get("stm_summary"),  # STM context summary (dict or None)
                 "memory_id_map": self.context_gatherer.memory_id_map if hasattr(self.context_gatherer, 'memory_id_map') else {}
             }
+            # Sections the token budget emptied (never rendered; the agentic
+            # reuse gate reads it so "trimmed away" is not read as "absent").
+            if context.get("_budget_emptied"):
+                prompt_ctx["_budget_emptied"] = list(context["_budget_emptied"])
 
             build_time = time.perf_counter() - start_time
             logger.info(f"Prompt built in {build_time:.2f}s")
@@ -2507,6 +2511,15 @@ class UnifiedPromptBuilder:
         try:
             # Just get recent conversations for small-talk
             recent = await self.context_gatherer._get_recent_conversations(3)
+
+            # The gatherer is shared across turns and turn telemetry reads its
+            # `last_web_decision`: reset it here, or this turn inherits the
+            # previous turn's "triggered / N results" (2026-10-08).
+            self.context_gatherer.last_web_decision = {
+                "triggered": False, "source": "light_path",
+                "reason": "light path", "confidence": None,
+                "results": None, "error": None,
+            }
 
             context = {
                 "recent_conversations": recent,

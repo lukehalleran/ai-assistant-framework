@@ -2143,8 +2143,10 @@ class AgenticSearchController:
                     _reused_answer = _candidate_reused_answer
                 else:
                     _missing_key = self._first_unmet_retrieval_key(initial_context, session)
+                    _emptied = _missing_key in self._budget_emptied_keys(initial_context)
                     session.reuse_skipped_reason = (
                         f"decision prompt lacked admitted evidence: {_missing_key}"
+                        + (" (emptied by budget)" if _emptied else "")
                         if _missing_key
                         else "decision prompt lacked admitted evidence"
                     )
@@ -2766,7 +2768,23 @@ class AgenticSearchController:
                 continue
             if self._context_value_nonempty(initial_context.get(key)):
                 return key
+        # 2026-10-08 (BC-25, BC-47): evidence the token budget EMPTIED never
+        # reached the decision prompt either — post-budget "empty" is not
+        # "nothing was retrieved". TokenManager records the names it emptied.
+        emptied = self._budget_emptied_keys(initial_context)
+        for key in self._RETRIEVAL_EVIDENCE_KEYS:
+            if key == "web_search_results" and seeded_web:
+                continue
+            if key in emptied:
+                return key
         return None
+
+    @staticmethod
+    def _budget_emptied_keys(initial_context: Optional[Dict[str, Any]]) -> frozenset:
+        """Section names the token budget emptied (non-empty before, empty
+        after), as recorded under `_budget_emptied` by TokenManager."""
+        raw = (initial_context or {}).get("_budget_emptied") or ()
+        return frozenset(raw) if isinstance(raw, (list, tuple, set, frozenset)) else frozenset()
 
     def _compute_visible_sources(self, sections: List[str]) -> Dict[str, Any]:
         """A5 receipt: {"web_ids": ..., "sections": ...} at answer time."""
@@ -3370,6 +3388,13 @@ class AgenticSearchController:
         if threads:
             lines.append(f"- [UNRESOLVED THREADS]: {len(threads)} open threads")
 
+        # 2026-10-08 (BC-25): evidence, not counts — a today's-event title
+        # ("Rivera Hair Studio") the decision prompt never saw was bound to a
+        # professor. Titles verbatim, today only, capped.
+        _cal_line = self._todays_calendar_line(initial_context.get('google_calendar'))
+        if _cal_line:
+            lines.append(_cal_line)
+
         insights = initial_context.get('proactive_insights', [])
         if insights:
             lines.append(f"- [PROACTIVE INSIGHTS]: {len(insights)} insights")
@@ -3380,6 +3405,34 @@ class AgenticSearchController:
         header = "Context already gathered by retrieval pipeline:"
         footer = "Do NOT re-search for information already covered above. Use search_memory to fill gaps in specific collections not yet covered."
         return f"{header}\n" + "\n".join(lines) + f"\n{footer}"
+
+    _CAL_INVENTORY_MAX_EVENTS = 5
+    _CAL_INVENTORY_MAX_CHARS = 300
+
+    def _todays_calendar_line(self, events: Any) -> str:
+        """One inventory line listing TODAY's calendar event titles verbatim
+        (local date, as the controller's other time context uses), capped at
+        5 events / 300 chars. "" when there is nothing for today."""
+        if not isinstance(events, (list, tuple)) or not events:
+            return ""
+        today = datetime.now().strftime("%Y-%m-%d")
+        titles: List[str] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get("start", "") or "")[:10] != today:
+                continue
+            title = str(ev.get("summary", "") or "").strip()
+            if title:
+                titles.append(title)
+            if len(titles) >= self._CAL_INVENTORY_MAX_EVENTS:
+                break
+        if not titles:
+            return ""
+        line = "- [GOOGLE CALENDAR — TODAY]: " + "; ".join(titles)
+        if len(line) > self._CAL_INVENTORY_MAX_CHARS:
+            line = line[: self._CAL_INVENTORY_MAX_CHARS - 1].rstrip() + "…"
+        return line
 
     # Decision-phase digest budget: a few of the most recent turns, hard-truncated.
     # The inventory only reports counts; this gives the loop the actual content so it
@@ -3482,6 +3535,21 @@ class AgenticSearchController:
             + rendered
         )
 
+    @classmethod
+    def _clip_on_word_boundary(cls, text: str, limit: int) -> str:
+        """Clip to `limit` chars at the last whitespace, ending with "…"
+        (never mid-word; a whitespace-free run hard-clips). Text that fits,
+        and text carrying the action-claim marker, defer to
+        _clip_preserving_claim_marker so the marker survives."""
+        if len(text) <= limit or text.endswith("\n" + UNVERIFIED_CLAIM_MARKER):
+            return cls._clip_preserving_claim_marker(text, limit)
+        head = text[: limit - 1]
+        if not text[limit - 1].isspace():
+            cut = max(head.rfind(" "), head.rfind("\n"), head.rfind("\t"))
+            if cut > 0:
+                head = head[:cut]
+        return head.rstrip() + "…"
+
     @staticmethod
     def _clip_preserving_claim_marker(text: str, limit: int) -> str:
         """Clip `text` to `limit` chars, but when it ends with the action-
@@ -3521,9 +3589,12 @@ class AgenticSearchController:
                 continue
             lines.append(f"- User: {user_msg[:self._DIGEST_MSG_CHARS]}")
             if assistant_msg:
+                # 2026-10-08 (BC-73): Daemon's own earlier wording is labelled
+                # as such (never a source) and clipped on a word boundary — a
+                # reply cut mid-word ("…The Focas a") was read as a fact.
                 lines.append(
-                    "  Daemon: "
-                    + self._clip_preserving_claim_marker(assistant_msg, self._DIGEST_MSG_CHARS)
+                    "  Daemon (earlier, not a source): "
+                    + self._clip_on_word_boundary(assistant_msg, self._DIGEST_MSG_CHARS)
                 )
         if not lines:
             return ""

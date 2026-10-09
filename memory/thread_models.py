@@ -43,6 +43,17 @@ class ThreadStatus(str, Enum):
     STALE = "stale"
 
 
+class DisputedResolution(str):
+    """A resolution text whose OUTCOME is "disputed" (typed, not a phrase).
+
+    The user said the thread's premise was wrong / never true — neither done
+    nor cancelled. It travels through the existing (thread_id, resolution)
+    tuples as a ``str`` subclass so every caller keeps working; the store
+    checks the TYPE (``isinstance``) and takes the stale path instead of
+    marking the thread resolved.
+    """
+
+
 # Priority weights by thread type (higher = more urgent to surface)
 TYPE_PRIORITY = {
     ThreadType.DEADLINE: 1.0,
