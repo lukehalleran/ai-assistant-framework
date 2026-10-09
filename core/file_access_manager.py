@@ -15,6 +15,7 @@ Module Contract:
     - Dependencies: None (pure stdlib)
 """
 
+import asyncio
 import fnmatch
 import os
 import re
@@ -206,7 +207,8 @@ class FileAccessManager:
                     cmd.append(f"--exclude={excl}")
                 cmd.extend([pattern, str(search_dir)])
 
-                result = subprocess.run(
+                result = await asyncio.to_thread(
+                    subprocess.run,
                     cmd,
                     capture_output=True,
                     text=True,

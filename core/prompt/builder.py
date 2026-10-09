@@ -1391,7 +1391,7 @@ class UnifiedPromptBuilder:
             if chroma and hasattr(chroma, 'clear_embedding_cache'):
                 chroma.clear_embedding_cache()
                 try:
-                    chroma._cached_embed(user_input)
+                    await asyncio.to_thread(chroma._cached_embed, user_input)
                 except Exception:  # degrades: query embedding not pre-cached, each lookup embeds itself
                     pass  # Non-fatal; individual queries will embed as needed
 

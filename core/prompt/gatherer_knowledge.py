@@ -2262,7 +2262,7 @@ class KnowledgeRetrievalMixin:
                 # .intent_type dead-wiring class).
                 from models.model_manager import ModelManager  # lazy import: startup-cost (would newly load: httpx, openai, torch, transformers)
                 embedder = ModelManager._get_cached_embedder()
-                query_embedding = embedder.encode(query, convert_to_tensor=False)
+                query_embedding = await asyncio.to_thread(embedder.encode, query, convert_to_tensor=False)
 
                 scored_messages = []
                 for msg in messages:
@@ -2270,7 +2270,7 @@ class KnowledgeRetrievalMixin:
                     email_text = f"{msg.subject or ''} {msg.snippet or ''}".strip()
                     if not email_text:
                         continue
-                    email_embedding = embedder.encode(email_text, convert_to_tensor=False)
+                    email_embedding = await asyncio.to_thread(embedder.encode, email_text, convert_to_tensor=False)
 
                     # Cosine similarity
                     import numpy as np  # lazy import: startup-cost (would newly load: numpy)
