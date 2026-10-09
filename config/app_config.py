@@ -1563,6 +1563,56 @@ PERSONAL_CLAIM_CHECK_ENABLED = bool(int(os.getenv(
     "1" if PERSONAL_CLAIM_CHECK_ENABLED else "0",
 )))
 
+# Decision model (Jev via OpenRouter System One; 2026-10-08, default OFF). Per-role
+# off|shadow|active. The endpoint is a code constant, never a key; no env reads here.
+# Plan: docs/execution/decision_model/PLAN_20261008.md (D11, D14, D16).
+DECISION_MODEL_CFG = config.get("decision_model", {})
+DECISION_MODEL_ROLES = ("tone_arbiter", "heavy_topic")
+_DECISION_TONE_POLICIES = ("argmax", "weighted", "cumulative")
+
+
+def resolve_decision_mode(cfg: dict, role: str) -> str:
+    """Effective mode of one role; pure (BC-63: tests pass a dict). "off" unless the
+    master switch is exactly True and the role's value is a known mode (a YAML bare
+    ``off`` arrives as False and lands here); "active" also needs its prerequisite
+    (tone_policy set / heavy_topic_threshold in [0, 1]) else off plus one warning."""
+    if not isinstance(cfg, dict) or cfg.get("enabled") is not True or role not in DECISION_MODEL_ROLES:
+        return "off"
+    roles = cfg.get("roles")
+    raw = roles.get(role) if isinstance(roles, dict) else None
+    mode = raw.strip().lower() if isinstance(raw, str) else "off"
+    if mode not in ("shadow", "active"):
+        return "off"
+    if mode == "active" and role == "tone_arbiter":
+        if str(cfg.get("tone_policy") or "").strip().lower() not in _DECISION_TONE_POLICIES:
+            logger.warning("[DecisionModel] tone_arbiter 'active' without tone_policy; resolving to off")
+            return "off"
+    elif mode == "active":
+        thr = cfg.get("heavy_topic_threshold")
+        if isinstance(thr, bool) or not isinstance(thr, (int, float)) or not 0.0 <= thr <= 1.0:
+            logger.warning("[DecisionModel] heavy_topic 'active' without heavy_topic_threshold; resolving to off")
+            return "off"
+    return mode
+
+
+DECISION_MODEL_ENABLED: bool = DECISION_MODEL_CFG.get("enabled") is True
+DECISION_MODEL_SLUG: str = str(DECISION_MODEL_CFG.get("model", "typesafe/jev-1.13"))
+DECISION_MODEL_SERVED_MODELS: tuple = tuple(str(m) for m in (DECISION_MODEL_CFG.get("served_models") or ()))
+DECISION_MODEL_PROVIDER: str = str(DECISION_MODEL_CFG.get("provider", "TypeSafe"))
+DECISION_MODEL_TIMEOUT_S: float = float(DECISION_MODEL_CFG.get("timeout_s", 1.5))
+DECISION_MODEL_TONE_POLICY: str = str(DECISION_MODEL_CFG.get("tone_policy") or "unset").strip().lower()
+DECISION_MODEL_TONE_POLICY_PARAMS: dict = dict(DECISION_MODEL_CFG.get("tone_policy_params") or {})
+_dm_thr = DECISION_MODEL_CFG.get("heavy_topic_threshold")
+DECISION_MODEL_HEAVY_THRESHOLD: Optional[float] = None if _dm_thr is None else float(_dm_thr)
+DECISION_MODEL_MAX_STATE_CHARS: dict = {
+    str(k): int(v) for k, v in (DECISION_MODEL_CFG.get("max_state_chars") or {}).items()}
+
+
+def decision_model_mode(role: str) -> str:
+    """Effective mode for ``role`` from the loaded config."""
+    return resolve_decision_mode(DECISION_MODEL_CFG, role)
+
+
 # --------------------------------------------------------------------
 # Email Integration (Gmail, Outlook metadata read-only; 2026-09-01)
 # Doctrine: metadata-first, live-fetch-only, 5-min TTL in-memory cache

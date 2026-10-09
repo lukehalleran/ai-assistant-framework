@@ -76,6 +76,7 @@ except ImportError:  # pragma: no cover - triggered in trimmed test envs
     AsyncOpenAI = None  # type: ignore
 import httpx
 import asyncio
+import concurrent.futures
 import json
 
 # Every prefix tag an LLM call can surface as response text instead of raising:
@@ -486,6 +487,11 @@ def _slug_supports_prompt_caching(full_slug: str) -> bool:
     return False
 
 
+# Fixed destination of the credential-owning System One method (D1/D11/D12); never derived from
+# mutable manager state such as ``base_url``.
+_SYSTEM_ONE_ENDPOINT = "https://openrouter.ai/api/v1/systemone"
+
+
 class ModelManager:
     """Manager class for handling both local and API-based language models."""
 
@@ -502,6 +508,14 @@ class ModelManager:
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
 
         self.base_url = "https://openrouter.ai/api/v1"
+
+        # System One (decision model) transport: own httpx client, one serving loop.
+        self.system_one_transport = None  # public test seam: an httpx transport (e.g. httpx.MockTransport)
+        self._system_one_client = None
+        self._system_one_loop = None
+        self._system_one_handle = None    # the transport we built/were given for that client (retry handle)
+        self._system_one_closing = set()  # in-flight closes of retired clients (tasks / futures)
+        self._system_one_retained = []    # (client, owner_loop) not closable yet; retried on later calls
 
         # Initialize OpenAI clients only when the package is available AND an API key is provided.
         if OpenAI is not None and AsyncOpenAI is not None and self.api_key:
@@ -576,6 +590,7 @@ class ModelManager:
 
             # Create new clients with the new API key
             self.api_key = new_key
+            self._retire_system_one_client()
 
             sync_http_client = httpx.Client(
                 timeout=httpx.Timeout(120.0),
@@ -607,6 +622,91 @@ class ModelManager:
         except Exception as e:
             logger.error(f"[ModelManager] Failed to reinitialize clients: {e}")
             return False
+
+    def _retire_system_one_client(self) -> None:
+        """Forget the System One client and close it on its OWN loop (never awaited cross-loop).
+
+        Retained ``(client, owner_loop, transport, failed)`` entries are retried on every call, one
+        at a time, so one failing close can neither raise past the rest nor lose them.
+        """
+        old, owner, handle = self._system_one_client, self._system_one_loop, self._system_one_handle
+        self._system_one_client = self._system_one_loop = self._system_one_handle = None
+        items, self._system_one_retained = self._system_one_retained, []
+        if old is not None and not old.is_closed:
+            items.append((old, owner, handle, False))
+        try:
+            here = asyncio.get_running_loop()
+        except RuntimeError:
+            here = None
+        keep = []
+        try:
+            while items:
+                client, loop, handle, failed = items[0]
+                try:
+                    entry = self._close_retained(client, loop, handle, failed, here)
+                except Exception as exc:  # degrades: this client's close is retried on a later call
+                    logger.debug("[ModelManager] System One client close failed: %s", type(exc).__name__)
+                    entry = None if loop is None or loop.is_closed() else (client, loop, handle, True)
+                except BaseException:  # CancelledError etc.: re-raised below, the item stays retained
+                    items[0] = (client, loop, handle, True)
+                    raise
+                if entry is not None:
+                    keep.append(entry)
+                items.pop(0)  # only after the item is settled: an exceptional exit leaves it in items
+        finally:
+            self._system_one_retained = keep + items + self._system_one_retained
+
+    def _close_retained(self, client, loop, handle, failed, here):
+        """Close one retained client on its own loop; return the entry to retry later, else None.
+
+        owner running here -> task; running in another thread -> run_coroutine_threadsafe (future
+        kept); stopped and no loop running here -> run_until_complete; stopped while another loop
+        runs here -> retained; closed -> dropped. ``failed``: an earlier close attempt raised; httpx
+        marks a client CLOSED before closing its transport, so the retry targets our saved handle.
+        """
+        if client.is_closed and not failed:
+            return None
+        if loop is None or loop.is_closed():
+            # degrades: a client whose loop is gone cannot be closed; its sockets died with the loop
+            logger.debug("[ModelManager] System One client dropped: owner loop is closed")
+            return None
+        closer = handle.aclose if failed and handle is not None else client.aclose
+        if loop.is_running():
+            pending = loop.create_task(closer()) if here is loop else asyncio.run_coroutine_threadsafe(closer(), loop)
+            self._system_one_closing.add(pending)
+            pending.add_done_callback(self._system_one_closing.discard)
+            return None
+        if here is not None:
+            return (client, loop, handle, failed)  # retried by the next close/aclose/retire
+        loop.run_until_complete(closer())
+        return None
+
+    async def post_system_one(self, url: str, body: dict, *, timeout_s: float):
+        """POST ``body`` to OpenRouter's System One endpoint with this manager's key.
+
+        Returns None when no API key (caller maps to not_configured), else
+        ``(status_code, retry_after_header_or_None, response_text)``. httpx timeout and
+        transport errors propagate unchanged. Never logs the body, key or headers.
+        The key never leaves this class: the URL is checked before it is read (D12).
+        """
+        if url != _SYSTEM_ONE_ENDPOINT:
+            raise ValueError("System One URL is not the pinned OpenRouter endpoint")
+        key = self.api_key
+        if not key:
+            return None
+        loop = asyncio.get_running_loop()
+        client = self._system_one_client
+        if client is None or client.is_closed or self._system_one_loop is not loop:
+            self._retire_system_one_client()
+            transport = self.system_one_transport or httpx.AsyncHTTPTransport(
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2))
+            client = httpx.AsyncClient(transport=transport)
+            self._system_one_client, self._system_one_loop, self._system_one_handle = client, loop, transport
+        resp = await client.post(
+            url, json=body, timeout=httpx.Timeout(timeout_s),
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        )
+        return resp.status_code, resp.headers.get("retry-after"), resp.text
 
     def _stub_response(self, prompt: str) -> str:
         return "[API unavailable] Unable to reach the language model. Please check your API key and network connection."
@@ -771,9 +871,30 @@ class ModelManager:
         self.api_models[model_name] = api_model_name
     def close(self):
         """Gracefully close the HTTP client to avoid socket leak."""
+        self._retire_system_one_client()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:  # no loop here: safe to wait for closes scheduled on other threads' loops
+            concurrent.futures.wait([f for f in list(self._system_one_closing)
+                                     if isinstance(f, concurrent.futures.Future)], timeout=2)
         if hasattr(self.client, "_client"):
             self.client._client.close()
     async def aclose(self):
+        self._retire_system_one_client()
+        here = asyncio.get_running_loop()
+        mine = [t for t in list(self._system_one_closing) if isinstance(t, asyncio.Task) and t.get_loop() is here]
+        if mine:
+            await asyncio.gather(*mine, return_exceptions=True)
+        cross = [asyncio.wrap_future(f) for f in list(self._system_one_closing)
+                 if isinstance(f, concurrent.futures.Future)]
+        if cross:
+            _, left = await asyncio.wait(cross, timeout=2)
+            for f in cross:
+                if f.done() and not f.cancelled():
+                    f.exception()  # consume: a failed close was already best-effort
+            if left:
+                # degrades: a cross-thread client close was still running after 2 s; shutdown continues
+                logger.debug("[ModelManager] System One close still pending after 2s")
         if hasattr(self.async_client, "_client"):
             await self.async_client._client.aclose()
     def is_api_model(self, model_name):

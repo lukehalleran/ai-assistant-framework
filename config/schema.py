@@ -11,6 +11,7 @@ Pydantic v2 schema validation for config.yaml.
 
 import sys
 import logging
+import math
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -846,6 +847,80 @@ class PersonalClaimCheckSection(BaseModel):
     max_evidence_chars: int = Field(default=12000, ge=500)
 
 
+class DecisionModelRolesSection(BaseModel):
+    """Per-role rollout mode (D9): off | shadow | active."""
+    model_config = ConfigDict(extra="forbid")
+    tone_arbiter: Literal["off", "shadow", "active"] = "off"
+    heavy_topic: Literal["off", "shadow", "active"] = "off"
+
+    @field_validator("tone_arbiter", "heavy_topic", mode="before")
+    @classmethod
+    def _bare_off_is_false(cls, v: Any) -> Any:
+        # YAML 1.1 reads an unquoted `off` as False; map it back (a bare `on` stays invalid).
+        return "off" if v is False else v
+
+
+class DecisionModelMaxStateChars(BaseModel):
+    """Longest state per role; longer is unavailable, never truncated (D11)."""
+    model_config = ConfigDict(extra="forbid")
+    tone_arbiter: int = Field(default=80000, ge=1000)
+    heavy_topic: int = Field(default=80000, ge=1000)
+
+
+class DecisionModelSection(BaseModel):
+    """Decision model (2026-10-08, default OFF): Jev via OpenRouter System One as an
+    alternative arbiter. FORBIDS unknown keys: the endpoint is a code constant, so an
+    `endpoint`/`base_url` key must fail loudly (G-5). Not in the Settings UI."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    model: str = Field(default="typesafe/jev-1.13", min_length=1)
+    served_models: List[str] = Field(default_factory=lambda: ["typesafe/jev-1.13-20260917"], min_length=1)
+    provider: str = Field(default="TypeSafe", min_length=1)
+    timeout_s: float = Field(default=1.5, gt=0.0, le=5.0)
+    roles: DecisionModelRolesSection = Field(default_factory=DecisionModelRolesSection)
+    tone_policy: Literal["unset", "argmax", "weighted", "cumulative"] = "unset"
+    tone_policy_params: Dict[str, Any] = Field(default_factory=dict)
+    heavy_topic_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    max_state_chars: DecisionModelMaxStateChars = Field(default_factory=DecisionModelMaxStateChars)
+
+    @model_validator(mode="after")
+    def _active_needs_prerequisite(self) -> "DecisionModelSection":
+        if self.roles.tone_arbiter == "active" and self.tone_policy == "unset":
+            raise ValueError("decision_model.roles.tone_arbiter=active requires tone_policy != unset")
+        if self.roles.heavy_topic == "active" and self.heavy_topic_threshold is None:
+            raise ValueError("decision_model.roles.heavy_topic=active requires heavy_topic_threshold")
+        self._check_tone_policy_params()
+        return self
+
+    def _check_tone_policy_params(self) -> None:
+        """tone_policy_params exactly per policy (mirrored by utils.tone_detector._policy_bounds_ok):
+        weighted {"cuts": [3 strictly increasing finite floats in [0, 3]]}, cumulative {"taus": [3 finite
+        floats in (0, 1]]}, argmax/unset {}. Unknown keys are rejected."""
+        key = {"weighted": "cuts", "cumulative": "taus"}.get(self.tone_policy)
+        params = self.tone_policy_params
+        if key is None:
+            if params:
+                raise ValueError(f"decision_model.tone_policy_params must be empty for tone_policy={self.tone_policy}")
+            return
+        if set(params) != {key}:
+            raise ValueError(f"decision_model.tone_policy_params for {self.tone_policy} must be exactly {{'{key}': [c1, c2, c3]}}")
+        vals = params[key]
+
+        def finite(v: Any) -> bool:
+            try:
+                return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            except OverflowError:  # an int beyond float range is not a usable bound
+                return False
+
+        if not isinstance(vals, (list, tuple)) or len(vals) != 3 or not all(finite(v) for v in vals):
+            raise ValueError(f"decision_model.tone_policy_params.{key} must be three finite numbers")
+        if self.tone_policy == "weighted":
+            if not (all(0 <= v <= 3 for v in vals) and vals[0] < vals[1] < vals[2]):
+                raise ValueError("decision_model weighted cuts must be strictly increasing within [0, 3]")
+        elif not all(0 < v <= 1 for v in vals):
+            raise ValueError("decision_model cumulative taus must be within (0, 1]")
+
+
 class EmailIntegrationSection(BaseModel):
     """Email integration (2026-09-01): metadata-only read access to Gmail and Outlook
     via adapters conforming to EmailProvider protocol. Results cached in-memory (TTL).
@@ -1161,6 +1236,7 @@ class DaemonConfig(BaseModel):
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     grounding_check: GroundingCheckSection = Field(default_factory=GroundingCheckSection)
     personal_claim_check: PersonalClaimCheckSection = Field(default_factory=PersonalClaimCheckSection)
+    decision_model: DecisionModelSection = Field(default_factory=DecisionModelSection)
     email_integration: EmailIntegrationSection = Field(default_factory=EmailIntegrationSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
     light_prompt: LightPromptSection = Field(default_factory=LightPromptSection)

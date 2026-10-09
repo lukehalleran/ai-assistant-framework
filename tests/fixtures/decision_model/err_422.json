@@ -1,0 +1,7 @@
+{
+ "error": {
+  "message": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      \"tone\",\n      \"criteria\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  }\n]",
+  "code": 422
+ },
+ "user_id": "user_synthetic"
+}
