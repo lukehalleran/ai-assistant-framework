@@ -176,8 +176,8 @@ class CrossCollectionDeduplicator:
                             "from %d contradiction clusters",
                             total_affected, len(contradiction_clusters),
                         )
-            except Exception as e:
-                logger.debug("[CrossDedup] Staleness cascade failed (non-fatal): %s", e)
+            except Exception as e:  # degrades: documents citing contradicted claims not marked stale
+                logger.warning("[CrossDedup] Staleness cascade failed (non-fatal): %s", type(e).__name__)
 
         # 5. Execute deletions if not dry_run
         if not dry_run:
@@ -463,7 +463,8 @@ class CrossCollectionDeduplicator:
             try:
                 if stance_classifier.effective_stance(md) == "appraisal":
                     continue
-            except Exception:
+            except Exception as e:  # degrades: appraisal fact may be superseded as a contradiction
+                logger.warning("[CrossDedup] Stance check failed for a fact: %s", type(e).__name__)
                 pass
             subj, pred, obj = self._extract_triple(doc)
             if subj and pred:
@@ -689,7 +690,7 @@ class CrossCollectionDeduplicator:
                     self.chroma_store.update_metadata("facts", del_id, {
                         "truth_score": TruthScorer.apply_contradiction(0.7),
                     })
-                except Exception:
+                except Exception:  # degrades: superseded fact keeps its pre-contradiction truth score
                     pass  # Best-effort; fact may be about to be deleted anyway
 
             # Small boost for the kept (most recent) fact
@@ -704,7 +705,7 @@ class CrossCollectionDeduplicator:
                             self.chroma_store.update_metadata("facts", cluster.keep_id, {
                                 "truth_score": new_truth,
                             })
-                except Exception as e:
+                except Exception as e:  # degrades: surviving fact misses its small truth boost
                     logger.debug("[CrossDedup] Failed to boost kept fact %s: %s", cluster.keep_id, e)
 
         except ImportError:

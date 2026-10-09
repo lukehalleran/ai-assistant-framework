@@ -393,7 +393,7 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
         _scoped = stance_classifier.scope_unresolved_referent(s, o)
         if _scoped:
             s = _scoped
-    except Exception:
+    except Exception:  # degrades: unresolved-referent subject kept unscoped in triple
         pass
 
     # Drop trivial subjects/objects
@@ -505,7 +505,7 @@ def _get_nlp():
         import spacy  # lazy import: startup-cost
         _NLP = spacy.load("en_core_web_sm")
         logger.debug("[FactExtractor] spaCy loaded: en_core_web_sm")
-    except Exception as e:
+    except Exception as e:  # degrades: spaCy parsing and entity typing unavailable
         logger.debug(f"[FactExtractor] spaCy not available or failed to load: {e}")
     return _NLP
 
@@ -526,7 +526,7 @@ def _get_rebel():
             truncation=True
         )
         logger.debug("[FactExtractor] REBEL pipeline loaded: Babelscape/rebel-large")
-    except Exception as e:
+    except Exception as e:  # degrades: REBEL relation extraction unavailable, other extractors only
         logger.debug(f"[FactExtractor] REBEL not available or failed to load: {e}")
     return _REBEL
 
@@ -564,7 +564,7 @@ def _append_personal_preference_slots() -> None:
     """Add per-user 'my favorite X' slots from config (keeps source general)."""
     try:
         from config.app_config import PROFILE_PERSONAL_PREFERENCE_SLOTS  # lazy import: live-config
-    except Exception:
+    except Exception:  # degrades: personal favorite-X preference patterns not added
         return
     for slot in (PROFILE_PERSONAL_PREFERENCE_SLOTS or []):
         s = str(slot).strip().lower()
@@ -652,7 +652,7 @@ def _detect_entity_type(subject: str, nlp=None) -> str:
         tokens = [t for t in doc if t.pos_ == "PROPN"]
         if tokens and len(doc) <= 2:
             return "PERSON"
-    except Exception:
+    except Exception:  # degrades: entity type reported UNKNOWN for subject
         pass
     return "UNKNOWN"
 

@@ -319,7 +319,7 @@ def rank_expansion_candidates(
             if stance_classifier.effective_stance(getattr(edge, "metadata", None)) in (
                     "appraisal", "inferred"):
                 return False
-        except Exception:
+        except Exception:  # degrades: appraisal or inferred edge treated as live
             pass
         if _stale_fn is None:
             return True
@@ -337,7 +337,7 @@ def rank_expansion_candidates(
                 other = edge.target_id if edge.source_id == nid else edge.source_id
                 if other:
                     out.add(other)
-        except Exception:
+        except Exception:  # degrades: node treated as having no live neighbours
             pass
         return out
 
@@ -349,7 +349,7 @@ def rank_expansion_candidates(
             return True
         try:
             return len(graph_memory.get_relations(nid, direction="both")) >= threshold
-        except Exception:
+        except Exception:  # degrades: node never classified as hub, may over-expand
             return False
 
     # Hub-aware BFS: collect candidates reachable from seeds without expanding
@@ -397,7 +397,7 @@ def rank_expansion_candidates(
                 other = edge.target_id if edge.source_id == cid else edge.source_id
                 if other not in skip:
                     non_hub_edges += 1
-        except Exception:
+        except Exception:  # degrades: candidate ranked with zero non-hub edges
             pass
 
         score = min(non_hub_edges * 0.3, 1.0)

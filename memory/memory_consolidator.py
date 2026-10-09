@@ -105,7 +105,7 @@ def _format_recent_for_summary(recent: List[Dict[str, Any]],
             if marked.get("response") != e.get("response"):
                 a += "\n" + PERSONAL_CLAIM_MARKER
             out.append(f"User: {q}\nAssistant: {a}")
-        except Exception:
+        except Exception:  # degrades: malformed exchange omitted from summary input
             # best-effort; skip malformed entries
             continue
     return out
@@ -204,7 +204,7 @@ class MemoryConsolidator:
             try:
                 from memory.user_profile import UserProfile  # lazy import: startup-cost
                 self._user_profile = UserProfile()
-            except Exception as e:
+            except Exception as e:  # degrades: status-claim guard runs without profile facts
                 logger.debug(f"[Consolidator] UserProfile unavailable for status-claim guard: {e}")
                 return None
         return self._user_profile
@@ -355,8 +355,8 @@ class MemoryConsolidator:
             logger.info("[Consolidation] Stored new summary node")
             return True
 
-        except Exception as e:
-            logger.debug(f"[Consolidation] Error: {e}")
+        except Exception as e:  # degrades: due consolidation summary not stored this cycle
+            logger.warning(f"[Consolidation] Error: {type(e).__name__}")
             return False
 
     # --- Narrative Context Synthesis ---
@@ -426,7 +426,7 @@ Do NOT make up information not present in the summaries."""
             from utils.notes_common import daily_notes_base  # lazy import: live-config
             notes_path = daily_notes_base()
             return str(notes_path) if notes_path.exists() else None
-        except Exception as e:
+        except Exception as e:  # degrades: narrative synthesis reads no Obsidian notes
             logger.debug(f"[NarrativeSynthesis] Could not get notes path: {e}")
             return None
 
@@ -483,7 +483,7 @@ Do NOT make up information not present in the summaries."""
                                         break
                                     elif line.startswith("start_date:"):
                                         timestamp = line.split(":", 1)[1].strip()
-                        except Exception:
+                        except Exception:  # degrades: weekly summary timestamp falls back to folder name
                             pass
 
                     weekly_summaries.append({
@@ -542,7 +542,7 @@ Do NOT make up information not present in the summaries."""
                                     break
                                 elif line.startswith("start_date:"):
                                     timestamp = line.split(":", 1)[1].strip()
-                    except Exception:
+                    except Exception:  # degrades: monthly summary loses its frontmatter generated/start date
                         pass
 
                 monthly_summaries.append({
@@ -617,7 +617,7 @@ Do NOT make up information not present in the summaries."""
                                 if line.startswith("date:"):
                                     timestamp = line.split(":", 1)[1].strip()
                                     break
-                    except Exception:
+                    except Exception:  # degrades: daily note loses its frontmatter date timestamp
                         pass
 
                 daily_notes.append({
@@ -727,7 +727,7 @@ Do NOT make up information not present in the summaries."""
             streak_claims = []
             try:
                 streak_claims = streak_ledger(user_statements or [], as_of=_today)
-            except Exception as e:
+            except Exception as e:  # degrades: narrative omits streak block and stale-count check
                 logger.debug(f"[NarrativeSynthesis] Streak ledger unavailable: {e}")
             streak_block = streak_ledger_block(streak_claims, _today)
 

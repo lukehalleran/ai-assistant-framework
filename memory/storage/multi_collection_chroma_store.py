@@ -247,7 +247,7 @@ class MultiCollectionChromaStore:
             # requires an explicit re-embed migration, not a destroy-on-access.
             try:
                 existing = self.client.get_collection(name=name)
-            except Exception:
+            except Exception:  # degrades: collection unopenable; RuntimeError raised just below
                 existing = None
             existing_fn = self._collection_embedder_name(existing) if existing else "unknown"
             logger.error(
@@ -279,7 +279,7 @@ class MultiCollectionChromaStore:
             name = md.get("embedding_function") or md.get("embedding_function_name")
             if name:
                 return str(name)
-        except Exception:
+        except Exception:  # degrades: embedder name looked up via list_collections instead
             pass
         # Fallback: try the client API list for a match
         try:
@@ -289,7 +289,7 @@ class MultiCollectionChromaStore:
                     name = md.get("embedding_function") or md.get("embedding_function_name")
                     if name:
                         return str(name)
-        except Exception:
+        except Exception:  # degrades: mismatch log reports embedder name unknown
             pass
         return "unknown"
     def _initialize_all_collections(self):
@@ -365,7 +365,7 @@ class MultiCollectionChromaStore:
         offset = 0
         try:
             total = coll.count()
-        except Exception:
+        except Exception:  # degrades: legacy page scan runs without total-count early stop
             total = None
 
         while True:
@@ -490,7 +490,7 @@ class MultiCollectionChromaStore:
             try:
                 if isinstance(ts, str):
                     return datetime.fromisoformat(ts)
-            except Exception as e:
+            except Exception as e:  # degrades: item with bad timestamp sorts as oldest
                 logger.debug(f"[ChromaStore] Could not parse timestamp '{ts}': {e}, using minimum date")
             # fallback ensures items without timestamp don't crash
             return _dt.min
@@ -883,8 +883,8 @@ class MultiCollectionChromaStore:
         # Pre-embed once if not provided — avoids N re-embeddings for N collections.
         if query_embedding is None and query_text:
             try:
-                query_embedding = self._cached_embed(query_text)
-            except Exception as e:
+                query_embedding = await asyncio.to_thread(self._cached_embed, query_text)
+            except Exception as e:  # degrades: each collection query embeds the text itself
                 logger.debug(f"[BatchQuery] Pre-embed failed, falling back to per-query: {e}")
 
         async def query_single_collection(collection_name: str) -> tuple[str, List[Dict]]:

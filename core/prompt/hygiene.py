@@ -29,6 +29,7 @@ Module Contract
   - Logging of dedup actions and backfill progress
 """
 
+import asyncio
 import re
 import numpy as np
 from typing import Dict, List, Optional, Any
@@ -304,7 +305,7 @@ class ContentHygiene:
                     # Check against existing deduplicated items
                     if embedder:
                         try:
-                            item_embedding = embedder.encode(normalized[:512], convert_to_numpy=True)
+                            item_embedding = await asyncio.to_thread(embedder.encode, normalized[:512], convert_to_numpy=True)
 
                             for seen_emb, _ in seen_embeddings:
                                 similarity = np.dot(item_embedding, seen_emb) / (

@@ -661,7 +661,7 @@ def _corpus_entries(corpus_manager, since: datetime, until: datetime) -> list[di
         try:
             if utils.is_junk_conversation_doc(e.get("query", ""), e.get("response", "")):
                 continue
-        except Exception:
+        except Exception:  # degrades: junk conversation entry kept in pattern corpus
             pass
         e = dict(e)
         e["_ts"] = ts
@@ -849,7 +849,7 @@ def _events_tone(query, telemetry_path, since, until, result):
                 continue
             try:
                 row = json.loads(line)
-            except Exception:
+            except Exception:  # degrades: malformed tone-log line skipped from pattern events
                 continue
             if row.get("test_env"):
                 continue
@@ -954,7 +954,7 @@ def _note_frontmatter_and_emotion(text: str) -> tuple[dict, str]:
                 parsed = yaml.safe_load(text[3:end])
                 if isinstance(parsed, dict):
                     fm = parsed
-            except Exception:
+            except Exception:  # degrades: daily-note frontmatter fields ignored for patterns
                 pass
     emotion = ""
     m = _re.search(r"^##\s+Emotional\s+State\s*\n(.+)$", text,
@@ -982,7 +982,7 @@ def _events_daily_notes(query, since, until, result):
     while cur <= until.date():
         try:
             text = read_daily_note(cur, vault)
-        except Exception:
+        except Exception:  # degrades: unreadable daily note absent from pattern events
             text = None
         if text:
             fm, emotion = _note_frontmatter_and_emotion(text)
@@ -1074,7 +1074,7 @@ def _events_content_type(query, corpus_manager, since, until, result):
     for e in _corpus_entries(corpus_manager, since, until):
         try:
             ct = detect_content_type(e.get("query", ""))
-        except Exception:
+        except Exception:  # degrades: entry missing from content-type pattern events
             continue
         if ct.content_type and ct.content_type.lower() in wanted:
             events.append((e["_ts"], ExemplarRef(

@@ -179,7 +179,7 @@ class MemoryCoordinator:
                 return ci
             except (CorruptStoreError, StoreVersionError):
                 raise
-            except Exception as e:
+            except Exception as e:  # degrades: staleness tracking off this session, no cascade
                 logger.debug(f"[MemoryCoordinator] Claim index init failed (non-fatal): {e}")
                 return None
 
@@ -201,8 +201,8 @@ class MemoryCoordinator:
                     model_manager=model_manager,
                 )
                 logger.debug("[MemoryCoordinator] Fact verification gate initialized")
-        except Exception as e:
-            logger.debug(f"[MemoryCoordinator] Fact verifier init failed (non-fatal): {e}")
+        except Exception as e:  # degrades: fact verification gate off all session, conflicts stored unflagged
+            logger.warning(f"[MemoryCoordinator] Fact verifier init failed (non-fatal): {type(e).__name__}")
 
         self._storage = MemoryStorage(
             corpus_manager=corpus_manager,
@@ -236,7 +236,7 @@ class MemoryCoordinator:
             if app_config.THREAD_SURFACING_ENABLED:
                 self.thread_store = thread_store.ThreadStore(chroma_store=chroma_store)
                 logger.debug("[MemoryCoordinator] Thread store initialized")
-        except Exception as e:
+        except Exception as e:  # degrades: open-thread surfacing disabled this session
             logger.debug(f"[MemoryCoordinator] Thread store init failed (non-fatal): {e}")
 
         # Initialize proactive context surfacer
@@ -249,7 +249,7 @@ class MemoryCoordinator:
                     model_manager=model_manager,
                 )
                 logger.debug("[MemoryCoordinator] Context surfacer initialized")
-        except Exception as e:
+        except Exception as e:  # degrades: proactive graph context surfacing disabled this session
             logger.debug(f"[MemoryCoordinator] Context surfacer init failed (non-fatal): {e}")
 
         # Initialize shutdown processor for end-of-session consolidation
@@ -385,7 +385,7 @@ class MemoryCoordinator:
                             self.thread_store.resolve_thread(
                                 tid, "auto-resolved: completion signal in user message"
                             )
-            except Exception as e:
+            except Exception as e:  # degrades: completed thread stays open and may resurface
                 logger.debug(f"[MemoryCoordinator] Quick thread resolution failed (non-fatal): {e}")
 
         return memory_id
@@ -491,7 +491,7 @@ class MemoryCoordinator:
         try:
             if hasattr(self.topic_manager, 'detect_topic'):
                 return self.topic_manager.detect_topic(text) or 'general'
-        except Exception:
+        except Exception:  # degrades: turn topic falls back to general
             pass
         return 'general'
 

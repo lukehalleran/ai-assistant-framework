@@ -1,5 +1,6 @@
 """System routes: GET /api/status (memory stats) and GET /api/graph (knowledge graph JSON)."""
 
+import asyncio
 import json
 import os
 import threading
@@ -139,6 +140,12 @@ async def sync_notes_status(request: Request):
     return request.app.state.daemon.notes_sync.snapshot()
 
 
+def _load_graph_json(path):
+    """Blocking read of the graph file; called via asyncio.to_thread."""
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 @router.get("/graph")
 async def graph(request: Request, limit: int = 300):
     """Read-only knowledge-graph payload for the (stretch) graph view.
@@ -161,8 +168,7 @@ async def graph(request: Request, limit: int = 300):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Knowledge graph file not found.")
 
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = await asyncio.to_thread(_load_graph_json, path)
 
     raw_nodes = data.get("nodes", {})
     raw_edges = data.get("edges", [])
