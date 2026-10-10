@@ -6,7 +6,10 @@ Used by orchestrator to determine response strategy.
 """
 
 from dataclasses import dataclass
+import math
+import re
 from typing import Optional, List, Dict, Any
+from config import app_config
 from utils.tone_detector import CrisisLevel, ToneAnalysis, detect_crisis_level
 from utils.need_detector import NeedType, NeedAnalysis, detect_need_type
 
@@ -20,6 +23,71 @@ class EmotionalContext:
     tone_trigger: str
     need_trigger: str
     explanation: str
+    # Content-free decision-model receipt from ToneAnalysis (labels and numbers only);
+    # None when the detector returned before the arbiter stage. Plan 2026-10-08 D13.
+    arbiter_receipt: Optional[Dict[str, Any]] = None
+
+
+# receipt key -> record field; scalar labels/numbers only (D13, BC-72: no message text, ever)
+_TONE_DM_SCALARS = (
+    ("mode", "tone_dm_mode"), ("status", "tone_dm_status"), ("reason", "tone_dm_reason"),
+    ("level", "tone_dm_level"), ("decision_confidence", "tone_dm_decision_confidence"),
+    ("policy", "tone_dm_policy"), ("retried", "tone_dm_retried"),
+    ("latency_ms", "tone_dm_latency_ms"), ("served_model", "tone_dm_served_model"),
+    ("provider", "tone_dm_provider"), ("cost_usd", "tone_dm_cost_usd"),
+    ("agrees", "tone_dm_agrees"),
+)
+
+
+_TONE_DM_NUMERIC = frozenset({"decision_confidence", "latency_ms", "cost_usd"})
+_DM_LABEL_RE = re.compile(r"[A-Za-z0-9_.\-/~]{1,60}")
+
+
+def _dm_scalar(value: Any) -> Any:
+    """A label (identifier-shaped str, no spaces), bool or finite number; anything else is
+    dropped or replaced by ``invalid_label`` so free text can never ride a receipt field."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str):
+        return value if _DM_LABEL_RE.fullmatch(value) else "invalid_label"
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value
+    return None
+
+
+def tone_receipt_fields(ctx: Optional[EmotionalContext]) -> Dict[str, Any]:
+    """Flatten the tone arbiter receipt into ``tone_dm_*`` + ``tone_arbiter_backend`` fields.
+
+    Always returns the mode, a non-empty status and the backend: a turn whose arbiter never
+    ran (no receipt, off mode, early return) records the resolved mode, status ``not_run`` and
+    backend ``none`` rather than an empty field (BC-47). Never raises.
+    """
+    try:
+        receipt = getattr(ctx, "arbiter_receipt", None)
+        receipt = receipt if isinstance(receipt, dict) else {}
+        out: Dict[str, Any] = {}
+        for src, dst in _TONE_DM_SCALARS:
+            if src in receipt:
+                value = _dm_scalar(receipt[src])
+                if src in _TONE_DM_NUMERIC and isinstance(value, str):
+                    value = None  # a number field never carries a label
+                out[dst] = value
+        probs = receipt.get("probs")
+        if isinstance(probs, (list, tuple)) and len(probs) == 4:
+            for i, p in enumerate(probs):
+                if isinstance(p, (int, float)) and not isinstance(p, bool) and math.isfinite(p):
+                    out[f"tone_dm_p{i}"] = round(float(p), 3)
+        out["tone_dm_deciding_level"] = _dm_scalar(
+            receipt.get("llm_level") or (receipt.get("level") if receipt.get("backend") == "jev" else None)
+        )
+        if not out.get("tone_dm_mode"):
+            out["tone_dm_mode"] = app_config.decision_model_mode("tone_arbiter")
+        if not out.get("tone_dm_status"):
+            out["tone_dm_status"] = "not_run"
+        out["tone_arbiter_backend"] = _dm_scalar(receipt.get("backend")) or "none"
+        return out
+    except Exception:  # degrades: the tone receipt fields are absent from this turn's record
+        return {}
 
 
 async def analyze_emotional_context(
@@ -61,7 +129,8 @@ async def analyze_emotional_context(
         need_confidence=need.confidence,
         tone_trigger=tone.trigger,
         need_trigger=need.trigger,
-        explanation=f"{tone.explanation} | {need.explanation}"
+        explanation=f"{tone.explanation} | {need.explanation}",
+        arbiter_receipt=getattr(tone, "arbiter_receipt", None),
     )
 
 
