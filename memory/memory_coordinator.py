@@ -31,11 +31,12 @@ from __future__ import annotations
 
 import uuid
 from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from datetime import datetime as _dt
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import os as _os
+import time as _time
 
 from utils.logging_utils import get_logger
 from utils.safe_json import CorruptStoreError, StoreVersionError
@@ -268,6 +269,21 @@ class MemoryCoordinator:
         )
 
         logger.debug("[MemoryCoordinator] All components initialized")
+
+    def advance_session_window(self, started_at_epoch: float) -> None:
+        """Start a new shutdown window at a completed idle flush's START time
+        (2026-10-10, BC-30/BC-58). ``session_start`` scopes every shutdown pass
+        (reflection, summaries, facts, ...) to corpus entries with ts >= it, and
+        the flush already covered everything before the run began; a turn that
+        arrived DURING the run is at/after the run start, so it stays in the next
+        window. Forward-only. The ShutdownProcessor holds its own copy (set once
+        at construction), so both move together."""
+        elapsed = max(0.0, _time.time() - float(started_at_epoch))
+        new_start = self._now() - timedelta(seconds=elapsed)
+        if isinstance(self.session_start, datetime) and new_start <= self.session_start:
+            return
+        self.session_start = new_start
+        self._shutdown.session_start = new_start
 
     # --------- time helpers (prefer TimeManager) ---------
     def _now(self):
