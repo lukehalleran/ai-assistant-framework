@@ -213,14 +213,14 @@
         "text": "elif \"/\" in pronouns_lower:",
         "ordinal": 1
       },
-      "source_sha256": "9f6a7bf8c11aa361d8d512dc8ac6b2623c3bbb36d799c59733ecac01da69721d",
+      "source_sha256": "47d873b4b295d9d0b1e20bd087cf2302db2d5ef6dba37efa7ac1a20b1089fd45",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-001): file edited by the oct08 turn-audit branch (one stream accumulator → smart_join, BC-92, plus its import); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-09 (owner-approved, CGR-20261009-001): file edited to add the content-free tone receipt fields to _last_turn_signals in build_full_prompt; this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-10-09); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-10-09",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-001): file edited by the oct08 turn-audit branch (one stream accumulator → smart_join, BC-92, plus its import); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-09 (owner-approved, CGR-20261009-001): file edited to add the content-free tone receipt fields to _last_turn_signals in build_full_prompt; this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-10 (owner-approved, CGR-20261010-004): file edited for the thread_dispute POST_RESPONSE_HOOKS entry; this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-10); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-10",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": "CGR-20261009-001"
+      "request": "CGR-20261010-004"
     },
     {
       "anchor": {
@@ -238,14 +238,14 @@
         "text": "if \"(today)\" in rel.lower():",
         "ordinal": 1
       },
-      "source_sha256": "ba06ca7b8eddc708b9bcb24abd49acf90e176ddbd5eeb16aebe4b57c1b667c85",
+      "source_sha256": "cfe0e79772d999496772da983a64caa564ae1c166e2373aad0e8071c34f7ce3e",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(today)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-10-02",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(today)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-10 (owner-approved, CGR-20261010-004): file edited for a stale comment naming the index_available() consumer; this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-10); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-10",
       "evidence": "docs/execution/review_20260922/REVIEW.md",
-      "request": "CGR-20261002-001"
+      "request": "CGR-20261010-004"
     },
     {
       "anchor": {
@@ -263,14 +263,14 @@
         "text": "elif \"(yesterday)\" in rel.lower():",
         "ordinal": 1
       },
-      "source_sha256": "ba06ca7b8eddc708b9bcb24abd49acf90e176ddbd5eeb16aebe4b57c1b667c85",
+      "source_sha256": "cfe0e79772d999496772da983a64caa564ae1c166e2373aad0e8071c34f7ce3e",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(yesterday)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-10-02); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-10-02",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Parses the '(yesterday)' label produced by the relative-time formatter. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-001): file edited by the session-audit branch (fix/sep27-session-audit); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-09-27 (owner-approved, CGR-20260927-002): file edited by lane B (fix/sep27-laneB-followups); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-10 (owner-approved, CGR-20261010-004): file edited for a stale comment naming the index_available() consumer; this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-10); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-10",
       "evidence": "docs/execution/review_20260922/REVIEW.md",
-      "request": "CGR-20261002-001"
+      "request": "CGR-20261010-004"
     },
     {
       "anchor": {
