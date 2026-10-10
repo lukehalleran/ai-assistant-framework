@@ -45,6 +45,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
+from utils.url_detect import contains_url
 from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher, prefix_only_hits
 from memory.fact_source import strip_quoted_correspondence
 import utils.temporal_resolver as temporal_resolver
@@ -346,7 +347,9 @@ _ANAPHORIC_OPENERS: frozenset = frozenset({
 })
 
 
-def is_anaphoric_continuation(q: str, max_words: int = 30) -> bool:
+def is_anaphoric_continuation(
+    q: str, max_words: int = 30, prior_text: Optional[str] = None
+) -> bool:
     """
     True when the message's SUBJECT lives in the previous exchange: it opens
     with a bare referential pronoun ("It was maybe 3 years of...") or repairs
@@ -371,6 +374,14 @@ def is_anaphoric_continuation(q: str, max_words: int = 30) -> bool:
     raining") — inheriting the prior topic there is a soft, low-cost hint,
     while a false topic-shift assertion on a real continuation was the
     demonstrated failure.
+
+    A message that BRINGS ITS OWN referent is not a continuation even when it
+    opens with a pronoun (2026-10-08: "This is evil holy shit people defending
+    this https://www.cnn.com/..." inherited the previous topic "Meeting
+    Confusion" for three turns): it carries a URL, or — when ``prior_text``
+    (the previous exchange) is given — names an entity absent from it
+    (``stm_analyzer.novel_named_entities``). ``prior_text=None`` skips the
+    entity test (callers without the previous exchange keep the old behaviour).
     """
     ql = _normalize(q)
     if not ql:
@@ -378,6 +389,13 @@ def is_anaphoric_continuation(q: str, max_words: int = 30) -> bool:
     words = ql.split()
     if len(words) > max_words:
         return False
+    if contains_url(q):
+        return False
+    if prior_text is not None:
+        # stm_analyzer imports query_checker at module level.
+        from core.stm_analyzer import novel_named_entities  # lazy import: cycle
+        if novel_named_entities(q, prior_text):
+            return False
     if any(m in ql for m in _REFERENT_CORRECTION_MARKERS):
         return True
     first = words[0].strip(".,!…:;'\"")

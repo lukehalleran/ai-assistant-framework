@@ -664,6 +664,16 @@ class ContextPipeline:
                     or ""
                 )
             answers_last_question = is_continuation_answer(query, str(last_response))
+            # Previous exchange (both sides) lets the detector tell a pronoun
+            # opener that names a NEW entity from a true continuation.
+            prior_text = (
+                " ".join(
+                    str(last_exchange.get(k))
+                    for k in ("query", "user", "response", "assistant", "content")
+                    if last_exchange.get(k)
+                )
+                if isinstance(last_exchange, dict) else None
+            )
             if (
                 isinstance(prev_topic, str)
                 and prev_topic.strip()
@@ -673,7 +683,7 @@ class ContextPipeline:
                 # 2-word riff mid-thread produced topic "Tactical Gear" and a
                 # gear-brand reply to a joke.
                 and (
-                    is_anaphoric_continuation(query)
+                    is_anaphoric_continuation(query, prior_text=prior_text)
                     or is_fragment_continuation(query)
                     or answers_last_question
                 )
