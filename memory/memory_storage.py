@@ -88,6 +88,20 @@ SUMMARIZE_AT_SHUTDOWN_ONLY = os.getenv("SUMMARIZE_AT_SHUTDOWN_ONLY", "1").strip(
 _FACT_EXTRACT_PASTE_CHARS = int(os.getenv("FACT_EXTRACT_PASTE_CHARS", "1500"))
 
 
+def is_paste_sized(text: str) -> bool:
+    """True when a message is long enough to be treated as pasted material.
+    THE paste-size test — the per-turn guard and the shutdown LLM-extraction
+    path (memory.llm_fact_extractor) both call it (2026-10-10)."""
+    return len(text or "") > _FACT_EXTRACT_PASTE_CHARS
+
+
+def subject_is_user_anchored(subject) -> bool:
+    """THE user-anchored test of the paste guard: the subject is the user or
+    a user-owned referent ("user's …")."""
+    s = str(subject or "").strip().lower()
+    return s == "user" or s.startswith("user's ")
+
+
 def _paste_guard_filter(query: str, facts: list) -> list:
     """Paste guard (2026-08-29): a paste-sized message is mostly DOCUMENT
     text, and the regex extractor happily mines it — a pasted syllabus stored
@@ -96,14 +110,13 @@ def _paste_guard_filter(query: str, facts: list) -> list:
     'questions'). On long messages keep only USER-anchored triples: the
     user's own narration ("I have the docs") still yields facts; document
     boilerplate does not. Under-fires by design."""
-    if len(query or "") <= _FACT_EXTRACT_PASTE_CHARS:
+    if not is_paste_sized(query):
         return facts
 
     def _user_anchored(item) -> bool:
         md = item.get("metadata", {}) if isinstance(item, dict) \
             else (getattr(item, "metadata", None) or {})
-        s = str(md.get("subject") or md.get("subj") or "").strip().lower()
-        return s == "user" or s.startswith("user's ")
+        return subject_is_user_anchored(md.get("subject") or md.get("subj"))
 
     kept = [f for f in facts if _user_anchored(f)]
     if len(kept) != len(facts):
