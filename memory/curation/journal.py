@@ -12,12 +12,13 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List
 
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 
 logger = get_logger("curation_journal")
 
-_PROD_JOURNAL_PATH = os.path.join("logs", "curation_audit.jsonl")
-_TEST_JOURNAL_PATH = os.path.join("logs", "test_curation_audit.jsonl")
+_PROD_JOURNAL_PATH = store_path(os.path.join("logs", "curation_audit.jsonl"))
+_TEST_JOURNAL_PATH = store_path(os.path.join("logs", "test_curation_audit.jsonl"))
 _DEFAULT_JOURNAL_PATH = _PROD_JOURNAL_PATH
 
 

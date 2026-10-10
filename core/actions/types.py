@@ -20,12 +20,13 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+from utils.bootstrap import store_path
 from utils.safe_json import atomic_write_json
 
 try:
     from config.app_config import PENDING_ACTIONS_STORE_PATH as _CFG_STORE_PATH
 except Exception:
-    _CFG_STORE_PATH = "data/pending_actions.json"
+    _CFG_STORE_PATH = store_path("data/pending_actions.json")
 _STORE_PATH = _CFG_STORE_PATH
 
 logger = logging.getLogger("actions")

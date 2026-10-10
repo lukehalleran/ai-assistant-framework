@@ -57,6 +57,7 @@ from config.app_config import (
 )
 from config import app_config
 from core.intent_classifier import IntentClassifier, IntentResult, IntentType
+from utils.bootstrap import store_path
 from utils.turn_progress import emit as _progress_emit
 from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
 import utils.safe_json as safe_json
@@ -838,7 +839,7 @@ class ContextPipeline:
     # Tone carryover persistence. This is DERIVED, self-healing state (next
     # turn rewrites it), so unlike real stores it loads leniently — a missing
     # or corrupt file just means a cold start, never a startup abort.
-    _TONE_STATE_PATH = "data/tone_state.json"
+    _TONE_STATE_PATH = store_path("data/tone_state.json")
 
     _ELEVATED_TONE_MARKERS = (
         "concern", "medium", "high", "light_support", "elevated_support",

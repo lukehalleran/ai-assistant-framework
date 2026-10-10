@@ -28,12 +28,13 @@ import json
 import os
 import time
 
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json
 
 logger = get_logger("narrative_staleness")
 
-_DEFAULT_FLAG_PATH = os.path.join("data", "narrative_stale.json")
+_DEFAULT_FLAG_PATH = store_path(os.path.join("data", "narrative_stale.json"))
 
 
 def _flag_path() -> str:

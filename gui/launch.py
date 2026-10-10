@@ -84,6 +84,7 @@ import gradio as gr
 from gradio import themes
 import copy
 from gui.handlers import handle_submit
+from utils.bootstrap import store_path
 from utils.conversation_logger import get_conversation_logger
 from gui.wizard import WizardState, process_wizard_message, get_welcome_message
 from gui.theme import DARK_CHATBOT_CSS, get_dark_theme
@@ -933,7 +934,7 @@ def build_demo(orchestrator, dev_tabs=None):
         except (AttributeError, TypeError):
             pass
         # Fallback to the default used in utils.logging_utils.configure_logging
-        return os.path.abspath('daemon_debug.log')
+        return os.path.abspath(store_path('daemon_debug.log', 'logs/daemon_debug.log'))
 
     def get_recent_app_log(num_lines=200):
         """Read tail of the main app .log file (daemon_debug.log by default)."""

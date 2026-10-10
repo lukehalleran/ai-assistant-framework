@@ -44,12 +44,13 @@ from pathlib import Path
 from typing import List, Optional
 
 import memory.relation_classifier as relation_classifier
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json
 
 logger = get_logger("learned_relations")
 
-_STORE_PATH = "data/learned_relations.json"
+_STORE_PATH = store_path("data/learned_relations.json")
 
 MAX_PROMOTED = 15
 MAX_TRACKED = 200

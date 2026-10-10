@@ -83,7 +83,7 @@ def backup_targets(*, existing_only: bool = True) -> List[str]:
     from memory.learned_relations import _STORE_PATH as learned_relations_path  # lazy import: layering
 
     # Narrative staleness flag path — resolved at call time for test sandboxing
-    narrative_stale_path = os.getenv("NARRATIVE_STALE_FLAG_PATH", os.path.join("data", "narrative_stale.json"))
+    narrative_stale_path = os.getenv("NARRATIVE_STALE_FLAG_PATH", bootstrap.store_path(os.path.join("data", "narrative_stale.json")))
 
     candidates = [
         KNOWLEDGE_GRAPH_PERSIST_PATH,
@@ -96,9 +96,9 @@ def backup_targets(*, existing_only: bool = True) -> List[str]:
         # Post-07-14 stores (2026-07-15+)
         adaptive_exemplars_path,
         learned_relations_path,
-        os.path.join("data", "tone_state.json"),  # context_pipeline._TONE_STATE_PATH
-        os.path.join("data", "pending_actions.json"),  # core.actions.types.PendingActionsStore
-        os.path.join("data", "curation_queue.json"),  # memory.curation.engine._DEFAULT_QUEUE_PATH
+        bootstrap.store_path(os.path.join("data", "tone_state.json")),  # context_pipeline._TONE_STATE_PATH
+        bootstrap.store_path(os.path.join("data", "pending_actions.json")),  # core.actions.types.PendingActionsStore
+        bootstrap.store_path(os.path.join("data", "curation_queue.json")),  # memory.curation.engine._DEFAULT_QUEUE_PATH
         narrative_stale_path,  # utils.narrative_staleness._DEFAULT_FLAG_PATH
     ]
     return [p for p in candidates if p and (not existing_only or os.path.isfile(p))]

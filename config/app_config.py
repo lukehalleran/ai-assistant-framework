@@ -34,7 +34,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
 from utils.logging_utils import get_logger
-from utils.bootstrap import resolve_bundled_path
+from utils.bootstrap import resolve_bundled_path, store_path
 
 logger = get_logger("config")
 
@@ -1182,7 +1182,9 @@ PATTERN_KEYWORD_HIT_CAP: int = int(PATTERN_CFG.get("keyword_hit_cap", 5000))
 # See utils/backup_manager.py; restore via scripts/restore_backup.py.
 BACKUP_CFG = config.get("backup", {}) or {}
 BACKUP_ENABLED: bool = bool(BACKUP_CFG.get("enabled", True))
-BACKUP_DIR: str = str(os.getenv("DAEMON_BACKUP_DIR", BACKUP_CFG.get("dir", os.path.join("data", "backups"))))
+# store_path: a relative dir (the shipped "data/backups") follows the data-root
+# authority in a frozen app; DAEMON_BACKUP_DIR and absolute configs win (2026-10-10).
+BACKUP_DIR: str = str(os.getenv("DAEMON_BACKUP_DIR", store_path(str(BACKUP_CFG.get("dir", os.path.join("data", "backups"))))))
 BACKUP_RETENTION: int = int(BACKUP_CFG.get("retention", 5))
 BACKUP_MIN_INTERVAL_HOURS: float = float(BACKUP_CFG.get("min_interval_hours", 12))
 BACKUP_INCLUDE_CHROMA: bool = bool(BACKUP_CFG.get("include_chroma", True))

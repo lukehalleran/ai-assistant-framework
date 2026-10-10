@@ -30,6 +30,7 @@ import time
 from datetime import datetime
 from typing import Dict
 
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 
 logger = get_logger("log_rotation")
@@ -123,14 +124,16 @@ def run_startup_log_maintenance() -> Dict[str, int]:
         if rotate_if_large(TURN_TELEMETRY_PATH,
                            int(LOG_MAINTENANCE_TURN_RECORDS_MAX_MB * mb)):
             summary["rotated"] += 1
-        if rotate_if_large(os.path.join("logs", "daily_notes.log"),
+        if rotate_if_large(store_path(os.path.join("logs", "daily_notes.log")),
                            int(LOG_MAINTENANCE_DAILY_NOTES_MAX_MB * mb)):
             summary["rotated"] += 1
-        if archive_if_large(os.path.join("logs", "actions_audit.jsonl"),
+        if archive_if_large(store_path(os.path.join("logs", "actions_audit.jsonl")),
                             int(LOG_MAINTENANCE_AUDIT_MAX_MB * mb)):
             summary["archived"] += 1
+        # Archives live next to wherever configure_logging writes the log.
+        debug_dir = os.path.dirname(store_path("daemon_debug.log", "logs/daemon_debug.log")) or "."
         dbg = maintain_debug_archives(
-            ".",
+            debug_dir,
             compress_age_days=LOG_MAINTENANCE_DEBUG_COMPRESS_AGE_DAYS,
             keep_days=LOG_MAINTENANCE_DEBUG_KEEP_DAYS,
         )

@@ -23,6 +23,7 @@ Module Contract
 import json, os, logging
 from datetime import datetime, date, timedelta
 import utils.safe_json as safe_json
+from utils.bootstrap import store_path
 
 logger = logging.getLogger(__name__)
 
@@ -73,16 +74,16 @@ def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
 
 class TimeManager:
     def __init__(self, time_file="data/last_query_time.json"):
-        self.time_file = time_file
+        self.time_file = store_path(time_file)
         self.last_query_time = self._load_last_query_time()
         self.last_response_time = None
         self.current_message_time = None  # Timestamp of current message being processed
         self.previous_query_time = None  # Initialize - will be set by mark_query_time()
         # Active days tracking for memory decay
-        self.active_days_file = "data/active_days.json"
+        self.active_days_file = store_path("data/active_days.json")
         self.active_days = self._load_active_days()
         # Session tracking - fixed path since sessions are app-wide, not per-instance
-        self.session_file = "data/last_session_time.json"
+        self.session_file = store_path("data/last_session_time.json")
         self.last_session_end_time = self._load_last_session_time()
         # The PREVIOUS session's last user message (2026-09-05). "Time since
         # last session" used to be measured from last_session_end_time, which
