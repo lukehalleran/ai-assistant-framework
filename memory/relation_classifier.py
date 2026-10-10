@@ -195,6 +195,57 @@ def is_multi_valued_relation(relation: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Sensitive relations (2026-10-10, class: BC-46, BC-75). A profile fact whose
+# relation names self-harm / suicidality, trauma / abuse, substance use,
+# sexual health or a mental-illness diagnosis is true and worth KEEPING, but
+# must not ride into every prompt: a `self_harm` fact (an old crisis
+# disclosure) surfaced in [USER PROFILE] on a student-loans turn. Consumed by
+# UserProfile.get_relevant_facts' prompt-selection gate: a sensitive fact is
+# included only on an elevated-tone turn, a topically related query, or an
+# explicit ask about the user's own history. Held back, never deleted.
+# One categorized set + one pattern per family (not a phrase list per
+# symptom): exact names cover the extractor's core/learned vocabulary, the
+# pattern catches inventions of the same family.
+# --------------------------------------------------------------------------
+
+SENSITIVE_RELATIONS = frozenset({
+    # self-harm / suicidality
+    "self_harm", "self_harm_history", "self_injury", "suicidal_ideation",
+    "suicidal_thoughts", "suicide_attempt", "suicide_history", "suicidality",
+    # trauma / abuse
+    "trauma", "trauma_history", "childhood_trauma", "ptsd", "abuse_history",
+    "abused_by", "assault_history", "sexual_assault", "domestic_violence",
+    # substance use (previous_addiction is in the core vocabulary)
+    "previous_addiction", "addiction", "substance_use", "substance_abuse",
+    "drug_use", "alcohol_abuse", "alcohol_use_disorder", "sobriety",
+    "relapse", "overdose_history", "eating_disorder",
+    # sexual health
+    "sexual_health", "std_status", "sti_status", "hiv_status",
+    # mental-illness diagnosis families (generic `diagnosis`/`condition`/
+    # `symptom` are deliberately NOT here: they carry ordinary health facts)
+    "mental_health_diagnosis", "mental_illness", "psychiatric_diagnosis",
+    "bipolar_disorder", "schizophrenia",
+})
+
+_SENSITIVE_RELATION_RE = re.compile(
+    r"suicid|self_?harm|self_?injur|trauma|ptsd|(?:^|_)abus(?:e|ed|er|ive)(?:_|$)"
+    r"|assault|overdos|eating_disorder|addict|substance_(?:use|abuse)|sobriety"
+    r"|(?:^|_)(?:std|sti|hiv)(?:_|$)|bipolar|schizo|psychiatric"
+    r"|mental_(?:health_)?(?:diagnos|illness|disorder)"
+    r"|drug|psychedel|hallucinat"
+)
+
+
+def is_sensitive_relation(relation: str) -> bool:
+    """True when this relation names a sensitive personal-history family
+    (see SENSITIVE_RELATIONS). Case/whitespace-insensitive."""
+    rel = (relation or "").lower().strip().replace(" ", "_").replace("-", "_")
+    if not rel:
+        return False
+    return rel in SENSITIVE_RELATIONS or bool(_SENSITIVE_RELATION_RE.search(rel))
+
+
+# --------------------------------------------------------------------------
 # Keyed supersession (2026-10-08, class: BC-51, BC-55). A multi-valued
 # relation keeps several values current at once, but SOME values of a keyed
 # relation are revisions of one another: "kavarin 300 mg" then
