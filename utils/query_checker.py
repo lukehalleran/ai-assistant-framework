@@ -1278,62 +1278,82 @@ def _is_heavy_topic_heuristic(q: str) -> bool:
     return False
 
 
+class HeavyTopicModelUnavailable(RuntimeError):
+    """The configured heavy-topic model is not a registered model.
+
+    Raised instead of falling back to the shared active model;
+    ``analyze_query_async`` catches it and keeps the heuristic analysis.
+    """
+
+
+def _resolve_heavy_topic_model(model_manager) -> Optional[str]:
+    """Resolve ``HEAVY_TOPIC_MODEL`` to a registered ``api_models`` key.
+
+    An ``api_models`` key is returned as is; a registered full slug (an
+    ``api_models`` value) returns the first key, in sorted order, that maps
+    to it. Anything else returns None and logs one warning naming the
+    configured value. Never falls back to the active model.
+    """
+    api_models = getattr(model_manager, "api_models", None)
+    configured = HEAVY_TOPIC_MODEL
+    if isinstance(api_models, dict):
+        if configured in api_models:
+            return configured
+        for key in sorted(api_models):
+            if api_models[key] == configured:
+                return key
+    logger.warning(
+        "[QueryChecker] Heavy-topic model %r is not a registered model; "
+        "skipping the LLM heavy-topic check (heuristic stands)", configured
+    )
+    return None
+
+
 async def _classify_heavy_topic_llm(q: str, model_manager) -> bool:
     """
     Use LLM to classify topic as heavy/normal.
-    
+
+    The call names its model (``model_name=``); it never switches the shared
+    active model, so concurrent callers are unaffected.
+
     Args:
         q: Query text
         model_manager: ModelManager instance
-    
+
     Returns:
         True if heavy, False if normal
-    
+
     Raises:
+        HeavyTopicModelUnavailable if the configured model is not registered
         asyncio.TimeoutError if classification times out
         Exception if LLM call fails
     """
     if not model_manager or not hasattr(model_manager, "generate_once"):
         return False
-    
+
     # Build prompt
     prompt = _build_heavy_topic_prompt(q)
-    
-    # Preserve current model
-    prev_model = None
-    try:
-        if hasattr(model_manager, "get_active_model_name"):
-            prev_model = model_manager.get_active_model_name()
-        
-        # Switch to classifier model if registered
-        if hasattr(model_manager, "switch_model"):
-            if hasattr(model_manager, "api_models") and HEAVY_TOPIC_MODEL in model_manager.api_models:
-                model_manager.switch_model(HEAVY_TOPIC_MODEL)
-    except Exception as e:
-        logger.debug(f"[QueryChecker] Model switch failed: {e}")
-    
-    try:
-        # Call LLM with timeout
-        response = await asyncio.wait_for(
-            model_manager.generate_once(
-                prompt,
-                max_tokens=HEAVY_TOPIC_MAX_TOKENS
-            ),
-            timeout=HEAVY_TOPIC_TIMEOUT
-        )
-        
-        # Parse response
-        result = _parse_heavy_topic_response(response)
-        logger.debug(f"[QueryChecker] LLM heavy topic result: {result}")
-        return result
-        
-    finally:
-        # Restore previous model
-        try:
-            if prev_model and hasattr(model_manager, "switch_model"):
-                model_manager.switch_model(prev_model)
-        except Exception:
-            pass
+
+    model_key = _resolve_heavy_topic_model(model_manager)
+    if model_key is None:
+        raise HeavyTopicModelUnavailable(HEAVY_TOPIC_MODEL)
+
+    # Call LLM with timeout. disable_reasoning: max_tokens is a tiny budget
+    # that a reasoning model would spend entirely on its reasoning channel.
+    response = await asyncio.wait_for(
+        model_manager.generate_once(
+            prompt,
+            model_name=model_key,
+            max_tokens=HEAVY_TOPIC_MAX_TOKENS,
+            disable_reasoning=True,
+        ),
+        timeout=HEAVY_TOPIC_TIMEOUT
+    )
+
+    # Parse response
+    result = _parse_heavy_topic_response(response)
+    logger.debug(f"[QueryChecker] LLM heavy topic result: {result}")
+    return result
 
 
 def _build_heavy_topic_prompt(q: str) -> str:
