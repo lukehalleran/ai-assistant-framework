@@ -25,6 +25,33 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 
 
+def _daemon_running() -> bool:
+    try:
+        from utils.daemon_guard import daemon_running  # lazy import: optional-dependency (import failure must fail CLOSED)
+        return daemon_running()
+    except Exception as exc:  # fail CLOSED: without the real guard we cannot prove the Daemon is down
+        print(f"[daemon-guard] utils.daemon_guard unavailable ({exc!r}) - treating the Daemon as RUNNING; "
+              f"--execute is refused. Run from the repo root with the project interpreter.", file=sys.stderr)
+        return True
+
+
+def _build_chroma_store():
+    """The live path's Chroma store (main.py `_init_chroma_store`)."""
+    from config.app_config import CHROMA_PATH  # lazy import: startup-cost
+    # lazy import: startup-cost (loads the bge embedder + Chroma)
+    from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+    return MultiCollectionChromaStore(persist_directory=CHROMA_PATH)
+
+
+def _build_visual_store(chroma_store=None, data_dir: str = "data"):
+    """Build the store exactly as gui/handlers + gatherer_knowledge do:
+    WITH the chroma store. Without it `add_image` silently skips the Chroma
+    write (the `visual_memories` collection stayed empty while the FAISS
+    metadata held 48 entries)."""
+    from knowledge.visual_memory_store import VisualMemoryStore  # lazy import: startup-cost (faiss)
+    return VisualMemoryStore(chroma_store=chroma_store, data_dir=data_dir)
+
+
 def find_upload_images(upload_dir: str) -> list[str]:
     """Find all image files in the uploads directory."""
     if not os.path.isdir(upload_dir):
@@ -56,7 +83,6 @@ def find_obsidian_images(vault_path: str) -> list[str]:
 
 async def run_backfill(args):
     from knowledge.clip_manager import get_clip_manager
-    from knowledge.visual_memory_store import VisualMemoryStore
     from knowledge.visual_memory_pipeline import VisualMemoryPipeline
 
     # Collect images to process
@@ -90,7 +116,8 @@ async def run_backfill(args):
 
     if not args.execute:
         # Dry run — just check what would be ingested
-        store = VisualMemoryStore(data_dir="data")
+        # Read-only: has_hash needs only the FAISS metadata; no Chroma opened.
+        store = _build_visual_store(None)
         store.load()
         existing = store.get_stats()["total_images"]
 
@@ -132,7 +159,7 @@ async def run_backfill(args):
             print("Proceeding without captions (filename-only)")
             model_manager = None
 
-    store = VisualMemoryStore(data_dir="data")
+    store = _build_visual_store(_build_chroma_store())
     pipeline = VisualMemoryPipeline(clip, store, model_manager=model_manager)
 
     ingested = 0
@@ -167,11 +194,17 @@ def main():
     parser.add_argument("--obsidian", action="store_true", help="Also scan Obsidian vault for images")
     args = parser.parse_args()
 
+    # Guard FIRST (fail closed): a live Daemon holds the visual store in memory and re-saves it.
+    if args.execute and _daemon_running():
+        print("ABORT: a live Daemon main.py process is running (or could not be ruled out). Stop it first.")
+        return 1
+
     if not args.execute:
         print("=== DRY RUN (use --execute to actually ingest) ===")
 
     asyncio.run(run_backfill(args))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
