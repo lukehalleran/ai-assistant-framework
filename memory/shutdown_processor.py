@@ -114,6 +114,9 @@ REFLECTIONS_ENABLED = os.getenv("REFLECTIONS_ENABLED", "1").strip() not in ("0",
 REFLECTION_MAX_TOKENS = int(os.getenv("REFLECTION_MAX_TOKENS", "300"))
 REFLECTION_MODEL_ALIAS = os.getenv("LLM_REFLECTION_ALIAS", os.getenv("LLM_SUMMARY_ALIAS", "gpt-4o-mini"))
 REFLECTION_MIN_EXCHANGES = int(os.getenv("REFLECTION_MIN_EXCHANGES", "4"))
+# Max proposals implementation-tracked per shutdown (oldest-checked first);
+# bounds the phase-B wall time under the shared SHUTDOWN_TASK_TIMEOUT_S.
+IMPL_TRACKING_MAX_PER_SHUTDOWN = 40
 SUMMARY_MAX_BLOCKS_PER_SHUTDOWN = int(os.getenv("SUMMARY_MAX_BLOCKS_PER_SHUTDOWN", "1"))
 REFLECTION_MAX_EXCERPTS = int(os.getenv("REFLECTION_MAX_EXCERPTS", "0") or 0)
 REFLECTION_MAX_SUMMARIES = int(os.getenv("REFLECTION_MAX_SUMMARIES", "0") or 0)
@@ -1495,21 +1498,37 @@ JSON:"""
             if not chroma_store:
                 return
 
-            store = ProposalStore(chroma_store=chroma_store)
-            proposals = store.get_pending_and_approved()
-            if not proposals:
-                return
+            def _track_sync():
+                # Blocking chroma/file calls (list_all per update) — runs on a
+                # worker thread so it can't stall the phase-B gather's other
+                # tasks (2026-10-10, BC-69: 233 proposals blocked the loop
+                # ~40 s and the shared 60 s budget cancelled the thread pass).
+                store = ProposalStore(chroma_store=chroma_store)
+                proposals = store.get_pending_and_approved()
+                if not proposals:
+                    return 0, 0
+                # Oldest-checked first (never-tracked = 0), capped per run;
+                # the rest are picked up on later shutdowns.
+                proposals.sort(key=lambda p: getattr(p, "last_tracked_at", None) or 0.0)
+                total = len(proposals)
+                if total > IMPL_TRACKING_MAX_PER_SHUTDOWN:
+                    logger.info(
+                        f"[Shutdown] Implementation tracking: capping {total} "
+                        f"proposals to {IMPL_TRACKING_MAX_PER_SHUTDOWN} (oldest-checked first)"
+                    )
+                    proposals = proposals[:IMPL_TRACKING_MAX_PER_SHUTDOWN]
+                detector = ImplementationDetector(repo_path=".")
+                done = 0
+                for proposal in proposals:
+                    result = detector.detect_single(proposal, lightweight=True)
+                    if not result.skipped_reason:
+                        if store.update_tracking_metadata(proposal.id, result):
+                            done += 1
+                return done, total
 
-            detector = ImplementationDetector(repo_path=".")
-            updated = 0
-            for proposal in proposals:
-                result = detector.detect_single(proposal, lightweight=True)
-                if not result.skipped_reason:
-                    if store.update_tracking_metadata(proposal.id, result):
-                        updated += 1
-
+            updated, total = await asyncio.to_thread(_track_sync)
             if updated:
-                logger.info(f"[Shutdown] Implementation tracking: updated {updated}/{len(proposals)} proposals")
+                logger.info(f"[Shutdown] Implementation tracking: updated {updated}/{total} proposals")
 
         except Exception as e:
             logger.warning(f"[Shutdown] Implementation tracking failed: {e}")

@@ -37,6 +37,7 @@ Module Contract
   - Thread-safe with lock for concurrent access
 """
 import os
+import re
 import uuid
 
 import json
@@ -45,6 +46,7 @@ from datetime import datetime as _dt
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import threading
+from contextvars import ContextVar
 
 from utils.bootstrap import get_user_profile_path
 from utils.logging_utils import get_logger
@@ -128,6 +130,64 @@ def _cosine_scores(query: str, facts: List[Dict]) -> Optional[List[float]]:
         return [float(np.dot(q, np.asarray(v, dtype=float))) for v in f_vecs]
     except Exception:  # degrades: embedding failed, ranking falls back to word overlap
         return None
+
+
+# Sensitive-fact relevance (2026-10-10, class: BC-46, BC-75). A fact whose
+# relation is sensitive (relation_classifier.is_sensitive_relation) reaches the
+# prompt only when the turn is elevated-tone / an explicit history ask (the
+# caller passes sensitive_open=True) or the query is TOPICALLY related to it.
+# The cosine bar is deliberately stricter than RELEVANCE_COSINE_FLOOR (0.15,
+# which only ranks): an unrelated query still scores up to ~0.2 against any
+# fact, and for this class a false inclusion costs far more than a miss.
+SENSITIVE_RELEVANCE_COSINE_FLOOR = 0.30
+# Per-turn gate state set by the prompt gatherer around its
+# get_context_injection call (an explicit `sensitive_open=` argument wins).
+# A ContextVar, not an argument, so the call signature the gatherer's stubs
+# and other callers rely on is unchanged and concurrent turns cannot cross.
+# None = ungated (shutdown reflection, CLI print); the gatherer sets True/False.
+SENSITIVE_OPEN: ContextVar = ContextVar("profile_sensitive_open", default=None)
+_SENSITIVE_LEXICAL_GENERIC = frozenset({
+    "self", "history", "status", "type", "level", "mental", "health", "user",
+})
+_SENSITIVE_LEXICAL_PREFIX = 5
+
+
+def _sensitive_lexical_hit(query: str, fact: Dict) -> bool:
+    """A query word that names the fact's own relation (shared 5-char stem, or
+    an exact match for shorter words) — 'suicide'/'suicidal', 'trauma',
+    'harm'. Relation words only: value text is free prose whose common words
+    would match any query."""
+    rel_words = [w for w in str(fact.get("relation", "")).lower().split("_")
+                 if len(w) >= 4 and w not in _SENSITIVE_LEXICAL_GENERIC]
+    q_words = [w for w in re.findall(r"[a-z]+", (query or "").lower()) if len(w) >= 4]
+    for rw in rel_words:
+        for qw in q_words:
+            if rw == qw:
+                return True
+            if (len(rw) >= _SENSITIVE_LEXICAL_PREFIX and len(qw) >= _SENSITIVE_LEXICAL_PREFIX
+                    and rw[:_SENSITIVE_LEXICAL_PREFIX] == qw[:_SENSITIVE_LEXICAL_PREFIX]):
+                return True
+    return False
+
+
+def hold_back_sensitive_facts(query: str, facts: List[Dict]) -> List[Dict]:
+    """Return `facts` minus the sensitive ones this query is not related to.
+    Pure selection: nothing is mutated or deleted (the profile keeps every
+    fact). Logs the held-back COUNT only — never fact text."""
+    sensitive = [f for f in facts if relation_classifier.is_sensitive_relation(f.get("relation", ""))]
+    if not sensitive:
+        return facts
+    cosines = _cosine_scores(query, sensitive) if query else None
+    keep = set()
+    for i, fact in enumerate(sensitive):
+        cos = cosines[i] if cosines is not None else None
+        if _sensitive_lexical_hit(query, fact) or (cos is not None and cos >= SENSITIVE_RELEVANCE_COSINE_FLOOR):
+            keep.add(id(fact))
+    held = len(sensitive) - len(keep)
+    if held:
+        logger.info(f"[UserProfile] held back {held} sensitive fact(s): turn not elevated-tone or related")
+    sensitive_ids = {id(f) for f in sensitive}
+    return [f for f in facts if id(f) not in sensitive_ids or id(f) in keep]
 
 
 def profile_shape_error(data) -> str:
@@ -821,7 +881,8 @@ class UserProfile:
         query_lower = query.lower()
         return self._TEMPORAL_KEYWORDS_MATCHER(query_lower)
 
-    def get_relevant_facts(self, query: str, category: ProfileCategory, limit: int = 3) -> List[Dict]:
+    def get_relevant_facts(self, query: str, category: ProfileCategory, limit: int = 3,
+                           sensitive_open: Optional[bool] = None) -> List[Dict]:
         """
         Get most relevant facts for a category using hybrid approach.
 
@@ -832,6 +893,10 @@ class UserProfile:
             query: Current user query for semantic relevance
             category: ProfileCategory to retrieve from
             limit: Total number of facts to return (default 3)
+            sensitive_open: None = ungated (legacy callers). False = prompt
+                selection: sensitive-relation facts are included only when the
+                query is topically related to them. True = the caller found an
+                elevated-tone turn / explicit history ask, so all are eligible.
 
         Returns:
             List of fact dicts ranked by hybrid score
@@ -839,6 +904,10 @@ class UserProfile:
         facts = self.get_category(category)
         if not facts:
             return []
+        if sensitive_open is False:
+            facts = hold_back_sensitive_facts(query, facts)
+            if not facts:
+                return []
 
         # Filter to medium+ confidence facts (lowered from 0.7 to include more imported facts)
         high_conf = [f for f in facts if isinstance(f, dict) and f.get("confidence", 0) >= 0.55]
@@ -905,7 +974,8 @@ class UserProfile:
 
         return result[:limit]
 
-    def get_context_injection(self, max_tokens: int = 500, query: str = "", facts_per_category: int = 3) -> str:
+    def get_context_injection(self, max_tokens: int = 500, query: str = "", facts_per_category: int = 3,
+                              sensitive_open: Optional[bool] = None) -> str:
         """
         Generate compact profile summary for prompt injection.
         Uses hybrid retrieval: 2/3 semantic (query-relevant) + 1/3 recent per category.
@@ -915,12 +985,17 @@ class UserProfile:
             max_tokens: Approximate token budget for profile context
             query: Current user query for semantic relevance (optional)
             facts_per_category: Number of facts to retrieve per category (default: 3)
+            sensitive_open: see get_relevant_facts. None defers to the
+                SENSITIVE_OPEN context var the prompt gatherer sets (and is
+                ungated when that is unset too)
 
         Returns:
             Formatted profile string for prompt injection
         """
         parts = []
         is_temporal = bool(query) and self._is_temporal_query(query)
+        if sensitive_open is None:
+            sensitive_open = SENSITIVE_OPEN.get()
 
         # Quick profile (always include)
         quick = self.get_quick_profile()
@@ -937,10 +1012,13 @@ class UserProfile:
         for cat in ProfileCategory:
             if query:
                 # Use hybrid retrieval when query provided
-                relevant_facts = self.get_relevant_facts(query, cat, limit=facts_per_category)
+                relevant_facts = self.get_relevant_facts(
+                    query, cat, limit=facts_per_category, sensitive_open=sensitive_open)
             else:
                 # Fallback to most recent high-confidence facts
                 facts = self.get_category(cat)
+                if sensitive_open is False:
+                    facts = hold_back_sensitive_facts(query, facts)
                 relevant_facts = sorted(
                     [f for f in facts if isinstance(f, dict) and f.get("confidence", 0) >= 0.55],
                     key=lambda x: x.get("timestamp", ""),

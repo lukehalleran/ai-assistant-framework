@@ -581,11 +581,34 @@ def _end_shutdown_run(success: "bool | None" = None) -> None:
     with _shutdown_state_lock:
         if (_flush_run_ok if success is None else success):
             _last_flush_done_at = _flush_run_started_at
+            if not _process_exiting:
+                # An idle flush (the process lives on): the next run must
+                # start its corpus window HERE, not at process start
+                # (2026-10-10, BC-30/BC-58).
+                _advance_session_window(_flush_run_started_at)
         else:
             _last_failed_flush_at = time.time()
         _shutdown_requested = False
         _shutdown_owner_thread = None
         _shutdown_done.set()
+
+
+def _advance_session_window(started_at: float) -> None:
+    """Move the memory system's session window to a completed non-exit run's
+    START time. The shutdown passes slice the corpus by ``session_start`` and
+    ``_gather_session_state`` returns no conversations, so without this an exit
+    run after an idle flush re-reflected / re-summarised / re-confirmed every
+    turn since PROCESS start. The run's start (not its end) is used so a turn
+    that arrived during the run stays in the next window. Called with the
+    state lock held: it must never raise."""
+    ms = getattr(_orchestrator_ref, "memory_system", None)
+    advance = getattr(ms, "advance_session_window", None)
+    if advance is None:
+        return
+    try:
+        advance(started_at)
+    except Exception as e:  # degrades: the next run re-covers the flushed turns (duplicate reflection) instead of only the new ones
+        logger.warning(f"[Shutdown] Could not advance the session window: {e}")
 
 
 def _activity_since_last_flush() -> bool:

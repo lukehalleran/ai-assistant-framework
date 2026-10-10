@@ -76,6 +76,7 @@ import memory.fact_source as fact_source
 import memory.fact_verification as fact_verification
 import memory.graph_models as graph_models
 import memory.graph_utils as graph_utils
+import memory.relation_classifier as relation_classifier
 import memory.stance_classifier as stance_classifier
 
 logger = get_logger("memory_storage")
@@ -88,6 +89,20 @@ SUMMARIZE_AT_SHUTDOWN_ONLY = os.getenv("SUMMARIZE_AT_SHUTDOWN_ONLY", "1").strip(
 _FACT_EXTRACT_PASTE_CHARS = int(os.getenv("FACT_EXTRACT_PASTE_CHARS", "1500"))
 
 
+def is_paste_sized(text: str) -> bool:
+    """True when a message is long enough to be treated as pasted material.
+    THE paste-size test — the per-turn guard and the shutdown LLM-extraction
+    path (memory.llm_fact_extractor) both call it (2026-10-10)."""
+    return len(text or "") > _FACT_EXTRACT_PASTE_CHARS
+
+
+def subject_is_user_anchored(subject) -> bool:
+    """THE user-anchored test of the paste guard: the subject is the user or
+    a user-owned referent ("user's …")."""
+    s = str(subject or "").strip().lower()
+    return s == "user" or s.startswith("user's ")
+
+
 def _paste_guard_filter(query: str, facts: list) -> list:
     """Paste guard (2026-08-29): a paste-sized message is mostly DOCUMENT
     text, and the regex extractor happily mines it — a pasted syllabus stored
@@ -96,14 +111,13 @@ def _paste_guard_filter(query: str, facts: list) -> list:
     'questions'). On long messages keep only USER-anchored triples: the
     user's own narration ("I have the docs") still yields facts; document
     boilerplate does not. Under-fires by design."""
-    if len(query or "") <= _FACT_EXTRACT_PASTE_CHARS:
+    if not is_paste_sized(query):
         return facts
 
     def _user_anchored(item) -> bool:
         md = item.get("metadata", {}) if isinstance(item, dict) \
             else (getattr(item, "metadata", None) or {})
-        s = str(md.get("subject") or md.get("subj") or "").strip().lower()
-        return s == "user" or s.startswith("user's ")
+        return subject_is_user_anchored(md.get("subject") or md.get("subj"))
 
     kept = [f for f in facts if _user_anchored(f)]
     if len(kept) != len(facts):
@@ -1409,6 +1423,14 @@ class MemoryStorage:
                     logger.debug(f"[MemoryStorage] Graph metadata: {subj_id}.{canon_rel} = '{obj}'")
                 return
 
+            # No EDGE for a transient-state relation (2026-10-10, BC-75): a
+            # planned/ephemeral act ("will do shower") is a profile fact with
+            # a TTL, not a durable graph relationship. Applies even when the
+            # object resolved to an existing node (the worthiness bypass above).
+            if relation_classifier.is_ephemeral_relation(canon_rel):
+                logger.debug(f"[MemoryStorage] Graph skip ephemeral-relation edge: {subj} --{canon_rel}--> {obj}")
+                return
+
             # Map "user" subject to a canonical user node
             subj_display = subj if subj.lower() != "user" else "User"
             obj_display = obj
@@ -1421,6 +1443,9 @@ class MemoryStorage:
                 subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
                 subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
             obj_id = self.entity_resolver.resolve_or_create(obj, display_name=obj_display)
+            if obj_id == subj_id:  # self-loop (`User name User`): no fact in an edge to itself
+                logger.debug(f"[MemoryStorage] Graph skip self-loop: {subj_id} --{canon_rel}--> {obj_id}")
+                return
 
             # A species-typed relation must not contradict the node's curated
             # species metadata (2026-08-18: the shutdown LLM extractor invented

@@ -69,7 +69,12 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
-from memory.fact_source import classify_claim_time, supporting_excerpt
+from memory.fact_source import (
+    classify_claim_time,
+    current_status_claim_supported,
+    relation_is_future_planned,
+    supporting_excerpt,
+)
 from memory.memory_interface import MemoryNode, MemoryType
 import memory.stance_classifier as stance_classifier
 from memory.user_profile_schema import is_living_situation_relation
@@ -243,13 +248,29 @@ _BARE_DWELLING_RE = re.compile(
 _NEGATION_OK_RELATION_SUFFIXES = ("_communication", "_status", "_access", "_availability")
 
 
-def _is_junk_object(obj: str, rel: str) -> bool:
+def is_self_reference(subj: str, obj: str) -> bool:
+    """True when the object IS the subject (``user | name | User``): an edge
+    from a node to itself carries no fact.  Compares the normalized strings;
+    the literal "the user" counts as "user"."""
+    def _norm(x: str) -> str:
+        x = re.sub(r"\s+", " ", (x or "")).strip(" .,:;\"'`").lower()
+        return "user" if x == "the user" else x
+    s, o = _norm(subj), _norm(obj)
+    return bool(s) and s == o
+
+
+def _is_junk_object(obj: str, rel: str, subj: str = "") -> bool:
     """True when the object is an adverbial/temporal/negation fragment that
     carries no durable factual content (extraction noise from casual or
-    emotional phrasing)."""
+    emotional phrasing).  ``subj`` (optional) enables the self-reference
+    check; callers without a subject keep the object-only checks."""
     o = (obj or "").strip().lower()
     r = (rel or "").strip().lower()
     if not o:
+        return True
+    if subj and is_self_reference(subj, o):
+        return True
+    if relation_is_future_planned(r):
         return True
     if is_living_situation_relation(r) and _BARE_DWELLING_RE.match(o):
         return True
@@ -401,7 +422,7 @@ def _clean_triple(subj: str, rel: str, obj: str, nlp=None) -> Optional[Tuple[str
         return None
 
     # Drop adverbial/temporal/negation fragment objects (extraction noise)
-    if _is_junk_object(o, r):
+    if _is_junk_object(o, r, s):
         return None
 
     # Drop transient git/repo machine-state triples (extraction noise from a
@@ -1589,6 +1610,10 @@ class FactExtractor:
                 if not isinstance(matches, list):
                     continue
                 emp_total += len(matches)
+                # A current-status relation needs a present-tense first-person
+                # statement ("I worked at X" is a PAST employer — BC-75).
+                if not current_status_claim_supported(rel_key, ln):
+                    continue
                 for m in matches[:4]:
                     val = m[0] if isinstance(m, tuple) else m
                     val = (val or '').strip()

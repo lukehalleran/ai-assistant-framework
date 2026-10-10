@@ -33,6 +33,8 @@ from typing import Dict, List, Any
 from datetime import datetime
 
 from .formatter import _as_summary_dict, _parse_bool
+from memory.user_profile import SENSITIVE_OPEN
+from utils.trigger_match import compile_keyword_matcher, has_non_negated_hit
 from utils.ordered_slice import newest_first as _ordered_newest_first
 from utils.personal_claim_provenance import annotate_personal_claim_memory
 from utils.retrieval_outcome import OutcomeList
@@ -40,6 +42,30 @@ from core.action_claim_guard import (
     annotate_conversation_content,
     annotate_unverified_action_claim,
 )
+
+
+# Explicit asks about the user's OWN recorded history — the subset of the
+# agentic gate's MEMORY_KEYWORDS that is self-referential (2026-10-10, sensitive
+# profile facts). 'what are my' / 'my notes' / 'look up' are deliberately
+# excluded: "what are my loan options" is not a request to surface a crisis
+# disclosure. Derived from the gate's list (drift-tested), not a second copy.
+PROFILE_HISTORY_ASK_PHRASES = (
+    'what do you know about me', 'did i tell you', 'did i mention',
+    'have i told you', 'what did i say', 'my facts',
+)
+_profile_history_matcher = None
+
+
+def is_profile_history_ask(query: str) -> bool:
+    """True when the user explicitly asks what Daemon knows/remembers of them."""
+    global _profile_history_matcher
+    if not query:
+        return False
+    if _profile_history_matcher is None:
+        from core.agentic.gate import MEMORY_KEYWORDS  # lazy import: cycle (gate <-> prompt ring)
+        _profile_history_matcher = compile_keyword_matcher(
+            [k for k in MEMORY_KEYWORDS if k in PROFILE_HISTORY_ASK_PHRASES])
+    return has_non_negated_hit(query.lower(), _profile_history_matcher)
 
 
 def _summary_ts_key(item):
@@ -954,11 +980,20 @@ class MemoryRetrievalMixin:
             return ""
 
         try:
-            profile_context = self.user_profile.get_context_injection(
-                max_tokens=max_tokens,
-                query=query,
-                facts_per_category=USER_PROFILE_FACTS_PER_CATEGORY
-            )
+            # Sensitive facts (self-harm, trauma, substance use, ...) are
+            # held out of the prompt unless the turn is elevated-tone (the
+            # builder's _distress_active), an explicit history ask, or the
+            # query is topically related (decided inside the profile).
+            sensitive_open = bool(getattr(self, "_distress_active", False)) or is_profile_history_ask(query)
+            _token = SENSITIVE_OPEN.set(sensitive_open)
+            try:
+                profile_context = self.user_profile.get_context_injection(
+                    max_tokens=max_tokens,
+                    query=query,
+                    facts_per_category=USER_PROFILE_FACTS_PER_CATEGORY
+                )
+            finally:
+                SENSITIVE_OPEN.reset(_token)
             logger.debug(f"[ContextGatherer] Generated profile context ({len(profile_context)} chars)")
 
             # Track user profile for citations (single entry for the whole profile)

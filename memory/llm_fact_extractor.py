@@ -200,7 +200,7 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
         _fact_object_max_chars,
         _salvage_long_object,
     )
-    if _is_junk_object(obj, rel):
+    if _is_junk_object(obj, rel, subj):
         logger.debug(f"[LLM Facts] Blocked junk object: {subj}|{rel}|{obj}")
         return None
 
@@ -716,8 +716,12 @@ JSON:"""
         if not user_messages:
             triples[:] = []
             return
-        from memory.fact_source import find_supporting_user_span
+        from memory.fact_source import find_supporting_user_span, iter_user_messages
         from memory.fact_extractor import _polarity_conflict
+        # lazy import: startup-cost (memory_storage pulls the model/core stack;
+        # needed only to share THE per-turn paste guard's size + anchor tests)
+        from memory.memory_storage import is_paste_sized, subject_is_user_anchored
+        msg_texts = {idx: text for idx, text, _tid in iter_user_messages(user_messages)}
         kept: List[Dict[str, str]] = []
         for triple in triples:
             evidence = find_supporting_user_span(triple, user_messages, excerpt_limit=200)
@@ -725,6 +729,18 @@ JSON:"""
                 logger.info(
                     f"[LLM Facts] Blocked unsupported proposal: "
                     f"{triple.get('subject')}|{triple.get('relation')}|{triple.get('object')}"
+                )
+                continue
+            # Paste guard (2026-10-10, BC-75): the per-turn guard never ran on
+            # this shutdown path. A paste-sized source message is mostly
+            # third-party text; only user-anchored triples may come from it.
+            if (is_paste_sized(msg_texts.get(evidence.turn_index, ""))
+                    and not subject_is_user_anchored(triple.get("subject"))):
+                logger.info(
+                    f"[LLM Facts] Paste guard: dropped non-user-subject triple "
+                    f"{triple.get('subject')}|{triple.get('relation')}|"
+                    f"{triple.get('object')} from a "
+                    f"{len(msg_texts.get(evidence.turn_index, ''))}-char message"
                 )
                 continue
             if _polarity_conflict(evidence.text, triple.get("relation", ""), triple.get("object", "")):
