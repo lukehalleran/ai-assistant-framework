@@ -5,7 +5,8 @@ Purpose:
     Startup preflight checks for full-orchestrator modes (gui/cli). Turns
     "cryptic failure on first use" into an actionable message at launch:
       - data directory not writable        → FATAL (memory could not persist)
-      - OPENAI_API_KEY missing/placeholder → WARNING (chat will return
+      - OPENROUTER_API_KEY / OPENAI_API_KEY (either) missing/placeholder
+                                           → WARNING (chat will return
         [AUTH ERROR]; local-model setups are legitimate, so not fatal)
       - TAVILY_API_KEY missing             → NOTE (web search disabled)
       - Google token expired, no refresh   → WARNING (2026-09-27, BC-47,
@@ -75,18 +76,21 @@ def _check_data_dir_writable(result: PreflightResult) -> None:
 
 
 def _check_llm_key(result: PreflightResult) -> None:
-    key = os.environ.get("OPENAI_API_KEY", "")
+    # The app resolves OPENROUTER_API_KEY first, then OPENAI_API_KEY
+    # (models/model_manager.py); the preflight must accept either (P3 F6).
+    key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
     if not key:
         result.warnings.append(
-            "OPENAI_API_KEY is not set — chat will fail with [AUTH ERROR] unless "
-            "a local model is configured. Add it to the .env file "
-            "(OPENAI_API_KEY=sk-or-...) or re-run the setup wizard: "
+            "OPENROUTER_API_KEY (or OPENAI_API_KEY) is not set — chat will fail "
+            "with [AUTH ERROR] unless a local model is configured. Add it to the "
+            ".env file (OPENROUTER_API_KEY=sk-or-...) or re-run the setup wizard: "
             "python main.py wizard"
         )
     elif _looks_like_placeholder(key):
         result.warnings.append(
-            "OPENAI_API_KEY looks like a placeholder value — chat will fail with "
-            "[AUTH ERROR]. Replace it with a real key in the .env file."
+            "The LLM API key (OPENROUTER_API_KEY / OPENAI_API_KEY) looks like a "
+            "placeholder value — chat will fail with [AUTH ERROR]. Replace it "
+            "with a real key in the .env file."
         )
 
 

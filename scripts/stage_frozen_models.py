@@ -26,6 +26,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# `python scripts/stage_frozen_models.py` puts scripts/ (not the repo root) on
+# sys.path, so the fail-closed `utils.daemon_guard` import below would ALWAYS fail
+# and --apply would always be refused (P3 smoke F3). Same pattern as the other
+# guarded scripts (dedup_reference_docs.py, purge_junk_facts.py).
+sys.path.insert(0, str(REPO_ROOT))
+
 MODELS = (
     "BAAI/bge-small-en-v1.5",
     "sentence-transformers/all-MiniLM-L6-v2",

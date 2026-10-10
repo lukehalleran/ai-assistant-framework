@@ -153,8 +153,12 @@ try:
 except Exception:
     pass
 
-# Other gradio dependencies that may need data files
-for pkg in ['tomlkit', 'ruff', 'httpcore', 'anyio', 'starlette', 'fastapi', 'uvicorn', 'orjson', 'aiofiles']:
+# Other gradio dependencies that may need data files.
+# rfc3987_syntax (2026-10-10, P3 smoke F1): chromadb -> jsonschema/_format.py falls
+# back to it when `rfc3987` is absent, and its load_grammar() opens the bundled
+# syntax_rfc3987.lark at import time - no pyinstaller-hooks-contrib hook ships it,
+# so the frozen app crashed at import without it.
+for pkg in ['tomlkit', 'ruff', 'httpcore', 'anyio', 'starlette', 'fastapi', 'uvicorn', 'orjson', 'aiofiles', 'rfc3987_syntax']:
     try:
         datas += collect_data_files(pkg)
     except Exception:
