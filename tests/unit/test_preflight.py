@@ -16,6 +16,13 @@ from utils.preflight import (
 
 
 class TestLLMKeyCheck:
+    @pytest.fixture(autouse=True)
+    def _no_ambient_openrouter_key(self, monkeypatch):
+        # 2026-10-10: either OPENROUTER_API_KEY or OPENAI_API_KEY satisfies the
+        # check, so an ambient OpenRouter key (shell or a loaded .env) would mask
+        # these OPENAI_API_KEY cases.
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
     def test_missing_key_warns_with_fix(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         result = PreflightResult()

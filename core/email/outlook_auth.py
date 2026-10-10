@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict
 
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json
 
@@ -35,7 +36,7 @@ class OutlookAuthManager:
     ):
         self._client_id = client_id
         self._tenant = tenant
-        self._token_path = Path(token_path)
+        self._token_path = Path(store_path(token_path))
         self._token_cache: Optional[Dict] = None
 
     @property

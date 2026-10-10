@@ -46,11 +46,12 @@ from typing import Dict, List, Optional
 import numpy as np
 
 import utils.safe_json as safe_json
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 
 logger = get_logger("adaptive_exemplars")
 
-_STORE_PATH = "data/adaptive_exemplars.json"
+_STORE_PATH = store_path("data/adaptive_exemplars.json")
 
 _MIN_CHARS = 12
 _CLIP_CHARS = 300

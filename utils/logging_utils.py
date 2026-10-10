@@ -20,6 +20,8 @@ import time
 import inspect
 import functools
 
+from utils.bootstrap import store_path
+
 
 # These libraries log complete HTTP bodies (including model prompts) at DEBUG.
 # Daemon's file sink is intentionally DEBUG even when the UI is in normal mode,
@@ -90,6 +92,14 @@ def configure_logging(
     # Under DAEMON_TEST_MODE the file sink is redirected to a test-only path.
     if os.getenv("DAEMON_TEST_MODE") and file_path:
         file_path = os.path.join("logs", "test_debug.log")
+
+    # Frozen / DAEMON_DATA_DIR runs keep the log under the user-data dir, not
+    # the launch cwd (2026-10-10, class: BC-83); plain dev is unchanged.
+    if file_path:
+        file_path = store_path(
+            file_path,
+            "logs/daemon_debug.log" if file_path == "daemon_debug.log" else None,
+        )
 
     root = logging.getLogger()
     if root.hasHandlers():

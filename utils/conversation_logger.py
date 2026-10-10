@@ -6,6 +6,8 @@ from pathlib import Path
 import threading
 from typing import Optional, Dict, Any
 
+from utils.bootstrap import store_path
+
 class ConversationLogger:
     """
     A dedicated logger for human-readable conversation transcripts.
@@ -24,7 +26,7 @@ class ConversationLogger:
             log_format: Format for logs ("text" for readable, "json" for structured)
             max_file_size_mb: Max size before rotating to new file
         """
-        self.log_dir = Path(log_dir)
+        self.log_dir = Path(store_path(log_dir))
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_format = log_format
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024

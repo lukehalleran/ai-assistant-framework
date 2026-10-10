@@ -128,6 +128,11 @@ def has_bundled_clip_weights() -> bool:
         return False
 
 
+def _data_dir_override() -> str:
+    """The non-blank ``DAEMON_DATA_DIR`` value, or "" when unset/blank."""
+    return os.environ.get("DAEMON_DATA_DIR", "").strip()
+
+
 def get_user_data_dir() -> str:
     """
     Get user-writable data directory for mutable files.
@@ -153,7 +158,7 @@ def get_user_data_dir() -> str:
     were a second, disagreeing data-root authority. The override is returned
     as an absolute, user-expanded path.
     """
-    override = os.environ.get("DAEMON_DATA_DIR", "").strip()
+    override = _data_dir_override()
     if override:
         return os.path.abspath(os.path.expanduser(override))
 
@@ -169,6 +174,40 @@ def get_user_data_dir() -> str:
         return os.path.expanduser('~/Library/Application Support/Daemon')
     else:  # Linux and others
         return os.path.expanduser('~/.daemon')
+
+
+def store_path(relative: str, frozen_relative: Optional[str] = None) -> str:
+    """
+    Resolve a store/log path (written in its dev, repo-relative form such as
+    ``data/tone_state.json`` / ``logs/x.jsonl`` / ``conversation_logs``)
+    against the ONE data-root authority, ``get_user_data_dir()``.
+
+    2026-10-10 (class: BC-83, BC-16): the frozen app set DAEMON_DATA_DIR but
+    nine stores still resolved against the launch cwd (shutdown backups,
+    curation queue + audit journal, tone/time state, debug and conversation
+    logs). Every such site now routes through here.
+
+    - Absolute paths pass through untouched (explicit paths always win).
+    - Neither frozen nor ``DAEMON_DATA_DIR`` set (plain dev): returned
+      UNCHANGED, i.e. exactly today's cwd-relative value.
+    - Otherwise: a leading ``data/`` maps onto the data root; any other
+      relative path (``logs/...``, ``conversation_logs``) keeps its folder
+      under the root (the layout ``setup_environment`` already uses for
+      LOG_DIR / CONVERSATION_LOG_DIR). ``frozen_relative`` substitutes a
+      different relative form in that mode only.
+    """
+    if not relative or os.path.isabs(relative):
+        return relative
+    if not (IS_FROZEN or _data_dir_override()):
+        return relative
+    rel = (frozen_relative or relative).replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    if rel == "data":
+        rel = ""
+    elif rel.startswith("data/"):
+        rel = rel[len("data/"):]
+    return os.path.join(get_user_data_dir(), *[part for part in rel.split("/") if part])
 
 
 def get_external_data_dir() -> Optional[str]:
@@ -498,8 +537,10 @@ def close_splash() -> None:
     try:
         import pyi_splash  # lazy import: optional-dependency
         pyi_splash.close()
-    except ImportError:
-        pass  # No splash screen in development mode
+    except (ImportError, RuntimeError):
+        # degrades: no splash (dev, or a headless frozen run where the
+        # bootloader never initialised it -> pyi_splash raises RuntimeError)
+        pass
 
 
 def update_splash(text: str) -> None:
@@ -507,7 +548,8 @@ def update_splash(text: str) -> None:
     try:
         import pyi_splash  # lazy import: optional-dependency
         pyi_splash.update_text(text)
-    except ImportError:
+    except (ImportError, RuntimeError):
+        # degrades: no splash text (RuntimeError = headless frozen run, no DISPLAY)
         # In development, print to console
         if not IS_FROZEN:
             print(f"[Startup] {text}")

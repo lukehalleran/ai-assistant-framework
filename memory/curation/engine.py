@@ -37,13 +37,14 @@ from memory.curation.types import (
     ScanReport,
     SentinelResult,
 )
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json
 
 logger = get_logger("curation_engine")
 
-_PROD_QUEUE_PATH = os.path.join("data", "curation_queue.json")
-_TEST_QUEUE_PATH = os.path.join("data", "test_curation_queue.json")
+_PROD_QUEUE_PATH = store_path(os.path.join("data", "curation_queue.json"))
+_TEST_QUEUE_PATH = store_path(os.path.join("data", "test_curation_queue.json"))
 _DEFAULT_QUEUE_PATH = _PROD_QUEUE_PATH
 
 
