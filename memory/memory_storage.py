@@ -76,6 +76,7 @@ import memory.fact_source as fact_source
 import memory.fact_verification as fact_verification
 import memory.graph_models as graph_models
 import memory.graph_utils as graph_utils
+import memory.relation_classifier as relation_classifier
 import memory.stance_classifier as stance_classifier
 
 logger = get_logger("memory_storage")
@@ -1422,6 +1423,14 @@ class MemoryStorage:
                     logger.debug(f"[MemoryStorage] Graph metadata: {subj_id}.{canon_rel} = '{obj}'")
                 return
 
+            # No EDGE for a transient-state relation (2026-10-10, BC-75): a
+            # planned/ephemeral act ("will do shower") is a profile fact with
+            # a TTL, not a durable graph relationship. Applies even when the
+            # object resolved to an existing node (the worthiness bypass above).
+            if relation_classifier.is_ephemeral_relation(canon_rel):
+                logger.debug(f"[MemoryStorage] Graph skip ephemeral-relation edge: {subj} --{canon_rel}--> {obj}")
+                return
+
             # Map "user" subject to a canonical user node
             subj_display = subj if subj.lower() != "user" else "User"
             obj_display = obj
@@ -1434,6 +1443,9 @@ class MemoryStorage:
                 subj_type = "person" if subj.lower() == "user" else (entity_type or "other")
                 subj_id = self.entity_resolver.resolve_or_create(subj, entity_type=subj_type, display_name=subj_display)
             obj_id = self.entity_resolver.resolve_or_create(obj, display_name=obj_display)
+            if obj_id == subj_id:  # self-loop (`User name User`): no fact in an edge to itself
+                logger.debug(f"[MemoryStorage] Graph skip self-loop: {subj_id} --{canon_rel}--> {obj_id}")
+                return
 
             # A species-typed relation must not contradict the node's curated
             # species metadata (2026-08-18: the shutdown LLM extractor invented

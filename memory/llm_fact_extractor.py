@@ -200,7 +200,7 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
         _fact_object_max_chars,
         _salvage_long_object,
     )
-    if _is_junk_object(obj, rel):
+    if _is_junk_object(obj, rel, subj):
         logger.debug(f"[LLM Facts] Blocked junk object: {subj}|{rel}|{obj}")
         return None
 

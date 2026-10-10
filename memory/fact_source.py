@@ -41,6 +41,7 @@ from typing import Any, Iterable, Iterator, Mapping
 
 from memory.user_profile_schema import RESIDENCE_RELATIONS
 from utils import test_envelope
+from utils.status_claims import EMPLOYMENT_RELATIONS, ENROLLMENT_RELATIONS
 from utils.temporal_resolver import resolve_date_expression
 
 
@@ -996,6 +997,50 @@ def _residence_resident_is_user(clause: str, object_val: str) -> bool:
     return bool(_FIRST_PERSON_RESIDENT_RE.search(head))
 
 
+# Current-status relations (2026-10-10, BC-75): the employment/enrollment family
+# utils.status_claims already defines (ONE relation set — `dropped` is a past
+# act, not a standing status).  Their name asserts a standing circumstance, so
+# a noun cue ("mercer job") is not enough: the object-bearing clause must be a
+# present-tense first-person statement.  Live: "ok so we have project, mercer
+# job and skill g2g" (resume talk) minted works_at=Mercer — a PAST employer
+# stored as current.
+CURRENT_STATUS_RELATIONS = frozenset(
+    (ENROLLMENT_RELATIONS - {"dropped"}) | EMPLOYMENT_RELATIONS
+)
+# Grammar-level past/former framing (closed class: tense + "used to"/"former"
+# markers), not employer or topic vocabulary.  Present perfect ("I have worked
+# at X for 3 years") is a standing status and is neutralized before the test.
+_PRESENT_PERFECT_WORKED_RE = re.compile(r"\b(?:have|has|had|i['\u2019]ve|we['\u2019]ve)\s+worked\b", re.IGNORECASE)
+_PAST_STATUS_RE = re.compile(
+    r"\b(?:used\s+to|formerly|previously|no\s+longer|any\s*more|former|worked|quit|"
+    r"resigned|fired|laid\s+off|left|(?:i|we)\s+(?:was|were))\b|\bex-\w+",
+    re.IGNORECASE,
+)
+
+
+def current_status_claim_supported(relation: str, clause: str) -> bool:
+    """False when ``relation`` is a current-status relation but ``clause`` is
+    not a present-tense first-person statement (explicit I/we subject, no
+    past/former framing).  True for every other relation."""
+    if (relation or "").strip().lower() not in CURRENT_STATUS_RELATIONS:
+        return True
+    text = clause or ""
+    if not _FIRST_PERSON_SUBJECT_RE.search(text):
+        return False
+    return not _PAST_STATUS_RE.search(_PRESENT_PERFECT_WORKED_RE.sub(" ", text))
+
+
+# Future-tense auxiliaries as the LEADING word of a relation name ("will_do")
+# mark a planned act, not a standing fact (closed grammatical class; `would`
+# is excluded — "would_like" is a preference).
+_FUTURE_RELATION_RE = re.compile(r"^(?:will|shall|gonna|going[_\s]to)(?:[_\s]|$)", re.IGNORECASE)
+
+
+def relation_is_future_planned(relation: str) -> bool:
+    """True when the relation name itself is a future-tense planned act."""
+    return bool(_FUTURE_RELATION_RE.match((relation or "").strip()))
+
+
 def _relation_cue_supported(span: str, relation: str) -> bool:
     """Where the relation name itself makes a claim, the span needs a cue."""
     cues = _RELATION_CUE_RES.get(relation)
@@ -1154,6 +1199,8 @@ def find_supporting_user_span(
                     if anchor is None:
                         continue
                     if not _relation_cue_supported(span, relation):
+                        continue
+                    if not current_status_claim_supported(relation, object_clause):
                         continue
                     if relation in RESIDENCE_RELATIONS and not _residence_resident_is_user(
                         object_clause, object_val
