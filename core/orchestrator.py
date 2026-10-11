@@ -213,7 +213,9 @@ from utils.need_detector import NeedType
 from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
 from core.best_of_handler import BestOfHandler
 from core.escalation_tracker import EscalationTracker
-from core.correction_detector import CorrectionDetector, CorrectionEvent
+from core.correction_detector import CorrectionDetector, CorrectionEvent, _MIN_CONFIDENCE as _CORRECTION_MIN_CONFIDENCE
+from memory.thread_models import DisputedResolution
+from memory.thread_store import _norm_keywords as _thread_norm_keywords
 from core.citation_extractor import extract_citations as _ext_extract_citations, expand_citation_range as _ext_expand_citation_range
 from core.tone_instructions import get_tone_instructions as _ext_get_tone_instructions, get_response_instructions as _ext_get_response_instructions, get_session_headers_instructions as _ext_get_session_headers_instructions
 from core.truth_event_handler import get_recent_profile_facts as _ext_get_recent_profile_facts, apply_truth_event as _ext_apply_truth_event, cascade_entity_resolution as _ext_cascade_entity_resolution, apply_content_attributions as _ext_apply_content_attributions
@@ -451,11 +453,72 @@ def _hook_post_response_detectors(ctx: PostResponseHookContext) -> None:
         orch._run_post_response_detectors(ctx)
 
 
+_THREAD_DISPUTE_MIN_OVERLAP = 2
+_THREAD_DISPUTE_MAX_PER_TURN = 2
+
+
+def _hook_thread_dispute(ctx: PostResponseHookContext) -> None:
+    """A correction turn disputes the open thread(s) it is about (2026-10-10).
+
+    The typed DisputedResolution outcome (thread_store maps it to stale) was
+    only reachable from the idle-shutdown resolution pass, so a mid-session
+    "Don't think it is standing" left the false thread open all afternoon.
+    Acts only when the EXISTING correction detector scores the user message
+    at its own confidence floor (the same detect_correction_signal verdict
+    run_post_response_detectors uses), and only on open threads sharing >=2
+    keywords with the message PLUS the previous assistant reply it corrects
+    (thread_store's own normalizer); at most two per turn. class: BC-58, BC-52.
+    """
+    orch = ctx.orchestrator
+    text = ctx.user_input
+    if orch is None or not text:
+        return
+    detector = getattr(orch, "correction_detector", None)
+    store = getattr(getattr(orch, "memory_system", None), "thread_store", None)
+    if detector is None or store is None:
+        return
+    try:
+        if detector.detect_correction_signal(text) < _CORRECTION_MIN_CONFIDENCE:
+            return
+        open_threads = store.list_open_threads()
+        if not open_threads:
+            return
+        # A correction is ABOUT the previous assistant reply, so its keywords
+        # count too (the corrected reply is the one that named the thread).
+        corpus = getattr(orch.memory_system, "corpus_manager", None)
+        corrected = ""
+        if corpus is not None:
+            norm = " ".join(text.lower().split())
+            for entry in corpus.get_recent_memories(3):
+                # skip this turn's own entry (stored or still pending)
+                if " ".join(str(entry.get("query") or "").lower().split()) != norm:
+                    corrected = str(entry.get("response") or "")
+                    break
+        msg_words = _thread_norm_keywords(f"{text} {corrected}")
+        scored = []
+        for thread in open_threads:
+            overlap = len(msg_words & _thread_norm_keywords(f"{thread.topic} {thread.summary}"))
+            if overlap >= _THREAD_DISPUTE_MIN_OVERLAP:
+                scored.append((overlap, thread.thread_id))
+        scored.sort(key=lambda p: -p[0])
+        disputed = []
+        for _overlap, tid in scored[:_THREAD_DISPUTE_MAX_PER_TURN]:
+            if store.resolve_thread(
+                tid, DisputedResolution("disputed by a user correction in a later message")
+            ):
+                disputed.append(tid)
+        if disputed:
+            logger.info(f"[ThreadDispute] Correction disputed thread(s): {disputed}")
+    except Exception as exc:  # degrades: a disputed thread stays open until the shutdown resolution pass
+        logger.debug(f"[ThreadDispute] skipped: {type(exc).__name__}")
+
+
 POST_RESPONSE_HOOKS: List[Tuple[str, Callable[[PostResponseHookContext], None]]] = [
     ("turn_telemetry", _hook_turn_telemetry),
     ("search_worthy_teach", _hook_search_worthy_teach),
     ("escalation_record_response", _hook_escalation_record_response),
     ("post_response_detectors", _hook_post_response_detectors),
+    ("thread_dispute", _hook_thread_dispute),
 ]
 
 

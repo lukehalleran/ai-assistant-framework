@@ -908,11 +908,11 @@ class PromptFormatter:
             know_parts.append(f"reference_docs={_on_off(getattr(cfg, 'REFERENCE_DOCS_AUTO_SEED', False))}{_suffix('reference_docs', ref_docs)}")
             # Wiki semantic index (FAISS) — 2026-09-27 (BC-70): a missing/
             # unmounted external index is a process-wide DISABLED state, not
-            # a per-turn failure. `_get_semantic_chunks` (gatherer_knowledge.py)
-            # reports this exact state via reason "index_not_loaded" whether
-            # it short-circuited on `index_available()` or a real search
-            # call found the index absent — either way this renders the same
-            # dedicated label instead of repeating "Could not check this
+            # a per-turn failure. `core/prompt/builder.py` records this exact
+            # state via reason "index_not_loaded" when `index_available()` is
+            # False (it never schedules the task); `_get_semantic_chunks`
+            # reports it too if a real search call found the index absent —
+            # either way this renders the same dedicated label instead of repeating "Could not check this
             # turn: semantic" forever for what is really an OFF switch (the
             # generic catch-all below still applies to a genuine transient
             # semantic failure, e.g. "timeout"/"in_flight").

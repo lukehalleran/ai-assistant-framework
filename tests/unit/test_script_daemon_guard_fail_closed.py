@@ -61,6 +61,7 @@ INTENTIONALLY_DIFFERENT = {"report_claim_contamination.py"}
 FIXED_SCRIPTS = [
     "add_profile_fact.py",
     "backfill_stance.py",
+    "backfill_visual_memory.py",
     "budget_experiment.py",
     "cleanup_stale_illness.py",
     "dedup_reference_docs.py",
