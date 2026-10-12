@@ -10,7 +10,13 @@ const KEYS = [
     link: 'https://developer.wolframalpha.com/',
     linkLabel: 'Get a Wolfram Alpha key',
   },
-  { name: 'e2b', label: 'E2B (code sandbox)', link: 'https://e2b.dev/dashboard', linkLabel: 'Get an E2B key' },
+  {
+    name: 'e2b',
+    label: 'E2B (code sandbox)',
+    link: 'https://e2b.dev/dashboard',
+    linkLabel: 'Get an E2B key',
+    devOnly: true,
+  },
 ] as const
 
 export default function OptionalKeysStep({ client, status, refresh, next }: StepProps) {
@@ -19,7 +25,7 @@ export default function OptionalKeysStep({ client, status, refresh, next }: Step
       <Text size="sm" c="dimmed">
         Optional. Each key only unlocks its own feature; keys are format-checked, not tested.
       </Text>
-      {KEYS.map((k, i) => (
+      {KEYS.filter((k) => !('devOnly' in k) || status.mode === 'dev').map((k, i) => (
         <Stack key={k.name} gap="xs">
           {i > 0 && <Divider />}
           <KeyField

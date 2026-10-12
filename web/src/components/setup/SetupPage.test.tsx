@@ -159,3 +159,26 @@ describe('SetupPage', () => {
     expect(screen.getByText(/Quit Daemon/)).toBeInTheDocument()
   })
 })
+
+describe('optional keys by mode', () => {
+  const atOptionalKeys = (mode?: 'user' | 'dev') => {
+    const st = makeStatus({
+      openrouter: { state: 'found', hint: '...abcd' },
+      profile: { state: 'found', name: 'Sam', pronouns: 'they/them' },
+      style: { state: 'found', value: 'balanced' },
+    })
+    renderPage(mode ? { ...st, mode } : st, makeClient())
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' })) // Style -> Optional keys
+  }
+
+  it('user mode (and an absent mode) hides the dev-only E2B key', async () => {
+    atOptionalKeys('user')
+    expect(await screen.findByLabelText(/Tavily/)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/E2B/)).toBeNull()
+  })
+
+  it('dev mode shows the E2B key', async () => {
+    atOptionalKeys('dev')
+    expect(await screen.findByLabelText(/E2B/)).toBeInTheDocument()
+  })
+})

@@ -124,7 +124,7 @@ import core.context_pipeline as _context_pipeline_mod
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult, attachment_display_name
-from utils.attachment_audit import audit_attachments, deadline_timezone_note
+from utils.attachment_audit import audit_attachments, deadline_timezone_note, self_reference_note
 from utils.query_checker import is_task_navigation
 from utils.trigger_match import is_negated, normalize_ws
 import utils.read_time_markers as read_time_markers
@@ -159,6 +159,7 @@ import core.agentic as agentic
 import core.agentic.gate as gate
 import core.agentic.protocols as protocols
 import core.agentic.tools as tools
+import core.citation_drift as citation_drift
 import core.citation_extractor as citation_extractor
 import core.email.service as service
 import core.grounding_check as grounding_check
@@ -1437,6 +1438,7 @@ class SubmitContext:
     # back to reading config fresh in that case.
     grounding_mode: Any = None
     grounding_pending: Any = None
+    citation_sources_text: str = ""  # agentic accumulated_context (for the log-only citation-drift check)
     grounding_task: Any = None
     # Independent personal-event support check.  Like grounding_mode this is
     # captured at ingress, so a config reload cannot change a live turn's
@@ -3615,7 +3617,7 @@ def _capture_delivery(ctx, debug_record):
             ctx.telemetry[key] = dict(debug_record[key])
     debug_record.update({k: v for k, v in ctx.telemetry.items()
                          if k.startswith(("grounding_", "personal_claim_"))
-                         or k in {"wall_elapsed_s", "pre_prepare_elapsed_s"}})
+                         or k in {"wall_elapsed_s", "pre_prepare_elapsed_s", "citation_drift"}})
 
 
 async def _apply_grounding_check_for_delivery(ctx, response_text, source_material=""):
@@ -4093,6 +4095,30 @@ async def _apply_personal_claim_check_for_delivery(ctx, response_text):
     return revised
 
 
+def _record_citation_drift(ctx, body):
+    """LOG-ONLY citation-drift receipt (2026-10-12, X2): a sentence citing
+    [WEB_n] whose numbers appear in none of the cited sources is recorded in
+    ctx.telemetry["citation_drift"] (copied onto the debug record by
+    _capture_delivery). Never edits the response; never raises."""
+    try:
+        if "[WEB_" not in (body or ""):
+            return
+        agentic_text = getattr(ctx, "citation_sources_text", "") or ""
+        if agentic_text:
+            sources = citation_drift.parse_web_blocks(agentic_text)
+        else:
+            from knowledge.web_search_manager import assign_web_ids  # lazy import: cycle (matches other web_search_manager imports)
+            base = (getattr(ctx, "raw_context", None) or {}).get("web_search_results")
+            numbered, _ = assign_web_ids(list(getattr(base, "pages", None) or []))
+            sources = {n.source_id: f"{n.title}\n{n.content}" for n in numbered}
+        items = citation_drift.find_citation_drift(body, sources)
+        ctx.telemetry["citation_drift"] = items
+        if items:
+            logger.info(f"[CitationDrift] {len(items)} cited sentence(s) with numbers absent from their cited sources (log-only)")
+    except Exception as exc:  # degrades: citation-drift receipt lost for this turn
+        logger.debug(f"[CitationDrift] check failed (non-fatal): {exc}")
+
+
 async def _apply_delivery_revisions(ctx, response_text, *, source_material="", regenerate_fn=None):
     """Apply content revisions in delivery order and return the clean body.
 
@@ -4152,6 +4178,7 @@ async def _apply_delivery_revisions(ctx, response_text, *, source_material="", r
                 ctx.telemetry["tool_marker_notice"] = True
     except Exception as exc:
         logger.warning(f"[DeliveryRevision] Tool-marker guard failed (non-fatal): {exc}")
+    _record_citation_drift(ctx, body)
     try:
         grounded, _ = await _apply_grounding_check_for_delivery(
             ctx, body, source_material=source_material,
@@ -4940,6 +4967,7 @@ async def _run_agentic_search(ctx):
                 if _gc_piece:
                     _ag_source_parts.append(str(_gc_piece)[:2000])
             _ag_source = "\n---\n".join(_ag_source_parts)[:6000]
+            ctx.citation_sources_text = getattr(_agentic_session, 'accumulated_context', '') or ''
             _delivery_body = await _apply_delivery_revisions(
                 ctx, _delivery_body, source_material=_ag_source,
                 regenerate_fn=agentic_controller.regenerate_final_answer,
@@ -6342,6 +6370,20 @@ async def _handle_submit_inner(
                 )
     except Exception as e:  # degrades: active-document navigation resolution is skipped this turn
         logger.debug(f"[ActiveDocument] Navigation resolution failed: {e}")
+
+    # Self-recognition (2026-10-12): attachments, and a user message that is
+    # itself a paste (over THE paste-size test — a short message that
+    # names the assistant is ADDRESSING it, not describing it).
+    try:
+        _selfref_sources = [d.content_text or "" for d in (files_result.documents or [])]
+        from memory.memory_storage import is_paste_sized  # lazy import: patch-point
+        if is_paste_sized(user_text):
+            _selfref_sources.append(user_text)
+        _selfref_note = self_reference_note(_selfref_sources)
+        if _selfref_note:
+            _attachment_note = (_attachment_note + "\n" + _selfref_note).strip()
+    except Exception as e:  # degrades: self-reference note is omitted this turn
+        logger.debug(f"[SelfReference] note failed: {type(e).__name__}")
 
     analysis_text = user_text
     if _attachment_note:

@@ -47,6 +47,7 @@ Module Contract:
 """
 
 import os
+import json
 import logging
 from pathlib import Path
 from utils.safe_json import atomic_write_text
@@ -196,6 +197,137 @@ def build_temporal_claim_audit(convos: List[Dict[str, Any]]) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Tool-use attribution (2026-10-12, X3): the note pass used to see only
+# query/response text, so it inferred which tool did what -- a note credited
+# Wolfram with a tip calculation that no Wolfram call produced (Wolfram ran on
+# a different turn). The turn telemetry records the tools that ACTUALLY ran;
+# they are handed to the note per exchange, with a name-a-tool-only-if-listed
+# rule, and a deterministic LOG-ONLY post-check flags a registry tool name in
+# the note that ran in no turn that day.
+# ---------------------------------------------------------------------------
+
+# Control/terminal tools that are not "work" a note would attribute.
+_NON_ATTRIBUTABLE_TOOLS = frozenset({"done_searching"})
+
+
+def known_tool_names() -> List[str]:
+    """Agentic tool names from the registry itself (native tool definitions +
+    DISPATCH_TABLE handler names) -- no hand-kept list to drift."""
+    # lazy import: layering (utils/ must not import core.agentic at module load)
+    from core.agentic import types as _atypes
+    from core.agentic.tools import DISPATCH_TABLE as _TABLE  # lazy import: layering
+    names = set()
+    for attr in dir(_atypes):
+        if attr.endswith("_TOOL_DEFINITION"):
+            fn = (getattr(_atypes, attr, None) or {}).get("function") or {}
+            if fn.get("name"):
+                names.add(str(fn["name"]))
+    for _pred, handler, _args in _TABLE:
+        base = str(handler).replace("_dispatch_", "", 1)
+        if base != "api_search":  # shared handler; the specific names come from the definitions
+            names.add(base)
+    return sorted(n for n in names if n not in _NON_ATTRIBUTABLE_TOOLS)
+
+
+def _tool_tokens(name: str) -> frozenset:
+    return frozenset(t for t in re.split(r"[^a-z0-9]+", str(name).lower()) if t)
+
+
+def _tool_names_match(a: str, b: str) -> bool:
+    """Same tool under the registry's two spellings (wolfram / wolfram_alpha,
+    memory_search / search_memory): equal token sets, or one is a token-prefix
+    of the other."""
+    ta, tb = _tool_tokens(a), _tool_tokens(b)
+    if not ta or not tb:
+        return False
+    return ta == tb or ta <= tb or tb <= ta
+
+
+def load_turn_tool_receipts(target_date: date, path: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    """Per-turn {ts, query, tools} for `target_date` from the turn telemetry
+    JSONL (stream-parsed). None = the record is unavailable (missing/unreadable)
+    -- distinct from [] (readable, no turns that day)."""
+    if path is None:
+        from config.app_config import TURN_TELEMETRY_PATH as path  # lazy import: live-config
+    try:
+        out: List[Dict[str, Any]] = []
+        day = target_date.isoformat()
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("test_env"):
+                    continue
+                if str(rec.get("ts", ""))[:10] != day:
+                    continue
+                tools: List[str] = []
+                for call in rec.get("tool_calls") or []:
+                    t = str((call or {}).get("tool", "")).strip()
+                    if t and t not in tools and t not in _NON_ATTRIBUTABLE_TOOLS:
+                        tools.append(t)
+                out.append({"ts": rec.get("ts"), "query": str(rec.get("query", "")).strip(), "tools": tools})
+        return out
+    except (OSError, ValueError):  # degrades: tool record unavailable, the note is told not to name tools
+        return None
+
+
+def tools_by_exchange(convos: List[Dict[str, Any]],
+                      receipts: Optional[List[Dict[str, Any]]]) -> Optional[Dict[int, List[str]]]:
+    """Exchange number (1-based, as _format_conversations numbers them) -> the
+    tools that ran for it. Joined on the exact stripped query, in order, each
+    receipt consumed once. An exchange with no matching receipt maps to [] only
+    when the record exists at all."""
+    if receipts is None:
+        return None
+    pool = list(receipts)
+    result: Dict[int, List[str]] = {}
+    for i, conv in enumerate(convos, 1):
+        q = str(conv.get("query", "")).strip()
+        match = next((r for r in pool if r["query"] == q), None)
+        if match is not None:
+            pool.remove(match)
+        result[i] = list(match["tools"]) if match else []
+    return result
+
+
+def build_tool_use_record(convos: List[Dict[str, Any]], receipts: Optional[List[Dict[str, Any]]]) -> str:
+    """Prompt block listing, per exchange, the tools that actually ran."""
+    mapping = tools_by_exchange(convos, receipts)
+    if mapping is None:
+        return ("TOOLS THAT ACTUALLY RAN: record unavailable. Do NOT name any "
+                "tool, API or calculator as having done anything.")
+    ran = {i: t for i, t in mapping.items() if t}
+    lines = ["TOOLS THAT ACTUALLY RAN (from the turn log; exchanges not listed ran NO tool):"]
+    if ran:
+        lines.extend(f"- Exchange {i}: {', '.join(t)}" for i, t in sorted(ran.items()))
+    else:
+        lines.append("- None: no tool ran in any exchange today.")
+    lines.append("Name a tool, API or calculator only if it is listed for that exchange. "
+                 "Arithmetic or facts in a reply without a listed tool came from the model itself.")
+    return "\n".join(lines)
+
+
+def find_unrun_tool_mentions(note_text: str, receipts: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """LOG-ONLY post-check: registry tool names the note mentions that ran in
+    NO turn that day. [] when the record is unavailable (nothing to check
+    against) or nothing is flagged."""
+    if receipts is None:
+        return []
+    ran = {t for r in receipts for t in r["tools"]}
+    flagged: List[str] = []
+    for name in known_tool_names():
+        pattern = r"\b" + r"[\s_\-]+".join(re.escape(t) for t in re.split(r"[^A-Za-z0-9]+", name) if t) + r"\b"
+        if not re.search(pattern, note_text or "", re.IGNORECASE):
+            continue
+        if any(_tool_names_match(name, r) for r in ran):
+            continue
+        flagged.append(name)
+    return flagged
+
+
 @dataclass
 class GenerationResult:
     """Result of daily note generation."""
@@ -207,6 +339,7 @@ class GenerationResult:
     duration_hours: float = 0.0
     skipped_reason: Optional[str] = None  # "already_exists", "no_conversations", "disabled"
     error: Optional[str] = None
+    unrun_tool_mentions: List[str] = field(default_factory=list)  # LOG-ONLY post-check (2026-10-12)
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +410,8 @@ CONVERSATIONS FROM {date}:
 TEMPORAL STATUS CLAIM AUDIT:
 {temporal_claim_audit}
 
+{tool_use_record}
+
 {authoritative_status_facts}
 
 STATISTICS:
@@ -334,6 +469,8 @@ IMPORTANT:
 - If an AUTHORITATIVE CURRENT FACTS block is present above, never write a
   sentence that contradicts it (e.g. do not claim someone withdrew from
   school/a program while a current enrollment fact is listed there).
+- Tools: name a tool, API or calculator as having done something ONLY if the
+  TOOLS THAT ACTUALLY RAN block above lists it for that exchange.
 - Do NOT include any preamble or meta-commentary, just the note content
 
 __SPEAKER_AUTHORITY_RULES__
@@ -810,6 +947,8 @@ generated: {datetime.now().isoformat()}
         # Format for LLM
         formatted = self._format_conversations(convos)
         temporal_claim_audit = build_temporal_claim_audit(convos)
+        tool_receipts = load_turn_tool_receipts(target_date)
+        tool_use_record = build_tool_use_record(convos, tool_receipts)
         first_time = first_ts.strftime("%H:%M") if first_ts else "??:??"
         last_time = last_ts.strftime("%H:%M") if last_ts else "??:??"
 
@@ -836,6 +975,7 @@ generated: {datetime.now().isoformat()}
             date=target_date.strftime("%B %d, %Y"),
             formatted_conversations=formatted,
             temporal_claim_audit=temporal_claim_audit,
+            tool_use_record=tool_use_record,
             authoritative_status_facts=status_block,
             count=len(convos),
             first_time=first_time,
@@ -904,6 +1044,17 @@ generated: {datetime.now().isoformat()}
                 f'[DailyNotes] Removed status-claim conflict ({c.family}) for {target_date}: '
                 f'"{c.claim_text}" contradicts current {c.relation}={c.value}'
             )
+
+        # LOG-ONLY tool-attribution post-check (2026-10-12): never edits the note.
+        try:
+            result.unrun_tool_mentions = find_unrun_tool_mentions(llm_response, tool_receipts)
+            if result.unrun_tool_mentions:
+                logger.warning(
+                    f"[DailyNotes] {target_date}: note names tool(s) that ran in no turn: "
+                    f"{', '.join(result.unrun_tool_mentions)}"
+                )
+        except Exception as e:  # degrades: tool-attribution check skipped
+            logger.debug(f"[DailyNotes] tool-attribution check skipped: {e}")
 
         # Extract main quest for frontmatter
         main_quest = self._extract_main_quest(llm_response)

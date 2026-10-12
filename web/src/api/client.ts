@@ -196,6 +196,8 @@ export interface SetupKeyStep {
 }
 export interface SetupStatus {
   complete: boolean
+  /** Daemon mode; dev-only optional keys (E2B) show only in dev. Absent = user. */
+  mode?: 'user' | 'dev'
   steps: {
     openrouter: SetupKeyStep
     profile: { state: SetupState; name: string | null; pronouns: string | null }

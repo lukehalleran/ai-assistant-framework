@@ -17,6 +17,7 @@ combination from one owner incident; a fresh clone must ship none of that):
 wants both unconditionally.
 """
 
+import re
 from typing import Any, Optional
 
 UNIVERSAL_GROUNDING = """
@@ -46,6 +47,30 @@ manufacture authority.
 CONTEXTUAL_GROUNDING = UNIVERSAL_GROUNDING + DECISION_SUPPORT_GROUNDING
 
 
+# First-person reference as a SUBJECT/possessive/reflexive (I, I'm, my, mine,
+# myself, we, our...), plus "me" ONLY when it is not the benefactive of a
+# ditransitive request opener ("tell/give/show me about X" is addressed to the
+# assistant and names no personal stake; "which is best for me" does).
+_FIRST_PERSON_RE = re.compile(
+    r"\b(i|i'm|i've|i'd|i'll|my|mine|myself|we|we're|we've|our|ours|ourselves)\b")
+_ME_RE = re.compile(r"\bme\b")
+_DITRANSITIVE_ME_RE = re.compile(
+    r"\b(tell|give|show|send|get|teach|bring|write|make|find|read|read out|"
+    r"explain|walk)\s+(it\s+to\s+)?me\b")
+
+
+def has_personal_stake(text: str) -> bool:
+    """Structural test: does the message reference the user's own situation
+    (first-person subject/possessive/reflexive, or "me" outside a ditransitive
+    request opener)? A third-person, historical or explanatory question
+    ("tell me about the role of rail in the French state") has none, so it is
+    not a decision for the user however request-shaped it is (2026-10-12)."""
+    ql = (text or "").lower().replace("\u2019", "'")
+    if _FIRST_PERSON_RE.search(ql):
+        return True
+    return bool(_ME_RE.search(_DITRANSITIVE_ME_RE.sub(" ", ql)))
+
+
 def include_decision_support(
     user_input: Optional[str],
     *,
@@ -58,8 +83,10 @@ def include_decision_support(
     Signals only — no vocabulary:
     - a heavy-topic turn or an elevated tone always qualifies;
     - otherwise a request-shaped / info-seeking message qualifies unless it is
-      small talk or a bare first-person self-report (the self-report keeps the
-      universal block only — a status update is not a decision).
+      small talk, a bare first-person self-report (the self-report keeps the
+      universal block only — a status update is not a decision), or carries no
+      personal stake at all (``has_personal_stake``: a historical/third-person
+      explanatory question is not the user's decision).
     """
     if is_heavy_topic:
         return True
@@ -72,5 +99,7 @@ def include_decision_support(
         return False
     from utils.query_checker import is_request_shaped, is_self_report  # lazy import: cycle
     if is_self_report(text):
+        return False
+    if not has_personal_stake(text):
         return False
     return is_request_shaped(text)

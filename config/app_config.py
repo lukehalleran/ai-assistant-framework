@@ -246,6 +246,7 @@ DEBUG_MODE = config.get("daemon", {}).get("debug_mode", True)
 # --------------------------------------------------------------------
 # Daemon Mode: "user" (streamlined) or "dev" (all features)
 # --------------------------------------------------------------------
+ASSISTANT_NAME: str = str(config.get("daemon", {}).get("assistant_name", "Daemon") or "Daemon").strip() or "Daemon"
 DAEMON_MODE: str = config.get("daemon", {}).get("mode", "user")
 DAEMON_MODE = os.getenv("DAEMON_MODE", DAEMON_MODE).strip().lower()
 if DAEMON_MODE not in ("user", "dev"):

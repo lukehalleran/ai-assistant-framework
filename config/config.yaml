@@ -1,5 +1,6 @@
 daemon:
   version: v4
+  assistant_name: Daemon   # the assistant's own name (self-reference note, 2026-10-12); change with the persona
   mode: user
   data_dir: ./data
   log_dir: ./conversation_logs
