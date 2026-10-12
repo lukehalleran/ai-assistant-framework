@@ -69,6 +69,11 @@ datas = [
     # Reference docs (auto-seeded into ChromaDB on startup)
     ('docs', 'docs'),
 
+    # Problem-report rollup (utils/problem_report loads it by path, 2026-10-12)
+    ('scripts/diagnostic_rollup.py', 'scripts'),
+    # App version for problem reports
+    ('pyproject.toml', '.'),
+
     # Assets
     ('assets/daemon_icon.ico', 'assets'),
     ('assets/daemon_icon.png', 'assets'),

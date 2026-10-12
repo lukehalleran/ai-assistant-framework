@@ -247,6 +247,15 @@ function postJson(path: string, body: unknown) {
   })
 }
 
+export interface ReportTurn {
+  index: number
+  ts: string
+  mode: string | null
+  preview: string
+}
+
+export type ReportBundle = Record<string, unknown> & { full?: unknown }
+
 export const api = {
   getSession: () => authorizedFetch('/api/session').then((r) => json<SessionState>(r)),
 
@@ -326,6 +335,30 @@ export const api = {
   // ---- Debug / Provenance (server-held per-turn records) ----
 
   getDebugRecords: () => authorizedFetch('/api/debug').then((r) => json<DebugRecordsResponse>(r)),
+
+  /** R1: recent turns of this page session for the "Report a problem" picker. */
+  getReportTurns: () =>
+    authorizedFetch('/api/report/turns').then((r) => json<{ turns: ReportTurn[] }>(r)),
+
+  /** R1: the server builds the diagnostic bundle; nothing is sent anywhere. */
+  buildReport: async (index: number, description: string, includeFull: boolean) => {
+    const r = await authorizedFetch('/api/report/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index, description, include_full: includeFull }),
+    })
+    if (!r.ok) {
+      let detail = ''
+      try {
+        const b = (await r.json()) as { detail?: unknown }
+        if (typeof b.detail === 'string') detail = b.detail
+      } catch {
+        // degrades: fall back to the status line
+      }
+      throw new Error(detail || `${r.status} ${r.statusText}`)
+    }
+    return (await r.json()) as ReportBundle
+  },
 
   getProvenance: (index = -1) =>
     authorizedFetch(`/api/provenance?index=${index}`).then((r) =>

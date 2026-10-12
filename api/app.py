@@ -28,7 +28,7 @@ from api.launch_auth import (
     normalize_trusted_hostnames,
 )
 from api.lifecycle import LifecycleState, watchdog_loop
-from api.routes import actions, chat, curation, debug, files, lifecycle, models, settings, setup, system
+from api.routes import actions, chat, curation, debug, files, lifecycle, models, report, settings, setup, system
 from api.state import AppState
 from config import app_config
 from utils.bootstrap import resolve_bundled_path
@@ -117,6 +117,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
     app.include_router(models.router)
     app.include_router(system.router)
     app.include_router(debug.router)
+    app.include_router(report.router)
     app.include_router(settings.router)
     app.include_router(setup.router)
     app.include_router(curation.router)

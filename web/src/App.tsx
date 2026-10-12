@@ -33,6 +33,7 @@ import MessageList from './components/chat/MessageList'
 import ProgressIndicator from './components/chat/ProgressIndicator'
 import MemoryPanel from './components/showcase/MemoryPanel'
 import SetupPage from './components/setup/SetupPage'
+import ReportProblemControl from './components/ReportProblemControl'
 import QuitDaemonControl, { ShutdownScreen } from './components/QuitDaemonControl'
 // Non-chat views are lazy-loaded (2026-09-03): they are opened rarely and
 // carried a large share of the main bundle.
@@ -322,6 +323,7 @@ export default function App() {
           >
             🧹 Clear chat
           </Button>
+          <ReportProblemControl />
           <QuitDaemonControl onShutDown={() => setShutDown(true)} />
           {availability.dev_mode && (
             <Text size="xs" c="dimmed">
