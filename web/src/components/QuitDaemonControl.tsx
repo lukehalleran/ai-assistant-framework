@@ -8,9 +8,12 @@ import { api } from '../api/client'
  * it can replace the UI with <ShutdownScreen/>. */
 export default function QuitDaemonControl({
   onShutDown,
+  quitAllowed,
   shutdown = api.shutdown,
 }: {
   onShutDown: () => void
+  /** From the heartbeat: false/unknown hides the control (POST /api/shutdown is loopback-only). */
+  quitAllowed: boolean
   shutdown?: () => Promise<void>
 }) {
   const [opened, { open, close }] = useDisclosure(false)
@@ -30,6 +33,8 @@ export default function QuitDaemonControl({
       setBusy(false)
     }
   }
+
+  if (!quitAllowed) return null
 
   return (
     <>

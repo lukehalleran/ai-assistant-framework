@@ -77,14 +77,13 @@ else:
     IS_FROZEN = False
 
 from dotenv import load_dotenv
-if getattr(sys, 'frozen', False):
-    # In frozen mode, load .env from user data directory
-    env_path = os.path.join(_user_data_dir, '.env')
-    load_dotenv(env_path, override=True)
-else:
-    # override=True ensures .env takes precedence over shell environment variables
-    load_dotenv(override=True)
-print(f"[DEBUG] OPENAI_API_KEY loaded: {'SET' if os.environ.get('OPENAI_API_KEY') else 'NOT SET'}")
+from utils.bootstrap import resolve_env_path
+# ONE .env authority (BC-83): the same file first-run Setup writes -- user data dir
+# when frozen or DAEMON_DATA_DIR is set, else the repo-root .env. In frozen mode
+# setup_environment() above has already run. override=True: .env beats shell env.
+load_dotenv(resolve_env_path(), override=True)
+_llm_key_set = bool(os.environ.get('OPENROUTER_API_KEY') or os.environ.get('OPENAI_API_KEY'))
+print(f"[DEBUG] LLM API key (OPENROUTER_API_KEY or OPENAI_API_KEY) loaded: {'SET' if _llm_key_set else 'NOT SET'}")
 
 
 import asyncio

@@ -33,6 +33,7 @@ import MessageList from './components/chat/MessageList'
 import ProgressIndicator from './components/chat/ProgressIndicator'
 import MemoryPanel from './components/showcase/MemoryPanel'
 import SetupPage from './components/setup/SetupPage'
+import StaleSessionBanner from './components/StaleSessionBanner'
 import ReportProblemControl from './components/ReportProblemControl'
 import QuitDaemonControl, { ShutdownScreen } from './components/QuitDaemonControl'
 // Non-chat views are lazy-loaded (2026-09-03): they are opened rarely and
@@ -64,7 +65,7 @@ export default function App() {
     }
   }
   // Liveness ping for the packaged-mode watchdog; stops once Daemon has quit.
-  useHeartbeat(!shutDown)
+  const quitAllowed = useHeartbeat(!shutDown)
   // One poll loop at a time; the newest controller owns the `syncing` flag.
   const syncPollRef = useRef<AbortController | null>(null)
   // One GET /api/settings at load; all-false (hidden) until it answers.
@@ -208,15 +209,21 @@ export default function App() {
   if (setup === undefined) return null
   if (setup && setup.complete === false) {
     return (
-      <SetupPage
-        initialStatus={setup}
-        onFinished={loadSetup}
-        onShutDown={() => setShutDown(true)}
-      />
+      <>
+        <StaleSessionBanner />
+        <SetupPage
+          initialStatus={setup}
+          onFinished={loadSetup}
+          onShutDown={() => setShutDown(true)}
+          quitAllowed={quitAllowed}
+        />
+      </>
     )
   }
 
   return (
+    <>
+    <StaleSessionBanner />
     <AppShell
       header={{ height: 56 }}
       navbar={{
@@ -324,7 +331,7 @@ export default function App() {
             🧹 Clear chat
           </Button>
           <ReportProblemControl />
-          <QuitDaemonControl onShutDown={() => setShutDown(true)} />
+          <QuitDaemonControl onShutDown={() => setShutDown(true)} quitAllowed={quitAllowed} />
           {availability.dev_mode && (
             <Text size="xs" c="dimmed">
               Dev tabs live at <a href="/admin">/admin</a>
@@ -394,5 +401,6 @@ export default function App() {
         </Stack>
       </AppShell.Main>
     </AppShell>
+    </>
   )
 }
