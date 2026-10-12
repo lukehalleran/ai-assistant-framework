@@ -241,3 +241,16 @@ describe('api client transport authorization (F01/G06-T02, A02)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('heartbeat quit_allowed (P2)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it.each([
+    [{ ok: true, quit_allowed: true }, true],
+    [{ ok: true, quit_allowed: false }, false],
+    [{ ok: true }, false],
+  ])('body %j -> %s', async (body, expected) => {
+    stubFetch(() => ({ json: async () => body }))
+    await expect(api.heartbeat()).resolves.toBe(expected)
+  })
+})

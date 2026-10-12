@@ -19,6 +19,7 @@ vi.mock('./api/client', () => ({
     postSetupProfile: vi.fn(),
     postSetupObsidian: vi.fn(),
     shutdown: vi.fn(),
+    heartbeat: vi.fn(),
   },
   NotesSyncNotStartedError: class extends Error {},
   pollNotesSync: vi.fn(),
@@ -82,6 +83,7 @@ describe('App setup gate', () => {
     mocked.getModels.mockResolvedValue({ models: [], active: null } as never)
     mocked.getSettings.mockResolvedValue({} as never)
     mocked.getNotesSyncStatus.mockResolvedValue({ status: 'idle', finished_at: null } as never)
+    mocked.heartbeat.mockResolvedValue(true)
   })
 
   it('incomplete setup shows the Setup page, not chat, with Quit reachable', async () => {
@@ -89,7 +91,16 @@ describe('App setup gate', () => {
     renderApp()
     expect(await screen.findByText('Welcome to Daemon')).toBeInTheDocument()
     expect(screen.queryByText('CHAT-INPUT')).toBeNull()
-    expect(screen.getByText(/Quit Daemon/)).toBeInTheDocument()
+    expect(await screen.findByText(/Quit Daemon/)).toBeInTheDocument()
+  })
+
+  it('Quit is hidden when the heartbeat says this client may not quit', async () => {
+    mocked.heartbeat.mockResolvedValue(false)
+    mocked.getSetupStatus.mockResolvedValue(status(false))
+    renderApp()
+    expect(await screen.findByText('Welcome to Daemon')).toBeInTheDocument()
+    await waitFor(() => expect(mocked.heartbeat).toHaveBeenCalled())
+    expect(screen.queryByText(/Quit Daemon/)).toBeNull()
   })
 
   it('Finish calls complete, re-fetches status, then shows chat', async () => {

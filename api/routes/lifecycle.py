@@ -16,7 +16,10 @@ router = APIRouter(prefix="/api", tags=["lifecycle"])
 @router.post("/heartbeat")
 async def heartbeat(request: Request):
     request.app.state.lifecycle.heartbeat()
-    return {"ok": True}
+    # quit_allowed lets the SPA hide Quit for a client /api/shutdown would 403
+    # (same peer test as the shutdown route below).
+    peer = request.client.host if request.client else None
+    return {"ok": True, "quit_allowed": is_loopback_client(peer)}
 
 
 @router.post("/shutdown")

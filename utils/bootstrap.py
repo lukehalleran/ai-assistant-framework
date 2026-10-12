@@ -176,6 +176,20 @@ def get_user_data_dir() -> str:
         return os.path.expanduser('~/.daemon')
 
 
+def resolve_env_path() -> Path:
+    """The ONE .env authority: the file the running launch path loads AND the
+    first-run Setup writes (class: BC-83).
+
+    Packaged (frozen) or with ``DAEMON_DATA_DIR`` set: ``<get_user_data_dir()>/.env``.
+    A source checkout without an override: the repo-root ``.env``. main.py and
+    ``gui.setup_core.resolve_env_path`` both delegate here so a saved key can
+    never land in a file the next launch does not read.
+    """
+    if IS_FROZEN or _data_dir_override():
+        return Path(os.path.join(get_user_data_dir(), ".env"))
+    return Path(os.path.join(get_app_dir(), ".env"))
+
+
 def store_path(relative: str, frozen_relative: Optional[str] = None) -> str:
     """
     Resolve a store/log path (written in its dev, repo-relative form such as

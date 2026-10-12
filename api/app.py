@@ -19,7 +19,11 @@ import sys
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from api.launch_auth import (
     LOOPBACK_HOSTNAMES,
@@ -90,6 +94,21 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
 
     app = FastAPI(title="Daemon", lifespan=lifespan)
     app.state.daemon = AppState(orchestrator)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(request: Request, exc: RequestValidationError):
+        # FastAPI's default 422 echoes each error's submitted `input` (and a
+        # `ctx` that can carry it), so a malformed /api/setup body would reflect
+        # the API key the user typed. Setup paths get the errors without those
+        # fields; every other path keeps FastAPI's default response.
+        path = request.url.path
+        if path == "/api/setup" or path.startswith("/api/setup/"):
+            cleaned = [
+                {k: v for k, v in err.items() if k not in ("input", "ctx")}
+                for err in exc.errors()
+            ]
+            return JSONResponse(status_code=422, content={"detail": jsonable_encoder(cleaned)})
+        return await request_validation_exception_handler(request, exc)
     app.state.lifecycle = LifecycleState()
     secret = launch_secret or generate_launch_secret()
     app.state.launch_secret = secret
