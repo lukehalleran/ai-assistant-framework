@@ -85,6 +85,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.logging_utils import get_logger
+from utils.request_span import request_span
 from utils.query_checker import is_personal_doc_search, is_note_save_request, is_request_shaped
 from utils.trigger_match import (
     is_negated as _trigger_is_negated,
@@ -1261,7 +1262,9 @@ def _looks_like_pattern_candidate(query: str) -> bool:
     It never routes the turn itself, and it must not drag personal-state
     statements (vents) into an LLM round-trip — the 08-05 guard's doctrine.
     """
-    text = query or ""
+    # BC-58: first-person/operation words inside a pasted third-party block
+    # are not the user's request — judge the request span only.
+    text = request_span(query or "")
     if not (_PATTERN_CANDIDATE_FIRST_PERSON_RE.search(text)
             and _PATTERN_CANDIDATE_OPERATION_RE.search(text)):
         return False

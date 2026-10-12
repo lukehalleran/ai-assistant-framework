@@ -80,6 +80,7 @@ from models import decision_model as dm
 from utils.logging_utils import get_logger
 from utils.trigger_match import compile_keyword_matcher, is_negated
 import utils.adaptive_exemplars as adaptive_exemplars
+from utils.request_span import request_span
 
 logger = get_logger("tone_detector")
 
@@ -971,7 +972,18 @@ def _heavy_row_is_distress_evidence(turn: dict) -> bool:
     text = turn.get("query") or turn.get("user") or turn.get("content")
     if not text:
         return True  # fail-closed: no text field to inspect
+    # BC-58: a stored row's pasted third-party block is not the user's own
+    # distress evidence — judge the request span only.
     text = str(text)
+    _span = request_span(text)
+    if _span != text:
+        # A pasted block was present: the stored heavy flag may have come from
+        # the paste, so heaviness must be re-derived from the request itself.
+        # lazy import: patch-point (see below)
+        from utils.query_checker import heavy_keyword_hits as _hkh
+        if not _hkh(_span):
+            return False
+        text = _span
 
     # T03 (2026-09-13, T03_design.md "Hold, not reset"): re-classify the
     # row's OWN text with T02's deterministic tier classifier. When the

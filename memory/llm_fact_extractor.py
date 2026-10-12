@@ -433,7 +433,16 @@ class LLMFactExtractor:
         total = 0
         for entry, ts in ordered:  # newest first — oldest drop off
             if total + len(entry) + 10 > self.max_input_chars:
-                break
+                # SKIP an entry that does not fit - never `break`. 2026-10-12
+                # (B4): one 115K-char paste turn (22:31) sat between the user's
+                # one-line facts ("I just started a new job at Northwind...",
+                # "moved to Chicago") and the newest turns; the `break` ended
+                # the walk there and every older turn was dropped, so the
+                # shutdown pass saw 5 of 20 turns and saved no employer/
+                # residence. A paste is not evidence about the user anyway
+                # (the paste guard keeps only user-anchored triples).
+                # class: BC-46, BC-75
+                continue
             msgs.append((entry, ts))
             total += len(entry) + 10
         msgs.reverse()  # render chronologically

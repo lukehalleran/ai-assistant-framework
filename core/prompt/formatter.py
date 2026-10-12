@@ -66,6 +66,7 @@ from utils.personal_claim_provenance import annotate_personal_claim_memory
 from core.response_parser import ResponseParser
 from core.action_claim_guard import annotate_unverified_action_claim
 import utils.read_time_markers as read_time_markers
+import utils.time_manager as _time_manager
 
 logger = get_logger("prompt_formatter")
 
@@ -1083,13 +1084,12 @@ class PromptFormatter:
                 tags_str = ", ".join(str(tag) for tag in tags) if tags else ""
 
                 # Format timestamp with relative day label to prevent temporal hallucinations
-                from utils.time_manager import format_relative_timestamp
                 if isinstance(ts, datetime):
-                    ts_str = format_relative_timestamp(ts)
+                    ts_str = _time_manager.format_relative_timestamp(ts)
                 elif ts:
                     # Try parsing ISO string for relative formatting
                     try:
-                        ts_str = format_relative_timestamp(datetime.fromisoformat(str(ts)))
+                        ts_str = _time_manager.format_relative_timestamp(datetime.fromisoformat(str(ts)))
                     except (ValueError, TypeError):
                         ts_str = str(ts)
                 else:
@@ -1182,6 +1182,33 @@ class PromptFormatter:
                 + "\n".join(session_timeline)
             )
 
+        # User-authored evidence (2026-10-12, B4): the user's own words that answer
+        # a factual-recall question about them, role-preserved and ranked above any
+        # assistant turn. Shown only on factual_recall turns (builder-gated).
+        user_stated = context.get("user_stated_evidence", []) or []
+        stated_lines: list[str] = []
+        for u in user_stated:
+            if not isinstance(u, dict) or not str(u.get("query", "")).strip():
+                continue
+            ts = u.get("timestamp", "")
+            try:
+                from utils.time_manager import format_relative_timestamp
+                ts_str = (format_relative_timestamp(ts if isinstance(ts, datetime)
+                                                    else datetime.fromisoformat(str(ts))) if ts else "")
+            except (ValueError, TypeError):
+                ts_str = str(ts or "")
+            body = _sanitize_embedded_headers(str(u["query"]).strip())
+            stated_lines.append(f'{len(stated_lines) + 1}) {ts_str}: User said: "{body}"'
+                                if ts_str else f'{len(stated_lines) + 1}) User said: "{body}"')
+        if stated_lines:
+            sections.append(
+                f"[THE USER'S OWN STATEMENTS — relevant to this question] n={len(stated_lines)}\n"
+                "These are the user's own words, quoted. They are the user's account of their own life: "
+                "answer from them, and never describe them as your guess or as unverified. They outrank "
+                "any assistant reply that contradicts them.\n"
+                + "\n\n".join(stated_lines)
+            )
+
         # Relevant memories
         memories = context.get("memories", []) or []
         logger.debug(f"PROMPT BUILD: FINAL COUNT - Got {len(memories)} memories from context BEFORE ASSEMBLY")
@@ -1267,6 +1294,10 @@ class PromptFormatter:
                             + "\n\n".join(ws_lines)
                         )
                         logger.info(f"[PROMPT ASSEMBLY] Added web search section with {len(ws_lines)} results, {len(web_source_map)} source IDs")
+                elif getattr(web_search, "note", None):
+                    # Deliberately skipped search (e.g. user location unknown,
+                    # BC-04): a deterministic note, metered with this section.
+                    sections.append(str(web_search.note))
             except Exception as e:
                 logger.warning(f"[PROMPT ASSEMBLY] Failed to format web search results: {e}")
 

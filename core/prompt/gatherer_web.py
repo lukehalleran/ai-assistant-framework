@@ -239,6 +239,27 @@ class WebSearchMixin:
 
             # Use LLM-optimized search_terms if available, otherwise use original query
             search_terms = getattr(decision, 'search_terms', [])
+
+            # BC-04: a placeless local-conditions query with no resolvable user
+            # location must not be searched (the provider ranks an arbitrary
+            # place); the prompt gets a deterministic note and the reply asks.
+            _loc_check = getattr(manager, "location_unknown_for", None)
+            if callable(_loc_check) and _loc_check([query] + list(search_terms or [])) is True:
+                from knowledge.web_search_manager import (  # lazy import: cycle
+                    LOCATION_UNKNOWN_ERROR,
+                    LOCATION_UNKNOWN_NOTE,
+                    WebSearchResult,
+                )
+                self.last_web_decision["results"] = 0
+                self.last_web_decision["blocked"] = "location_unknown"
+                logger.info("[ContextGatherer] Local-conditions query, user location unknown — search skipped")
+                return WebSearchResult(
+                    query=query,
+                    search_depth=search_depth,
+                    error=LOCATION_UNKNOWN_ERROR,
+                    blocked="location_unknown",
+                    note=LOCATION_UNKNOWN_NOTE,
+                )
             if search_terms:
                 logger.info(f"[ContextGatherer] Using LLM-optimized search terms: {search_terms}")
                 result = await manager.multi_search(

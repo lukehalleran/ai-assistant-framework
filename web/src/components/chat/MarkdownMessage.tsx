@@ -8,7 +8,7 @@ export default function MarkdownMessage({ content }: { content: string }) {
   return (
     <div className="markdown-body">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[rehypeKatex, rehypeHighlight]}
         components={{
           a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,

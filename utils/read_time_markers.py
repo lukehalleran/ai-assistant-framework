@@ -24,12 +24,23 @@ assistant turn should call first.
 from __future__ import annotations
 
 PERSONAL_CLAIM_MARKER = (
+    "[Personal-claim check: some claims the ASSISTANT added in this response "
+    "were not found in the user's own words. This note is about the "
+    "assistant's claims only; it says nothing against anything the user "
+    "said, and the user's statements are not unverified.]"
+)
+# Pre-2026-10-12 wording (B4): still present in stored turns, so the strippers
+# must keep recognising it. It read as if the USER's account were unverified
+# ("insufficient or conflicting user evidence ... assistant interpretation") and
+# a model took a stored assistant reply carrying it as "my own guess" about a
+# fact the user had stated. class: BC-91, BC-46.
+LEGACY_PERSONAL_CLAIM_MARKERS = (
     "[Personal-claim check: this assistant response contains claims with "
     "insufficient or conflicting user evidence. Treat it as assistant "
-    "interpretation, not a user completion report.]"
+    "interpretation, not a user completion report.]",
 )
 UNVERIFIED_CLAIM_MARKER = "[unverified action claim]"
-READ_TIME_MARKERS = (PERSONAL_CLAIM_MARKER, UNVERIFIED_CLAIM_MARKER)
+READ_TIME_MARKERS = (PERSONAL_CLAIM_MARKER, UNVERIFIED_CLAIM_MARKER, *LEGACY_PERSONAL_CLAIM_MARKERS)
 DELIVERY_NOTICE_PREFIX = "> ⚠️"
 
 # Every delivery-notice FAMILY the system can glue onto a reply is declared

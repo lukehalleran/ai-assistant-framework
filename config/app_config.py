@@ -724,7 +724,12 @@ ESCALATION_DISTRESS_THRESHOLD = int(os.getenv("ESCALATION_DISTRESS_THRESHOLD", s
 OBSIDIAN_CFG = config.get("obsidian", {})
 OBSIDIAN_ENABLED: bool = bool(OBSIDIAN_CFG.get("enabled", True))
 # Path to Obsidian vault directory
-OBSIDIAN_VAULT_PATH: str = OBSIDIAN_CFG.get("vault_path", "") or os.path.expanduser("~/Documents/Notes")
+# 2026-10-12 (BC-83): the home-relative guess is a DEV default only. In user
+# mode a vault exists solely when config/env names one explicitly (the guess
+# would let note writers/indexers touch a folder the user never chose).
+OBSIDIAN_VAULT_PATH: str = OBSIDIAN_CFG.get("vault_path", "") or (
+    "" if DAEMON_MODE == "user" else os.path.expanduser("~/Documents/Notes")
+)
 # Character threshold for chunking (notes < threshold = whole, >= threshold = chunk by headers)
 OBSIDIAN_CHUNK_THRESHOLD: int = int(OBSIDIAN_CFG.get("chunk_threshold", 1500))
 # Maximum notes to include in prompt
@@ -1236,6 +1241,19 @@ if getattr(sys, "frozen", False):
     FRONTEND_DIST_DIR = resolve_bundled_path(FRONTEND_DIST_DIR)
 # A01b: exact hostnames/IPs trusted as a Host header beyond loopback (e.g. a Tailscale address).
 API_ALLOWED_HOSTS: list = list(API_CFG.get("allowed_hosts", []) or [])
+
+# --------------------------------------------------------------------
+# App lifecycle (B3): heartbeat watchdog for the packaged build
+# --------------------------------------------------------------------
+APP_LIFECYCLE_CFG = config.get("app_lifecycle", {}) or {}
+APP_LIFECYCLE_CLIENT_GRACE_S: float = float(
+    os.getenv("DAEMON_CLIENT_GRACE_S", APP_LIFECYCLE_CFG.get("client_grace_s", 120))
+)
+_exit_when_gone = APP_LIFECYCLE_CFG.get("exit_when_clients_gone", None)
+# null/absent = auto: on only for the frozen (packaged) build.
+APP_LIFECYCLE_EXIT_WHEN_CLIENTS_GONE: bool = (
+    bool(getattr(sys, "frozen", False)) if _exit_when_gone is None else bool(_exit_when_gone)
+)
 
 # --------------------------------------------------------------------
 # Entity Facts Configuration
@@ -2162,7 +2180,21 @@ if DAEMON_MODE == "user":
     # delete, against the never-auto-delete rule; latent only because the committed
     # default mode was dev. Dedup stays a dry-run preview in every mode.
     CROSS_DEDUP_AUTO_EXECUTE = False
-    logger.info("DAEMON_MODE=user — proposals, synthesis, and reference docs disabled")
+    # 2026-10-12 (BC-83, BC-58): every developer surface is off in user mode.
+    # A frozen beta build greeted a fresh profile with the OWNER's untracked
+    # repo files and offered file_access/git_stats/github (the machine's gh
+    # login) as tools. Consumers read these at call time / at manager init.
+    GIT_MEMORY_ENABLED = False
+    SESSION_DIFF_ENABLED = False
+    FILE_ACCESS_ENABLED = False
+    GIT_STATS_ENABLED = False
+    GITHUB_API_ENABLED = False
+    INTERNET_ACTIONS_GITHUB_WRITE_ENABLED = False
+    if not str(OBSIDIAN_VAULT_PATH or "").strip():
+        # No explicit vault: an empty path resolves to "." (the launch CWD), so
+        # the indexer must not run at all. Note writers use the profile notes/.
+        OBSIDIAN_ENABLED = False
+    logger.info("DAEMON_MODE=user — proposals, synthesis, reference docs, and git/file/github dev surfaces disabled")
 else:
     CROSS_DEDUP_AUTO_EXECUTE = False  # Dev mode: dry-run only, manual execution from GUI
 

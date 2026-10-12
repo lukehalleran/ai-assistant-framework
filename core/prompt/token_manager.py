@@ -76,6 +76,9 @@ PRIORITY_ORDER = [
     # and emptied the calendar and threads (they are small; history flexes).
     ("google_calendar",       7),  # Real-time calendar events, small + time-sensitive
     ("unresolved_threads",    7),  # Continuity threads, small (~100-500 tokens)
+    # 2026-10-12 (B4): the user's OWN statements relevant to a factual-recall
+    # question about them - tiny (<=3 short lines), outranks assistant history.
+    ("user_stated_evidence",  8),
     ("recent_conversations",  7),
     # 2026-09-27 (BC-46, BC-30, BC-51): [EARLIER TODAY] recall-timeline lines
     # a truncated [RECENT CONVERSATION] window dropped (temporal_recall-only,
@@ -210,7 +213,10 @@ def _meter_web_search_results(val: Any, count_tokens: Callable[[str], int]) -> i
     never a str(dataclass) repr. Empty/errored results (has_results False)
     count 0 so the section passes through untouched."""
     if not getattr(val, "has_results", False):
-        return 0
+        # A deliberately skipped search carries a short deterministic note the
+        # formatter renders (BC-04); meter exactly that text.
+        _note = getattr(val, "note", None)
+        return count_tokens(str(_note)) if _note else 0
     pages = getattr(val, "pages", None) or []
     lines, _ = render_numbered_web_sources(pages, max_sources=8, max_chars_per_source=2000)
     if not lines:

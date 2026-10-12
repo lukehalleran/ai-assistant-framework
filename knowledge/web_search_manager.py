@@ -270,6 +270,10 @@ class WebSearchResult:
     # ``f"tavily_extract:{reason}"`` instead. Additive, default None; no
     # consumer reads it in F2 (F6 surfaces it in a receipt).
     extract_error: Optional[str] = None
+    # Deterministic prompt note for a search that was deliberately skipped
+    # (e.g. LOCATION_UNKNOWN_NOTE). Rendered by the formatter inside the
+    # web_search_results section, which the token manager meters.
+    note: Optional[str] = None
 
     @property
     def has_results(self) -> bool:
@@ -628,6 +632,21 @@ def format_web_sources_with_ids(
 
 
 DISABLED_ERROR = "Web search is disabled in Settings"
+def _strip_placeholder_location(text: str) -> str:
+    """Drop deictic placeholder phrases ("current location", "near me") — they
+    point at a place, they are not one (BC-04)."""
+    from utils.location_resolver import strip_placeholder_location  # lazy import: layering (keeps resolver out of module import graph)
+    return strip_placeholder_location(text)
+
+
+LOCATION_UNKNOWN_ERROR = "User location unknown for a local-conditions query"
+# Deterministic prompt note (BC-04): rendered by the formatter inside the
+# metered web_search_results section when the search was skipped.
+LOCATION_UNKNOWN_NOTE = (
+    "[LOCATION UNKNOWN] The user asked about local conditions (weather or similar) but "
+    "their location is not known, so no search was run. Ask which city they mean; do not "
+    "guess a place or invent conditions."
+)
 
 
 # Live rate limiters, so any module can ask what the REAL remaining search
@@ -1296,6 +1315,15 @@ class WebSearchManager:
         # callers (literature oracle) whose queries must reach Tavily verbatim.
         if localize:
             query = self._localize_query(query)
+            if self.location_unknown_for([query]):
+                log.info("[WebSearch] Local-conditions query with no known location — not searching")
+                return WebSearchResult(
+                    query=query,
+                    search_depth=depth,
+                    error=LOCATION_UNKNOWN_ERROR,
+                    blocked="location_unknown",
+                    note=LOCATION_UNKNOWN_NOTE,
+                )
 
         # Check cache first
         if use_cache:
@@ -1874,6 +1902,8 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
     # they make the ranker pick an arbitrary big-market result (a "my area"
     # weather query once returned DC news to an Illinois user).
     _DEICTIC_LOCATION_SUBS = [
+        (re.compile(r"\b(?:(?:in|at|for|near|around)\s+)?(?:(?:my|your|the)\s+)?(?:current|present)\s+(?:location|city|town|area|place|position|neighbou?rhood)\b", re.I),
+         "in {loc}"),
         (re.compile(r"\b(?:in|for|around|near)\s+my\s+(?:area|city|town|location|neighborhood)\b", re.I),
          "in {loc}"),
         (re.compile(r"\bnear\s+me\b", re.I), "in {loc}"),
@@ -1920,14 +1950,40 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
             log.debug(f"[WebSearch] Institution resolution failed: {e}")
             return None
 
+    def location_unknown_for(self, queries: List[str]) -> bool:
+        """True when every text is placeless AND the first is a local-conditions
+        query AND no user location resolves (BC-04). Deictic placeholders
+        ("current location", "my area") never count as naming a place."""
+        texts = [t for t in (queries or []) if t]
+        if not texts:
+            return False
+        loc = self._get_user_location()
+        if loc:
+            return False
+        for text in texts:
+            cleaned = _strip_placeholder_location(text)
+            if self._NAMES_A_PLACE_RE.search(cleaned):
+                return False
+        first = _strip_placeholder_location(texts[0])
+        return bool(self._LOCATION_DEPENDENT_RE.search(first)) or bool(
+            self._AMBIGUOUS_WEATHER_RE.search(first)
+            and self._CURRENT_CONDITIONS_RE.search(first)
+        )
+
     def _localize_query(self, query: str) -> str:
         """Deterministic backstop behind the LLM prompts: substitute literal
         "my area"/"near me" with the user's location, and append the location
         to weather-type queries that name no place at all. Runs on every query
         entering search(), so LLM-generated sub-queries are covered too."""
-        loc = self._get_user_location()
-        if not loc or not query:
+        if not query:
             return query
+        loc = self._get_user_location()
+        if not loc:
+            # No place known: a deictic placeholder must never reach the
+            # provider as if it were one ("weather in current location" ranked
+            # a weatherapi page titled "Current, Harbour Island, Bahamas").
+            stripped = _strip_placeholder_location(query)
+            return stripped or query
 
         original = query
         for pattern, template in self._DEICTIC_LOCATION_SUBS:

@@ -14,6 +14,11 @@ What it proves (the P3 procedure of 2026-10-10, made repeatable):
            ``/health`` 200, the SPA root div is served, ``/api/session`` is 401
            without the launch token and 200 with it, a POST ``/api/chat`` stream
            ends in a ``complete`` event, SIGINT exits 0, shutdown phases run.
+           Smoke B ends by POST /api/shutdown (B3, the Quit button's endpoint):
+           401 without the launch token, 202 with it, then exit 0 with all
+           shutdown phases run -- no signal sent. (The heartbeat watchdog's
+           grace-period exit is covered by tests/unit/test_oct12_b3_app_lifecycle.py;
+           a third frozen launch for it was judged too heavy.)
   Strict write assertion (per smoke): everything newer than a stamp file lies
            under ``home/.daemon`` (plus ``home/.cache``, ``home/.nv``,
            ``run.log``, the stamp itself). A frozen app that scatters stores
@@ -361,6 +366,7 @@ class Smoke:
         self.proc: Optional[subprocess.Popen] = None
         self.api_port = 0
         self.gradio_port = 0
+        self.quit_checked = False  # True once the app exited via POST /api/shutdown (B3)
 
     def rec(self, step: str, ok: bool, detail: str = "") -> bool:
         self.results.append((f"{self.tag}: {step}", PASS if ok else FAIL, detail))
@@ -400,6 +406,8 @@ class Smoke:
     def stop(self) -> None:
         """SIGINT our own child, expect a clean exit within EXIT_TIMEOUT_S."""
         proc = self.proc
+        if self.quit_checked:
+            return  # already exited and recorded by _quit_via_api
         if proc is None or proc.poll() is not None:
             code = None if proc is None else proc.returncode
             self.rec("clean exit", False, f"process already gone (exit {code}) before SIGINT")
@@ -474,7 +482,35 @@ class Smoke:
             hdr = {"X-Daemon-Launch-Token": token}
             self.rec("/api/session 200 with token", http_status(port, "/api/session", headers=hdr) == 200)
             self._chat(port, token)
+            self._quit_via_api(port, token)
         self.rec("/admin hidden when packaged", http_status(port, "/admin/") == 404, "404 by design (admin_packaged)")
+
+    def _quit_via_api(self, port: int, token: str) -> None:
+        """B3: the app owns its shutdown. Without the token POST /api/shutdown is
+        refused; with it, 202 and the process exits 0 with every shutdown phase run
+        (the same path as SIGINT -- no signal is sent by this script)."""
+        hdr = {"Origin": f"http://{LOOPBACK}:{port}"}
+        self.rec("POST /api/shutdown 401 without token",
+                 http_status(port, "/api/shutdown", method="POST", headers=hdr) == 401)
+        proc = self.proc
+        if proc is None:
+            return
+        hdr["X-Daemon-Launch-Token"] = token
+        status = http_status(port, "/api/shutdown", method="POST", headers=hdr)
+        if not self.rec("POST /api/shutdown 202 with token", status == 202, f"-> {status}"):
+            return
+        self.quit_checked = True
+        t0 = time.time()
+        try:
+            code = proc.wait(timeout=EXIT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()  # our own child only
+            proc.wait()
+            self.rec("clean exit via /api/shutdown", False, f"still running {EXIT_TIMEOUT_S}s after the POST; killed")
+            return
+        self.rec("clean exit via /api/shutdown", code == 0, f"exit {code} in {time.time() - t0:.0f}s")
+        reached, total = shutdown_phases(self.log_text())
+        self.rec("shutdown phases (via /api/shutdown)", total > 0 and reached == total, f"{reached}/{total} reached")
 
     def _chat(self, port: int, token: str) -> None:
         hdr = {"X-Daemon-Launch-Token": token, "Origin": f"http://{LOOPBACK}:{port}",

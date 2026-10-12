@@ -12,7 +12,7 @@ from knowledge.WikiManager import WikiManager, _clean_query as _wiki_clean_query
 # Only tested against the OPENING of a chunk (see looks_like_disambiguation_text)
 # so an article that merely discusses ambiguity mid-text never matches.
 _DISAMBIGUATION_RE = re.compile(
-    r"\b(?:may|might|can|commonly|most\s+commonly)\s+(?:also\s+)?refers?\s+to\b",
+    r"\b(?:may|might|can|commonly|most\s+(?:commonly|often|usually|frequently))\s+(?:also\s+)?refers?\s+to\b",
     re.IGNORECASE,
 )
 

@@ -47,6 +47,7 @@ from utils.status_claims import authoritative_facts_block, remove_conflicting_cl
 import utils.status_claims as status_claims
 from utils.streak_claims import remove_stale_streak_claims, streak_ledger, streak_ledger_block
 from utils.retrieval_outcome import RetrievalError
+from utils.notes_common import SPEAKER_AUTHORITY_RULES
 from pathlib import Path
 import re
 
@@ -413,7 +414,9 @@ TEMPORAL ACCURACY RULES — these are critical:
 
 Write in third person ("The user is..."). Be specific and grounded in the data.
 Prioritize recent daily notes for current state, weekly for active threads, monthly for trajectory.
-Do NOT make up information not present in the summaries."""
+Do NOT make up information not present in the summaries.
+
+""" + SPEAKER_AUTHORITY_RULES
 
     def _get_obsidian_notes_path(self) -> Optional[str]:
         """Get the path to the daily notes folder (None when it does not exist).

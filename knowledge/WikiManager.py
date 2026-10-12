@@ -41,21 +41,81 @@ GENERIC_TOPIC_WORDS = {
 }
 
 
+_QUOTED_SPAN_RE = re.compile(r"[\"\u201c]([^\"\u201d]+)[\"\u201d]|(?<!\w)'([^']+)'(?!\w)")
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def _quoted_spans(q: str) -> List[tuple]:
+    return [m.span() for m in _QUOTED_SPAN_RE.finditer(q or "")]
+
+
 def _keywords_from_query(q: str) -> List[str]:
     """
     Extract reasonable probe keywords from a verbose query.
     Keeps alphanumerics, drops stopwords and generic topic words, title-cases tokens.
     Also returns last-2-words bigram if useful.
+
+    Categorized generic-word rule (2026-10-12, B6): a bare lowercase single
+    token is not evidence of a PROPER-NAME topic. Probing it resolved "role" ->
+    Role (social role), "web" -> Web (disambiguation), "we" -> the pronoun
+    article, "talk" -> Talk radio. So (1) a function word (spaCy's English
+    lexicon, the same one the junk-entity chokepoint uses) is dropped unless
+    the user wrote it as a name (quoted, or capitalized mid-sentence like
+    "May"), and (2) a single-token probe needs a name signal (quoted or
+    capitalized mid-sentence) unless it is the ONLY content token of the query;
+    otherwise the topic is carried by the multi-word bigram probe.
     """
-    tokens = re.findall(r"[A-Za-z0-9']+", (q or "").lower())
-    core = [t for t in tokens if t not in STOPWORDS and t not in GENERIC_TOPIC_WORDS]
-    core = list(dict.fromkeys(core))  # preserve order, dedupe
+    q = q or ""
+    quoted = _quoted_spans(q)
+    # lazy import: layering (knowledge/ keeps memory.graph_utils off the module import path)
+    from memory.graph_utils import _stop_lexicon
+    function_words = _stop_lexicon()
+
+    core: List[str] = []
+    contiguous: List[str] = []  # adjacent kept words in the text = a real multi-word span
+    prev_kept: Optional[str] = None
+    named: set = set()
+    seen: set = set()
+    for m in _WORD_RE.finditer(q):
+        raw = m.group(0)
+        t = raw.lower()
+        start = m.start()
+        in_quote = any(a <= start < b for a, b in quoted)
+        before = q[:start].rstrip()
+        sentence_start = (not before) or before[-1] in ".!?:\n"
+        capitalized = raw[:1].isupper() and not sentence_start
+        name_like = in_quote or capitalized
+        if t in STOPWORDS or t in GENERIC_TOPIC_WORDS:
+            prev_kept = None
+            continue
+        if t in function_words and not name_like:
+            prev_kept = None
+            continue
+        if prev_kept is not None and len(prev_kept) > 1 and len(t) > 1:
+            pair = f"{prev_kept[:1].upper() + prev_kept[1:]} {t[:1].upper() + t[1:]}"
+            if pair not in contiguous:
+                contiguous.append(pair)
+        prev_kept = t
+        if t in seen:
+            if name_like:
+                named.add(t)
+            continue
+        seen.add(t)
+        core.append(t)
+        if name_like:
+            named.add(t)
     probes: List[str] = []
 
-    # Single-token probes (title-cased)
+    # Single-token probes (title-cased): only name-like tokens, or the sole
+    # content token of the query.
     for t in core:
-        if len(t) > 1:
+        if len(t) > 1 and (t in named or len(core) == 1):
             probes.append(t[:1].upper() + t[1:])
+
+    # Adjacent-word spans from the text itself ("quantum entanglement")
+    for pair in contiguous:
+        if pair not in probes:
+            probes.append(pair)
 
     # Last-two-words bigram (often the head noun phrase)
     if len(core) >= 2:

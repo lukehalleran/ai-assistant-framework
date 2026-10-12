@@ -61,7 +61,7 @@ import utils.status_claims as status_claims
 import utils.streak_claims as streak_claims
 import utils.tag_generator as _tag_generator
 from utils.retrieval_outcome import RetrievalError
-from utils.notes_common import FALLBACK_MODELS
+from utils.notes_common import FALLBACK_MODELS, SPEAKER_AUTHORITY_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +335,8 @@ IMPORTANT:
   sentence that contradicts it (e.g. do not claim someone withdrew from
   school/a program while a current enrollment fact is listed there).
 - Do NOT include any preamble or meta-commentary, just the note content
+
+__SPEAKER_AUTHORITY_RULES__
 '''
 
 
@@ -828,7 +830,8 @@ generated: {datetime.now().isoformat()}
         # Build prompt with user display name substitution
         from utils.user_identity import get_user_display_name  # lazy import: live-config read
         user_name = get_user_display_name()
-        prompt_template = SYSTEM_PROMPT_TEMPLATE.replace("__USER_NAME__", user_name)
+        prompt_template = SYSTEM_PROMPT_TEMPLATE.replace(
+            "__SPEAKER_AUTHORITY_RULES__", SPEAKER_AUTHORITY_RULES).replace("__USER_NAME__", user_name)
         prompt = prompt_template.format(
             date=target_date.strftime("%B %d, %Y"),
             formatted_conversations=formatted,

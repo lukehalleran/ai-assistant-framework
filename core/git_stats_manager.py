@@ -164,9 +164,17 @@ class GitStatsManager:
     ):
         self.timeout = timeout
         self.max_output_lines = max_output_lines
-        self._configured_repo_root = (
-            str(Path(repo_path).expanduser().resolve()) if repo_path else None
-        )
+        # 2026-10-12 (BC-83): never resolve the repo from the launch CWD. With
+        # no explicit path, use the checkout this module lives in; a copy that
+        # is not a git work tree (frozen build) is simply unavailable.
+        if repo_path:
+            self._configured_repo_root = str(Path(repo_path).expanduser().resolve())
+        else:
+            _own = Path(__file__).resolve().parent.parent
+            self._configured_repo_root = (
+                str(_own) if (_own / ".git").exists() else None
+            )
+        self._no_repo = self._configured_repo_root is None
         self._repo_root: Optional[str] = self._configured_repo_root
         self._available: Optional[bool] = None
 
@@ -174,6 +182,9 @@ class GitStatsManager:
         """Check if we're inside a git repo. Caches result."""
         if self._available is not None:
             return self._available
+        if self._no_repo:
+            self._available = False
+            return False
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],

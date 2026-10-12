@@ -50,6 +50,8 @@ function stubFetch(responseFactory?: (req: RecordedRequest) => Partial<Response>
 const REPRESENTATIVE_ARGS: Record<string, unknown[]> = {
   getSession: [],
   clearSession: [],
+  heartbeat: [],
+  shutdown: [],
   getModels: [],
   setActiveModel: ['gpt-x'],
   approveAction: ['act-1'],

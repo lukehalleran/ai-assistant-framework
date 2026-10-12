@@ -423,6 +423,20 @@ def canonicalize_profile_relation(rel: str, value: str | None = None) -> str:
 
 # Prefix map: first token of underscore-split relation → category
 # More robust than substring matching — "sleep_apnea_test_result" matches on "sleep" prefix
+# Emotional-state verb family (2026-10-12, B4, class: BC-46): "concerned_about",
+# "worried_about", "feels_...", "stressed_about" name how the user feels NOW. Single
+# source for the category (health/emotional, never hobbies) AND for the
+# relation_classifier ephemeral TTL, so the two can't drift.
+EMOTIONAL_STATE_PREFIXES = (
+    "concerned", "worried", "anxious", "stressed", "upset", "feeling", "feels",
+)
+
+
+def is_emotional_state_relation(relation: str) -> bool:
+    rel = (relation or "").lower().strip()
+    return rel.split("_", 1)[0] in EMOTIONAL_STATE_PREFIXES if rel else False
+
+
 _PREFIX_CATEGORY_MAP: Dict[str, ProfileCategory] = {
     # Fitness
     "workout": ProfileCategory.FITNESS, "bench": ProfileCategory.FITNESS,
@@ -834,6 +848,11 @@ def categorize_relation(relation: str) -> ProfileCategory:
     # Layer 1: Direct lookup (fastest, most reliable — always authoritative)
     if relation_lower in RELATION_CATEGORY_MAP:
         return RELATION_CATEGORY_MAP[relation_lower]
+
+    # Layer 1b: emotional-state family -> HEALTH (ahead of the persisted cache,
+    # which had filed concerned_about under "hobbies").
+    if is_emotional_state_relation(relation_lower):
+        return ProfileCategory.HEALTH
 
     # Layer 2: Prefix lookup (first token before underscore)
     tokens = relation_lower.split("_")

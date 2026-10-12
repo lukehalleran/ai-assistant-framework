@@ -153,3 +153,27 @@ REAL handle_submit), `test_api_actions.py` (core outcomes + audit + Gradio
 wrapper tuple), `test_api_misc.py` (uploads/models/status/graph/schema).
 Mock-orchestrator factory shared via `tests/unit/helpers_orchestrator.py`
 (re-exports from test_handle_submit.py, which is unchanged).
+
+## App lifecycle: Quit and the packaged-mode watchdog (B3, 2026-10-12)
+
+Closing a terminal window does not reliably hang up the process (Fedora's
+Ptyxis never sends SIGHUP), so the app owns its shutdown (`api/lifecycle.py`,
+`api/routes/lifecycle.py`; class BC-58).
+
+- **`POST /api/shutdown`** (launch token + same-origin required like every
+  `/api/*` write; additionally refused for non-loopback peers) schedules
+  `SIGINT` to our own process ~0.5 s after the 202 is sent, so uvicorn's
+  graceful exit runs the lifespan shutdown sequence exactly as Ctrl+C does.
+  Idempotent: a repeat call returns 202 `already_shutting_down` with no second
+  signal. A turn in flight is reported (`turn_in_flight`) but does not block it.
+- **`POST /api/heartbeat`**: the SPA pings on mount, every 30 s and on
+  `visibilitychange -> visible` (`web/src/api/useHeartbeat.ts`).
+- **Watchdog** (YAML `app_lifecycle`): armed by the first heartbeat ever; when
+  the gap exceeds `client_grace_s` (120, env `DAEMON_CLIENT_GRACE_S`) and no
+  turn is in flight it requests the same clean shutdown. `exit_when_clients_gone`
+  is `null` = auto (on when frozen, off in dev). Config is read live per tick.
+- **SPA**: navbar "Quit Daemon" (confirm modal) -> POST -> a "Daemon has shut
+  down -- you can close this tab" screen; heartbeats stop.
+- The frozen smoke (`scripts/smoke_frozen_build.py`, Smoke B) ends by calling
+  `/api/shutdown` and asserts 401 without the token, 202 with it, exit 0 and
+  all shutdown phases.

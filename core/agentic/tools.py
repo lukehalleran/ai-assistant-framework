@@ -34,7 +34,7 @@ from core.agentic.types import (
     SearchRound,
     _ToolResult,
 )
-from core.agentic.formatters import AgenticFormatter
+from core.agentic.formatters import AgenticFormatter, drop_navigation_and_duplicate_chunks
 from config import app_config
 import re as _re
 import asyncio
@@ -275,17 +275,27 @@ class ToolExecutor:
         else:
             lines.append("wolfram: UNAVAILABLE")
 
+        # Developer surfaces (file access, git stats, GitHub): 2026-10-12
+        # (BC-83, BC-58) when the live flag is off (user mode forces all of
+        # them off) the tool is not mentioned at all — a held manager from
+        # before a toggle must not keep advertising it.
+        _fa_on = bool(getattr(app_config, "FILE_ACCESS_ENABLED", True))
+        _gs_on = bool(getattr(app_config, "GIT_STATS_ENABLED", True))
+        _gh_on = bool(getattr(app_config, "GITHUB_API_ENABLED", True))
+
         # File access
-        if self.file_access_manager:
-            lines.append("file_access: AVAILABLE")
-        else:
-            lines.append("file_access: UNAVAILABLE")
+        if _fa_on:
+            if self.file_access_manager:
+                lines.append("file_access: AVAILABLE")
+            else:
+                lines.append("file_access: UNAVAILABLE")
 
         # Git stats
-        if self.git_stats_manager:
-            lines.append("git_stats: AVAILABLE")
-        else:
-            lines.append("git_stats: UNAVAILABLE")
+        if _gs_on:
+            if self.git_stats_manager:
+                lines.append("git_stats: AVAILABLE")
+            else:
+                lines.append("git_stats: UNAVAILABLE")
 
         # Memory expander
         if self.memory_expander:
@@ -306,7 +316,9 @@ class ToolExecutor:
             lines.append("recall_image: DISABLED")
 
         # GitHub API
-        if self.github_manager:
+        if not _gh_on:
+            pass
+        elif self.github_manager:
             gh_line = "github: AVAILABLE (query issues, PRs, actions, releases, search)."
             try:
                 if app_config.INTERNET_ACTIONS_GITHUB_WRITE_ENABLED:
@@ -1998,7 +2010,7 @@ Provide a focused summary with the most important information."""
         """Search the FAISS Wikipedia index (41M vectors) as fallback for wiki_knowledge."""
         try:
             from knowledge.semantic_search import semantic_search_with_neighbors  # lazy import: startup-cost (would newly load: faiss, numpy)
-            return semantic_search_with_neighbors(query, k=k)
+            return drop_navigation_and_duplicate_chunks(semantic_search_with_neighbors(query, k=k))
         except Exception as e:
             logger.warning(f"[AgenticSearch] FAISS wiki search failed: {e}")
             return []

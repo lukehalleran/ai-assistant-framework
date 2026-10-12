@@ -12,6 +12,7 @@ create_app(orchestrator) builds the parent app:
 Mount order matters: routers → /admin → static /.
 """
 
+import asyncio
 import html as html_lib
 import os
 import sys
@@ -26,7 +27,8 @@ from api.launch_auth import (
     generate_launch_secret,
     normalize_trusted_hostnames,
 )
-from api.routes import actions, chat, curation, debug, files, models, settings, system
+from api.lifecycle import LifecycleState, watchdog_loop
+from api.routes import actions, chat, curation, debug, files, lifecycle, models, settings, system
 from api.state import AppState
 from config import app_config
 from utils.bootstrap import resolve_bundled_path
@@ -74,8 +76,11 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
             except Exception as e:
                 logger.warning(f"[API] Idle monitor not started: {e}")
 
+        watchdog = asyncio.create_task(watchdog_loop(app.state.lifecycle))
+
         yield
 
+        watchdog.cancel()
         if start_background:
             try:
                 import main as main_mod  # lazy import: cycle (main alias — see main.py:802)
@@ -85,6 +90,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
 
     app = FastAPI(title="Daemon", lifespan=lifespan)
     app.state.daemon = AppState(orchestrator)
+    app.state.lifecycle = LifecycleState()
     secret = launch_secret or generate_launch_secret()
     app.state.launch_secret = secret
 
@@ -113,6 +119,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
     app.include_router(debug.router)
     app.include_router(settings.router)
     app.include_router(curation.router)
+    app.include_router(lifecycle.router)
 
     # Minimal, read-only liveness (G06-T02) — not the detailed
     # utils.health_check payload; the legacy --legacy-gui path still wires

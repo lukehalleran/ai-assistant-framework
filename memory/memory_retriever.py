@@ -411,6 +411,30 @@ def _metadata_fallback_search(
         ) from e
 
 
+
+def _reflection_body(content: str, metadata: Optional[dict]) -> str:
+    """Display body of a stored reflection.
+
+    The reflections collection EMBEDS a compact retrieval text
+    (`_extract_reflection_retrieval_text`: entity/topic keywords plus a
+    truncated paraphrase) and keeps the real markdown in
+    metadata["original_text"]. Rendering the Chroma document therefore showed
+    the same reflection twice - body (corpus) and keyword soup ("Adam Adam
+    Serwer Atlantic Atlantic**...") - in [RECENT REFLECTIONS]. Render the
+    body only. class: BC-46
+    """
+    if isinstance(metadata, dict):
+        orig = metadata.get("original_text")
+        if isinstance(orig, str) and orig.strip():
+            return orig.strip()
+    return (content or "").strip()
+
+
+def _reflection_dedup_key(text: str) -> str:
+    """Whitespace/markup-insensitive body prefix used to dedup one reflection."""
+    return re.sub(r"[\s*#_`>-]+", " ", text or "").strip().lower()[:80]
+
+
 class MemoryRetriever:
     """
     Memory retrieval operations.
@@ -795,6 +819,8 @@ class MemoryRetriever:
         """Fetch recent reflections."""
         out = []
 
+        seen_bodies: set = set()
+
         # Corpus-first
         try:
             cm = self.corpus_manager
@@ -814,6 +840,7 @@ class MemoryRetriever:
                     t = (n.get("type") or "").strip().lower()
                     tags = n.get("tags") or []
                     if t == "reflection" or "type:reflection" in tags:
+                        seen_bodies.add(_reflection_dedup_key(n.get("content", "")))
                         out.append({
                             "content": n.get("content", "").strip(),
                             "type": "reflection",
@@ -832,9 +859,13 @@ class MemoryRetriever:
             if coll and coll.count() > 0:
                 items = self.chroma_store.get_recent("reflections", limit=limit)
                 for r in items or []:
-                    txt = (r.get("content") if isinstance(r, dict) else str(r)).strip()
-                    ts = (r.get("metadata") or {}).get("timestamp") if isinstance(r, dict) else None
-                    if txt:
+                    _meta = (r.get("metadata") or {}) if isinstance(r, dict) else {}
+                    txt = _reflection_body(
+                        (r.get("content") if isinstance(r, dict) else str(r)), _meta)
+                    ts = _meta.get("timestamp") if isinstance(r, dict) else None
+                    _k = _reflection_dedup_key(txt)
+                    if txt and _k not in seen_bodies:
+                        seen_bodies.add(_k)
                         out.append({
                             "content": txt,
                             "type": "reflection",
@@ -888,7 +919,7 @@ class MemoryRetriever:
                         continue
                     seen_semantic_ids.add(rid)
                     semantic.append({
-                        'content': r.get('content', ''),
+                        'content': _reflection_body(r.get('content', ''), r.get('metadata', {})),
                         'metadata': r.get('metadata', {}),
                         'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
                         'type': 'reflection',
@@ -909,7 +940,7 @@ class MemoryRetriever:
             if rid not in seen_semantic_ids:
                 seen_semantic_ids.add(rid)
                 semantic.append({
-                    'content': r.get('content', ''),
+                    'content': _reflection_body(r.get('content', ''), r.get('metadata', {})),
                     'metadata': r.get('metadata', {}),
                     'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
                     'type': 'reflection',
@@ -923,8 +954,7 @@ class MemoryRetriever:
                 return str(item)[:50]
             ts = item.get("timestamp", "")
             ts_str = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
-            content_prefix = (item.get("content", "") or "")[:50].strip()
-            return f"ts:{ts_str}::{content_prefix}"
+            return "body:" + _reflection_dedup_key(item.get("content", "") or "")
 
         pool = []
         seen_ids = set()
