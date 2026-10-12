@@ -412,7 +412,7 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
 
                     try:
                         error_body = str(resp.text)[:300]
-                    except Exception:
+                    except Exception:  # degrades: calendar failure detail omits the API error body text
                         error_body = ""
                     detail = f"HTTP {resp.status_code}"
                     if error_body:
@@ -433,7 +433,7 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
             try:
                 from core.actions.google_calendar import clear_cache  # lazy import: cycle
                 clear_cache()
-            except Exception as exc:
+            except Exception as exc:  # degrades: calendar read cache may show stale events until its TTL expires
                 logger.debug(f"[CalendarCreate] Could not clear calendar cache: {exc}")
 
         if not failures:

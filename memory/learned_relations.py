@@ -99,7 +99,7 @@ class LearnedRelationStore:
         try:
             from memory.entity_resolver import normalize_relation  # lazy import: startup-cost (would newly load: networkx)
             rel = normalize_relation(rel) or rel
-        except Exception:
+        except Exception:  # degrades: relation is tracked without synonym normalization
             pass
         # lazy import: cycle (llm_fact_extractor imports this store at call time)
         from memory.llm_fact_extractor import CORE_RELATIONS
@@ -108,7 +108,7 @@ class LearnedRelationStore:
         try:
             if relation_classifier.is_ephemeral_relation(rel):
                 return None
-        except Exception:
+        except Exception:  # degrades: ephemeral-relation check is skipped so a transient relation may be tracked
             pass
         if not _SHAPE_RE.match(rel):  # normalization may have reshaped it
             return None

@@ -203,6 +203,7 @@ class OutlookProvider:
                     if msg_date < cutoff:
                         continue  # Outside window
                 except Exception:
+                    # degrades: one Outlook message with unparseable date is kept instead of date-filtered
                     pass  # Skip on parse error
 
                 email_msg = self._parse_message(msg)
@@ -341,7 +342,7 @@ class OutlookProvider:
                 try:
                     dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                     date_iso = dt.isoformat()
-                except Exception:
+                except Exception:  # degrades: Outlook message shows an empty date when its timestamp cannot be parsed
                     pass
 
             return EmailMessage(
@@ -358,5 +359,6 @@ class OutlookProvider:
             )
 
         except Exception as e:
+            # degrades: one Outlook message is dropped from the inbox digest when its fields fail to parse
             logger.debug(f"[Outlook] _parse_message failed: {e}")
             return None

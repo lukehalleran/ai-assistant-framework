@@ -227,7 +227,7 @@ class ResponsePlanner:
             from utils.query_checker import is_task_directive  # lazy import: cycle
             if is_task_directive(query):
                 return False
-        except Exception:
+        except Exception:  # degrades: task-directive check failure lets the planner run on directives
             pass
 
         # A bare self-report ("Cool. Managed to push today and there is a
@@ -247,7 +247,7 @@ class ResponsePlanner:
             if ((is_self_report(query) or is_status_report(query))
                     and not is_request_shaped(query)):
                 return False
-        except Exception:
+        except Exception:  # degrades: self-report check failure lets the planner run on status updates
             pass
 
         return True
@@ -592,8 +592,8 @@ class ResponsePlanner:
         except asyncio.TimeoutError:
             logger.debug("[RESPONSE PLANNER] Timed out, skipping plan")
             return None
-        except Exception as e:
-            logger.debug(f"[RESPONSE PLANNER] LLM call failed: {e}")
+        except Exception as e:  # degrades: planner LLM failure means no plan guides this reply
+            logger.warning(f"[RESPONSE PLANNER] LLM call failed: {type(e).__name__}")
             return None
 
         if not raw or not raw.strip():
@@ -717,8 +717,8 @@ class ResponsePlanner:
         except asyncio.TimeoutError:
             logger.debug("[REVIEW GATE] Timed out, skipping review")
             return None
-        except Exception as e:
-            logger.debug(f"[REVIEW GATE] LLM call failed: {e}")
+        except Exception as e:  # degrades: review gate LLM failure means reply goes unreviewed
+            logger.warning(f"[REVIEW GATE] LLM call failed: {type(e).__name__}")
             return None
 
         if not raw or not raw.strip():

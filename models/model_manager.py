@@ -594,7 +594,7 @@ class ModelManager:
             if self.client is not None:
                 try:
                     self.client.close()
-                except Exception:
+                except Exception:  # degrades: old client close failure may leak the previous connection
                     pass
 
             # Create new clients with the new API key
@@ -1034,7 +1034,7 @@ class ModelManager:
                     for k in dir(usage)
                     if not k.startswith("_") and not callable(getattr(usage, k, None))
                 }
-        except Exception:
+        except Exception:  # degrades: usage parse failure drops prompt cache stats for this call
             return
 
         try:
@@ -1060,6 +1060,7 @@ class ModelManager:
                 served, written, cache_discount,
             )
         except Exception as e:  # pragma: no cover - diagnostic only
+            # degrades: prompt cache stats line lost, diagnostics only
             logger.debug("[PromptCache] usage parse failed: %s", e)
 
     @log_and_time("Generate with openAI")

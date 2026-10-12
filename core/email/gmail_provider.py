@@ -401,6 +401,7 @@ class GmailProvider:
                         dt = parsedate_to_datetime(date_str)
                         date_iso = dt.isoformat()
                     except Exception:
+                        # degrades: Gmail message shows an empty date when its Date header cannot be parsed
                         pass
 
                 # Gmail snippet and threadId are at message top level
@@ -430,5 +431,6 @@ class GmailProvider:
                 )
 
             except Exception as e:
-                logger.debug(f"[Gmail] _fetch_message_metadata({message_id}) failed: {e}")
+                # degrades: one Gmail message is missing from the inbox digest after a metadata fetch failure
+                logger.warning(f"[Gmail] _fetch_message_metadata({message_id}) failed: {type(e).__name__}")
                 return None

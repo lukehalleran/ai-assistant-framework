@@ -144,6 +144,7 @@ class GoalDirectedGenerator:
                     context["skeleton"] = self._filter_skeleton_sections(text)
                     break
                 except Exception as e:
+                    # degrades: unreadable skeleton file leaves proposal prompt without project skeleton
                     logger.debug(f"Could not read skeleton at {path}: {e}")
 
         # Read goals file
@@ -157,7 +158,7 @@ class GoalDirectedGenerator:
                     text = path.read_text(encoding="utf-8")
                     context["goals"] = text[:4000]
                     break
-                except Exception as e:
+                except Exception as e:  # degrades: unreadable goals file leaves proposal prompt without project goals
                     logger.debug(f"Could not read goals at {path}: {e}")
 
         # Read CLAUDE.md (project conventions and architecture)
@@ -173,6 +174,7 @@ class GoalDirectedGenerator:
                     logger.debug(f"Loaded CLAUDE.md ({len(text)} chars)")
                     break
                 except Exception as e:
+                    # degrades: unreadable CLAUDE.md leaves proposal prompt without conventions context
                     logger.debug(f"Could not read CLAUDE.md at {path}: {e}")
 
         # Read QUICK_REFERENCE.md (API signatures and patterns)
@@ -188,6 +190,7 @@ class GoalDirectedGenerator:
                     logger.debug(f"Loaded QUICK_REFERENCE.md ({len(text)} chars)")
                     break
                 except Exception as e:
+                    # degrades: unreadable quick reference leaves proposal prompt without API signatures
                     logger.debug(f"Could not read QUICK_REFERENCE.md at {path}: {e}")
 
         # Recent git commits
@@ -379,7 +382,7 @@ class GoalDirectedGenerator:
                 if isinstance(step_data, dict):
                     try:
                         steps.append(ImplementationStep.from_dict(step_data))
-                    except Exception:
+                    except Exception:  # degrades: malformed implementation step is skipped, so proposal loses that step
                         continue
 
             # Parse complexity
@@ -421,7 +424,7 @@ class GoalDirectedGenerator:
 
             return proposal
 
-        except Exception as e:
+        except Exception as e:  # degrades: unparseable model proposal text is dropped, so that proposal is lost
             logger.debug(f"Failed to parse proposal: {e}")
             return None
 
@@ -436,6 +439,7 @@ class GoalDirectedGenerator:
         try:
             from config.feature_registry import check_conflicts, get_dependencies  # lazy import: optional-dependency (a missing/broken registry degrades to no annotation)
         except Exception:  # noqa: BLE001
+            # degrades: missing feature registry means proposals get no conflict annotation
             return
         for p in proposals:
             try:
@@ -460,6 +464,7 @@ class GoalDirectedGenerator:
                 logger.info("[ProposalGenerator] '%s' overlaps shipped features: %s",
                             p.title, deps)
             except Exception as e:  # noqa: BLE001
+                # degrades: annotation failure leaves proposal without feature-overlap dependency hints
                 logger.debug(f"conflict annotation failed for '{p.title}': {e}")
 
     async def generate_proposals(
@@ -707,6 +712,7 @@ class GoalDirectedGenerator:
                     if len(text) > 15000:
                         current_content += f"\n\n# ... (truncated, full file is {len(text)} chars)"
             except Exception as e:
+                # degrades: unreadable source file leaves code generation without current file content
                 logger.debug(f"[CodeGen] Could not read {file_path}: {e}")
 
         # Build prompt based on action type
@@ -751,6 +757,7 @@ class GoalDirectedGenerator:
                             text = target_path.read_text(encoding="utf-8")
                             test_target += f"\n\nSOURCE FILE ({af}):\n```\n{text[:8000]}\n```"
                     except Exception:
+                        # degrades: unreadable source file leaves test generation without target source context
                         pass
 
             prompt = (

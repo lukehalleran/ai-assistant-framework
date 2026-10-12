@@ -408,7 +408,7 @@ class ResponseGenerator:
                                 model_name=getattr(self.model_manager, "active_model_name", "?"),
                                 where="streaming",
                             )
-                        except Exception:
+                        except Exception:  # degrades: prompt cache usage stats not logged for streamed turn
                             pass
 
                 except Exception as e:
@@ -870,7 +870,7 @@ class ResponseGenerator:
                     f"[BESTOF/MULTI] starting gens={list(generator_models)} n_total={n_total} temps={tuple(temps)} "
                     f"selectors={list(selector_models) if selector_models else []} w_heur={weight_heuristic} w_llm={weight_llm} top_k={judge_top_k}"
                 )
-            except Exception:
+            except Exception:  # degrades: best-of start log line lost, diagnostics only
                 pass
 
         if not generator_models:
@@ -924,7 +924,7 @@ class ResponseGenerator:
         if self.logger:
             try:
                 self.logger.info(f"[BESTOF/MULTI] gathered {len(candidates)} candidates from {len(generator_models)} models")
-            except Exception:
+            except Exception:  # degrades: best-of gathered-candidates log line lost, diagnostics only
                 pass
 
         # Heuristic scores (normalize to 0..10)
