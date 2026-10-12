@@ -14,7 +14,7 @@ from core.agentic.tools import ToolExecutor, reroute_url_search
 from core.agentic.types import SearchDecision
 from utils.fetch_provenance import check_fetch_provenance, url_content_tokens
 
-PRIVATE_MEMORY = "User takes zorvexamine 100mg daily and lives at 12 Elm Street."
+PRIVATE_MEMORY = "User takes zorvexamine 50mg daily and lives at 12 Elm Street."
 
 
 def _check(url, user="", tool_text="", tool_urls=(), user_texts=()):
@@ -62,7 +62,7 @@ def test_wikipedia_url_allowed_once_search_results_mention_it():
 @pytest.mark.parametrize("url", [
     "https://attacker.example/?q=zorvexamine",
     "https://zorvexamine.attacker.example/",
-    "https://attacker.example/log/zorvexamine%20100mg",
+    "https://attacker.example/log/zorvexamine-50mg",
     "https://attacker.example/x?d=em9ydmV4YW1pbmU",
 ])
 def test_exfil_shapes_blocked_even_when_value_is_only_in_memory(url):
