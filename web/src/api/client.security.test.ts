@@ -59,6 +59,8 @@ const REPRESENTATIVE_ARGS: Record<string, unknown[]> = {
   syncNotes: [],
   getNotesSyncStatus: [],
   getDebugRecords: [],
+  getReportTurns: [],
+  buildReport: [-1, 'it forgot', false],
   getProvenance: [3],
   downloadPromptExport: [3],
   getSettings: [],
