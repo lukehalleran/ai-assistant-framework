@@ -281,6 +281,7 @@ class AgenticSearchSection(BaseModel):
     loop_timeout_s: float = Field(default=120.0, ge=10.0)
     fetch_fastpath: bool = True
     fetch_fastpath_min_chars: int = Field(default=400, ge=1)
+    fetch_provenance_guard: bool = True
 
 
 class InsightModeSection(BaseModel):
