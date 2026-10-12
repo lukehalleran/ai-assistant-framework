@@ -295,6 +295,28 @@ class TestSettingsRoutes:
         assert orch.memory_system.consolidator.consolidation_threshold == 25
 
     @pytest.mark.asyncio
+    async def test_get_snapshot_carries_availability_through_the_route(self, tmp_path, monkeypatch):
+        """The response model must not strip the capability flags the SPA
+        gates on (2026-10-12: it did, hiding Sync notes/curation everywhere)."""
+        import config.app_config as app_cfg
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setattr(app_cfg, "OBSIDIAN_ENABLED", True)
+        monkeypatch.setattr(app_cfg, "OBSIDIAN_VAULT_PATH", str(vault))
+        monkeypatch.setattr(app_cfg, "DAEMON_MODE", "dev")
+        monkeypatch.setattr(app_cfg, "WEB_SEARCH_API_KEY", "tvly-test")
+        app, _ = self._app(tmp_path, monkeypatch)
+        async with _client(app) as client:
+            resp = await client.get("/api/settings")
+        assert resp.json()["availability"] == {"web_search_key": True, "vault": True, "dev_mode": True}
+        monkeypatch.setattr(app_cfg, "DAEMON_MODE", "user")
+        monkeypatch.setattr(app_cfg, "OBSIDIAN_ENABLED", False)
+        async with _client(app) as client:
+            resp = await client.get("/api/settings")
+        assert resp.json()["availability"]["vault"] is False
+        assert resp.json()["availability"]["dev_mode"] is False
+
+    @pytest.mark.asyncio
     async def test_get_snapshot_includes_shutdown_llm_sections(self, tmp_path, monkeypatch):
         app, _ = self._app(tmp_path, monkeypatch)
         async with _client(app) as client:
