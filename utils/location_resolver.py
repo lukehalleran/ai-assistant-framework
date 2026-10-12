@@ -76,6 +76,48 @@ _PLACE_RE = re.compile(r"^[A-Za-z][A-Za-z .'\-]*,\s*[A-Za-z][A-Za-z .'\-]{1,}$")
 _IP_FAILURE_RETRY_S = 600.0
 
 
+# ----------------------------------------------------------------------
+# Placeholder (deictic) locations — BC-04
+# ----------------------------------------------------------------------
+# A deictic phrase ("current location", "my area", "here", "near me") points AT
+# the user's place; it is never a place. The closed-class words below are
+# grammatical (determiners/deictics/generic location nouns), not a list of
+# example phrases: a value built only from them can never name a place.
+_PLACEHOLDER_TOKENS = frozenset({
+    "current", "present", "my", "your", "the", "this", "that", "local",
+    "nearby", "here", "there", "near", "me", "around", "in", "at", "where",
+    "i", "am", "location", "area", "city", "town", "neighborhood",
+    "neighbourhood", "place", "position", "whereabouts", "unknown", "none",
+    "null", "n/a", "na", "unspecified", "undefined",
+})
+# Deictic placeholder PHRASES inside a longer query ("weather in my current
+# location"); same closed-class vocabulary, phrase-shaped.
+PLACEHOLDER_PHRASE_RE = re.compile(
+    r"\b(?:(?:in|at|for|near|around|from)\s+)?"
+    r"(?:(?:my|your|the)\s+)?(?:current|present)\s+"
+    r"(?:location|city|town|area|place|position|neighbou?rhood)\b"
+    r"|\b(?:(?:in|at|for|near|around)\s+)?my\s+"
+    r"(?:location|area|city|town|neighbou?rhood)\b"
+    r"|\bnear\s+me\b|\baround\s+here\b|\b(?:in|at)\s+here\b"
+    r"|\bwhere\s+i\s+am\b",
+    re.I,
+)
+
+
+def is_placeholder_location(value: Optional[str]) -> bool:
+    """True when `value` is empty or built only from deictic/generic location
+    words — never a real place (e.g. "current location", "my area", "here")."""
+    if value is None:
+        return True
+    tokens = re.findall(r"[a-z/']+", str(value).lower())
+    return not tokens or all(t in _PLACEHOLDER_TOKENS for t in tokens)
+
+
+def strip_placeholder_location(text: str) -> str:
+    """Remove deictic placeholder phrases from query text (whitespace-normalised)."""
+    return re.sub(r"\s{2,}", " ", PLACEHOLDER_PHRASE_RE.sub(" ", text or "")).strip()
+
+
 class LocationResolver:
     """Non-blocking user-location resolution with layered fallbacks."""
 
@@ -99,7 +141,7 @@ class LocationResolver:
             return None
 
         override = (LOCATION_OVERRIDE or "").strip()
-        if override:
+        if override and not is_placeholder_location(override):
             return override
 
         if LOCATION_IP_LOOKUP_ENABLED and requests is not None:
@@ -140,7 +182,7 @@ class LocationResolver:
     def _refresh_ip_location(self) -> None:
         try:
             loc = self._fetch_ip_location()
-            if loc:
+            if loc and not is_placeholder_location(loc):
                 self._ip_location = loc
                 self._ip_fetched_at = time.time()
                 logger.info(f"[Location] IP geolocation resolved: {loc}")
@@ -221,6 +263,8 @@ class LocationResolver:
         except Exception as e:  # degrades: profile location fact unreadable, lives_in fallback unavailable
             logger.warning(f"[Location] Profile location read failed: {e}")
 
+        if location is not None and is_placeholder_location(location):
+            location = None
         self._profile_location = location
         self._profile_mtime = mtime
         return location

@@ -36,6 +36,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
+from utils.request_span import request_span
 from core.insight.types import InsightIntent
 
 # Long-message discipline (mirrors document_generator's incidental guard).
@@ -490,7 +491,8 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
     e.g. 'write a report about the roman empire')."""
     if not text or not text.strip():
         return None
-    query = text.strip()
+    # BC-58: judge only the user's REQUEST, never a pasted third-party block.
+    query = request_span(text.strip()).strip()
     # Explicit ISO window ("from 2026-07-15 through today") for the
     # theme-sweep evidence path only; pattern_temporal keeps its own
     # relative-day window_days.

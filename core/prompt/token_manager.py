@@ -210,7 +210,10 @@ def _meter_web_search_results(val: Any, count_tokens: Callable[[str], int]) -> i
     never a str(dataclass) repr. Empty/errored results (has_results False)
     count 0 so the section passes through untouched."""
     if not getattr(val, "has_results", False):
-        return 0
+        # A deliberately skipped search carries a short deterministic note the
+        # formatter renders (BC-04); meter exactly that text.
+        _note = getattr(val, "note", None)
+        return count_tokens(str(_note)) if _note else 0
     pages = getattr(val, "pages", None) or []
     lines, _ = render_numbered_web_sources(pages, max_sources=8, max_chars_per_source=2000)
     if not lines:

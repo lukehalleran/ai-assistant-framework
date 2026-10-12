@@ -1267,6 +1267,10 @@ class PromptFormatter:
                             + "\n\n".join(ws_lines)
                         )
                         logger.info(f"[PROMPT ASSEMBLY] Added web search section with {len(ws_lines)} results, {len(web_source_map)} source IDs")
+                elif getattr(web_search, "note", None):
+                    # Deliberately skipped search (e.g. user location unknown,
+                    # BC-04): a deterministic note, metered with this section.
+                    sections.append(str(web_search.note))
             except Exception as e:
                 logger.warning(f"[PROMPT ASSEMBLY] Failed to format web search results: {e}")
 
