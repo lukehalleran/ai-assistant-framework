@@ -243,7 +243,8 @@ class GitHubManager:
                 self._detect_repo()
         except FileNotFoundError:
             self._available = False
-        except Exception:
+        except Exception as e:  # degrades: GitHub tools report unavailable when the gh CLI check itself fails
+            logger.warning(f"[GitHub] gh availability check failed: {type(e).__name__}")
             self._available = False
         return self._available
 
@@ -259,7 +260,8 @@ class GitHubManager:
             )
             if result.returncode == 0 and result.stdout.strip():
                 self._detected_repo = result.stdout.strip()
-        except Exception:
+        except Exception as e:  # degrades: GitHub repo auto-detection is skipped so repo flag stays unset
+            logger.warning(f"[GitHub] repo auto-detect failed: {type(e).__name__}")
             pass
 
     def _get_repo_flag(self) -> List[str]:

@@ -149,7 +149,7 @@ async def search_gmail_contacts(
         if resp.status_code != 200:
             try:
                 err_body = resp.text[:500]
-            except Exception:
+            except Exception:  # degrades: error log omits the response body text when it cannot be read
                 err_body = "(no body)"
             logger.warning(f"[GmailSearch] API error: HTTP {resp.status_code} — {err_body}")
             _record_failure(f"Gmail API error: HTTP {resp.status_code}")
@@ -264,7 +264,8 @@ async def _fetch_message_headers(
 
             return results
 
-        except Exception:
+        except Exception as e:  # degrades: Gmail header fetch failure yields no contacts from that message
+            logger.warning(f"[GmailSearch] header fetch failed: {type(e).__name__}")
             return []
 
 

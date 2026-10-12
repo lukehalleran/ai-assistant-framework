@@ -188,7 +188,7 @@ async def resolve_contact(
                     results.append(r)
                     if len(results) >= max_results:
                         break
-        except Exception as e:
+        except Exception as e:  # degrades: contact lookup skips the Gmail header fallback so name matches may be missed
             logger.debug(f"[GoogleContacts] Gmail search fallback failed: {e}")
 
     return results
@@ -235,7 +235,7 @@ async def _warmup(auth) -> None:
             )
         _warmed_up = True
         logger.debug("[GoogleContacts] Warmup request sent")
-    except Exception as e:
+    except Exception as e:  # degrades: contacts API first request stays cold, slower first lookup
         logger.debug(f"[GoogleContacts] Warmup failed (non-fatal): {e}")
         _warmed_up = True  # Don't retry on failure
 

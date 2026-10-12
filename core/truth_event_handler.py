@@ -38,7 +38,7 @@ def get_recent_profile_facts(user_profile, limit: int = 30) -> list:
                     facts.append(f)
         facts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return facts[:limit]
-    except Exception as e:
+    except Exception as e:  # degrades: correction detection sees no profile facts to compare against
         logger.debug(f"Failed to get profile facts: {e}")
         return []
 
@@ -111,7 +111,7 @@ def cascade_entity_resolution(events: list, memory_system) -> None:
                         node = graph_memory.get_node(resolved_id)
                         if node and hasattr(node, 'display_name') and node.display_name:
                             display_name = node.display_name
-            except Exception:
+            except Exception:  # degrades: entity display name falls back to the raw spoken name
                 pass
 
         entity_lower = event.entity_name.lower()
@@ -150,10 +150,10 @@ def cascade_entity_resolution(events: list, memory_system) -> None:
                     })
                     total_affected += 1
 
-            except Exception as e:
-                logger.debug(
+            except Exception as e:  # degrades: alive-entity staleness cascade skips this collection's old memories
+                logger.warning(
                     f"[EntityResolution] Failed to query {collection} for "
-                    f"'{event.entity_name}': {e}"
+                    f"'{event.entity_name}': {type(e).__name__}"
                 )
 
         if total_affected:
@@ -195,5 +195,5 @@ def apply_content_attributions(attributions: list, memory_system) -> None:
                         f"[ContentAttribution] Updated {doc_id} with {updates}"
                     )
                 return  # Only update the most recent unattributed content
-    except Exception as e:
-        logger.debug(f"[ContentAttribution] Failed (non-fatal): {e}")
+    except Exception as e:  # degrades: content attribution metadata is not written to the stored conversation
+        logger.warning(f"[ContentAttribution] Failed (non-fatal): {type(e).__name__}")

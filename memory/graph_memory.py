@@ -304,7 +304,7 @@ class GraphMemory:
             non_elevated_days = sum(1 for t in tones if t == "non_elevated")
             if non_elevated_days >= self.APPRAISAL_SETTLED_MIN_DAYS:
                 edge.metadata["settled"] = True
-        except Exception:
+        except Exception:  # degrades: appraisal edge settledness is not updated this turn
             pass
 
     def get_entity(self, entity_id: str) -> Optional[GraphNode]:
@@ -505,7 +505,7 @@ class GraphMemory:
                 from config.app_config import GRAPH_EXPANSION_HUB_DEGREE  # lazy import: live-config read
                 if hub_degree is None:
                     limit = int(GRAPH_EXPANSION_HUB_DEGREE)
-            except Exception:
+            except Exception:  # degrades: graph expansion uses the default hub-degree limit
                 pass
 
         visited: set[str] = set()
@@ -643,7 +643,7 @@ class GraphMemory:
                 edge.relation, getattr(tgt, "metadata", None) or {}
             ):
                 return True
-        except Exception:
+        except Exception:  # degrades: edge suppression check treated as not suppressed on error
             return False
         return False
 

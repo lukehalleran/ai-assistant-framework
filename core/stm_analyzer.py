@@ -205,20 +205,20 @@ def _resolve_graph_node(name: str, graph_memory=None, entity_resolver=None):
             cand = entity_resolver.resolve(name)
             if isinstance(cand, str) and cand.strip():
                 eid = cand
-    except Exception:
+    except Exception:  # degrades: entity resolver failure skips alias lookup, so novelty check may misjudge names
         eid = None
     if eid is None and graph_memory is not None:
         try:
             cand = graph_memory.resolve_entity(name)
             if isinstance(cand, str) and cand.strip():
                 eid = cand
-        except Exception:
+        except Exception:  # degrades: graph resolver failure skips entity lookup, so novelty check may misjudge names
             eid = None
     if not isinstance(eid, str) or not eid.strip():
         return None
     try:
         node = graph_memory.get_entity(eid) if graph_memory is not None else None
-    except Exception:
+    except Exception:  # degrades: graph node lookup failure drops entity type, so novelty check may under-fire
         node = None
     return node
 
@@ -273,7 +273,7 @@ def novel_named_entities(
     window = window_text if isinstance(window_text, str) else ""
     try:
         candidates = list(extract_rare_proper_nouns(user_query))
-    except Exception:
+    except Exception:  # degrades: rare-noun extraction failure means novelty override cannot fire
         candidates = []
     ordered: List[tuple] = [(c, False) for c in candidates]
     if graph_memory is not None or entity_resolver is not None:
@@ -281,7 +281,7 @@ def novel_named_entities(
             for tok in _sentence_initial_candidates(user_query):
                 if tok.lower() not in {c.lower() for c, _ in ordered}:
                     ordered.append((tok, True))
-        except Exception:
+        except Exception:  # degrades: sentence-initial candidate scan failure means fewer novelty names checked
             pass
 
     novel: List[str] = []
@@ -301,7 +301,7 @@ def novel_named_entities(
         try:
             if any(_word_in_text(surf, window) for surf in surfaces):
                 continue
-        except Exception:
+        except Exception:  # degrades: word-match failure skips candidate, so novel name goes unreported
             continue
         seen.add(name.lower())
         novel.append(name)
@@ -321,7 +321,7 @@ def novel_data_tokens(user_query: str, window_text: str) -> List[str]:
     try:
         query_tokens = extract_data_tokens(user_query)
         window_tokens = set(extract_data_tokens(window))
-    except Exception:
+    except Exception:  # degrades: data-token extraction failure means new-data override cannot fire
         return []
     novel: List[str] = []
     seen: set = set()
@@ -373,7 +373,7 @@ def new_data_override(user_query: str, window_text: str) -> Dict[str, Any]:
                 if len(absent) / len(kws) >= 0.5:
                     return {"reason": "new_data", "novel_data": absent[:5]}
         return {}
-    except Exception:
+    except Exception:  # degrades: new-data check failure returns no override, so STM may over-assert recall
         return {}
 
 
@@ -509,7 +509,7 @@ def abbreviation_expansion_conflicts(
                 seen_pair.add(pair)
                 conflicts.append(pair)
         return conflicts
-    except Exception:
+    except Exception:  # degrades: abbreviation conflict scan failure returns no conflicts, so expansions go unflagged
         return []
 
 
@@ -694,6 +694,7 @@ Return JSON only, no markdown or extra text:"""
                         "preceding request without asking for it again"
                     )
             except Exception:
+                # degrades: option-answer rewrite failure leaves STM summary without the selected-option intent
                 pass
             # Novelty override (2026-09-03): "recall" asserts the message
             # restates something already in context, but the prompt biases
@@ -719,7 +720,7 @@ Return JSON only, no markdown or extra text:"""
                             f"[STMAnalyzer] Novelty override: recall → unclear "
                             f"(names absent from window: {novel})"
                         )
-            except Exception:
+            except Exception:  # degrades: novelty override failure leaves recall reference type unchanged
                 pass
             # New-data override (2026-09-06): runs only when the novelty
             # step above did NOT already demote this turn (still "recall").
@@ -744,7 +745,7 @@ Return JSON only, no markdown or extra text:"""
                             f"[STMAnalyzer] New-data override: recall → unclear "
                             f"(reason={override['reason']})"
                         )
-            except Exception:
+            except Exception:  # degrades: new-data override failure leaves recall reference type unchanged
                 pass
             # Abbreviation-expansion backstop (2026-09-10, probe T3; window
             # fix round 2 same day): runs regardless of reference_type — the
@@ -769,6 +770,7 @@ Return JSON only, no markdown or extra text:"""
                         f"[STMAnalyzer] Abbreviation-expansion conflict(s): {conflicts}"
                     )
             except Exception:
+                # degrades: abbreviation conflict annotation failure leaves expansion conflicts unrecorded
                 pass
             # Fidelity fallback (2026-10-08): the summary must be about THIS
             # message. Runs last so it sees the final state of every override.

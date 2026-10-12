@@ -24,12 +24,12 @@ async def status(request: Request):
         cm = orchestrator.memory_system.corpus_manager
         corpus = getattr(cm, "corpus", []) or []
         out["total_entries"] = len(corpus)
-    except Exception as e:
+    except Exception as e:  # degrades: status response omits the corpus entry count
         logger.debug(f"[API] status corpus read failed: {e}")
     try:
         mm = orchestrator.model_manager
         out["active_model"] = mm.get_active_model_name()
-    except Exception:
+    except Exception:  # degrades: status response omits the active model name
         pass
     try:
         graph = getattr(orchestrator.memory_system, "graph_memory", None)
@@ -42,7 +42,7 @@ async def status(request: Request):
         elif graph is not None and hasattr(graph, "graph"):
             out["graph_nodes"] = int(graph.graph.number_of_nodes())
             out["graph_edges"] = int(graph.graph.number_of_edges())
-    except Exception:
+    except Exception:  # degrades: status response omits the graph node and edge counts
         pass
     return out
 

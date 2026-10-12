@@ -335,6 +335,7 @@ def build_orchestrator():
     try:
         dependencies.deps.initialize(model_manager)
     except Exception as e:
+        # degrades: shared dependency registry stays uninitialized, TopicManager may lack model access
         logger.debug(f"[build_orchestrator] deps.initialize failed or unavailable: {e}")
 
     # ------------------------------------------------------------------ #
@@ -513,7 +514,7 @@ def _mark_session_end(orchestrator):
         if time_mgr and hasattr(time_mgr, "mark_session_end"):
             time_mgr.mark_session_end()
             logger.info("[Shutdown] Session end time recorded")
-    except Exception as e:
+    except Exception as e:  # degrades: session end time is not recorded for time tracking
         logger.debug(f"[Shutdown] Could not mark session end: {e}")
 
 
@@ -664,7 +665,7 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
         agentic = getattr(orchestrator, '_agentic_controller', None)
         if agentic and hasattr(agentic, 'close_sandbox'):
             await agentic.close_sandbox()
-    except Exception as e:
+    except Exception as e:  # degrades: persistent sandbox session may be left open at shutdown
         logger.debug(f"[Shutdown] Sandbox cleanup: {e}")
 
     # Wait for any pending background storage tasks first
@@ -1470,6 +1471,7 @@ if __name__ == "__main__":
                         try:
                             ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                         except Exception:
+                            # degrades: corpus summary with unparseable timestamp is skipped from the fallback list
                             continue
                     if isinstance(ts, datetime):
                         if ts.tzinfo is not None:

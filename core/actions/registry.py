@@ -88,7 +88,7 @@ def _calendar_batch_within_cap(params: Dict[str, Any]) -> bool:
     try:
         from config.app_config import GOOGLE_CALENDAR_MAX_EVENTS  # lazy import: live-config read
         cap = int(GOOGLE_CALENDAR_MAX_EVENTS)
-    except Exception:
+    except Exception:  # degrades: config read failure falls back to default ten-event calendar cap
         cap = 10
     return len(items) <= cap
 
@@ -435,7 +435,7 @@ def get_runtime_action_health() -> str:
             _contacts_err = _contacts_last_error()
             if _contacts_err:
                 lines.append(f"lookup_contact backend: DEGRADED ({_contacts_err})")
-        except Exception:
+        except Exception:  # degrades: contacts backend error status omitted from tool health report
             pass
 
         if not getattr(cfg, "GOOGLE_CALENDAR_ENABLED", False):
@@ -1329,7 +1329,7 @@ def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
         from core.action_claim_guard import (  # lazy import: cycle
             NO_CARD_NOTICE, ActionKind, detect_completion_claims, detect_kind,
         )
-    except Exception:
+    except Exception:  # degrades: claim guard import failure disables no-card action inference
         return None
     notice = NO_CARD_NOTICE.strip() in text or "I didn't actually" in text
     claims = [c for c in detect_completion_claims(text)
@@ -1345,7 +1345,7 @@ def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
 def _kind_to_action_type(kind, clause: str) -> Optional[ActionType]:
     try:
         from core.action_claim_guard import ActionKind  # lazy import: cycle
-    except Exception:
+    except Exception:  # degrades: claim guard import failure disables claim-kind to action mapping
         return None
     if kind == ActionKind.CALENDAR:
         if _OFFER_DELETE_VERB_RE.search(clause):
@@ -1442,7 +1442,7 @@ def offer_action_type(response_text: str) -> Optional[ActionType]:
             ActionKind, detect_kind, detect_offer_clauses, detect_proposals,
             has_offer_marker,
         )
-    except Exception:
+    except Exception:  # degrades: claim guard import failure disables offer action inference
         return None
     # Offer FRAMING is required ("want me to…", "I can…", "confirm and I'll…").
     # detect_proposals also admits a bare question + action verb, which is
