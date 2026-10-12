@@ -70,7 +70,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from memory.user_profile_schema import is_living_situation_relation
+from memory.user_profile_schema import is_emotional_state_relation, is_living_situation_relation
 
 # --------------------------------------------------------------------------
 # Standard-ephemeral patterns (lifted verbatim from user_profile so profile
@@ -381,6 +381,8 @@ def _is_standard_ephemeral(rel: str) -> bool:
     if rel in _EPHEMERAL_EXACT:
         return True
     if any(rel.startswith(p) for p in _EPHEMERAL_PREFIXES):
+        return True
+    if is_emotional_state_relation(rel):  # how the user feels NOW (B4 2026-10-12)
         return True
     if any(rel.endswith(s) for s in _EPHEMERAL_SUFFIXES):
         return True

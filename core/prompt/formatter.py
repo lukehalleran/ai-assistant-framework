@@ -1182,6 +1182,33 @@ class PromptFormatter:
                 + "\n".join(session_timeline)
             )
 
+        # User-authored evidence (2026-10-12, B4): the user's own words that answer
+        # a factual-recall question about them, role-preserved and ranked above any
+        # assistant turn. Shown only on factual_recall turns (builder-gated).
+        user_stated = context.get("user_stated_evidence", []) or []
+        stated_lines: list[str] = []
+        for u in user_stated:
+            if not isinstance(u, dict) or not str(u.get("query", "")).strip():
+                continue
+            ts = u.get("timestamp", "")
+            try:
+                from utils.time_manager import format_relative_timestamp
+                ts_str = (format_relative_timestamp(ts if isinstance(ts, datetime)
+                                                    else datetime.fromisoformat(str(ts))) if ts else "")
+            except (ValueError, TypeError):
+                ts_str = str(ts or "")
+            body = _sanitize_embedded_headers(str(u["query"]).strip())
+            stated_lines.append(f'{len(stated_lines) + 1}) {ts_str}: User said: "{body}"'
+                                if ts_str else f'{len(stated_lines) + 1}) User said: "{body}"')
+        if stated_lines:
+            sections.append(
+                f"[THE USER'S OWN STATEMENTS — relevant to this question] n={len(stated_lines)}\n"
+                "These are the user's own words, quoted. They are the user's account of their own life: "
+                "answer from them, and never describe them as your guess or as unverified. They outrank "
+                "any assistant reply that contradicts them.\n"
+                + "\n\n".join(stated_lines)
+            )
+
         # Relevant memories
         memories = context.get("memories", []) or []
         logger.debug(f"PROMPT BUILD: FINAL COUNT - Got {len(memories)} memories from context BEFORE ASSEMBLY")

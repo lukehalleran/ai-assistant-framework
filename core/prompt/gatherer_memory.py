@@ -28,6 +28,7 @@ self.gate_system, self.user_profile, self.model_manager (set by ContextGatherer.
 """
 
 import os
+import re
 import logging
 from typing import Dict, List, Any
 from datetime import datetime
@@ -167,6 +168,93 @@ REFLECTIONS_HYBRID_FILTER = _parse_bool(os.getenv("REFLECTIONS_HYBRID_FILTER", "
 SUMMARIES_HYBRID_FILTER = _parse_bool(os.getenv("SUMMARIES_HYBRID_FILTER", "1"))
 
 
+
+# ---------------------------------------------------------------------------
+# User-authored evidence channel (2026-10-12, B4; class: BC-46, BC-75).
+# "where do I work?" after "I just started a new job at Northwind ..." found
+# nothing: the Northwind turn scored cosine 0.585 as a combined User+Assistant
+# doc (0.612 on the user's text alone) against a 0.703 gate, and its only
+# surviving mention was an assistant reply. Measured offline against the beta
+# corpus with the deployed bge-small embedder. A first/second-person question
+# about the user's own life is answered from what the USER said, so the user's
+# own non-question statements are scored on their OWN text (the assistant half
+# dilutes the vector) and the top few are rendered role-preserved, outranking
+# assistant turns. Cheap: <=USER_STATED_SCAN_TURNS short texts, embeddings cached.
+# ---------------------------------------------------------------------------
+USER_STATED_SCAN_TURNS = 300
+USER_STATED_MAX_ITEMS = 3
+USER_STATED_MIN_COSINE = 0.45  # bge space; measured noise floor ~0.5-0.6 so K does the selecting
+USER_STATED_MIN_WORDS = 3
+_PERSON_PRONOUN_RE = re.compile(r"\b(?:i|i'm|i've|i'd|i'll|my|me|mine|myself|we|our)\b", re.IGNORECASE)
+
+
+def is_user_fact_question(query: str) -> bool:
+    """Structural 'asks about the user's own life': a question (query_checker)
+    carrying a first-person pronoun (a closed grammatical class, no topic words)."""
+    from utils.query_checker import is_question  # lazy import: layering (utils stays leaf)
+    q = query or ""
+    return bool(q.strip()) and is_question(q) and bool(_PERSON_PRONOUN_RE.search(q))
+
+
+def select_user_stated_candidates(entries_newest_first, query: str, scan: int = USER_STATED_SCAN_TURNS):
+    """The user's own scannable statements: non-question, non-paste, not the
+    query itself, de-duplicated. Returns [(text, timestamp)] newest-first."""
+    from memory.memory_storage import is_paste_sized
+    from utils.query_checker import is_question
+    seen = set()
+    out = []
+    qnorm = " ".join((query or "").lower().split())
+    for e in entries_newest_first or []:
+        if len(out) >= scan:
+            break
+        if not isinstance(e, dict):
+            continue
+        text = e.get("user_text") if e.get("user_text") else e.get("query")
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        key = " ".join(text.lower().split())
+        if (not text or key == qnorm or key in seen or is_paste_sized(text)
+                or is_question(text) or len(text.split()) < USER_STATED_MIN_WORDS):
+            continue
+        seen.add(key)
+        out.append((text, e.get("timestamp")))
+    return out
+
+
+RECENT_WINDOW_PASTE_MAX_MULTIPLE = 2  # hard cap = N * this, however many pastes
+
+
+def paste_aware_recent_window(entries_newest_first, n: int,
+                              max_multiple: int = RECENT_WINDOW_PASTE_MAX_MULTIPLE):
+    """Pick the [RECENT CONVERSATION] window from a NEWEST-FIRST turn list.
+
+    A turn whose USER text is paste-sized (memory_storage.is_paste_sized - THE
+    paste boundary) does not count toward the N-turn count, so three pasted
+    documents can no longer push the user's one-line fact ("I just started a
+    new job at Northwind...") out of a 10-turn window (2026-10-11 beta
+    session). Hard maximum N*max_multiple turns; a paste still renders under
+    the existing per-item caps and the budget manager still meters it.
+    class: BC-46, BC-75
+    """
+    from memory.memory_storage import is_paste_sized  # lazy import: cycle (storage imports gatherer-side modules)
+    if n <= 0:
+        return []
+    hard_cap = max(n, int(n * max_multiple))
+    picked = []
+    counted = 0
+    for e in entries_newest_first or []:
+        if len(picked) >= hard_cap:
+            break
+        picked.append(e)
+        q = e.get("query", "") if isinstance(e, dict) else ""
+        if not is_paste_sized(q if isinstance(q, str) else ""):
+            counted += 1
+            if counted >= n:
+                break
+    return picked
+
+
 class MemoryRetrievalMixin:
     """Mixin providing memory retrieval methods."""
 
@@ -195,6 +283,55 @@ class MemoryRetrievalMixin:
             logger.warning(f"Error getting facts: {e}")
             return []
 
+    async def get_user_stated_evidence(self, query: str, intent_type=None,
+                                       limit: int = USER_STATED_MAX_ITEMS) -> List[Dict[str, Any]]:
+        """User-authored evidence for a factual-recall question about the user.
+
+        Returns [{"query": <the user's own words>, "timestamp": ts, "similarity": cos}]
+        best-first, or [] when the turn is not a first/second-person factual
+        recall. Scores the USER text alone with the store's own embedder (the
+        gate's scoring model). Never raises into the prompt build.
+        """
+        if str(intent_type or "").lower() != "factual_recall" or not is_user_fact_question(query):
+            return []
+        try:
+            import asyncio
+            import numpy as np
+            mc = self.memory_coordinator
+            corpus = getattr(mc, "corpus_manager", None)
+            store = getattr(mc, "chroma_store", None)
+            model = store.get_st_model() if store is not None and hasattr(store, "get_st_model") else None
+            if corpus is None or model is None:
+                return OutcomeList(status="unavailable", reason="no_store")
+            entries = corpus.get_recent_memories(count=USER_STATED_SCAN_TURNS * 2)
+            cands = select_user_stated_candidates(entries, query)
+            if not cands:
+                return []
+            cache = getattr(self, "_user_stated_emb_cache", None)
+            if cache is None:
+                cache = self._user_stated_emb_cache = {}
+
+            def _score():
+                need = [t for t, _ in cands if t[:500] not in cache]
+                if need:
+                    vecs = model.encode([t[:500] for t in need], normalize_embeddings=True,
+                                        convert_to_numpy=True)
+                    for t, v in zip(need, vecs):
+                        cache[t[:500]] = v
+                    while len(cache) > 2000:  # bounded; oldest-inserted first
+                        cache.pop(next(iter(cache)))
+                qv = model.encode([query], normalize_embeddings=True, convert_to_numpy=True)[0]
+                return [(float(np.dot(qv, cache[t[:500]])), t, ts) for t, ts in cands]
+
+            scored = await asyncio.to_thread(_score)
+            scored = [r for r in scored if r[0] >= USER_STATED_MIN_COSINE]
+            scored.sort(key=lambda r: r[0], reverse=True)
+            return OutcomeList([{"query": t, "timestamp": ts, "similarity": round(sim, 3)}
+                                for sim, t, ts in scored[:max(0, limit)]])
+        except Exception as e:
+            logger.warning(f"[UserStated] evidence channel failed: {type(e).__name__}")
+            return OutcomeList.failed(type(e).__name__)
+
     async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
         """Get recent conversation memories."""
         try:
@@ -203,7 +340,11 @@ class MemoryRetrievalMixin:
             if hasattr(self.memory_coordinator, 'corpus_manager'):
                 corpus_manager = self.memory_coordinator.corpus_manager
                 if hasattr(corpus_manager, 'get_recent_memories'):
-                    memories = corpus_manager.get_recent_memories(count=limit)
+                    # Over-fetch to the paste-aware hard cap, then pick the window
+                    # (pastes don't count toward `limit`; B4 2026-10-12).
+                    _wide = corpus_manager.get_recent_memories(
+                        count=max(limit, int(limit * RECENT_WINDOW_PASTE_MAX_MULTIPLE)))
+                    memories = paste_aware_recent_window(_wide, limit)
                     logger.debug(f"Got {len(memories or [])} recent conversations from corpus_manager (requested {limit})")
 
             # If we didn't get enough, try fallback

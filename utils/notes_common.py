@@ -76,3 +76,29 @@ def daily_notes_base() -> Path:
     if not corpus.is_absolute():
         corpus = Path(__file__).resolve().parent.parent / corpus
     return corpus.parent / "notes" / folder
+
+
+# Speaker-authority rules shared by the daily-note and narrative-synthesis
+# prompts (2026-10-12, B4; class: BC-46, BC-75, BC-91). Live incident: the user
+# said "I just started a new job at Northwind as a data analyst"; Daemon later
+# called Northwind "its own guess"; the daily note then wrote the user's
+# statement in as "later confirmed this was test data, not fact - actual
+# workplace remains unknown", the narrative inherited it, and the note also
+# credited Wolfram with a tip calculation no tool ran. NO braces here: both
+# prompts pass through str.format().
+SPEAKER_AUTHORITY_RULES = (
+    "SPEAKER AUTHORITY - these rules outrank everything above:\n"
+    "- Lines starting \"User:\" are the user's own words; lines starting \"Daemon:\" are "
+    "the assistant's. A fact the user stated about their own life (job, home, health, "
+    "plans) is the user's own account: record it as stated. NEVER describe a user "
+    "statement as unconfirmed, unverified, test data, or not fact.\n"
+    "- If the assistant later doubted, disowned, or contradicted something the user "
+    "stated, that is an assistant error, not evidence against the user. Note the "
+    "assistant's slip if it matters; keep the user's statement standing unless the USER "
+    "retracted it.\n"
+    "- Text marked \"Personal-claim check\" concerns claims the ASSISTANT added; it says "
+    "nothing about the user's statements.\n"
+    "- Name a tool or service (calculator, web search, Wolfram, calendar, email) as having "
+    "been used ONLY if the source text explicitly says that tool ran. Otherwise describe "
+    "the result without naming any tool.\n"
+)

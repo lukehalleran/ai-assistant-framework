@@ -76,6 +76,9 @@ PRIORITY_ORDER = [
     # and emptied the calendar and threads (they are small; history flexes).
     ("google_calendar",       7),  # Real-time calendar events, small + time-sensitive
     ("unresolved_threads",    7),  # Continuity threads, small (~100-500 tokens)
+    # 2026-10-12 (B4): the user's OWN statements relevant to a factual-recall
+    # question about them - tiny (<=3 short lines), outranks assistant history.
+    ("user_stated_evidence",  8),
     ("recent_conversations",  7),
     # 2026-09-27 (BC-46, BC-30, BC-51): [EARLIER TODAY] recall-timeline lines
     # a truncated [RECENT CONVERSATION] window dropped (temporal_recall-only,

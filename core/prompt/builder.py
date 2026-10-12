@@ -1634,6 +1634,14 @@ class UnifiedPromptBuilder:
                                 self.context_gatherer.get_upcoming_schedule(user_input, eff_max_upcoming_schedule))
                 )
 
+            # User-authored evidence (2026-10-12, B4): a first/second-person
+            # factual-recall question is answered from the USER's own words.
+            if (intent_type or "").lower() == "factual_recall":
+                tasks["user_stated"] = asyncio.create_task(
+                    _timed_task("user_stated",
+                                self.context_gatherer.get_user_stated_evidence(user_input, intent_type))
+                )
+
             # Visual memories (CLIP-based image search) — gated by visual intent
             # (a "show me"/recall signal), not just a bare entity name match.
             if eff_max_visual_memories > 0:
@@ -1934,8 +1942,15 @@ class UnifiedPromptBuilder:
                 _shown_keys = {_canonical_turn_key(m) for m in recent_convos}
                 _session_timeline = _today_timeline_from_probe(_session_probe, _shown_keys)
 
+            # Drop user-stated evidence already shown verbatim in the recent window.
+            _recent_user_texts = {" ".join(str((m or {}).get("query", "")).lower().split())
+                                  for m in recent_convos if isinstance(m, dict)}
+            user_stated = [u for u in (gathered.get("user_stated") or [])
+                           if " ".join(str(u.get("query", "")).lower().split()) not in _recent_user_texts]
+
             context = {
                 "recent_conversations": recent_convos,
+                "user_stated_evidence": user_stated,
                 "recent_window_truncated": _sess_truncated,
                 "session_turns_total": _sess_total,
                 "session_started_at": _sess_started,
@@ -2270,6 +2285,7 @@ class UnifiedPromptBuilder:
             # Step 8: Final context assembly
             prompt_ctx = {
                 "recent_conversations": context.get("recent_conversations", []),
+                "user_stated_evidence": context.get("user_stated_evidence", []),
                 "memories": context.get("memories", []),
                 "user_profile": context.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
                 "narrative_state": context.get("narrative_state", ""),  # Temporal grounding (synthesized life context)
