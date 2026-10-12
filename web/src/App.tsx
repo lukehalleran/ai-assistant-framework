@@ -19,6 +19,7 @@ import {
   api,
   NotesSyncNotStartedError,
   pollNotesSync,
+  type SetupStatus,
   startNotesSyncAndPoll,
   type NotesSyncStatus,
 } from './api/client'
@@ -31,6 +32,7 @@ import ChatInput from './components/chat/ChatInput'
 import MessageList from './components/chat/MessageList'
 import ProgressIndicator from './components/chat/ProgressIndicator'
 import MemoryPanel from './components/showcase/MemoryPanel'
+import SetupPage from './components/setup/SetupPage'
 import QuitDaemonControl, { ShutdownScreen } from './components/QuitDaemonControl'
 // Non-chat views are lazy-loaded (2026-09-03): they are opened rarely and
 // carried a large share of the main bundle.
@@ -49,6 +51,17 @@ export default function App() {
   const [citations, setCitations] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [shutDown, setShutDown] = useState(false)
+  // First-run setup gate (B2). `undefined` = still asking; `null` = no
+  // answer (fetch failed) -> show the normal app, never lock an existing user
+  // out; a status with complete === false -> the Setup page.
+  const [setup, setSetup] = useState<SetupStatus | null | undefined>(undefined)
+  const loadSetup = async () => {
+    try {
+      setSetup(await api.getSetupStatus())
+    } catch {
+      setSetup(null)
+    }
+  }
   // Liveness ping for the packaged-mode watchdog; stops once Daemon has quit.
   useHeartbeat(!shutDown)
   // One poll loop at a time; the newest controller owns the `syncing` flag.
@@ -61,6 +74,10 @@ export default function App() {
   const [navOpened, { toggle: toggleNav, close: closeNav }] = useDisclosure(false)
   // Memory Transparency panel — closed by default, toggled from the header
   const [asideOpened, { toggle: toggleAside }] = useDisclosure(false)
+
+  useEffect(() => {
+    void loadSetup()
+  }, [])
 
   useEffect(() => {
     // Debug/Provenance show only turns from this page load (Gradio parity) —
@@ -187,6 +204,16 @@ export default function App() {
   }
 
   if (shutDown) return <ShutdownScreen />
+  if (setup === undefined) return null
+  if (setup && setup.complete === false) {
+    return (
+      <SetupPage
+        initialStatus={setup}
+        onFinished={loadSetup}
+        onShutDown={() => setShutDown(true)}
+      />
+    )
+  }
 
   return (
     <AppShell
