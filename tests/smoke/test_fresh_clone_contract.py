@@ -58,6 +58,10 @@ def _boot_env(run_dir: Path) -> dict:
         "TRANSFORMERS_OFFLINE": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "DISABLE_FS_GUARD": "1",
+        # B2 (2026-10-12): the wizard walk saves its key to the launch path's
+        # .env; without a data-dir override a source checkout resolves that to
+        # the repo-root .env (the owner's real keys). Pin it under the run dir.
+        "DAEMON_DATA_DIR": str(data_root),
         "USER_PROFILE_PATH": str(data_root / "user_profile.json"),
         "CHROMA_PATH": str(data_root / "chroma"),
         "CORPUS_FILE": str(data_root / "corpus.json"),

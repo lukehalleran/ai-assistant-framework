@@ -213,6 +213,27 @@ def _sandbox_generated_documents(tmp_path, monkeypatch):
     yield
 
 
+# B2 (2026-10-12): first-run setup / wizard key saves write the .env the
+# launch path loads -- in a source checkout that is the repo-root .env, so an
+# unpatched test (tests/test_wizard.py drives a real key save) would overwrite
+# the owner's API key. Every test gets a temp .env, and the key env vars a
+# save sets in os.environ are restored afterwards (monkeypatch records the
+# original value on first touch and restores it at teardown).
+_SETUP_KEY_VARS = ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "TAVILY_API_KEY", "WOLFRAM_APP_ID", "E2B_API_KEY")
+
+
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_env_file(tmp_path, monkeypatch):
+    import gui.setup_core as _setup_core
+    monkeypatch.setattr(_setup_core, "env_path", lambda: tmp_path / ".env")
+    for name in _SETUP_KEY_VARS:
+        if name in os.environ:
+            monkeypatch.setenv(name, os.environ[name])
+        else:
+            monkeypatch.delenv(name, raising=False)
+    yield
+
+
 @_pytest_ae.fixture(autouse=True)
 def _sandbox_pending_actions(tmp_path, monkeypatch):
     """Keep persisted approval proposals isolated from the live daemon and tests."""

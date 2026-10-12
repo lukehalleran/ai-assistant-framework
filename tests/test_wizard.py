@@ -102,12 +102,11 @@ class TestWriteApiKeyToEnv:
     def test_write_api_key_creates_new_file(self, temp_env_file):
         """Should create new .env file if it doesn't exist."""
         os.remove(temp_env_file)  # Start with no file
-        original_key = os.environ.get('OPENAI_API_KEY')
+        original_key = os.environ.get('OPENROUTER_API_KEY')
         test_key = "sk-" + "or-" + "test-" + "key-" + "12345"
 
         try:
-            with patch('gui.wizard.Path') as mock_path:
-                mock_path.return_value = Path(temp_env_file)
+            with patch('gui.setup_core.env_path', return_value=Path(temp_env_file)):
                 result = write_api_key_to_env(test_key)
 
             assert result is True
@@ -115,26 +114,25 @@ class TestWriteApiKeyToEnv:
 
             with open(temp_env_file, 'r') as f:
                 content = f.read()
-            assert f'OPENAI_API_KEY={test_key}' in content
+            assert f'OPENROUTER_API_KEY={test_key}' in content
         finally:
             # Restore real env var so tests don't poison the process
             if original_key is not None:
-                os.environ['OPENAI_API_KEY'] = original_key
+                os.environ['OPENROUTER_API_KEY'] = original_key
             else:
-                os.environ.pop('OPENAI_API_KEY', None)
+                os.environ.pop('OPENROUTER_API_KEY', None)
 
     def test_write_api_key_updates_existing_file(self, temp_env_file):
-        """Should update existing OPENAI_API_KEY line in .env."""
+        """Should update existing OPENROUTER_API_KEY line in .env."""
         # Create existing .env with old key
         with open(temp_env_file, 'w') as f:
-            f.write('OPENAI_API_KEY=old-key\n')
+            f.write('OPENROUTER_API_KEY=old-key\n')
             f.write('OTHER_VAR=value\n')
 
-        original_key = os.environ.get('OPENAI_API_KEY')
+        original_key = os.environ.get('OPENROUTER_API_KEY')
 
         try:
-            with patch('gui.wizard.Path') as mock_path:
-                mock_path.return_value = Path(temp_env_file)
+            with patch('gui.setup_core.env_path', return_value=Path(temp_env_file)):
                 result = write_api_key_to_env("sk-or-new-key-67890")
 
             assert result is True
@@ -142,35 +140,34 @@ class TestWriteApiKeyToEnv:
             with open(temp_env_file, 'r') as f:
                 lines = f.readlines()
 
-            assert 'OPENAI_API_KEY=sk-or-new-key-67890\n' in lines
+            assert 'OPENROUTER_API_KEY=sk-or-new-key-67890\n' in lines
             assert 'OTHER_VAR=value\n' in lines
         finally:
             if original_key is not None:
-                os.environ['OPENAI_API_KEY'] = original_key
+                os.environ['OPENROUTER_API_KEY'] = original_key
             else:
-                os.environ.pop('OPENAI_API_KEY', None)
+                os.environ.pop('OPENROUTER_API_KEY', None)
 
     def test_write_api_key_sets_os_environ(self):
-        """Should set os.environ['OPENAI_API_KEY'] for immediate effect."""
-        original_key = os.environ.get('OPENAI_API_KEY')
+        """Should set os.environ['OPENROUTER_API_KEY'] for immediate effect."""
+        original_key = os.environ.get('OPENROUTER_API_KEY')
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
             temp_path = f.name
 
         try:
-            with patch('gui.wizard.Path') as mock_path:
-                mock_path.return_value = Path(temp_path)
+            with patch('gui.setup_core.env_path', return_value=Path(temp_path)):
                 write_api_key_to_env("sk-or-test-key-99999")
 
-            assert os.environ.get('OPENAI_API_KEY') == 'sk-or-test-key-99999'
+            assert os.environ.get('OPENROUTER_API_KEY') == 'sk-or-test-key-99999'
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             # Restore real env var
             if original_key is not None:
-                os.environ['OPENAI_API_KEY'] = original_key
+                os.environ['OPENROUTER_API_KEY'] = original_key
             else:
-                os.environ.pop('OPENAI_API_KEY', None)
+                os.environ.pop('OPENROUTER_API_KEY', None)
 
 
 class TestParseStylePreference:

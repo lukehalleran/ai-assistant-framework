@@ -833,6 +833,17 @@ async def run_shutdown_tasks_async(orchestrator):
         _end_shutdown_run()
 
 
+def use_legacy_gradio_path(legacy_gui: bool, force_wizard: bool, needs_wizard: bool) -> bool:
+    """True when startup must take the standalone-Gradio path.
+
+    2026-10-12 (B2): only the explicit dev flags (--legacy-gui, `main.py wizard`,
+    --wizard) qualify. A first run (needs_wizard without force_wizard) stays on
+    the FastAPI path -- the SPA's Setup page replaces the Gradio wizard, so a
+    packaged first run never opens a second port.
+    """
+    return bool(legacy_gui or force_wizard)
+
+
 def _signal_handler(signum, frame):
     """Handle SIGTERM/SIGINT for graceful shutdown."""
     global _process_exiting, _exit_shutdown_handled
@@ -1723,9 +1734,10 @@ if __name__ == "__main__":
             from gui.launch import check_first_run
             needs_wizard = check_first_run(orchestrator, force_wizard=force_wizard)
 
-            if legacy_gui or needs_wizard:
-                # Legacy standalone-Gradio path. The first-run wizard is a
-                # standalone Gradio app, so it also routes through here.
+            if use_legacy_gradio_path(legacy_gui, force_wizard, needs_wizard):
+                # Legacy standalone-Gradio path (dev only: --legacy-gui /
+                # `main.py wizard` / --wizard). A first run on the FastAPI path
+                # no longer lands here -- the SPA shows its own Setup page.
                 signal.signal(signal.SIGTERM, _signal_handler)
                 signal.signal(signal.SIGINT, _signal_handler)
                 install_hangup_handler(logger=logger)  # SIGHUP (terminal gone) → same clean shutdown

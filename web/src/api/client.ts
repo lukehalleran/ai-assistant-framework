@@ -187,6 +187,64 @@ async function curationResult<T>(resp: Response, label: string): Promise<T> {
 }
 
 
+// ---- First-run setup (B2): contract in oct12_runs/B2_CONTRACT.md ----
+
+export type SetupState = 'found' | 'missing'
+export interface SetupKeyStep {
+  state: SetupState
+  hint: string | null
+}
+export interface SetupStatus {
+  complete: boolean
+  steps: {
+    openrouter: SetupKeyStep
+    profile: { state: SetupState; name: string | null; pronouns: string | null }
+    style: { state: SetupState; value: string | null }
+    tavily: SetupKeyStep
+    wolfram: SetupKeyStep
+    e2b: SetupKeyStep
+    obsidian: { state: SetupState; path: string | null }
+  }
+}
+export interface SetupResult {
+  ok: boolean
+  error: string | null
+  hint?: string | null
+  /** True when the key could not be checked (OpenRouter unreachable). */
+  unreachable?: boolean
+}
+export type SetupKeyName = 'tavily' | 'wolfram' | 'e2b'
+
+/** Setup POSTs answer `{ok:false, error}` for a rejected input; read that body
+ * whatever the HTTP status so the API's own error text reaches the form. A
+ * body without `ok` on a non-ok status is a transport/server failure. */
+async function setupResult(resp: Response): Promise<SetupResult> {
+  let body: Partial<SetupResult> & { detail?: string } = {}
+  try {
+    body = await resp.json()
+  } catch {
+    // not JSON; fall through to the status check
+  }
+  if (typeof body.ok === 'boolean') {
+    return {
+      ok: body.ok,
+      error: body.error ?? null,
+      hint: body.hint ?? null,
+      unreachable: body.unreachable === true,
+    }
+  }
+  if (!resp.ok) throw new Error(body.detail || `${resp.status} ${resp.statusText}`)
+  return { ok: true, error: null, hint: null }
+}
+
+function postJson(path: string, body: unknown) {
+  return authorizedFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export const api = {
   getSession: () => authorizedFetch('/api/session').then((r) => json<SessionState>(r)),
 
@@ -241,6 +299,27 @@ export const api = {
     authorizedFetch('/api/sync-notes/status', { signal }).then((r) =>
       statusJson<NotesSyncStatus>(r, 'Notes sync status'),
     ),
+
+  // ---- First-run setup (B2) ----
+
+  getSetupStatus: () => authorizedFetch('/api/setup/status').then((r) => json<SetupStatus>(r)),
+
+  postSetupOpenrouter: (key: string, saveUnverified = false) =>
+    postJson('/api/setup/openrouter', saveUnverified ? { key, save_unverified: true } : { key }).then(
+      setupResult,
+    ),
+
+  postSetupKey: (name: SetupKeyName, key: string) =>
+    postJson(`/api/setup/key/${name}`, { key }).then(setupResult),
+
+  postSetupProfile: (body: { name: string; pronouns: string | null; style: string | null }) =>
+    postJson('/api/setup/profile', body).then(setupResult),
+
+  postSetupObsidian: (path: string | null) =>
+    postJson('/api/setup/obsidian', { path }).then(setupResult),
+
+  postSetupComplete: () =>
+    authorizedFetch('/api/setup/complete', { method: 'POST' }).then((r) => json<SetupStatus>(r)),
 
   // ---- Debug / Provenance (server-held per-turn records) ----
 

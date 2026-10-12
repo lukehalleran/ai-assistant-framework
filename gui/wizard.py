@@ -16,7 +16,7 @@ Module Contract
   - Updated WizardState after each step
   - is_complete=True when wizard finishes
 - Side effects:
-  - Writes DAEMON_MODE and API keys to .env file (OPENAI_API_KEY, TAVILY_API_KEY, WOLFRAM_APP_ID, E2B_API_KEY)
+  - Writes DAEMON_MODE and API keys to .env file (OPENROUTER_API_KEY, TAVILY_API_KEY, WOLFRAM_APP_ID, E2B_API_KEY)
   - Extracts user + entity facts via LLMFactExtractor (dual-budget, fact_scope aware)
   - Stores user facts to both UserProfile (JSON) AND ChromaDB (semantic retrieval)
   - Stores entity facts to ChromaDB only (not UserProfile)
@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Tuple, Dict, Any, Optional
 from pathlib import Path
 
+from gui import setup_core
 from utils.logging_utils import get_logger
 import memory.llm_fact_extractor as llm_fact_extractor
 
@@ -99,71 +100,21 @@ Type anything to continue to setup."""
 
 
 def _get_env_path() -> Path:
-    """Get the .env file path (user data dir when frozen, project root otherwise)."""
-    if getattr(sys, 'frozen', False):
-        return Path(os.environ.get('APPDATA', '')) / 'Daemon' / '.env'
-    return Path('.env')
+    """The profile .env path (2026-10-12: setup_core is the ONE authority)."""
+    return setup_core.env_path()
 
 
 def write_env_key(env_var: str, value: str) -> bool:
-    """
-    Write or update a key=value pair in the .env file.
-
-    Args:
-        env_var: Environment variable name (e.g. 'OPENAI_API_KEY')
-        value: Value to set
-    Returns:
-        bool: True if successful
-    """
-    try:
-        env_path = _get_env_path()
-        lines = []
-
-        if env_path.exists():
-            with open(env_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-
-        key_found = False
-        for i, line in enumerate(lines):
-            if line.startswith(f'{env_var}='):
-                lines[i] = f'{env_var}={value}\n'
-                key_found = True
-                break
-
-        if not key_found:
-            if lines and not lines[-1].endswith('\n'):
-                lines.append('\n')
-            lines.append(f'{env_var}={value}\n')
-
-        with open(env_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
-
-        os.environ[env_var] = value
-        logger.info(f"[Wizard] {env_var} written to .env and set in environment")
-        return True
-
-    except Exception as e:
-        logger.error(f"[Wizard] Failed to write {env_var} to .env: {e}")
-        return False
+    """Write or update one key=value pair in the profile .env (atomic, 0600)."""
+    return setup_core.write_env_vars({env_var: value})
 
 
 def write_api_key_to_env(key: str) -> bool:
-    """Write OpenRouter API key to .env."""
-    return write_env_key('OPENAI_API_KEY', key)
+    """Write the OpenRouter API key to .env (OPENROUTER_API_KEY, never OPENAI_)."""
+    return write_env_key(setup_core.OPENROUTER_ENV, key)
 
 
-def validate_api_key_format(key: str) -> bool:
-    """
-    Check if key matches OpenRouter format.
-
-    Args:
-        key: API key to validate
-
-    Returns:
-        bool: True if format is valid
-    """
-    key = key.strip()
-    return key.startswith('sk-or-') and len(key) > 20
+validate_api_key_format = setup_core.validate_api_key_format
 
 
 def write_tavily_key_to_env(key: str) -> bool:
@@ -171,19 +122,7 @@ def write_tavily_key_to_env(key: str) -> bool:
     return write_env_key('TAVILY_API_KEY', key)
 
 
-def validate_tavily_key_format(key: str) -> bool:
-    """
-    Check if key matches Tavily API key format.
-
-    Args:
-        key: API key to validate
-
-    Returns:
-        bool: True if format is valid
-    """
-    key = key.strip()
-    # Tavily keys start with 'tvly-' and are reasonably long
-    return key.startswith('tvly-') and len(key) > 20
+validate_tavily_key_format = setup_core.validate_tavily_key_format
 
 
 def write_wolfram_key_to_env(key: str) -> bool:
@@ -196,16 +135,8 @@ def write_e2b_key_to_env(key: str) -> bool:
     return write_env_key('E2B_API_KEY', key)
 
 
-def validate_wolfram_key_format(key: str) -> bool:
-    """Check if key looks like a Wolfram Alpha App ID."""
-    key = key.strip()
-    return len(key) >= 6
-
-
-def validate_e2b_key_format(key: str) -> bool:
-    """Check if key matches E2B API key format."""
-    key = key.strip()
-    return key.startswith('e2b_') and len(key) > 10
+validate_wolfram_key_format = setup_core.validate_wolfram_key_format
+validate_e2b_key_format = setup_core.validate_e2b_key_format
 
 
 def parse_mode_preference(user_input: str) -> str:
@@ -340,7 +271,7 @@ async def process_wizard_message(
         if state.error_count >= state.max_retries:
             return (
                 "I'm having trouble with setup. You can try restarting the application, "
-                "or manually add your API key to the .env file as OPENAI_API_KEY=your-key",
+                "or manually add your API key to the .env file as OPENROUTER_API_KEY=your-key",
                 state,
                 False
             )
@@ -419,7 +350,7 @@ async def _handle_api_key(
     try:
         logger.info("[Wizard] Testing API key with model call")
         # Set the key in environment AND reinitialize the model manager clients
-        os.environ['OPENAI_API_KEY'] = key
+        os.environ[setup_core.OPENROUTER_ENV] = key
 
         # Reinitialize the model manager's clients with the new API key
         # This is necessary because the ModelManager was created before the API key was available
@@ -442,6 +373,12 @@ async def _handle_api_key(
 
         if not test_response or not test_response.strip():
             raise Exception("Empty response from API")
+
+        # 2026-10-12: an error sentinel is a FAILED key test, not a success
+        # (an [AUTH ERROR] reply used to pass as "key works").
+        from models.model_manager import API_ERROR_PREFIXES  # lazy import: startup-cost
+        if test_response.lstrip().startswith(tuple(API_ERROR_PREFIXES)):
+            raise Exception("API returned an error sentinel")
 
         # Check for stub response (indicates API client not properly initialized)
         if test_response.startswith("[API unavailable]"):

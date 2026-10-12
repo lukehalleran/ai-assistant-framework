@@ -558,6 +558,15 @@ class ModelManager:
         # by tests/unit/test_model_capability_wiring.py.
         self.api_models.update(API_MODEL_ALIASES)
 
+    def reload_api_keys(self) -> bool:
+        """Re-key the running manager from os.environ (first-run Setup, 2026-10-12).
+
+        Rebuilds the OpenRouter sync/async clients from OPENROUTER_API_KEY (then
+        OPENAI_API_KEY) so a key saved by the Setup page works without a restart.
+        Returns False when no key is set or the clients could not be rebuilt.
+        """
+        return self.reinitialize_clients(None)
+
     def reinitialize_clients(self, api_key: str = None) -> bool:
         """
         Reinitialize the OpenAI clients with a new API key.

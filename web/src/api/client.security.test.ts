@@ -70,6 +70,12 @@ const REPRESENTATIVE_ARGS: Record<string, unknown[]> = {
   dismissCurationProposal: ['p-1', 'because'],
   undoCurationProposal: ['p-1'],
   getCurationActivity: [50],
+  getSetupStatus: [],
+  postSetupOpenrouter: ['sk-or-test', false],
+  postSetupKey: ['tavily', 'tvly-test'],
+  postSetupProfile: [{ name: 'A', pronouns: null, style: null }],
+  postSetupObsidian: [null],
+  postSetupComplete: [],
 }
 
 describe('api client transport authorization (F01/G06-T02, A02)', () => {
