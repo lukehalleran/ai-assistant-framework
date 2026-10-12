@@ -650,9 +650,17 @@ class TestQueryLocalization:
         q = "Tesla stock price July 2026"
         assert m._localize_query(q) == q
 
-    def test_no_location_known_is_noop(self, temp_state_file):
+    def test_no_location_known_strips_placeholder(self, temp_state_file):
+        """No known place: a deictic placeholder never reaches the provider as
+        if it were one (BC-04) — it is dropped, the rest of the query kept."""
         m = self._manager(temp_state_file, location=None)
-        q = "temperature in my area July 2 2026"
+        assert m._localize_query("temperature in my area July 2 2026") == \
+            "temperature July 2 2026"
+        assert m._localize_query("best restaurants near me") == "best restaurants"
+
+    def test_no_location_known_placeless_query_is_noop(self, temp_state_file):
+        m = self._manager(temp_state_file, location=None)
+        q = "weather in tokyo"
         assert m._localize_query(q) == q
 
     def test_leaves_lowercase_place_alone(self, temp_state_file):
