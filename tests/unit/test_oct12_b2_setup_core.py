@@ -274,3 +274,12 @@ def test_conftest_sandboxes_the_env_file(tmp_path):
     checkout's real .env (a wizard test once wrote the repo-root .env)."""
     assert setup_core.env_path() == tmp_path / ".env"
     assert setup_core.resolve_env_path() != tmp_path / ".env"
+
+
+def test_status_reports_mode_live(data_dir, monkeypatch):
+    """The SPA hides the dev-only E2B key outside dev mode (legacy wizard parity)."""
+    import config.app_config as app_cfg
+    monkeypatch.setattr(app_cfg, "DAEMON_MODE", "user")
+    assert setup_core.get_status(_orch(name="Sam"))["mode"] == "user"
+    monkeypatch.setattr(app_cfg, "DAEMON_MODE", "dev")
+    assert setup_core.get_status(_orch(name="Sam"))["mode"] == "dev"

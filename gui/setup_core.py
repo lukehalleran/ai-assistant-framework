@@ -402,7 +402,11 @@ def get_status(orchestrator) -> dict:
     steps["obsidian"] = {"state": "found" if vault else "missing", "path": vault}
     required = steps["openrouter"]["state"] == "found" and steps["profile"]["state"] == "found"
     complete = (required and marker) or (required and _established_profile(orchestrator))
-    return {"complete": bool(complete), "steps": steps}
+    # The SPA shows dev-only optional keys (E2B code sandbox) only in dev mode,
+    # as the legacy wizard did. Read live (Settings can change the mode).
+    import config.app_config as app_cfg  # lazy import: live-config
+    mode = "dev" if str(getattr(app_cfg, "DAEMON_MODE", "user")).lower() == "dev" else "user"
+    return {"complete": bool(complete), "mode": mode, "steps": steps}
 
 
 def complete_setup(orchestrator) -> dict:
