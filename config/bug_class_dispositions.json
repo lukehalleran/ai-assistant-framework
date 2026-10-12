@@ -2209,14 +2209,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "7c1147ac8c974055eeae9edd3d779eb7834d28321ef0c4943d177bf17d886feb",
+      "source_sha256": "7ce7ef38d0fee4198932a9eb32598f1d8cf64b1a099827a722ba02ee40f3a07e",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means no page; resolve_and_fetch falls back to the REST summary endpoint.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means no page; resolve_and_fetch falls back to the REST summary endpoint. Re-reviewed 2026-10-12 (owner-approved, CGR-20261012-001): file edited by beta fix B6 (retrieval quality); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-12); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-12",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261012-001"
     },
     {
       "anchor": {
@@ -2234,14 +2234,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "7c1147ac8c974055eeae9edd3d779eb7834d28321ef0c4943d177bf17d886feb",
+      "source_sha256": "7ce7ef38d0fee4198932a9eb32598f1d8cf64b1a099827a722ba02ee40f3a07e",
       "status": "accepted_debt",
       "assessment": "uncertain",
-      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: Background wiki knowledge: a failure and 'no article' both return None.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "On this background or auxiliary path, an LLM, parse or provider failure produces the same empty outcome as 'nothing to extract'. The failure is logged, but this bounded review did not establish its effect on persisted data or user-facing claims. Retained as uncertain accepted debt. Site: Background wiki knowledge: a failure and 'no article' both return None. Re-reviewed 2026-10-12 (owner-approved, CGR-20261012-001): file edited by beta fix B6 (retrieval quality); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-12); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-12",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261012-001"
     },
     {
       "anchor": {
