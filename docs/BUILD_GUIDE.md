@@ -50,6 +50,31 @@ Notes:
   after setup the app serves the SPA at http://127.0.0.1:8000 (Gradio dev tabs at `/admin`).
 - User data lives in `~/.daemon/` (see User Data Directory), never the install dir.
 
+### Smoke test
+
+One command builds (optional) and proves the frozen binary works:
+
+```bash
+python scripts/smoke_frozen_build.py --build     # SPA + models + capped freeze, then smoke
+python scripts/smoke_frozen_build.py             # smoke an existing dist/Daemon/Daemon
+python scripts/smoke_frozen_build.py --dist PATH --work DIR
+```
+
+It runs two launches, each in its own temp HOME under `--work` (default
+`~/daemon_exec/smoke_runs/<timestamp>`) with a from-scratch environment (no
+`DISPLAY`, no inherited keys) and runtime-picked free ports (never 8000 or 7860;
+it refuses to start if a port is bound):
+
+- **A, cold first run:** the wizard answers, the user-data dir is created, SIGINT exits 0 within 120 s, shutdown phases run.
+- **B, returning user** (synthetic profile + fake key): `/health` 200, the SPA root div, `/api/session` 401 without the launch token and 200 with it, a `/api/chat` stream that ends `complete`, clean SIGINT exit.
+- **Strict write assertion:** nothing newer than the start stamp may exist outside `home/.daemon` (plus `home/.cache`, `home/.nv`, `run.log`). A store that lands in the launch cwd FAILS.
+- **Isolation:** `~/.daemon` is unchanged (mtime + a hash of its file listing; contents are never read) and no spawned process is left running.
+
+It prints a PASS/FAIL table, writes `report.md` to the work dir and exits
+non-zero on any FAIL. No real API key is used, so it makes no paid calls. It
+only signals processes it started, but do not run it with `--build` while the
+live Daemon is under memory pressure: the freeze is capped at 6 GB.
+
 ## Windows (not yet re-verified since the FastAPI migration)
 
 The last verified Windows build (v1.0.0, 2026-04-02) predates the FastAPI/SPA
