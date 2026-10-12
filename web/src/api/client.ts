@@ -269,9 +269,17 @@ export const api = {
     }),
 
   /** App lifecycle (B3): liveness ping for the packaged-mode client watchdog. */
-  heartbeat: () =>
-    authorizedFetch('/api/heartbeat', { method: 'POST' }).then((r) => {
+  heartbeat: (): Promise<boolean> =>
+    authorizedFetch('/api/heartbeat', { method: 'POST' }).then(async (r) => {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+      // P2: the server says whether THIS client may quit (loopback peer only).
+      // A missing/unparseable field means "no" — never offer a button that 403s.
+      try {
+        const body = await r.json()
+        return body?.quit_allowed === true
+      } catch {
+        return false
+      }
     }),
 
   /** App lifecycle (B3): ask Daemon to run its normal clean shutdown. */

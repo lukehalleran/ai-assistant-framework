@@ -30,12 +30,14 @@ export default function SetupPage({
   initialStatus,
   onFinished,
   onShutDown,
+  quitAllowed = false,
   client = api,
 }: {
   initialStatus: SetupStatus
   /** Called after POST /api/setup/complete succeeds; the caller re-reads status. */
   onFinished: () => void | Promise<void>
   onShutDown: () => void
+  quitAllowed?: boolean
   client?: SetupClient
 }) {
   const [status, setStatus] = useState(initialStatus)
@@ -62,7 +64,7 @@ export default function SetupPage({
       <Stack gap="md">
         <Group justify="space-between">
           <Title order={2}>Welcome to Daemon</Title>
-          <QuitDaemonControl onShutDown={onShutDown} />
+          <QuitDaemonControl onShutDown={onShutDown} quitAllowed={quitAllowed} />
         </Group>
         <Progress value={((index + 1) / STEPS.length) * 100} size="xs" />
         <Card withBorder padding="lg">

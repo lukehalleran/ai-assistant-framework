@@ -6,10 +6,10 @@ import QuitDaemonControl, { ShutdownScreen } from './QuitDaemonControl'
 // B3: Quit asks for confirmation, only then POSTs shutdown, and only a
 // successful POST hands off to the shutdown screen.
 
-function renderControl(shutdown: () => Promise<void>, onShutDown = vi.fn()) {
+function renderControl(shutdown: () => Promise<void>, onShutDown = vi.fn(), quitAllowed = true) {
   render(
     <MantineProvider>
-      <QuitDaemonControl shutdown={shutdown} onShutDown={onShutDown} />
+      <QuitDaemonControl shutdown={shutdown} onShutDown={onShutDown} quitAllowed={quitAllowed} />
     </MantineProvider>,
   )
   return onShutDown
@@ -34,6 +34,11 @@ describe('QuitDaemonControl', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Quit' }))
     expect(await screen.findByText(/401 Unauthorized/)).toBeInTheDocument()
     expect(onShutDown).not.toHaveBeenCalled()
+  })
+
+  it('renders nothing when quit is not allowed for this client', () => {
+    renderControl(vi.fn(), vi.fn(), false)
+    expect(screen.queryByText(/Quit Daemon/)).not.toBeInTheDocument()
   })
 
   it('cancel does nothing', async () => {

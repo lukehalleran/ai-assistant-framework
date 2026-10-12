@@ -35,10 +35,15 @@ function makeClient(over: Partial<SetupClient> = {}): SetupClient {
   } as SetupClient
 }
 
-function renderPage(status: SetupStatus, client: SetupClient, onFinished = vi.fn()) {
+function renderPage(
+  status: SetupStatus,
+  client: SetupClient,
+  onFinished = vi.fn(),
+  quitAllowed = true,
+) {
   render(
     <MantineProvider>
-      <SetupPage initialStatus={status} client={client} onFinished={onFinished} onShutDown={vi.fn()} />
+      <SetupPage initialStatus={status} client={client} onFinished={onFinished} onShutDown={vi.fn()} quitAllowed={quitAllowed} />
     </MantineProvider>,
   )
   return onFinished
@@ -157,6 +162,11 @@ describe('SetupPage', () => {
   it('the Quit control stays reachable', () => {
     renderPage(makeStatus(), makeClient())
     expect(screen.getByText(/Quit Daemon/)).toBeInTheDocument()
+  })
+
+  it('the Quit control is hidden when the server says this client may not quit', () => {
+    renderPage(makeStatus(), makeClient(), vi.fn(), false)
+    expect(screen.queryByText(/Quit Daemon/)).not.toBeInTheDocument()
   })
 })
 
