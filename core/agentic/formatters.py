@@ -11,6 +11,7 @@ Contract:
       mistakes a preview cut for the end of the stored document
 """
 
+import re
 from typing import Dict, List
 
 TRUNCATION_MARKER = " [...truncated]"
@@ -20,6 +21,52 @@ def clip_text(text: str, limit: int, marker: str = TRUNCATION_MARKER) -> str:
     """Clip text to limit chars, appending a marker only when actually cut."""
     text = text or ""
     return text if len(text) <= limit else text[:limit] + marker
+
+
+# Standard reference/navigation section headings of an encyclopedia article.
+_NAV_SECTION_HEADINGS = frozenset({
+    "see also", "external links", "references", "further reading", "notes",
+    "footnotes", "bibliography", "citations", "sources", "general references",
+    "explanatory notes", "works cited", "links", "related articles",
+})
+_CITATION_SHAPE_RE = re.compile(
+    r"https?://|\(\d{4}\)|\bisbn\b|\bdoi\b|\bretrieved\b|\barchived\b", re.IGNORECASE
+)
+_PROSE_MIN_WORDS = 15
+
+
+def _is_navigation_stub(section: str, text: str) -> bool:
+    """True when a chunk is a navigation-only section: a standard
+    reference/navigation heading AND a body that is link/list-only (no line is
+    a prose sentence run — long lines count as prose unless they are
+    citation-shaped). Structural: heading category + body shape, no phrase list."""
+    heading = re.sub(r"[^a-z ]+", " ", (section or "").lower())
+    heading = " ".join(heading.split())
+    if heading.rsplit(" / ", 1)[-1] not in _NAV_SECTION_HEADINGS:
+        return False
+    for line in (text or "").splitlines():
+        line = line.strip(" \t*-\u2022")
+        if len(line.split()) >= _PROSE_MIN_WORDS and not _CITATION_SHAPE_RE.search(line):
+            return False
+    return True
+
+
+def drop_navigation_and_duplicate_chunks(results: List[Dict]) -> List[Dict]:
+    """Agentic wiki hygiene: drop navigation-only sections ("See also",
+    "External links", "References" with link/list-only bodies) and chunks whose
+    whitespace-normalized text duplicates an earlier one. Order preserved."""
+    kept: List[Dict] = []
+    seen: set = set()
+    for r in results or []:
+        text = r.get("text", "") or ""
+        if _is_navigation_stub(r.get("section", ""), text):
+            continue
+        key = " ".join(text.split()).lower()
+        if key and key in seen:
+            continue
+        seen.add(key)
+        kept.append(r)
+    return kept
 
 
 class AgenticFormatter:

@@ -225,17 +225,22 @@ class ThreadExtractionError(RuntimeError):
 
 
 def _parse_json_array_strict(raw: Optional[str]) -> Optional[List[dict]]:
-    """Robust JSON array parsing with find("[") / rfind("]") pattern.
+    """Tolerant JSON array parsing for a model that may misbehave.
 
     Returns None when no array can be parsed; a parsed EMPTY array is [] (a
-    genuine "nothing found").
+    genuine "nothing found"). Handles, in order: a clean array; a reasoning
+    preamble (or trailing commentary) around the array — every "[" is tried
+    with ``raw_decode`` so a stray bracket in prose ("[1]", "[unfinished]")
+    cannot hide the real array; and an array TRUNCATED at the token budget —
+    the complete leading objects are salvaged rather than the whole answer
+    discarded (BC-89).
     """
     if not raw or not raw.strip():
         return None
 
     text = raw.strip()
+    decoder = json.JSONDecoder()
 
-    # Try direct parse first
     try:
         parsed = json.loads(text)
         if isinstance(parsed, list):
@@ -243,20 +248,41 @@ def _parse_json_array_strict(raw: Optional[str]) -> Optional[List[dict]]:
     except json.JSONDecodeError:
         pass
 
-    # Find the JSON array boundaries
-    start = text.find("[")
-    end = text.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        return None
-
-    try:
-        parsed = json.loads(text[start:end + 1])
+    empty_seen = False
+    pos = text.find("[")
+    while pos != -1:
+        try:
+            parsed, _end = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            parsed = None
         if isinstance(parsed, list):
-            return parsed
-    except json.JSONDecodeError:
-        pass
+            if parsed and all(isinstance(x, dict) for x in parsed):
+                return parsed
+            if not parsed:
+                empty_seen = True
+        pos = text.find("[", pos + 1)
 
-    return None
+    # Truncated array: salvage the complete objects that precede the cut.
+    pos = text.find("[")
+    while pos != -1:
+        i = pos + 1
+        salvaged: List[dict] = []
+        while True:
+            while i < len(text) and text[i] in " \t\r\n,":
+                i += 1
+            if i >= len(text) or text[i] != "{":
+                break
+            try:
+                obj, i = decoder.raw_decode(text, i)
+            except json.JSONDecodeError:
+                break
+            if isinstance(obj, dict):
+                salvaged.append(obj)
+        if salvaged:
+            return salvaged
+        pos = text.find("[", pos + 1)
+
+    return [] if empty_seen else None
 
 
 def _parse_json_array(raw: str) -> List[dict]:
@@ -326,8 +352,9 @@ class ThreadExtractor:
             raw = await self.model_manager.generate_once(
                 prompt,
                 model_name=model_alias if model_alias else None,
-                max_tokens=800,
+                max_tokens=1600,
                 temperature=0.0,
+                disable_reasoning=True,  # BC-89: structured JSON on a reasoning-capable model
             )
         except Exception as e:
             logger.warning(f"[ThreadExtractor] LLM extraction failed: {type(e).__name__}")
@@ -447,8 +474,9 @@ class ThreadExtractor:
             raw = await self.model_manager.generate_once(
                 prompt,
                 model_name=model_alias if model_alias else None,
-                max_tokens=400,
+                max_tokens=800,
                 temperature=0.0,
+                disable_reasoning=True,  # BC-89: structured JSON on a reasoning-capable model
             )
         except Exception as e:
             logger.warning(f"[ThreadExtractor] LLM resolution detection failed: {type(e).__name__}")

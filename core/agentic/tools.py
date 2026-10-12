@@ -34,7 +34,7 @@ from core.agentic.types import (
     SearchRound,
     _ToolResult,
 )
-from core.agentic.formatters import AgenticFormatter
+from core.agentic.formatters import AgenticFormatter, drop_navigation_and_duplicate_chunks
 from config import app_config
 import re as _re
 import asyncio
@@ -2010,7 +2010,7 @@ Provide a focused summary with the most important information."""
         """Search the FAISS Wikipedia index (41M vectors) as fallback for wiki_knowledge."""
         try:
             from knowledge.semantic_search import semantic_search_with_neighbors  # lazy import: startup-cost (would newly load: faiss, numpy)
-            return semantic_search_with_neighbors(query, k=k)
+            return drop_navigation_and_duplicate_chunks(semantic_search_with_neighbors(query, k=k))
         except Exception as e:
             logger.warning(f"[AgenticSearch] FAISS wiki search failed: {e}")
             return []
