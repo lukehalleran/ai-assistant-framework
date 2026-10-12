@@ -67,7 +67,8 @@ def daily_notes_base() -> Path:
     from config import app_config  # lazy import: live-config
 
     folder = app_config.DAILY_NOTES_FOLDER
-    if app_config.OBSIDIAN_ENABLED:
+    # An empty path would resolve to "." (the launch CWD) and pass is_dir().
+    if app_config.OBSIDIAN_ENABLED and str(app_config.OBSIDIAN_VAULT_PATH or "").strip():
         vault = Path(app_config.OBSIDIAN_VAULT_PATH).expanduser()
         if vault.is_dir():
             return vault / folder

@@ -87,8 +87,10 @@ class TestGetCodebaseChangesOffMainThread:
                 datetime.now() - timedelta(hours=2)
             )
 
-        # All four git subprocess calls (rev-parse, log, diff, status) fired.
-        assert len(thread_flags) == 4
+        # The three git subprocess calls (log, diff, status) fired. B1
+        # (2026-10-12): the repo root comes from the module location, so the
+        # CWD-dependent `git rev-parse --show-toplevel` call no longer exists.
+        assert len(thread_flags) == 3
         assert not any(thread_flags), (
             "one or more git subprocess.run calls ran ON the event-loop thread"
         )

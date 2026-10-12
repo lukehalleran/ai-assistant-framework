@@ -226,7 +226,9 @@ class TestToolHealthAdvertisesGithubWrites:
 
     def test_propose_action_lists_github_writes_when_enabled(self):
         te = self._tool_executor()
-        with patch(_ENABLED, True):
+        # B1 (2026-10-12): user mode (the test default) forces the github read
+        # tool off; this test is about the dev-mode advertisement.
+        with patch(_ENABLED, True), patch("config.app_config.GITHUB_API_ENABLED", True):
             health = te.get_tool_health()
         propose_line = next(l for l in health.splitlines() if l.startswith("propose_action:"))
         assert "github_create_issue" in propose_line

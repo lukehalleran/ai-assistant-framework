@@ -55,6 +55,7 @@ import contextvars
 import hashlib
 import logging
 import subprocess
+import sys
 import threading
 import os as _os
 import asyncio as _asyncio
@@ -1568,19 +1569,14 @@ class KnowledgeRetrievalMixin:
             if not SESSION_DIFF_ENABLED or since_datetime is None:
                 return {}
 
-            # Resolve the repo root
-            repo_root = None
-            try:
-                result = await asyncio.to_thread(subprocess.run,
-                    ["git", "rev-parse", "--show-toplevel"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    repo_root = result.stdout.strip()
-            except Exception:  # degrades: session diff context omitted, no repo root resolved
+            # Resolve the repo root from THIS module's location, never the
+            # launch CWD (2026-10-12, BC-83: a frozen build run from the
+            # owner's repo directory reported the owner's untracked files).
+            # Not a git work tree here (frozen build, installed copy) -> skip.
+            _root = Path(__file__).resolve().parents[2]
+            if getattr(sys, "frozen", False) or not (_root / ".git").exists():
                 return {}
-            if not repo_root:
-                return {}
+            repo_root = str(_root)
 
             # Exclusion patterns for paths
             _EXCLUDE_PATTERNS = ("__pycache__", ".pyc", "venv/", "dist/", "build/", ".egg-info")
