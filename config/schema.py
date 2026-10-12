@@ -101,6 +101,7 @@ class DefaultCoreDirective(BaseModel):
 class DaemonSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     version: str = "v4"
+    assistant_name: str = "Daemon"
     mode: str = "dev"
     data_dir: str = "./data"
     log_dir: str = "./conversation_logs"

@@ -162,3 +162,35 @@ def extract_citations(
     logger.debug(f"[Citation] Extracted {len(citations)} citations (from {len(cited_ids)} tags, {len(invalid_cited_ids)} invalid)")
 
     return clean_response, citations
+
+
+# ---------------------------------------------------------------------------
+# Web-citation ID expansion for the log-only drift check (2026-10-12, X2).
+# CITATION_PATTERN above matches only single [WEB_N] markers (display path);
+# models also write ranges ([WEB_1-3], [WEB_1-WEB_3]) and lists ([WEB_1, WEB_3]).
+# This is read-only: it never changes what is stripped or linkified.
+# ---------------------------------------------------------------------------
+_WEB_MARKER_GROUP = re.compile(r'\[\s*(WEB_\d+(?:\s*(?:[-–]|,)\s*(?:WEB_)?\d+)*)\s*\]')
+_WEB_MARKER_PART = re.compile(r'WEB_(\d+)(?:\s*[-–]\s*(?:WEB_)?(\d+))?|,\s*(?:WEB_)?(\d+)')
+
+
+def extract_web_citation_ids(text: str) -> List[str]:
+    """Return the ordered, de-duplicated WEB ids cited in ``text``.
+
+    Handles [WEB_3], [WEB_1-3], [WEB_1-WEB_3], [WEB_1, WEB_3], [WEB_1, 3].
+    """
+    ids: List[str] = []
+    for group in _WEB_MARKER_GROUP.findall(text or ""):
+        for m in _WEB_MARKER_PART.finditer(group):
+            if m.group(3):
+                nums = [int(m.group(3))]
+            elif m.group(2):
+                lo, hi = int(m.group(1)), int(m.group(2))
+                nums = list(range(lo, hi + 1)) if 0 < hi - lo <= 20 else [lo, hi]
+            else:
+                nums = [int(m.group(1))]
+            for n in nums:
+                cid = f"WEB_{n}"
+                if cid not in ids:
+                    ids.append(cid)
+    return ids

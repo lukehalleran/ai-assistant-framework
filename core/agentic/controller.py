@@ -869,6 +869,18 @@ class AgenticSearchController:
         # source and web-evidence receipt all read the PREVIOUS turn's rounds
         # — the same staleness the _last_final_* resets above close.
         self._last_session = session
+        # Per-turn citation numbering (2026-10-12, X2): the executor is a
+        # long-lived singleton, so its [WEB_N]/[WIKI_N] maps used to survive
+        # across turns and numbering kept counting (live: a weather turn's
+        # base prompt numbered WEB_1..5 while the seeded loop minted WEB_21..25,
+        # and the answer cited WEB_24/25). The maps are per-turn evidence
+        # state: clear them at session start so seeded base web keeps the
+        # same ids the base prompt showed, and a stale prior-turn id can never
+        # linkify to a source from another turn.
+        for _map_name in ("_current_web_source_map", "_current_wiki_source_map"):
+            _m = getattr(self._tool_executor, _map_name, None)
+            if isinstance(_m, dict):
+                _m.clear()
         # A14 (2026-09-10, round 3): a gate-detected note-save request's
         # saved note body must be the USER'S stated content, never the
         # model's own elaboration on the create_daemon_note call — live:

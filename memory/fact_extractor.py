@@ -800,6 +800,11 @@ class FactExtractor:
         self.location_patterns = [
             # "I live in X" / "I'm from X" / "I moved to X"
             ("lives_in", r"\b(?:i|we)\s+(?:live|lived|reside|am\s+from|moved\s+to|relocated\s+to)\s+(?:in\s+)?([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)"),
+            # Elided-subject coordinate: "I used to live in Denver, moved to Chicago
+            # last year" -- the second clause shares the first-person subject of
+            # the first. The earlier clause is only the subject anchor (never
+            # captured), so the PRIOR place is not minted as the current one.
+            ("lives_in", r"\b(?:i|we)\b[^.;!?]{0,80}?[,;]\s*(?:and\s+|then\s+)?(?:moved|relocated)\s+to\s+([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)"),
             # "I'm in Chicago" / "I'm based in X"
             ("lives_in", r"\b(?:i(?:'m|\s+am))\s+(?:in|based\s+in|located\s+in)\s+([A-Z][a-zA-Z\s,]+?)(?:[\.;,!?:]|$)"),
         ]

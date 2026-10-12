@@ -72,6 +72,45 @@ except ImportError:
 # ("a bad mood") under lives_in, and none of that should reach a search query.
 _PLACE_RE = re.compile(r"^[A-Za-z][A-Za-z .'\-]*,\s*[A-Za-z][A-Za-z .'\-]{1,}$")
 
+# Closed class: generic location NOUNS (home, work...) that spaCy will tag GPE
+# in a "live in X" frame but that never name a city. Only consulted on the
+# bare-place path below.
+_GENERIC_PLACE_NOUNS = frozenset({
+    "home", "house", "work", "office", "school", "campus", "apartment", "flat",
+    "room", "dorm", "town", "city", "state", "country", "street", "building",
+    "downtown", "uptown", "suburbs", "outside", "inside", "abroad",
+})
+
+
+def _is_bare_city(value: str) -> bool:
+    """True for a single-token city/region name as the per-turn extractor stores
+    it ("chicago", no region). The strict "City, Region" shape cannot admit it;
+    a single token is trusted only when spaCy's NER tags the WHOLE title-cased
+    token as a geopolitical entity and it is not a generic location noun or a
+    deictic placeholder. Multi-word bare values stay rejected (a two-word GPE
+    like "Joke State" is exactly the sarcasm junk the strict shape guards)."""
+    v = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z.'\-]{1,}", v):
+        return False
+    if v.lower() in _GENERIC_PLACE_NOUNS or is_placeholder_location(v):
+        return False
+    try:
+        # lazy import: startup-cost (spaCy load on first bare-place check only)
+        from memory.fact_extractor import _get_nlp
+        nlp = _get_nlp()
+        if nlp is None:
+            return False
+        ents = nlp(f"I live in {v.title()}.").ents
+    except Exception:  # degrades: bare-city check unavailable, only "City, Region" values are trusted
+        return False
+    return any(e.label_ == "GPE" and e.text == v.title() for e in ents)
+
+
+def _is_place_value(value: str) -> bool:
+    v = str(value or "").strip()
+    return bool(_PLACE_RE.match(v)) or _is_bare_city(v)
+
+
 # Retry failed IP lookups sooner than the success TTL, but not every turn.
 _IP_FAILURE_RETRY_S = 600.0
 
@@ -250,7 +289,7 @@ class LocationResolver:
                 e for cat in ("identity", "living_situation")
                 for e in profile.get("categories", {}).get(cat, [])
                 if e.get("relation") == "lives_in"
-                and _PLACE_RE.match(str(e.get("value", "")).strip())
+                and _is_place_value(str(e.get("value", "")))
             ]
             if candidates:
                 # Prefer current facts; among those, the most recent wins. If

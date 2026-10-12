@@ -454,3 +454,67 @@ def deadline_timezone_note(text: str, user_tz: Optional[str] = None,
     except Exception as e:
         logger.debug(f"[AttachmentAudit] deadline_timezone_note failed: {e}")
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Self-reference note (2026-10-12)
+# ---------------------------------------------------------------------------
+
+SELF_REFERENCE_NOTE_PREFIX = "[SELF-REFERENCE NOTE]"
+
+
+def _function_words():
+    from spacy.lang.en.stop_words import STOP_WORDS  # lazy import: startup-cost
+    return STOP_WORDS
+
+
+def _name_mentions_as_project(text: str, name: str) -> bool:
+    """True when ``name`` occurs EXACTLY-cased (TitleCase proper noun) in
+    ``text`` as a project name. Structural, not a phrase list: a lowercase
+    "daemon process" / "systemd daemon" never matches (case-sensitive), and a
+    capitalised occurrence that is only sentence-initial capitalisation
+    ("Daemon processes run in the background") is discarded when a lowercase
+    word follows a sentence boundary."""
+    if not text or not name:
+        return False
+    pat = re.compile(rf"(?<![\w]){re.escape(name)}(?![\w])")
+    for m in pat.finditer(text):
+        before = text[:m.start()].rstrip(" \t\"'(*_")
+        sentence_initial = (not before) or before[-1] in ".!?\n:"
+        if sentence_initial:
+            nxt = re.match(r"\s*([A-Za-z']+)", text[m.end():m.end() + 24])
+            # Positional capital: only a function word next ("Daemon is …",
+            # "Daemon has …", "Daemon, my …") keeps it a proper-noun use
+            # (spaCy's English stop-word category, not a hand list).
+            if nxt and nxt.group(1).islower() and nxt.group(1) not in _function_words():
+                continue
+        return True
+    return False
+
+
+def self_reference_note(texts: Iterable[str], assistant_name: Optional[str] = None) -> str:
+    """One metered prompt note when attached/pasted material names the
+    assistant's configured name as a project. ``assistant_name`` defaults to
+    ``app_config.ASSISTANT_NAME`` (read at call time). "" when nothing matches."""
+    try:
+        if assistant_name is None:
+            from config import app_config  # lazy import: live-config
+            assistant_name = app_config.ASSISTANT_NAME
+        name = (assistant_name or "").strip()
+        if not name:
+            return ""
+        for t in texts or []:
+            if _name_mentions_as_project(t or "", name):
+                # Conditional on purpose: the name also occurs in unrelated
+                # material (a "Daemon (computing)" article, "Maxwell's Daemon"),
+                # so the note informs the model and never asserts ownership.
+                return (
+                    f"{SELF_REFERENCE_NOTE_PREFIX} This material names \"{name}\", which is also "
+                    f"this assistant's name. If it describes a software project or assistant called "
+                    f"{name}, it is describing you \u2014 the user's own project; otherwise the "
+                    f"shared name is a coincidence."
+                )
+        return ""
+    except Exception as e:  # degrades: the self-reference note is omitted
+        logger.debug(f"[AttachmentAudit] self_reference_note failed: {e}")
+        return ""
