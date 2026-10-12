@@ -199,6 +199,18 @@ export const api = {
       return r
     }),
 
+  /** App lifecycle (B3): liveness ping for the packaged-mode client watchdog. */
+  heartbeat: () =>
+    authorizedFetch('/api/heartbeat', { method: 'POST' }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+    }),
+
+  /** App lifecycle (B3): ask Daemon to run its normal clean shutdown. */
+  shutdown: () =>
+    authorizedFetch('/api/shutdown', { method: 'POST' }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+    }),
+
   getModels: () => authorizedFetch('/api/models').then((r) => json<ModelListResponse>(r)),
 
   setActiveModel: (name: string) =>

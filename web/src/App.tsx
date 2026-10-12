@@ -24,12 +24,14 @@ import {
 } from './api/client'
 import { captureDebugBaseline } from './api/debugSession'
 import { useChatStream } from './api/useChatStream'
+import { useHeartbeat } from './api/useHeartbeat'
 import { NO_AVAILABILITY, type Availability } from './api/types'
 import ActivityLog from './components/chat/ActivityLog'
 import ChatInput from './components/chat/ChatInput'
 import MessageList from './components/chat/MessageList'
 import ProgressIndicator from './components/chat/ProgressIndicator'
 import MemoryPanel from './components/showcase/MemoryPanel'
+import QuitDaemonControl, { ShutdownScreen } from './components/QuitDaemonControl'
 // Non-chat views are lazy-loaded (2026-09-03): they are opened rarely and
 // carried a large share of the main bundle.
 const DebugPage = lazy(() => import('./components/debug/DebugPage'))
@@ -46,6 +48,9 @@ export default function App() {
   const [rawMode, setRawMode] = useState(false)
   const [citations, setCitations] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [shutDown, setShutDown] = useState(false)
+  // Liveness ping for the packaged-mode watchdog; stops once Daemon has quit.
+  useHeartbeat(!shutDown)
   // One poll loop at a time; the newest controller owns the `syncing` flag.
   const syncPollRef = useRef<AbortController | null>(null)
   // One GET /api/settings at load; all-false (hidden) until it answers.
@@ -181,6 +186,8 @@ export default function App() {
     }
   }
 
+  if (shutDown) return <ShutdownScreen />
+
   return (
     <AppShell
       header={{ height: 56 }}
@@ -288,6 +295,7 @@ export default function App() {
           >
             🧹 Clear chat
           </Button>
+          <QuitDaemonControl onShutDown={() => setShutDown(true)} />
           {availability.dev_mode && (
             <Text size="xs" c="dimmed">
               Dev tabs live at <a href="/admin">/admin</a>

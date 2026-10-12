@@ -748,6 +748,14 @@ class ApiSection(BaseModel):
     allowed_hosts: List[str] = Field(default_factory=list)
 
 
+class AppLifecycleSection(BaseModel):
+    """Packaged-app lifecycle: heartbeat watchdog that ends the process when the SPA is gone."""
+    model_config = ConfigDict(extra="ignore")
+    client_grace_s: float = Field(default=120.0, ge=1.0)
+    # None = auto: enabled when frozen (packaged), disabled in dev.
+    exit_when_clients_gone: Optional[bool] = None
+
+
 class EntityFactsSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -1296,6 +1304,7 @@ class DaemonConfig(BaseModel):
     action_guard: ActionGuardSection = Field(default_factory=ActionGuardSection)
     internet_actions: InternetActionsSection = Field(default_factory=InternetActionsSection)
     api: ApiSection = Field(default_factory=ApiSection)
+    app_lifecycle: AppLifecycleSection = Field(default_factory=AppLifecycleSection)
 
 
 # =============================================================================

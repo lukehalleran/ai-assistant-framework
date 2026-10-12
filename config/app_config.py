@@ -1243,6 +1243,19 @@ if getattr(sys, "frozen", False):
 API_ALLOWED_HOSTS: list = list(API_CFG.get("allowed_hosts", []) or [])
 
 # --------------------------------------------------------------------
+# App lifecycle (B3): heartbeat watchdog for the packaged build
+# --------------------------------------------------------------------
+APP_LIFECYCLE_CFG = config.get("app_lifecycle", {}) or {}
+APP_LIFECYCLE_CLIENT_GRACE_S: float = float(
+    os.getenv("DAEMON_CLIENT_GRACE_S", APP_LIFECYCLE_CFG.get("client_grace_s", 120))
+)
+_exit_when_gone = APP_LIFECYCLE_CFG.get("exit_when_clients_gone", None)
+# null/absent = auto: on only for the frozen (packaged) build.
+APP_LIFECYCLE_EXIT_WHEN_CLIENTS_GONE: bool = (
+    bool(getattr(sys, "frozen", False)) if _exit_when_gone is None else bool(_exit_when_gone)
+)
+
+# --------------------------------------------------------------------
 # Entity Facts Configuration
 # --------------------------------------------------------------------
 # Allow non-user-centric triples (entity-to-entity) through to ChromaDB.

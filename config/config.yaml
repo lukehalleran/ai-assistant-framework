@@ -390,6 +390,14 @@ api:
   # Tailscale address); api.host is trusted automatically when it is a
   # specific non-wildcard address. No suffix/wildcard matching.
   allowed_hosts: []
+# App lifecycle (B3, 2026-10-12): the SPA sends a heartbeat; when a PACKAGED
+# build has seen no client for client_grace_s (and no turn is in flight) it
+# runs the same clean shutdown as Ctrl+C. exit_when_clients_gone: null = auto
+# (on when frozen, off in dev); true/false forces it. Env override:
+# DAEMON_CLIENT_GRACE_S.
+app_lifecycle:
+  client_grace_s: 120
+  exit_when_clients_gone: null
 entity_facts:
   enabled: true
   per_turn_cap: 4
