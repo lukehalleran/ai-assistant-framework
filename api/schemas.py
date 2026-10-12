@@ -122,6 +122,17 @@ class ProposalsSettings(BaseModel):
     max_per_session: int = Field(default=5, ge=1, le=10)
 
 
+class Availability(BaseModel):
+    """Server-computed capability flags (gui.settings_core._availability). The
+    SPA hides surfaces that cannot work on this install. 2026-10-12: this
+    field was missing from the response model, so FastAPI stripped it from
+    every /api/settings response since 09-30 and the SPA hid Sync notes,
+    curation and the dev badge on every install."""
+    web_search_key: bool = False
+    vault: bool = False
+    dev_mode: bool = False
+
+
 class SettingsSnapshot(BaseModel):
     streaming: StreamingSettings
     web_search: WebSearchSettings
@@ -132,6 +143,7 @@ class SettingsSnapshot(BaseModel):
     synthesis: SynthesisSettings
     proposals: ProposalsSettings
     model_choices: List[str] = Field(default_factory=list)
+    availability: Availability = Field(default_factory=Availability)
 
 
 class SettingsApplyResult(BaseModel):
