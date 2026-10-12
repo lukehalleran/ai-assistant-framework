@@ -27,9 +27,12 @@ Depends on self.memory_coordinator, self.memory_id_map, self.token_manager,
 self.gate_system, self.user_profile, self.model_manager (set by ContextGatherer.__init__).
 """
 
+import asyncio
 import os
 import re
 import logging
+
+import numpy as np
 from typing import Dict, List, Any
 from datetime import datetime
 
@@ -199,8 +202,8 @@ def is_user_fact_question(query: str) -> bool:
 def select_user_stated_candidates(entries_newest_first, query: str, scan: int = USER_STATED_SCAN_TURNS):
     """The user's own scannable statements: non-question, non-paste, not the
     query itself, de-duplicated. Returns [(text, timestamp)] newest-first."""
-    from memory.memory_storage import is_paste_sized
-    from utils.query_checker import is_question
+    from memory.memory_storage import is_paste_sized  # lazy import: cycle (storage imports gatherer-side modules)
+    from utils.query_checker import is_question  # lazy import: layering (utils stays leaf)
     seen = set()
     out = []
     qnorm = " ".join((query or "").lower().split())
@@ -295,8 +298,6 @@ class MemoryRetrievalMixin:
         if str(intent_type or "").lower() != "factual_recall" or not is_user_fact_question(query):
             return []
         try:
-            import asyncio
-            import numpy as np
             mc = self.memory_coordinator
             corpus = getattr(mc, "corpus_manager", None)
             store = getattr(mc, "chroma_store", None)

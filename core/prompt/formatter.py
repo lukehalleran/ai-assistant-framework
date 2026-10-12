@@ -66,6 +66,7 @@ from utils.personal_claim_provenance import annotate_personal_claim_memory
 from core.response_parser import ResponseParser
 from core.action_claim_guard import annotate_unverified_action_claim
 import utils.read_time_markers as read_time_markers
+import utils.time_manager as _time_manager
 
 logger = get_logger("prompt_formatter")
 
@@ -1083,13 +1084,12 @@ class PromptFormatter:
                 tags_str = ", ".join(str(tag) for tag in tags) if tags else ""
 
                 # Format timestamp with relative day label to prevent temporal hallucinations
-                from utils.time_manager import format_relative_timestamp
                 if isinstance(ts, datetime):
-                    ts_str = format_relative_timestamp(ts)
+                    ts_str = _time_manager.format_relative_timestamp(ts)
                 elif ts:
                     # Try parsing ISO string for relative formatting
                     try:
-                        ts_str = format_relative_timestamp(datetime.fromisoformat(str(ts)))
+                        ts_str = _time_manager.format_relative_timestamp(datetime.fromisoformat(str(ts)))
                     except (ValueError, TypeError):
                         ts_str = str(ts)
                 else:
