@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { api } from './client'
 import { HEARTBEAT_INTERVAL_MS, useHeartbeat } from './useHeartbeat'
 
@@ -36,10 +36,21 @@ describe('useHeartbeat', () => {
   })
 
   it('does not re-ping on re-render with the default sender', () => {
-    const spy = vi.spyOn(api, 'heartbeat').mockResolvedValue(undefined)
+    const spy = vi.spyOn(api, 'heartbeat').mockResolvedValue(false)
     const { rerender } = renderHook(() => useHeartbeat(true))
     for (let i = 0; i < 5; i++) rerender()
     expect(spy).toHaveBeenCalledTimes(1)
     spy.mockRestore()
+  })
+
+  it('exposes the latest quit_allowed: false until a heartbeat says true', async () => {
+    const send = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true)
+    const { result } = renderHook(() => useHeartbeat(true, send))
+    await act(async () => {})
+    expect(result.current).toBe(false)
+    await act(async () => {
+      vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS)
+    })
+    expect(result.current).toBe(true)
   })
 })

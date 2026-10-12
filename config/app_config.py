@@ -1427,6 +1427,8 @@ AGENTIC_MEMORY_SEARCH_LIMIT: int = int(AGENTIC_CFG.get("memory_search_limit", 7)
 # response, skipping the second full-context synthesis call (saves ~20-30s
 # per turn where the model answers instead of calling tools).
 AGENTIC_REUSE_DECISION_ANSWER: bool = bool(AGENTIC_CFG.get("reuse_decision_answer", True))
+# fetch_url provenance guard (2026-10-12, BC-46): read at call time.
+AGENTIC_FETCH_PROVENANCE_GUARD: bool = bool(AGENTIC_CFG.get("fetch_provenance_guard", True))
 # Token cap for decision-round calls (native tools + XML). High enough that a
 # complete final answer fits — a capped answer fails the reuse truncation
 # check and falls back to the synthesis call. Tool-call rounds emit few

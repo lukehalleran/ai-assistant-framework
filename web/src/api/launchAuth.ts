@@ -65,7 +65,55 @@ function withLaunchToken(extra?: HeadersInit): Headers {
  * non-same-origin/non-/api/ path before `fetch` ever runs. */
 export async function authorizedFetch(input: string, init?: RequestInit): Promise<Response> {
   assertApiPath(input)
-  return fetch(input, { ...init, headers: withLaunchToken(init?.headers) })
+  const resp = await fetch(input, { ...init, headers: withLaunchToken(init?.headers) })
+  if (resp.status === 401 || resp.status === 403) await noteIfStaleSession(resp)
+  return resp
+}
+
+// BC-80: a tab opened before a Daemon restart still holds the OLD launch token,
+// so every /api/* call is rejected by LaunchAuthMiddleware and the SPA would
+// quietly degrade to an empty/all-false UI that looks like a broken install.
+// The middleware's own rejections are matched by (status, detail) — see
+// api/launch_auth.py — so a ROUTE's own 403 (e.g. /api/shutdown's
+// "shutdown is loopback-only") never trips it.
+// Only the token rejection: a 403 "origin not allowed" is not fixed by a reload,
+// so it must not claim "Daemon restarted".
+const STALE_SESSION_REJECTIONS: ReadonlyArray<readonly [number, string]> = [
+  [401, 'unauthorized'],
+]
+
+let staleSession = false
+const staleListeners = new Set<() => void>()
+
+export function isStaleSession(): boolean {
+  return staleSession
+}
+
+/** Subscribe to the stale-session flag; returns the unsubscribe function. */
+export function onStaleSession(cb: () => void): () => void {
+  staleListeners.add(cb)
+  return () => {
+    staleListeners.delete(cb)
+  }
+}
+
+/** Test-only: clear the flag and listeners. */
+export function __resetStaleSessionForTests(): void {
+  staleSession = false
+  staleListeners.clear()
+}
+
+async function noteIfStaleSession(resp: Response): Promise<void> {
+  if (staleSession) return
+  let detail: unknown
+  try {
+    detail = (await resp.clone().json())?.detail
+  } catch {
+    return // not JSON (or no clone): not the middleware's rejection shape
+  }
+  if (!STALE_SESSION_REJECTIONS.some(([status, d]) => status === resp.status && d === detail)) return
+  staleSession = true
+  staleListeners.forEach((cb) => cb())
 }
 
 /** For fetchEventSource, which wants a plain Record<string, string> rather

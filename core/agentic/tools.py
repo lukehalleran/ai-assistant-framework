@@ -36,6 +36,7 @@ from core.agentic.types import (
 )
 from core.agentic.formatters import AgenticFormatter, drop_navigation_and_duplicate_chunks
 from config import app_config
+from utils.fetch_provenance import check_fetch_provenance, blocked_message
 import re as _re
 import asyncio
 import urllib.parse
@@ -220,6 +221,82 @@ class ToolExecutor:
         self._current_web_source_map = {}
         # Wikipedia source map — same session-wide [WIKI_N] numbering scheme
         self._current_wiki_source_map = {}
+        # fetch_url provenance guard state (2026-10-12, BC-46): installed by
+        # the controller at session start, None outside a turn.
+        self._fetch_prov = None
+
+    # -- fetch_url provenance guard (2026-10-12, class: BC-46) ---------------
+    # Provenance = PUBLIC WEB CONTENT retrieved this turn, nothing else. Never:
+    # a round's request query (model-authored -- a search for the private
+    # value would launder it), file/git/GitHub reads (the user's private
+    # files), memory/contacts/email/notes/python, or a BLOCKED fetch's own
+    # refusal text (it quotes the unseen tokens; a retry would pass).
+    _FETCH_PROV_FETCH_PREFIX = "[Fetch URL]"
+
+    def set_fetch_provenance_context(self, *, current_user_text, user_texts=(), session=None):
+        self._fetch_prov = {
+            "current": current_user_text or "",
+            "user_texts": [t for t in (user_texts or ()) if t],
+            "session": session,
+        }
+
+    def clear_fetch_provenance_context(self):
+        self._fetch_prov = None
+
+    def _fetch_prov_tool_material(self):
+        """(urls, text) of public web content seen THIS turn: web source
+        map, web-search result pages and successfully fetched pages."""
+        ctx = self._fetch_prov or {}
+        urls, parts = [], []
+        for meta in (self._current_web_source_map or {}).values():
+            if isinstance(meta, dict):
+                urls.append(meta.get("url", ""))
+                parts.append(str(meta.get("title", "")))
+        session = ctx.get("session")
+        for rnd in (getattr(session, "rounds", None) or []):
+            q = getattr(getattr(rnd, "request", None), "query", "") or ""
+            if q.startswith(self._FETCH_PROV_FETCH_PREFIX):
+                summary = getattr(rnd, "summary", None)
+                if getattr(rnd, "blocked", None) or getattr(summary, "blocked", None):
+                    continue  # refusal text, not fetched content
+                parts.append(str(summary or ""))
+                continue
+            if q.startswith("["):
+                continue  # private or model-authored tool output
+            # Web search rounds: result pages only (never the query or summary).
+            for page in (getattr(getattr(rnd, "results", None), "pages", None) or []):
+                urls.append(getattr(page, "url", "") or "")
+                parts.extend(str(getattr(page, a, "") or "") for a in ("title", "snippet", "content"))
+        return urls, "\n".join(parts)
+
+    def _fetch_provenance_block(self, url: str):
+        """BlockedFetchText when the guard refuses ``url``; None to proceed.
+        No guard context installed (executor used outside a turn) = proceed."""
+        if not app_config.AGENTIC_FETCH_PROVENANCE_GUARD:
+            return None
+        ctx = getattr(self, "_fetch_prov", None)
+        if not ctx:
+            return None
+        tool_urls, tool_text = self._fetch_prov_tool_material()
+        verdict = check_fetch_provenance(
+            url,
+            user_texts=ctx["user_texts"],
+            current_user_text=ctx["current"],
+            tool_urls=tool_urls,
+            tool_text=tool_text,
+        )
+        if verdict.allowed:
+            return None
+        try:
+            host = urllib.parse.urlsplit(url).hostname or "?"
+        except ValueError:
+            host = "?"
+        # host + COUNT only: the tokens may be the private data being exported.
+        logger.warning(
+            f"[FetchProvenance] blocked fetch_url host={host} "
+            f"unseen_token_count={len(verdict.unseen_tokens)} rule={verdict.rule}"
+        )
+        return BlockedFetchText(blocked_message(verdict), blocked="provenance")
 
     def get_tool_health(self) -> str:
         """Return a status summary of tool backends for the agentic system prompt.
@@ -2123,6 +2200,9 @@ Provide a focused summary with the most important information."""
         """
         if not self.web_search_manager:
             return "[Web search manager not configured — cannot fetch URLs]"
+        _prov_block = self._fetch_provenance_block(url)
+        if _prov_block is not None:
+            return _prov_block
         try:
             pages = await self.web_search_manager.fetch_url_content(url)
             if not pages:

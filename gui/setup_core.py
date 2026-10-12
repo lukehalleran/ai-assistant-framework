@@ -58,9 +58,7 @@ def resolve_env_path() -> Path:
     is never read (class: BC-83).
     """
     import utils.bootstrap as _bootstrap  # lazy import: patch-point (tests flip IS_FROZEN)
-    if _bootstrap.IS_FROZEN or _bootstrap._data_dir_override():
-        return Path(os.path.join(get_user_data_dir(), ".env"))
-    return Path(os.path.join(_bootstrap.get_app_dir(), ".env"))
+    return _bootstrap.resolve_env_path()
 
 
 def _read_env_lines(path: Path) -> list:

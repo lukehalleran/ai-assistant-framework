@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from './client'
 
 export const HEARTBEAT_INTERVAL_MS = 30_000
@@ -11,12 +11,19 @@ const defaultSend = () => api.heartbeat()
  * every 30 s, and when the tab becomes visible again (a throttled background
  * timer may have lagged). Failures are ignored -- the server decides what a
  * missing heartbeat means. `enabled=false` stops it (Daemon has shut down). */
-export function useHeartbeat(enabled: boolean, send: () => Promise<void> = defaultSend): void {
+export function useHeartbeat(
+  enabled: boolean,
+  send: () => Promise<boolean | void> = defaultSend,
+): boolean {
+  // Latest `quit_allowed` from the server; false until a heartbeat said true.
+  const [quitAllowed, setQuitAllowed] = useState(false)
   useEffect(() => {
     if (!enabled) return
     const ping = () => {
       try {
-        send().catch(() => {})
+        send()
+          .then((allowed) => setQuitAllowed(allowed === true))
+          .catch(() => {})
       } catch {
         // a synchronous throw (e.g. a stubbed client) must not break the app
       }
@@ -32,4 +39,5 @@ export function useHeartbeat(enabled: boolean, send: () => Promise<void> = defau
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [enabled, send])
+  return quitAllowed
 }

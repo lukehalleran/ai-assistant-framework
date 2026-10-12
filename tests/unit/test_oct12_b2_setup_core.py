@@ -259,7 +259,7 @@ class TestReferee1012:
         import utils.bootstrap as bootstrap
         monkeypatch.delenv("DAEMON_DATA_DIR", raising=False)
         monkeypatch.setattr(bootstrap, "IS_FROZEN", True)
-        monkeypatch.setattr(setup_core, "get_user_data_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(bootstrap, "get_user_data_dir", lambda: str(tmp_path))
         assert setup_core.resolve_env_path() == tmp_path / ".env"
 
     def test_legacy_openai_key_counts_as_the_openrouter_key(self, data_dir, monkeypatch):

@@ -1002,6 +1002,20 @@ class AgenticSearchController:
         # session" log now fires on first successful acquisition there.
         sandbox_session = LazySandboxSession(self._get_sandbox_session) if sandbox_available else None
 
+        # fetch_url provenance guard (2026-10-12, BC-46): the executor's single
+        # fetch chokepoint (both routers + round-1 direct fetch pass through
+        # it) checks model-built URLs against THIS turn's user text and tool
+        # results. The user's own message URLs (initial_urls) count as seen.
+        # Prior user messages are not threaded in: only the current message.
+        # getattr: executor test doubles that predate the guard have no hook.
+        _set_prov = getattr(self._tool_executor, "set_fetch_provenance_context", None)
+        if _set_prov is not None:
+            _set_prov(
+                current_user_text=self._action_query_ws,
+                user_texts=list(initial_urls or []),
+                session=session,
+            )
+
         try:
             # Tracks whether round 1 itself ran a web search (as opposed to a
             # URL fetch or a skip-to-loop branch) — used by the A3 pre-
@@ -2261,6 +2275,9 @@ class AgenticSearchController:
             # (normal completion, error fallback, or an early exit) — "loop
             # end" per core.agentic.tool_thread's contract.
             tool_thread.record_read_tool_calls(self._read_tool_calls_this_turn)
+            _clear_prov = getattr(self._tool_executor, "clear_fetch_provenance_context", None)
+            if _clear_prov is not None:
+                _clear_prov()
 
     # ------------------------------------------------------------------
     # Parallel dispatch infrastructure
