@@ -164,6 +164,7 @@ agentic_search:
   loop_timeout_s: 120      # wall-clock budget for rounds 2-N; then synthesize from context
   fetch_fastpath: true
   fetch_fastpath_min_chars: 400
+  fetch_provenance_guard: true  # block model-built fetch_url URLs carrying text not from the user's message / this turn's tool results (injection exfiltration)
 insight_mode:
   enabled: true
   max_facets: 6            # facet decomposition cap (distinct search angles per theme)
