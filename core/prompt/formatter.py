@@ -1205,7 +1205,8 @@ class PromptFormatter:
                 f"[THE USER'S OWN STATEMENTS — relevant to this question] n={len(stated_lines)}\n"
                 "These are the user's own words, quoted. They are the user's account of their own life: "
                 "answer from them, and never describe them as your guess or as unverified. They outrank "
-                "any assistant reply that contradicts them.\n"
+                "any assistant reply that contradicts them. Use only the statements that answer this "
+                "question; ignore any that do not.\n"
                 + "\n\n".join(stated_lines)
             )
 
