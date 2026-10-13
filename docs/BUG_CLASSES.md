@@ -132,6 +132,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-90 | Per-route request-shape constraint lives outside the capability registry | B | partial |
 | BC-91 | Machinery text treated as content by a downstream consumer | E | partial |
 | BC-92 | Separator discarded at a split and re-guessed at the join | E | closed |
+| BC-93 | Empty-iterable reduction | D | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -903,6 +904,13 @@ mechanism no existing class named. Every other finding of that day is filed as a
 - Find: DM-40 — `tests/unit/test_stream_join_guard.py` (regex scan of production modules for a stream chunk joined with a hand-inserted space, and for `buffer.split(" ")` in the generator; sensitivity case pins the original lines); manually, for any new producer/consumer pair: `rg -n "\.split\(\s*[\"'] [\"']\s*\)|\+\s*[\"'] [\"']" <dirs>` and ask whether the joiner can know what the splitter dropped.
 - Closure: CM-01 — the separator stays ON the chunk (`core/response_generator.split_at_last_whitespace`; flush paths `rstrip` only), every consumer joins through ONE `core.response_generator.smart_join` (no-op concatenation for separator-carrying chunks; the punctuation rule now applies only to bare-word producers such as stubs and markers). Tests: `tests/unit/test_oct08_stream_spacing.py` drives the deployed generator with the verbatim live deltas through all three consumers and requires byte equality (fails 10/11 on the pre-fix base).
 - Status: closed — the guard fails on recurrence of either half. Historical stored turns keep the glued quotes (cosmetic; no repair planned).
+
+### BC-93 Empty-iterable reduction
+- Mechanism: `max()`/`min()` (or `[0]`, `next()`) over an iterable that a degraded upstream path can leave empty raises `ValueError`; the caller's broad `except` (BC-47-shaped) converts the crash into the SAFE-LOOKING default, so the failure is invisible and the stages after the reduction never run. In the tone detector the empty value is produced ON PURPOSE by the degraded paths (`raw_scores={}` when there is no embedder / no exemplar embeddings / encode raises) and consumed by a reduction written for the healthy path; a second reduction ~70 lines later already carried `default=0.0`, so the author knew the shape and missed one site.
+- Incidents: 2026-10-13 `utils/tone_detector.py` `_detect_crisis_level_impl` `max(raw_scores.values())` — with the embedder weights absent (first-run download failed), every non-keyword, non-casual message crashed, `core/context_pipeline.py` logged a one-line warning and returned CONVERSATIONAL, skipping the arbiter and the domain-strain floor (distress answered as chat). Sibling audit the same day (`oct13_runs/TONE/max_min_triage.md`): 60 single-argument `max`/`min` calls without `default=` in the app dirs, all other sites guarded or structurally non-empty.
+- Find: stdlib `ast` scan of core/memory/knowledge/utils/api/gui/models/processing/config for `Call(Name in {max,min})` with exactly one positional argument that is not a literal list/tuple/set, no `default=` keyword; then for each hit check whether an emptiness test dominates the call and whether any upstream path (error, degraded mode, empty store) can produce an empty iterable. Also `rg -n "raw_scores=\{\}|return \(.*, \{\}\)"` for producers that signal failure with an empty container.
+- Closure: `default=`/dominating guard at the call (tone detector fixed), plus an explicit degraded-mode signal where the empty value MEANS something (`semantic_unavailable` forces the arbiter, skips exemplar teaching, labels the result). The broad handler in `core/context_pipeline.py` now uses `logger.exception` with a `# degrades:` marker. Tests: `tests/unit/test_tone_detector_degraded.py` (19 of 20 fail on the pre-fix base).
+- Status: partial — no scanner (guard files reserved this lane); the sweep is manual and found no other reachable-empty site, but new reductions are unguarded by construction.
 
 ## Detection methods (DM) — find instances without a full read
 

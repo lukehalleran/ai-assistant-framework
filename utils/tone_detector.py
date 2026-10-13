@@ -1543,6 +1543,19 @@ def _check_keyword_crisis(message: str) -> Optional[Tuple[CrisisLevel, str]]:
         return None
 
 
+_SEMANTIC_UNAVAILABLE_WARNED = False
+
+
+def _warn_semantic_unavailable(msg: str) -> None:
+    """Degraded-mode warning, once per process (it repeated every turn)."""
+    global _SEMANTIC_UNAVAILABLE_WARNED
+    if _SEMANTIC_UNAVAILABLE_WARNED:
+        logger.debug(msg)
+        return
+    _SEMANTIC_UNAVAILABLE_WARNED = True
+    logger.warning(msg)
+
+
 def _semantic_crisis_detection(
     message: str,
     conversation_history: Optional[List[dict]] = None,
@@ -1562,12 +1575,12 @@ def _semantic_crisis_detection(
     """
     embedder = _get_embedder(model_manager)
     if embedder is None:
-        logger.warning("[ToneDetector] No embedder available, cannot do semantic detection")
+        _warn_semantic_unavailable("[ToneDetector] No embedder available, cannot do semantic detection")
         return (CrisisLevel.CONVERSATIONAL, 0.0, {})
 
     exemplar_embeddings = _get_exemplar_embeddings(model_manager)
     if not exemplar_embeddings:
-        logger.warning("[ToneDetector] No exemplar embeddings available")
+        _warn_semantic_unavailable("[ToneDetector] No exemplar embeddings available")
         return (CrisisLevel.CONVERSATIONAL, 0.0, {})
 
     # Encode the message
@@ -2105,6 +2118,9 @@ async def _detect_crisis_level_impl(
     level, confidence, raw_scores = _semantic_crisis_detection(
         message, conversation_history, model_manager, force_escalation=session_distress
     )
+    # Empty scores = the semantic stage could not run (no embedder / no exemplar
+    # embeddings / encode failed). Degraded mode: the arbiter must cover it.
+    semantic_unavailable = not raw_scores
 
     # Positive-recovery override (2026-08-14): first-person improvement
     # statements sit semantically close to the "I feel…" distress prototypes
@@ -2148,7 +2164,11 @@ async def _detect_crisis_level_impl(
     # Stage 3: LLM fallback for borderline cases
     # Use LLM when semantic scores are close to thresholds (within 0.10)
     use_llm_fallback = False
-    if level != CrisisLevel.CONVERSATIONAL:
+    if semantic_unavailable:
+        if not (_is_explicit_casual(message) or _is_task_directive_signal(message)):
+            use_llm_fallback = True
+            logger.debug("[ToneDetector] Semantic stage unavailable — routing to arbiter")
+    elif level != CrisisLevel.CONVERSATIONAL:
         # Check if score is borderline for its detected level
         threshold_map = {
             CrisisLevel.HIGH: TONE_CONFIG["threshold_high"],
@@ -2161,7 +2181,7 @@ async def _detect_crisis_level_impl(
             logger.debug(f"[ToneDetector] Borderline {level.value}: confidence={confidence:.2f}, threshold={threshold:.2f}")
     elif level == CrisisLevel.CONVERSATIONAL:
         # Use LLM if highest score is close to CONCERN threshold
-        highest_score = max(raw_scores.values())
+        highest_score = max(raw_scores.values(), default=0.0)
         concern_threshold = TONE_CONFIG["threshold_concern"]
         if highest_score > concern_threshold - 0.15:
             use_llm_fallback = True
@@ -2197,7 +2217,7 @@ async def _detect_crisis_level_impl(
                     CrisisLevel.CONCERN: "concern",
                 }
                 # D8: only the LLM arbiter teaches; a decision-model verdict never reaches the store.
-                if llm_level in _ARB_KEYS and _arbiter_source == "llm":
+                if llm_level in _ARB_KEYS and _arbiter_source == "llm" and not semantic_unavailable:
                     _learn_tone_exemplar(
                         message, _ARB_KEYS[llm_level], "arbiter", model_manager
                     )
@@ -2263,13 +2283,15 @@ async def _detect_crisis_level_impl(
             explanation=(
                 "LLM classification: conversational" if _arbiter_source == "llm"
                 else "Decision-model classification: conversational"
-            ),
+            ) + (" (semantic stage unavailable)" if semantic_unavailable else ""),
             arbiter_receipt=_arbiter_receipt,
         )
 
     # Build explanation
     if level == CrisisLevel.CONVERSATIONAL:
         explanation = "No crisis indicators detected"
+        if semantic_unavailable:
+            explanation += " (semantic stage unavailable; arbiter did not raise the level)"
     else:
         explanation = f"Semantic similarity to {level.value}: {confidence:.2f}"
 

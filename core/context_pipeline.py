@@ -842,8 +842,8 @@ class ContextPipeline:
         except ImportError:
             logger.warning("emotional_context module not available, using CONVERSATIONAL")
             return ToneLevel.CONVERSATIONAL, None
-        except Exception as e:
-            logger.warning(f"Tone detection failed: {e}")
+        except Exception:  # degrades: tone falls back to CONVERSATIONAL (no arbiter, no strain floor)
+            logger.exception("Tone detection failed")
             return ToneLevel.CONVERSATIONAL, None
 
     # Tone carryover persistence. This is DERIVED, self-healing state (next
