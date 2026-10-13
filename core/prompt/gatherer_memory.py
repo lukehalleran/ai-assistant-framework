@@ -36,7 +36,9 @@ import numpy as np
 from typing import Dict, List, Any
 from datetime import datetime
 
-from .formatter import _as_summary_dict, _parse_bool
+from .formatter import (
+    _as_summary_dict, _parse_bool, _detect_session_boundary, _parse_entry_timestamp,
+)
 from memory.user_profile import SENSITIVE_OPEN
 from utils.trigger_match import compile_keyword_matcher, has_non_negated_hit
 from utils.ordered_slice import newest_first as _ordered_newest_first
@@ -188,6 +190,10 @@ USER_STATED_SCAN_TURNS = 300
 USER_STATED_MAX_ITEMS = 3
 USER_STATED_MIN_COSINE = 0.45  # bge space; measured noise floor ~0.5-0.6 so K does the selecting
 USER_STATED_MIN_WORDS = 3
+# Rank = cosine + LEXICAL_WEIGHT*content-overlap + SESSION_BOOST(same session). Measured 2026-10-13:
+# "where do I work?" vs the answer 0.613 but vs generic old chatter 0.626/0.628 (bge noise floor).
+USER_STATED_LEXICAL_WEIGHT = 0.10  # > the 0.015 cosine gap at full overlap of a 1-term query
+USER_STATED_SESSION_BOOST = 0.05  # same-session statement beats the 0.613 vs 0.628 gap
 _PERSON_PRONOUN_RE = re.compile(r"\b(?:i|i'm|i've|i'd|i'll|my|me|mine|myself|we|our)\b", re.IGNORECASE)
 
 
@@ -197,6 +203,26 @@ def is_user_fact_question(query: str) -> bool:
     from utils.query_checker import is_question  # lazy import: layering (utils stays leaf)
     q = query or ""
     return bool(q.strip()) and is_question(q) and bool(_PERSON_PRONOUN_RE.search(q))
+
+
+def _content_stems(text: str) -> frozenset:
+    """Content-bearing stems: lowercase tokens minus spaCy stop words (categorized
+    function-word lexicon, no phrase list), short non-digit tokens dropped, stemmed."""
+    from memory.memory_scorer import _stem  # lazy import: cycle (scorer imports memory stack)
+    from utils.fetch_provenance import _stop_words  # lazy import: layering
+    stop = _stop_words()
+    out = set()
+    for tok in re.findall(r"[a-z0-9']+", (text or "").lower()):
+        if tok in stop or (len(tok) < 3 and not any(c.isdigit() for c in tok)):
+            continue
+        out.add(_stem(tok))
+    return frozenset(out)
+
+
+def _lexical_overlap(query_stems: frozenset, text: str) -> float:
+    if not query_stems:
+        return 0.0
+    return len(query_stems & _content_stems(text)) / len(query_stems)
 
 
 def select_user_stated_candidates(entries_newest_first, query: str, scan: int = USER_STATED_SCAN_TURNS):
@@ -325,10 +351,20 @@ class MemoryRetrievalMixin:
                 return [(float(np.dot(qv, cache[t[:500]])), t, ts) for t, ts in cands]
 
             scored = await asyncio.to_thread(_score)
-            scored = [r for r in scored if r[0] >= USER_STATED_MIN_COSINE]
-            scored.sort(key=lambda r: r[0], reverse=True)
-            return OutcomeList([{"query": t, "timestamp": ts, "similarity": round(sim, 3)}
-                                for sim, t, ts in scored[:max(0, limit)]])
+            scored = [r for r in scored if r[0] >= USER_STATED_MIN_COSINE]  # floor on RAW cosine
+            q_stems = _content_stems(query)
+            now = datetime.now()
+            ranked = []
+            for sim, t, ts in scored:
+                score = sim + USER_STATED_LEXICAL_WEIGHT * _lexical_overlap(q_stems, t)
+                cand_ts = _parse_entry_timestamp({"timestamp": ts})
+                if cand_ts is not None and not _detect_session_boundary(cand_ts, now):
+                    score += USER_STATED_SESSION_BOOST
+                ranked.append((score, sim, t, ts))
+            ranked.sort(key=lambda r: r[0], reverse=True)
+            return OutcomeList([{"query": t, "timestamp": ts, "similarity": round(sim, 3),
+                                 "score": round(score, 3)}
+                                for score, sim, t, ts in ranked[:max(0, limit)]])
         except Exception as e:
             logger.warning(f"[UserStated] evidence channel failed: {type(e).__name__}")
             return OutcomeList.failed(type(e).__name__)
