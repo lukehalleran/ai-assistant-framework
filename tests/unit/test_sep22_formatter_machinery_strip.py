@@ -139,7 +139,12 @@ class TestLastExchangeMachineryStrip:
     def test_last_exchange_strips_trailing_notice(self):
         fmt = _get_formatter()
         body = "I don't see anything on your calendar for that."
-        recent_ts = (datetime.now() - timedelta(minutes=5)).isoformat()
+        # Same session by construction: a few minutes back, but never across
+        # midnight — a day change IS a session boundary (_detect_session_boundary),
+        # so a bare now-5min went red on CI between 00:00 and 00:05.
+        now = datetime.now()
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        recent_ts = max(now - timedelta(minutes=5), midnight).isoformat()
         entry = {
             "query": "did you add it",
             "response": body + CALENDAR_NOTICE,
