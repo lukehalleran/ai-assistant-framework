@@ -8,7 +8,7 @@ starts from and the place a fix ends: naming the class is part of shipping.
 
 Started 2026-09-10 from the whole audit record (2026-07-14 → 2026-09-10:
 `docs/BUG_RETROSPECTIVE_20260715_20260904.md` §3's fifteen classes; the
-independent audits `AUDIT_SWEEP_20260831.md`, `AUDIT_SWEEP_20260903_CODEX.md`,
+independent audits `docs/audits/AUDIT_SWEEP_20260831.md`, `docs/audits/AUDIT_SWEEP_20260903_CODEX.md`,
 `docs/INDEPENDENT_AUDIT_20260905.md`, `docs/AUDIT_20260906_CONVERSATION.md`,
 `docs/HANDOFF_20260909_independent_bug_audit.md`; the generalization,
 situation-coverage and claim-support audits; `CLAUDE_CHANGELOG.md`'s 46

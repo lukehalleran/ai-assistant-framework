@@ -2794,7 +2794,7 @@ Exclude: `pytest -m "not benchmark"`
   `config.app_config.CONSTANT`, not `module.CONSTANT`
 - **Debug dict**: `memory_scorer.py` debug dict only populated at DEBUG
   log level — tests must set logger level explicitly
-- **Excluded dirs**: `venv/`, `data/`, `integration.bak/`
+- **Excluded dirs**: `venv/`, `data/`
 
 ---
 

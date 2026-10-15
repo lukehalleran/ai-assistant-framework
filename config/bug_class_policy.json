@@ -285,10 +285,6 @@
         "reason": "Root pytest bootstrap. Outside every detection-method input; classified, not covered."
       },
       {
-        "name": "debug_graph_context.py",
-        "reason": "Developer debug script at the repository root. Outside every detection-method input; classified, not covered."
-      },
-      {
         "name": "eval",
         "reason": "Prompt-ablation evaluation harness. Outside every detection-method input; classified, not covered."
       },

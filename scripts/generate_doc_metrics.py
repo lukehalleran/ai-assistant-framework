@@ -177,11 +177,11 @@ def build_snapshot_block() -> str:
     lines.append(f"- **ChromaDB collections:** {colls}")
     led = bench.get("ledger")
     if led:
-        lines.append(f"- **Retrieval benchmark (ledger):** MRR={led['mrr']} · "
+        lines.append(f"- **Retrieval benchmark (combined synthetic + owner-local real suites, ledger):** MRR={led['mrr']} · "
                      f"R@1={led['r_at_1']} · n={led['n']}  <sub>({led['source']})</sub>")
     csvb = bench.get("csv")
     if csvb:
-        lines.append(f"- **Retrieval benchmark (CSV cross-check):** MRR={csvb['mrr']} · "
+        lines.append(f"- **Retrieval benchmark (combined synthetic + owner-local real suites, CSV cross-check):** MRR={csvb['mrr']} · "
                      f"R@1={csvb['r_at_1']} · n={csvb['n']}  <sub>({csvb['source']})</sub>")
     if led and csvb and (led["n"] != csvb["n"] or abs(led["mrr"] - csvb["mrr"]) > 0.005):
         lines.append(f"  - ⚠️ **Ledger and CSV disagree** (n {led['n']}≠{csvb['n']}, "

@@ -9,7 +9,7 @@ import sys
 import os
 
 # Add the project directory to the path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from memory.graph_memory import GraphMemory
 from memory.entity_resolver import EntityResolver

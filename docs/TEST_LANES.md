@@ -77,21 +77,23 @@ four months ago and never re-evaluated. The 3 documented skips are honest
 (name a specific unimplemented method / signature drift), not silent
 `assert True`-style vacuity — they are fine to ship as-is.
 
-## 2. `pytest.ini` — 4 `--ignore` entries
+## 2. `pytest.ini` — 0 `--ignore` entries (was 4)
+
+Entries #1 and #2 were deleted with their files (2026-10-10, owner yes) and #3 (a dead reference to a file that never existed) was pruned from `pytest.ini` 2026-10-14; #4 was deleted with its file the same day (owner yes, decision D6: retire). None remain. The rows are kept as the historical record.
 
 | # | File | Reason | Owning subsystem | Fast replacement | Bounded command |
 |---|---|---|---|---|---|
 | 1 | `tests/memory_test.py`  — **DELETED 2026-10-10 (owner yes)**| **Collection error, current and real** (not stale): a legacy top-level smoke script — module-level `asyncio.run(smoke_test())` at import time, not `test_*` functions — that drives the real orchestrator's `_SimplePromptBuilder` fallback (`core/orchestrator.py`), which no longer has an `_assemble_prompt` method. Verified today: `AttributeError: '_SimplePromptBuilder' object has no attribute '_assemble_prompt'` during collection. | `core/orchestrator.py::_SimplePromptBuilder` (fallback prompt builder used when the modular `core/prompt` package can't be constructed) | **NONE** — `tests/unit/test_request_path_parity.py` and `tests/unit/test_independent_prompt_audit.py` drive the real `UnifiedPromptBuilder`, not the `_SimplePromptBuilder` fallback path. This fallback appears to have no current test coverage at all. Scoped gap, flagged for a follow-up ticket (fixing/deleting `_SimplePromptBuilder` or this script is a `core/orchestrator.py` change, out of B5's scope per its STOP conditions). | not runnable as a real test file; would need a rewrite, not a command |
 | 2 | `tests/test_double_filtering_performance.py`  — **DELETED 2026-10-10 (owner yes)**| **Collection error, current and real**: `ModuleNotFoundError: No module named 'tests.integration.gate_system_helpers'`. That helper module does not exist anywhere in the tree (`tests/integration/` only has `test_context_pipeline_integration.py` and `test_golden_distress_replay.py`). | Cross-encoder / gate-system reuse performance (the double-filtering fix this repo is named for) | Partial: `tests/test_actual_caching.py::test_model_manager_cross_encoder_caching` (repaired in this batch — real process-global cache dict, model-loading boundary only) covers the caching half; `tests/test_performance_fix.py` covers a simulation of gate-system reuse but not through the deployed prompt-build path. Neither is a full substitute for "measure total prompt-build time end to end." | N/A (fails collection) |
 | 3 | `tests/test_double_filtering_regression.py` | **Dead/stale reference**: this file does not exist in the tree (confirmed via `git ls-files` / `find`); the ignore line matches nothing and has no effect. | N/A | N/A | N/A — safe to delete the ignore line as pure cleanup, zero behavior change |
-| 4 | `tests/test_gating_consistency.py` | **Collection error, current and real**: same missing `tests.integration.gate_system_helpers` module as #2. | Gate-system output consistency across instances/caching (`processing/gate_system.py`) | Partial: `tests/unit/test_gate_min_results_cap.py`, `tests/unit/test_gate_retrieval_space.py`, `tests/unit/test_gate_forced_quality_floor.py`, `tests/unit/test_lane_regressions.py` cover various gate-behavior slices, but none specifically re-asserts "the same memories produce identical filtering results regardless of gate instance/caching approach" — this is a scoped gap. | N/A (fails collection) |
+| 4 | `tests/test_gating_consistency.py`  — **DELETED 2026-10-14 (owner yes, D6)** | **Collection error, current and real**: same missing `tests.integration.gate_system_helpers` module as #2. | Gate-system output consistency across instances/caching (`processing/gate_system.py`) | Partial: `tests/unit/test_gate_min_results_cap.py`, `tests/unit/test_gate_retrieval_space.py`, `tests/unit/test_gate_forced_quality_floor.py`, `tests/unit/test_lane_regressions.py` cover various gate-behavior slices, but none specifically re-asserts "the same memories produce identical filtering results regardless of gate instance/caching approach" — this is a scoped gap. | N/A (fails collection) |
 
-**Do not silently remove #1/#2/#4's ignore lines** — unlike the 17 CI
-entries above, these three still genuinely fail to collect today. Removing
+**(Historical — #4 is now deleted.)** Unlike the 17 CI
+entries above, it still genuinely fails to collect today (historical note, written when #1/#2 were also present: Removing
 their ignores without also either restoring `tests/integration/gate_system_helpers.py`
 (for #2/#4) or repairing/retiring `tests/memory_test.py` (#1) would break
 every local/CI run that stops ignoring them. #3 is the only pytest.ini
-entry safe to prune as pure documentation hygiene.
+entry safe to prune as pure documentation hygiene — done 2026-10-14.)
 
 ## 3. Markers: `slow`, `benchmark`, `semantic`
 
@@ -116,7 +118,7 @@ default collection without a marker exclusion.
 **Fast CI lane (what runs on every push):**
 `.github/workflows/tests.yml` → `python -m pytest -q -m "not slow and not
 benchmark and not semantic" --tb=short` over `testpaths = tests` (from
-`pytest.ini`) minus the 4 `pytest.ini` ignores (the 17 CI-only ignores are gone since
+`pytest.ini`) minus the 1 `pytest.ini` ignore (the 17 CI-only ignores are gone since
 52a7fbb). This lane also runs the privacy guard, `ruff check .`, and a
 separate `frontend` job: `npm run typecheck` then `npm test` (the Vitest
 behaviour lane B4 added for F07/T09); there is no `npm run build` step
@@ -149,7 +151,7 @@ a ledger override, masks a failure, or adds a path filter.
 the 77 uncovered classes. DM-29's only input is the untracked
 `CLAUDE_CHANGELOG.md`, so CI reports it *unavailable*, not zero. Python roots
 outside every scanner (`agent_branch`, `eval`, `hooks`, `integrations`, the
-root `conftest.py`, `debug_graph_context.py`) are classified in the policy and
+root `conftest.py`) are classified in the policy and
 listed in each report.
 
 **Accepted debt needs re-review when its file changes.** Editing any file that
@@ -200,7 +202,7 @@ Strengthened 2026-09-13:
   a capability row and the classifiers agree. Every alias is also checked
   through the public `ModelManager` classifiers and `detect_protocol`.
 
-Run together (also used as this batch's own regression sweep, §5 below):
+Run together (also used as this batch's own regression sweep, §7 below):
 ```bash
 python -m pytest -q tests/unit/test_no_git_state_in_tests.py \
   tests/unit/test_ordered_slice_guard.py \
@@ -257,7 +259,38 @@ push again (pass 3 then runs), or verify that selection by hand under the 8G wra
 **Eval suite** (`tests/test_eval/`, 246 tests by collect-only on 2026-09-10; not broken out in `docs/METRICS_SNAPSHOT.md`)
 is unmarked and unignored — already part of the fast lane above.
 
-## 5. Invocation pitfalls
+## 5. Running the suite locally
+
+The full suite does not fit in 16 GB in one process, so run it in
+memory-capped batches (generic form; add the `DAEMON_TEST_MODE=1` env above):
+
+```bash
+# unit tests (4 GB cap)
+systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=512M \
+  python -m pytest -q -p no:cacheprovider -m "not slow and not benchmark and not semantic" tests/unit/
+
+# the non-unit remainder (8 GB cap, app NOT running)
+systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=512M \
+  python -m pytest -q -p no:cacheprovider -m "not slow and not benchmark and not semantic" --ignore=tests/unit
+
+# one file or marker lane
+systemd-run --user --scope -q -p MemoryMax=4G python -m pytest -q tests/unit/test_<module>.py
+python -m pytest -q -m benchmark tests/benchmarks/     # retrieval benchmarks (loads real embeddings)
+```
+
+Never run the entire suite in a single process, and never traverse `data/`
+(the wiki parquet is 41M+ rows). See §7 for pitfalls.
+
+## 6. Naming new tests
+
+New test files are named by module and behaviour:
+`tests/unit/test_<module>_<behaviour>.py`. The incident date and the bug
+class (`BC-nn`) go in the module docstring, not the file name. Existing
+dated files (`test_sep*.py`, `test_oct*.py`, ...) are NOT renamed: they are
+cited by path across `docs/BUG_CLASSES.md`, the changelog, disposition
+records and CGR files.
+
+## 7. Invocation pitfalls
 
 - Never `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` outside the §4 bug-class
   `tests/bug_class_guards` command — it disables pytest-asyncio (2026-09-16:

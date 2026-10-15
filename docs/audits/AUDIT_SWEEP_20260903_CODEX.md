@@ -2,7 +2,7 @@
 
 Status: code changes are **uncommitted**. No live-store or `data/` writes were
 performed. Fable's existing edits were preserved. This note is the resume point
-for the next session; see `AUDIT_SWEEP_20260831.md` for the preceding full sweep.
+for the next session; see `AUDIT_SWEEP_20260831.md` (same directory) for the preceding full sweep.
 
 ## Coordination / interrupted Fable batch
 
