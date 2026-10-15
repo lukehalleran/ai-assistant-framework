@@ -117,6 +117,8 @@ import utils.web_search_trigger as web_search_trigger
 # Module-level logger: 14 call sites referenced `logger` while it was only
 # assigned inside two function scopes — every other use was a latent
 # NameError waiting for its code path (first ruff pass, 2026-08-28).
+from memory import summary_coverage as _cov
+
 logger = logging.getLogger("gui.launch")
 
 # Detect frozen executable mode
@@ -721,43 +723,27 @@ def build_demo(orchestrator, dev_tabs=None):
         total_summaries = sum(1 for e in corpus if _is_summary(e))  # not capped at 5
         non_summary_entries = sum(1 for e in corpus if (not _is_summary(e)) and (not _is_reflection(e)))
 
-        # Estimate backlog and remaining (t)
-        def _is_consolidator_summary(e: dict) -> bool:
-            if not _is_summary(e):
-                return False
-            tags = [str(t).lower() for t in (e.get('tags') or [])]
-            return ('summary:consolidated' in tags) or ('source:consolidator' in tags)
-
-        def _parse_block_n(tags: list):  # -> Optional[int]
-            try:
-                key = f"block_n:{N}:"
-                for t in (tags or []):
-                    t = str(t).strip().lower()
-                    if t.startswith(key):
-                        return int(t.split(':', 2)[2])
-            except (ValueError, IndexError) as e:
-                logger.debug(f"[Launch] Could not parse block_n from tags: {e}")
-                return None
-            return None
-
-        tagged_blocks = set()
-        for e in corpus:
-            if _is_consolidator_summary(e):
-                bi = _parse_block_n(e.get('tags') or [])
-                if isinstance(bi, int):
-                    tagged_blocks.add(bi)
-
-        # Prefer tagged count when present; else count of consolidator summaries
-        prev_blocks = len(tagged_blocks) if tagged_blocks else sum(1 for e in corpus if _is_consolidator_summary(e))
-        total_blocks = non_summary_entries // N
-        backlog = max(0, total_blocks - prev_blocks)
-
-        if backlog > 0:
-            since_last = 0
-            remaining = 0
+        # Backlog by CONTENT coverage (summary anchors), not by positional block
+        # tags (BC-95).  Unreadable coverage -> unknown (None), never a fabricated number.
+        non_summ_sorted = sorted(
+            (e for e in corpus if (not _is_summary(e)) and (not _is_reflection(e))),
+            key=lambda e: _cov.entry_time(e),
+        )
+        ranges = _cov.covered_ranges(getattr(orchestrator.memory_system, "chroma_store", None))
+        if ranges is None:
+            backlog = None
+            since_last = None
+            remaining = None
         else:
-            since_last = non_summary_entries % N
-            remaining = 0 if since_last == 0 else (N - since_last)
+            watermark = _cov.coverage_watermark(ranges)
+            backlog = _cov.remaining_full_blocks(non_summ_sorted, watermark, N, _cov.entry_time)
+            newer = len([e for e in non_summ_sorted if watermark is None or _cov.entry_time(e) > watermark])
+            if backlog > 0:
+                since_last = 0
+                remaining = 0
+            else:
+                since_last = newer % N
+                remaining = 0 if since_last == 0 else (N - since_last)
         conv_stats = conversation_logger.get_session_stats()
         # Reflection counts
         cm = orchestrator.memory_system.corpus_manager

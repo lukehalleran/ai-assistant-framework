@@ -441,10 +441,6 @@ class TestShutdownSummarySourceDocIds:
         block = [{"timestamp": (base + timedelta(minutes=m)).isoformat()} for m in (0, 10, 20)]
         sp._store_summary(
             "A consolidated summary of the early conversation block used for this F05 regression test.",
-            N=1,
-            b=0,
-            start=0,
-            end=3,
             block=block,
         )
 

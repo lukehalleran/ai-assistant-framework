@@ -197,13 +197,19 @@ def _format_summary_section(items: list, header: str, apply_staleness: bool = Tr
         if isinstance(item, dict):
             content = item.get("content", "") or str(item)
             ts = item.get("timestamp", "")
+            covers = item.get("covers", "")
         else:
             content = str(item)
             ts = ""
+            covers = ""
         if content:
             content = _sanitize_embedded_headers(content)
             prefix = _staleness_prefix(item) if apply_staleness else ""
-            if ts:
+            if covers:
+                # Content span, never the creation stamp: a summary written today
+                # about September must not read as a today-dated memory (BC-96).
+                lines.append(f"{i}) [covers {covers}] {prefix}{content}")
+            elif ts:
                 lines.append(f"{i}) {ts}: {prefix}{content}")
             else:
                 lines.append(f"{i}) {prefix}{content}")
