@@ -83,16 +83,27 @@ _GENERIC_PLACE_NOUNS = frozenset({
 
 
 def _is_bare_city(value: str) -> bool:
-    """True for a single-token city/region name as the per-turn extractor stores
-    it ("chicago", no region). The strict "City, Region" shape cannot admit it;
-    a single token is trusted only when spaCy's NER tags the WHOLE title-cased
-    token as a geopolitical entity and it is not a generic location noun or a
-    deictic placeholder. Multi-word bare values stay rejected (a two-word GPE
-    like "Joke State" is exactly the sarcasm junk the strict shape guards)."""
+    """True for a 1-3 word city/region name as the per-turn extractor stores it
+    ("chicago", "san diego", "salt lake city" - no region). The strict
+    "City, Region" shape cannot admit it. Admitted only when ALL hold:
+    (a) every token is a name-like word; (b) spaCy NER on "I live in {Title}."
+    yields ONE GPE entity whose text equals the WHOLE title-cased value;
+    (c) no token is a generic location noun or a spaCy stop word ("Joke State",
+    "Empty House", "the city" fail even if tagged); (d) not a placeholder.
+    (b)+(c) replace the old single-token rule: the span-equals-whole-value NER
+    check rejects sarcasm phrases, and the closed-class token filters catch the
+    two-word generic phrases NER can still tag. 4+ words stay rejected."""
     v = str(value or "").strip()
-    if not re.fullmatch(r"[A-Za-z][A-Za-z.'\-]{1,}", v):
+    tokens = v.split()
+    if not 1 <= len(tokens) <= 3:
         return False
-    if v.lower() in _GENERIC_PLACE_NOUNS or is_placeholder_location(v):
+    if not all(re.fullmatch(r"[A-Za-z][A-Za-z.'\-]*", t) for t in tokens):
+        return False
+    if len(tokens) == 1 and len(v) < 2:
+        return False
+    if is_placeholder_location(v):
+        return False
+    if any(t.lower() in _GENERIC_PLACE_NOUNS for t in tokens):
         return False
     try:
         # lazy import: startup-cost (spaCy load on first bare-place check only)
@@ -100,10 +111,15 @@ def _is_bare_city(value: str) -> bool:
         nlp = _get_nlp()
         if nlp is None:
             return False
+        if len(tokens) > 1:
+            from spacy.lang.en.stop_words import STOP_WORDS  # lazy import: startup-cost (imports the spacy package)
+            if any(t.lower() in STOP_WORDS for t in tokens):
+                return False
         ents = nlp(f"I live in {v.title()}.").ents
     except Exception:  # degrades: bare-city check unavailable, only "City, Region" values are trusted
         return False
-    return any(e.label_ == "GPE" and e.text == v.title() for e in ents)
+    gpes = [e for e in ents if e.label_ == "GPE"]
+    return len(ents) == 1 and len(gpes) == 1 and gpes[0].text == v.title()
 
 
 def _is_place_value(value: str) -> bool:

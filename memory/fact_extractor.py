@@ -77,6 +77,7 @@ from memory.fact_source import (
 )
 from memory.memory_interface import MemoryNode, MemoryType
 import memory.stance_classifier as stance_classifier
+from memory.graph_utils import is_interjection
 from memory.user_profile_schema import is_living_situation_relation
 from utils.logging_utils import get_logger, log_and_time
 import utils.temporal_resolver as temporal_resolver
@@ -269,6 +270,8 @@ def _is_junk_object(obj: str, rel: str, subj: str = "") -> bool:
     if not o:
         return True
     if subj and is_self_reference(subj, o):
+        return True
+    if is_interjection((obj or "").strip()):  # original casing: "ER"/"WoW" are not interjections
         return True
     if relation_is_future_planned(r):
         return True
