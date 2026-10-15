@@ -340,6 +340,8 @@ WIKI_MAX_CHARS_DEFAULT: int = int(WIKI_CFG.get("max_chars", 15000))
 # 0 (or <=0) disables sentence clipping; intro/full selection is handled elsewhere
 WIKI_MAX_SENTENCES_DEFAULT: int = int(WIKI_CFG.get("max_sentences", 0))
 WIKI_TIMEOUT_DEFAULT: float = float(WIKI_CFG.get("timeout_s", 1.2))
+# One deadline for the whole live-Wikipedia fallback in the prompt gatherer.
+WIKI_FALLBACK_DEADLINE_S: float = float(WIKI_CFG.get("fallback_deadline_s", 2.5))
 # Wiki FAISS data root (2026-09-27, BC-59/BC-88): the parent of wiki_data/.
 # Was an owner-mount default hardcoded in knowledge/semantic_search.py and two
 # build scripts. Env WIKI_DATA_ROOT still wins; the owner's real path lives in

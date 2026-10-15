@@ -150,6 +150,7 @@ _PROFILES: Dict[IntentType, dict] = {
             # activates schedule retrieval for genuine future-schedule queries.
             "max_recent": 20, "max_summaries": 15, "max_mems": 10,
             "max_dreams": 0,
+            "max_wiki": 0,  # personal recall: encyclopedia content is never the answer (2026-10-15 probe)
         },
         "gate": 0.30,
     },
@@ -171,6 +172,7 @@ _PROFILES: Dict[IntentType, dict] = {
             "max_visual_memories": 0,
             "max_skills": 0,        # procedural workflows are tone-deaf during distress
             "max_relevant_emails": 0,  # 2026-09-03: no inbox mining on emotional turns
+            "max_wiki": 0,          # emotional turns: encyclopedia content is never the answer (2026-10-15 probe)
         },
         "gate": 0.35,
     },

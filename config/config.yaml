@@ -593,6 +593,8 @@ visual_memory:
   similarity_threshold: 0.2
   ingest_on_upload: true
   ingest_on_obsidian_sync: true
+wiki:
+  fallback_deadline_s: 2.5
 wiki_enrichment:
   enabled: true
   max_articles_per_session: 15
