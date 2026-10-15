@@ -449,6 +449,24 @@ def _hit_within_scope(text: str, start: int) -> bool:
     return start < _INCIDENTAL_HIT_EDGE_CHARS or start >= tail_start
 
 
+def _tier1_keyword_hit(user_text: str, matcher) -> bool:
+    """ONE chokepoint for every Tier-1 keyword-list arm (2026-10-14, BC-58).
+
+    A non-negated hit of `matcher` in the code-stripped message whose position
+    passes `_hit_within_scope` (head/tail window once the message exceeds
+    REQUEST_CONTINUATION_MAX_WORDS). The file arm had this discipline since
+    09-08; the computation/web/tools/memory/knowledge arms scanned the whole
+    message, so 'integral' mid-way through a pasted progress report routed a
+    36 s agentic loop on a no-request vent turn.
+    """
+    from utils.query_checker import strip_code_shaped_lines  # lazy import: cycle (query_checker's request-shape helpers import gate at call time)
+    scan = strip_code_shaped_lines(user_text).lower()
+    return any(
+        _hit_within_scope(scan, h.start)
+        for h in _find_trigger_hits(scan, matcher)
+    )
+
+
 _COMPUTATION_HIT = _compile_keyword_matcher(COMPUTATION_KEYWORDS)
 _WEB_SEARCH_HIT = _compile_keyword_matcher(WEB_SEARCH_KEYWORDS)
 _TOOL_HIT = _compile_keyword_matcher(TOOL_KEYWORDS)
@@ -958,7 +976,7 @@ async def evaluate_agentic_gate(
     # ── Tier 1: Keyword heuristics (instant, no LLM) ─────────────────
     # Negation-aware (2026-09-04): "I'm not asking you to calculate it" must
     # not force computation mode just because 'calculate' appears.
-    needs_computation = _hit_non_negated(_lower, _COMPUTATION_HIT)
+    needs_computation = _tier1_keyword_hit(user_text, _COMPUTATION_HIT)
 
     # Personal-document search (2026-08-29): "please search for documents
     # related to the ABC class I am currently enrolled in" hit the WEB
@@ -980,7 +998,7 @@ async def evaluate_agentic_gate(
     # Negation-aware (2026-09-04): "don't search the web for this, just tell
     # me" must not force web-search mode just because 'search the web'
     # appears — a bare URL still always counts (pasting a link is explicit).
-    _keyword_web = _hit_non_negated(_lower, _WEB_SEARCH_HIT) and not _personal_doc_search
+    _keyword_web = _tier1_keyword_hit(user_text, _WEB_SEARCH_HIT) and not _personal_doc_search
     if _has_url:
         needs_web_search = True
         logger.debug("[Agentic Gate] Tier 1: URL detected")
@@ -1019,7 +1037,7 @@ async def evaluate_agentic_gate(
         needs_web_search = True
         logger.debug("[Agentic Gate] Tier 1: bare lookup imperative on prior exchange")
 
-    if _hit_non_negated(_lower, _TOOL_HIT):
+    if _tier1_keyword_hit(user_text, _TOOL_HIT):
         needs_tools = True
         # Log the trigger — this arm fired SILENTLY for months; the 09-01
         # 'actions' misfire took three probes to attribute because of it.
@@ -1105,10 +1123,7 @@ async def evaluate_agentic_gate(
     # at call time; this avoids the reverse loop)
     from utils.query_checker import strip_code_shaped_lines
     _file_scan_text = strip_code_shaped_lines(user_text).lower()
-    _file_keyword_hit = any(
-        _hit_within_scope(_file_scan_text, h.start)
-        for h in _find_trigger_hits(_file_scan_text, _FILE_ACCESS_KEYWORD_HIT)
-    )
+    _file_keyword_hit = _tier1_keyword_hit(user_text, _FILE_ACCESS_KEYWORD_HIT)
     _file_pattern_hit = False
     if "pattern tool" not in _lower_normalized:
         for _fp in FILE_ACCESS_PATTERNS:
@@ -1126,11 +1141,11 @@ async def evaluate_agentic_gate(
         needs_tools = True
         logger.debug("[Agentic Gate] Tier 1: file/document access intent detected")
 
-    needs_memory = _hit_non_negated(_lower, _MEMORY_HIT)
+    needs_memory = _tier1_keyword_hit(user_text, _MEMORY_HIT)
 
     # Knowledge keywords require 4+ words and no computation trigger
     if len(_words) >= 4 and not needs_computation:
-        needs_knowledge = _hit_non_negated(_lower, _KNOWLEDGE_HIT)
+        needs_knowledge = _tier1_keyword_hit(user_text, _KNOWLEDGE_HIT)
 
     # ── Tier 2: Entity match (instant, no LLM) ───────────────────────
     # 2026-08-29 live-session hardening (three agentic loops on emotional

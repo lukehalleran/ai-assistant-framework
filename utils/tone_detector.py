@@ -80,6 +80,7 @@ from models import decision_model as dm
 from utils.logging_utils import get_logger
 from utils.trigger_match import compile_keyword_matcher, is_negated
 import utils.adaptive_exemplars as adaptive_exemplars
+from utils.paste_shape import authored_head
 from utils.request_span import request_span
 
 logger = get_logger("tone_detector")
@@ -1594,29 +1595,68 @@ def _semantic_crisis_detection(
     def cosine_similarity(a, b):
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
 
-    similarity_scores = {}
-    for level in ["high", "medium", "concern", "conversational"]:
-        if level in exemplar_embeddings:
-            sim = cosine_similarity(message_embedding, exemplar_embeddings[level])
-            similarity_scores[level] = float(sim)
-        else:
-            similarity_scores[level] = 0.0
-
-    logger.debug(f"[ToneDetector] Semantic scores: {similarity_scores}")
-
-    # Check for recent distress in conversation history OR a forced-escalation
-    # signal from the caller (sustained-distress session). NOTE: this previously
-    # set recent_distress = 0.5 and gated on `> 0.5`, so the boost never fired.
     recent_distress = bool(force_escalation) or _recent_distress_from_history(conversation_history)
 
-    # Apply escalation boost if recent distress detected (but not to conversational)
-    if recent_distress:
-        boosted_scores = {k: (v * TONE_CONFIG["escalation_boost"] if k != "conversational" else v) for k, v in similarity_scores.items()}
-        logger.debug(f"[ToneDetector] Applied escalation boost: {boosted_scores}")
-        similarity_scores = boosted_scores
+    def _score_vector(vec):
+        scores = {}
+        for level in ["high", "medium", "concern", "conversational"]:
+            if level in exemplar_embeddings:
+                scores[level] = float(cosine_similarity(vec, exemplar_embeddings[level]))
+            else:
+                scores[level] = 0.0
+        # Escalation boost if recent distress detected (never to conversational).
+        # NOTE: this previously set recent_distress = 0.5 and gated on `> 0.5`,
+        # so the boost never fired.
+        if recent_distress:
+            scores = {k: (v * TONE_CONFIG["escalation_boost"] if k != "conversational" else v)
+                      for k, v in scores.items()}
+        return scores
 
-    # Determine crisis level based on thresholds AND conversational similarity
-    # If conversational similarity is significantly higher, prefer conversational
+    similarity_scores = _score_vector(message_embedding)
+    logger.debug(f"[ToneDetector] Semantic scores: {similarity_scores}")
+    level, conf, scores = _level_from_scores(similarity_scores)
+    source = "whole"
+
+    # Authored-head scoring (2026-10-14, BC-09): on an inline paste the user's own
+    # opening words are diluted by the pasted body in one embedding. Score the
+    # structural head too and keep whichever vector yields the MORE severe level
+    # (tie -> whole), so the result can never be lower than the whole-message one.
+    # One extra local encode, no LLM, no teaching.
+    try:
+        head = authored_head(message)
+        if head:
+            head_scores = _score_vector(embedder.encode(head, convert_to_numpy=True))
+            h_level, h_conf, h_scores = _level_from_scores(head_scores)
+            if _LEVEL_SEVERITY[h_level] > _LEVEL_SEVERITY[level]:
+                level, conf, scores, source = h_level, h_conf, h_scores, "head"
+                logger.info(
+                    f"[ToneDetector] Authored head scored {h_level.value} "
+                    f"({h_conf:.2f}) over the whole-message blend")
+    except Exception as e:  # degrades: head scoring skipped, whole-message score stands
+        logger.debug(f"[ToneDetector] authored-head scoring skipped: {e}")
+
+    out = _SemanticScores(scores)
+    out.source = source
+    return (level, conf, out)
+
+
+class _SemanticScores(dict):
+    """raw_scores dict that remembers which text won ("head"|"whole").
+
+    A plain dict subclass so every numeric consumer (max(values), format) is
+    unchanged; the source is read off the attribute for the explanation.
+    """
+    source = "whole"
+
+
+_LEVEL_SEVERITY = {
+    CrisisLevel.CONVERSATIONAL: 0, CrisisLevel.CONCERN: 1,
+    CrisisLevel.MEDIUM: 2, CrisisLevel.HIGH: 3,
+}
+
+
+def _level_from_scores(similarity_scores: Dict[str, float]):
+    """Threshold logic over one score vector -> (level, confidence, scores)."""
     conversational_score = similarity_scores.get("conversational", 0.0)
 
     # Check each level in order of severity, but only return if it's clearly higher than conversational
@@ -2218,8 +2258,15 @@ async def _detect_crisis_level_impl(
                 }
                 # D8: only the LLM arbiter teaches; a decision-model verdict never reaches the store.
                 if llm_level in _ARB_KEYS and _arbiter_source == "llm" and not semantic_unavailable:
+                    # When the user's authored head (not the pasted body) is what
+                    # raised the semantic level, teach the head: the clipped whole
+                    # message would plant pasted-document text as a distress
+                    # exemplar (BC-29). Referee 2026-10-14.
+                    _teach_text = message
+                    if getattr(raw_scores, "source", "whole") == "head":
+                        _teach_text = authored_head(message) or message
                     _learn_tone_exemplar(
-                        message, _ARB_KEYS[llm_level], "arbiter", model_manager
+                        _teach_text, _ARB_KEYS[llm_level], "arbiter", model_manager
                     )
                 return ToneAnalysis(
                     level=llm_level,
@@ -2294,6 +2341,8 @@ async def _detect_crisis_level_impl(
             explanation += " (semantic stage unavailable; arbiter did not raise the level)"
     else:
         explanation = f"Semantic similarity to {level.value}: {confidence:.2f}"
+    if getattr(raw_scores, "source", "whole") == "head":
+        explanation += " (semantic_source=head: user's authored opening, not the pasted body)"
 
     return ToneAnalysis(
         level=level,
