@@ -208,7 +208,7 @@ def _storage_failure_label(exc: Exception) -> str:
 
 from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import CrisisLevel
-from utils.emotional_context import EmotionalContext, tone_receipt_fields
+from utils.emotional_context import EmotionalContext, tone_receipt_fields, tone_semantic_source_field
 from utils.need_detector import NeedType
 from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
 from core.best_of_handler import BestOfHandler
@@ -1834,6 +1834,11 @@ class DaemonOrchestrator:
                 ),
                 "tone_confidence": getattr(
                     getattr(context, "emotional_context", None), "tone_confidence", None
+                ),
+                # Which text the semantic stage scored (head|whole|None) — how often
+                # the authored-head path decided a turn (2026-10-15, BC-72).
+                "tone_semantic_source": tone_semantic_source_field(
+                    getattr(context, "emotional_context", None)
                 ),
                 # Content-free decision-model tone receipt (tone_dm_*, tone_arbiter_backend).
                 **tone_receipt_fields(getattr(context, "emotional_context", None)),

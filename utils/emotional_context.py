@@ -26,6 +26,9 @@ class EmotionalContext:
     # Content-free decision-model receipt from ToneAnalysis (labels and numbers only);
     # None when the detector returned before the arbiter stage. Plan 2026-10-08 D13.
     arbiter_receipt: Optional[Dict[str, Any]] = None
+    # Which text the semantic stage scored: "head" | "whole" | None (stage did not
+    # run / other path). Enum for turn telemetry, never text (2026-10-15, BC-72).
+    tone_semantic_source: Optional[str] = None
 
 
 # receipt key -> record field; scalar labels/numbers only (D13, BC-72: no message text, ever)
@@ -53,6 +56,12 @@ def _dm_scalar(value: Any) -> Any:
     if isinstance(value, (int, float)) and math.isfinite(value):
         return value
     return None
+
+
+def tone_semantic_source_field(ctx: Optional[EmotionalContext]) -> Optional[str]:
+    """Turn-record value for `tone_semantic_source`: "head" | "whole" | None. Enum only."""
+    value = getattr(ctx, "tone_semantic_source", None)
+    return value if value in ("head", "whole") else None
 
 
 def tone_receipt_fields(ctx: Optional[EmotionalContext]) -> Dict[str, Any]:
@@ -131,6 +140,7 @@ async def analyze_emotional_context(
         need_trigger=need.trigger,
         explanation=f"{tone.explanation} | {need.explanation}",
         arbiter_receipt=getattr(tone, "arbiter_receipt", None),
+        tone_semantic_source=getattr(tone, "semantic_source", None),
     )
 
 

@@ -164,3 +164,4 @@ python scripts/sample_real_benchmark_v2.py --seed 42
 
 Results saved to:
 - `data/benchmark_per_case.csv` — per-case detail with ranks and top-5 retrieved
+  (a benchmark run writes the untracked `logs/benchmark_per_case.csv` by default; the tracked file, which `scripts/generate_doc_metrics.py` reads, is refreshed only with `pytest tests/benchmarks --benchmark-csv data/benchmark_per_case.csv`)

@@ -22,6 +22,21 @@ from typing import Dict, List, Any
 _benchmark_results: List[Dict[str, Any]] = []
 
 
+def benchmark_csv_path(option_value, repo_root) -> Path:
+    """Where the per-case CSV is written (BC-37).
+
+    Default is the UNTRACKED ``<repo>/logs/benchmark_per_case.csv``; the tracked
+    ``data/benchmark_per_case.csv`` (source of the README/METRICS retrieval
+    figures) is written only when ``--benchmark-csv PATH`` is passed. A relative
+    PATH is taken relative to the repo root.
+    """
+    repo_root = Path(repo_root)
+    if not option_value:
+        return repo_root / "logs" / "benchmark_per_case.csv"
+    p = Path(option_value)
+    return p if p.is_absolute() else repo_root / p
+
+
 def record_benchmark_result(result: Dict[str, Any]):
     """Called by test functions to record results for the session summary."""
     _benchmark_results.append(result)
@@ -374,10 +389,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"MRR={agg_mrr:.4f}  R@1={agg_r1:.4f}  R@3={agg_r3:.4f}  R@topK={agg_r10:.4f}"
         )
 
-    # Write CSV to data/benchmark_per_case.csv
+    # Write the per-case CSV: untracked logs/ by default; the tracked
+    # data/benchmark_per_case.csv only on --benchmark-csv (BC-37).
     import csv
-    csv_path = Path(__file__).parent.parent.parent / "data" / "benchmark_per_case.csv"
+    csv_path = benchmark_csv_path(
+        config.getoption("benchmark_csv", default=None),
+        Path(__file__).parent.parent.parent,
+    )
     try:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
