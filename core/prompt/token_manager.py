@@ -52,10 +52,16 @@ asserts formatter↔PRIORITY_ORDER parity so a new rendered section can't go unm
 """
 
 import os
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils.logging_utils import get_logger
 from utils.text_budget import fit_text_to_tokens
 from .base import _parse_bool
+# ONE session-boundary rule (formatter owns it; builder._session_truth_from_probe
+# applies the same walk). Module-level import verified cycle-free 2026-10-15.
+from .formatter import (
+    _detect_session_boundary, _parse_entry_timestamp, SESSION_BOUNDARY_GAP_HOURS,
+)
 
 # Module-level import verified cycle-free (2026-09-06): knowledge.web_search_manager
 # does not import core.prompt.* (or anything that does) at module level, so this
@@ -153,6 +159,50 @@ def _cfg_int(key: str, default_val: int) -> int:
         return int(v) if v is not None else int(default_val)
     except (ValueError, TypeError):
         return int(default_val)
+
+def _cfg_float(key: str, default_val: float) -> float:
+    try:
+        v = _MEM_CFG.get(key, default_val)
+        return float(v) if v is not None else float(default_val)
+    except (ValueError, TypeError):
+        return float(default_val)
+
+# 2026-10-15: PRIOR-session recent conversation may use at most this share of
+# the prompt budget. recent_conversations (priority 7) is admitted before
+# memories/summaries/reflections, so 26 prior-session turns (~6.5K of a 10K
+# budget) emptied every long-term section (live probe 14:48; 47% of October
+# builds had 0 memories). Current-session turns are never capped by this.
+RECENT_PRIOR_SESSION_MAX_SHARE = _cfg_float("prompt_recent_prior_session_max_share", 0.40)
+# Section-wide cap (current + prior) on recent_conversations. The newest
+# RECENT_ALWAYS_ADMIT items are exempt (total budget only) — same YAML key and
+# default as builder.PROMPT_MIN_RECENT_FLOOR (not imported: cycle).
+RECENT_MAX_SHARE = _cfg_float("prompt_recent_max_share", 0.50)
+RECENT_ALWAYS_ADMIT = _cfg_int("prompt_min_recent_floor", 5)
+
+
+def current_session_prefix_len(items: List[Any], now: datetime) -> int:
+    """Length of the newest-first prefix of `items` that is the CURRENT session.
+
+    Same rule as builder._session_truth_from_probe: item 0 is current only if
+    it is not a session boundary from `now`; item i>0 continues the prefix
+    while it is not a boundary from item i-1. `now` is explicit (BC-94).
+    """
+    prev_ts: Optional[datetime] = None
+    n = 0
+    for idx, item in enumerate(items or []):
+        ts = _parse_entry_timestamp(item) if isinstance(item, dict) else None
+        # An item whose time cannot be read is never PROVEN prior-session
+        # (formatter's rule would call it a boundary): it stays in the
+        # uncapped prefix, so untimestamped lists behave exactly as before.
+        if ts is not None:
+            if idx == 0:
+                if _detect_session_boundary(ts, now, SESSION_BOUNDARY_GAP_HOURS):
+                    return 0
+            elif prev_ts is not None and _detect_session_boundary(prev_ts, ts, SESSION_BOUNDARY_GAP_HOURS):
+                break
+            prev_ts = ts
+        n += 1
+    return n
 
 # Token limits and configuration
 ENABLE_MIDDLE_OUT = _parse_bool(os.getenv("ENABLE_MIDDLE_OUT", "1"))
@@ -354,7 +404,9 @@ class TokenManager:
             lambda value: self.get_token_count(value, model_name), head_ratio,
         )
 
-    def _manage_token_budget(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def _manage_token_budget(
+        self, context: Dict[str, Any], now: Optional[datetime] = None
+    ) -> Dict[str, Any]:
         """
         Trim sections in increasing priority order until we fit within token budget.
         For lists, we remove items from the tail in conservative chunks (25%) to
@@ -411,6 +463,19 @@ class TokenManager:
             logger.debug(f"[TOKEN BUDGET] Processing section '{name}' with {len(val) if isinstance(val, list) else 1} items, current_tokens={current_tokens}")
             if isinstance(val, list):
                 kept = []
+                # Prior-session share cap (recent_conversations only).
+                _prior_start = len(val)
+                _prior_cap = 0
+                _prior_used = 0
+                _prior_kept = 0
+                _prior_capped = False
+                _capped_by = ""
+                _sect_cap = 0
+                _sect_used = 0
+                if name == "recent_conversations":
+                    _prior_start = current_session_prefix_len(val, now or datetime.now())
+                    _prior_cap = int(RECENT_PRIOR_SESSION_MAX_SHARE * self.token_budget)
+                    _sect_cap = int(RECENT_MAX_SHARE * self.token_budget)
                 for i, item in enumerate(val):
                     max_item_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
                     if self._is_conversation_item(item) and ENABLE_MIDDLE_OUT:
@@ -447,13 +512,31 @@ class TokenManager:
                             t = _item_tokens(item)
                             logger.debug(f"[MIDDLE-OUT] Compressed {name}[{i}]: {self.get_token_count(item_text, model_name)} → {t} tokens")
 
+                    if name == "recent_conversations":
+                        if i >= _prior_start and _prior_used + t > _prior_cap:
+                            _prior_capped, _capped_by = True, "prior-session"
+                            break
+                        if i >= RECENT_ALWAYS_ADMIT and _sect_used + t > _sect_cap:
+                            _prior_capped, _capped_by = True, "section"
+                            break
                     if current_tokens + t <= self.token_budget:
                         kept.append(item)
                         current_tokens += t
+                        _sect_used += t
+                        if i >= _prior_start:
+                            _prior_used += t
+                            _prior_kept += 1
                     else:
                         if name == "memories":
                             logger.debug(f"[TOKEN BUDGET] Stopped adding memories at item {i}/{len(val)}: budget={self.token_budget}, current={current_tokens}, item_tokens={t}")
                         break
+                if _prior_capped:
+                    logger.info(
+                        f"[TOKEN BUDGET] recent_conversations {_capped_by} cap ended section: kept "
+                        f"{len(kept)}/{len(val)} items, {_prior_kept}/{len(val) - _prior_start} prior "
+                        f"(prior cap {_prior_cap}, section cap {_sect_cap} tokens); "
+                        f"current session {_prior_start} items"
+                    )
                 if name == "memories":
                     logger.debug(f"[TOKEN BUDGET] Kept {len(kept)}/{len(val)} memories, budget={self.token_budget}, used={current_tokens}")
                 trimmed[name] = kept

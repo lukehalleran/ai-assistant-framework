@@ -138,6 +138,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-96 | Production time consumed as content time | C | partial |
 | BC-97 | Non-specific provenance annotation | E | partial |
 | BC-98 | State flag set on one copy of a dual-stored record | D | partial |
+| BC-99 | Priority admission lets one unbounded section starve the rest | C | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -328,6 +329,13 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Find: `rg -n "min_results=|_FLOOR\s*=|TOPUP" --type py` and check for a margin and a post-floor re-measure.
 - Closure: CM-08 survival-minimum doctrine (`GATE_FORCED_FLOOR_MARGIN`, `MEMORY_TOPUP_FLOOR`=3, `min_results=0` for notes); budget computed after floors.
 - Status: partial — doctrine, not lint.
+
+### BC-99 Priority admission lets one unbounded section starve the rest
+- Mechanism: a budgeted assembler admits sections in priority order, each until the TOTAL budget runs out. A high-priority section bounded only by the total (a history list) consumes the whole budget, and every lower tier is emptied with no error — the log only lists "Sections emptied by budget". Floors run before the budget, so they cannot protect the lower tiers.
+- Incidents: 2026-10-15 14:48 restart probe (temporal_recall): 26 prior-session [RECENT CONVERSATION] turns took ≈6.5 K of the 10 K budget after the profile; memories, both summary sections, reflections, git and wiki were all emptied. Debug logs: final prompts with 0 memories on 29% of 1,142 September builds, 47% of 278 October builds, 9 of the last 12. Priority admission arrived in ac6b858 (2026-09-05), after the 07-15 budget experiment that chose the 10 K budget, so the trim was never validated.
+- Find: `grep "Sections emptied by budget"` / `"BEFORE FINAL ASSEMBLY: memories count = 0"` over `daemon_debug*.log`; in code, any priority-sorted admission loop whose sections have no per-section cap.
+- Closure: share caps inside the first pass of `TokenManager._manage_token_budget` — `memory.prompt_recent_prior_session_max_share` (0.40, prior-session turns) and `memory.prompt_recent_max_share` (0.50, the whole section beyond the newest `prompt_min_recent_floor` turns); the session rule is formatter's `_detect_session_boundary` via `current_session_prefix_len`. Both at 1.0 reproduce the old behaviour. Tests: `tests/unit/test_token_manager_recent_share.py`.
+- Status: partial — recent_conversations only; no other section is unbounded today, and there is no guard against a new one.
 
 ### BC-25 Downstream consumer blind to gathered evidence
 - Mechanism: a planner digest, verifier, reuse gate or parallel task gets a narrower or different view than the answering model (hard-coded key lists; parallel context forks).

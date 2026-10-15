@@ -56,6 +56,12 @@ memory:
   hybrid_reflections_enabled: true
   user_profile_facts_per_category: 5
   prompt_max_recent: 10
+  # Max share of the prompt token budget that PRIOR-session [RECENT CONVERSATION]
+  # turns may use (current-session turns are never capped by it). 1.0 = off.
+  prompt_recent_prior_session_max_share: 0.40
+  # Max share of the prompt budget for ALL [RECENT CONVERSATION] turns (current + prior);
+  # the newest prompt_min_recent_floor turns are exempt (total budget only). 1.0 = off.
+  prompt_recent_max_share: 0.50
   semantic_retrieval_limit: 40
   prompt_max_semantic: 15
   force_min_memories: true
