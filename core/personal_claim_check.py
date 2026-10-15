@@ -532,6 +532,40 @@ def _validate_claims(
     return claims, counts, drops
 
 
+FLAGGED_SPAN_MAX_CHARS = 240
+FLAGGED_SPAN_MAX_COUNT = 3
+
+
+def _flagged_spans(response: str, claims: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Span text of each contradicted/insufficient personal-kind claim.
+
+    Position-ordered, newline-normalised, cut (at whitespace) to a prefix of
+    at most FLAGGED_SPAN_MAX_CHARS, deduped, at most FLAGGED_SPAN_MAX_COUNT.
+    The cut span is still a substring of the normalised response.
+    """
+    found: list[tuple[int, str]] = []
+    for claim in claims:
+        if claim.get("status") not in _UNSUPPORTED:
+            continue
+        if not _omission_eligible_kind(_as_text(claim.get("kind"))):
+            continue
+        text = claim.get("text")
+        if not isinstance(text, str):
+            continue
+        position = response.find(text)
+        span = text.replace("\n", " ").strip()
+        if len(span) > FLAGGED_SPAN_MAX_CHARS:
+            cut = span.rfind(" ", 0, FLAGGED_SPAN_MAX_CHARS)
+            span = span[:cut if cut > 0 else FLAGGED_SPAN_MAX_CHARS].rstrip()
+        if span:
+            found.append((position if position >= 0 else len(response), span))
+    ordered: list[str] = []
+    for _, span in sorted(found, key=lambda item: item[0]):
+        if span not in ordered:
+            ordered.append(span)
+    return ordered[:FLAGGED_SPAN_MAX_COUNT]
+
+
 @dataclass
 class PersonalClaimResult:
     status: str
@@ -543,6 +577,13 @@ class PersonalClaimResult:
     dropped_evidence_count: int = 0
     demoted_count: int = 0
     relocated_count: int = 0
+    # Located response spans of the unsupported PERSONAL-kind claims, ordered by
+    # position (class: BC-97): the receipt names WHICH claim was flagged.
+    # None = not computed by the caller (a result built outside
+    # audit_personal_claims): receipt() derives the spans from ``claims`` in
+    # claim order rather than emitting [] -- an empty list MEANS "nothing
+    # personal was flagged" and suppresses the marker (referee 2026-10-14).
+    flagged_spans: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.status not in _RESULT_STATUSES:
@@ -574,6 +615,11 @@ class PersonalClaimResult:
         }
         if self.evidence_truncated:
             result["evidence_truncated"] = True
+        if self.status == "checked":
+            spans = self.flagged_spans
+            if spans is None:
+                spans = _flagged_spans("", self.claims)
+            result["flagged_spans"] = list(spans)
         return result
 
 
@@ -655,7 +701,8 @@ async def audit_personal_claims(
                                dropped_claim_count=counts["dropped_claims"],
                                dropped_evidence_count=counts["dropped_evidence"],
                                demoted_count=counts["demoted"],
-                               relocated_count=counts["relocated"])
+                               relocated_count=counts["relocated"],
+                               flagged_spans=_flagged_spans(response, claims))
 
 
 _SENTENCE_END_RE = re.compile(r"[.!?]+(?:[\"'”’»\)\]]+)?(?:\s+|$)|\n{2,}")

@@ -173,9 +173,15 @@ async def test_log_only_delivers_unchanged_and_defers_receipt_to_every_sink(turn
     receipt = provenance["personal_claim_support"]
     assert receipt["status"] == "checked" and receipt["delivery"] == "unchanged"
     assert receipt["source_ids"] == ["src_current_query"]
-    # The receipt carries counts and opaque IDs only -- never the claim text.
-    assert "resume" not in json.dumps(receipt) and "resume" not in json.dumps(
+    # Telemetry carries counts and opaque IDs only -- never the claim text.
+    # The STORAGE receipt (stored beside this same reply) quotes only the
+    # flagged personal spans, each an exact substring of the reply, so the
+    # read-time marker can name them (2026-10-14, BC-97).
+    assert "resume" not in json.dumps(
         {k: v for k, v in row.items() if k.startswith("personal_claim_")})
+    assert receipt["flagged_spans"] == [
+        s for s in UNSUPPORTED_SPANS if s in ANSWER][:3]
+    assert all(span in ANSWER for span in receipt["flagged_spans"])
     debug = state.session.debug_records[0]
     assert debug["response"] == ANSWER
     assert debug["personal_claim_status"] == "checked"

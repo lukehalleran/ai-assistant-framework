@@ -39,6 +39,23 @@ LEGACY_PERSONAL_CLAIM_MARKERS = (
     "insufficient or conflicting user evidence. Treat it as assistant "
     "interpretation, not a user completion report.]",
 )
+# Span family (BC-97): names WHICH claim was flagged, so the note carries
+# information (the generic marker above fired on nearly every stored turn).
+PERSONAL_CLAIM_SPAN_OPEN = '[Personal-claim check: the assistant said "'
+PERSONAL_CLAIM_SPAN_CLOSE = '" — not found in the user\'s own words; do not repeat it as fact.]'
+
+
+def personal_claim_span_marker(span: str) -> str:
+    """One marker line quoting an unverified assistant claim (newlines flattened)."""
+    return f"{PERSONAL_CLAIM_SPAN_OPEN}{' '.join(str(span).split())}{PERSONAL_CLAIM_SPAN_CLOSE}"
+
+
+def _is_span_marker_line(stripped: str) -> bool:
+    return (stripped.startswith(PERSONAL_CLAIM_SPAN_OPEN)
+            and stripped.endswith(PERSONAL_CLAIM_SPAN_CLOSE)
+            and len(stripped) >= len(PERSONAL_CLAIM_SPAN_OPEN) + len(PERSONAL_CLAIM_SPAN_CLOSE))
+
+
 UNVERIFIED_CLAIM_MARKER = "[unverified action claim]"
 READ_TIME_MARKERS = (PERSONAL_CLAIM_MARKER, UNVERIFIED_CLAIM_MARKER, *LEGACY_PERSONAL_CLAIM_MARKERS)
 DELIVERY_NOTICE_PREFIX = "> ⚠️"
@@ -102,7 +119,8 @@ def strip_read_time_markers(text: str) -> str:
         if not isinstance(text, str) or not text:
             return text
         lines = text.split("\n")
-        kept = [line for line in lines if line.strip() not in READ_TIME_MARKERS]
+        kept = [line for line in lines if line.strip() not in READ_TIME_MARKERS
+                and not _is_span_marker_line(line.strip())]
         return "\n".join(kept).rstrip()
     except Exception:
         return text

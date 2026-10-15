@@ -51,7 +51,7 @@ import json
 import logging
 from pathlib import Path
 from utils.safe_json import atomic_write_text
-from utils.personal_claim_provenance import MARKER as PERSONAL_CLAIM_MARKER, annotate_personal_claim_memory
+from utils.personal_claim_provenance import annotate_personal_claim_memory, marker_suffix
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
@@ -755,7 +755,7 @@ class DailyNotesGenerator:
             if len(response) > a_max:
                 response = response[:a_max] + "..."
             if marked.get("response") != conv.get("response"):
-                response += "\n" + PERSONAL_CLAIM_MARKER
+                response += "\n" + marker_suffix(conv.get("response") or "", marked.get("response") or "")
 
             formatted.append(f"[{time_str}] Exchange {i}:\nUser: {query}\nDaemon: {response}")
 

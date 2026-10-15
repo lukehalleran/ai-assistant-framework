@@ -3983,14 +3983,28 @@ def _personal_claim_receipt(result, *, delivery="unchanged", status=None, reason
             "source_ids": [], "elapsed_s": 0.0,
         }
     clean["delivery"] = delivery
+    if delivery != "unchanged":
+        # 2026-10-14 (BC-97): flagged spans name text in the DELIVERED reply so
+        # a later prompt can quote it as unverified. A revised reply no longer
+        # contains them -- never persist text the user was not shown (G12).
+        clean.pop("flagged_spans", None)
+        clean.pop("flagged_spans_dropped", None)
     return clean
+
+
+# Receipt keys that quote the assistant's reply. They ride ONLY on the storage
+# provenance (stored beside that same reply, where the read-time marker needs
+# them); telemetry and the shareable debug record keep the excerpt-free
+# receipt contract of PLAN_20260915 (counts, IDs, status). class: BC-97.
+_STORAGE_ONLY_RECEIPT_KEYS = frozenset({"flagged_spans"})
 
 
 def _record_personal_claim_outcome(ctx, receipt, provenance=None):
     """Copy only the bounded receipt into turn telemetry/debug/provenance."""
     receipt = dict(receipt or {})
     ctx.personal_claim_receipt = receipt
-    for key, value in receipt.items():
+    public = {k: v for k, v in receipt.items() if k not in _STORAGE_ONLY_RECEIPT_KEYS}
+    for key, value in public.items():
         # Keep telemetry field names explicit and easy to query.  The nested
         # receipt is also carried in provenance for storage consumers.
         ctx.telemetry[f"personal_claim_{key}"] = value
@@ -3998,8 +4012,8 @@ def _record_personal_claim_outcome(ctx, receipt, provenance=None):
         provenance["personal_claim_support"] = dict(receipt)
     record = getattr(ctx, "debug_record", None)
     if isinstance(record, dict):
-        record["personal_claim_support"] = dict(receipt)
-        record.update({f"personal_claim_{k}": v for k, v in receipt.items()})
+        record["personal_claim_support"] = dict(public)
+        record.update({f"personal_claim_{k}": v for k, v in public.items()})
     return receipt
 
 
