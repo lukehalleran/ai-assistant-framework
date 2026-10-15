@@ -1736,7 +1736,15 @@ class PromptFormatter:
                 deadline = t.get("deadline_date")
                 line = f"- [{ttype}] {topic}: {summary}"
                 if deadline:
-                    line += f" (deadline: {deadline})"
+                    # A commitment's date is a TARGET the user set for
+                    # themselves, not a due date (BC-51); only a real
+                    # deadline thread says "due".
+                    if ttype == "commitment":
+                        line += f" (target date the user set: {deadline})"
+                    elif ttype == "deadline":
+                        line += f" (due: {deadline})"
+                    else:
+                        line += f" (date: {deadline})"
                 thread_lines.append(line)
             sections.append(f"[UNRESOLVED THREADS] n={len(thread_lines)}\n" + "\n".join(thread_lines))
 

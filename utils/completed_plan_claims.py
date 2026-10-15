@@ -312,6 +312,47 @@ def plan_sentences(narrative: str) -> List[str]:
     return [" ".join(s.split()) for s, _start, _end in _plan_claim_spans(narrative)]
 
 
+def _clause_passes_guards(
+    clause: str, *, plan_digits: set, is_document_plan: bool,
+) -> bool:
+    """Status / negation / completion-cue / digit-conflict / document-share
+    guards of the per-clause judge (everything except object identity)."""
+    if _STATUS_NOT_COMPLETED_RE.search(clause):
+        return False
+    if _COMPLETION_NEGATION_RE.search(clause):
+        return False
+    if not _has_completion_cue(clause):
+        return False
+    clause_digits = _digit_tokens(_norm_tokens(clause))
+    if plan_digits and clause_digits and not (plan_digits & clause_digits):
+        return False
+    if (_DOCUMENT_SHARE_RE.search(clause) and _DOCUMENT_NOUN_RE.search(clause)
+            and not is_document_plan):
+        return False
+    return True
+
+
+def clause_reports_completion(
+    clause: str,
+    head: str,
+    modifier: str,
+    *,
+    plan_digits: set,
+    is_document_plan: bool,
+) -> bool:
+    """THE per-clause judge: does this user CLAUSE report the object
+    (head/modifier identity) done?  Shared by the narrative completed-plan
+    check (``completed_by_user``) and the thread quick-resolver
+    (``memory.thread_store.check_quick_resolutions``) -- one chokepoint
+    (BC-26).  Status/negation/cue/digit/document-share guards, then the
+    object-head identity match, all inside the SAME clause."""
+    if not _clause_passes_guards(
+        clause, plan_digits=plan_digits, is_document_plan=is_document_plan,
+    ):
+        return False
+    return _clause_matches_head(clause, head, modifier)
+
+
 def _statement_text(item: Dict[str, Any]) -> str:
     return str(item.get("user_text") or item.get("query") or item.get("user") or "")
 
@@ -387,19 +428,14 @@ def completed_by_user(
             continue
         matched_clause: Optional[str] = None
         for clause in (_split_clauses(text) or [text]):
-            if _STATUS_NOT_COMPLETED_RE.search(clause):
+            if not _clause_passes_guards(
+                clause, plan_digits=plan_digits, is_document_plan=is_document_plan,
+            ):
                 continue
-            if _COMPLETION_NEGATION_RE.search(clause):
-                continue
-            if not _has_completion_cue(clause):
-                continue
-            clause_digits = _digit_tokens(_norm_tokens(clause))
-            if plan_digits and clause_digits and not (plan_digits & clause_digits):
-                continue
-            if (_DOCUMENT_SHARE_RE.search(clause) and _DOCUMENT_NOUN_RE.search(clause)
-                    and not is_document_plan):
-                continue
-            if _clause_matches_head(clause, head, modifier):
+            if clause_reports_completion(
+                clause, head, modifier,
+                plan_digits=plan_digits, is_document_plan=is_document_plan,
+            ):
                 matched_clause = clause
                 break
             if _BARE_IT_RE.search(clause) and pos > 0:
