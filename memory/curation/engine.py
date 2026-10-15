@@ -178,7 +178,8 @@ class CurationEngine:
     def _store_kwargs(self):
         return dict(chroma_store=self.stores.chroma_store,
                     user_profile=self.stores.user_profile,
-                    graph_memory=self.stores.graph_memory)
+                    graph_memory=self.stores.graph_memory,
+                    corpus_manager=self.stores.corpus_manager)
 
     @staticmethod
     def _transition(p, status, detail=""):
