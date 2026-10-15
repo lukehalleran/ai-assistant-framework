@@ -355,7 +355,12 @@ def _recent_entry(ts: datetime) -> dict:
 def test_last_exchange_attached_within_session(formatter):
     """A minutes-old exchange from the same session stays glued to the query."""
     from datetime import timedelta
-    ts = datetime.now() - timedelta(minutes=5)
+    # _detect_session_boundary treats a calendar-day change as a new session,
+    # so clamp to today's midnight: "5 minutes ago" must stay in today at ANY
+    # wall-clock time (class: BC-94)
+    now = datetime.now()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    ts = max(now - timedelta(minutes=5), midnight)
     prompt = formatter._assemble_prompt(
         context={"recent_conversations": [_recent_entry(ts)]},
         user_input="Hey",
