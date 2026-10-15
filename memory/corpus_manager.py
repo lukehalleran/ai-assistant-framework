@@ -40,6 +40,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from memory.summary_coverage import corpus_content_time_raw
+from memory.utils import is_quarantined
 import memory.pending_turns as pending_turns
 from utils.logging_utils import get_logger, log_and_time
 from utils.safe_json import atomic_write_json, atomic_write_text, load_critical_json
@@ -242,16 +243,36 @@ class CorpusManager:
         self.save_corpus()
 
 
+    def visible_entries(self) -> List[Dict]:
+        """THE visibility predicate for corpus CONTENT reads (2026-10-15).
+
+        A quarantined entry (top-level ``curation_quarantined`` flag, the same
+        flag ``memory.utils.is_quarantined`` reads on the Chroma copy) stays
+        stored, pruned and saved like any other entry, but must never reach a
+        prompt, a summary, an extraction or a note. Maintenance paths (save,
+        add_entry, prune, clear, dedup) keep iterating ``self.corpus``.
+        """
+        return [e for e in self.corpus if not is_quarantined(e)]
+
+    def invalidate_read_cache(self) -> None:
+        """Drop the cached episodic list (call after flipping a flag in place)."""
+        self._episodic_cache = None
+
     def _get_episodic_sorted(self) -> List[Dict]:
-        """Return filtered+sorted episodic list, cached until corpus changes."""
+        """Return filtered+sorted episodic list, cached until corpus changes.
+
+        The cache is built from visible entries AND re-filtered at read time:
+        a flag flipped on an in-memory entry after the cache was built must
+        not leave the entry visible.
+        """
         if self._episodic_cache is None:
             episodic = [
-                e for e in self.corpus
+                e for e in self.visible_entries()
                 if e.get("type") not in ("summary", "reflection")
                 and "@summary" not in e.get("tags", [])
             ]
             self._episodic_cache = sorted(episodic, key=lambda x: x.get('timestamp', datetime.min), reverse=True)
-        return self._episodic_cache
+        return [e for e in self._episodic_cache if not is_quarantined(e)]
 
     def _episodic_with_pending(self) -> List[Dict]:
         """READ-path view: delivered-but-not-yet-stored turns (memory.pending_turns)
@@ -550,7 +571,7 @@ class CorpusManager:
                 return False
             return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
 
-        summaries = [e for e in self.corpus if _is_summary_entry(e)]
+        summaries = [e for e in self.visible_entries() if _is_summary_entry(e)]
         summaries.sort(key=lambda x: _norm_ts(corpus_content_time_raw(x)), reverse=True)
         return summaries[:count]
 
@@ -580,13 +601,13 @@ class CorpusManager:
     # --- Convenience helpers used by reflections path ---
     def get_summaries_of_type(self, types=("summary",), limit: int = 5) -> List[Dict]:
         tset = set(types or ("summary",))
-        items = [e for e in self.corpus if (e.get("type") or "").lower() in tset]
+        items = [e for e in self.visible_entries() if (e.get("type") or "").lower() in tset]
         items.sort(key=lambda x: x.get("timestamp", datetime.min), reverse=True)
         return items[:limit]
 
     def get_items_by_type(self, type_name: str, limit: int = 5) -> List[Dict]:
         t = (type_name or "").lower()
-        items = [e for e in self.corpus if (e.get("type") or "").lower() == t or f"type:{t}" in (e.get("tags") or [])]
+        items = [e for e in self.visible_entries() if (e.get("type") or "").lower() == t or f"type:{t}" in (e.get("tags") or [])]
 
         # Sort by timestamp, handling both timezone-aware and naive datetimes
         def _get_sortable_ts(x):

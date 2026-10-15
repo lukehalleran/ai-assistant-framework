@@ -73,6 +73,7 @@ def _gen(tmp_path, profile=None, model_manager=None, convos=None):
     method under test in this file."""
     corpus = MagicMock()
     corpus.corpus = convos if convos is not None else []
+    corpus.visible_entries.side_effect = lambda: list(corpus.corpus)  # mirrors CorpusManager.visible_entries
     gen = DailyNotesGenerator(
         corpus_manager=corpus,
         model_manager=model_manager or _FakeModelManager(),

@@ -216,7 +216,7 @@ class ShutdownProcessor:
         """
         try:
             # 1) Prep corpus slices and counts
-            corpus = list(self.corpus_manager.corpus)
+            corpus = list(self.corpus_manager.visible_entries())
 
             non_summ = [
                 e for e in corpus
@@ -515,7 +515,7 @@ class ShutdownProcessor:
             session_recent = list(session_conversations)
         else:
             try:
-                corpus = list(self.corpus_manager.corpus)
+                corpus = list(self.corpus_manager.visible_entries())
             except (AttributeError, TypeError):
                 corpus = []
             session_recent = [
@@ -635,7 +635,7 @@ class ShutdownProcessor:
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.corpus)
+                corpus = list(self.corpus_manager.visible_entries())
             except (AttributeError, TypeError):
                 corpus = []
             try:
@@ -908,7 +908,7 @@ class ShutdownProcessor:
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.corpus)
+                corpus = list(self.corpus_manager.visible_entries())
                 sess_items = [
                     e for e in corpus
                     if (not self._is_summary(e)) and (not self._is_reflection(e))
@@ -1051,7 +1051,7 @@ JSON:"""
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.corpus)
+                corpus = list(self.corpus_manager.visible_entries())
             except (AttributeError, TypeError):
                 return
             try:
@@ -1193,7 +1193,7 @@ JSON:"""
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.corpus)
+                corpus = list(self.corpus_manager.visible_entries())
             except (AttributeError, TypeError):
                 return
             try:
@@ -1539,7 +1539,7 @@ JSON:"""
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.corpus)
+                corpus = list(self.corpus_manager.visible_entries())
             except (AttributeError, TypeError):
                 return
             try:
@@ -2048,7 +2048,7 @@ JSON:"""
 
         if not conv:
             try:
-                corpus = list(self.corpus_manager.corpus)
+                corpus = list(self.corpus_manager.visible_entries())
                 non = [
                     e for e in corpus
                     if (not self._is_summary(e)) and (not self._is_reflection(e))
