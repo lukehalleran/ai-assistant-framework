@@ -215,38 +215,8 @@ class ShutdownProcessor:
             of size N, from oldest to newest (so we never duplicate prior work).
         """
         try:
-            # 1) Prep corpus slices and counts
-            corpus = list(self.corpus_manager.visible_entries())
-
-            non_summ = [
-                e for e in corpus
-                if (not self._is_summary(e)) and (not self._is_reflection(e))
-            ]
-            non_summ.sort(key=self._ts)
-
-            N = max(1, int(getattr(self.consolidator, 'consolidation_threshold', 10)))
-            cap = max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN)
-
-            # Coverage is judged by CONTENT time (summary anchors), never by a
-            # positional block index into the rolling corpus (BC-95).
-            ranges = _cov.covered_ranges(self.chroma_store)
-            if ranges is None:
-                logger.info(
-                    "[Shutdown] Summary coverage unreadable — skipping summary blocks this shutdown"
-                )
-            else:
-                watermark = _cov.coverage_watermark(ranges)
-                blocks = _cov.uncovered_blocks(non_summ, watermark, N, cap, _cov.entry_time)
-                if blocks:
-                    await self._generate_block_summaries(blocks, N, non_summ, watermark)
-                else:
-                    pending = _cov.remaining_full_blocks(non_summ, watermark, N, _cov.entry_time)
-                    newer = len([e for e in non_summ if watermark is None or _cov.entry_time(e) > watermark])
-                    since_last = newer % N
-                    logger.info(
-                        "[Shutdown] No new summaries due (N=%s, T=%s); since_last=%s, remaining=%s, backlog=%s",
-                        N, len(non_summ), since_last, (N - since_last) if since_last else N, pending
-                    )
+            # 1) Summary blocks (ONE method shared with scripts/backfill_summaries.py)
+            await self.summarize_uncovered_blocks(max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN))
 
             # ── Parallel Phase A: Extraction ──────────────────────────
             # Facts, LLM facts, behavioral patterns, and skills are
@@ -352,6 +322,68 @@ class ShutdownProcessor:
         except Exception as e:  # noqa: BLE001 — must never block shutdown
             logger.warning("[Shutdown] agent_branch spawn failed: %s", e)
 
+    def _select_uncovered(self, cap: int):
+        """THE selection for summary blocks: (non_summ, N, watermark, blocks), or None
+        when coverage is unreadable (callers must not summarize blind). Pure read."""
+        corpus = list(self.corpus_manager.visible_entries())
+
+        non_summ = [
+            e for e in corpus
+            if (not self._is_summary(e)) and (not self._is_reflection(e))
+        ]
+        non_summ.sort(key=self._ts)
+
+        N = max(1, int(getattr(self.consolidator, 'consolidation_threshold', 10)))
+
+        # Coverage is judged by CONTENT time (summary anchors), never by a
+        # positional block index into the rolling corpus (BC-95).
+        ranges = _cov.covered_ranges(self.chroma_store)
+        if ranges is None:
+            return None
+        watermark = _cov.coverage_watermark(ranges)
+        blocks = _cov.uncovered_blocks(non_summ, watermark, N, cap, _cov.entry_time)
+        return non_summ, N, watermark, blocks
+
+    def plan_uncovered_blocks(self, cap: int) -> list[dict]:
+        """Pure-read plan of the blocks `summarize_uncovered_blocks(cap)` would summarize
+        (no LLM, no writes): [{index, n_entries, start, end}], oldest first."""
+        sel = self._select_uncovered(cap)
+        if sel is None:
+            return []
+        _, _, _, blocks = sel
+        plan = []
+        for i, block in enumerate(blocks):
+            times = [_cov.entry_time(e) for e in block if _cov.entry_time(e) != datetime.min]
+            plan.append({
+                'index': i,
+                'n_entries': len(block),
+                'start': min(times) if times else None,
+                'end': max(times) if times else None,
+            })
+        return plan
+
+    async def summarize_uncovered_blocks(self, cap: int) -> int:
+        """Summarize up to ``cap`` full uncovered blocks (oldest first); returns the
+        number of summaries created. The shutdown and the offline backfill both call
+        this (one chokepoint: selection, prompt and storage are never re-derived)."""
+        sel = self._select_uncovered(cap)
+        if sel is None:
+            logger.info(
+                "[Shutdown] Summary coverage unreadable — skipping summary blocks this shutdown"
+            )
+            return 0
+        non_summ, N, watermark, blocks = sel
+        if blocks:
+            return await self._generate_block_summaries(blocks, N, non_summ, watermark)
+        pending = _cov.remaining_full_blocks(non_summ, watermark, N, _cov.entry_time)
+        newer = len([e for e in non_summ if watermark is None or _cov.entry_time(e) > watermark])
+        since_last = newer % N
+        logger.info(
+            "[Shutdown] No new summaries due (N=%s, T=%s); since_last=%s, remaining=%s, backlog=%s",
+            N, len(non_summ), since_last, (N - since_last) if since_last else N, pending
+        )
+        return 0
+
     async def _generate_block_summaries(self, blocks, N, non_summ=None, watermark=None):
         """Summarize each uncovered block (lists of corpus entries, oldest first)."""
         created = 0
@@ -370,10 +402,15 @@ class ShutdownProcessor:
 
             summary_text = await self._consolidate_block(content_list)
             summary_text = (summary_text or '').strip()
-            if not summary_text:
-                continue
-
-            self._store_summary(summary_text, block)
+            # Stop at the first block that did not land: coverage is a watermark, so a
+            # later block stored after a failed one would move it past the gap and the
+            # failed block would never be summarized (multi-block runs, 2026-10-15).
+            if not summary_text or not self._store_summary(summary_text, block):
+                logger.warning(
+                    "[Shutdown] Summary block not stored (empty/junk/duplicate) — stopping this "
+                    "run so later blocks cannot move the watermark past it"
+                )
+                break
             created += 1
 
         # Backlog after this shutdown = full blocks still newer than the content
@@ -387,6 +424,7 @@ class ShutdownProcessor:
         logger.info(
             f"[Shutdown] Created {created} summary block(s) (N={N}); backlog={remaining}"
         )
+        return created
 
     async def _consolidate_block(self, content_list: list) -> Optional[str]:
         """Compress one block of exchanges into an extractive summary.
@@ -404,8 +442,9 @@ class ShutdownProcessor:
             logger.warning(f"[Shutdown] Block consolidation failed: {e}")
         return None
 
-    def _store_summary(self, summary_text: str, block: list):
-        """Store summary into corpus and Chroma."""
+    def _store_summary(self, summary_text: str, block: list) -> bool:
+        """Store summary into corpus and Chroma. True only when the Chroma copy — the one
+        summary coverage reads its anchors from — was written (2026-10-15)."""
         # Third storage path (2026-08-22): this writes chroma via raw
         # add_to_collection, BYPASSING chroma_store.add_summary — which is
         # where the stream-artifact strip and junk check live. Two summaries
@@ -418,7 +457,7 @@ class ShutdownProcessor:
             from memory.utils import is_junk_summary
             if is_junk_summary(summary_text):
                 logger.warning("[Shutdown] Rejected junk summary at _store_summary")
-                return
+                return False
         except ImportError:
             pass
         try:
@@ -431,7 +470,7 @@ class ShutdownProcessor:
             except Exception as e:
                 logger.warning(f"[Shutdown] Could not retrieve summaries for dedup check: {e}")
             if summary_text in existing_texts:
-                return
+                return False
             entry = {
                 'content': summary_text,
                 'timestamp': datetime.now(),
@@ -504,9 +543,11 @@ class ShutdownProcessor:
                             logger.debug(f"[Staleness] Registered {len(claims)} claims for summary {doc_id}")
                 except Exception as ce:
                     logger.debug(f"[Staleness] Claim extraction for summary failed: {ce}")
+            return bool(doc_id)
 
         except (AttributeError, TypeError) as e:
             logger.debug(f"[Shutdown] Failed to add summary to chroma: {e}")
+        return False
 
     async def _extract_session_facts(self, session_conversations):
         """Extract facts from this session's user turns."""
