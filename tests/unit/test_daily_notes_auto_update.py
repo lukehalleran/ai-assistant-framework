@@ -42,6 +42,7 @@ def generator(vault_path):
     """Create a DailyNotesGenerator with temp vault, no lazy-loading."""
     mock_corpus = MagicMock()
     mock_corpus.corpus = []
+    mock_corpus.visible_entries.side_effect = lambda: list(mock_corpus.corpus)  # mirrors CorpusManager.visible_entries
     mock_model = MagicMock()
     mock_profile = MagicMock()
     mock_profile.get_current_view.return_value = {}

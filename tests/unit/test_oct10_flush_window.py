@@ -33,6 +33,9 @@ class _Corpus:
     def __init__(self):
         self.corpus = []
 
+    def visible_entries(self):  # mirrors CorpusManager.visible_entries
+        return list(self.corpus)
+
 
 class _FakeModels:
     def __init__(self):

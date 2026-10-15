@@ -705,7 +705,7 @@ class DailyNotesGenerator:
         """Filter corpus entries by date."""
         conversations = []
 
-        for entry in self.corpus_manager.corpus:
+        for entry in self.corpus_manager.visible_entries():
             ts = entry.get("timestamp")
             if ts is None:
                 continue

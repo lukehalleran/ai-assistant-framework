@@ -144,6 +144,7 @@ class _Model:
 def _gen(tmp_path, model):
     corpus = MagicMock()
     corpus.corpus = _convos()
+    corpus.visible_entries.side_effect = lambda: list(corpus.corpus)  # mirrors CorpusManager.visible_entries
     gen = DailyNotesGenerator(corpus_manager=corpus, model_manager=model,
                               vault_path=str(tmp_path / "vault"), user_profile=MagicMock(get_current_view=lambda: {}))
     gen.tag_generation_enabled = False
