@@ -33,7 +33,7 @@ build-backend = "setuptools.build_meta"
 # undefined names, invalid comparisons/f-strings — so the gate stays green
 # and violations are always worth fixing. Broaden deliberately, not by default.
 target-version = "py311"
-extend-exclude = ["venv", "data", "integration.bak", "web", "build", "dist"]
+extend-exclude = ["venv", "data", "web", "build", "dist"]
 
 [tool.ruff.lint]
 select = [
@@ -62,7 +62,6 @@ select = [
 "docs/**" = ["T201"]
 "hooks/**" = ["T201"]
 "agent_branch/**" = ["T201"]        # self-improvement proposal harness (goal_runner/workers), own console reporting
-"debug_graph_context.py" = ["T201"] # standalone root-level debug script, not an app module
 
 # Documented CLI/banner paths (the "two documented exceptions" in FOLLOWUPS
 # #180): console output IS the interface here, not a logging gap.
@@ -98,7 +97,7 @@ select = [
 pythonVersion = "3.11"
 pythonPlatform = "Linux"
 include = ["core", "memory", "knowledge", "utils", "gui", "api", "models", "processing", "config", "main.py"]
-exclude = ["venv", "**/venv", "data", "web", "integration.bak", "build", "dist", "scripts", "tests", "agent_branch", "**/__pycache__"]
+exclude = ["venv", "**/venv", "data", "web", "build", "dist", "scripts", "tests", "agent_branch", "**/__pycache__"]
 typeCheckingMode = "standard"
 # Missing third-party stubs are an environment fact, not a code defect (2 rows).
 reportMissingImports = "none"

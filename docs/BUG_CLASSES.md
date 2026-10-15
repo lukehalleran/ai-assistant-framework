@@ -8,7 +8,7 @@ starts from and the place a fix ends: naming the class is part of shipping.
 
 Started 2026-09-10 from the whole audit record (2026-07-14 → 2026-09-10:
 `docs/BUG_RETROSPECTIVE_20260715_20260904.md` §3's fifteen classes; the
-independent audits `AUDIT_SWEEP_20260831.md`, `AUDIT_SWEEP_20260903_CODEX.md`,
+independent audits `docs/audits/AUDIT_SWEEP_20260831.md`, `docs/audits/AUDIT_SWEEP_20260903_CODEX.md`,
 `docs/INDEPENDENT_AUDIT_20260905.md`, `docs/AUDIT_20260906_CONVERSATION.md`,
 `docs/HANDOFF_20260909_independent_bug_audit.md`; the generalization,
 situation-coverage and claim-support audits; `CLAUDE_CHANGELOG.md`'s 46
@@ -133,6 +133,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-91 | Machinery text treated as content by a downstream consumer | E | partial |
 | BC-92 | Separator discarded at a split and re-guessed at the join | E | closed |
 | BC-93 | Empty-iterable reduction | D | partial |
+| BC-94 | Wall-clock test fixture crosses a calendar boundary | H | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -911,6 +912,13 @@ mechanism no existing class named. Every other finding of that day is filed as a
 - Find: stdlib `ast` scan of core/memory/knowledge/utils/api/gui/models/processing/config for `Call(Name in {max,min})` with exactly one positional argument that is not a literal list/tuple/set, no `default=` keyword; then for each hit check whether an emptiness test dominates the call and whether any upstream path (error, degraded mode, empty store) can produce an empty iterable. Also `rg -n "raw_scores=\{\}|return \(.*, \{\}\)"` for producers that signal failure with an empty container.
 - Closure: `default=`/dominating guard at the call (tone detector fixed), plus an explicit degraded-mode signal where the empty value MEANS something (`semantic_unavailable` forces the arbiter, skips exemplar teaching, labels the result). The broad handler in `core/context_pipeline.py` now uses `logger.exception` with a `# degrades:` marker. Tests: `tests/unit/test_tone_detector_degraded.py` (19 of 20 fail on the pre-fix base).
 - Status: partial — no scanner (guard files reserved this lane); the sweep is manual and found no other reachable-empty site, but new reductions are unguarded by construction.
+
+### BC-94 Wall-clock test fixture crosses a calendar boundary
+- Mechanism: a test builds "recent" from the wall clock (`datetime.now() - timedelta(minutes=N)`) and hands it to code that treats a calendar-day change (or an hour/weekday edge) as meaningful. The fixture means "same session / today" for all but the first N minutes after midnight, so CI goes red in a narrow recurring window and passes on rerun.
+- Incidents: 2026-10-12 master CI red 00:00-00:05 UTC on fa2c7eb — `tests/unit/test_sep22_formatter_machinery_strip.py` vs `core/prompt/formatter.py` `_detect_session_boundary` (`prev.date() != curr.date()`), fixed 7d8b4c3. 2026-10-14 audit of the 12 now-minus-minutes files: `tests/unit/test_prompt_builder_methods.py::test_last_exchange_attached_within_session` had the same flip (proven: fails with the clock forced to 00:03, passes after the clamp); the other 11 compare elapsed time only. Side finding: `test_last_exchange_skipped_on_calendar_day_change` skips itself outside the hour after midnight, so the day-change branch is almost never exercised.
+- Find: `rg -n "datetime\.(now|utcnow)\(\) - timedelta\((minutes|seconds|hours)=" tests` and `rg -n "time\.time\(\) - [0-9]" tests`; per hit, grep the production path for `.date()`, `.hour`, `.weekday()`, "today", date-keyed strftime. Elapsed-only comparisons (`total_seconds()` vs a TTL) are safe. Prove a flip by forcing the module's `datetime.now()` to 00:03 (pytest plugin pattern: `~/daemon_exec/oct14_runs/WALL/fake_clock_plugin.py`).
+- Closure: clamp to today's midnight (`max(now - delta, midnight)`) or freeze the clock for session-boundary tests. Proposed: a shared fixture helper plus a ceiling guard on now-minus-delta fixtures in tests that reach the session-boundary code.
+- Status: partial — 25 further files with the pattern (17 `now() - timedelta`, 8 `time.time() - N`) are listed but unaudited (`oct14_runs/WALL/handoff.md`); no guard yet.
 
 ## Detection methods (DM) — find instances without a full read
 

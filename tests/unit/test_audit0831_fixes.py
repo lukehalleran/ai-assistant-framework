@@ -1,6 +1,6 @@
 """Regression tests for the 2026-08-31 audit-sweep fix batch (F5-F33).
 
-Each class pins one finding from AUDIT_SWEEP_20260831.md by driving the
+Each class pins one finding from docs/audits/AUDIT_SWEEP_20260831.md by driving the
 DEPLOYED function — no getsource string pins. Findings F1-F4, F7, F8, F31
 were fixed and tested in the prior commit; this file covers the remainder.
 """

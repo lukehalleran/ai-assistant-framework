@@ -98,6 +98,7 @@ from .context_gatherer import (
     PROMPT_MAX_RECENT_REFLECTIONS,
     PROMPT_MAX_SEMANTIC_REFLECTIONS
 )
+from .gatherer_memory import USER_STATED_CANDIDATE_POOL, USER_STATED_MAX_ITEMS
 from .formatter import (
     PromptFormatter, _parse_bool, _dedupe_keep_order, _sanitize_embedded_headers,
     _staleness_prefix, _is_multimodal_model, _load_upload_image,
@@ -364,6 +365,22 @@ PROMPT_MIN_REFLECTIONS_FLOOR = _cfg_int("prompt_min_reflections_floor", 1)
 # its filler is ungated recent conversations relabeled as [RELEVANT MEMORIES];
 # refilling to the intent cap (30) defeated the gate's honest-few doctrine.
 MEMORY_TOPUP_FLOOR = _cfg_int("prompt_memory_topup_floor", 3)
+
+
+def _drop_visible_user_stated(user_stated, recent_convos, limit: int):
+    """Best-first [THE USER'S OWN STATEMENTS] minus those already shown verbatim in
+    [RECENT CONVERSATION], THEN cut to ``limit`` (K after dedup, so a hit in the recent
+    window cannot empty the section). Both sides compared on [test]-envelope inner text.
+    class: BC-58, BC-46"""
+    from utils.test_envelope import inner_text  # lazy import: layering (utils stays leaf)
+
+    def _norm(v):
+        return " ".join(inner_text(str(v or "")).lower().split())
+
+    visible = {_norm((m or {}).get("query", "")) for m in (recent_convos or [])
+               if isinstance(m, dict)}
+    kept = [u for u in (user_stated or []) if _norm(u.get("query", "")) not in visible]
+    return kept[:max(0, limit)]
 
 
 def select_floor_topup(stored, have_contents, needed):
@@ -1639,7 +1656,8 @@ class UnifiedPromptBuilder:
             if (intent_type or "").lower() == "factual_recall":
                 tasks["user_stated"] = asyncio.create_task(
                     _timed_task("user_stated",
-                                self.context_gatherer.get_user_stated_evidence(user_input, intent_type))
+                                self.context_gatherer.get_user_stated_evidence(
+                                    user_input, intent_type, limit=USER_STATED_CANDIDATE_POOL))
                 )
 
             # Visual memories (CLIP-based image search) — gated by visual intent
@@ -1943,10 +1961,9 @@ class UnifiedPromptBuilder:
                 _session_timeline = _today_timeline_from_probe(_session_probe, _shown_keys)
 
             # Drop user-stated evidence already shown verbatim in the recent window.
-            _recent_user_texts = {" ".join(str((m or {}).get("query", "")).lower().split())
-                                  for m in recent_convos if isinstance(m, dict)}
-            user_stated = [u for u in (gathered.get("user_stated") or [])
-                           if " ".join(str(u.get("query", "")).lower().split()) not in _recent_user_texts]
+            # K applies AFTER this dedup (pool fetched at USER_STATED_CANDIDATE_POOL).
+            user_stated = _drop_visible_user_stated(
+                gathered.get("user_stated") or [], recent_convos, USER_STATED_MAX_ITEMS)
 
             context = {
                 "recent_conversations": recent_convos,

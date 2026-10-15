@@ -6,6 +6,8 @@ All quality metrics computed over retrieval cases only (intent-only cases exclud
 
 ## Current Metrics (2026-09-20 rerun, git `3d28858`)
 
+**Headline (public, reproducible): the synthetic adversarial suite — 80 retrieval cases, MRR 0.8901, R@1 0.7625, R@3 0.9375, R@topK 1.0000.** The n=280 *Combined* row below additionally includes the owner-local real-conversation suite (200 cases, private fixture); the real suite's goldens were auto-labelled by the classifier under test, so treat its intent-label results as self-consistency, not independent validation.
+
 ### Combined (n=280 retrieval cases)
 
 | Suite | Cases | MRR | R@1 | R@3 | R@topK |

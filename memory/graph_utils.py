@@ -143,6 +143,48 @@ def _stop_lexicon() -> "frozenset[str]":
     return _STOP_LEXICON
 
 
+# Closed class: interjections and laughter/expressive chat tokens that never
+# name an entity. spaCy tags "lol"/"lmao"/"ugh" as ADV/PROPN (not INTJ), so a
+# POS test cannot catch them; this one category is consulted at the junk
+# chokepoints (is_junk_entity, fact_extractor._is_junk_object).
+INTERJECTION_TOKENS = frozenset({
+    # laughter
+    "lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hehe",
+    # expressive interjections
+    "ugh", "meh", "oops", "whoa", "wow", "yay", "yikes", "oof", "huh", "hmm",
+    "hm", "uh", "um", "er", "eh", "ah", "oh", "ow", "ouch", "phew",
+    # chat reactions
+    "omg", "smh", "idk", "tbh", "ikr", "fr", "ngl",
+})
+_LAUGH_RE = re.compile(r"^(?:h[ae]){2,}h?$")
+_ELONGATION_RE = re.compile(r"([a-z])\1{2,}")
+
+
+def _is_interjection_word(w: str) -> bool:
+    # Casing marks an abbreviation or a name, never an interjection: a 1-2
+    # letter all-caps token ("ER", "OH", "UM") or a word with an internal
+    # capital ("WoW"). 3+ letter all-caps laughter ("LOL", "OMG") still counts.
+    if (w.isupper() and len(w) <= 2) or any(c.isupper() for c in w[1:]) and not w.isupper():
+        return False
+    w = w.lower()
+    if _LAUGH_RE.match(w) or w in INTERJECTION_TOKENS:
+        return True
+    squeezed = _ELONGATION_RE.sub(r"\1\1", w)   # "lmaooo" -> "lmaoo", "ughhh" -> "ughh"
+    if squeezed in INTERJECTION_TOKENS or _LAUGH_RE.match(squeezed):
+        return True
+    collapsed = re.sub(r"([a-z])\1+", r"\1", squeezed)  # "lolll"/"lmaoo" -> single letters
+    return any(re.sub(r"([a-z])\1+", r"\1", t) == collapsed
+               for t in INTERJECTION_TOKENS)
+
+
+def is_interjection(text: str) -> bool:
+    """True when EVERY word token of *text* is a chat interjection/laughter
+    token (elongations like "lmaooo"/"hahahaha" normalised). "lol" and
+    "ugh lol" are junk; "Lola" and "lol cat cafe" are not."""
+    words = re.findall(r"[A-Za-z']+", text or "")
+    return bool(words) and all(_is_interjection_word(w) for w in words)
+
+
 def _is_single_function_word(n: str, *, entity_type: str = "") -> bool:
     """Flag untyped lowercase stopwords; abstain on possible proper names.
 
@@ -172,6 +214,8 @@ def is_junk_entity(name: str, *, entity_type: str = "") -> bool:
     if not n or len(n) <= 2:
         return True
     if n in _STOPWORDS or n in _JUNK_ENTITIES:
+        return True
+    if is_interjection(original):
         return True
     if len(n.split()) >= 4:
         return True

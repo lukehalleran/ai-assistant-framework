@@ -5252,7 +5252,6 @@ daemon/
 │   │   ├── test_harness.py              # Generation harness
 │   │   ├── test_judge.py                # Pairwise judge
 │   │   └── test_checks.py              # Objective checks
-│   ├── integration.bak/       # Backup integration tests
 │   ├── test_*.py             # Integration tests (50+ files)
 │   │   ├── test_integration_prompt_builder.py
 │   │   ├── test_integration_gate_system.py

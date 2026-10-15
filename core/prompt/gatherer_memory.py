@@ -194,6 +194,15 @@ USER_STATED_MIN_WORDS = 3
 # "where do I work?" vs the answer 0.613 but vs generic old chatter 0.626/0.628 (bge noise floor).
 USER_STATED_LEXICAL_WEIGHT = 0.10  # > the 0.015 cosine gap at full overlap of a 1-term query
 USER_STATED_SESSION_BOOST = 0.05  # same-session statement beats the 0.613 vs 0.628 gap
+# Candidate pool the builder asks for: the builder drops statements already visible in
+# [RECENT CONVERSATION] AFTER ranking, so K must be applied after that dedup (2026-10-14 probe:
+# top-3 were all in the recent window -> section rendered empty). 20 is enough to survive the
+# recent-window dedup; the paste-aware window holds at most 2xN turns.
+USER_STATED_CANDIDATE_POOL = 20
+# Within-session recency (2026-10-14 probe: older "Brightwater" 0.763 vs NEWER "Halvorsen" 0.745,
+# gap 0.018): a newer self-statement in the same session usually supersedes an older one.
+USER_STATED_RECENCY_BOOST = 0.03
+USER_STATED_RECENCY_WINDOW_MIN = 120
 _PERSON_PRONOUN_RE = re.compile(r"\b(?:i|i'm|i've|i'd|i'll|my|me|mine|myself|we|our)\b", re.IGNORECASE)
 
 
@@ -230,9 +239,10 @@ def select_user_stated_candidates(entries_newest_first, query: str, scan: int = 
     query itself, de-duplicated. Returns [(text, timestamp)] newest-first."""
     from memory.memory_storage import is_paste_sized  # lazy import: cycle (storage imports gatherer-side modules)
     from utils.query_checker import is_question  # lazy import: layering (utils stays leaf)
+    from utils.test_envelope import inner_text  # lazy import: layering (utils stays leaf)
     seen = set()
     out = []
-    qnorm = " ".join((query or "").lower().split())
+    qnorm = " ".join(inner_text(query or "").lower().split())
     for e in entries_newest_first or []:
         if len(out) >= scan:
             break
@@ -241,7 +251,9 @@ def select_user_stated_candidates(entries_newest_first, query: str, scan: int = 
         text = e.get("user_text") if e.get("user_text") else e.get("query")
         if not isinstance(text, str):
             continue
-        text = text.strip()
+        # [test] envelope (BC-58): judge what the probe actually said, so a [test] QUESTION
+        # is a question; a [test] statement stays a valid candidate (as its inner text).
+        text = inner_text(text).strip()
         key = " ".join(text.lower().split())
         if (not text or key == qnorm or key in seen or is_paste_sized(text)
                 or is_question(text) or len(text.split()) < USER_STATED_MIN_WORDS):
@@ -360,6 +372,9 @@ class MemoryRetrievalMixin:
                 cand_ts = _parse_entry_timestamp({"timestamp": ts})
                 if cand_ts is not None and not _detect_session_boundary(cand_ts, now):
                     score += USER_STATED_SESSION_BOOST
+                    age_min = max(0.0, (now - cand_ts).total_seconds() / 60.0)
+                    score += USER_STATED_RECENCY_BOOST * max(
+                        0.0, 1 - age_min / USER_STATED_RECENCY_WINDOW_MIN)
                 ranked.append((score, sim, t, ts))
             ranked.sort(key=lambda r: r[0], reverse=True)
             return OutcomeList([{"query": t, "timestamp": ts, "similarity": round(sim, 3),

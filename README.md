@@ -4,9 +4,8 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml/badge.svg)](https://github.com/lukehalleran/ai-assistant-framework/actions/workflows/tests.yml)
-[![Tests](https://img.shields.io/badge/tests-12%2C513-brightgreen.svg)](#testing)
 
-> ~338K lines of Python (≈260K code) across 1,038 files | 14 ChromaDB collections | 12,513 tests | 23 agentic tool types (22 in-loop) | solo-built part-time over ~15 months
+> Python codebase with 14 ChromaDB collections, an agentic tool loop, and a large automated test suite, solo-built part-time. Current line, file, and test counts are generated in the metrics block under Testing below.
 
 Daemon is built around persistent memory, evaluated retrieval, knowledge-graph context, agentic tools, and experimental literature-backed synthesis. It stores your memory locally, retrieves context through a multi-stage RAG pipeline, tracks fact truth and staleness over time, and supports human-gated self-improvement through structured code proposals and isolated agent-branch experiments.
 
@@ -95,7 +94,7 @@ Images are ingested through OpenCLIP ViT-B/32 → vision-LLM caption → entity 
 
 Retrieval quality is **measured, not asserted** — no scoring or weight change ships without a before/after benchmark run.
 
-- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2). Two suites: (1) synthetic adversarial cases (openly distributed), and (2) owner-local cases sampled from personal ChromaDB (not distributed — contains personal memory and skips cleanly when absent). Latest rerun (2026-09-20) across both suites: **273/296 cases pass (92.2%)**; combined **MRR 0.84** (R@1 0.79) over 280 retrieval cases — retrieval is flat against the 2026-07-23 rerun (283/296); the ten newly failing cases fail only a stale intent-label assertion, not retrieval. Historically measured (2026-05-17 baseline snapshot, MRR 0.89, 305/305 on the combined dataset) and retained in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md) for regression tracking.
+- **Retrieval benchmarks** (`tests/benchmarks/`): real embeddings (BGE-small-en-v1.5, 384d) + cross-encoder rerank (ms-marco-MiniLM-L-6-v2). Two suites: (1) synthetic adversarial cases (openly distributed), and (2) owner-local cases sampled from personal ChromaDB (not distributed — contains personal memory and skips cleanly when absent). **Public headline (synthetic adversarial suite, 80 retrieval cases, reproducible from this repo): MRR 0.89, R@1 0.76, R@3 0.94, R@topK 1.00** (2026-09-20 rerun). The combined figure — 273/296 cases pass (92.2%), MRR 0.84 / R@1 0.79 over 280 retrieval cases — additionally includes the owner-local real-conversation suite (200 cases, not distributed), whose goldens were auto-labelled by the intent classifier under test, so its intent-label assertions are not independent evidence. Retrieval is flat against the 2026-07-23 rerun (283/296); the ten newly failing cases fail only a stale intent-label assertion, not retrieval. Historically measured (2026-05-17 baseline snapshot, MRR 0.89, 305/305 on the combined dataset) and retained in [BENCHMARK_METRICS.md](docs/BENCHMARK_METRICS.md) for regression tracking.
 - **Prompt-section ablation eval** (`eval/`): snapshot capture → deterministic replay → leave-one-out / add-one-in variants → blind pairwise A/B judging → 5 automated objective checks. Entirely side-effect-free (a persistence guard asserts no ChromaDB/JSON mutation during eval).
 - **Synthesis validation** (`scripts/synthesis_*`, `docs/SYNTHESIS_VALIDATION.md`): judge-discrimination tests, the document-co-occurrence oracle hardening (n=99), controlled-distance and discovery-mining experiments — all using literature as ground truth.
 
@@ -279,22 +278,22 @@ python -m pytest -m "not slow" -q            # Exclude slow tests
 python -m pytest --cov=. --cov-report=html   # With coverage
 ```
 
-> `pytest.ini` only `--ignore`s four broken-collection files and applies no marker filter, so a bare `pytest` also collects `tests/integration/` and `tests/benchmarks/`; use the CI filter `-m "not slow and not benchmark and not semantic"` to skip them. Markers: `slow`, `semantic`, `benchmark`.
+> `pytest.ini` has no `--ignore`s and applies no marker filter, so a bare `pytest` also collects `tests/integration/` and `tests/benchmarks/`; use the CI filter `-m "not slow and not benchmark and not semantic"` to skip them. Markers: `slow`, `semantic`, `benchmark`.
 >
-> **CI runs a curated fast subset**, not the full suite: `.github/workflows/tests.yml` runs that marker-filtered selection over the whole `tests/` tree with no extra `--ignore`s (the former 17-file CI ignore list was retired in 52a7fbb, 2026-09-09 — `docs/TEST_LANES.md` §1). The full suite runs locally in memory-capped batches (see `CLAUDE.md`); the badge above counts collected tests, not CI-executed tests.
+> **CI runs a curated fast subset**, not the full suite: `.github/workflows/tests.yml` runs that marker-filtered selection over the whole `tests/` tree with no extra `--ignore`s (the former 17-file CI ignore list was retired in 52a7fbb, 2026-09-09 — `docs/TEST_LANES.md` §1). The full suite runs locally in memory-capped batches (see "Running the suite locally" in [`docs/TEST_LANES.md`](docs/TEST_LANES.md)); the generated test count below counts collected tests, not CI-executed tests.
 
-**12,513 tests across 553 test files** (exact live count in the badge above and `docs/METRICS_SNAPSHOT.md`; run `pytest --collect-only`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
+**Test suite** (exact generated counts in the metrics block below and `docs/METRICS_SNAPSHOT.md`; run `pytest --collect-only`). Coverage spans every subsystem — prompt-section eval (246), synthesis audit (40), knowledge graph, intent classification, web-search trigger, fact verification, escalation FSM, cross-deduplication, claim tracking, visual memory, and retrieval benchmarks (real embeddings, recall@K + MRR), among others.
 
 <!-- METRICS:BEGIN -->
 <!-- Generated by scripts/generate_doc_metrics.py — do not edit by hand. -->
-_Snapshot: 2026-09-20 · git `3d28858`_
+_Snapshot: 2026-10-15 · git `058b2e0`_
 
-- **Python:** 1038 files · 338,475 total lines · 259,971 non-blank/non-comment  <sub>(git ls-files '*.py', excl venv/ data/)</sub>
-- **Tests:** 12513 collected across 553 test files  <sub>(python -m pytest --collect-only -q; pytest.ini exclusions applied)</sub>
+- **Python:** 1185 files · 374,054 total lines · 287,149 non-blank/non-comment  <sub>(git ls-files '*.py', excl venv/ data/)</sub>
+- **Tests:** 14506 collected across 671 test files  <sub>(python -m pytest --collect-only -q; pytest.ini exclusions applied)</sub>
 - **Agentic tools:** 23 dispatch-table types (22 exposed in the loop; recall_image excluded)
 - **ChromaDB collections:** 14
-- **Retrieval benchmark (ledger):** MRR=0.8404 · R@1=0.7857 · n=280  <sub>(docs/BENCHMARK_METRICS.md (Combined row))</sub>
-- **Retrieval benchmark (CSV cross-check):** MRR=0.8404 · R@1=0.7857 · n=280  <sub>(data/benchmark_per_case.csv (computed))</sub>
+- **Retrieval benchmark (combined synthetic + owner-local real suites, ledger):** MRR=0.8404 · R@1=0.7857 · n=280  <sub>(docs/BENCHMARK_METRICS.md (Combined row))</sub>
+- **Retrieval benchmark (combined synthetic + owner-local real suites, CSV cross-check):** MRR=0.8404 · R@1=0.7857 · n=280  <sub>(data/benchmark_per_case.csv (computed))</sub>
 <!-- METRICS:END -->
 
 _Volatile counts above are regenerated from primary sources by `scripts/generate_doc_metrics.py` (see `docs/METRICS_SNAPSHOT.md`)._
@@ -420,7 +419,7 @@ eval/                        # Prompt ablation & eval system
 
 agent_branch/                # Sandboxed, human-gated self-modification harness
 scripts/                     # Validation harnesses (synthesis_*, oracle, miner)
-tests/                       # 553 test files, 12,513 tests
+tests/                       # test files (counts: see the generated metrics block)
 ```
 
 ---
