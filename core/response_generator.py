@@ -125,12 +125,11 @@ class ResponseGenerator:
         first_token_time = None
 
         try:
+            # BC-30: route THIS call to model_name; never mutate the
+            # process-wide active model from inside a coroutine (concurrent
+            # verifiers / second turns / best-of candidates would inherit it).
             if model_name:
-                self.model_manager.switch_model(model_name)
-                self.logger.info(
-                    "[ModelManager] Active model set to: %s",
-                    self.model_manager.get_active_model_name()
-                )
+                self.logger.info("[GENERATE] Routing this call to: %s", model_name)
 
             # Ensure a non-empty system prompt is always sent.
             # Falls back to config default if None/blank is provided.
@@ -149,6 +148,8 @@ class ResponseGenerator:
             }
             if max_tokens is not None:
                 gen_kwargs["max_tokens"] = max_tokens
+            if model_name:
+                gen_kwargs["route_model"] = model_name
 
             # Include images for multimodal models
             if images:
@@ -324,7 +325,7 @@ class ResponseGenerator:
                                         if _was_reasoning:
                                             yield "</thinking>"
                                             _was_reasoning = False
-                                        async for _rc in self._recover_reasoning_only(prompt, effective_sp, max_tokens):
+                                        async for _rc in self._recover_reasoning_only(prompt, effective_sp, max_tokens, model_name=model_name):
                                             if _rc:
                                                 _recovered_any = True
                                                 yield _rc
@@ -388,7 +389,7 @@ class ResponseGenerator:
                         if _was_reasoning:
                             yield "</thinking>"
                             _was_reasoning = False
-                        async for _rc in self._recover_reasoning_only(prompt, effective_sp, max_tokens):
+                        async for _rc in self._recover_reasoning_only(prompt, effective_sp, max_tokens, model_name=model_name):
                             if _rc:
                                 first_token_time = time.time()
                                 yield _rc
@@ -405,7 +406,7 @@ class ResponseGenerator:
                         try:
                             self.model_manager._log_cache_usage(
                                 _stream_usage,
-                                model_name=getattr(self.model_manager, "active_model_name", "?"),
+                                model_name=model_name or getattr(self.model_manager, "active_model_name", "?"),
                                 where="streaming",
                             )
                         except Exception:  # degrades: prompt cache usage stats not logged for streamed turn
@@ -434,7 +435,7 @@ class ResponseGenerator:
             self.logger.error(f"[GENERATE] Error: {type(e).__name__}: {str(e)}")
             yield f"[Streaming Error] {e}"
 
-    async def _recover_reasoning_only(self, prompt: str, system_prompt: str, max_tokens):
+    async def _recover_reasoning_only(self, prompt: str, system_prompt: str, max_tokens, model_name: str = None):
         """Recover a swallowed answer when streaming returned reasoning but no content.
 
         Some reasoning models (deepseek-v4 etc.) intermittently emit the entire
@@ -445,7 +446,7 @@ class ResponseGenerator:
         try:
             recovered = await self.model_manager.generate_once(
                 prompt=prompt,
-                model_name=self.model_manager.get_active_model_name(),
+                model_name=model_name or self.model_manager.get_active_model_name(),
                 system_prompt=system_prompt,
                 max_tokens=max_tokens or 1024,
                 disable_reasoning=True,
@@ -469,8 +470,6 @@ class ResponseGenerator:
     async def generate_full(self, prompt: str, model_name: str, system_prompt: str = None, temperature: float = None) -> str:
         """Generate a full, non-streamed response using generate_once."""
         try:
-            if model_name:
-                self.model_manager.switch_model(model_name)
             # Fallback system prompt if missing
             try:
                 from config.app_config import SYSTEM_PROMPT as DEFAULT_SP  # lazy import: live-config
@@ -479,7 +478,7 @@ class ResponseGenerator:
             effective_sp = (system_prompt or "").strip() or DEFAULT_SP
             text = await self.model_manager.generate_once(
                 prompt=prompt,
-                model_name=self.model_manager.get_active_model_name(),
+                model_name=model_name or self.model_manager.get_active_model_name(),
                 system_prompt=effective_sp,
                 # Let ModelManager apply its current default temperature when None
                 temperature=temperature if temperature is not None else None,
