@@ -197,13 +197,19 @@ def _format_summary_section(items: list, header: str, apply_staleness: bool = Tr
         if isinstance(item, dict):
             content = item.get("content", "") or str(item)
             ts = item.get("timestamp", "")
+            covers = item.get("covers", "")
         else:
             content = str(item)
             ts = ""
+            covers = ""
         if content:
             content = _sanitize_embedded_headers(content)
             prefix = _staleness_prefix(item) if apply_staleness else ""
-            if ts:
+            if covers:
+                # Content span, never the creation stamp: a summary written today
+                # about September must not read as a today-dated memory (BC-96).
+                lines.append(f"{i}) [covers {covers}] {prefix}{content}")
+            elif ts:
                 lines.append(f"{i}) {ts}: {prefix}{content}")
             else:
                 lines.append(f"{i}) {prefix}{content}")
@@ -1730,7 +1736,15 @@ class PromptFormatter:
                 deadline = t.get("deadline_date")
                 line = f"- [{ttype}] {topic}: {summary}"
                 if deadline:
-                    line += f" (deadline: {deadline})"
+                    # A commitment's date is a TARGET the user set for
+                    # themselves, not a due date (BC-51); only a real
+                    # deadline thread says "due".
+                    if ttype == "commitment":
+                        line += f" (target date the user set: {deadline})"
+                    elif ttype == "deadline":
+                        line += f" (due: {deadline})"
+                    else:
+                        line += f" (date: {deadline})"
                 thread_lines.append(line)
             sections.append(f"[UNRESOLVED THREADS] n={len(thread_lines)}\n" + "\n".join(thread_lines))
 

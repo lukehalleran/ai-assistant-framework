@@ -39,6 +39,7 @@ import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from memory.summary_coverage import corpus_content_time_raw
 import memory.pending_turns as pending_turns
 from utils.logging_utils import get_logger, log_and_time
 from utils.safe_json import atomic_write_json, atomic_write_text, load_critical_json
@@ -550,7 +551,7 @@ class CorpusManager:
             return ("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)
 
         summaries = [e for e in self.corpus if _is_summary_entry(e)]
-        summaries.sort(key=lambda x: _norm_ts(x.get("timestamp")), reverse=True)
+        summaries.sort(key=lambda x: _norm_ts(corpus_content_time_raw(x)), reverse=True)
         return summaries[:count]
 
     def create_summary_now(self, num_recent: int = 20) -> str:

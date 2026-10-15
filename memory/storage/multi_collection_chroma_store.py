@@ -482,16 +482,25 @@ class MultiCollectionChromaStore:
         coll.add(ids=doc_ids, documents=[t or "" for t in texts], metadatas=clean_mds)
         return doc_ids
 
-    def get_recent(self, collection_name: str, limit: int = 8) -> List[Dict]:
+    def get_recent(self, collection_name: str, limit: int = 8,
+                   time_keys: tuple = ("timestamp",)) -> List[Dict]:
+        """Newest-first by metadata time.
+
+        ``time_keys``: the first present+parseable metadata key wins (default
+        creation ``timestamp``; summaries pass ``temporal_anchor_end`` first so
+        they sort by CONTENT time, BC-96).
+        """
         all_items = self.list_all(collection_name)
 
         def _ts(x):
-            ts = (x.get("metadata") or {}).get("timestamp")
-            try:
-                if isinstance(ts, str):
-                    return datetime.fromisoformat(ts)
-            except Exception as e:  # degrades: item with bad timestamp sorts as oldest
-                logger.debug(f"[ChromaStore] Could not parse timestamp '{ts}': {e}, using minimum date")
+            md = x.get("metadata") or {}
+            for key in time_keys:
+                ts = md.get(key)
+                try:
+                    if isinstance(ts, str):
+                        return datetime.fromisoformat(ts)
+                except Exception as e:  # degrades: item with bad timestamp tries the next key, then sorts as oldest
+                    logger.debug(f"[ChromaStore] Could not parse {key} '{ts}': {e}")
             # fallback ensures items without timestamp don't crash
             return _dt.min
 

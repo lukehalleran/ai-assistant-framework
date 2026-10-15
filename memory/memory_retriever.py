@@ -75,6 +75,7 @@ from config.app_config import (
     NORMAL_THRESHOLD,
 )
 from memory.utils import format_recent_conversations
+from memory.summary_coverage import corpus_anchor_md, corpus_content_time_raw, covers_label
 import re as _re
 
 logger = get_logger("memory_retriever")
@@ -169,6 +170,42 @@ _REFORMULATION_STOPWORDS = frozenset({
 # ---------------------------------------------------------------------------
 # Reflection-specific retrieval helpers
 # ---------------------------------------------------------------------------
+
+def _summary_item(r: dict) -> dict:
+    """ONE builder for a summary dict from a chroma row (BC-96 chokepoint).
+
+    ``timestamp`` is the CONTENT end when the row carries anchors (else the
+    creation time, legacy rows); ``created_at`` keeps the creation time;
+    ``covers`` is the human-readable content span, only when anchors exist.
+    """
+    md = (r or {}).get('metadata') or {}
+    created = md.get('timestamp', datetime.now())
+    item = {
+        'content': (r or {}).get('content', ''),
+        'timestamp': md.get('temporal_anchor_end') or created,
+        'created_at': created,
+        'type': 'summary',
+    }
+    covers = covers_label(md)
+    if covers:
+        item['covers'] = covers
+    return item
+
+
+def _corpus_summary_item(e):
+    """Corpus-side twin of `_summary_item`: timestamp = covers_end when present,
+    created_at = the original stamp, covers label from covers_start/covers_end.
+    Legacy entries (no covers_*) are returned unchanged."""
+    if not isinstance(e, dict) or not e.get('covers_end'):
+        return e
+    item = dict(e)
+    item['created_at'] = e.get('timestamp')
+    item['timestamp'] = corpus_content_time_raw(e)
+    label = covers_label(corpus_anchor_md(e))
+    if label:
+        item['covers'] = label
+    return item
+
 
 def _rewrite_reflection_query(query: str) -> str:
     """
@@ -1024,12 +1061,11 @@ class MemoryRetriever:
         # Try ChromaDB first
         try:
             # Fetch a buffer so historical junk docs don't eat the limit.
-            results = self.chroma_store.get_recent('summaries', limit=limit * 3)
-            chroma_summaries = [{
-                'content': r.get('content', ''),
-                'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
-                'type': 'summary'
-            } for r in results
+            results = self.chroma_store.get_recent(
+                'summaries', limit=limit * 3,
+                time_keys=("temporal_anchor_end", "timestamp"),
+            )
+            chroma_summaries = [_summary_item(r) for r in results
                 if not is_junk_summary(r.get('content', ''))
                 and not is_quarantined(r.get('metadata'))]
             if chroma_summaries:
@@ -1042,7 +1078,7 @@ class MemoryRetriever:
             if hasattr(self.corpus_manager, 'get_summaries'):
                 corpus_summaries = self.corpus_manager.get_summaries(limit)
                 if corpus_summaries:
-                    return corpus_summaries
+                    return [_corpus_summary_item(x) for x in corpus_summaries]
         except Exception:
             pass
 
@@ -1060,7 +1096,8 @@ class MemoryRetriever:
         recent = []
         try:
             if hasattr(self.corpus_manager, 'get_summaries'):
-                recent = self.corpus_manager.get_summaries(recent_budget * 2)
+                recent = [_corpus_summary_item(x)
+                          for x in self.corpus_manager.get_summaries(recent_budget * 2)]
         except Exception:
             pass
 
@@ -1071,15 +1108,7 @@ class MemoryRetriever:
                 results = self.chroma_store.query_collection(
                     'summaries', query, n_results=semantic_budget * 2
                 )
-                semantic = [
-                    {
-                        'content': r.get('content', ''),
-                        'timestamp': r.get('metadata', {}).get('timestamp', datetime.now()),
-                        'type': 'summary',
-                        'source': 'semantic'
-                    }
-                    for r in results
-                ]
+                semantic = [dict(_summary_item(r), source='semantic') for r in results]
             except Exception:
                 pass
 

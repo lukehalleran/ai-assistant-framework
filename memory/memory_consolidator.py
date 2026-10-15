@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
 from utils.completed_plan_claims import remove_completed_plan_claims
-from utils.personal_claim_provenance import MARKER as PERSONAL_CLAIM_MARKER, annotate_personal_claim_memory
+from utils.personal_claim_provenance import annotate_personal_claim_memory, marker_suffix
 from utils.status_claims import authoritative_facts_block, remove_conflicting_claims
 import utils.status_claims as status_claims
 from utils.streak_claims import remove_stale_streak_claims, streak_ledger, streak_ledger_block
@@ -104,7 +104,7 @@ def _format_recent_for_summary(recent: List[Dict[str, Any]],
             if len(a) > a_max:
                 a = a[:a_max]
             if marked.get("response") != e.get("response"):
-                a += "\n" + PERSONAL_CLAIM_MARKER
+                a += "\n" + marker_suffix(e.get("response") or "", marked.get("response") or "")
             out.append(f"User: {q}\nAssistant: {a}")
         except Exception:  # degrades: malformed exchange omitted from summary input
             # best-effort; skip malformed entries
@@ -267,7 +267,7 @@ class MemoryConsolidator:
             if q or a:
                 rendered = a[:300]
                 if marked.get("response", marked.get("a")) != m.get("response", m.get("a")):
-                    rendered += "\n" + PERSONAL_CLAIM_MARKER
+                    rendered += "\n" + marker_suffix(m.get("response", m.get("a")) or "", marked.get("response", marked.get("a")) or "")
                 out.append(f"User: {q[:240]}\nAssistant: {rendered}")
                 continue
             c = (marked.get("content") or "").strip()

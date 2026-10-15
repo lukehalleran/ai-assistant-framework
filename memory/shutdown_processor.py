@@ -87,6 +87,8 @@ from memory.fact_source import authored_text
 import json
 import time
 
+from memory import summary_coverage as _cov
+
 logger = get_logger("shutdown_processor")
 
 
@@ -222,58 +224,29 @@ class ShutdownProcessor:
             ]
             non_summ.sort(key=self._ts)
 
-            # count consolidator-produced summaries
-            def _is_consolidator_summary(e: Dict) -> bool:
-                tags = [str(t).lower() for t in (e.get('tags') or [])]
-                typ = (e.get('type') or '').lower()
-                if not (("summary" in typ) or ("@summary" in tags) or ("type:summary" in tags)):
-                    return False
-                return ("source:consolidator" in tags) or ("summary:consolidated" in tags)
-
-            consolidator_summaries = [e for e in corpus if _is_consolidator_summary(e)]
-
-            def _parse_block_n(tags: list, n: int) -> int | None:
-                try:
-                    key = f"block_n:{n}:"
-                    for t in (tags or []):
-                        t = str(t).strip().lower()
-                        if t.startswith(key):
-                            return int(t.split(':', 2)[2])
-                except (ValueError, IndexError):
-                    return None
-                return None
-
-            existing_block_indices = []
             N = max(1, int(getattr(self.consolidator, 'consolidation_threshold', 10)))
-            for s in consolidator_summaries:
-                bi = _parse_block_n(s.get('tags') or [], N)
-                if isinstance(bi, int):
-                    existing_block_indices.append(bi)
-
-            T = len(non_summ)
-            total_blocks = T // N
-
-            existing_set = set(int(x) for x in existing_block_indices if isinstance(x, int))
-            all_indices = set(range(total_blocks))
-            missing = sorted(all_indices - existing_set)
-
             cap = max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN)
-            selected_blocks = missing[-cap:] if missing else []
 
-            if selected_blocks:
-                await self._generate_block_summaries(
-                    non_summ, selected_blocks, N,
-                    existing_block_indices, consolidator_summaries, T
+            # Coverage is judged by CONTENT time (summary anchors), never by a
+            # positional block index into the rolling corpus (BC-95).
+            ranges = _cov.covered_ranges(self.chroma_store)
+            if ranges is None:
+                logger.info(
+                    "[Shutdown] Summary coverage unreadable — skipping summary blocks this shutdown"
                 )
             else:
-                prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
-                pending_blocks = max(0, (T // N) - prev_blocks)
-                since_last = 0 if pending_blocks > 0 else (T % N)
-                remaining = 0 if pending_blocks > 0 else (N if since_last == 0 else (N - since_last))
-                logger.info(
-                    "[Shutdown] No new summaries due (N=%s, T=%s, prev=%s); since_last=%s, remaining=%s, t=%s, backlog=%s",
-                    N, T, prev_blocks, since_last, remaining, remaining, pending_blocks
-                )
+                watermark = _cov.coverage_watermark(ranges)
+                blocks = _cov.uncovered_blocks(non_summ, watermark, N, cap, _cov.entry_time)
+                if blocks:
+                    await self._generate_block_summaries(blocks, N, non_summ, watermark)
+                else:
+                    pending = _cov.remaining_full_blocks(non_summ, watermark, N, _cov.entry_time)
+                    newer = len([e for e in non_summ if watermark is None or _cov.entry_time(e) > watermark])
+                    since_last = newer % N
+                    logger.info(
+                        "[Shutdown] No new summaries due (N=%s, T=%s); since_last=%s, remaining=%s, backlog=%s",
+                        N, len(non_summ), since_last, (N - since_last) if since_last else N, pending
+                    )
 
             # ── Parallel Phase A: Extraction ──────────────────────────
             # Facts, LLM facts, behavioral patterns, and skills are
@@ -379,17 +352,12 @@ class ShutdownProcessor:
         except Exception as e:  # noqa: BLE001 — must never block shutdown
             logger.warning("[Shutdown] agent_branch spawn failed: %s", e)
 
-    async def _generate_block_summaries(
-        self, non_summ, selected_blocks, N,
-        existing_block_indices, consolidator_summaries, T
-    ):
-        """Generate summaries for selected blocks."""
-        for b in selected_blocks:
-            start = b * N
-            end = start + N
-            block = non_summ[start:end]
+    async def _generate_block_summaries(self, blocks, N, non_summ=None, watermark=None):
+        """Summarize each uncovered block (lists of corpus entries, oldest first)."""
+        created = 0
+        for block in blocks:
             if not block:
-                break
+                continue
             content_list = []
             for c in block:
                 q = (c.get('query') or '').strip()
@@ -405,16 +373,19 @@ class ShutdownProcessor:
             if not summary_text:
                 continue
 
-            self._store_summary(summary_text, N, b, start, end, block)
+            self._store_summary(summary_text, block)
+            created += 1
 
-        prev_blocks = len(existing_block_indices) if existing_block_indices else len(consolidator_summaries)
-        new_prev = prev_blocks + len(selected_blocks)
-        pending_blocks = max(0, (T // N) - new_prev)
-        since_last = 0 if pending_blocks > 0 else (T % N)
-        remaining = 0 if pending_blocks > 0 else (N if since_last == 0 else (N - since_last))
+        # Backlog after this shutdown = full blocks still newer than the content
+        # just summarized (the blocks handed in were the oldest uncovered ones).
+        remaining = 0
+        if non_summ is not None:
+            covered = {id(e) for blk in blocks for e in blk}
+            rest = [e for e in non_summ
+                    if id(e) not in covered and (watermark is None or _cov.entry_time(e) > watermark)]
+            remaining = len(rest) // N
         logger.info(
-            f"[Shutdown] Created {len(selected_blocks)} summary block(s) (N={N}, T={T}, prev={prev_blocks}); "
-            f"since_last={since_last}, remaining={remaining}, t={remaining}, backlog={pending_blocks}"
+            f"[Shutdown] Created {created} summary block(s) (N={N}); backlog={remaining}"
         )
 
     async def _consolidate_block(self, content_list: list) -> Optional[str]:
@@ -433,7 +404,7 @@ class ShutdownProcessor:
             logger.warning(f"[Shutdown] Block consolidation failed: {e}")
         return None
 
-    def _store_summary(self, summary_text: str, N: int, b: int, start: int, end: int, block: list):
+    def _store_summary(self, summary_text: str, block: list):
         """Store summary into corpus and Chroma."""
         # Third storage path (2026-08-22): this writes chroma via raw
         # add_to_collection, BYPASSING chroma_store.add_summary — which is
@@ -461,17 +432,18 @@ class ShutdownProcessor:
                 logger.warning(f"[Shutdown] Could not retrieve summaries for dedup check: {e}")
             if summary_text in existing_texts:
                 return
-            self.corpus_manager.add_summary({
+            entry = {
                 'content': summary_text,
                 'timestamp': datetime.now(),
                 'type': 'summary',
-                'tags': [
-                    'summary:consolidated',
-                    'source:consolidator',
-                    f'block_n:{N}:{b}',
-                    f'block_span_n:{N}:{start}-{end - 1}',
-                ]
-            })
+                'tags': ['summary:consolidated', 'source:consolidator'],
+            }
+            # Content span (BC-96): corpus readers sort/render by this, not by 'timestamp'.
+            block_times = [_cov.entry_time(e) for e in block if _cov.entry_time(e) != datetime.min]
+            if block_times:
+                entry['covers_start'] = min(block_times).isoformat()
+                entry['covers_end'] = max(block_times).isoformat()
+            self.corpus_manager.add_summary(entry)
         except (AttributeError, TypeError) as e:
             logger.debug(f"[Shutdown] Failed to add summary to corpus: {e}")
 
@@ -480,13 +452,13 @@ class ShutdownProcessor:
                 'timestamp': datetime.now().isoformat(),
                 'type': 'summary',
                 'importance_score': 0.7,
-                'tags': f'summary:consolidated,source:consolidator,block_n:{N}:{b},block_span_n:{N}:{start}-{end - 1}',
+                'tags': 'summary:consolidated,source:consolidator',
                 'memory_count': len(block),
                 'staleness_ratio': 0.0,
             }
             # Add temporal anchors from the block's timestamp range
             try:
-                block_times = [self._ts(e) for e in block if self._ts(e) != datetime.min]
+                block_times = [_cov.entry_time(e) for e in block if _cov.entry_time(e) != datetime.min]
                 if block_times:
                     md['temporal_anchor_start'] = min(block_times).isoformat()
                     md['temporal_anchor_end'] = max(block_times).isoformat()

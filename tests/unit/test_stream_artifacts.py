@@ -490,7 +490,7 @@ class TestShutdownSummaryPathSanitized:
         p._store_summary(
             "<|sep|>- The user sent their ODS accommodations notice, which "
             "includes extra time on exams, and has a meeting with ODS on "
-            "Wednesday to discuss next steps for the semester.", 20, 0, 0, 5, [])
+            "Wednesday to discuss next steps for the semester.", [])
         assert p.chroma_store.added, "summary should store"
         coll, text = p.chroma_store.added[0]
         assert "<|sep|>" not in text
@@ -498,7 +498,7 @@ class TestShutdownSummaryPathSanitized:
 
     def test_junk_summary_rejected(self):
         p = self._proc()
-        p._store_summary("[API Error] request failed", 20, 0, 0, 5, [])
+        p._store_summary("[API Error] request failed", [])
         assert not p.chroma_store.added
         assert not p.corpus_manager.added
 
@@ -510,7 +510,7 @@ class TestShutdownSummaryPathSanitized:
             "<thinking>Let me think about the user's patterns...</thinking>"
             "Based on the data, the user has been improving steadily over the past few weeks."
         )
-        p._store_summary(summary_with_thinking, 20, 0, 0, 5, [])
+        p._store_summary(summary_with_thinking, [])
         assert p.chroma_store.added, "summary should store"
         coll, text = p.chroma_store.added[0]
         assert "<thinking>" not in text

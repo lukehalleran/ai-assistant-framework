@@ -41,6 +41,8 @@ from typing import List, Optional
 
 from utils.logging_utils import get_logger
 from utils.retrieval_outcome import OutcomeList, RetrievalError, StoreWriteError
+import utils.completed_plan_claims as cpc
+from memory.fact_source import _split_clauses
 from memory.thread_models import DisputedResolution, OpenThread, ThreadStatus
 
 logger = get_logger("thread_store")
@@ -128,10 +130,101 @@ def threads_duplicate(a: OpenThread, b: OpenThread) -> bool:
     return jaccard >= 0.6
 
 
-def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -> List[str]:
-    """Check if user's message signals completion of any open threads.
+def _thread_nlp():
+    """spaCy pipeline via the extractor's lazy loader (None when unavailable)."""
+    try:
+        from memory.fact_extractor import _get_nlp  # lazy import: cycle
+        return _get_nlp()
+    except Exception:  # degrades: thread identity falls back to the plan-head heuristic
+        return None
 
-    Pure regex — no LLM, no DB queries. ~1ms.
+
+def _thread_identities(topic: str) -> List[tuple]:
+    """Ordered (head, modifier) identity candidates for a thread topic.
+
+    Primary: the ROOT of the first noun chunk that is not a pronoun or a
+    temporal expression, with the content token right before the root inside
+    the chunk as its modifier (spaCy -- structural, no word list). Secondary:
+    when that modifier is itself a plain compound noun, it names the object
+    alone too ("email response" -> a bare "the email" reports it done).
+    Fallback without spaCy: the plan-head heuristic the narrative check uses.
+    """
+    nlp = _thread_nlp()
+    if nlp is not None and (topic or "").strip():
+        try:
+            doc = nlp(topic)
+        except Exception:  # degrades: thread identity falls back to the plan-head heuristic
+            doc = None
+        if doc is not None:
+            chunks = list(doc.noun_chunks)
+            # A person chunk is the addressee ("Email Professor Hale about the
+            # extension"), not the object -- unless nothing else names one.
+            if any(c.root.ent_type_ != "PERSON" and c.root.pos_ not in ("PRON", "NUM")
+                   for c in chunks):
+                chunks = [c for c in chunks if c.root.ent_type_ != "PERSON"]
+            out: List[tuple] = []
+            label: List[tuple] = []
+            want_next = False
+            for chunk in chunks:
+                root = chunk.root
+                if root.pos_ in ("PRON", "NUM") or root.ent_type_ in ("DATE", "TIME"):
+                    continue
+                if root.lower_ in cpc._PLAN_TEMPORAL_WORDS or not root.is_alpha:
+                    continue
+                head = root.lower_
+                modifier = ""
+                prev = None
+                for tok in chunk:
+                    if tok.i >= root.i:
+                        break
+                    if tok.is_alpha and not tok.is_stop:
+                        modifier, prev = tok.lower_, tok
+                out.append((head, modifier))
+                if prev is not None and prev.pos_ == "NOUN" and prev.dep_ == "compound":
+                    out.append((modifier, ""))
+                # A coded label ("STAT 5100", "HW 4") is a PROPN root directly
+                # followed by a number: the thing it labels is the NEXT chunk,
+                # so that chunk's identity counts too.
+                nxt = doc[root.i + 1] if root.i + 1 < len(doc) else None
+                if (not want_next and root.pos_ == "PROPN" and nxt is not None
+                        and nxt.pos_ == "NUM" and chunk.end <= nxt.i + 1):
+                    # The label alone ("stat") is too weak an identity when a
+                    # later chunk names the object ("STAT 5100 incomplete
+                    # work" must not resolve on "finished the stat lecture");
+                    # it counts only if nothing after it names one
+                    # ("Finish sim HW 4 today"). Referee 2026-10-14.
+                    label, out = out, []
+                    want_next = True
+                    continue
+                return out
+            return out or label
+    head, modifier = cpc._plan_object_head(topic or "")
+    return [(head, modifier)] if head else []
+
+
+_ALNUM_BOUNDARY = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
+
+
+def _split_alnum(text: str) -> str:
+    """Insert a space at letter/digit boundaries ("hw4" -> "hw 4")."""
+    return _ALNUM_BOUNDARY.sub(" ", text or "")
+
+
+def thread_object_head(topic: str) -> tuple:
+    """(head, modifier) of a thread topic's object -- see _thread_identities."""
+    ids = _thread_identities(topic)
+    return ids[0] if ids else ("", "")
+
+
+def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -> List[str]:
+    """Check if user's message reports completion of any open threads.
+
+    No LLM, no DB queries. Resolution is decided per CLAUSE by the shared
+    identity+status judge (``utils.completed_plan_claims.clause_reports_completion``,
+    the same one the narrative completed-plan check uses): the clause must
+    carry a non-negated completion cue AND name the thread's object head.
+    A thread with no identifiable object is never resolved here (the
+    shutdown LLM resolution pass still covers it).
 
     Args:
         user_message: The user's raw input text.
@@ -149,45 +242,39 @@ def check_quick_resolutions(user_message: str, open_threads: List[OpenThread]) -
     declarative = " . ".join(p for p in sentences if not p.rstrip().endswith("?"))
     msg_lower = declarative.lower()
 
-    # Must contain at least one completion signal
+    # Cheap prefilter (also carries the second-person exclusion)
     if not _COMPLETION_SIGNALS.search(msg_lower):
         return []
 
-    # Signal-adjacent objects: the tokens right after a completion verb name
-    # WHAT was completed ("did the EMAIL yesterday"). Lets a 1-keyword match
-    # resolve when it is the completed object itself, without loosening the
-    # global 2-keyword floor into a wildcard.
-    object_words = set()
-    for m in _COMPLETION_SIGNALS.finditer(msg_lower):
-        tail = msg_lower[m.end():]
-        object_words |= _norm_keywords(" ".join(tail.split()[:4]))
-
-    # Same normalization on both sides (digit tokens kept: "hw6" is what
-    # distinguishes numbered tasks, so "done with hw6" can't match hw7's thread
-    # on generic words alone).
-    msg_words = _norm_keywords(msg_lower)
+    # One tokenization rule for both sides: a fused code ("hw4") and its
+    # spaced form ("HW 4") are the same identity + digit token.
+    declarative = _split_alnum(declarative)
+    clauses = _split_clauses(declarative) or [declarative]
     resolved_ids = []
 
     for thread in open_threads:
-        keywords = _norm_keywords(f"{thread.topic} {thread.summary}")
-        if not keywords:
+        topic = _split_alnum(thread.topic or "")
+        identities = _thread_identities(topic)
+        if not identities:
             continue
-        # Require at least 2 keyword overlaps (or 1 if topic has ≤2 keywords),
-        # OR a direct hit on the completed object. The object shortcut is
-        # blocked on a digit-token mismatch: numeric tokens are what
-        # distinguish "homework 6" from hw7's thread, so a generic object
-        # word ("homework") must not bridge conflicting numbers.
-        overlap = msg_words & keywords
-        min_required = min(2, len(keywords))
-        _msg_digits = {w for w in msg_words if any(c.isdigit() for c in w)}
-        _kw_digits = {w for w in keywords if any(c.isdigit() for c in w)}
-        _digit_conflict = bool(_msg_digits and _kw_digits and not (_msg_digits & _kw_digits))
-        _object_hit = bool(object_words & keywords) and not _digit_conflict
-        if len(overlap) >= min_required or _object_hit:
+        plan_digits = cpc._digit_tokens(cpc._norm_tokens(topic))
+        is_doc = bool(cpc._DOCUMENT_NOUN_RE.search(topic))
+        hit = None
+        for clause in clauses:
+            for head, modifier in identities:
+                if cpc.clause_reports_completion(
+                    clause, head, modifier,
+                    plan_digits=plan_digits, is_document_plan=is_doc,
+                ):
+                    hit = clause
+                    break
+            if hit:
+                break
+        if hit:
             resolved_ids.append(thread.thread_id)
             logger.info(
-                f"[QuickResolve] Thread '{thread.topic}' matched: "
-                f"signal + keywords {overlap or (object_words & keywords)}"
+                f"[QuickResolve] Thread '{thread.topic}' matched clause: "
+                f"{' '.join(hit.split())[:120]!r}"
             )
 
     return resolved_ids
