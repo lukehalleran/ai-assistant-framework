@@ -361,7 +361,7 @@ class TestMaybeRegenerateNarrativeOutcomes:
         corpus_manager = MagicMock()
         recent_ts = (datetime.now() - timedelta(days=3)).isoformat()
         corpus_manager.get_summaries.return_value = [{"timestamp": recent_ts, "text": "weekly ok"}]
-        corpus_manager.get_recent_memories.side_effect = RuntimeError(f"disk error {_MARKER}")
+        corpus_manager.get_recent_derivable.side_effect = RuntimeError(f"disk error {_MARKER}")
         consolidator = AsyncMock()
         ms, _corpus, _chroma = _make_storage(corpus_manager=corpus_manager, consolidator=consolidator)
 
@@ -378,7 +378,7 @@ class TestMaybeRegenerateNarrativeOutcomes:
         corpus_manager = MagicMock()
         recent_ts = (datetime.now() - timedelta(days=3)).isoformat()
         corpus_manager.get_summaries.return_value = [{"timestamp": recent_ts, "text": "weekly ok"}]
-        corpus_manager.get_recent_memories.return_value = ["stmt-1"]
+        corpus_manager.get_recent_derivable.return_value = ["stmt-1"]
         consolidator = AsyncMock()
         consolidator.generate_narrative_context.return_value = "a narrative"
         ms, _corpus, _chroma = _make_storage(corpus_manager=corpus_manager, consolidator=consolidator)

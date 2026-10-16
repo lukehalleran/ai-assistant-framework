@@ -324,7 +324,7 @@ class MemoryConsolidator:
                     return False
             else:
                 # Fallback: use recent length as proxy
-                recent_probe = corpus_manager.get_recent_memories(self.lookback)
+                recent_probe = corpus_manager.get_recent_derivable(self.lookback)
                 if len(recent_probe) < self.consolidation_threshold:
                     logger.debug(
                         "[Consolidation] Skipped (proxy %s/%s)",
@@ -333,7 +333,7 @@ class MemoryConsolidator:
                     return False
 
             # 3) Gather + compress the recent exchanges via the shared path
-            recent = corpus_manager.get_recent_memories(self.lookback)
+            recent = corpus_manager.get_recent_derivable(self.lookback)
             summary = await self.consolidate_memories(recent)
             if not summary:
                 logger.debug("[Consolidation] No material to summarize")

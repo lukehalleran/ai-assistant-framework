@@ -705,7 +705,7 @@ class DailyNotesGenerator:
         """Filter corpus entries by date."""
         conversations = []
 
-        for entry in self.corpus_manager.visible_entries():
+        for entry in self.corpus_manager.derivable_entries():
             ts = entry.get("timestamp")
             if ts is None:
                 continue
@@ -1120,7 +1120,7 @@ generated: {datetime.now().isoformat()}
             # Recent user statements feed the streak ledger (2026-09-05).
             user_statements = []
             try:
-                user_statements = self.corpus_manager.get_recent_memories(60)
+                user_statements = self.corpus_manager.get_recent_derivable(60)
             except Exception as e:
                 logger.debug(f"[DailyNotes] No user statements for the streak ledger: {e}")
 

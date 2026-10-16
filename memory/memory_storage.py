@@ -1483,7 +1483,7 @@ class MemoryStorage:
             return
 
         try:
-            recent_memories = self.corpus_manager.get_recent_memories(
+            recent_memories = self.corpus_manager.get_recent_derivable(
                 count=self.consolidator.consolidation_threshold
             )
 
@@ -1623,7 +1623,7 @@ class MemoryStorage:
             user_statements = []
             _recent_memories_failed = False
             try:
-                user_statements = self.corpus_manager.get_recent_memories(60)
+                user_statements = self.corpus_manager.get_recent_derivable(60)
             except Exception as e:
                 _recent_memories_failed = True
                 logger.warning(

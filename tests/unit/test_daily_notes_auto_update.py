@@ -43,6 +43,7 @@ def generator(vault_path):
     mock_corpus = MagicMock()
     mock_corpus.corpus = []
     mock_corpus.visible_entries.side_effect = lambda: list(mock_corpus.corpus)  # mirrors CorpusManager.visible_entries
+    mock_corpus.derivable_entries.side_effect = lambda: list(mock_corpus.corpus)  # mirrors CorpusManager.derivable_entries (no [test] turns in these fixtures)
     mock_model = MagicMock()
     mock_profile = MagicMock()
     mock_profile.get_current_view.return_value = {}
