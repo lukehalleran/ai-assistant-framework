@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from config.app_config import config as app_cfg
+import config.app_config as app_config
 from core.prompt.token_manager import TokenManager
 
 NOW = datetime(2026, 10, 15, 22, 5, 0)
@@ -71,7 +71,11 @@ def _metered(tm, out):
 
 @pytest.fixture
 def mem_cfg(monkeypatch):
-    mem = app_cfg.setdefault("memory", {})
+    # Patch the LIVE config object the deployed code reads at call time: a
+    # module-level `from config.app_config import config` binds the object that
+    # existed at import, and test_sep27_config_paths reloads app_config (new
+    # dict) — the patches then missed the code under test in the full run.
+    mem = app_config.config.setdefault("memory", {})
     def _set(**kw):
         for k, v in kw.items():
             monkeypatch.setitem(mem, k, v)
