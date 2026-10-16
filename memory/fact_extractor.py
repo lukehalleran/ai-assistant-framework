@@ -77,7 +77,7 @@ from memory.fact_source import (
 )
 from memory.memory_interface import MemoryNode, MemoryType
 import memory.stance_classifier as stance_classifier
-from memory.graph_utils import is_interjection
+from memory.graph_utils import is_interjection, strip_edge_interjections
 from memory.user_profile_schema import is_living_situation_relation
 from utils.logging_utils import get_logger, log_and_time
 import utils.temporal_resolver as temporal_resolver
@@ -273,6 +273,9 @@ def _is_junk_object(obj: str, rel: str, subj: str = "") -> bool:
         return True
     if is_interjection((obj or "").strip()):  # original casing: "ER"/"WoW" are not interjections
         return True
+    stripped = strip_edge_interjections((obj or "").strip())
+    if stripped and stripped != (obj or "").strip() and _is_junk_object(stripped, rel, subj):
+        return True  # edge interjection hid a junk remainder; verdict otherwise unchanged
     if relation_is_future_planned(r):
         return True
     if is_living_situation_relation(r) and _BARE_DWELLING_RE.match(o):
