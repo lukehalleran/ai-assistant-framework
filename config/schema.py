@@ -1124,13 +1124,6 @@ class SecuritySection(BaseModel):
     )
 
 
-class BehavioralPatternsSection(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
-    min_turns: int = Field(default=3, ge=1)
-    max_patterns: int = Field(default=3, ge=1)
-
-
 class WikiSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     fetch_full: bool = True
@@ -1295,7 +1288,6 @@ class DaemonConfig(BaseModel):
     procedural_skills: ProceduralSkillsSection = Field(default_factory=ProceduralSkillsSection)
     skill_activation: SkillActivationSection = Field(default_factory=SkillActivationSection)
     code_proposals: CodeProposalsSection = Field(default_factory=CodeProposalsSection)
-    behavioral_patterns: BehavioralPatternsSection = Field(default_factory=BehavioralPatternsSection)
     escalation_tracker: EscalationSection = Field(default_factory=EscalationSection)
     valence_retrieval: ValenceRetrievalSection = Field(default_factory=ValenceRetrievalSection)
     canary: CanarySection = Field(default_factory=CanarySection)

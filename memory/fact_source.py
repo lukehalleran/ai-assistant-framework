@@ -399,9 +399,21 @@ def _clause_is_negated(clause: str, object_val: str, object_tokens: set[str]) ->
 # never misclassified into a stronger kind.
 # ---------------------------------------------------------------------------
 
+# CLS-1 (2026-10-16, class: BC-04/BC-51): "every"/"each" is a RECURRENCE cue only
+# when its head is a TIME unit. "every chapter"/"each question" quantify things,
+# they do not recur. ONE module constant: the core periods are also the unit
+# list of ``_SIMPLE_PRESENT_FREQ_RE``; the full set heads "every"/"each".
+_CORE_PERIOD_UNITS = ("day", "night", "week")
+_TIME_UNITS = _CORE_PERIOD_UNITS + (
+    "morning", "evening", "afternoon", "month", "year", "weekend", "weekday", "hour",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+)
+_TIME_UNIT_ALT = "|".join(_TIME_UNITS)
+_NUMBER_WORDS = "two|three|four|five|six|seven|eight|nine|ten|few|couple"
 _HABIT_CUE_RE = re.compile(
-    r"\bevery\b|\beach\s+(?:day|night|morning|evening|week|month|year|"
-    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|"
+    rf"\b(?:every|each)\s+(?:single\s+)?(?:other\s+)?(?:{_TIME_UNIT_ALT})\b|"
+    rf"\bevery\s+(?:\d+|{_NUMBER_WORDS})(?:\s+of)?\s+(?:{_TIME_UNIT_ALT})s?\b|"
+    r"\bevery\s+time\b|"
     r"\b(?:daily|nightly|weekly|monthly|yearly|biweekly|usually|always|"
     r"typically|routinely|regularly)\b|"
     r"\bmost\s+(?:days?|nights?|mornings?|evenings?|weeks?)\b",
@@ -409,9 +421,10 @@ _HABIT_CUE_RE = re.compile(
 )
 # "I <verb> ... a day/week" — simple-present habitual framing without one of
 # the adverbial cues above ("I take it twice a day").
+_PERIOD_ALT = "|".join(_CORE_PERIOD_UNITS)
 _SIMPLE_PRESENT_FREQ_RE = re.compile(
-    r"\bi\s+[a-z]+\b[^.!?\n]{0,40}\b(?:a\s+day|a\s+night|a\s+week|per\s+day|"
-    r"per\s+week|once\s+a\b|twice\s+a\b|three\s+times\s+a\b)\b",
+    rf"\bi\s+[a-z]+\b[^.!?\n]{{0,40}}\b(?:a\s+(?:{_PERIOD_ALT})|per\s+(?:day|week)|"
+    r"once\s+a\b|twice\s+a\b|three\s+times\s+a\b)\b",
     re.IGNORECASE,
 )
 
@@ -446,6 +459,25 @@ _PLAN_KIND_CUE_RE = re.compile(
     r"\b(?:ready|about|want|wants|wanna|need|needs|gonna|hoping|hope|trying|tempted|"
     r"supposed|intend|intending|thinking)\s+to\b|\bgonna\b|\bwanna\b|"
     r"\bthinking\s+(?:about|of)\b|\bconsidering\b",
+    re.IGNORECASE,
+)
+
+# CLS-1.2 (2026-10-16): intention / future framing in the SAME clause beats a
+# recurrence cue ("I plan to run every day starting tomorrow" is a plan, not a
+# habit).  Reuses ``_PLAN_KIND_CUE_RE`` (will / going to / plan to / want to /
+# tomorrow / next <unit>) and adds only the three framings it lacks.
+_INTENT_FRAMING_RE = re.compile(
+    _PLAN_KIND_CUE_RE.pattern
+    + r"|\b\w+['\u2019]ll\b|\bfrom\s+now\s+on\b"
+    + rf"|\bstarting\s+(?:today|tonight|tomorrow|now|next|this|{_TIME_UNIT_ALT})\b",
+    re.IGNORECASE,
+)
+
+# CLS-3 frame check: HISTORICAL framing (closed grammatical class).  Detected
+# LOCALLY by the recurrence gate only — it is deliberately NOT a global claim
+# kind (profile/Chroma/graph readers have no parity for one; plan v2.1 R2-4).
+_HISTORICAL_FRAME_RE = re.compile(
+    r"\bused\s+to\b|\bno\s+longer\b|\bany\s*more\b|\bstopped\b",
     re.IGNORECASE,
 )
 
@@ -614,6 +646,20 @@ def _resolve_weekday_sequence_episode(text: str, observed: datetime) -> date | N
     return today - timedelta(days=delta)
 
 
+def _habit_cue_is_intended(text: str) -> bool:
+    """True when EVERY clause carrying a recurrence cue also carries
+    intention/future framing (CLS-1.2).  A cue living only in the whole-text
+    frequency pattern ("I ... twice a day") is judged on the whole text."""
+    clauses = _split_clauses(text) or [text]
+    cue_clauses = [
+        c for c in clauses
+        if _HABIT_CUE_RE.search(c) or _SIMPLE_PRESENT_FREQ_RE.search(c)
+    ]
+    if not cue_clauses:
+        return bool(_INTENT_FRAMING_RE.search(text))
+    return all(_INTENT_FRAMING_RE.search(c) for c in cue_clauses)
+
+
 def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> ClaimTime:
     """Classify what kind of claim ``span`` makes, relative to ``observed_at``
     (defaults to now when the caller has no turn timestamp).
@@ -632,6 +678,10 @@ def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> Cl
 
     if (_HABIT_CUE_RE.search(text) or _SIMPLE_PRESENT_FREQ_RE.search(text)
             or _is_spread_weekday_schedule(text)):
+        # CLS-1.2: future/intention framing in the SAME clause as the
+        # recurrence cue makes the claim a plan, not a standing habit.
+        if _habit_cue_is_intended(text):
+            return ClaimTime(kind="plan")
         return ClaimTime(kind="habit")
 
     seq_date = _resolve_weekday_sequence_episode(text, observed)
@@ -677,6 +727,177 @@ def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> Cl
     return ClaimTime(kind="unknown")
 
 
+# ---------------------------------------------------------------------------
+# CLS-2 (2026-10-16, class: BC-04): classify the clause that CARRIES the object,
+# not the whole sentence.  "Yesterday I worked late and today I saw Rowan" dated
+# the Rowan event yesterday; a recurrence cue in a neighbouring clause ("…every
+# day, and saw Rowan for two hours") made a one-off a habit.
+# ---------------------------------------------------------------------------
+
+_CLAUSE_CONJUNCTIONS = frozenset({"and", "but", "so", "then", "or"})
+_TODAY_RE = re.compile(r"\btoday\b", re.IGNORECASE)
+
+
+def _clause_has_own_subject(clause: str) -> bool:
+    return bool(_FIRST_PERSON_SUBJECT_RE.search(clause) or _OTHER_PERSON_RE.search(clause))
+
+
+def _elliptical_head_is_past(clause: str) -> bool:
+    """Past-tense head of a subject-less clause.  The closed past-tense set
+    PLUS an ``-ed`` suffix on the clause's FIRST token only: at the head of an
+    elliptical clause that token is a verb position (``walked``), where the
+    blanket ``-ed`` rule (prescribed/based) the sentence-level cue avoids does
+    not apply.  Local to scope inheritance — never added to
+    ``_PAST_TENSE_CUE_RE``."""
+    words = _WORD_RE.findall(clause)
+    while words and words[0].lower() in _CLAUSE_CONJUNCTIONS:  # ", and walked home"
+        words = words[1:]
+    if not words:
+        return False
+    head = words[0].lower()
+    if _PAST_TENSE_CUE_RE.fullmatch(head):
+        return True
+    return len(head) > 3 and head.endswith("ed")
+
+
+def _own_clause_time(clause: str, observed: datetime) -> ClaimTime:
+    """The clause's OWN cues: recurrence, event anchor, plan, state — plus a
+    same-clause ``today`` with a past-tense verb (an event on the observed day;
+    ``classify_claim_time`` has no ``today`` anchor, and the profile reader
+    only hides events dated BEFORE today)."""
+    own = classify_claim_time(clause, observed_at=observed)
+    if own.kind == "unknown" and _TODAY_RE.search(clause) and _PAST_TENSE_CUE_RE.search(clause):
+        return ClaimTime(kind="event", event_date=observed.date(), event_date_source="relative")
+    return own
+
+
+def classify_claim_time_for_object(
+    span: str, object_clause: str, *, observed_at: datetime | None = None
+) -> ClaimTime:
+    """Claim kind/date for the clause ``object_clause`` of ``span``.
+
+    Rules, in order:
+      1. The clause's OWN recurrence / anchor / plan / state cue decides.
+      2. A clause with no subject of its own (elliptical: "…and swim") inherits
+         the governing clause's whole classification — a shared predicate
+         frame — EXCEPT when its head verb is past tense while the governing
+         clause is not ("I always run and walked home": a separate completed
+         act inherits nothing).
+      3. A clause with its own subject and no own cue inherits only the
+         nearest PRECEDING clause's event anchor ("Yesterday I worked late and
+         I saw Rowan" -> yesterday); one with its own anchor never takes
+         another clause's anchor.
+    """
+    observed = observed_at or datetime.now()
+    sentence = span or ""
+    clause = (object_clause or "").strip()
+    if not clause or clause == sentence.strip():
+        return _own_clause_time(clause or sentence, observed)
+
+    own = _own_clause_time(clause, observed)
+    if own.kind in ("habit", "event", "plan", "state"):
+        return own
+    # A standing weekday schedule split across clauses at "and"/"," ("I work
+    # Monday and Friday"): the object clause holds one weekday of the list.
+    if _weekday_indices(clause) and _is_spread_weekday_schedule(sentence):
+        return ClaimTime(kind="habit")
+
+    clauses = _split_clauses(sentence)
+    try:
+        idx = clauses.index(clause)
+    except ValueError:
+        return own
+    preceding = clauses[:idx]
+    result = _inherit_from_neighbours(clause, preceding, own, observed)
+    if (result.kind == "unknown"
+            and not (_EVENT_ANCHOR_RE.search(clause) or _TODAY_RE.search(clause)
+                     or _weekday_indices(clause))):
+        # Trailing shared modifier ("I went to the gym and did legs
+        # yesterday"): the nearest FOLLOWING clause's event anchor.  Only an
+        # anchor — recurrence is never inherited from a following clause.
+        for later in clauses[idx + 1:]:
+            anchor = _EVENT_ANCHOR_RE.search(later)
+            if anchor is not None:
+                dated = classify_claim_time(f"{clause} {anchor.group(0)}", observed_at=observed)
+                return dated if dated.kind == "event" else result
+    return result
+
+
+def _inherit_from_neighbours(
+    clause: str, preceding: list[str], own: ClaimTime, observed: datetime
+) -> ClaimTime:
+    if not _clause_has_own_subject(clause):
+        governing = next((c for c in reversed(preceding) if _clause_has_own_subject(c)), None)
+        if governing is None:
+            return own
+        if _elliptical_head_is_past(clause) and not _PAST_TENSE_CUE_RE.search(governing):
+            return own
+        # A clause with its OWN date specification (event anchor / today /
+        # a named weekday) is a dated report, not a shared predicate frame —
+        # it never takes the governing clause's recurrence ("…every day, and
+        # hung with Tamsin Sat": "hung" is outside the closed past-tense set).
+        if (_EVENT_ANCHOR_RE.search(clause) or _TODAY_RE.search(clause)
+                or _weekday_indices(clause)):
+            return own
+        return _own_clause_time(governing, observed)
+    for prior in reversed(preceding):
+        anchor = _EVENT_ANCHOR_RE.search(prior)
+        if anchor is not None:
+            return classify_claim_time(f"{clause} {anchor.group(0)}", observed_at=observed)
+    return own
+
+
+def object_clause_for(span: str, object_val: str) -> str:
+    """The clause of ``span`` that carries ``object_val`` (whole span when none
+    does) — the public form of the clause choice the provenance join makes."""
+    clauses = _split_clauses(span)
+    return _object_bearing_clause(clauses, object_val, _tokens(object_val)) or (span or "")
+
+
+# ---------------------------------------------------------------------------
+# CLS-3 (2026-10-16, class: BC-51): a relation whose NAME asserts recurrence
+# ("eating_habit", "sleep_pattern", "morning_routine") needs recurrence evidence
+# in the user's own words — the same fail-closed pattern as
+# ``current_status_claim_supported``.  ONE predicate, two call sites (the LLM
+# provenance join and the regex producer).
+# ---------------------------------------------------------------------------
+
+RECURRENCE_RELATION_TOKENS = frozenset(
+    {"habit", "habits", "routine", "routines", "pattern", "patterns"}
+)
+# The regex SCHEDULE-pattern producer (fact_extractor: found.append(…,
+# "schedule_regex")) emits triples whose match is itself validated schedule
+# evidence — the only producer exempt from the gate (never by relation name).
+SCHEDULE_PRODUCER_METHOD = "schedule_regex"
+
+
+def is_recurrence_relation(relation: str) -> bool:
+    toks = [t for t in re.split(r"[_\s\-]+", (relation or "").strip().lower()) if t]
+    return any(t in RECURRENCE_RELATION_TOKENS for t in toks)
+
+
+def recurrence_claim_supported(
+    relation: str, span: str, object_clause: str, *, observed_at: datetime | None = None
+) -> bool:
+    """False when ``relation`` names a recurrence but the evidence is not a
+    present-tense recurrence claim.  True for every other relation.
+
+    Requires (a) the scoped claim kind of the object clause to be exactly
+    ``habit`` and (b) a clean SENTENCE frame: no intention/future framing and
+    no historical framing (used to / no longer / anymore / stopped) anywhere in
+    the sentence holding the winning clause — even if the object clause has its
+    own recurrence cue.  Deliberately fail-closed: "I used to run but now I
+    swim every day" is a false reject (Phase 2's occurrence ledger recovers
+    genuinely recurring activity)."""
+    if not is_recurrence_relation(relation):
+        return True
+    sentence = span or object_clause or ""
+    if _INTENT_FRAMING_RE.search(sentence) or _HISTORICAL_FRAME_RE.search(sentence):
+        return False
+    kind = classify_claim_time_for_object(sentence, object_clause, observed_at=observed_at).kind
+    return kind == "habit"
+
+
 @dataclass(frozen=True)
 class EvidenceSpan:
     """A user-authored span supporting one proposed triple."""
@@ -698,6 +919,11 @@ class EvidenceSpan:
     claim_kind: str = field(default="", compare=False)
     event_date: str = field(default="", compare=False)
     observed_at: str = field(default="", compare=False)
+    # CLS-4 (2026-10-16): the SOURCE message's own timestamp (ISO), "" when the
+    # message carries none.  Distinct from ``turn_id`` (identity) and from
+    # ``observed_at`` (which falls back to now() for claim-time anchoring):
+    # day-keyed consumers (learned-relation recurrence) must never see "now".
+    source_time: str = field(default="", compare=False)
 
 
 def authored_text(message: Any) -> str:
@@ -737,6 +963,22 @@ def _message_text_and_id(message: Any) -> tuple[str, str] | None:
     if not text or _NON_USER_ROLE_RE.match(text):
         return None
     return _USER_ROLE_RE.sub("", text, count=1).strip(), turn_id
+
+
+def _message_source_time(message: Any) -> str:
+    """The message's own ``timestamp`` as an ISO string, or ``""`` when the
+    message has none / it is unparseable.  Never falls back to now()."""
+    if not isinstance(message, Mapping):
+        return ""
+    raw = message.get("timestamp")
+    if isinstance(raw, datetime):
+        return raw.isoformat()
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return datetime.fromisoformat(raw.strip()).isoformat()
+        except ValueError:
+            return ""
+    return ""
 
 
 def iter_user_messages(messages: Iterable[Any]) -> Iterator[tuple[int, str, str]]:
@@ -1163,7 +1405,8 @@ def find_supporting_user_span(
     ]
     object_head_token = _ordered_object_tokens[-1] if _ordered_object_tokens else None
 
-    best: tuple[int, int, str, str, str, str] | None = None
+    best: tuple[int, int, str, str, str, str, str] | None = None
+    messages = list(messages or [])
     for turn_index, text, turn_id in iter_user_messages(messages):
         for span in _claim_spans(text):
             low = span.lower()
@@ -1202,6 +1445,12 @@ def find_supporting_user_span(
                         continue
                     if not current_status_claim_supported(relation, object_clause):
                         continue
+                    # CLS-3: a recurrence-NAMED relation needs recurrence evidence.
+                    if not recurrence_claim_supported(
+                        relation, span, object_clause,
+                        observed_at=_parse_observed_at(turn_id),
+                    ):
+                        continue
                     if relation in RESIDENCE_RELATIONS and not _residence_resident_is_user(
                         object_clause, object_val
                     ):
@@ -1215,7 +1464,7 @@ def find_supporting_user_span(
 
             score = (100 if exact_object else 0) + overlap
             support = "exact_object" if exact_object else "object_token_overlap"
-            candidate = (score, turn_index, span, turn_id, support, anchor)
+            candidate = (score, turn_index, span, turn_id, support, anchor, object_clause)
             if best is None or candidate[0] > best[0] or (
                 candidate[0] == best[0] and candidate[1] > best[1]
             ):
@@ -1223,10 +1472,11 @@ def find_supporting_user_span(
 
     if best is None:
         return None
-    _, turn_index, span, turn_id, support, anchor = best
+    _, turn_index, span, turn_id, support, anchor, winner_clause = best
     excerpt_text = _cropped_excerpt(span, object_val, excerpt_limit)
     observed_dt = _parse_observed_at(turn_id)
-    claim_time = classify_claim_time(excerpt_text, observed_at=observed_dt)
+    # CLS-2: classify the WINNING span's winning clause (never the loop's last).
+    claim_time = classify_claim_time_for_object(span, winner_clause, observed_at=observed_dt)
     return EvidenceSpan(
         text=excerpt_text,
         turn_index=turn_index,
@@ -1237,4 +1487,5 @@ def find_supporting_user_span(
         claim_kind=claim_time.kind,
         event_date=claim_time.event_date.isoformat() if claim_time.event_date else "",
         observed_at=observed_dt.isoformat(),
+        source_time=_message_source_time(messages[turn_index]),
     )

@@ -693,23 +693,34 @@ JSON:"""
                 continue
             seen.add(key)
             triples.append(norm)
-            # Track surviving non-core relations for automatic vocabulary
-            # promotion — only triples that PASSED normalization/junk gates
-            # ever count (junk-relation floodgate guard).
-            if norm.get("relation") not in CORE_RELATIONS:
-                try:
-                    from memory.learned_relations import get_learned_relation_store
-                    get_learned_relation_store().record(
-                        norm["relation"], norm.get("object", "")
-                    )
-                except Exception as e:
-                    logger.debug(f"[LLM Facts] learned-relation record failed: {e}")
             if len(triples) >= self.max_triples:
                 break
 
         # Attach source_excerpt by matching each triple back to its source message
         if triples:
-            self._attach_source_excerpts(triples, user_messages)
+            source_times: Dict[int, str] = {}
+            self._attach_source_excerpts(triples, user_messages, source_times=source_times)
+            # CLS-4 (2026-10-16, class: BC-51/BC-58): learned-relation
+            # recurrence counts only relations that SURVIVED the provenance
+            # join, on the SOURCE message's own day — a replay of the same
+            # turn on a later shutdown lands on the same day and cannot
+            # inflate the distinct-day count.  No source time = no learning.
+            for t in triples:
+                rel = t.get("relation")
+                if rel in CORE_RELATIONS:
+                    continue
+                st = source_times.get(id(t), "")
+                when = _parse_turn_datetime(st) if st else None
+                if when is None:
+                    logger.info(
+                        f"[LLM Facts] Learned-relation skipped (no source time): {rel}"
+                    )
+                    continue
+                try:
+                    from memory.learned_relations import get_learned_relation_store
+                    get_learned_relation_store().record(rel, t.get("object", ""), when=when)
+                except Exception as e:
+                    logger.debug(f"[LLM Facts] learned-relation record failed: {e}")
             logger.info(f"[LLM Facts] SUCCESS: extracted={len(triples)} facts using model={self.model_alias}")
             for t in triples:
                 logger.info(f"[LLM Facts]   -> {t['relation']}: {t['object']} (conf={t['confidence']})")
@@ -720,8 +731,13 @@ JSON:"""
 
     @staticmethod
     def _attach_source_excerpts(triples: List[Dict[str, str]],
-                                user_messages: List) -> None:
-        """Attach direct user evidence and drop unsupported proposals."""
+                                user_messages: List,
+                                source_times: Dict[int, str] | None = None) -> None:
+        """Attach direct user evidence and drop unsupported proposals.
+
+        ``source_times`` (optional, caller-owned): filled with
+        ``id(triple) -> ISO source-message timestamp`` for each KEPT triple
+        whose message carries one (CLS-4)."""
         if not user_messages:
             triples[:] = []
             return
@@ -764,6 +780,8 @@ JSON:"""
                     f"{triple.get('relation')}|{triple.get('object')} vs source: {evidence.text[:80]!r}"
                 )
                 continue
+            if source_times is not None and evidence.source_time:
+                source_times[id(triple)] = evidence.source_time
             triple["source_excerpt"] = evidence.text
             triple["source_role"] = evidence.role
             triple["source_turn_index"] = evidence.turn_index
