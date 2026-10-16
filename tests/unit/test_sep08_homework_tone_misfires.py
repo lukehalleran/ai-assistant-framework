@@ -100,7 +100,7 @@ class TestHistoryDistressRecheck:
         return datetime.now().isoformat()
 
     def _stale_ts(self):
-        return (datetime.now() - timedelta(minutes=45)).isoformat()
+        return (datetime.now() - timedelta(minutes=45)).isoformat()  # clock-safe: tone carryover compares elapsed minutes only
 
     def test_pasted_script_row_not_distress(self):
         row = {

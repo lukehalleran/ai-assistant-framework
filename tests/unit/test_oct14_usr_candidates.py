@@ -37,8 +37,28 @@ class _Corpus:
         return list(self._items[:count])
 
 
+# Wall-clock pin (2026-10-15, class: wall-clock-dependent test): the session boost
+# needs "same calendar day AND < gap hours" (_detect_session_boundary), so a bare
+# datetime.now() - 100min is yesterday for the first 100 minutes after midnight and
+# the newer-same-session assertion flipped. Pin the name the deployed gatherer reads
+# and build every timestamp from the same instant.
+FIXED_NOW = datetime(2026, 10, 15, 12, 0, 0)
+
+
+class _PinnedDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return FIXED_NOW
+
+
+@pytest.fixture(autouse=True)
+def _pin_gatherer_clock(monkeypatch):
+    import core.prompt.gatherer_memory as gm
+    monkeypatch.setattr(gm, "datetime", _PinnedDatetime)
+
+
 def _ts(delta):
-    return (datetime.now() - delta).isoformat()
+    return (FIXED_NOW - delta).isoformat()
 
 
 def _gatherer(entries, cos):

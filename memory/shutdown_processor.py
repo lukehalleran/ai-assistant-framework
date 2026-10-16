@@ -84,6 +84,7 @@ from typing import Dict, List, Optional
 
 from utils.logging_utils import get_logger
 from memory.fact_source import authored_text
+from memory.llm_fact_extractor import LLMFactExtractor
 import json
 import time
 
@@ -1006,8 +1007,9 @@ EXAMPLES of behavioral patterns:
 - Exercises in the morning before class (mentioned workout timing + school)
 
 RULES:
-- Only extract patterns where BOTH activities appear in this session's messages
-- Must be a HABIT or recurring behavior, not a one-time event
+- Only extract a pattern when the user's OWN words state the regularity (e.g. "always", "every morning", "usually", "whenever", "most days") in a message that also names the activity or place
+- Two things happening in the same session is NOT a pattern; a single evening or one-time event is NOT a habit
+- The "object" must reuse the user's own words from that message
 - Use relation names like: coding_environment, study_environment, workout_habit, multitasking_habit
 - Confidence 0.7 for first observation, 0.85+ if user explicitly confirms the pattern
 - Maximum 3 patterns per session
@@ -1045,23 +1047,41 @@ JSON:"""
             if not isinstance(patterns, list) or not patterns:
                 return
 
-            added = 0
+            # Provenance boundary (2026-10-15, BC-46/BC-75): a pattern is
+            # stored only if it joins back to a USER-authored span of this
+            # session (the SAME join the LLM fact extractor uses) AND that
+            # span itself states a recurrence. One evening is one observation.
+            triples = []
             for p in patterns[:3]:
-                rel = p.get("relation", "").strip()
-                obj = p.get("object", "").strip()
-                confidence = float(p.get("confidence", 0.7))
+                if not isinstance(p, dict):
+                    continue
+                rel = str(p.get("relation") or "").strip()
+                obj = str(p.get("object") or "").strip()
                 if not rel or not obj:
                     continue
+                try:
+                    confidence = float(p.get("confidence", 0.7))
+                except (TypeError, ValueError):
+                    confidence = 0.7
+                triples.append({
+                    "subject": "user", "relation": rel, "object": obj,
+                    "category": p.get("category", "preferences"),
+                    "confidence": confidence,
+                })
 
-                # Store in user profile
-                if self.user_profile:
-                    self.user_profile.add_fact(rel, obj, confidence)
-                    added += 1
-                    logger.info(f"[Shutdown] Behavioral pattern: {rel}={obj} (conf={confidence:.2f})")
-
-            if added:
-                self.user_profile.save()
-                logger.info(f"[Shutdown] Extracted {added} behavioral patterns from session")
+            if triples and self.user_profile:
+                LLMFactExtractor._attach_source_excerpts(triples, sess_items[-20:])
+                kept = []
+                for t in triples:
+                    if t.get("claim_kind") != "habit":
+                        logger.info(
+                            f"[Shutdown] Behavioral pattern dropped: {t['relation']} "
+                            f"(habit_without_recurrence)")
+                        continue
+                    kept.append(t)
+                added = self.user_profile.add_facts_batch(kept) if kept else 0
+                if added:
+                    logger.info(f"[Shutdown] Extracted {added} behavioral patterns from session")
 
         except Exception as e:
             logger.debug(f"[Shutdown] Behavioral pattern extraction failed (non-fatal): {e}")

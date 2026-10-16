@@ -1650,18 +1650,33 @@ def annotate_unverified_action_claim(text: str) -> str:
     """
     if not text:
         return text
-    if _UNVERIFIED_CLAIM_MARKER in text:
+    if read_time_markers.contains_unverified_marker(text):
         return text
     try:
-        if detect_completion_claims(text):
-            return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
-        if _card_claim_regions(text, hard_only=True):
-            return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
-        if _calendar_claim_regions(text, use_entity_anchor=False, use_semantic=False):
-            return text.rstrip() + "\n" + _UNVERIFIED_CLAIM_MARKER
+        claims = _unverified_claim_texts(text)
+        if claims:
+            return text.rstrip() + "\n" + read_time_markers.unverified_claim_marker(claims)
     except Exception:
         return text
     return text
+
+
+def _unverified_claim_texts(text: str) -> list[str]:
+    """Claim sentences/regions from the SAME three regex detectors that decide
+    the marker (BC-97: the marker names the claim). Position-ordered."""
+    raw = [d.matched_text for d in detect_completion_claims(text)]
+    raw += _card_claim_regions(text, hard_only=True)
+    raw += _calendar_claim_regions(text, use_entity_anchor=False, use_semantic=False)
+    if not raw:
+        return []
+    norm = " ".join(text.split())
+
+    def _pos(f: str) -> int:
+        i = norm.find(" ".join(str(f).split()))
+        return i if i >= 0 else len(norm)
+
+    named = sorted((f for f in raw if isinstance(f, str) and f.strip()), key=_pos)
+    return named or [""]  # [""] = detected but unnameable -> bare marker
 
 
 # Content-field conversation items (2026-09-11, round 5, B13). The hybrid

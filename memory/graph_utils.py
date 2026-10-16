@@ -185,6 +185,25 @@ def is_interjection(text: str) -> bool:
     return bool(words) and all(_is_interjection_word(w) for w in words)
 
 
+def strip_edge_interjections(text: str) -> str:
+    """*text* with leading/trailing interjection tokens (same category as
+    ``is_interjection``) removed; unchanged when none sit at an edge or when
+    nothing would remain. Used ONLY to re-evaluate junk verdicts on the
+    remainder -- stored text is never rewritten (2026-10-15, BC-75)."""
+    toks = (text or "").split()
+    def _is(t: str) -> bool:
+        w = re.findall(r"[A-Za-z']+", t)
+        return bool(w) and all(_is_interjection_word(x) for x in w)
+    lo, hi = 0, len(toks)
+    while lo < hi and _is(toks[lo]):
+        lo += 1
+    while hi > lo and _is(toks[hi - 1]):
+        hi -= 1
+    if lo == hi or (lo == 0 and hi == len(toks)):
+        return (text or "").strip()
+    return " ".join(toks[lo:hi])
+
+
 def _is_single_function_word(n: str, *, entity_type: str = "") -> bool:
     """Flag untyped lowercase stopwords; abstain on possible proper names.
 
@@ -217,6 +236,9 @@ def is_junk_entity(name: str, *, entity_type: str = "") -> bool:
         return True
     if is_interjection(original):
         return True
+    stripped = strip_edge_interjections(original)
+    if stripped != original and is_junk_entity(stripped, entity_type=entity_type):
+        return True  # edge interjection hid a junk remainder ("for a bit lmao")
     if len(n.split()) >= 4:
         return True
     if n[0].isdigit():

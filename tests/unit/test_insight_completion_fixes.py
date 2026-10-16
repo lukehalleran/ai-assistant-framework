@@ -306,7 +306,7 @@ class TestCompletedResendWindow:
 
     def test_serves_recent_completed_duplicate(self):
         import gui.handlers as handlers
-        ts = (datetime.now() - timedelta(seconds=90)).isoformat()
+        ts = (datetime.now() - timedelta(seconds=90)).isoformat()  # clock-safe: deliberation freshness compares elapsed seconds only
         orch = self._orchestrator([
             {"query": "Examine whether my social contact and household "
                       "activity co-occur", "response": "# Frozen Contract Report",
@@ -319,8 +319,8 @@ class TestCompletedResendWindow:
 
     def test_old_or_empty_entries_do_not_match(self):
         import gui.handlers as handlers
-        old_ts = (datetime.now() - timedelta(seconds=900)).isoformat()
-        fresh_ts = (datetime.now() - timedelta(seconds=30)).isoformat()
+        old_ts = (datetime.now() - timedelta(seconds=900)).isoformat()  # clock-safe: deliberation freshness compares elapsed seconds only
+        fresh_ts = (datetime.now() - timedelta(seconds=30)).isoformat()  # clock-safe: deliberation freshness compares elapsed seconds only
         orch = self._orchestrator([
             {"query": "same question here", "response": "old reply",
              "timestamp": old_ts},
@@ -341,7 +341,7 @@ class TestCompletedResendWindow:
     @pytest.mark.asyncio
     async def test_handle_submit_serves_stored_reply_without_reprocessing(self, monkeypatch):
         import gui.handlers as handlers
-        ts = (datetime.now() - timedelta(seconds=60)).isoformat()
+        ts = (datetime.now() - timedelta(seconds=60)).isoformat()  # clock-safe: deliberation freshness compares elapsed seconds only
         query = "Examine whether my social contact and household activity co-occur over time"
         orch = self._orchestrator([
             {"query": query, "response": "# Frozen Contract Report",

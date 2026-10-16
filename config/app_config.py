@@ -1121,6 +1121,8 @@ TURN_TELEMETRY_CFG = config.get("turn_telemetry", {}) or {}
 TURN_TELEMETRY_ENABLED: bool = bool(TURN_TELEMETRY_CFG.get("enabled", True))
 TURN_TELEMETRY_PATH: str = os.getenv("TURN_TELEMETRY_PATH", str(TURN_TELEMETRY_CFG.get("path", "logs/turn_records.jsonl")))
 TURN_TELEMETRY_ENABLED = bool(int(os.getenv("TURN_TELEMETRY_ENABLED", "1" if TURN_TELEMETRY_ENABLED else "0")))
+LOOP_STALL_DETECTOR_ENABLED: bool = bool(TURN_TELEMETRY_CFG.get("loop_stall_detector", True))
+LOOP_STALL_THRESHOLD_MS: int = int(TURN_TELEMETRY_CFG.get("loop_stall_threshold_ms", 250))
 
 # --------------------------------------------------------------------
 # Light-Prompt Path [2026-07-15]

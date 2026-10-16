@@ -562,7 +562,7 @@ def test_belongs_to_thread_recent_same_keywords():
     last_conv = {
         "query": "tell me about neural networks",
         "response": "Neural networks are computational models",
-        "timestamp": datetime.now() - timedelta(seconds=60),
+        "timestamp": datetime.now() - timedelta(seconds=60),  # clock-safe: recent-turn window is an elapsed-seconds comparison, no date test
         "is_heavy_topic": False,
         "topic": "machine_learning"
     }
@@ -600,7 +600,7 @@ def test_belongs_to_thread_explicit_break():
     last_conv = {
         "query": "tell me about neural networks",
         "response": "Neural networks are models",
-        "timestamp": datetime.now() - timedelta(seconds=60),
+        "timestamp": datetime.now() - timedelta(seconds=60),  # clock-safe: recent-turn window is an elapsed-seconds comparison, no date test
         "is_heavy_topic": False,
         "topic": "machine_learning"
     }
@@ -619,7 +619,7 @@ def test_belongs_to_thread_different_topics():
     last_conv = {
         "query": "tell me about databases",
         "response": "Databases store data",
-        "timestamp": datetime.now() - timedelta(seconds=60),
+        "timestamp": datetime.now() - timedelta(seconds=60),  # clock-safe: recent-turn window is an elapsed-seconds comparison, no date test
         "is_heavy_topic": False,
         "topic": "databases"
     }

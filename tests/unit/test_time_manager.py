@@ -122,7 +122,7 @@ def test_elapsed_since_last_no_previous(time_manager):
 
 def test_elapsed_since_last_seconds(time_manager):
     """elapsed_since_last() formats seconds correctly"""
-    time_manager.last_query_time = datetime.now() - timedelta(seconds=30)
+    time_manager.last_query_time = datetime.now() - timedelta(seconds=30)  # clock-safe: asserts the elapsed-duration wording only (elapsed_since_last)
     result = time_manager.elapsed_since_last()
     assert result.endswith("s")
     assert "30" in result or "29" in result  # Account for timing variation
@@ -130,7 +130,7 @@ def test_elapsed_since_last_seconds(time_manager):
 
 def test_elapsed_since_last_minutes(time_manager):
     """elapsed_since_last() formats minutes correctly"""
-    time_manager.last_query_time = datetime.now() - timedelta(minutes=5, seconds=30)
+    time_manager.last_query_time = datetime.now() - timedelta(minutes=5, seconds=30)  # clock-safe: asserts the elapsed-duration wording only (elapsed_since_last)
     result = time_manager.elapsed_since_last()
     assert "m" in result
     assert "5" in result
@@ -138,7 +138,7 @@ def test_elapsed_since_last_minutes(time_manager):
 
 def test_elapsed_since_last_hours(time_manager):
     """elapsed_since_last() formats hours correctly"""
-    time_manager.last_query_time = datetime.now() - timedelta(hours=2, minutes=30)
+    time_manager.last_query_time = datetime.now() - timedelta(hours=2, minutes=30)  # clock-safe: asserts the elapsed-duration wording only (elapsed_since_last)
     result = time_manager.elapsed_since_last()
     assert "h" in result
     assert "m" in result
@@ -156,7 +156,7 @@ def test_elapsed_since_last_days(time_manager):
 
 def test_elapsed_since_last_just_under_minute(time_manager):
     """elapsed_since_last() handles 59 seconds as seconds"""
-    time_manager.last_query_time = datetime.now() - timedelta(seconds=59)
+    time_manager.last_query_time = datetime.now() - timedelta(seconds=59)  # clock-safe: asserts the elapsed-duration wording only (elapsed_since_last)
     result = time_manager.elapsed_since_last()
     assert "s" in result
     assert "m" not in result
@@ -164,7 +164,7 @@ def test_elapsed_since_last_just_under_minute(time_manager):
 
 def test_elapsed_since_last_exactly_one_minute(time_manager):
     """elapsed_since_last() handles exactly 60 seconds as minutes"""
-    time_manager.last_query_time = datetime.now() - timedelta(seconds=60)
+    time_manager.last_query_time = datetime.now() - timedelta(seconds=60)  # clock-safe: asserts the elapsed-duration wording only (elapsed_since_last)
     result = time_manager.elapsed_since_last()
     assert "m" in result
 

@@ -122,7 +122,7 @@ from core.agentic.protocols import (
 from core.agentic.formatters import AgenticFormatter
 from core.agentic.tools import LazySandboxSession, ToolExecutor
 from core.agentic import tool_thread
-from core.action_claim_guard import UNVERIFIED_CLAIM_MARKER
+from utils import read_time_markers
 from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 from utils.ordered_slice import oldest_first as _ordered_oldest_first
@@ -3570,7 +3570,7 @@ class AgenticSearchController:
         (never mid-word; a whitespace-free run hard-clips). Text that fits,
         and text carrying the action-claim marker, defer to
         _clip_preserving_claim_marker so the marker survives."""
-        if len(text) <= limit or text.endswith("\n" + UNVERIFIED_CLAIM_MARKER):
+        if len(text) <= limit or read_time_markers.trailing_unverified_marker(text):
             return cls._clip_preserving_claim_marker(text, limit)
         head = text[: limit - 1]
         if not text[limit - 1].isspace():
@@ -3589,9 +3589,13 @@ class AgenticSearchController:
         would defeat the point of annotating it upstream in
         core/prompt/gatherer_memory.py. Ordinary (unmarked) text keeps the
         prior plain `text[:limit]` behavior."""
-        suffix = "\n" + UNVERIFIED_CLAIM_MARKER
-        if text.endswith(suffix):
-            body = text[: -len(suffix)]
+        marker = read_time_markers.trailing_unverified_marker(text)
+        if marker:
+            # Quoted markers can be long: shrink to at most half the limit so
+            # the body keeps room (BC-97).
+            marker = read_time_markers.compact_unverified_marker(marker, max(0, limit // 2))
+            suffix = "\n" + marker
+            body = text[: text.rindex("\n")]
             return body[: max(0, limit - len(suffix))] + suffix
         return text[:limit]
 

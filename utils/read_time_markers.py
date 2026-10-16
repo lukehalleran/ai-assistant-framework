@@ -56,7 +56,71 @@ def _is_span_marker_line(stripped: str) -> bool:
             and len(stripped) >= len(PERSONAL_CLAIM_SPAN_OPEN) + len(PERSONAL_CLAIM_SPAN_CLOSE))
 
 
+# Legacy bare form (stored turns still carry it; also the fallback when a
+# claim cannot be named). The quoted family (BC-97, 2026-10-15) names WHICH
+# sentence was unverified: [unverified action claim: "<sentence>"; ... +N more].
 UNVERIFIED_CLAIM_MARKER = "[unverified action claim]"
+UNVERIFIED_CLAIM_OPEN = '[unverified action claim: "'
+UNVERIFIED_CLAIM_CLOSE = "]"
+UNVERIFIED_CLAIM_MAX_CLAIMS = 2
+UNVERIFIED_CLAIM_MAX_CHARS = 240
+
+
+def unverified_claim_marker(claims) -> str:
+    """ONE marker line quoting up to 2 claim sentences (each capped, ellipsis
+    on cut; newlines flattened); a third+ claim becomes ``+N more``. No usable
+    claim text -> the legacy bare marker. Quote only the assistant's own text."""
+    seen: list[str] = []
+    for c in claims or ():
+        text = " ".join(str(c).split()).replace('"', "'")
+        if not text:
+            continue
+        if len(text) > UNVERIFIED_CLAIM_MAX_CHARS:
+            text = text[:UNVERIFIED_CLAIM_MAX_CHARS - 1].rstrip() + "…"
+        if text not in seen:
+            seen.append(text)
+    if not seen:
+        return UNVERIFIED_CLAIM_MARKER
+    shown = seen[:UNVERIFIED_CLAIM_MAX_CLAIMS]
+    body = '"; "'.join(shown)
+    more = len(seen) - len(shown)
+    tail = f'" +{more} more' if more else '"'
+    return f"[unverified action claim: \"{body}{tail}{UNVERIFIED_CLAIM_CLOSE}"
+
+
+def is_unverified_marker_line(line: str) -> bool:
+    """True for the legacy bare marker or a quoted-family marker line."""
+    s = line.strip()
+    return s == UNVERIFIED_CLAIM_MARKER or (
+        s.startswith(UNVERIFIED_CLAIM_OPEN) and s.endswith(UNVERIFIED_CLAIM_CLOSE)
+        and len(s) > len(UNVERIFIED_CLAIM_OPEN))
+
+
+def contains_unverified_marker(text: str) -> bool:
+    return isinstance(text, str) and (
+        UNVERIFIED_CLAIM_MARKER in text
+        or any(is_unverified_marker_line(ln) for ln in text.split("\n")))
+
+
+def trailing_unverified_marker(text: str) -> str:
+    """The marker line when ``text``'s LAST line is one, else ''."""
+    if not isinstance(text, str) or "\n" not in text:
+        return ""
+    last = text.rsplit("\n", 1)[1]
+    return last.strip() if is_unverified_marker_line(last) else ""
+
+
+def compact_unverified_marker(marker: str, max_len: int) -> str:
+    """Shrink a marker line to <= max_len (cut inside the quote, keep the
+    closing form); falls back to the legacy bare marker when too tight."""
+    if len(marker) <= max_len:
+        return marker
+    room = max_len - len(UNVERIFIED_CLAIM_OPEN) - len('…"]')
+    if marker == UNVERIFIED_CLAIM_MARKER or room < 8:
+        return UNVERIFIED_CLAIM_MARKER
+    return UNVERIFIED_CLAIM_OPEN + marker[len(UNVERIFIED_CLAIM_OPEN):][:room].rstrip() + '…"]'
+
+
 READ_TIME_MARKERS = (PERSONAL_CLAIM_MARKER, UNVERIFIED_CLAIM_MARKER, *LEGACY_PERSONAL_CLAIM_MARKERS)
 DELIVERY_NOTICE_PREFIX = "> ⚠️"
 
@@ -120,7 +184,8 @@ def strip_read_time_markers(text: str) -> str:
             return text
         lines = text.split("\n")
         kept = [line for line in lines if line.strip() not in READ_TIME_MARKERS
-                and not _is_span_marker_line(line.strip())]
+                and not _is_span_marker_line(line.strip())
+                and not is_unverified_marker_line(line)]
         return "\n".join(kept).rstrip()
     except Exception:
         return text

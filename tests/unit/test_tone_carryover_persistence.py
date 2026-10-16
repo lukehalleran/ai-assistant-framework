@@ -31,7 +31,7 @@ def _pipeline():
 
 
 def _write_state(p, level, age_minutes=0):
-    ts = (datetime.now() - timedelta(minutes=age_minutes)).isoformat()
+    ts = (datetime.now() - timedelta(minutes=age_minutes)).isoformat()  # clock-safe: carryover gap is elapsed minutes only
     p.write_text(json.dumps({"level": level, "ts": ts}))
 
 

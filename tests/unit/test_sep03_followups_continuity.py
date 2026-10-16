@@ -136,7 +136,7 @@ class TestThreadContextSessionStart:
 
     @pytest.mark.asyncio
     async def test_fresh_last_timestamp_without_time_manager_keeps_thread(self):
-        fresh = (datetime.now() - timedelta(minutes=5)).isoformat()
+        fresh = (datetime.now() - timedelta(minutes=5)).isoformat()  # clock-safe: recent-history gate compares an elapsed gap in hours, no date test
         ctx = _make_context(
             thread_context={**_THREAD_CTX, "last_timestamp": fresh},
             original_query="did they ever answer about the fees",
@@ -155,7 +155,7 @@ class TestThreadContextSessionStart:
         assert _thread_context_is_stale({"last_timestamp": 12345}) is False
         assert _thread_context_is_stale(None) is False
         assert _thread_context_is_stale("garbage") is False
-        five_min = (datetime.now() - timedelta(minutes=5)).isoformat()
+        five_min = (datetime.now() - timedelta(minutes=5)).isoformat()  # clock-safe: recent-history gate compares an elapsed gap in hours, no date test
         assert _thread_context_is_stale({"last_timestamp": five_min}) is False
         three_h = datetime.now() - timedelta(hours=3)
         assert _thread_context_is_stale({"last_timestamp": three_h}) is True
@@ -239,7 +239,7 @@ def _last_conv(topic):
     return {
         **_LAST_CONV_BASE,
         "topic": topic,
-        "timestamp": (datetime.now() - timedelta(seconds=60)).isoformat(),
+        "timestamp": (datetime.now() - timedelta(seconds=60)).isoformat(),  # clock-safe: recent-history gate compares an elapsed gap in hours, no date test
     }
 
 

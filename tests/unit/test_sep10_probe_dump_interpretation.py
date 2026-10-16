@@ -71,7 +71,7 @@ B11 `core.stm_analyzer._is_regular_inflection` — categorical morphology
 B12 `core.action_claim_guard.annotate_unverified_action_claim` — ONE shared,
    regex-only annotator (never calls the `_claim_semantic_hit` embedding
    channel — this runs per rendered conversation item) appends the existing
-   "[unverified action claim]" marker to a stored Daemon reply that
+   "[unverified action claim" marker to a stored Daemon reply that
    confabulated a pending/completed/existing action, applied at BOTH
    conversation render sites in `core/prompt/formatter.py`
    (`_format_memory`, `mem_parts`) to the Daemon segment only; `core/prompt/
@@ -1370,7 +1370,7 @@ class TestAnnotateUnverifiedActionClaim:
     def test_live_reply_gets_annotated(self):
         from core.action_claim_guard import annotate_unverified_action_claim
         out = annotate_unverified_action_claim(LIVE_2056_REPLY)
-        assert out.endswith("[unverified action claim]")
+        assert out.endswith('"]')
         assert out.startswith("Done")
 
     def test_plain_reply_unchanged(self):
@@ -1388,7 +1388,7 @@ class TestAnnotateUnverifiedActionClaim:
         once = annotate_unverified_action_claim(LIVE_2056_REPLY)
         twice = annotate_unverified_action_claim(once)
         assert once == twice
-        assert twice.count("[unverified action claim]") == 1
+        assert twice.count("[unverified action claim") == 1
 
     def test_semantic_hit_channel_never_called(self):
         """The embedding channel (`_claim_semantic_hit`) is NEVER consulted
@@ -1401,7 +1401,7 @@ class TestAnnotateUnverifiedActionClaim:
             side_effect=AssertionError("_claim_semantic_hit must not be called"),
         ):
             out = annotate_unverified_action_claim(LIVE_2056_REPLY)
-        assert "[unverified action claim]" in out
+        assert "[unverified action claim" in out
 
     def test_semantic_hit_channel_never_called_on_plain_text_either(self):
         from core.action_claim_guard import annotate_unverified_action_claim
@@ -1419,7 +1419,7 @@ class TestAnnotateUnverifiedActionClaim:
         from core.action_claim_guard import annotate_unverified_action_claim
         reply = "Locked in. Approving the card will put it on your calendar."
         out = annotate_unverified_action_claim(reply)
-        assert out.endswith("[unverified action claim]")
+        assert out.endswith('"]')
 
     def test_wrapped_form_of_live_reply_still_annotated(self):
         """The annotator normalizes internally (via utils.trigger_match.
@@ -1430,7 +1430,7 @@ class TestAnnotateUnverifiedActionClaim:
             "is already in place", "is already\n  in place",
         )
         out = annotate_unverified_action_claim(wrapped)
-        assert out.endswith("[unverified action claim]")
+        assert out.endswith('"]')
 
     def test_offer_framed_calendar_sentence_not_annotated(self):
         from core.action_claim_guard import annotate_unverified_action_claim
@@ -1466,9 +1466,9 @@ class TestFormatterAnnotatesDaemonSegmentOnly:
             "timestamp": "",
         }
         out = fmt._format_memory(mem)
-        assert "[unverified action claim]" in out
+        assert "[unverified action claim" in out
         daemon_idx = out.index("Daemon:")
-        marker_idx = out.index("[unverified action claim]")
+        marker_idx = out.index("[unverified action claim")
         user_idx = out.index("User:")
         assert marker_idx > daemon_idx > user_idx
 
@@ -1481,7 +1481,7 @@ class TestFormatterAnnotatesDaemonSegmentOnly:
             "timestamp": "",
         }
         out = fmt._format_memory(mem)
-        assert "[unverified action claim]" not in out
+        assert "[unverified action claim" not in out
 
     def test_mem_parts_via_assemble_prompt_annotates_daemon_segment(self):
         from core.prompt.formatter import PromptFormatter
@@ -1498,11 +1498,11 @@ class TestFormatterAnnotatesDaemonSegmentOnly:
         out = fmt._assemble_prompt(
             context=context, user_input="anything", directives="", system_prompt="",
         )
-        assert "[unverified action claim]" in out
+        assert "[unverified action claim" in out
         assert "did you get that note saved?" in out
         # The user's own query text is never annotated.
         user_line_end = out.index("Daemon:")
-        assert "[unverified action claim]" not in out[:user_line_end]
+        assert "[unverified action claim" not in out[:user_line_end]
 
     def test_mem_parts_relevant_memories_section_also_annotates(self):
         from core.prompt.formatter import PromptFormatter
@@ -1520,7 +1520,7 @@ class TestFormatterAnnotatesDaemonSegmentOnly:
             context=context, user_input="anything", directives="", system_prompt="",
         )
         assert "[RELEVANT MEMORIES]" in out
-        assert "[unverified action claim]" in out
+        assert "[unverified action claim" in out
 
     def test_mem_parts_plain_reply_unmarked(self):
         from core.prompt.formatter import PromptFormatter
@@ -1537,7 +1537,7 @@ class TestFormatterAnnotatesDaemonSegmentOnly:
         out = fmt._assemble_prompt(
             context=context, user_input="anything", directives="", system_prompt="",
         )
-        assert "[unverified action claim]" not in out
+        assert "[unverified action claim" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -1564,9 +1564,9 @@ class TestAnnotateConversationContent:
     def test_live_item1_content_gets_annotated_after_assistant_label(self):
         from core.action_claim_guard import annotate_conversation_content
         out = annotate_conversation_content(LIVE_MEMORY_ITEM1_CONTENT)
-        assert out.endswith("[unverified action claim]")
+        assert out.endswith('"]')
         assert out.startswith("User: jot down a note")
-        assert out.index("[unverified action claim]") > out.index("Assistant:")
+        assert out.index("[unverified action claim") > out.index("Assistant:")
 
     def test_plain_content_item_unchanged(self):
         from core.action_claim_guard import annotate_conversation_content
@@ -1587,7 +1587,7 @@ class TestAnnotateConversationContent:
         once = annotate_conversation_content(LIVE_MEMORY_ITEM1_CONTENT)
         twice = annotate_conversation_content(once)
         assert once == twice
-        assert twice.count("[unverified action claim]") == 1
+        assert twice.count("[unverified action claim") == 1
 
     def test_semantic_hit_channel_never_called(self):
         from core.action_claim_guard import annotate_conversation_content
@@ -1596,14 +1596,14 @@ class TestAnnotateConversationContent:
             side_effect=AssertionError("_claim_semantic_hit must not be called"),
         ):
             out = annotate_conversation_content(LIVE_MEMORY_ITEM1_CONTENT)
-        assert "[unverified action claim]" in out
+        assert "[unverified action claim" in out
 
     def test_daemon_label_variant_also_supported(self):
         from core.action_claim_guard import annotate_conversation_content
         text = "User: hi\nDaemon: " + LIVE_2056_REPLY
         out = annotate_conversation_content(text)
-        assert out.endswith("[unverified action claim]")
-        assert out.index("[unverified action claim]") > out.index("Daemon:")
+        assert out.endswith('"]')
+        assert out.index("[unverified action claim") > out.index("Daemon:")
 
     def test_last_label_used_when_multiple_turns_present(self):
         from core.action_claim_guard import annotate_conversation_content
@@ -1612,9 +1612,9 @@ class TestAnnotateConversationContent:
             "User: did you save it?\nAssistant: " + LIVE_2056_REPLY
         )
         out = annotate_conversation_content(text)
-        assert out.count("[unverified action claim]") == 1
+        assert out.count("[unverified action claim") == 1
         last_assistant_idx = out.rindex("Assistant:")
-        assert out.index("[unverified action claim]") > last_assistant_idx
+        assert out.index("[unverified action claim") > last_assistant_idx
 
 
 # ---------------------------------------------------------------------------
@@ -1676,7 +1676,7 @@ class TestGathererMemoryProducerAnnotation:
         g = _make_r5_gatherer(coord)
         result = await g._get_recent_conversations(limit=1)
         assert result
-        assert "[unverified action claim]" in result[0]["response"]
+        assert "[unverified action claim" in result[0]["response"]
 
     @pytest.mark.asyncio
     async def test_recent_conversations_plain_reply_unmarked(self):
@@ -1688,7 +1688,7 @@ class TestGathererMemoryProducerAnnotation:
         coord = _R5StubCoordinator([item])
         g = _make_r5_gatherer(coord)
         result = await g._get_recent_conversations(limit=1)
-        assert "[unverified action claim]" not in result[0]["response"]
+        assert "[unverified action claim" not in result[0]["response"]
 
     @pytest.mark.asyncio
     async def test_recent_conversations_does_not_double_mark_already_annotated_reply(self):
@@ -1697,7 +1697,7 @@ class TestGathererMemoryProducerAnnotation:
         coord = _R5StubCoordinator([item])
         g = _make_r5_gatherer(coord)
         result = await g._get_recent_conversations(limit=1)
-        assert result[0]["response"].count("[unverified action claim]") == 1
+        assert result[0]["response"].count("[unverified action claim") == 1
 
     @pytest.mark.asyncio
     async def test_memories_content_shape_item_annotated(self):
@@ -1712,7 +1712,7 @@ class TestGathererMemoryProducerAnnotation:
             "jot down a note for this session", limit=3,
         )
         assert result
-        assert "[unverified action claim]" in result[0]["content"]
+        assert "[unverified action claim" in result[0]["content"]
         assert result[0]["content"].startswith("User: jot down a note")
 
     @pytest.mark.asyncio
@@ -1725,7 +1725,7 @@ class TestGathererMemoryProducerAnnotation:
         coord = _R5StubCoordinator([item])
         g = _make_r5_gatherer(coord)
         result = await g._get_semantic_memories("anything at all here", limit=3)
-        assert "[unverified action claim]" not in result[0]["content"]
+        assert "[unverified action claim" not in result[0]["content"]
 
 
 class TestClipPreservingClaimMarker:
@@ -1772,7 +1772,7 @@ class TestDigestBuildersPreserveMarker:
         digest = controller._compute_recent_conversation_digest(
             {"recent_conversations": result},
         )
-        assert "[unverified action claim]" in digest
+        assert "[unverified action claim" in digest
 
     @pytest.mark.asyncio
     async def test_planner_context_digest_contains_marker_for_recent_conversations(self):
@@ -1788,7 +1788,7 @@ class TestDigestBuildersPreserveMarker:
         digest, included = ResponsePlanner.build_context_digest(
             {"recent_conversations": result},
         )
-        assert "[unverified action claim]" in digest
+        assert "[unverified action claim" in digest
         assert "recent_conversations" in included
 
     @pytest.mark.asyncio
@@ -1805,7 +1805,7 @@ class TestDigestBuildersPreserveMarker:
             "jot down a note for this session", limit=3,
         )
         digest, included = ResponsePlanner.build_context_digest({"memories": result})
-        assert "[unverified action claim]" in digest
+        assert "[unverified action claim" in digest
         assert "memories" in included
 
 

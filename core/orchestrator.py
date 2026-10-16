@@ -2003,7 +2003,9 @@ class DaemonOrchestrator:
             self._last_section_outcomes = _pctx.pop("_section_outcomes", {})
             self._last_gather_elapsed = _pctx.pop("_gather_elapsed", 0.0)
             _pctx.pop("_build_time", None)
+            self._last_loop_stalls = _pctx.pop("_loop_stalls", [])
         else:
+            self._last_loop_stalls = []
             self._last_task_timings = {}
             self._last_section_outcomes = {}
             self._last_gather_elapsed = 0.0

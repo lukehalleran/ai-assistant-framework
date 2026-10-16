@@ -62,6 +62,10 @@ memory:
   # Max share of the prompt budget for ALL [RECENT CONVERSATION] turns (current + prior);
   # the newest prompt_min_recent_floor turns are exempt (total budget only). 1.0 = off.
   prompt_recent_max_share: 0.50
+  # Max share of the prompt budget reserved up front for the survival floors of
+  # recent_summaries / recent_reflections (prompt_min_summaries_floor / prompt_min_reflections_floor),
+  # so higher-priority sections cannot empty them. 0.0 = no reserve.
+  prompt_floor_reserve_max_share: 0.15
   semantic_retrieval_limit: 40
   prompt_max_semantic: 15
   force_min_memories: true
@@ -358,6 +362,10 @@ intent_classifier:
 turn_telemetry:
   enabled: true
   path: logs/turn_records.jsonl
+  # Event-loop stall detector (utils/loop_stall.py): names the frame that blocks
+  # the loop during prompt gathering; stalls land in the turn record as loop_stalls.
+  loop_stall_detector: true
+  loop_stall_threshold_ms: 250
 light_prompt:
   enabled: true
   max_words: 8

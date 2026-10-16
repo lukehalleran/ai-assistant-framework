@@ -179,6 +179,27 @@ RECENT_PRIOR_SESSION_MAX_SHARE = _cfg_float("prompt_recent_prior_session_max_sha
 RECENT_MAX_SHARE = _cfg_float("prompt_recent_max_share", 0.50)
 RECENT_ALWAYS_ADMIT = _cfg_int("prompt_min_recent_floor", 5)
 
+# 2026-10-15 (BC-99, BC-24): survival floors for the rendered summary/reflection
+# sections. The builder tops these sections up to the floor BEFORE the budget
+# runs, so the budget must RESERVE room for them or priority admission empties
+# the very items the floor guarantees. Section -> memory-config key of its floor
+# (the SAME keys builder.PROMPT_MIN_*_FLOOR read; defaults mirror the builder's).
+# Listed in PRIORITY_ORDER order (reserve is granted first-come up to the bound).
+FLOOR_PROTECTED_SECTIONS = (
+    ("recent_summaries", "prompt_min_summaries_floor", 2),
+    ("recent_reflections", "prompt_min_reflections_floor", 1),
+)
+
+
+def _live_memory_cfg(key: str, default_val: Any) -> Any:
+    """Read a memory-section config key at CALL time (BC-82: live, not frozen)."""
+    try:
+        from config.app_config import config as cfg  # lazy import: live-config read
+        v = (cfg.get("memory") or {}).get(key, default_val)
+        return default_val if v is None else v
+    except (ImportError, AttributeError, TypeError):  # degrades: falls back to the built-in default
+        return default_val
+
 
 def current_session_prefix_len(items: List[Any], now: datetime) -> int:
     """Length of the newest-first prefix of `items` that is the CURRENT session.
@@ -438,6 +459,79 @@ class TokenManager:
             # Admit it before historical conversation, within the same budget.
             priority_order = [(name, 8 if name == "git_commits" else priority)
                               for name, priority in priority_order]
+        def _meter_list_item(name: str, i: int, item: Any):
+            """Cap + meter one list item exactly as the first pass does (shared with
+            the floor-reserve computation so the two can never meter differently)."""
+            max_item_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
+            if self._is_conversation_item(item) and ENABLE_MIDDLE_OUT:
+                # Conversation-shaped entry ({query, response}): cap the
+                # two FIELDS independently and meter the rendered pair
+                # (2026-09-04) — see CONVERSATION_QUERY_MAX_TOKENS.
+                _before = self.get_token_count(self._extract_text(item), model_name)
+                item = self._cap_conversation_item(item, max_item_tokens, model_name)
+                item_text = self._extract_text(item)
+                t = self.get_token_count(item_text, model_name)
+                if t < _before:
+                    logger.debug(f"[MIDDLE-OUT] Capped conversation entry {name}[{i}]: {_before} → {t} tokens")
+            else:
+                # Get item text and token count
+                item_text = self._extract_text(item)
+                t = self.get_token_count(item_text, model_name)
+
+                # Apply middle-out to oversized individual items before considering removal
+                if t > max_item_tokens and ENABLE_MIDDLE_OUT:
+                    compressed_text = self._middle_out(item_text, max_item_tokens, force=True)
+                    # Update item with compressed text — written back to
+                    # the SAME key _extract_text read (see _TEXT_KEYS).
+                    if isinstance(item, dict):
+                        compressed_item = dict(item)
+                        _wb_key = self._text_key(compressed_item)
+                        if _wb_key:
+                            compressed_item[_wb_key] = compressed_text
+                        item = compressed_item
+                    else:
+                        item = compressed_text
+                    # Recount tokens after compression
+                    # A dictionary with no recognized text key was
+                    # not changed. Meter the object actually retained.
+                    t = _item_tokens(item)
+                    logger.debug(f"[MIDDLE-OUT] Compressed {name}[{i}]: {self.get_token_count(item_text, model_name)} → {t} tokens")
+            return item, t
+
+        # BC-99 / BC-24: reserve room for the floor-protected sections' first
+        # `floor` items; sections admitted ahead of them see budget - reserve.
+        _reserve: Dict[str, int] = {}
+        try:
+            _max_share = float(_live_memory_cfg("prompt_floor_reserve_max_share", 0.15))
+        except (TypeError, ValueError):  # degrades: default share
+            _max_share = 0.15
+        _reserve_bound = int(_max_share * self.token_budget)
+        _reserve_total = 0
+        _floors: Dict[str, int] = {}
+        for _rname, _rkey, _rdef in FLOOR_PROTECTED_SECTIONS:
+            try:
+                _floor = int(_live_memory_cfg(_rkey, _rdef))
+            except (TypeError, ValueError):  # degrades: default floor
+                _floor = _rdef
+            _floors[_rname] = max(0, _floor)
+            _rval = context.get(_rname)
+            if _floor <= 0 or not isinstance(_rval, list) or not _rval:
+                continue
+            _need = sum(_meter_list_item(_rname, _ri, _rit)[1]
+                        for _ri, _rit in enumerate(_rval[:_floor]))
+            if _reserve_total + _need > _reserve_bound:
+                logger.info(
+                    f"[TOKEN BUDGET] Floor reserve for '{_rname}' skipped: {_need} tokens would "
+                    f"exceed bound {_reserve_bound} ({_max_share:.2f} of budget; reserved so far {_reserve_total})"
+                )
+                continue
+            _reserve[_rname] = _need
+            _reserve_total += _need
+
+        def _held_for(name: str) -> int:
+            """Tokens other sections' floor reserves hold back from `name`'s admission."""
+            return sum(v for k, v in _reserve.items() if k != name)
+
         for name, _prio in sorted(priority_order, key=lambda entry: entry[1], reverse=True):
             val = trimmed.get(name)
             if not val:
@@ -477,41 +571,7 @@ class TokenManager:
                     _prior_cap = int(RECENT_PRIOR_SESSION_MAX_SHARE * self.token_budget)
                     _sect_cap = int(RECENT_MAX_SHARE * self.token_budget)
                 for i, item in enumerate(val):
-                    max_item_tokens = MEMORY_ITEM_MAX_TOKENS if name == "memories" else SEMANTIC_ITEM_MAX_TOKENS
-                    if self._is_conversation_item(item) and ENABLE_MIDDLE_OUT:
-                        # Conversation-shaped entry ({query, response}): cap the
-                        # two FIELDS independently and meter the rendered pair
-                        # (2026-09-04) — see CONVERSATION_QUERY_MAX_TOKENS.
-                        _before = self.get_token_count(self._extract_text(item), model_name)
-                        item = self._cap_conversation_item(item, max_item_tokens, model_name)
-                        item_text = self._extract_text(item)
-                        t = self.get_token_count(item_text, model_name)
-                        if t < _before:
-                            logger.debug(f"[MIDDLE-OUT] Capped conversation entry {name}[{i}]: {_before} → {t} tokens")
-                    else:
-                        # Get item text and token count
-                        item_text = self._extract_text(item)
-                        t = self.get_token_count(item_text, model_name)
-
-                        # Apply middle-out to oversized individual items before considering removal
-                        if t > max_item_tokens and ENABLE_MIDDLE_OUT:
-                            compressed_text = self._middle_out(item_text, max_item_tokens, force=True)
-                            # Update item with compressed text — written back to
-                            # the SAME key _extract_text read (see _TEXT_KEYS).
-                            if isinstance(item, dict):
-                                compressed_item = dict(item)
-                                _wb_key = self._text_key(compressed_item)
-                                if _wb_key:
-                                    compressed_item[_wb_key] = compressed_text
-                                item = compressed_item
-                            else:
-                                item = compressed_text
-                            # Recount tokens after compression
-                            # A dictionary with no recognized text key was
-                            # not changed. Meter the object actually retained.
-                            t = _item_tokens(item)
-                            logger.debug(f"[MIDDLE-OUT] Compressed {name}[{i}]: {self.get_token_count(item_text, model_name)} → {t} tokens")
-
+                    item, t = _meter_list_item(name, i, item)
                     if name == "recent_conversations":
                         if i >= _prior_start and _prior_used + t > _prior_cap:
                             _prior_capped, _capped_by = True, "prior-session"
@@ -519,7 +579,9 @@ class TokenManager:
                         if i >= RECENT_ALWAYS_ADMIT and _sect_used + t > _sect_cap:
                             _prior_capped, _capped_by = True, "section"
                             break
-                    if current_tokens + t <= self.token_budget:
+                    # Floor-protected sections: this section's own reserve is released
+                    # here; other sections' reserves stay held back from this pass.
+                    if current_tokens + t + _held_for(name) <= self.token_budget:
                         kept.append(item)
                         current_tokens += t
                         _sect_used += t
@@ -540,6 +602,7 @@ class TokenManager:
                 if name == "memories":
                     logger.debug(f"[TOKEN BUDGET] Kept {len(kept)}/{len(val)} memories, budget={self.token_budget}, used={current_tokens}")
                 trimmed[name] = kept
+                _reserve.pop(name, None)
             elif isinstance(val, dict):
                 # Dict-shaped sections (e.g. a raw {"pages": [...]} web
                 # result, or codebase_changes) are metered but NEVER
@@ -548,7 +611,7 @@ class TokenManager:
                 # "web_search_results": only the dataclass shape is adapted.
                 item_text = str(val)
                 t = self.get_token_count(item_text, model_name)
-                if current_tokens + t <= self.token_budget:
+                if current_tokens + t + _held_for(name) <= self.token_budget:
                     current_tokens += t
                 else:
                     # We'll consider dropping this later in the second pass.
@@ -581,7 +644,7 @@ class TokenManager:
                         f"[TOKEN BUDGET] Structured section '{name}' metered "
                         f"at {t} tokens (adapter step={step})"
                     )
-                if val is not None and current_tokens + t <= self.token_budget:
+                if val is not None and current_tokens + t + _held_for(name) <= self.token_budget:
                     current_tokens += t
                 else:
                     # Over budget (or dropped by the ladder already) — the
@@ -609,7 +672,7 @@ class TokenManager:
                         f"str() length, never writing back a stringified value"
                     )
 
-                if current_tokens + t <= self.token_budget:
+                if current_tokens + t + _held_for(name) <= self.token_budget:
                     current_tokens += t
                 else:
                     # We'll consider dropping this later in the second pass.
@@ -656,7 +719,12 @@ class TokenManager:
 
                     if isinstance(v, list) and v:
                         # Drop a conservative slice from the tail
-                        drop_n = max(1, int(len(v) * 0.25))
+                        # Floor-protected sections never drop below their floor
+                        # (reserve doctrine, BC-99): trim only the tail beyond it.
+                        _fl = _floors.get(name, 0)
+                        if len(v) <= _fl:
+                            continue
+                        drop_n = min(max(1, int(len(v) * 0.25)), len(v) - _fl)
                         trimmed[name] = v[:-drop_n]
                     elif name in STRUCTURED_SECTION_ADAPTERS and not isinstance(v, (str, dict)):
                         # Adapter section: advance exactly ONE ladder step per
@@ -695,7 +763,8 @@ class TokenManager:
         )
         if _emptied:
             trimmed["_budget_emptied"] = _emptied
-            logger.info(f"[TOKEN BUDGET] Sections emptied by budget: {_emptied}")
+            logger.info(f"[TOKEN BUDGET] Sections emptied by budget: {_emptied}"
+                        + (f" (floor reserve {_reserve_total} tokens)" if _reserve_total else ""))
 
         # Visibility-only true total for anything still outside PRIORITY_ORDER
         # (visual_memories, note_images, …) plus the deliberately-unmetered
@@ -725,7 +794,8 @@ class TokenManager:
             if unmetered:
                 logger.info(
                     f"[TOKEN BUDGET] True context total ≈ {usage + unmetered} tokens "
-                    f"(metered {usage}/{self.token_budget} + {unmetered} unmetered)"
+                    f"(metered {usage}/{self.token_budget} + {unmetered} unmetered"
+                    + (f"; floor reserve {_reserve_total}" if _reserve_total else "") + ")"
                 )
         except Exception as e:  # degrades: true-total token accounting log line is skipped
             logger.debug(f"[TOKEN BUDGET] True-total accounting failed (non-fatal): {e}")

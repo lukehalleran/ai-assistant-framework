@@ -114,12 +114,12 @@ def test_a_reply_naming_the_card_or_the_approval_is_a_hard_claim(reply):
 
 @pytest.mark.parametrize("reply", [LIVE_REPLY, WRAPPED_REPLY])
 def test_read_time_marker_is_not_stamped_on_the_live_reply(reply):
-    assert "[unverified action claim]" not in guard.annotate_unverified_action_claim(reply)
+    assert "[unverified action claim" not in guard.annotate_unverified_action_claim(reply)
 
 
 def test_read_time_marker_still_fires_on_a_hard_claim():
     out = guard.annotate_unverified_action_claim("I've queued it up — approve the card below.")
-    assert out.rstrip().endswith("[unverified action claim]")
+    assert out.rstrip().endswith('"]')
 
 
 # ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ class TestMarkSequence:
         tm = _bare_tm()
         tm.mark_query_time()
         # Simulate the prior turn having happened 2 minutes ago.
-        tm.last_query_time = datetime.now() - timedelta(minutes=2)
+        tm.last_query_time = datetime.now() - timedelta(minutes=2)  # clock-safe: asserts the elapsed-duration wording only (elapsed_since_last)
         tm.mark_query_time()
         # Marked at ingress, the reported gap is THIS message vs the previous
         # one — minutes, not a stale value.

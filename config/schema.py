@@ -152,6 +152,7 @@ class MemorySection(BaseModel):
     prompt_max_recent: int = Field(default=10, ge=1)
     prompt_recent_prior_session_max_share: float = Field(default=0.40, ge=0.0, le=1.0)
     prompt_recent_max_share: float = Field(default=0.50, ge=0.0, le=1.0)
+    prompt_floor_reserve_max_share: float = Field(default=0.15, ge=0.0, le=1.0)
     semantic_retrieval_limit: int = Field(default=100, ge=1)
     prompt_max_semantic: int = Field(default=15, ge=0)
     force_min_memories: bool = True
@@ -697,6 +698,8 @@ class TurnTelemetrySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
     path: str = "logs/turn_records.jsonl"
+    loop_stall_detector: bool = True
+    loop_stall_threshold_ms: int = Field(default=250, ge=20, le=60000)
 
 
 class LightPromptSection(BaseModel):
