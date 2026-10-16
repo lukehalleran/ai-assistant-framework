@@ -298,6 +298,77 @@ def _temporal_adverb_recall_shaped(text: str) -> bool:
     return False
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Past-anchored first-person question (2026-10-15, BC-58)
+# ═══════════════════════════════════════════════════════════════════════════
+# "What was I working on in late September, and when is sim HW 4 due?"
+# classified general@0.00: the adverb rule above knows "last week"/"yesterday"
+# but no calendar-period anchor, and no pattern covered a first-person PAST
+# question about a month. The rule is structural, per CLAUSE: a question whose
+# clause has a first-person past auxiliary shape (inverted "was I / did we", or
+# embedded "what I was") AND a past-time anchor. A second clause about the
+# future ("and when is X due") neither supplies nor vetoes the match.
+# Month vocabulary + relative markers are the deployed resolver/checker tables
+# (no new month matcher); bare weekday markers are excluded (they point
+# forward as often as back).
+_QUESTION_OPENER_RE = re.compile(
+    r"^\W*(?:what|when|where|who|which|how|why|did|do|was|were|had|have|is|are|am)\b",
+    re.IGNORECASE,
+)
+_FIRST_PERSON_PAST_Q_RE = re.compile(
+    r"\b(?:was|were|did|had|have)\s+(?:i|we)\b"
+    r"|\b(?:what|where|who|how|when)\s+(?:i|we)\s+(?:was|were|did|had)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_SPLIT_RE = re.compile(r"[,;]|\b(?:and|but|then)\b", re.IGNORECASE)
+
+
+def _past_anchor_re() -> "re.Pattern":
+    from utils.query_checker import TEMPORAL_MARKERS  # lazy import: startup-cost
+    from utils.temporal_resolver import _MONTH_NAMES  # lazy import: startup-cost
+    months = "|".join(sorted((m for m in _MONTH_NAMES if m != "may"), key=len, reverse=True))
+    markers = "|".join(
+        re.escape(m) for m in TEMPORAL_MARKERS
+        if m not in {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+    )
+    return re.compile(
+        r"\b(?:" + markers + r")\b"
+        r"|\b(?:(?:early|mid|late|the (?:start|end|middle) of|the (?:first|last) (?:week|half) of)\s+)?"
+        r"(?:" + months + r"|may(?=\s+(?:of\s+)?\d{4}))\b(?:\s+\d{4})?"
+        r"|\b(?:in|during|since|back in|around|by)\s+(?:early |mid |late )?may\b"
+        r"|\b(?:in|during|since|back in)\s+(?:19|20)\d{2}\b"
+        r"|\blast\s+(?:weekend|week|month|year|night|summer|winter|spring|fall|semester|term|quarter|"
+        r"(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b"
+        r"|\b(?:i|we)\s+last\b"
+        r"|\b\d+\s+(?:days?|weeks?|months?|years?)\s+ago\b",
+        re.IGNORECASE,
+    )
+
+
+_PAST_ANCHOR_RE = None
+
+
+def _past_anchored_first_person_question(text: str) -> bool:
+    """True when some question-shaped sentence has a CLAUSE that is a
+    first-person past question carrying a past time anchor."""
+    global _PAST_ANCHOR_RE
+    if _PAST_ANCHOR_RE is None:
+        _PAST_ANCHOR_RE = _past_anchor_re()
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        if not sentence:
+            continue
+        if not (sentence.rstrip().endswith("?") or _QUESTION_OPENER_RE.search(sentence)):
+            continue
+        for clause in _CLAUSE_SPLIT_RE.split(sentence):
+            if (
+                clause
+                and _FIRST_PERSON_PAST_Q_RE.search(clause)
+                and _PAST_ANCHOR_RE.search(clause)
+            ):
+                return True
+    return False
+
+
 class _CallablePattern:
     """Minimal `.search()` shim so a Python-level predicate can sit in the
     `_PATTERNS` list next to compiled regexes — the classify() loop only
@@ -397,6 +468,7 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
     # Sentence-scoped (2026-09-27, BC-04): a callable predicate, not a single
     # whole-message regex — see _temporal_adverb_recall_shaped above for why.
     patterns.append((_CallablePattern(_temporal_adverb_recall_shaped), IntentType.TEMPORAL_RECALL, 0.85))
+    patterns.append((_CallablePattern(_past_anchored_first_person_question), IntentType.TEMPORAL_RECALL, 0.85))
     _add(
         r"\b(remember when|what (did|were) we (talk|discuss|chat)"
         r"|what have (i|we) been|(my|our|chat|conversation|message) history"
