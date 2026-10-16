@@ -31,7 +31,7 @@ def test_long_gap_resets_stickiness():
 
 def test_within_session_keeps_stickiness():
     p = _pipeline_with_carried_tone()
-    two_min_ago = datetime.now() - timedelta(minutes=2)
+    two_min_ago = datetime.now() - timedelta(minutes=2)  # clock-safe: gap compared as elapsed minutes (_should_reset_tone_stickiness), no date logic
     assert p._should_reset_tone_stickiness(_recent(two_min_ago)) is False
 
 
@@ -49,7 +49,7 @@ def test_iso_string_timestamp_parsed():
     p = _pipeline_with_carried_tone()
     old_iso = (datetime.now() - timedelta(hours=3)).isoformat()
     assert p._should_reset_tone_stickiness(_recent(old_iso)) is True
-    fresh_iso = (datetime.now() - timedelta(minutes=1)).isoformat()
+    fresh_iso = (datetime.now() - timedelta(minutes=1)).isoformat()  # clock-safe: gap compared as elapsed minutes (_should_reset_tone_stickiness), no date logic
     assert p._should_reset_tone_stickiness(_recent(fresh_iso)) is False
 
 
@@ -64,8 +64,8 @@ def test_threshold_boundary_configurable(monkeypatch):
     import config.app_config as cfg
     monkeypatch.setattr(cfg, "TONE_STICKINESS_MAX_GAP_MINUTES", 30, raising=False)
     p = _pipeline_with_carried_tone()
-    just_under = datetime.now() - timedelta(minutes=25)
-    just_over = datetime.now() - timedelta(minutes=35)
+    just_under = datetime.now() - timedelta(minutes=25)  # clock-safe: gap compared as elapsed minutes (_should_reset_tone_stickiness), no date logic
+    just_over = datetime.now() - timedelta(minutes=35)  # clock-safe: gap compared as elapsed minutes (_should_reset_tone_stickiness), no date logic
     assert p._should_reset_tone_stickiness(_recent(just_under)) is False
     assert p._should_reset_tone_stickiness(_recent(just_over)) is True
 
@@ -80,7 +80,7 @@ def test_history_distress_ignores_stale_heavy_turn(monkeypatch):
         "is_heavy_topic": True,
         "timestamp": datetime.now() - timedelta(hours=12),
     }
-    fresh = dict(stale, timestamp=datetime.now() - timedelta(minutes=2))
+    fresh = dict(stale, timestamp=datetime.now() - timedelta(minutes=2))  # clock-safe: gap compared as elapsed minutes (_should_reset_tone_stickiness), no date logic
 
     assert _recent_distress_from_history([stale]) is False
     assert _recent_distress_from_history([fresh]) is True

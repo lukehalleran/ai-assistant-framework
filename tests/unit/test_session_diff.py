@@ -227,7 +227,7 @@ class TestGetCodebaseChanges:
                 return _make_subprocess_result(stdout="")
             return _make_subprocess_result()
 
-        since = datetime.now() - timedelta(hours=3, minutes=15)
+        since = datetime.now() - timedelta(hours=3, minutes=15)  # clock-safe: since_label renders an elapsed duration (3h), no date test
         with patch("config.app_config.SESSION_DIFF_ENABLED", True), \
              patch("config.app_config.SESSION_DIFF_MAX_COMMITTED", 20), \
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 20), \

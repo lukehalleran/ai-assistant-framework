@@ -359,7 +359,7 @@ class TestPriorToolFollowup:
             "Want me to run one more Gmail search for \"acme corp\" before "
             "you go digging in Outlook?"
         )
-        stale_ts = (datetime.now() - timedelta(seconds=TOOL_CONTINUATION_MAX_AGE_S + 500)).isoformat()
+        stale_ts = (datetime.now() - timedelta(seconds=TOOL_CONTINUATION_MAX_AGE_S + 500)).isoformat()  # clock-safe: continuation max-age is an elapsed-seconds comparison
         corpus = _FakeCorpus([_entry(offer_reply, response_mode="agentic-search", timestamp=stale_ts)])
         assert _prior_tool_followup("Yes please", corpus) is None
 

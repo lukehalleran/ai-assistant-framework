@@ -262,7 +262,7 @@ def _bare_pipeline(tmp_path):
 
 def _row(text, heavy, minutes_ago=0):
     return {"query": text, "is_heavy_topic": heavy,
-            "timestamp": (datetime.now() - timedelta(minutes=minutes_ago)).isoformat()}
+            "timestamp": (datetime.now() - timedelta(minutes=minutes_ago)).isoformat()}  # clock-safe: tone carryover compares elapsed minutes only
 
 def _state(pipe):
     p = Path(pipe._TONE_STATE_PATH)
