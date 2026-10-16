@@ -781,6 +781,7 @@ def _build_debug_record(
         ),
         'section_outcomes': dict(section_outcomes or {}),
         'gather_elapsed': round(gather_elapsed, 3) if gather_elapsed else 0.0,
+        'loop_stalls': list(getattr(orchestrator, '_last_loop_stalls', None) or []),
         'gate_reason': gate_reason or '',
         'response_plan': plan_audit,
     }
@@ -3615,6 +3616,8 @@ def _capture_delivery(ctx, debug_record):
     for key in ("phase_timings", "task_timings", "section_outcomes"):
         if debug_record.get(key):
             ctx.telemetry[key] = dict(debug_record[key])
+    if debug_record.get("loop_stalls"):
+        ctx.telemetry["loop_stalls"] = list(debug_record["loop_stalls"])
     debug_record.update({k: v for k, v in ctx.telemetry.items()
                          if k.startswith(("grounding_", "personal_claim_"))
                          or k in {"wall_elapsed_s", "pre_prepare_elapsed_s", "citation_drift"}})

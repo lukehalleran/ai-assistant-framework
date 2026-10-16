@@ -362,6 +362,10 @@ intent_classifier:
 turn_telemetry:
   enabled: true
   path: logs/turn_records.jsonl
+  # Event-loop stall detector (utils/loop_stall.py): names the frame that blocks
+  # the loop during prompt gathering; stalls land in the turn record as loop_stalls.
+  loop_stall_detector: true
+  loop_stall_threshold_ms: 250
 light_prompt:
   enabled: true
   max_words: 8

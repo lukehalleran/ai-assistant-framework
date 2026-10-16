@@ -698,6 +698,8 @@ class TurnTelemetrySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
     path: str = "logs/turn_records.jsonl"
+    loop_stall_detector: bool = True
+    loop_stall_threshold_ms: int = Field(default=250, ge=20, le=60000)
 
 
 class LightPromptSection(BaseModel):

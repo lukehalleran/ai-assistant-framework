@@ -118,6 +118,7 @@ import eval.snapshots as snapshots
 import eval.schema as schema
 import eval.section_registry as section_registry
 import utils.turn_progress as turn_progress
+import utils.loop_stall as loop_stall
 import memory.valence as valence
 import knowledge.semantic_search as semantic_index
 
@@ -1743,12 +1744,16 @@ class UnifiedPromptBuilder:
             turn_progress.emit(f"🔎 Retrieving context from {len(tasks)} sources in parallel…")
             _gather_start = time.perf_counter()
             phase_timings["before_retrieval"] = _gather_start - start_time
+            # Event-loop stall detector (BC-41/BC-69): a gather task that
+            # blocks the loop inline defeats every wait_for around it.
+            _stall_det = loop_stall.LoopStallDetector()
             try:
-                done, pending = await asyncio.wait(
-                    list(tasks.values()),
-                    timeout=30.0,
-                    return_when=asyncio.ALL_COMPLETED,
-                )
+                async with _stall_det:
+                    done, pending = await asyncio.wait(
+                        list(tasks.values()),
+                        timeout=30.0,
+                        return_when=asyncio.ALL_COMPLETED,
+                    )
                 _gather_elapsed = time.perf_counter() - _gather_start
                 phase_timings["retrieval"] = _gather_elapsed
 
@@ -2351,6 +2356,8 @@ class UnifiedPromptBuilder:
             prompt_ctx["_gather_elapsed"] = locals().get('_gather_elapsed', 0.0)
             prompt_ctx["_build_time"] = build_time
             prompt_ctx["_phase_timings"] = phase_timings
+            _det = locals().get("_stall_det")
+            prompt_ctx["_loop_stalls"] = _det.turn_fields() if _det is not None else []
             logger.info("[BUILD_PROMPT PHASES] %s", " | ".join(
                 f"{name}={elapsed:.3f}s" for name, elapsed in phase_timings.items()
             ))

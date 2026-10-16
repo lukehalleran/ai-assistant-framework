@@ -41,7 +41,10 @@ Typical record fields (all optional — record what the turn produced):
   grounding_flagged, grounding_confidence, grounding_corrected,
   response_len, model, session_id, prepare_elapsed_s, wall_elapsed_s,
   pre_prepare_elapsed_s, grounding_verifier_elapsed_s, grounding_status,
-  phase_timings, task_timings (seconds; finite, rounded, at most 20 keys), has_images.
+  phase_timings, task_timings (seconds; finite, rounded, at most 20 keys), has_images,
+  loop_stalls (2026-10-15, utils/loop_stall.py: up to 5 {ms, top} entries -- a blocked-
+  event-loop duration and a repo-relative "path:line function"; numbers and code
+  locations only, never message text),
   doc_gen_prompt_tokens, doc_gen_system_tokens, doc_gen_total_tokens (2026-09-27,
   BC-45/BC-72): real counts from DocumentGenerator's per-run debug summary
   (knowledge/document_generator.py GeneratedDocument.prompt_tokens/
@@ -150,6 +153,24 @@ def sanitize_tool_calls(value: Any) -> list:
     return out
 
 
+def _sanitize_loop_stalls(value: Any) -> list:
+    """[{ms:int, top:'path:line func'}], longest first, max 5; nothing else survives."""
+    out = []
+    if not isinstance(value, (list, tuple)):
+        return out
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            ms = int(item.get("ms"))
+        except (TypeError, ValueError):  # degrades: malformed stall entry dropped
+            continue
+        top = str(item.get("top", ""))[:120]
+        out.append({"ms": ms, "top": top})
+    out.sort(key=lambda r: r["ms"], reverse=True)
+    return out[:5]
+
+
 def record_turn(record: Dict[str, Any]) -> bool:
     """Append one turn record as a JSON line. Never raises.
 
@@ -180,6 +201,11 @@ def record_turn(record: Dict[str, Any]) -> bool:
             if key_str in {"phase_timings", "task_timings"}:
                 if isinstance(value, dict):
                     payload[key_str] = _sanitize_timings(value)
+                continue
+            if key_str == "loop_stalls":
+                stalls = _sanitize_loop_stalls(value)
+                if stalls:
+                    payload[key_str] = stalls
                 continue
             if key_str == "tool_calls":
                 continue  # sanitized below; always present
