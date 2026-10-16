@@ -118,7 +118,7 @@ class _Consolidator:
 
 def _proc(corpus, chroma, cons):
     p = sp.ShutdownProcessor(corpus, chroma, cons, None, None, None, None, datetime.now())
-    for name in ("_extract_session_facts", "_extract_llm_facts", "_extract_behavioral_patterns",
+    for name in ("_extract_session_facts", "_extract_llm_facts",
                  "_extract_procedural_skills", "_generate_proposals", "_check_implementation_tracking",
                  "_process_open_threads", "_run_wiki_enrichment", "_run_wikidata_enrichment",
                  "_run_cross_collection_dedup"):

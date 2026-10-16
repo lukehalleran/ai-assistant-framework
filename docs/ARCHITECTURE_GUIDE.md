@@ -2218,11 +2218,7 @@ Step 3:  LLM fact extraction — Neural triple extraction, last 30 turns (2026-0
          source_excerpt attached via keyword matching (_attach_source_excerpts)
          Graph ingestion for entity-worthy facts
 
-Step 4:  Behavioral pattern extraction — Cross-turn habit detection
-         Single LLM call identifies recurring cross-domain behaviors the user
-         exhibits but never states explicitly (e.g., "codes at the gym").
-         Stores as profile facts. Min 3 turns required, max 3 patterns.
-         Config: behavioral_patterns.enabled (default true).
+Step 4:  (removed 2026-10-16: single-session behavioral-pattern step; see PLAN_20261016)
 
 Step 5:  Procedural skill extraction — WHEN/THEN adaptive workflows
 
@@ -2647,7 +2643,6 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `git_stats` | Git activity queries | `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT`, `GIT_STATS_MAX_OUTPUT_LINES` |
 | `response_planning` | Pre-answer plan + post-answer review | `RESPONSE_PLANNING_ENABLED`, `RESPONSE_REVIEW_ENABLED`, `RESPONSE_REVIEW_CONFIDENCE_THRESHOLD` |
 | `llm_compression` | Smart token compression | `LLM_COMPRESSION_ENABLED`, `LLM_COMPRESSION_MODEL`, `LLM_COMPRESSION_TIMEOUT` |
-| `behavioral_patterns` | Cross-turn habit detection | `behavioral_patterns.enabled` |
 | `wiki_enrichment` | Session wiki articles to graph | `WIKI_ENRICHMENT_ENABLED`, `WIKI_ENRICHMENT_MAX_PER_SESSION` |
 | `wikidata_import` | Wikidata entity resolution | `WIKIDATA_*` constants |
 | `wikidata_enrichment` | Anchored typed edges from offline Wikidata cache | `WIKIDATA_ENRICHMENT_ENABLED`, `WIKIDATA_ENRICHMENT_RELATION_WHITELIST`, `WIKIDATA_ENRICHMENT_MAX_EDGES_PER_ENTITY/RUN`, `WIKIDATA_ENRICHMENT_MAX_NEW_NODES` |

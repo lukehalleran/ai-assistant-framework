@@ -52,10 +52,6 @@ Module Contract
     UserProfile.add_fact, which resolves the relative word deterministically
     against it — falls back to extraction time (logged) only when the
     provenance join found no turn_id to anchor to
-  - _extract_behavioral_patterns(session_conversations) — cross-turn habit detection;
-    single LLM call identifies recurring cross-domain behaviors the user exhibits
-    but never states explicitly (e.g., "codes at the gym"). Stores as profile facts.
-    Config: behavioral_patterns.enabled (default true), min 3 turns required.
   - _extract_procedural_skills(session_conversations) — adaptive workflow extraction
   - _generate_proposals(session_conversations) — goal-directed code change proposals
   - _check_implementation_tracking() — lightweight proposal implementation detection
@@ -84,7 +80,6 @@ from typing import Dict, List, Optional
 
 from utils.logging_utils import get_logger
 from memory.fact_source import authored_text
-from memory.llm_fact_extractor import LLMFactExtractor
 import json
 import time
 
@@ -220,12 +215,11 @@ class ShutdownProcessor:
             await self.summarize_uncovered_blocks(max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN))
 
             # ── Parallel Phase A: Extraction ──────────────────────────
-            # Facts, LLM facts, behavioral patterns, and skills are
+            # Facts, LLM facts, and skills are
             # independent LLM calls that can overlap.
             phase_a = await asyncio.gather(
                 self._extract_session_facts(session_conversations),
                 self._extract_llm_facts(session_conversations),
-                self._extract_behavioral_patterns(session_conversations),
                 self._extract_procedural_skills(session_conversations),
                 return_exceptions=True,
             )
@@ -922,169 +916,6 @@ class ShutdownProcessor:
         except Exception:
             pass
         return "unknown"
-
-    # ------------------------------------------------------------------
-    # Behavioral pattern extraction (cross-turn habit detection)
-    # ------------------------------------------------------------------
-
-    async def _extract_behavioral_patterns(self, session_conversations):
-        """Extract recurring behavioral patterns from the full session.
-
-        Looks across all session turns for cross-domain habits the user exhibits
-        repeatedly but never states explicitly as a fact (e.g., "codes at the gym",
-        "studies at coffee shops"). Single LLM call, ~200 tokens output.
-        """
-        try:
-            from config.app_config import config as _cfg
-            _pattern_cfg = _cfg.get("behavioral_patterns", {})
-            if not _pattern_cfg.get("enabled", True):
-                return
-        except ImportError:
-            pass
-
-        if not self.model_manager:
-            return
-
-        # Need enough turns to detect patterns (not just one-off mentions)
-        if isinstance(session_conversations, list) and session_conversations:
-            sess_items = session_conversations
-        else:
-            try:
-                corpus = list(self.corpus_manager.visible_entries())
-                sess_items = [
-                    e for e in corpus
-                    if (not self._is_summary(e)) and (not self._is_reflection(e))
-                    and self._ts(e) >= self.session_start
-                ]
-            except (AttributeError, TypeError, ValueError):
-                return
-
-        if len(sess_items) < 3:
-            return
-
-        # Build condensed session view (just user messages, capped)
-        user_msgs = []
-        total_chars = 0
-        for e in sess_items[-20:]:
-            q = (e.get('query') or '').strip()
-            if q and total_chars + len(q) < 3000:
-                user_msgs.append(q)
-                total_chars += len(q)
-
-        if len(user_msgs) < 3:
-            return
-
-        # Gather existing profile facts to avoid duplicating known patterns
-        existing_habits = []
-        if self.user_profile:
-            try:
-                current_view = self.user_profile.get_current_view()
-                for cat_name, facts_list in current_view.items():
-                    for f in facts_list:
-                        rel = f.get("relation", "")
-                        val = f.get("value", "")
-                        if any(k in rel for k in ("habit", "routine", "pattern", "environment",
-                                                   "coding_location", "study_location")):
-                            existing_habits.append(f"{rel}={val}")
-            except Exception:
-                pass
-
-        existing_section = ""
-        if existing_habits:
-            existing_section = (
-                "\n\nALREADY KNOWN HABITS (do NOT re-extract these):\n"
-                + "\n".join(f"- {h}" for h in existing_habits[:10])
-            )
-
-        numbered = "\n".join(f"{i+1}. {m}" for i, m in enumerate(user_msgs))
-
-        prompt = f"""Review these user messages from a single session and identify RECURRING BEHAVIORAL PATTERNS — things the user habitually does together across domains.
-
-EXAMPLES of behavioral patterns:
-- Codes/programs while at the gym (mentioned working on code + being at gym)
-- Studies at coffee shops (mentioned studying + being at a café)
-- Listens to specific music while working (mentioned music + work context)
-- Exercises in the morning before class (mentioned workout timing + school)
-
-RULES:
-- Only extract a pattern when the user's OWN words state the regularity (e.g. "always", "every morning", "usually", "whenever", "most days") in a message that also names the activity or place
-- Two things happening in the same session is NOT a pattern; a single evening or one-time event is NOT a habit
-- The "object" must reuse the user's own words from that message
-- Use relation names like: coding_environment, study_environment, workout_habit, multitasking_habit
-- Confidence 0.7 for first observation, 0.85+ if user explicitly confirms the pattern
-- Maximum 3 patterns per session
-- Do NOT extract single-activity facts (just "goes to gym" is not a pattern)
-{existing_section}
-
-USER MESSAGES THIS SESSION:
-{numbered}
-
-Output ONLY a JSON array (empty [] if no cross-domain patterns found):
-[{{"relation": "snake_case", "object": "concise description", "category": "preferences", "confidence": 0.7}}]
-
-JSON:"""
-
-        try:
-            import json
-            text = await self.model_manager.generate_once(
-                prompt=prompt,
-                model_name=os.getenv("LLM_FACTS_MODEL", "gpt-4o-mini"),
-                system_prompt="You output only strict JSON arrays. No prose.",
-                max_tokens=200,
-                temperature=0.0,
-            )
-
-            if not text or not text.strip():
-                return
-
-            raw = text.strip()
-            start = raw.find("[")
-            end = raw.rfind("]")
-            if start < 0 or end <= start:
-                return
-
-            patterns = json.loads(raw[start:end + 1])
-            if not isinstance(patterns, list) or not patterns:
-                return
-
-            # Provenance boundary (2026-10-15, BC-46/BC-75): a pattern is
-            # stored only if it joins back to a USER-authored span of this
-            # session (the SAME join the LLM fact extractor uses) AND that
-            # span itself states a recurrence. One evening is one observation.
-            triples = []
-            for p in patterns[:3]:
-                if not isinstance(p, dict):
-                    continue
-                rel = str(p.get("relation") or "").strip()
-                obj = str(p.get("object") or "").strip()
-                if not rel or not obj:
-                    continue
-                try:
-                    confidence = float(p.get("confidence", 0.7))
-                except (TypeError, ValueError):
-                    confidence = 0.7
-                triples.append({
-                    "subject": "user", "relation": rel, "object": obj,
-                    "category": p.get("category", "preferences"),
-                    "confidence": confidence,
-                })
-
-            if triples and self.user_profile:
-                LLMFactExtractor._attach_source_excerpts(triples, sess_items[-20:])
-                kept = []
-                for t in triples:
-                    if t.get("claim_kind") != "habit":
-                        logger.info(
-                            f"[Shutdown] Behavioral pattern dropped: {t['relation']} "
-                            f"(habit_without_recurrence)")
-                        continue
-                    kept.append(t)
-                added = self.user_profile.add_facts_batch(kept) if kept else 0
-                if added:
-                    logger.info(f"[Shutdown] Extracted {added} behavioral patterns from session")
-
-        except Exception as e:
-            logger.debug(f"[Shutdown] Behavioral pattern extraction failed (non-fatal): {e}")
 
     # ------------------------------------------------------------------
     # Procedural skill extraction
