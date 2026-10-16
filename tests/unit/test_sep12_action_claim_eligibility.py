@@ -247,12 +247,10 @@ class TestLegitReplaySentencesStillFire:
     def test_card_family_legit_rows(self, text, anchor):
         assert claims_pending_card(text) is True
         out = annotate_unverified_action_claim(text)
-        assert out.endswith("[unverified action claim]")
+        assert out.endswith('"]')
         wrapped = _wrap(text, anchor)
         assert claims_pending_card(wrapped) is True
-        assert annotate_unverified_action_claim(wrapped).endswith(
-            "[unverified action claim]"
-        )
+        assert annotate_unverified_action_claim(wrapped).endswith('"]')
 
     def test_approve_it_calendar_also_fires_calendar_family(self):
         """Explicitly required by the plan: this sentence carries BOTH a

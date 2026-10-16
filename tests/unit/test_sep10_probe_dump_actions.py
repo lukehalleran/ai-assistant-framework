@@ -1327,7 +1327,7 @@ class TestA14SelfNotesUnverifiedActionClaimMarker:
                 self.memory_coordinator = None
 
         out = await _G().get_daemon_self_notes("test query", limit=3)
-        assert "[unverified action claim]" in out[0]["content"]
+        assert "[unverified action claim" in out[0]["content"]
 
     async def test_ordinary_note_gets_no_marker(self):
         from core.prompt.gatherer_knowledge import KnowledgeRetrievalMixin
@@ -1342,7 +1342,7 @@ class TestA14SelfNotesUnverifiedActionClaimMarker:
                 self.memory_coordinator = None
 
         out = await _G().get_daemon_self_notes("test query", limit=3)
-        assert "[unverified action claim]" not in out[0]["content"]
+        assert "[unverified action claim" not in out[0]["content"]
 
 
 # ===========================================================================

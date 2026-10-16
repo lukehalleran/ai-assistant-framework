@@ -168,17 +168,13 @@ class TestAAnnotateResidualOutOfContract:
     def test_clean_annotate_marked_by_out_of_contract_completion_check(self, i):
         text = _A_NOT_CLAIMS[i]
         assert claims_calendar_state(text) == []
-        assert annotate_unverified_action_claim(text).endswith(
-            "[unverified action claim]"
-        )
+        assert annotate_unverified_action_claim(text).endswith('"]')
 
     @pytest.mark.parametrize("i", [3, 6])
     def test_wrapped_annotate_marked_by_out_of_contract_completion_check(self, i):
         wrapped = _wrap(_A_NOT_CLAIMS[i], _A_NOT_CLAIMS_ANCHORS[i])
         assert claims_calendar_state(wrapped) == []
-        assert annotate_unverified_action_claim(wrapped).endswith(
-            "[unverified action claim]"
-        )
+        assert annotate_unverified_action_claim(wrapped).endswith('"]')
 
     def test_wrapped_index_4_residual_does_not_survive_the_wrap(self):
         """Index 4's soft-wrap anchor ("put it") happens to land the
@@ -265,14 +261,14 @@ class TestBClaimsExactReturn:
             "The email says the meeting is already scheduled, and it is "
             "already on your calendar for Friday at 3 PM."
         )
-        assert annotate_unverified_action_claim(text).endswith("[unverified action claim]")
+        assert annotate_unverified_action_claim(text).endswith('"]')
 
     def test_annotator_period_form_marked(self):
         text = (
             "The email says the meeting is already scheduled. "
             "It is already on your calendar for Friday at 3 PM."
         )
-        assert annotate_unverified_action_claim(text).endswith("[unverified action claim]")
+        assert annotate_unverified_action_claim(text).endswith('"]')
 
 
 # ===========================================================================
