@@ -58,6 +58,14 @@ def probe_ctx(prior=26, words=250):
 
 
 def run(ctx, share, budget=10000, sect=1.0):
+    # These tests isolate the recent_conversations share caps; the summary/
+    # reflection floor reserve (2026-10-15, test_token_manager_floor_reserve.py)
+    # is switched off here so "share 1.0 == old behaviour" stays literally true.
+    from config.app_config import config as _cfg
+    _mem = _cfg.setdefault("memory", {})
+    _had = "prompt_floor_reserve_max_share" in _mem
+    _prev = _mem.get("prompt_floor_reserve_max_share")
+    _mem["prompt_floor_reserve_max_share"] = 0.0
     old = (tmod.RECENT_PRIOR_SESSION_MAX_SHARE, tmod.RECENT_MAX_SHARE)
     tmod.RECENT_PRIOR_SESSION_MAX_SHARE, tmod.RECENT_MAX_SHARE = share, sect
     try:
@@ -65,6 +73,10 @@ def run(ctx, share, budget=10000, sect=1.0):
         out = tm._manage_token_budget(ctx, now=NOW)
     finally:
         tmod.RECENT_PRIOR_SESSION_MAX_SHARE, tmod.RECENT_MAX_SHARE = old
+        if _had:
+            _mem["prompt_floor_reserve_max_share"] = _prev
+        else:
+            _mem.pop("prompt_floor_reserve_max_share", None)
     return tm, out
 
 

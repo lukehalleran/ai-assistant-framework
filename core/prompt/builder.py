@@ -21,7 +21,8 @@ Module Contract
     Delegates to ContentHygiene._hygiene_and_caps().
   - _backfill_recent_conversations(...) -> List
     Delegates to ContentHygiene._backfill_recent_conversations().
-  - Post-budget floors (Step 7.1): Guarantees minimum recent_conversations (PROMPT_MIN_RECENT_FLOOR=5),
+  - Survival floors (Step 7.1, run BEFORE the budget; TokenManager._manage_token_budget reserves
+    room for the summaries/reflections floors so priority admission cannot empty them): Guarantees minimum recent_conversations (PROMPT_MIN_RECENT_FLOOR=5),
     recent_summaries (PROMPT_MIN_SUMMARIES_FLOOR=2), and recent_reflections
     (PROMPT_MIN_REFLECTIONS_FLOOR=1) survive budget trimming. 2026-08-14: floors target the
     RENDERED split keys (the combined summaries/reflections keys are never rendered — the old
