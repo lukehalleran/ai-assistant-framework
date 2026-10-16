@@ -217,18 +217,13 @@ def test_site_regex_facts_excludes_probe(tmp_path):
     seen = []
 
     class _Extractor:
-        def extract_triples(self, text, *a, **k):
+        async def extract_facts(self, text, *a, **k):  # the deployed call site awaits this
             seen.append(text)
             return []
 
-        extract_facts = extract_triples
-
     proc = _proc(cm)
     proc.fact_extractor = _Extractor()
-    try:
-        asyncio.run(proc._extract_session_facts(None))
-    except Exception:  # the extractor stub is minimal; only what it was handed matters
-        pass
+    asyncio.run(proc._extract_session_facts(None))
     assert seen, "extractor should have been handed the real turns"
     assert any(REAL in t for t in seen if isinstance(t, str))
     assert all(_no_probe(t) for t in seen if isinstance(t, str))
@@ -248,10 +243,7 @@ def test_site_threads_excludes_probe(tmp_path):
     model = _EchoModel()
     proc = _proc(cm, model=model)
     proc.thread_store = SimpleNamespace(list_open_threads=lambda *a, **k: [])
-    try:
-        asyncio.run(proc._process_open_threads(None))
-    except Exception:  # thread store is a stub; only the prompts matter
-        pass
+    asyncio.run(proc._process_open_threads(None))
     assert any(REAL in p for p in model.prompts)
     assert all(_no_probe(p) for p in model.prompts)
 
@@ -271,10 +263,7 @@ def test_site_proposals_selection_excludes_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(pg, "GoalDirectedGenerator", lambda **k: SimpleNamespace())
     monkeypatch.setattr(ps, "ProposalStore", lambda **k: SimpleNamespace(get_for_dedup=lambda: ""))
     monkeypatch.setattr("config.app_config.CODE_PROPOSALS_ENABLED", True, raising=False)
-    try:
-        asyncio.run(proc._generate_proposals(None))
-    except Exception:  # downstream persistence is not under test
-        pass
+    asyncio.run(proc._generate_proposals(None))
     assert len(captured.get("items", [])) == 4
     for e in captured["items"]:
         assert _no_probe(e["query"])
@@ -432,14 +421,8 @@ def test_explicit_session_list_is_filtered_at_the_process_entry(tmp_path, monkey
     monkeypatch.setenv("LLM_FACTS_ENABLED", "1")
     items = [_entry(REAL, 1), _entry(PROBE_WRAPPED, 2)]
     import memory.summary_coverage as cov
-    orig = cov.covered_ranges
-    cov.covered_ranges = lambda store: []
-    try:
-        asyncio.run(proc.process_shutdown_memory(items))
-        asyncio.run(proc.run_shutdown_reflection(items, None))
-    except Exception:  # downstream stores are stubs; only prompts matter
-        pass
-    finally:
-        cov.covered_ranges = orig
+    monkeypatch.setattr(cov, "covered_ranges", lambda store: [])
+    asyncio.run(proc.process_shutdown_memory(items))
+    asyncio.run(proc.run_shutdown_reflection(items, None))
     assert any(REAL in p for p in model.prompts)
     assert all(_no_probe(p) for p in model.prompts)
