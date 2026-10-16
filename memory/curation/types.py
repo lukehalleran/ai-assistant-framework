@@ -62,6 +62,11 @@ class ItemChange(BaseModel):
     before: Dict[str, Any] = Field(default_factory=dict)
     missing_before: Optional[List[str]] = None  # None: legacy None-means-absent encoding
     after: Dict[str, Any] = Field(default_factory=dict)
+    # Corpus-copy half of a conversation/summary/reflection quarantine
+    # (2026-10-15, BC-98). None on legacy journal entries and out-of-scope changes.
+    corpus_outcome: Optional[str] = None            # quarantine_sync OUTCOME_* constant
+    corpus_before: Optional[Dict[str, Any]] = None  # prior values of the update keys on the corpus entry
+    corpus_missing_before: Optional[List[str]] = None
 
 
 class CurationProposal(BaseModel):

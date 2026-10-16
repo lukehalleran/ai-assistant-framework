@@ -1588,7 +1588,7 @@ class ModelManager:
     @log_and_time("ModelManager Generate Async")
     async def generate_async(self, prompt, raw=False, images=None, **kwargs):
         """
-        Async wrapper for generation using the active model.
+        Async wrapper for generation using the active model (or ``route_model`` for this call only).
 
         Args:
             prompt: Text prompt
@@ -1608,7 +1608,19 @@ class ModelManager:
         # (2026-09-06 synthesis probe). Dropped once, here, for every branch.
         kwargs.pop('model_name', None)
 
-        target_model = self.active_model_name  # No longer allows override
+        # BC-30: per-call routing via the explicit ``route_model`` keyword only.
+        # The legacy ``model_name`` kwarg stays ignored (above); the process-wide
+        # active model is never written here.
+        route_model = kwargs.pop('route_model', None)
+        target_model = self.active_model_name
+        if route_model:
+            if route_model in self.models or route_model in self.api_models:
+                target_model = route_model
+            else:
+                logger.warning(
+                    f"[generate_async] route_model {route_model!r} is not registered; "
+                    f"falling back to active model {self.active_model_name!r}"
+                )
         logger.debug(f"[generate_async] Active model: {target_model}")
         logger.debug(f"[generate_async] Registered OpenAI models: {self.api_models}")
         logger.debug(f"[generate_async] Registered local models: {self.models}")

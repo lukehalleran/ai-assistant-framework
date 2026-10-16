@@ -7,10 +7,14 @@ unsupported changes are rejected before writing. Existing values are restored
 exactly. No adapter deletes/reinserts documents. B3's mutation notifications
 remain on both successful Chroma apply and revert.
 """
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from memory.curation.types import ItemChange
 from memory.memory_expander import notify_chroma_mutation
+from memory.quarantine_sync import OUTCOME_MATCH, OUTCOME_NONE, match_corpus_index, set_corpus_flag
+from utils.logging_utils import get_logger
+
+logger = get_logger("curation_adapters")
 
 QUARANTINE_KEY = "curation_quarantined"
 QUARANTINE_REASON_KEY = "curation_quarantine_reason"
@@ -89,10 +93,49 @@ def _current_fields(change, *, chroma_store=None, user_profile=None, graph_memor
     raise AdapterError(f"unknown store {change.store!r}")
 
 
-def prepare_change(change: ItemChange, **stores) -> None:
+def _corpus_scope(change: ItemChange) -> Optional[str]:
+    """Collection name when this change quarantines a record that is ALSO
+    stored in the corpus JSON (conversations/summaries/reflections), else None."""
+    if not change.store.startswith("chroma:"):
+        return None
+    if change.change_type not in ("quarantine", "set_metadata"):
+        return None
+    coll = change.store.split(":", 1)[1]
+    if coll not in ("conversations", "summaries", "reflections"):
+        return None
+    return coll if QUARANTINE_KEY in _updates(change) else None
+
+
+def _corpus_entry(change: ItemChange, collection: str, chroma_store, corpus_manager):
+    """(entry|None, outcome) - the corpus dict that is the same record as the
+    Chroma doc, matched by quarantine_sync's structural identity rule."""
+    doc = _get_chroma_doc(_chroma_collection(chroma_store, change.store), change.doc_id)
+    idx, outcome = match_corpus_index(collection, doc, corpus_manager.corpus)
+    return (corpus_manager.corpus[idx] if idx is not None else None), outcome
+
+
+def _flush_corpus(corpus_manager) -> None:
+    corpus_manager.save_corpus()
+    invalidate = getattr(corpus_manager, "invalidate_read_cache", None)
+    if callable(invalidate):
+        invalidate()
+
+
+def prepare_change(change: ItemChange, corpus_manager=None, **stores) -> None:
     """Capture and validate all touched fields without changing the target."""
     updates = _updates(change)
     current = _current_fields(change, **stores)
+    collection = _corpus_scope(change) if corpus_manager is not None else None
+    if collection is not None:
+        entry, outcome = _corpus_entry(change, collection, stores.get("chroma_store"),
+                                       corpus_manager)
+        change.corpus_outcome = outcome
+        if entry is not None:
+            change.corpus_before = {k: entry.get(k) for k in updates if k in entry}
+            change.corpus_missing_before = [k for k in updates if k not in entry]
+        else:
+            change.corpus_before = None
+            change.corpus_missing_before = None
     if not updates:
         raise AdapterError("empty change is not reversible")
     if change.change_type == "replace_content":
@@ -112,15 +155,19 @@ def prepare_change(change: ItemChange, **stores) -> None:
 
 
 def apply_change(change: ItemChange, *, chroma_store=None, user_profile=None,
-                 graph_memory=None, prepared: bool = False) -> None:
-    stores = dict(chroma_store=chroma_store, user_profile=user_profile, graph_memory=graph_memory)
+                 graph_memory=None, corpus_manager=None, prepared: bool = False) -> None:
+    stores = dict(chroma_store=chroma_store, user_profile=user_profile, graph_memory=graph_memory,
+                  corpus_manager=corpus_manager)
     if not prepared:
         prepare_change(change, **stores)
     else:
         # Do not replace the durable pre-image with a new, unjournaled one.
         check = change.model_copy(deep=True)
         prepare_change(check, **stores)
-        if check.before != change.before or check.missing_before != change.missing_before:
+        if (check.before != change.before or check.missing_before != change.missing_before
+                or check.corpus_outcome != change.corpus_outcome
+                or check.corpus_before != change.corpus_before
+                or check.corpus_missing_before != change.corpus_missing_before):
             raise AdapterError(f"target changed since preparation: {change.doc_id}")
 
     updates = _updates(change)
@@ -131,6 +178,15 @@ def apply_change(change: ItemChange, *, chroma_store=None, user_profile=None,
         else:
             coll.update(ids=[change.doc_id], metadatas=[updates])
         notify_chroma_mutation(change.doc_id)
+        if change.corpus_outcome == OUTCOME_MATCH and corpus_manager is not None:
+            # Re-match: the rolling window may have shifted since prepare.
+            # A raise here is rolled back by the engine (Chroma half reverted).
+            collection = _corpus_scope(change)
+            entry, outcome = _corpus_entry(change, collection, chroma_store, corpus_manager)
+            if entry is None or outcome != OUTCOME_MATCH:
+                raise AdapterError(f"corpus copy no longer resolves uniquely ({outcome}): {change.doc_id}")
+            set_corpus_flag(entry, updates)
+            _flush_corpus(corpus_manager)
     elif change.store == "profile":
         _find_profile_fact(user_profile, change.doc_id).update(updates)
         user_profile.save(raise_on_error=True)
@@ -144,7 +200,7 @@ def apply_change(change: ItemChange, *, chroma_store=None, user_profile=None,
 
 
 def revert_change(change: ItemChange, *, chroma_store=None, user_profile=None,
-                  graph_memory=None) -> None:
+                  graph_memory=None, corpus_manager=None) -> None:
     """Restore touched fields, refusing to overwrite a later conflicting edit.
 
     Undo is idempotent: an interrupted rollback can safely be retried. Old
@@ -181,6 +237,8 @@ def revert_change(change: ItemChange, *, chroma_store=None, user_profile=None,
         else:
             coll.update(ids=[change.doc_id], metadatas=[restored])
         notify_chroma_mutation(change.doc_id)
+        if change.corpus_outcome == OUTCOME_MATCH and corpus_manager is not None:
+            _revert_corpus(change, chroma_store, corpus_manager)
         return
 
     target = current
@@ -198,3 +256,22 @@ def revert_change(change: ItemChange, *, chroma_store=None, user_profile=None,
     else:
         graph_memory._mark_dirty()
         graph_memory.save(raise_on_error=True)
+
+
+def _revert_corpus(change: ItemChange, chroma_store, corpus_manager) -> None:
+    """Restore the corpus copy's pre-image. Idempotent; an entry that has
+    rolled out of the window leaves nothing to show, so that is success."""
+    collection = _corpus_scope(change)
+    entry, outcome = _corpus_entry(change, collection, chroma_store, corpus_manager)
+    if entry is None:
+        if outcome == OUTCOME_NONE:
+            logger.info(f"[Curation] corpus copy of {change.doc_id} no longer present; nothing to restore")
+            return
+        raise AdapterError(f"corpus copy does not resolve uniquely on undo ({outcome}): {change.doc_id}")
+    missing = set(change.corpus_missing_before or [])
+    for key in _updates(change):
+        if key in missing:
+            entry.pop(key, None)
+        elif change.corpus_before and key in change.corpus_before:
+            entry[key] = change.corpus_before[key]
+    _flush_corpus(corpus_manager)

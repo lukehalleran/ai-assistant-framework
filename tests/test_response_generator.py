@@ -62,7 +62,9 @@ async def test_generate_streaming_response_basic(response_generator, mock_model_
         result.append(chunk)
 
     assert len(result) > 0
-    mock_model_manager.switch_model.assert_called_once_with("gpt-4")
+    # BC-30 (2026-10-15): per-call routing, never a process-wide switch.
+    mock_model_manager.switch_model.assert_not_called()
+    assert mock_model_manager.generate_async.call_args.kwargs["route_model"] == "gpt-4"
 
 
 @pytest.mark.asyncio

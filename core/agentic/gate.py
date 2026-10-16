@@ -449,6 +449,33 @@ def _hit_within_scope(text: str, start: int) -> bool:
     return start < _INCIDENTAL_HIT_EDGE_CHARS or start >= tail_start
 
 
+def _tier4_query_text(user_text: str) -> str:
+    """Text the Tier-4 LLM trigger classifier sees (2026-10-15, BC-06).
+
+    Same scope rule as `_hit_within_scope`: a message within
+    REQUEST_CONTINUATION_MAX_WORDS goes through unchanged; a longer one is
+    reduced to its head and tail windows (cut on whitespace) with an omission
+    marker, so the paid classifier judges the request, not the pasted body.
+    """
+    words = user_text.split()
+    if len(words) <= REQUEST_CONTINUATION_MAX_WORDS:
+        return user_text
+    n = _INCIDENTAL_HIT_EDGE_CHARS
+    if len(user_text) <= 2 * n:
+        return user_text
+    head = user_text[:n]
+    if not user_text[n].isspace():
+        head = head.rsplit(None, 1)[0] if len(head.split()) > 1 else head
+    head = head.rstrip()
+    tail = user_text[-n:]
+    if not user_text[-n - 1].isspace():
+        parts = tail.split(None, 1)
+        tail = parts[1] if len(parts) > 1 else tail
+    tail = tail.lstrip()
+    omitted = max(0, len(words) - len(head.split()) - len(tail.split()))
+    return f"{head}\n[… {omitted} words of pasted material omitted …]\n{tail}"
+
+
 def _tier1_keyword_hit(user_text: str, matcher) -> bool:
     """ONE chokepoint for every Tier-1 keyword-list arm (2026-10-14, BC-58).
 
@@ -1366,7 +1393,7 @@ async def evaluate_agentic_gate(
             )
             if _looks_like_pattern_candidate(user_text) and _pattern_analysis_enabled():
                 _pattern_decision = await analyze_for_web_search_llm(
-                    query=user_text,
+                    query=_tier4_query_text(user_text),
                     model_manager=model_manager,
                     conversation_context=_build_recent_context(corpus_manager),
                 )
@@ -1461,7 +1488,7 @@ async def evaluate_agentic_gate(
                 else:
                     _recent_ctx = _build_recent_context(corpus_manager)
                     trigger_decision = await analyze_for_web_search_llm(
-                        query=user_text,
+                        query=_tier4_query_text(user_text),
                         model_manager=model_manager,
                         conversation_context=_recent_ctx,
                     )
@@ -1652,7 +1679,7 @@ async def evaluate_agentic_gate(
             logger.debug(f"[Agentic Gate] Triggered — modes: {', '.join(triggered)}")
 
     # ── Intent-veto exemption (explicit requests are never vetoed) ────
-    _explicit_kw = _hit_non_negated(_lower, _EXPLICIT_SEARCH_HIT)
+    _explicit_kw = _tier1_keyword_hit(user_text, _EXPLICIT_SEARCH_HIT)
     _veto_exempt = (
         _explicit_kw or _has_url or needs_files
         or bool(doc_gen_intent) or bool(self_note_intent)

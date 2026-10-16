@@ -213,14 +213,14 @@
         "text": "elif \"/\" in pronouns_lower:",
         "ordinal": 1
       },
-      "source_sha256": "47d873b4b295d9d0b1e20bd087cf2302db2d5ef6dba37efa7ac1a20b1089fd45",
+      "source_sha256": "e3ec5b7542abd184fed06ed74170aaae88fb1a977121343b089535a298576b91",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-001): file edited by the oct08 turn-audit branch (one stream accumulator → smart_join, BC-92, plus its import); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-09 (owner-approved, CGR-20261009-001): file edited to add the content-free tone receipt fields to _last_turn_signals in build_full_prompt; this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-10 (owner-approved, CGR-20261010-004): file edited for the thread_dispute POST_RESPONSE_HOOKS entry; this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-10-10); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-10-10",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Delimiter check on a pronouns profile field. Re-reviewed 2026-09-15 (Claude Fable 5.1, personal-claim support batch): the file changed only outside the anchored symbol (module-level import hoist / telemetry prefix / provenance annotation call); the anchored occurrence and its assessment are unchanged. Re-reviewed 2026-10-02 (owner-approved, CGR-20261002-001): file edited by the re-review branch (fix/oct02-rereview); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-08 (owner-approved, CGR-20261008-001): file edited by the oct08 turn-audit branch (one stream accumulator → smart_join, BC-92, plus its import); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-09 (owner-approved, CGR-20261009-001): file edited to add the content-free tone receipt fields to _last_turn_signals in build_full_prompt; this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-10 (owner-approved, CGR-20261010-004): file edited for the thread_dispute POST_RESPONSE_HOOKS entry; this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-15 (owner-approved, CGR-20261015-003): file edited by SMALL follow-up lane; this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-15); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-15",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": "CGR-20261010-004"
+      "request": "CGR-20261015-003"
     },
     {
       "anchor": {
@@ -2734,14 +2734,14 @@
         "text": "return None",
         "ordinal": 1
       },
-      "source_sha256": "2c5b7c7455db4eb6513ed0b2bb654d51c0c979748100ddc9165ac5f27183891d",
+      "source_sha256": "319515dcb4e2b67371a8bf437a31e016d1fdb97b84b9f3062db792fb17a35efc",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means the store size is unknown. Re-reviewed 2026-10-10 (owner-approved, CGR-20261010-001): file edited to add the frozen-safe curation-queue paths (utils.bootstrap.store_path); this record's anchored construct is byte-identical and the scan reports no new findings.",
-      "reviewer": "Owner (dialogue re-review 2026-10-10); evidence prepared by Claude Opus 5.5",
-      "review_date": "2026-10-10",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: None means the store size is unknown. Re-reviewed 2026-10-10 (owner-approved, CGR-20261010-001): file edited to add the frozen-safe curation-queue paths (utils.bootstrap.store_path); this record's anchored construct is byte-identical and the scan reports no new findings. Re-reviewed 2026-10-15 (owner-approved, CGR-20261015-004): file edited by CURATE follow-up lane; this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-15); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-15",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": "CGR-20261010-001"
+      "request": "CGR-20261015-004"
     },
     {
       "anchor": {

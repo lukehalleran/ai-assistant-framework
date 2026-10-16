@@ -1829,11 +1829,50 @@ class KnowledgeRetrievalMixin:
             from knowledge.WikiManager import _keywords_from_query as _wiki_keywords_from_query
             search_terms = _wiki_keywords_from_query(query)
 
+            # 2026-10-15 (BC-69): concurrent lookups under ONE deadline — the
+            # sequential loop paid up to 5s PER term (probe turn: 12.3s wiki
+            # task, then emptied by the budget). Results are kept in the
+            # original term order; unfinished lookups are cancelled.
+            from config.app_config import WIKI_FALLBACK_DEADLINE_S  # lazy import: live-config read
+            terms = list(search_terms[:limit])
+            tasks = [_asyncio.ensure_future(self._get_wiki_snippet_cached(t)) for t in terms]
             wiki_results = []
-            for term in search_terms[:limit]:
-                snippet = await self._get_wiki_snippet_cached(term)
-                if snippet:
-                    wiki_results.append(snippet)
+            if tasks:
+                try:
+                    _done, pending = await _asyncio.wait(tasks, timeout=WIKI_FALLBACK_DEADLINE_S)
+                except BaseException:
+                    # caller cancellation: do not leave orphan lookups running
+                    for t in tasks:
+                        t.cancel()
+                    raise
+                for t in pending:
+                    t.cancel()
+                kept = 0
+                first_exc = None
+                for term, t in zip(terms, tasks):
+                    if t in pending or t.cancelled():
+                        continue
+                    exc = t.exception()
+                    if exc is not None:
+                        # class name only: exception text can echo the query
+                        logger.warning("[Wiki] live fallback lookup failed: %s", type(exc).__name__)
+                        if first_exc is None:
+                            first_exc = exc
+                        continue
+                    kept += 1
+                    snippet = t.result()
+                    if snippet:
+                        wiki_results.append(snippet)
+                if pending:
+                    timings["timed_out"] = True
+                    logger.info(
+                        "[Wiki] live fallback deadline: kept %d/%d terms",
+                        kept, len(tasks),
+                    )
+                if first_exc is not None and kept == 0:
+                    # every finished lookup raised: same failed outcome as the
+                    # sequential loop produced (reason = exception class only)
+                    return OutcomeList.failed(type(first_exc).__name__)
 
             if chroma_err and not wiki_results:
                 # Primary source errored; an empty fallback isn't confident no_results.

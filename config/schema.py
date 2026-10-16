@@ -150,6 +150,8 @@ class MemorySection(BaseModel):
     hybrid_reflections_enabled: bool = True
     user_profile_facts_per_category: int = Field(default=5, ge=1)
     prompt_max_recent: int = Field(default=10, ge=1)
+    prompt_recent_prior_session_max_share: float = Field(default=0.40, ge=0.0, le=1.0)
+    prompt_recent_max_share: float = Field(default=0.50, ge=0.0, le=1.0)
     semantic_retrieval_limit: int = Field(default=100, ge=1)
     prompt_max_semantic: int = Field(default=15, ge=0)
     force_min_memories: bool = True
@@ -1132,6 +1134,9 @@ class WikiSection(BaseModel):
     max_chars: int = Field(default=15000, ge=100)
     max_sentences: int = Field(default=0, ge=0)
     timeout_s: float = Field(default=1.2, gt=0.0)
+    # One deadline for the whole live-Wikipedia fallback (concurrent lookups);
+    # read at call time (2026-10-15, BC-69).
+    fallback_deadline_s: float = Field(default=2.5, gt=0.0)
     # Parent directory of wiki_data/ (FAISS index + metadata parquet).
     # Owner-specific paths belong in config.local.yaml, never in code.
     data_root: str = "~/daemon-wiki-data"

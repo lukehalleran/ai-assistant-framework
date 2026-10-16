@@ -28,6 +28,7 @@ ALLOWLIST = {
     ("gui/launch.py", "get_summary_status"): "count-only (summary/block cadence status line)",
     ("memory/user_profile.py", "is_first_run"): "count-only",
     ("memory/memory_coordinator.py", "debug_memory_state"): "count-only (entry counts in the debug dict)",
+    ("memory/curation/adapters.py", "_corpus_entry"): "identity match for the quarantine flip itself (must see quarantined entries too; reads no entry text into any prompt)",
 }
 
 CONTENT_READ_METHODS = {

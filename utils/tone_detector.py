@@ -139,6 +139,19 @@ class ToneAnalysis:
     # set on every return AFTER the arbiter stage, None before it. Plan 2026-10-08 D13.
     arbiter_receipt: Optional[Dict[str, Any]] = None
 
+    @property
+    def semantic_source(self) -> Optional[str]:
+        """Which text the semantic stage scored: "head" | "whole" | None.
+
+        None when the semantic stage did not run (empty/plain-dict raw_scores,
+        i.e. a keyword/early path). A property, not a dataclass field: the
+        field list is pinned (one trailing optional field), and the source is
+        already carried by `_SemanticScores.source` — never parse `explanation`.
+        Enum value for turn telemetry (BC-72); never text.
+        """
+        src = getattr(self.raw_scores, "source", None)
+        return src if self.raw_scores and src in ("head", "whole") else None
+
 
 # ===== Crisis Keywords =====
 

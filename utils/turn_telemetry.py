@@ -21,7 +21,9 @@ Module Contract:
 Typical record fields (all optional — record what the turn produced):
   query, intent, intent_confidence, intent_source, tone_level,
   tone_trigger, tone_confidence (which detector path produced the tone, and its
-  confidence), tone_arbiter_backend (llm|jev|llm_after_jev|none),
+  confidence), tone_semantic_source (head|whole|None: which text the semantic
+  stage scored — the authored head of a paste, or the whole message),
+  tone_arbiter_backend (llm|jev|llm_after_jev|none),
   tone_dm_mode (off|shadow|active, as resolved), tone_dm_status (ok|unavailable|
   invalid|disabled|not_run — never empty), tone_dm_reason, tone_dm_level,
   tone_dm_p0..tone_dm_p3 (probabilities, 3 dp), tone_dm_decision_confidence,
