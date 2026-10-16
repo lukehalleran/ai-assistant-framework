@@ -100,8 +100,12 @@ class TestFitnessCue:
         assert ev is not None
 
     def test_workout_habit_with_workout_word(self):
-        ev = _find("workout_habit", "wants to get in a workout before therapy appointment", T_MELATONIN)
+        obj = "wants to get in a workout before therapy appointment"
+        # The fitness cue is judged on a NON-family relation; a recurrence-NAMED
+        # relation (workout_habit) cannot ride on a plan (2026-10-16, BC-51).
+        ev = _find("workout_goal", obj, T_MELATONIN)
         assert ev is not None and ev.claim_kind == "plan"
+        assert _find("workout_habit", obj, T_MELATONIN) is None
 
     def test_typo_calendar_request_still_supports_the_intent_relation(self):
         ev = _find("wants_to", "add ABC office hours sessions to Google Calendar", T_CALENDAR)

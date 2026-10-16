@@ -70,8 +70,11 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
 from memory.fact_source import (
-    classify_claim_time,
+    SCHEDULE_PRODUCER_METHOD,
+    classify_claim_time_for_object,
     current_status_claim_supported,
+    object_clause_for,
+    recurrence_claim_supported,
     relation_is_future_planned,
     supporting_excerpt,
 )
@@ -1174,6 +1177,8 @@ class FactExtractor:
                 confidence=conf2, method=method, source_text=text, extra_tags=tags,
                 extra_metadata=extra_metadata,
             )
+            if node is None:  # CLS-3 gate (unsupported recurrence claim)
+                continue
 
             if is_user_fact:
                 user_facts.append(node)
@@ -1972,7 +1977,7 @@ class FactExtractor:
         source_text: str,
         extra_tags: Optional[List[str]] = None,
         extra_metadata: Optional[Dict[str, str]] = None,
-    ) -> MemoryNode:
+    ) -> Optional[MemoryNode]:
         # Merge base + extra tags
         tags = (extra_tags or [])[:]
         if "extracted_fact" not in tags:
@@ -1987,7 +1992,20 @@ class FactExtractor:
         # an accepted approximation (under-fire by design; see
         # fact_source._parse_observed_at for the same tradeoff on the LLM
         # path, which DOES have a turn timestamp when the corpus provides one).
-        _claim_time = classify_claim_time(excerpt, observed_at=_now)
+        _object_clause = object_clause_for(excerpt, object)
+        # CLS-3 (2026-10-16, class: BC-51): a recurrence-NAMED relation ("my
+        # routine is …" -> routine) needs recurrence evidence in the user's own
+        # words.  The regex SCHEDULE producer is exempt by producer tag, never
+        # by relation name; entity (non-user) facts are out of scope here.
+        if (subject == "user" and method != SCHEDULE_PRODUCER_METHOD
+                and not recurrence_claim_supported(
+                    relation, excerpt, _object_clause, observed_at=_now)):
+            logger.info(
+                f"[FactExtractor] Blocked unsupported recurrence claim: "
+                f"{relation}|{object[:60]!r} (method={method})"
+            )
+            return None
+        _claim_time = classify_claim_time_for_object(excerpt, _object_clause, observed_at=_now)
         metadata = {
             "subject": subject,
             "relation": relation,
