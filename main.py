@@ -714,7 +714,10 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     print("[Shutdown] 3/6 Daily note…")
     try:
         if app_config.DAILY_NOTES_ENABLED:
-            gen = daily_notes_generator.DailyNotesGenerator(model_manager=orchestrator.model_manager)
+            gen = daily_notes_generator.DailyNotesGenerator(
+                corpus_manager=orchestrator.memory_system.corpus_manager,  # the LIVE instance, never a 2nd writer (BC-81)
+                model_manager=orchestrator.model_manager,
+            )
             result = await gen.generate_for_date(date.today())
             if result.success:
                 logger.info(f"[Shutdown] Daily note generated ({result.conversation_count} conversations)")
@@ -786,8 +789,11 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
             print("[Shutdown] 6/6 Backing up memory stores…")
             _bk = await asyncio.to_thread(backup_manager.run_shutdown_backup)
             if _bk.ok and _bk.path:
+                # "exiting" only on a real process exit: the idle-monitor flush
+                # leaves the server up (2026-10-16, message truth).
+                _tail = "exiting." if _process_exiting else "server still running."
                 print(f"[Shutdown] 6/6 Backup written: {_bk.path}"
-                      f"{' (+chroma)' if _bk.chroma_included else ''} — exiting.")
+                      f"{' (+chroma)' if _bk.chroma_included else ''} — {_tail}")
             elif _bk.skipped_reason:
                 logger.info(f"[Shutdown] Backup skipped: {_bk.skipped_reason}")
             else:

@@ -36,6 +36,9 @@ class _Corpus:
     def visible_entries(self):  # mirrors CorpusManager.visible_entries
         return list(self.corpus)
 
+    def derivable_entries(self):  # mirrors CorpusManager.derivable_entries (no [test] turns here)
+        return list(self.corpus)
+
 
 class _FakeModels:
     def __init__(self):

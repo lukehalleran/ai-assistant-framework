@@ -945,6 +945,16 @@ def authored_text(message: Any) -> str:
     return str(message.get("query") or message.get("user") or "")
 
 
+def is_test_turn(entry: Any) -> bool:
+    """True when a turn's AUTHORED text carries a complete [test]...[/test] envelope.
+
+    The ONE predicate every DERIVED-artifact builder (summaries, reflections,
+    notes, narrative, threads, skills, facts) asks, built on ``authored_text``
+    (the authorship chokepoint) and ``test_envelope`` (the structural parser).
+    """
+    return test_envelope.has_envelope(authored_text(entry))
+
+
 def _message_text_and_id(message: Any) -> tuple[str, str] | None:
     """Return only the user-authored portion of a supported message shape."""
     if isinstance(message, Mapping):

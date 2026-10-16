@@ -79,7 +79,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from utils.logging_utils import get_logger
-from memory.fact_source import authored_text
+from memory.fact_source import authored_text, is_test_turn
 import json
 import time
 
@@ -210,6 +210,9 @@ class ShutdownProcessor:
           - Generate (Target - S) new summaries, each summarizing a disjoint block
             of size N, from oldest to newest (so we never duplicate prior work).
         """
+        # An explicit list is filtered at the entry so every downstream method inherits it.
+        if session_conversations:
+            session_conversations = [e for e in session_conversations if not is_test_turn(e)]
         try:
             # 1) Summary blocks (ONE method shared with scripts/backfill_summaries.py)
             await self.summarize_uncovered_blocks(max(1, SUMMARY_MAX_BLOCKS_PER_SHUTDOWN))
@@ -320,7 +323,7 @@ class ShutdownProcessor:
     def _select_uncovered(self, cap: int):
         """THE selection for summary blocks: (non_summ, N, watermark, blocks), or None
         when coverage is unreadable (callers must not summarize blind). Pure read."""
-        corpus = list(self.corpus_manager.visible_entries())
+        corpus = list(self.corpus_manager.derivable_entries())
 
         non_summ = [
             e for e in corpus
@@ -551,7 +554,7 @@ class ShutdownProcessor:
             session_recent = list(session_conversations)
         else:
             try:
-                corpus = list(self.corpus_manager.visible_entries())
+                corpus = list(self.corpus_manager.derivable_entries())
             except (AttributeError, TypeError):
                 corpus = []
             session_recent = [
@@ -671,7 +674,7 @@ class ShutdownProcessor:
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.visible_entries())
+                corpus = list(self.corpus_manager.derivable_entries())
             except (AttributeError, TypeError):
                 corpus = []
             try:
@@ -943,7 +946,7 @@ class ShutdownProcessor:
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.visible_entries())
+                corpus = list(self.corpus_manager.derivable_entries())
             except (AttributeError, TypeError):
                 return
             try:
@@ -1085,7 +1088,7 @@ class ShutdownProcessor:
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.visible_entries())
+                corpus = list(self.corpus_manager.derivable_entries())
             except (AttributeError, TypeError):
                 return
             try:
@@ -1431,7 +1434,7 @@ class ShutdownProcessor:
             sess_items = session_conversations
         else:
             try:
-                corpus = list(self.corpus_manager.visible_entries())
+                corpus = list(self.corpus_manager.derivable_entries())
             except (AttributeError, TypeError):
                 return
             try:
@@ -1928,6 +1931,8 @@ class ShutdownProcessor:
         session_summaries: list[dict | str] | None = None,
     ) -> bool:
         """Generate and store an end-of-session reflection."""
+        if session_conversations:
+            session_conversations = [e for e in session_conversations if not is_test_turn(e)]
         if (
             not REFLECTIONS_ENABLED
             or not hasattr(self, 'model_manager')
@@ -1940,7 +1945,7 @@ class ShutdownProcessor:
 
         if not conv:
             try:
-                corpus = list(self.corpus_manager.visible_entries())
+                corpus = list(self.corpus_manager.derivable_entries())
                 non = [
                     e for e in corpus
                     if (not self._is_summary(e)) and (not self._is_reflection(e))

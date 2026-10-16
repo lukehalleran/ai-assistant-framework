@@ -192,6 +192,9 @@ class TestNarrativeRegenerationWithProductionSignature:
             def get_recent_memories(self, count=3):
                 return ["stmt-1"]
 
+            def get_recent_derivable(self, count=3):
+                return ["stmt-1"]
+
         corpus_manager = _ProductionSignatureCorpusManager()
         consolidator = AsyncMock()
         consolidator.generate_narrative_context.return_value = "a narrative"

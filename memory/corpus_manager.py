@@ -41,6 +41,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from memory.summary_coverage import corpus_content_time_raw
 from memory.utils import is_quarantined
+from memory.fact_source import is_test_turn
 import memory.pending_turns as pending_turns
 from utils.logging_utils import get_logger, log_and_time
 from utils.safe_json import atomic_write_json, atomic_write_text, load_critical_json
@@ -254,6 +255,16 @@ class CorpusManager:
         """
         return [e for e in self.corpus if not is_quarantined(e)]
 
+    def derivable_entries(self) -> List[Dict]:
+        """Entries a DERIVED artifact may be built from (2026-10-16).
+
+        Summaries, reflections, notes, narrative, threads, skills and facts:
+        ``visible_entries()`` minus owner ``[test]...[/test]`` probes. A probe
+        must never become a daily note, summary or narrative. Retrieval keeps
+        using ``visible_entries()`` so an in-session probe can test recall.
+        """
+        return [e for e in self.visible_entries() if not is_test_turn(e)]
+
     def invalidate_read_cache(self) -> None:
         """Drop the cached episodic list (call after flipping a flag in place)."""
         self._episodic_cache = None
@@ -313,6 +324,14 @@ class CorpusManager:
         result = cached[:count]
         logger.debug(f"[CorpusManager] Returning {len(result)} recent episodic memories from {len(cached)} entries (filtered out summaries + reflections)")
         return result
+
+    def get_recent_derivable(self, count: int = 3) -> List[Dict]:
+        """``get_recent_memories`` for DERIVED artifacts (2026-10-16): the newest
+        ``count`` episodic memories with owner ``[test]`` probes removed (the
+        probes are dropped BEFORE the count is applied, so a probe never
+        displaces a real turn from the window)."""
+        cached = self._episodic_with_pending()
+        return [e for e in cached if not is_test_turn(e)][:count]
 
     def get_recent_within_hours(self, hours: int = 24, max_count: int = 30) -> List[Dict]:
         """Get episodic memories from the last `hours` hours, capped at `max_count`.
