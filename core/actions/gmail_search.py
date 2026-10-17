@@ -122,7 +122,7 @@ async def search_gmail_contacts(
         _record_failure("Gmail scope missing (gmail.readonly): re-authorize with: python scripts/reauth_google.py")
         return []
 
-    creds = auth.get_credentials()
+    creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
     if not creds:
         logger.warning("[GmailSearch] Token refresh failed")
         # 2026-09-27 (BC-47, BC-58): a failed refresh is a FAILURE, not

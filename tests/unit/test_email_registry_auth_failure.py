@@ -117,6 +117,12 @@ class TestGoogleAuthManagerRefreshFailure:
         # Next call: a healthy, refreshable credential succeeds and saves —
         # `_save_token` must clear the recorded failure immediately (not
         # only via the mtime check on the next read).
+        # 2026-10-17: a PERMANENT failure now short-circuits while the token
+        # file's mtime is unchanged; a real re-auth rewrites the file, so
+        # simulate that by bumping the mtime.
+        import os
+        st = token_path.stat()
+        os.utime(token_path, (st.st_atime + 10, st.st_mtime + 10))
         ok_creds = _fake_creds()
         monkeypatch.setattr(auth, "_load_token", lambda: ok_creds)
         monkeypatch.setattr(auth, "_save_token", lambda creds: None)

@@ -12,6 +12,7 @@ Module Contract
   Returns minimal event fields only: summary, start, end, all_day, location.
 """
 
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
@@ -107,7 +108,7 @@ async def fetch_upcoming_events(
     if auth is None or not auth.is_authenticated:
         return []
 
-    creds = auth.get_credentials()
+    creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
     if not creds:
         logger.warning("[GoogleCalendar] Token refresh failed")
         # 2026-09-27 (BC-47, BC-58): a failed refresh is a FAILURE, not

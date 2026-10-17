@@ -15,6 +15,7 @@ Module Contract
   Returns minimal contact fields only: name, email, source.
 """
 
+import asyncio
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -213,7 +214,7 @@ async def _warmup(auth) -> None:
     if _warmed_up:
         return
 
-    creds = auth.get_credentials()
+    creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
     if not creds:
         # 2026-09-27 (BC-47, BC-58): a failed refresh is a FAILURE, not
         # silence — follow the E1 shape. The real search call right after
@@ -269,7 +270,7 @@ async def _search_api(
         _last_error = f"Google Contacts scope missing ({endpoint}): re-authorize with: python scripts/reauth_google.py"
         return []
 
-    creds = auth.get_credentials()
+    creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
     if not creds:
         logger.warning("[GoogleContacts] Token refresh failed")
         # 2026-09-27 (BC-47, BC-58): a failed refresh is a FAILURE, not

@@ -10,6 +10,7 @@ Module Contract
   Requires calendar.events scope. Blocks if scope not granted.
 """
 
+import asyncio
 import logging
 import re as _re
 from datetime import datetime, timedelta
@@ -316,7 +317,7 @@ async def create_calendar_event(proposal: ActionProposal) -> ActionResult:
                     "Re-run 'python -m core.actions.google_auth' to approve calendar event creation.",
         )
 
-    creds = auth.get_credentials()
+    creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
     if not creds:
         return ActionResult(
             action_id=proposal.action_id,

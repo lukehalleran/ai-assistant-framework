@@ -175,6 +175,15 @@ class GoogleAuthManager:
         if self._credentials is not None and self._credentials.valid:
             return self._credentials
 
+        # 2026-10-17 (BC-41, BC-47): a PERMANENT failure (invalid_grant) is
+        # unrecoverable by retrying — it used to re-hit the network on every
+        # call (2.5 s per turn, always failing). `auth_failure` self-clears
+        # when the token file's mtime changes, so a re-auth refreshes normally.
+        # Transient failures are NOT short-circuited.
+        if self._refresh_failure is not None and self._refresh_failure[1]:
+            if self.auth_failure is not None:
+                return None
+
         creds = self._load_token()
         if creds is None:
             return None

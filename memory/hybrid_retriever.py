@@ -79,7 +79,11 @@ class HybridRetriever:
             candidate_multiplier = 3  # Normal: get 3x candidates for better ranking
 
         # Step 1: Query rewriting
-        expanded_query = rewrite_query(query)
+        # 2026-10-17 (BC-41): rewrite_query's topic step makes a blocking LLM
+        # round-trip (TopicManager._llm_fallback -> generate_with_openai); live
+        # loop-stall records showed 0.7-1.3 s on the event loop. Keep
+        # rewrite_query sync (other callers) and run it on a worker thread.
+        expanded_query = await asyncio.to_thread(rewrite_query, query)
         logger.debug(f"[HybridRetriever] Expanded query: '{expanded_query}'")
 
         # Step 2: Semantic search with expanded query.

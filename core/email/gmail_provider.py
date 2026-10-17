@@ -181,7 +181,7 @@ class GmailProvider:
             logger.debug("[Gmail] Not authenticated")
             return []
 
-        creds = auth.get_credentials()
+        creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
         if creds is None:
             logger.warning("[Gmail] Token refresh failed")
             # 2026-09-27 (BC-47, BC-78, BC-69, BC-71): a failed refresh is a
@@ -279,7 +279,7 @@ class GmailProvider:
             logger.debug("[Gmail] Not authenticated")
             return []
 
-        creds = auth.get_credentials()
+        creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
         if creds is None:
             logger.warning("[Gmail] Token refresh failed")
             _record_failure(_auth_failure_reason(auth))

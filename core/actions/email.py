@@ -107,7 +107,7 @@ async def _try_gmail_send(
     if not auth.is_authenticated:
         return None
 
-    creds = auth.get_credentials()
+    creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop
     if not creds:
         return ActionResult(
             action_id=proposal.action_id,
