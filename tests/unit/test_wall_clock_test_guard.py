@@ -1,11 +1,11 @@
 """Repo-wide guard (2026-10-15): tests must not build "now minus a few minutes"
 timestamps without saying why a midnight crossing cannot change the outcome.
 
-Incident: ``test_sep22_formatter_machinery_strip`` went red on master CI at
+Incident: ``test_read_time_markers_formatter_strip`` went red on master CI at
 00:00 UTC because ``datetime.now() - timedelta(minutes=5)`` is *yesterday* for
 the first five minutes of every day, and the formatter treats a date change as
-a session boundary. The same shape in ``test_oct13_b4r_user_stated_ranking`` and
-``test_oct14_usr_candidates`` flipped a same-session ranking assertion. The
+a session boundary. The same shape in ``test_gatherer_memory_user_stated_ranking`` and
+``test_gatherer_memory_user_stated_candidates`` flipped a same-session ranking assertion. The
 audit (docs: lane CLOCK handoff) found every other hit compared an elapsed
 duration only.
 

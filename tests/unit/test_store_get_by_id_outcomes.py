@@ -12,7 +12,7 @@ document that still exists.
 These tests drive the DEPLOYED ``get_by_id`` (via a fake Chroma collection
 behind the same ``__new__`` + manual ``.collections`` construction used by
 tests/unit/test_chroma_store_no_autodelete.py and
-tests/unit/test_sep09_storage_repairs.py — never a real Chroma client here)
+tests/unit/test_multi_collection_chroma_store_storage_repairs.py — never a real Chroma client here)
 and the DEPLOYED ``ClaimIndex.cascade_staleness`` — first through a mocked
 ``get_by_id`` (isolating the cascade's own exception handling), then through
 the real edited store (proving the store fix and the cascade together).
@@ -58,7 +58,7 @@ class _FakeCollection:
 
 def _make_store(collections):
     """A MultiCollectionChromaStore wired to fake collections, bypassing
-    __init__ (the test_chroma_store_no_autodelete.py / test_sep09_storage_repairs.py
+    __init__ (the test_chroma_store_no_autodelete.py / test_multi_collection_chroma_store_storage_repairs.py
     pattern) so no real Chroma client or SentenceTransformer is constructed."""
     store = MultiCollectionChromaStore.__new__(MultiCollectionChromaStore)
     store.collections = collections

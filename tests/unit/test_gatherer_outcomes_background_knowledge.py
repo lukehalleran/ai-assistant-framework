@@ -9,7 +9,7 @@ check changes). F7b, docs/execution/generalization/failure_outcome_design.md,
 
 Drives the DEPLOYED `_get_wiki_content`/`_get_semantic_chunks` wrappers and
 `SemanticSearchIndex.search`, reusing fakes/techniques from
-test_sep09_latency_metrics.py (semaphore monkeypatching, `sys.modules`
+test_turn_telemetry_latency_metrics.py (semaphore monkeypatching, `sys.modules`
 stubs for the lazy WikiManager/wiki_tracker imports, `_timing_line`),
 test_audit0831_fixes.py's `TestWikiTimeoutSkip`, and
 test_semantic_visual_failure_outcomes.py's `_ready_index` helper. No real

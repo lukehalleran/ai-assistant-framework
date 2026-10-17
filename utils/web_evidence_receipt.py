@@ -38,7 +38,7 @@ import utils.read_time_markers as read_time_markers
 
 # The error prefix WebSearchManager.search returns when the limiter refuses a
 # search (multi_search repeats it per sub-query). Pinned against the deployed
-# manager by tests/unit/test_sep12_web_evidence_budget.py.
+# manager by tests/unit/test_web_search_trigger_paid_search_budget.py.
 BUDGET_ERROR_MARKER = "Daily credit limit reached"
 
 BUDGET_NOTICE = read_time_markers.delivery_notice(

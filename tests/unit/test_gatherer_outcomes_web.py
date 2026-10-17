@@ -19,7 +19,7 @@ Contract (docs/execution/generalization/briefs/F8b.md):
 - the success path and every receipt write are byte-for-byte unchanged.
 
 Every gatherer host here is a bare `WebSearchMixin` instance built with
-`__new__`/direct attributes (the test_sep10_web_search_gap.py `_gatherer`
+`__new__`/direct attributes (the test_web_search_trigger_search_gap.py `_gatherer`
 precedent) or a `SimpleNamespace` bound to the REAL mixin method via
 `types.MethodType` for the builder-level proof -- never a real
 WebSearchManager, rate limiter, cache, Tavily client or network. A local
@@ -82,7 +82,7 @@ def _manager(multi_search_mock, *, rate_limiter=None):
 
 def _host(manager, *, decision=None, trigger_llm=None):
     """A bare WebSearchMixin host -- no ContextGatherer/UserProfile
-    construction, matching test_sep12_web_evidence_budget.py's
+    construction, matching test_web_search_trigger_paid_search_budget.py's
     `_GathererHost` (a local copy, not an import)."""
     gatherer = WebSearchMixin.__new__(WebSearchMixin)
     gatherer.web_search_manager = manager

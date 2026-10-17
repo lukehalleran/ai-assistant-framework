@@ -8,7 +8,7 @@ obsidian=OFF") and CGR-007. Batch: docs/execution/generalization/batches/
 F6a.md (attempt 2).
 
 Drives the deployed PromptFormatter directly (core/prompt/formatter.py),
-the pattern tests/unit/test_sep10_web_search_gap.py already uses.
+the pattern tests/unit/test_web_search_trigger_search_gap.py already uses.
 `_section_outcomes` is F5's dict: {section: {"status": ... , "reason": ...}}.
 
 FAILING FIRST: run against the UNEDITED formatter.py (digest

@@ -73,7 +73,7 @@ def _metered(tm, out):
 def mem_cfg(monkeypatch):
     # Patch the LIVE config object the deployed code reads at call time: a
     # module-level `from config.app_config import config` binds the object that
-    # existed at import, and test_sep27_config_paths reloads app_config (new
+    # existed at import, and test_app_config_wiki_data_root reloads app_config (new
     # dict) — the patches then missed the code under test in the full run.
     mem = app_config.config.setdefault("memory", {})
     def _set(**kw):
