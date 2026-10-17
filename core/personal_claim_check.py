@@ -377,6 +377,67 @@ def _omission_eligible_kind(kind: str) -> bool:
     return bool(tokens) and not all(t in _NON_PERSONAL_KINDS for t in tokens)
 
 
+# Repetition-count grammar (2026-10-17, BC-46/BC-75/BC-84). These tables are
+# closed grammatical categories of English (number words and the frames that
+# make a number a repetition count), not vocabulary from any incident.
+_ORDINAL_WORDS = {
+    "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+    "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+}
+_CARDINAL_WORDS = {
+    "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_ORDINAL_FRAMES = ("in a row", "straight", "consecutive", "running", "this week", "again")
+_CARDINAL_FRAMES = ("in a row", "straight", "consecutive", "running")
+# "a second" / "one second" / "per second" is the time unit (or "another"),
+# never an ordinal count.
+_ORDINAL_COUNT_RE = re.compile(
+    r"(?<!\ba )(?<!\bone )(?<!\bper )"
+    r"\b(" + "|".join(_ORDINAL_WORDS) + r"|(?:[2-9]|10)(?:nd|rd|th))\b", re.IGNORECASE)
+_CARDINAL_COUNT_RE = re.compile(
+    r"\b(" + "|".join(_CARDINAL_WORDS) + r"|(?:[2-9]|10))\s+(?:[a-z'-]+\s+){0,2}?[a-z'-]+s\s+(?:"
+    + "|".join(re.escape(f) for f in _CARDINAL_FRAMES) + r")\b", re.IGNORECASE)
+
+
+def claim_repetition_count(text: str) -> int | None:
+    """N (>= 2) when ``text`` asserts a repetition count, else None."""
+    lowered = _as_text(text).lower()
+    found: list[int] = []
+    if any(re.search(r"\b" + re.escape(f) + r"\b", lowered) for f in _ORDINAL_FRAMES):
+        for match in _ORDINAL_COUNT_RE.finditer(lowered):
+            token = match.group(1)
+            found.append(_ORDINAL_WORDS.get(token) or int(token[:-2]))
+    for match in _CARDINAL_COUNT_RE.finditer(lowered):
+        token = match.group(1)
+        found.append(_CARDINAL_WORDS.get(token) or int(token))
+    return max(found) if found else None
+
+
+_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _distinct_user_days(checked_refs: Sequence[Mapping[str, Any]],
+                        sources: Mapping[str, list[Mapping[str, Any]]]) -> int:
+    """Distinct calendar days among the cited USER-role sources.
+
+    The current query is today (one day); a timestamp-less user row is no day.
+    """
+    days: set[str] = set()
+    for ref in checked_refs:
+        source_id = ref["source_id"]
+        for row in sources.get(source_id, ()):
+            if row.get("role") != "user":
+                continue
+            if source_id == "src_current_query":
+                days.add("__today__")
+                continue
+            match = _DATE_PREFIX_RE.match(_as_text(row.get("timestamp")))
+            if match:
+                days.add(match.group(0))
+    return len(days)
+
+
 class _DropClaim(ValueError):
     """This claim cannot be used; the rest of the audit still can."""
 
@@ -526,6 +587,20 @@ def _validate_claims(
                 # Assistant discussion/advice cannot corroborate a user event.
                 status = "insufficient"
                 counts["demoted"] += 1
+        if status == "supported" and _omission_eligible_kind(kind):
+            # Rule 1: a personal claim resting ONLY on assistant-role rows is
+            # the assistant's own earlier line quoted back (BC-75). Only the
+            # "assistant" role counts: profile/summary/unknown rows stay.
+            rows = [row for ref in checked_refs for row in sources.get(ref["source_id"], ())]
+            if rows and all(row.get("role") == "assistant" for row in rows):
+                status = "insufficient"
+                counts["demoted"] += 1
+            else:
+                # Rule 2: "the Nth ... in a row" needs N distinct user days.
+                repeated = claim_repetition_count(text)
+                if repeated is not None and _distinct_user_days(checked_refs, sources) < repeated:
+                    status = "insufficient"
+                    counts["demoted"] += 1
         claim = {"text": text, "status": status, "kind": kind.strip(), "evidence": checked_refs}
         by_span[text] = claim
         claims.append(claim)
