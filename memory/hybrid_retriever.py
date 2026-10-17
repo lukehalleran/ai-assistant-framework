@@ -95,10 +95,15 @@ class HybridRetriever:
         )
 
         # Step 3: Keyword matching
-        keyword_results = self._keyword_match(query, semantic_results)
+        # Steps 3+4 are CPU-bound over up to 200 candidates (keyword scoring
+        # stalled the loop up to 1.2 s, 19x live) -- one worker-thread call.
+        # BC-41 (2026-10-17).
+        def _match_and_score():
+            kw = self._keyword_match(query, semantic_results)
+            return self._hybrid_score(semantic_results, kw, query)
 
         # Step 4: Hybrid scoring and ranking
-        hybrid_results = self._hybrid_score(semantic_results, keyword_results, query)
+        hybrid_results = await asyncio.to_thread(_match_and_score)
 
         # Step 5: Return top results
         final_results = hybrid_results[:limit]

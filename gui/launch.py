@@ -142,7 +142,7 @@ def _find_free_port(preferred: int = 7860) -> int:
         s.bind(("", 0))
         return s.getsockname()[1]
 
-def _run_daily_notes_catchup():
+def _run_daily_notes_catchup(corpus_manager=None):
     """
     Run daily notes catch-up in background thread.
     Generates yesterday's note if missing, plus today's if there are conversations.
@@ -159,7 +159,9 @@ def _run_daily_notes_catchup():
 
             # Create a fresh generator for this thread - don't share model_manager
             # across event loops (httpx.AsyncClient is not thread-safe)
-            generator = daily_notes_generator.DailyNotesGenerator()
+            # BC-81: share the LIVE corpus manager (a second CorpusManager would be
+            # a second writer to corpus_v4.json); model_manager stays its own.
+            generator = daily_notes_generator.DailyNotesGenerator(corpus_manager=corpus_manager)
 
             # Create new event loop for this thread
             loop = asyncio.new_event_loop()
@@ -679,7 +681,9 @@ def start_background_tasks(orchestrator):
     """
     # Daily/weekly/monthly notes catch-up: each creates its own model_manager
     # to avoid sharing httpx clients across event loops.
-    _run_daily_notes_catchup()
+    _run_daily_notes_catchup(
+        corpus_manager=getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None)
+    )
     _run_weekly_notes_catchup()
     _run_monthly_notes_catchup()
 

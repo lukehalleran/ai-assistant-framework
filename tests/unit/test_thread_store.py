@@ -56,7 +56,7 @@ class MockChromaStore:
             self._mock_collection._items = self._items
         return doc_id
 
-    def list_all(self, name):
+    def list_all(self, name, where=None):
         return list(self._items)
 
     def query_collection(self, name, query_text, n_results):

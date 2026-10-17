@@ -368,6 +368,7 @@ class MemoryScorer:
 
         # Graph-boosted scoring: build set of related entity display names
         graph_related_names: Set[str] = set()
+        graph_names_lower: List[str] = []  # lowered ONCE, not per name per memory (BC-41)
         graph_boost_enabled = False
         graph_boost_cap = 0.15
         try:
@@ -390,6 +391,7 @@ class MemoryScorer:
                         query_entities, gm, depth=1, skip_ids={"user"},
                     )
                     graph_boost_enabled = bool(graph_related_names)
+                    graph_names_lower = [n.lower() for n in graph_related_names]  # list: keeps per-name match counting
                     graph_boost_cap = GRAPH_SCORING_BOOST_CAP
                     if graph_related_names:
                         logger.debug(
@@ -555,8 +557,8 @@ class MemoryScorer:
             if graph_boost_enabled and graph_related_names:
                 blob_lower = blob  # already lowered above
                 matches = sum(
-                    1 for name in graph_related_names
-                    if name.lower() in blob_lower
+                    1 for name in graph_names_lower
+                    if name in blob_lower
                 )
                 if matches > 0:
                     graph_bonus = min(0.05 * matches, graph_boost_cap)

@@ -57,6 +57,10 @@ from config.app_config import (
     FILE_UPLOAD_IMAGE_DIR,
 )
 import io
+import re
+import zipfile
+from types import SimpleNamespace
+from utils.subtitle_text import subtitle_to_text
 
 logger = get_logger("file_processor")
 
@@ -76,6 +80,30 @@ CSV_FORMULA_PREFIXES = FILE_UPLOAD_CSV_FORMULA_PREFIXES
 ATTACHMENT_TABLE_FULL_MAX_ROWS = int(os.getenv("ATTACHMENT_TABLE_FULL_MAX_ROWS", "60"))
 ATTACHMENT_TABLE_HEAD_ROWS = 20
 ATTACHMENT_TABLE_TAIL_ROWS = 5
+
+# Zip attachment limits (2026-10-17): checked against the central directory BEFORE any
+# member is extracted; members are read in memory and never written to disk.
+ZIP_MAX_MEMBERS = 50
+ZIP_MAX_RATIO = 100  # uncompressed:compressed beyond this = bomb, whole zip refused
+
+# The "not read" notice for a file type we cannot process. Defined ONCE: it is shown to the
+# user/model but is machinery text, never document content (BC-91) -- the processor marks the
+# ProcessedFile as an error with UNSUPPORTED_FILE_ERROR so it is never persisted.
+UNSUPPORTED_FILE_PREFIX = "[Unsupported file type:"
+UNSUPPORTED_FILE_ERROR = "unsupported file type"
+
+
+def unsupported_file_notice(display_name: str) -> str:
+    return f"{UNSUPPORTED_FILE_PREFIX} {display_name}]"
+
+
+def is_unsupported_notice(text: str) -> bool:
+    return isinstance(text, str) and text.lstrip().startswith(UNSUPPORTED_FILE_PREFIX)
+
+
+def _natural_key(name: str):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
 
 # Image file extensions
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
@@ -186,10 +214,62 @@ class FileProcessor:
         # the literal-same-id case, this handles the same-content case.
         seen_doc_signatures = set()
 
+        def _absorb(pf: ProcessedFile) -> bool:
+            """Fold one ProcessedFile into the result. True = stop (total size exceeded)."""
+            nonlocal total_size
+            total_size += pf.file_size
+            if total_size > MAX_TOTAL_SIZE:
+                pf.error = f"Total file size exceeds limit: {total_size}/{MAX_TOTAL_SIZE} bytes"
+                logger.warning(pf.error)
+                result.processed_files.append(pf)
+                result.text_content += f"\n\n[{pf.error}]"
+                return True
+
+            result.processed_files.append(pf)
+
+            if pf.error == UNSUPPORTED_FILE_ERROR:
+                # Visible notice stays (user + model learn the file was not read); it is an
+                # error entry, so it is never a document and never persisted.
+                result.text_content += "\n\n" + (pf.content_text or unsupported_file_notice(pf.filename))
+            elif pf.error:
+                result.text_content += f"\n\n[Error processing {pf.filename}: {pf.error}]"
+            elif pf.is_image:
+                result.images.append(pf)
+                logger.debug(f"Processed image: {pf.filename} ({pf.file_size} bytes)")
+            else:
+                result.documents.append(pf)
+                if pf.content_text:
+                    sig = (pf.filename, hashlib.md5(
+                        pf.content_text.encode('utf-8', errors='ignore')
+                    ).hexdigest())
+                    if sig in seen_doc_signatures:
+                        logger.warning(
+                            f"[FileProcessor] Duplicate attachment content skipped: "
+                            f"{pf.filename} matches an earlier file in this same batch"
+                        )
+                    else:
+                        seen_doc_signatures.add(sig)
+                        result.text_content += "\n\n" + pf.content_text
+                logger.debug(f"Processed document: {pf.filename} ({pf.file_size} bytes)")
+            return False
+
         for file in files:
             try:
                 basename = attachment_display_name(file)
                 ext = Path(basename).suffix.lower()
+
+                if ext == '.zip' and '.zip' in ALLOWED_EXTENSIONS:
+                    members, notice = self._expand_zip(file, basename, total_size)
+                    if notice:
+                        result.text_content += "\n\n" + notice
+                    stop = False
+                    for member_pf in members:
+                        if _absorb(member_pf):
+                            stop = True
+                            break
+                    if stop:
+                        break
+                    continue
 
                 if ext in IMAGE_EXTENSIONS:
                     # Process as image
@@ -198,37 +278,8 @@ class FileProcessor:
                     # Process as text document
                     pf = self._process_text_file(file)
 
-                # Check total size limit
-                total_size += pf.file_size
-                if total_size > MAX_TOTAL_SIZE:
-                    pf.error = f"Total file size exceeds limit: {total_size}/{MAX_TOTAL_SIZE} bytes"
-                    logger.warning(pf.error)
-                    result.processed_files.append(pf)
-                    result.text_content += f"\n\n[{pf.error}]"
+                if _absorb(pf):
                     break
-
-                result.processed_files.append(pf)
-
-                if pf.error:
-                    result.text_content += f"\n\n[Error processing {pf.filename}: {pf.error}]"
-                elif pf.is_image:
-                    result.images.append(pf)
-                    logger.debug(f"Processed image: {pf.filename} ({pf.file_size} bytes)")
-                else:
-                    result.documents.append(pf)
-                    if pf.content_text:
-                        sig = (pf.filename, hashlib.md5(
-                            pf.content_text.encode('utf-8', errors='ignore')
-                        ).hexdigest())
-                        if sig in seen_doc_signatures:
-                            logger.warning(
-                                f"[FileProcessor] Duplicate attachment content skipped: "
-                                f"{pf.filename} matches an earlier file in this same batch"
-                            )
-                        else:
-                            seen_doc_signatures.add(sig)
-                            result.text_content += "\n\n" + pf.content_text
-                    logger.debug(f"Processed document: {pf.filename} ({pf.file_size} bytes)")
 
             except ValueError as e:
                 file_name = getattr(file, 'name', 'unknown_file')
@@ -248,6 +299,96 @@ class FileProcessor:
 
         logger.info(f"Structured processing complete: {len(result.documents)} documents, {len(result.images)} images")
         return result
+
+    def _expand_zip(self, file, zip_name: str, total_so_far: int):
+        """Expand a .zip attachment into one ProcessedFile per supported member.
+
+        Returns (members, notice). Security checks run on the central directory BEFORE any
+        member is read; members are read in memory and never written to disk. A refused or
+        unreadable zip yields a single error ProcessedFile named after the zip.
+        """
+        def _refuse(message: str):
+            logger.warning(f"[zip {zip_name}] refused: {message}")
+            return [ProcessedFile(filename=zip_name, extension='.zip', error=message)], ""
+
+        data = self._read_file_bytes(file)
+        if len(data) > MAX_FILE_SIZE:
+            return _refuse(f"File too large: {len(data)} bytes (max {MAX_FILE_SIZE // (1024*1024)}MB)")
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+            infos = zf.infolist()
+        except zipfile.BadZipFile:
+            return _refuse("not a valid zip archive")
+        except Exception as e:  # degrades: unreadable archive becomes an error entry
+            return _refuse(f"could not open zip archive: {e}")
+
+        with zf:
+            files_in = [i for i in infos if not i.is_dir()]
+            if len(files_in) > ZIP_MAX_MEMBERS:
+                return _refuse(f"zip has {len(files_in)} members (max {ZIP_MAX_MEMBERS})")
+            for info in files_in:
+                name = info.filename.replace('\\', '/')
+                if name.startswith('/') or '..' in name.split('/') or re.match(r'^[A-Za-z]:', name):
+                    return _refuse(f"unsafe member path in zip: {info.filename!r}")
+            total_unc = sum(i.file_size for i in files_in)
+            total_comp = sum(i.compress_size for i in files_in)
+            if total_so_far + total_unc > MAX_TOTAL_SIZE:
+                return _refuse(
+                    f"zip expands to {total_unc} bytes, over the batch limit "
+                    f"({MAX_TOTAL_SIZE - total_so_far} bytes remaining)"
+                )
+            for info in files_in:
+                if info.file_size and (info.compress_size == 0 or info.file_size / info.compress_size > ZIP_MAX_RATIO):
+                    return _refuse("compression ratio too high (possible zip bomb)")
+            if total_comp and total_unc / total_comp > ZIP_MAX_RATIO:
+                return _refuse("compression ratio too high (possible zip bomb)")
+
+            skipped = []
+            candidates = []
+            for info in files_in:
+                name = info.filename.replace('\\', '/')
+                parts = name.split('/')
+                base = parts[-1]
+                if '__MACOSX' in parts or base.startswith('.'):
+                    continue  # archive metadata, not a skipped attachment
+                ext = Path(base).suffix.lower()
+                if (
+                    ext in IMAGE_EXTENSIONS or ext == '.zip' or ext not in ALLOWED_EXTENSIONS
+                    or info.flag_bits & 0x1 or info.file_size == 0 or info.file_size > MAX_FILE_SIZE
+                ):
+                    skipped.append(base)
+                    continue
+                candidates.append((info, base))
+            candidates.sort(key=lambda c: _natural_key(c[1]))
+
+            members = []
+            for info, base in candidates:
+                try:
+                    with zf.open(info) as fh:
+                        content = fh.read(MAX_FILE_SIZE + 1)
+                except Exception as e:  # degrades: one unreadable member is skipped and named
+                    logger.warning(f"[zip {zip_name}] member {base} unreadable: {e}")
+                    skipped.append(base)
+                    continue
+                if len(content) > MAX_FILE_SIZE:
+                    skipped.append(base)
+                    continue
+                shim = SimpleNamespace(name=base, read=lambda c=content: c, orig_name=base)
+                label = f"{zip_name}/{base}"
+                pf = ProcessedFile(filename=label, extension=Path(base).suffix.lower())
+                try:
+                    text, size = self._process_single_file(shim)
+                    pf.content_text, pf.file_size = text, size
+                    if is_unsupported_notice(text):
+                        pf.error = UNSUPPORTED_FILE_ERROR
+                except Exception as e:  # degrades: a member that fails to parse becomes an error entry
+                    pf.error = str(e)
+                members.append(pf)
+
+        notice = ""
+        if skipped:
+            notice = f"[zip {zip_name}: skipped {len(skipped)} member(s): {', '.join(skipped)}]"
+        return members, notice
 
     def _process_image_file(self, file, basename: str, ext: str) -> ProcessedFile:
         """
@@ -387,6 +528,8 @@ class FileProcessor:
             content, file_size = self._process_single_file(file)
             pf.content_text = content
             pf.file_size = file_size
+            if is_unsupported_notice(content):
+                pf.error = UNSUPPORTED_FILE_ERROR
         except ValueError:
             raise  # Re-raise security errors for proper handling upstream
         except Exception as e:
@@ -473,7 +616,7 @@ class FileProcessor:
                 break
 
         if not file_ext:
-            return f"[Unsupported file type: {display_name}]", 0
+            return unsupported_file_notice(display_name), 0
 
         # SECURITY: Read file content with size limit
         # Handle two types of file objects:
@@ -539,6 +682,9 @@ class FileProcessor:
                 if file_ext in ('.txt', '.md', '.log'):
                     result = safe_path.read_text(encoding='utf-8')
 
+                elif file_ext in ('.srt', '.vtt'):
+                    result = subtitle_to_text(safe_path.read_text(encoding='utf-8', errors='replace'))
+
                 elif file_ext == '.py':
                     content = safe_path.read_text(encoding='utf-8')
                     result = f"```python\n{content}\n```"
@@ -602,7 +748,7 @@ class FileProcessor:
                     result = self._extract_pdf_with_tables(safe_path, display_name)
 
                 else:
-                    result = f"[Unsupported file type: {display_name}]"
+                    result = unsupported_file_notice(display_name)
 
             except Exception as e:
                 logger.error(f"Error processing {basename}: {e}")

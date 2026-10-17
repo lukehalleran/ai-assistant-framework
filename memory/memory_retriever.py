@@ -1577,7 +1577,10 @@ class MemoryRetriever:
         if self.scorer:
             # Pass topic and meta-conversational status to scorer
             # Note: is_meta_conversational already checked above, so False here
-            ranked = self.scorer.rank_memories(
+            # BC-41 (2026-10-17): scoring is CPU-bound (graph-proximity scan
+            # stalled the loop 9.6 s live); run it on a worker thread.
+            ranked = await asyncio.to_thread(
+                self.scorer.rank_memories,
                 combined,
                 query,
                 current_topic=topic_filter,
@@ -2061,7 +2064,8 @@ class MemoryRetriever:
 
         # Use scorer with meta-conversational bonus if available
         if self.scorer:
-            ranked = self.scorer.rank_memories(
+            ranked = await asyncio.to_thread(
+                self.scorer.rank_memories,
                 combined,
                 query,
                 current_topic=topic_filter,
