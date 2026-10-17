@@ -1222,6 +1222,22 @@ class WebSearchManager:
             log.warning(f"[WebSearch] Failed to initialize Tavily: {e}")
             return False
 
+    def warm(self) -> bool:
+        """Pay the first-use ``tavily`` import + client build now (2026-10-16).
+
+        ``is_available()`` runs on the event loop and its first call used to
+        import the library there (6965 ms LoopStall on turn 1). Startup warm-up
+        calls this from a background thread so turn 1 finds the client built.
+        Honours the live Settings toggle; never raises.
+        """
+        try:
+            if not self.is_enabled():
+                return False
+            return bool(self._ensure_tavily())
+        except Exception as e:  # degrades: first turn pays the import itself
+            log.debug(f"[WebSearch] warm skipped: {e}")
+            return False
+
     def is_available(self) -> bool:
         """Check if web search is available.
 

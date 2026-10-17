@@ -432,6 +432,17 @@ def _run_model_warmup(orchestrator):
                 VisualMemoryStore().load()
         except Exception as e:
             print(f"[Warmup] clip skip: {e}")
+        # 9) Tavily client. `is_available()` runs ON THE EVENT LOOP and its first
+        #    call imported the tavily library there (6965 ms LoopStall on turn 1,
+        #    2026-10-16). Resolve THE gatherer's own manager (its lazy property;
+        #    never a second instance) and build the client here, off the loop.
+        try:
+            gatherer = getattr(getattr(orchestrator, "prompt_builder", None), "context_gatherer", None)
+            manager = getattr(gatherer, "web_search_manager", None)
+            if manager is not None and hasattr(manager, "warm"):
+                manager.warm()  # skips itself when web search is disabled
+        except Exception as e:
+            print(f"[Warmup] tavily skip: {e}")
         print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
 
     threading.Thread(target=_warm_task, daemon=True).start()

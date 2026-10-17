@@ -42,7 +42,7 @@ Typical record fields (all optional — record what the turn produced):
   response_len, model, session_id, prepare_elapsed_s, wall_elapsed_s,
   pre_prepare_elapsed_s, grounding_verifier_elapsed_s, grounding_status,
   phase_timings, task_timings (seconds; finite, rounded, at most 20 keys), has_images,
-  loop_stalls (2026-10-15, utils/loop_stall.py: up to 5 {ms, top} entries -- a blocked-
+  loop_stalls (2026-10-15, utils/loop_stall.py: up to 5 {ms, top, entry} entries -- a blocked-
   event-loop duration and a repo-relative "path:line function"; numbers and code
   locations only, never message text),
   doc_gen_prompt_tokens, doc_gen_system_tokens, doc_gen_total_tokens (2026-09-27,
@@ -154,7 +154,7 @@ def sanitize_tool_calls(value: Any) -> list:
 
 
 def _sanitize_loop_stalls(value: Any) -> list:
-    """[{ms:int, top:'path:line func'}], longest first, max 5; nothing else survives."""
+    """[{ms:int, top:'path:line func', entry?}], longest first, max 5; nothing else survives."""
     out = []
     if not isinstance(value, (list, tuple)):
         return out
@@ -166,7 +166,10 @@ def _sanitize_loop_stalls(value: Any) -> list:
         except (TypeError, ValueError):  # degrades: malformed stall entry dropped
             continue
         top = str(item.get("top", ""))[:120]
-        out.append({"ms": ms, "top": top})
+        row = {"ms": ms, "top": top}
+        if item.get("entry"):  # outermost repo frame = the caller to fix (2026-10-16)
+            row["entry"] = str(item["entry"])[:120]
+        out.append(row)
     out.sort(key=lambda r: r["ms"], reverse=True)
     return out[:5]
 
