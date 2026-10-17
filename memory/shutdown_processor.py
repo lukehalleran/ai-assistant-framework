@@ -692,7 +692,9 @@ class ShutdownProcessor:
         # Build conversation pairs. The extractor reads ONLY the user query
         # (2026-09-02: Daemon responses are not evidence about the user); the
         # response rides along for the capture-tone join, and the timestamp
-        # becomes the evidence span's turn_id for provenance.
+        # becomes the evidence span's turn_id for provenance. It is ALSO
+        # forwarded as the message's own ``timestamp`` (the source time the
+        # learned-relation day is read from; without it nothing is learned).
         conv_pairs = []
         for e in sess_items:
             q = (e.get('query') or '').strip()
@@ -709,7 +711,9 @@ class ShutdownProcessor:
                     pair["user_text"] = ut.strip()
                 ts = e.get('timestamp')
                 if ts:
-                    pair["turn_id"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                    ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                    pair["turn_id"] = ts_iso
+                    pair["timestamp"] = ts_iso
                 conv_pairs.append(pair)
         conv_tail = conv_pairs[-max(1, last_turns):]
 
