@@ -516,7 +516,16 @@ def detect_completion_claims(text: str) -> list[DetectedAction]:
             continue  # it's an offer, not a claim
         if _is_third_party_narration(sent):
             continue  # narrates someone else's action, not an assistant self-claim
-        if any(p.search(sent) for p in _COMPLETION_PATTERNS):
+        if not any(p.search(sent) for p in _COMPLETION_PATTERNS):
+            continue
+        # 2026-10-17 (class BC-06, A23 lineage): the kind word and the
+        # completion cue must sit in the SAME voice-ok clause. A homework
+        # description ("... observe queue behavior, and Q20 is ... Crystal
+        # Reports output") matched the kind in one clause and the cue in
+        # another. matched_text stays the whole sentence (the marker quotes it).
+        clause_kind = _completion_clause_kind(sent)
+        if clause_kind is not None:
+            kind = clause_kind
             out.append(
                 DetectedAction(
                     kind=kind,
@@ -1028,6 +1037,21 @@ def _voice_ok_regions_from(
         regions.append((spans[i][0], spans[j][1], list(range(i, j + 1))))
         i = j + 1
     return regions
+
+
+def _completion_clause_kind(sentence: str) -> ActionKind | None:
+    """Kind of the first voice-ok clause of ``sentence`` that carries BOTH an
+    action-kind word and a completion cue, else None (see
+    ``detect_completion_claims``)."""
+    spans, ok = _claim_sentence_clauses(sentence, "completion")
+    for (s, e), voice_ok in zip(spans, ok):
+        if not voice_ok:
+            continue
+        clause = sentence[s:e]
+        k = _detect_kind(clause)
+        if k is not None and any(p.search(clause) for p in _COMPLETION_PATTERNS):
+            return k
+    return None
 
 
 def _voice_ok_regions(sentence: str, family: str) -> list[tuple[int, int]]:

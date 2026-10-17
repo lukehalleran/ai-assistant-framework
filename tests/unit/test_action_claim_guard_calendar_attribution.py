@@ -125,7 +125,7 @@ _A_NOT_CLAIMS_ANCHORS = [
 # out-of-contract collision above — asserted unchanged, clean and wrapped.
 _A_ANNOTATE_UNCHANGED_IDX = [0, 1, 2, 5, 7]
 # Rows that trip the pre-existing detect_completion_claims collision.
-_A_ANNOTATE_RESIDUAL_IDX = [3, 4, 6]
+_A_ANNOTATE_RESIDUAL_IDX = [3]
 
 
 class TestANotClaims:
@@ -164,7 +164,9 @@ class TestAAnnotateResidualOutOfContract:
     marks them via its pre-existing pattern #5 over-match. Verified
     directly against the deployed `detect_completion_claims` (see the
     final report). `claims_calendar_state` itself correctly returns []
-    for all three (asserted in TestANotClaims above)."""
+    for all three (asserted in TestANotClaims above).
+
+    2026-10-17 (BC-06): rows 4 and 6 closed by clause-scoped detect_completion_claims; row 3 remains (kind word and cue share one clause)."""
 
     @pytest.mark.parametrize("i", _A_ANNOTATE_RESIDUAL_IDX)
     def test_clean_annotate_marked_by_out_of_contract_completion_check(self, i):
@@ -172,7 +174,7 @@ class TestAAnnotateResidualOutOfContract:
         assert claims_calendar_state(text) == []
         assert annotate_unverified_action_claim(text).endswith('"]')
 
-    @pytest.mark.parametrize("i", [3, 6])
+    @pytest.mark.parametrize("i", [3])
     def test_wrapped_annotate_marked_by_out_of_contract_completion_check(self, i):
         wrapped = _wrap(_A_NOT_CLAIMS[i], _A_NOT_CLAIMS_ANCHORS[i])
         assert claims_calendar_state(wrapped) == []
@@ -197,6 +199,21 @@ class TestAAnnotateResidualOutOfContract:
 # ===========================================================================
 # (B) Claims — exact return, clean AND wrapped (wrapped result == clean result).
 # ===========================================================================
+
+
+class TestAAnnotateResidualClosedByClauseScope:
+    """2026-10-17 (BC-06): rows 4 and 6 are no longer marked."""
+
+    @pytest.mark.parametrize("i", [4, 6])
+    def test_clean_annotate_unchanged(self, i):
+        text = _A_NOT_CLAIMS[i]
+        assert claims_calendar_state(text) == []
+        assert annotate_unverified_action_claim(text) == text
+
+    def test_wrapped_row_6_annotate_unchanged(self):
+        wrapped = _wrap(_A_NOT_CLAIMS[6], _A_NOT_CLAIMS_ANCHORS[6])
+        assert claims_calendar_state(wrapped) == []
+        assert annotate_unverified_action_claim(wrapped) == wrapped
 
 class TestBClaimsExactReturn:
     def test_bare_it_on_calendar(self):
