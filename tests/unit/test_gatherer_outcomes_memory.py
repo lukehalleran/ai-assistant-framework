@@ -6,7 +6,7 @@ and gatherer outcome shape" -> the F8 split. Drives the DEPLOYED
 `MemoryRetrievalMixin._get_recent_conversations` (#87),
 `_get_semantic_memories` (#88), `get_user_profile_context` (#90) and
 `get_upcoming_schedule` (#91) directly through a bare-host pattern (the
-`test_sep10_probe_dump_interpretation.py` precedent: `MemoryRetrievalMixin
+`test_response_planner_self_report_interpretation.py` precedent: `MemoryRetrievalMixin
 .__new__` + attributes, never `UserProfile()`/`ContextGatherer()`), plus
 the DEPLOYED `UnifiedPromptBuilder.build_prompt`/`_build_lightweight_context`
 through the `full_builder`/`retrieval_limits` fake-builder pattern
@@ -34,7 +34,7 @@ RECENT = [{"query": "Synthetic question", "response": "Synthetic retained answer
 
 def _G(coordinator=None, user_profile=None):
     """Bare MemoryRetrievalMixin host, bypassing __init__ (the
-    test_sep10_probe_dump_interpretation.py `_make_r5_gatherer` precedent).
+    test_response_planner_self_report_interpretation.py `_make_r5_gatherer` precedent).
     Never constructs a real UserProfile() or ContextGatherer()."""
     g = MemoryRetrievalMixin.__new__(MemoryRetrievalMixin)
     g.memory_coordinator = coordinator

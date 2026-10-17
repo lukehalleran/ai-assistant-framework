@@ -40,12 +40,12 @@ import knowledge.web_search_manager as wsm
 from knowledge.web_search_manager import WebSearchDepth, WebSearchManager
 from utils.retrieval_outcome import OutcomeList, RetrievalError, outcome_status
 
-from tests.unit.test_sep12_search_budget_reservation import _make_manager, _page
-from tests.unit.test_sep12_web_evidence_budget import _GathererHost
+from tests.unit.test_web_search_manager_budget_reservation import _make_manager, _page
+from tests.unit.test_web_search_trigger_paid_search_budget import _GathererHost
 
 
 # Fresh live-limiter registry per test (identical fixture to
-# tests/unit/test_sep12_search_budget_reservation.py; never imported across
+# tests/unit/test_web_search_manager_budget_reservation.py; never imported across
 # modules, only re-declared, per that file's own precedent).
 @pytest.fixture(autouse=True)
 def _isolated_rate_limiter_registry(monkeypatch):

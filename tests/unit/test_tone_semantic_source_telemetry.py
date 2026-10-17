@@ -3,7 +3,7 @@
 explanation string, so turn records could not show how often the head path
 decided a turn. Now ToneAnalysis.semantic_source -> EmotionalContext.
 tone_semantic_source -> the turn record's `tone_semantic_source`. Enum only.
-Synthetic fake embedder (same as test_oct14e_paste_tone_head).
+Synthetic fake embedder (same as test_tone_paste_authored_head).
 """
 import inspect
 

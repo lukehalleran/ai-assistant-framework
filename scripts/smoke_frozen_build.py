@@ -17,7 +17,7 @@ What it proves (the P3 procedure of 2026-10-10, made repeatable):
            Smoke B ends by POST /api/shutdown (B3, the Quit button's endpoint):
            401 without the launch token, 202 with it, then exit 0 with all
            shutdown phases run -- no signal sent. (The heartbeat watchdog's
-           grace-period exit is covered by tests/unit/test_oct12_b3_app_lifecycle.py;
+           grace-period exit is covered by tests/unit/test_api_lifecycle_shutdown_heartbeat.py;
            a third frozen launch for it was judged too heavy.)
   Strict write assertion (per smoke): everything newer than a stamp file lies
            under ``home/.daemon`` (plus ``home/.cache``, ``home/.nv``,

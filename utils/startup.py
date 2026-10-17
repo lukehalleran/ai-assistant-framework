@@ -173,7 +173,7 @@ def staged_import(progress: StartupProgress) -> Dict[str, Any]:
 
     # Stage 3: Torch (slow, ~1.8s)
     def load_torch():
-        import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
+        import torch  # lazy import: patch-point (tests/unit/test_visual_memory_pipeline_image_latency.py:119)
         return torch
 
     components['torch'] = load_with_fallback(

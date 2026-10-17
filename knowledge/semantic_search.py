@@ -68,7 +68,7 @@ _warned_missing = False
 def _cuda_available() -> bool:
     """Cheap check for CUDA presence without importing torch at module import."""
     try:
-        import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
+        import torch  # lazy import: patch-point (tests/unit/test_visual_memory_pipeline_image_latency.py:119)
         return torch.cuda.is_available()
     except Exception:
         return False

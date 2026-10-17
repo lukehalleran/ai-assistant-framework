@@ -144,7 +144,7 @@ class TestNewDataOverrideDirect:
 
 # --------------------------------------------------------------------------
 # End-to-end via STMAnalyzer.analyze (scripted "recall" model), mirroring
-# tests/unit/test_sep03_followups_continuity.py's _RecallModel/_analyzer/_run.
+# tests/unit/test_thread_manager_session_start_continuity.py's _RecallModel/_analyzer/_run.
 # --------------------------------------------------------------------------
 
 class _RecallModel:

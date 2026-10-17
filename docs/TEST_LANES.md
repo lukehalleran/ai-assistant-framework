@@ -57,7 +57,7 @@ zero `--ignore`s since.
 | 4 | `tests/test_edge_cases_comprehensive.py` | cross-module edge cases | PASS | none full |
 | 5 | `tests/test_prompt_deep_paths.py` | prompt builder deep paths | PASS | `tests/unit/test_independent_prompt_audit.py` overlaps partially (deployed-builder driving) but targets different scenarios |
 | 6 | `tests/test_thread_tracking.py` | `memory/thread_manager.py` | PASS (1 test) | none |
-| 7 | `tests/test_multi_collection_chroma_store.py` | real `MultiCollectionChromaStore` (the T03 "real database contracts" surface named in the handoff) | PASS | B2/B3 added narrower real-Chroma contract tests (`test_sep09_storage_repairs.py`, `test_sep09_curation_integrity.py`) but this file is the broad real-store suite T03 pointed at — no full substitute |
+| 7 | `tests/test_multi_collection_chroma_store.py` | real `MultiCollectionChromaStore` (the T03 "real database contracts" surface named in the handoff) | PASS | B2/B3 added narrower real-Chroma contract tests (`test_multi_collection_chroma_store_storage_repairs.py`, `test_curation_engine_integrity.py`) but this file is the broad real-store suite T03 pointed at — no full substitute |
 | 8 | `tests/unit/test_memory_coordinator_methods.py` | pure `memory_coordinator` helper methods (rank/sort/normalize) | PASS (96 tests) | is itself the fast/pure counterpart to #1 |
 | 9 | `tests/unit/test_visual_memory_pipeline.py` | CLIP/visual memory pipeline | PASS (22 tests) | none |
 | 10 | `tests/unit/test_context_pipeline.py` | `core/context_pipeline.py` (tone/topic/intent/STM orchestration) | PASS (39 tests) | none full — this is itself the fast unit suite for the subsystem named in the handoff |
@@ -215,9 +215,9 @@ python -m pytest -q tests/unit/test_no_git_state_in_tests.py \
 verified today (2026-09-09) with:
 ```bash
 python -m pytest -q --collect-only -m "not slow and not benchmark and not semantic" \
-  tests/unit/test_sep09_storage_repairs.py tests/unit/test_sep09_curation_integrity.py \
-  tests/unit/test_sep09_atomic_writers.py tests/unit/test_atomic_writer_guard.py \
-  tests/unit/test_sep09_backup_recovery.py
+  tests/unit/test_multi_collection_chroma_store_storage_repairs.py tests/unit/test_curation_engine_integrity.py \
+  tests/unit/test_safe_json_atomic_writers.py tests/unit/test_atomic_writer_guard.py \
+  tests/unit/test_backup_manager_restore_contracts.py
 # => 59 tests collected, 0 errors, 0 deselected
 ```
 None of the five is in either ignore list and none carries a `slow`/
@@ -285,10 +285,7 @@ Never run the entire suite in a single process, and never traverse `data/`
 
 New test files are named by module and behaviour:
 `tests/unit/test_<module>_<behaviour>.py`. The incident date and the bug
-class (`BC-nn`) go in the module docstring, not the file name. Existing
-dated files (`test_sep*.py`, `test_oct*.py`, ...) are NOT renamed: they are
-cited by path across `docs/BUG_CLASSES.md`, the changelog, disposition
-records and CGR files.
+class (`BC-nn`) go in the module docstring, not the file name. Dated files (`test_sep*.py`, `test_oct*.py`, ...) were renamed by module and behaviour on 2026-10-16; `tests/RENAMES.tsv` maps every old path to its new one (and records the one exempt class-guard ledger anchor), `git log --follow <new path>` keeps the history, and `tests/unit/test_test_file_naming_guard.py` rejects new dated names.
 
 ## 7. Invocation pitfalls
 

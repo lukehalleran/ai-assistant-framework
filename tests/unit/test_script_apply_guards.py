@@ -15,7 +15,7 @@ lock (stronger than ``daemon_running()``: it *prevents* Daemon from starting
 mid-restore rather than just detecting one already running). See
 TestRestoreBackupGuardEvidence below, which adds the one requested main()-level
 check on top of the existing
-test_sep09_backup_recovery.py::test_restore_refuses_when_daemon_lock_is_held
+test_backup_manager_restore_contracts.py::test_restore_refuses_when_daemon_lock_is_held
 evidence.
 """
 
@@ -33,8 +33,8 @@ import scripts.graph_relation_normalize as grn
 from memory.graph_memory import GraphMemory
 from memory.graph_models import GraphEdge, GraphNode
 from scripts import restore_backup
-from tests.unit.test_sep09_backup_recovery import backup as make_backup
-from tests.unit.test_sep09_backup_recovery import snapshot, stores  # noqa: F401  (fixture)
+from tests.unit.test_backup_manager_restore_contracts import backup as make_backup
+from tests.unit.test_backup_manager_restore_contracts import snapshot, stores  # noqa: F401  (fixture)
 
 _RECLASSIFY_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "scripts", "reclassify_proposals.py")

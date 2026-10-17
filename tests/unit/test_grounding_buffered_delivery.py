@@ -23,7 +23,7 @@ from core.grounding_check import GroundingVerdict
 from tests.unit.test_handle_submit import (
     _gate_decision, _make_file_processor_mock, _make_orchestrator,
 )
-from tests.unit.test_sep09_speed_batch import ANSWER, REVISED, FALLBACK_TEXT
+from tests.unit.test_handlers_request_latency import ANSWER, REVISED, FALLBACK_TEXT
 
 # Distinctive substring present ONLY in the flawed draft (REVISED differs by
 # "four" vs "three"; FALLBACK_TEXT never repeats the flawed clause). Asserted
@@ -166,7 +166,7 @@ async def test_off_mode_streams_draft_unchanged(turn_setup, monkeypatch):
 async def test_captured_mode_survives_mid_turn_flip_to_log_only(turn_setup, monkeypatch):
     """The mode is read once at turn start (ctx.grounding_mode). Flipping
     GROUNDING_MODE to log_only after the turn started must not un-buffer it.
-    (The reverse flip is already pinned by test_sep09_speed_batch.py; this is
+    (The reverse flip is already pinned by test_handlers_request_latency.py; this is
     the direction that pin does not exercise.)"""
     monkeypatch.setattr(config, "GROUNDING_MODE", "correct")
     orch = _make_orchestrator(streaming_chunks=[PART1, PART2])

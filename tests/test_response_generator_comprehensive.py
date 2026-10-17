@@ -331,7 +331,7 @@ async def test_generate_streaming_response_basic(response_generator):
     # concatenation reproduces the model text exactly; the deployed joiner
     # (smart_join, used by every caller) must agree. The old word-split
     # contract discarded the spaces and callers re-guessed them, deleting the
-    # space before opening quotes (tests/unit/test_oct08_stream_spacing.py).
+    # space before opening quotes (tests/unit/test_response_generator_stream_spacing.py).
     from core.response_generator import smart_join
     joined = ""
     for chunk in chunks:

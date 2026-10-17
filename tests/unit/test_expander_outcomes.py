@@ -19,7 +19,7 @@ as if complete.
 These tests drive the DEPLOYED ``get_ids_by_timestamp_range`` (via a fake
 Chroma collection behind the same ``__new__`` + manual ``.collections``
 construction used by F9a's tests/unit/test_store_get_by_id_outcomes.py and
-tests/unit/test_sep09_storage_repairs.py — never a real Chroma client here)
+tests/unit/test_multi_collection_chroma_store_storage_repairs.py — never a real Chroma client here)
 and the DEPLOYED ``MemoryExpander.expand()`` / ``_fetch_conversations_in_range``
 (via a fake store like tests/unit/test_memory_expander.py's, extended to
 raise on demand with call counters).

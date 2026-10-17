@@ -49,7 +49,7 @@ from core.grounding_check import GroundingVerdict
 from tests.unit.test_handle_submit import (
     _gate_decision, _make_file_processor_mock, _make_orchestrator,
 )
-from tests.unit.test_sep09_speed_batch import ANSWER, REVISED, FALLBACK_TEXT
+from tests.unit.test_handlers_request_latency import ANSWER, REVISED, FALLBACK_TEXT
 
 # Same distinctive-substring guard as test_grounding_buffered_delivery.py /
 # test_grounding_cancel_storage_gate.py.

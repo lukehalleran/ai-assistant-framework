@@ -193,7 +193,7 @@ class TestAcademicCue:
         "troop withdrawal news",
         # Pinned as detected before the split; unanchored, these are now
         # generic. A follow-up inside a school exchange is covered by the
-        # bounded-context arm (test_sep12_search_identity_scope.py).
+        # bounded-context arm (test_institution_resolver_identity_scope.py).
         "when is the withdrawal deadline",
         "when does registration open",
     ])

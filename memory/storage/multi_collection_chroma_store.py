@@ -164,7 +164,7 @@ def _resolve_embed_device() -> str:
     if env:
         return env
     try:
-        import torch  # lazy import: patch-point (tests/unit/test_sep09_speed_images.py:117)
+        import torch  # lazy import: patch-point (tests/unit/test_visual_memory_pipeline_image_latency.py:119)
         return "cuda" if torch.cuda.is_available() else "cpu"
     except Exception:
         return "cpu"

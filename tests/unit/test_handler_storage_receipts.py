@@ -15,7 +15,7 @@ failure run and a success run for the same inputs.
 
 Fakes only: LOCAL copies of the ctx/store shapes from
 tests/unit/test_doc_conversation_source.py,
-tests/unit/test_sep07_calendar_offer_continuation.py and
+tests/unit/test_handlers_calendar_offer_continuation.py and
 tests/unit/test_handle_submit.py -- no real Chroma/embedder/ModelManager,
 no Gradio build, no real conversation-log directory (tmp_path only).
 """
