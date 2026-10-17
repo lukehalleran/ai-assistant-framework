@@ -85,8 +85,16 @@ ATTACHMENT_TABLE_TAIL_ROWS = 5
 
 # Zip attachment limits (2026-10-17): checked against the central directory BEFORE any
 # member is extracted; members are read in memory and never written to disk.
-ZIP_MAX_MEMBERS = 50
+ZIP_MAX_MEMBERS = 50      # content members (archive metadata excluded)
+ZIP_MAX_ENTRIES = 1000    # raw central-directory entries, metadata included
 ZIP_MAX_RATIO = 100  # uncompressed:compressed beyond this = bomb, whole zip refused
+
+
+def _is_zip_metadata(member_name: str) -> bool:
+    """macOS ``__MACOSX/`` AppleDouble entries and dot-files: archive metadata, never content."""
+    parts = member_name.replace('\\', '/').split('/')
+    return '__MACOSX' in parts or parts[-1].startswith('.')
+
 
 # The "not read" notice for a file type we cannot process. Defined ONCE: it is shown to the
 # user/model but is machinery text, never document content (BC-91) -- the processor marks the
@@ -335,13 +343,20 @@ class FileProcessor:
             return _refuse(f"could not open zip archive: {e}")
 
         with zf:
-            files_in = [i for i in infos if not i.is_dir()]
-            if len(files_in) > ZIP_MAX_MEMBERS:
-                return _refuse(f"zip has {len(files_in)} members (max {ZIP_MAX_MEMBERS})")
-            for info in files_in:
+            entries = [i for i in infos if not i.is_dir()]
+            if len(entries) > ZIP_MAX_ENTRIES:
+                return _refuse(f"zip has {len(entries)} entries (max {ZIP_MAX_ENTRIES})")
+            for info in entries:
                 name = info.filename.replace('\\', '/')
                 if name.startswith('/') or '..' in name.split('/') or re.match(r'^[A-Za-z]:', name):
                     return _refuse(f"unsafe member path in zip: {info.filename!r}")
+            # Archive metadata (macOS __MACOSX/._* AppleDouble files, dot-files) is never
+            # read, so it counts toward neither the member cap nor the size/ratio checks
+            # (2026-10-17: a 26-lecture zip from macOS carried 51 metadata entries and was
+            # refused as "77 members"; tiny zero-padded ._ files also compress past 100:1).
+            files_in = [i for i in entries if not _is_zip_metadata(i.filename)]
+            if len(files_in) > ZIP_MAX_MEMBERS:
+                return _refuse(f"zip has {len(files_in)} members (max {ZIP_MAX_MEMBERS})")
             total_unc = sum(i.file_size for i in files_in)
             total_comp = sum(i.compress_size for i in files_in)
             if total_so_far + total_unc > MAX_TOTAL_SIZE:
@@ -361,8 +376,6 @@ class FileProcessor:
                 name = info.filename.replace('\\', '/')
                 parts = name.split('/')
                 base = parts[-1]
-                if '__MACOSX' in parts or base.startswith('.'):
-                    continue  # archive metadata, not a skipped attachment
                 ext = Path(base).suffix.lower()
                 if (
                     ext in IMAGE_EXTENSIONS or ext == '.zip' or ext not in ALLOWED_EXTENSIONS

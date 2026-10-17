@@ -86,3 +86,25 @@ def test_zip_with_r_and_odt_expands_both():
     r = _run([_upload("pack.zip", z)])
     assert sorted(d.filename for d in r.documents) == ["pack.zip/a.R", "pack.zip/b.odt"]
     assert "```r" in r.text_content and "# Rowan Project" in r.text_content
+
+
+def test_macos_zip_metadata_does_not_count_toward_member_cap():
+    """2026-10-17 live: a macOS-made zip of 26 lecture .srt files carried 51
+    __MACOSX/._* AppleDouble entries (plus a directory entry) and was refused as
+    "77 members (max 50)". Metadata is never read, so it never counts."""
+    ZIP_MAX_MEMBERS = fp.ZIP_MAX_MEMBERS
+    srt = "1\n00:00:01,000 --> 00:00:03,000\nInvented lecture line.\n"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("__MACOSX/", "")
+        for n in range(1, 27):
+            zf.writestr(f"Lecture_L{n}.srt", srt)
+            zf.writestr(f"__MACOSX/._Lecture_L{n}.srt", "\x00" * 4096)  # zero-padded: >100:1
+        for n in range(27, 52):
+            zf.writestr(f"__MACOSX/._Lecture_L{n}.srt", "\x00" * 4096)
+    assert 26 < ZIP_MAX_MEMBERS < 78
+    result = _run([_upload("Module 5.zip", buf.getvalue())])
+    names = [d.filename for d in result.documents]
+    assert len(names) == 26
+    assert names[0] == "Module 5.zip/Lecture_L1.srt" and names[-1] == "Module 5.zip/Lecture_L26.srt"
+    assert not [p for p in result.processed_files if p.error]
