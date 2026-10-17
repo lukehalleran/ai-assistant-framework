@@ -44,7 +44,7 @@ class MockChromaStore:
         self._items.append({"id": doc_id, "content": text, "metadata": metadata})
         return doc_id
 
-    def list_all(self, name):
+    def list_all(self, name, where=None):
         return list(self._items)
 
     def query_collection(self, name, query_text, n_results=5):

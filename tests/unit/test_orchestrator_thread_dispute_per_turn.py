@@ -47,7 +47,7 @@ class _Chroma:
         self._items.append({"id": f"d{self._n}", "content": text, "metadata": dict(metadata)})
         return f"d{self._n}"
 
-    def list_all(self, name):
+    def list_all(self, name, where=None):
         return list(self._items)
 
     def create_collection(self, name):

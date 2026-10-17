@@ -69,7 +69,7 @@ class FakeChromaStore:
         self._items.append({"id": doc_id, "content": text, "metadata": dict(metadata)})
         return doc_id
 
-    def list_all(self, name):
+    def list_all(self, name, where=None):
         return list(self._items)
 
     def create_collection(self, name):

@@ -1299,7 +1299,11 @@ class KnowledgeRetrievalMixin:
             if not hasattr(self.memory_coordinator, 'get_unresolved_threads'):
                 return []
 
-            threads = self.memory_coordinator.get_unresolved_threads(max_results=max_results)
+            # BC-41 (2026-10-17): the thread-store read is a sync Chroma call
+            # (2.2 s live); keep it off the loop.
+            threads = await asyncio.to_thread(
+                self.memory_coordinator.get_unresolved_threads, max_results=max_results
+            )
             logger.debug(f"[ContextGatherer] Retrieved {len(threads)} unresolved threads")
             return threads or []
 
@@ -2087,7 +2091,10 @@ class KnowledgeRetrievalMixin:
             return []
 
         try:
-            results = chroma.query_collection(
+            # BC-41 (2026-10-17): a Chroma query (embed + HNSW) blocked the
+            # loop 5.2 s live; run it on a worker thread.
+            results = await asyncio.to_thread(
+                chroma.query_collection,
                 "daemon_self_notes",
                 query_text=query,
                 n_results=limit * 2,

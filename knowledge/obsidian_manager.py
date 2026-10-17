@@ -36,6 +36,7 @@ Features:
 - Image loading with resolution: same folder → parent → attachments → vault root → global search
 """
 
+import asyncio
 import os
 import re
 import re as _re
@@ -695,7 +696,9 @@ class ObsidianManager:
             semantic_limit = limit - keyword_limit
 
             # 1. KEYWORD SEARCH - match on title, tags, content
-            keyword_results = self._keyword_search(query, keyword_limit * 3)  # Get extra for filtering
+            # BC-41 (2026-10-17): scans every note chunk in Python (403 ms live).
+            keyword_results = await asyncio.to_thread(
+                self._keyword_search, query, keyword_limit * 3)  # Get extra for filtering
             # Read status BEFORE any slice: slicing a list subclass drops it.
             kw_status, kw_reason = outcome_status(keyword_results)
 

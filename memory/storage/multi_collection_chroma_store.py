@@ -414,13 +414,16 @@ class MultiCollectionChromaStore:
 
     # memory/storage/multi_collection_chroma_store.py
 
-    def list_all(self, collection_name: str) -> List[Dict]:
+    def list_all(self, collection_name: str, where: Optional[Dict] = None) -> List[Dict]:
         if collection_name not in self.collections:
             return []
         coll = self._get_collection(collection_name)
 
         # ❌ don't ask for "ids" here; not supported in your Chroma build
-        results = coll.get(include=["documents", "metadatas"])  # <- only these
+        get_kwargs = {"include": ["documents", "metadatas"]}  # <- only these
+        if where:
+            get_kwargs["where"] = where
+        results = coll.get(**get_kwargs)
 
         docs = results.get("documents", []) or []
         metas = results.get("metadatas", []) or []

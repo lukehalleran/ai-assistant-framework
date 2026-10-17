@@ -1071,10 +1071,12 @@ class WebSearchCache:
             norm = self._norm(result.query)
             self._recent_by_query[norm] = (time.time(), result)
             if len(self._recent_by_query) > self._recent_max:
+                # snapshot: put() may now run on a worker thread while another
+                # put/get mutates the map
                 oldest_key = min(
-                    self._recent_by_query,
-                    key=lambda k: self._recent_by_query[k][0]
-                )
+                    list(self._recent_by_query.items()),
+                    key=lambda kv: kv[1][0]
+                )[0]
                 self._recent_by_query.pop(oldest_key, None)
 
         if not self._ensure_initialized() or not result.has_results:
@@ -1387,7 +1389,9 @@ class WebSearchManager:
 
             # Cache successful results
             if use_cache and result.has_results:
-                self.cache.put(result)
+                # BC-41 (2026-10-17): the Chroma upsert blocked the loop up to
+                # 2.8 s (25 stalls). Awaited, so the write is never dropped.
+                await asyncio.to_thread(self.cache.put, result)
 
             return result
 

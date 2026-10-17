@@ -362,7 +362,11 @@ class ThreadStore:
             return []
 
         try:
-            all_items = self.chroma_store.list_all(COLLECTION_NAME)
+            # Push the status filter into Chroma instead of fetching the whole
+            # collection (2.2 s live); the Python check below stays as a guard.
+            all_items = self.chroma_store.list_all(
+                COLLECTION_NAME, where={"status": ThreadStatus.OPEN.value}
+            )
             threads = []
             for item in all_items:
                 meta = item.get("metadata") or {}
