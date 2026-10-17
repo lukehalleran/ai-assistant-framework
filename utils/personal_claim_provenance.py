@@ -22,11 +22,11 @@ from utils.read_time_markers import (
 KEY = "personal_claim_support"
 _COUNTS = ("candidate_count", "supported_count", "contradicted_count", "insufficient_count",
            "dropped_claim_count", "dropped_evidence_count", "demoted_count",
-           "relocated_count", "question_drops")
+           "relocated_count", "question_drops", "proposal_drops")
 _STATUSES = {"checked", "unavailable", "failed", "skipped"}
 _REASONS = {
     "ok", "checked", "no_claims", "empty_response", "disabled", "no_model",
-    "no_evidence", "timeout", "cancelled", "provider_error", "invalid_json",
+    "no_evidence", "timeout", "cancelled", "provider_error", "invalid_json", "output_truncated",
     "invalid_response", "invalid_verdict", "invalid_evidence", "response_too_long",
     "check_error",
 }

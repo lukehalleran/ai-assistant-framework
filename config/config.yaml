@@ -246,7 +246,9 @@ personal_claim_check:      # 2026-09-15: post-generation support check for claim
   enabled: true
   mode: log_only          # log_only records support; correct buffers delivery and omits unsupported claim sentences
   model: null             # null -> response_planning.review_model
-  timeout_s: 10.0         # 2026-10-08 (BC-67): the 10-07/08 session measured 32 ok (median 4.76s,
+  timeout_s: 18.0         # 2026-10-17 (BC-89): max_tokens 900 -> 1600 (below) takes ~18s at the measured
+                          # 900 tokens = 9.82s; log_only runs AFTER delivery, so no user-visible latency.
+                          # Prior 10.0: 2026-10-08 (BC-67): the 10-07/08 session measured 32 ok (median 4.76s,
                           # p90 6.00s, max 6.455s) vs 21 timeouts all at 6.50s -> 39% of log-only checks
                           # gave no signal; raised above the observed max (log_only: off the delivery path).
                           # Prior: 2026-09-27 (BC-47): S10/personal_claim_rollup.md measured 378 production checks
@@ -257,7 +259,8 @@ personal_claim_check:      # 2026-09-15: post-generation support check for claim
                           # pinned faster model was not chosen: the default is already the cheap/fast review
                           # tier used elsewhere (grounding_check), and this check has not yet been evaluated
                           # for `correct` mode -- adding a second model dependency now is not warranted.
-  max_tokens: 900
+  max_tokens: 1600        # 2026-10-17 (BC-89): two live audits ended invalid_json at exactly 900
+                          # completion tokens (JSON cut mid-object); 900 tokens took 9.82s.
   max_evidence_chars: 12000
 decision_model:          # 2026-10-08: Jev (TypeSafe) via OpenRouter System One. Default OFF (egress gate D16).
                          # Endpoint is a code constant, not a key; unknown keys are rejected.

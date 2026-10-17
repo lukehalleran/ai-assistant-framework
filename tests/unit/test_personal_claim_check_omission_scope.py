@@ -133,5 +133,6 @@ def test_deployed_config_timeout_is_the_raised_budget_not_the_old_ceiling():
     """Reads config.app_config's ACTUAL loaded constant (YAML -> schema ->
     app_config), not a re-derivation or a hardcoded historical baseline."""
     # 2026-10-08 (BC-67): raised 6.5 -> 10.0; 39% of a session's checks timed out at 6.5.
-    assert app_config.PERSONAL_CLAIM_TIMEOUT_S == 10.0
+    # 2026-10-17 (BC-89): raised 10.0 -> 18.0 with max_tokens 900 -> 1600 (900 tokens took 9.82s).
+    assert app_config.PERSONAL_CLAIM_TIMEOUT_S == 18.0
     assert app_config.PERSONAL_CLAIM_TIMEOUT_S > 5.0
