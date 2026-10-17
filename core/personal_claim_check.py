@@ -212,14 +212,29 @@ def _iter_context(context: Any, history: Iterable[Any]) -> list[Any]:
     return values
 
 
+ATTACHMENT_EVIDENCE_SHARE = 0.4
+
+
+# ONE definition: the builder writes it and audit_personal_claims detects it
+# (2026-10-17 referee: the detector looked for "[…truncated]" with a Unicode
+# ellipsis, so evidence_truncated never fired).
+TRUNCATION_MARKER = " [...truncated]"
+
+
 def build_personal_evidence(
     query: str,
     context: Any,
     history: Iterable[Any] = (),
     *,
     max_chars: int = 12000,
+    attachments: Sequence[tuple[str, str]] = (),
 ) -> list[dict]:
     """Build bounded, role-preserved evidence for one draft.
+
+    ``attachments`` are this turn's (display name, text) documents; each
+    becomes a role ``"attachment"`` row (``src_attachment_<n>``) capped to a
+    share of at most ``ATTACHMENT_EVIDENCE_SHARE`` of ``max_chars`` across all
+    of them. An attachment is document text, never user evidence.
 
     The current query is always the first entry.  Entries retain unknown
     timestamps as ``None`` and are selected in a stable order, with the latest
@@ -236,15 +251,16 @@ def build_personal_evidence(
             return
         # Keep a truthful marker when a single query/record exceeds the bound.
         if len(text) > budget:
-            marker = " [...truncated]"
+            marker = TRUNCATION_MARKER
             text = text[: max(1, budget - len(marker))] + marker
         if len(text) > budget:
             return
-        source_id = (
-            "src_current_query"
-            if identity == "__current_query__"
-            else _opaque_id(identity, role, text, ordinal)
-        )
+        if identity == "__current_query__":
+            source_id = "src_current_query"
+        elif isinstance(identity, str) and identity.startswith("__attachment_"):
+            source_id = "src_attachment_" + identity[len("__attachment_"):].rstrip("_")
+        else:
+            source_id = _opaque_id(identity, role, text, ordinal)
         item = {"source_id": source_id, "role": role, "timestamp": timestamp, "text": text}
         entries.append(item)
         budget -= len(text)
@@ -252,6 +268,20 @@ def build_personal_evidence(
     add("user", None, current, "__current_query__", 0)
     if budget <= 0:
         return entries
+
+    docs = [(str(n or ""), _as_text(t)) for n, t in (attachments or ()) if _as_text(t).strip()]
+    if docs:
+        share = max(int(int(max_chars) * ATTACHMENT_EVIDENCE_SHARE), 1)
+        share = min(share, budget)
+        per_doc = max(share // len(docs), 1)
+        for number, (name, doc_text) in enumerate(docs, 1):
+            before = len(entries)
+            if len(doc_text) > per_doc:
+                marker = TRUNCATION_MARKER
+                doc_text = doc_text[: max(1, per_doc - len(marker))] + marker
+            add("attachment", None, doc_text, f"__attachment_{number}__", number)
+            if name and len(entries) > before:
+                entries[-1]["name"] = name
 
     candidates: list[tuple[int, int, str, str | None, str, Any]] = []
     rows = _iter_context(context, history)
@@ -302,7 +332,8 @@ def build_personal_evidence(
 _SYSTEM_PROMPT = """You audit personal claims in an assistant draft against supplied conversation evidence.
 Return one strict JSON object with exactly this shape: {\"claims\":[{\"text\":string,\"status\":\"supported\"|\"contradicted\"|\"insufficient\",\"kind\":string,\"evidence\":[{\"source_id\":string,\"quote\":string}]}]}.
 Find every material claim IN THE DRAFT about what the user or another person did, including novel actions; do not use a closed action-verb list. Also classify plans, suggestions, conditional/partial/negated/cancelled claims, quoted claims, discussion claims, and claims about another episode or object. The "text" field MUST be a character-exact copy of a contiguous span of the DRAFT: never paraphrase, never prefix it with "User", never restate the user's own message as a claim (the user's message is evidence, not a claim). If you cannot copy the span exactly, omit the claim.
-Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Ambiguous, missing, or incomplete evidence is insufficient, never a negative fact. Cite exact contiguous source quotes and their source IDs; cite no source for an insufficient claim when no exact span supports it.
+Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Evidence rows with role "attachment" are the text of files the user attached this turn: they support claims about that document's content, never claims about what the user did. A question or an offer in the draft is not a claim; do not return it.
+Ambiguous, missing, or incomplete evidence is insufficient, never a negative fact. Cite exact contiguous source quotes and their source IDs; cite no source for an insufficient claim when no exact span supports it.
 """
 
 
@@ -507,6 +538,9 @@ def _checked_references(
     return checked
 
 
+_TRAILING_CLOSERS = " \t\r\n\"'\u201d\u2019)]}>*_`"
+
+
 def _validate_claims(
     response: str, payload: dict, evidence: Sequence[Mapping[str, Any]], *,
     overlap_threshold: float = DEFAULT_LOCATE_OVERLAP,
@@ -528,7 +562,7 @@ def _validate_claims(
     claims: list[dict] = []
     by_span: dict[str, dict] = {}
     counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0, "relocated": 0,
-              "malformed": 0}
+              "malformed": 0, "question_drops": 0}
     drops: list[str] = []
     for raw_claim in payload["claims"]:
         try:
@@ -561,6 +595,12 @@ def _validate_claims(
         if how == "relocated":
             counts["relocated"] += 1
         text = located
+        if text.rstrip(_TRAILING_CLOSERS).endswith("?"):
+            # A question is not a claim (live 2026-10-17: "What's 6 covering?"
+            # was audited as insufficient). Mechanical, model-independent.
+            counts["question_drops"] += 1
+            drops.append("claim span is a question")
+            continue
         if text in by_span:
             # Two claims landed on one sentence: keep ONE claim per span and
             # let the status move only in the conservative direction.
@@ -652,6 +692,7 @@ class PersonalClaimResult:
     dropped_evidence_count: int = 0
     demoted_count: int = 0
     relocated_count: int = 0
+    question_drops: int = 0
     # Located response spans of the unsupported PERSONAL-kind claims, ordered by
     # position (class: BC-97): the receipt names WHICH claim was flagged.
     # None = not computed by the caller (a result built outside
@@ -687,6 +728,7 @@ class PersonalClaimResult:
             "dropped_evidence_count": int(self.dropped_evidence_count),
             "demoted_count": int(self.demoted_count),
             "relocated_count": int(self.relocated_count),
+            "question_drops": int(self.question_drops),
         }
         if self.evidence_truncated:
             result["evidence_truncated"] = True
@@ -726,7 +768,7 @@ async def audit_personal_claims(
         return PersonalClaimResult("unavailable", "no_evidence", elapsed_s=perf_counter() - started)
     if model_manager is None or not callable(getattr(model_manager, "generate_once", None)):
         return PersonalClaimResult("unavailable", "no_model", elapsed_s=perf_counter() - started)
-    truncated = any("[…truncated]" in _as_text(row.get("text")) for row in evidence)
+    truncated = any(TRUNCATION_MARKER.strip() in _as_text(row.get("text")) for row in evidence)
     try:
         raw = await asyncio.wait_for(
             model_manager.generate_once(
@@ -777,6 +819,7 @@ async def audit_personal_claims(
                                dropped_evidence_count=counts["dropped_evidence"],
                                demoted_count=counts["demoted"],
                                relocated_count=counts["relocated"],
+                               question_drops=counts["question_drops"],
                                flagged_spans=_flagged_spans(response, claims))
 
 

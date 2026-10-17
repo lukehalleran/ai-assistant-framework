@@ -4055,6 +4055,11 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
         evidence = personal_claim_check.build_personal_evidence(
             ctx.user_text or "", context, history=getattr(ctx, "history", ()) or (),
             max_chars=app_config.PERSONAL_CLAIM_MAX_EVIDENCE_CHARS,
+            attachments=[
+                (str(a.get("name") or ""), str(a.get("text") or ""))
+                for a in (getattr(ctx, "turn_attachments", None) or [])
+                if isinstance(a, dict)
+            ],
         )
         result = await personal_claim_check.audit_personal_claims(
             response_text, evidence, mm,
