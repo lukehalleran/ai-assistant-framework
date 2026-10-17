@@ -74,6 +74,7 @@ FIXED_SCRIPTS = [
     "purge_profile_facts.py",
     "quarantine_facts.py",
     "quarantine_graph_edges.py",
+    "remove_graph_node_attrs.py",
     "reclassify_proposals.py",
     "reembed_visual_memories.py",
     "stage_frozen_models.py",
