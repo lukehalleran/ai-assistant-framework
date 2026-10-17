@@ -13,7 +13,12 @@ Module Contract:
            keeps the innermost frames. One record per stall (the heartbeat's
            own measured gap is the duration).
   Output:  ``records()`` -> list of {"ms": int, "top": "path:line func",
-           "frames": ["path:line func", ...]} longest first, max 5. Numbers
+           "entry": "path:line func" | None, "frames": [...]} longest first,
+           max 5. ``top`` is the INNERMOST repo frame (where the blocking call
+           sits); ``entry`` is the OUTERMOST repo frame (the code that started
+           the chain, i.e. the caller to fix). If the stack is deeper than
+           ``MAX_STACK_WALK`` frames, ``entry`` is the outermost repo frame
+           seen within that walk. Numbers
            and code locations ONLY: no locals, arguments or source text
            (turn records must stay content-free).
   Config:  ``turn_telemetry.loop_stall_detector`` (default true) and
@@ -96,6 +101,7 @@ class LoopStallDetector:
         # Sample of the stall in progress (thread-written, loop/stop-read).
         self._pending_frames: Optional[List[str]] = None
         self._pending_ms: float = 0.0
+        self._pending_entry: Optional[str] = None
 
     # -- thread side ---------------------------------------------------
     def _watch(self) -> None:
@@ -111,6 +117,7 @@ class LoopStallDetector:
             # keep the innermost MAX_FRAMES plus that repo frame.
             labels: List[str] = []
             repo_label: Optional[str] = None
+            entry_label: Optional[str] = None
             depth = 0
             while frame is not None and depth < MAX_STACK_WALK:
                 label = _frame_label(frame)
@@ -118,12 +125,15 @@ class LoopStallDetector:
                     labels.append(label)
                 if repo_label is None and _is_repo_label(label):
                     repo_label = label
+                if _is_repo_label(label):
+                    entry_label = label  # keeps overwriting: ends as the outermost
                 frame = frame.f_back
                 depth += 1
             if repo_label is not None and repo_label not in labels:
                 labels.append(repo_label)
             with self._lock:
                 self._pending_frames = labels
+                self._pending_entry = entry_label
                 self._pending_ms = max(self._pending_ms, age_ms)
 
     # -- loop side -----------------------------------------------------
@@ -139,13 +149,14 @@ class LoopStallDetector:
     def _finish(self, ms: float) -> None:
         with self._lock:
             frames, self._pending_frames, self._pending_ms = self._pending_frames, None, 0.0
+            entry, self._pending_entry = self._pending_entry, None
         if not frames:
             return
         top = next((f for f in frames if _is_repo_label(f)), frames[0])
-        record = {"ms": int(round(ms)), "top": top, "frames": frames}
+        record = {"ms": int(round(ms)), "top": top, "entry": entry, "frames": frames}
         self._records.append(record)
-        logger.warning("[LoopStall] event loop blocked %d ms at %s | frames: %s",
-                       record["ms"], top, " <- ".join(frames))
+        logger.warning("[LoopStall] event loop blocked %d ms at %s (entry: %s) | frames: %s",
+                       record["ms"], top, entry, " <- ".join(frames))
 
     async def __aenter__(self) -> "LoopStallDetector":
         if not self.enabled:
@@ -182,5 +193,5 @@ class LoopStallDetector:
         return [dict(r) for r in out]
 
     def turn_fields(self) -> List[Dict[str, Any]]:
-        """Content-free form for the turn record: [{ms, top}], longest first."""
-        return [{"ms": r["ms"], "top": r["top"]} for r in self.records()]
+        """Content-free form for the turn record: [{ms, top, entry}], longest first."""
+        return [{"ms": r["ms"], "top": r["top"], "entry": r.get("entry")} for r in self.records()]

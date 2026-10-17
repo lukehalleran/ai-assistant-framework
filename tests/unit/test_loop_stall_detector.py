@@ -96,7 +96,7 @@ async def test_records_capped_at_five_sorted_and_content_free():
     assert len(recs) == 5
     assert [r["ms"] for r in recs] == sorted((r["ms"] for r in recs), reverse=True)
     for r in recs:
-        assert set(r) == {"ms", "top"}
+        assert set(r) == {"ms", "top", "entry"}
     assert secret not in json.dumps(det.records())
 
 
@@ -112,6 +112,10 @@ def test_turn_record_carries_only_numbers_and_locations(tmp_path, monkeypatch):
     assert len(row["loop_stalls"]) == 5
     assert [s["ms"] for s in row["loop_stalls"]] == [107, 106, 105, 104, 103]
     assert all(set(s) == {"ms", "top"} for s in row["loop_stalls"])
+    with_entry = [{"ms": 9, "top": "core/x.py:1 f", "entry": "core/y.py:2 g", "frames": ["LEAK"]}]
+    assert turn_telemetry.record_turn({"query": "q", "loop_stalls": with_entry})
+    row2 = json.loads(path.read_text().splitlines()[-1])
+    assert row2["loop_stalls"] == [{"ms": 9, "top": "core/x.py:1 f", "entry": "core/y.py:2 g"}]
     assert "LEAK" not in json.dumps(row)
 
 
@@ -138,7 +142,7 @@ async def test_deployed_build_prompt_gather_names_the_blocking_store(monkeypatch
     assert stalls, "gather blocked the loop for 450 ms; the detector must have named it"
     assert stalls[0]["ms"] >= 350
     assert "test_loop_stall_detector.py" in stalls[0]["top"]
-    assert set(stalls[0]) == {"ms", "top"}
+    assert set(stalls[0]) == {"ms", "top", "entry"}
 
 
 @pytest.mark.asyncio
@@ -171,3 +175,37 @@ async def test_top_is_the_repo_frame_when_the_block_is_inside_a_library(tmp_path
     assert "test_loop_stall_detector.py" in recs[0]["top"]
     assert "_repo_caller" in recs[0]["top"]
     assert "fake_heavy_lib.py" in recs[0]["frames"][0]
+
+
+@pytest.mark.asyncio
+async def test_record_names_the_outermost_repo_frame_as_entry():
+    """2026-10-16, BC-41: a library blocks under repo frame B called from repo frame A.
+    top = B (innermost repo frame), entry = A (outermost repo frame)."""
+    import utils.loop_stall as ls
+
+    class _Code:
+        def __init__(self, path, name):
+            self.co_filename, self.co_name = path, name
+
+    class _Frame:
+        def __init__(self, path, line, name, back=None):
+            self.f_code, self.f_lineno, self.f_back = _Code(path, name), line, back
+
+    root = ls._ROOT
+    outer = _Frame(root + "/gui/launch.py", 10, "frame_a")           # repo, outermost
+    mid = _Frame(root + "/core/orchestrator.py", 20, "frame_b", outer)  # repo
+    lib = _Frame("/x/site-packages/httpx/_client.py", 30, "send", mid)  # library, innermost
+
+    det = LoopStallDetector(threshold_ms=100, enabled=True)
+    async with det:
+        real = ls.sys._current_frames
+        ls.sys._current_frames = lambda: {det._loop_tid: lib}
+        try:
+            time.sleep(0.3)  # genuine stall so the deployed watcher samples
+            await asyncio.sleep(0.15)
+        finally:
+            ls.sys._current_frames = real
+    rec = det.records()[0]
+    assert rec["top"].split(" ")[0] == "core/orchestrator.py" + chr(58) + "20"
+    assert rec["entry"].split(" ")[0] == "gui/launch.py" + chr(58) + "10"
+    assert det.turn_fields()[0]["entry"] == rec["entry"]
