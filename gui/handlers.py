@@ -123,7 +123,7 @@ import core.response_generator as _response_generator_mod
 import core.context_pipeline as _context_pipeline_mod
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
-from utils.file_processor import FileProcessor, ProcessedFilesResult, attachment_display_name
+from utils.file_processor import FileProcessor, ProcessedFilesResult, attachment_display_name, is_unsupported_notice
 from utils.attachment_audit import audit_attachments, deadline_timezone_note, self_reference_note
 from utils.query_checker import is_task_navigation
 from utils.trigger_match import is_negated, normalize_ws
@@ -490,6 +490,8 @@ async def _persist_uploads(orchestrator, files_result: ProcessedFilesResult):
         # Persist text documents
         for doc in files_result.documents:
             if doc.content_text and not doc.error:
+                if is_unsupported_notice(doc.content_text):
+                    continue  # machinery text, never document content (BC-91)
                 try:
                     await asyncio.to_thread(
                         ref_manager.upload_text,

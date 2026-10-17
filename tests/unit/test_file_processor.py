@@ -79,13 +79,13 @@ def create_mock_file(name: str, path: str = None):
 
 def test_init_supported_extensions(file_processor):
     """FileProcessor initializes with supported extensions"""
-    assert file_processor.supported_extensions == ['.txt', '.md', '.json', '.yaml', '.yml', '.log', '.html', '.xml', '.docx', '.xlsx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+    assert file_processor.supported_extensions == ['.txt', '.md', '.json', '.yaml', '.yml', '.log', '.html', '.xml', '.docx', '.xlsx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.srt', '.vtt', '.zip']
 
 
 def test_get_supported_extensions(file_processor):
     """get_supported_extensions returns the list"""
     result = file_processor.get_supported_extensions()
-    assert result == ['.txt', '.md', '.json', '.yaml', '.yml', '.log', '.html', '.xml', '.docx', '.xlsx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']
+    assert result == ['.txt', '.md', '.json', '.yaml', '.yml', '.log', '.html', '.xml', '.docx', '.xlsx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.srt', '.vtt', '.zip']
     assert isinstance(result, list)
 
 
