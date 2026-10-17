@@ -11,7 +11,7 @@ interface Props {
 }
 
 const ACCEPT =
-  '.txt,.md,.json,.yaml,.yml,.log,.html,.xml,.csv,.py,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.gif,.webp,.srt,.vtt,.zip'
+  '.txt,.md,.json,.yaml,.yml,.log,.html,.xml,.csv,.py,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.gif,.webp,.srt,.vtt,.zip,.r,.rmd,.odt,.xls'
 
 export default function ChatInput({ streaming, onSend, onStop }: Props) {
   const [text, setText] = useState('')

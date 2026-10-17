@@ -38,6 +38,7 @@ Module Contract
   - Creates temporary files (cleaned up automatically)
   - Persists uploaded images to data/uploads/ (FILE_UPLOAD_IMAGE_DIR)
 """
+import csv
 import os
 import base64
 import hashlib
@@ -61,6 +62,7 @@ import re
 import zipfile
 from types import SimpleNamespace
 from utils.subtitle_text import subtitle_to_text
+from utils.odt_text import odt_to_text
 
 logger = get_logger("file_processor")
 
@@ -91,6 +93,16 @@ ZIP_MAX_RATIO = 100  # uncompressed:compressed beyond this = bomb, whole zip ref
 # ProcessedFile as an error with UNSUPPORTED_FILE_ERROR so it is never persisted.
 UNSUPPORTED_FILE_PREFIX = "[Unsupported file type:"
 UNSUPPORTED_FILE_ERROR = "unsupported file type"
+
+
+class FileContentError(ValueError):
+    """A supported-extension file whose bytes cannot be read; its message is user-facing."""
+
+
+OLE2_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
+XLS_LEGACY_MESSAGE = "legacy .xls needs the xlrd package; re-save as .xlsx or .csv"
+XLS_HTML_MESSAGE = "HTML saved as .xls; re-save as .csv or .xlsx"
+XLS_UNREADABLE_MESSAGE = "this .xls is not legacy Excel or delimited text; re-save as .csv or .xlsx"
 
 
 def unsupported_file_notice(display_name: str) -> str:
@@ -530,6 +542,8 @@ class FileProcessor:
             pf.file_size = file_size
             if is_unsupported_notice(content):
                 pf.error = UNSUPPORTED_FILE_ERROR
+        except FileContentError as e:
+            pf.error = str(e)
         except ValueError:
             raise  # Re-raise security errors for proper handling upstream
         except Exception as e:
@@ -689,6 +703,21 @@ class FileProcessor:
                     content = safe_path.read_text(encoding='utf-8')
                     result = f"```python\n{content}\n```"
 
+                elif file_ext in ('.r', '.rmd'):
+                    content = safe_path.read_text(encoding='utf-8', errors='replace')
+                    result = f"```r\n{content}\n```"
+
+                elif file_ext == '.odt':
+                    try:
+                        result = odt_to_text(file_content if isinstance(file_content, bytes) else safe_path.read_bytes())
+                    except ValueError as e:
+                        raise FileContentError(f"{display_name}: {e}")
+                    if not result.strip():
+                        result = f"[No text content extracted from {display_name}]"
+
+                elif file_ext == '.xls':
+                    result = self._extract_xls(safe_path, display_name)
+
                 elif file_ext == '.json':
                     content = safe_path.read_text(encoding='utf-8')
                     result = f"```json\n{content}\n```"
@@ -714,35 +743,8 @@ class FileProcessor:
                         result = f"[No text content extracted from {display_name}]"
 
                 elif file_ext == '.csv':
-                    # SECURITY: Sanitize CSV to prevent formula injection
                     df = pd.read_csv(safe_path)
-
-                    # Apply sanitization to all string columns
-                    for col in df.columns:
-                        if df[col].dtype == 'object':  # String columns
-                            df[col] = df[col].apply(self._sanitize_csv_cell)
-
-                    # Deterministic manifest (2026-09-04, homework-attachment
-                    # turn audit item 4): a model asked to reason about an
-                    # attached dataset's size ("~1,400 rows") answered from
-                    # prior knowledge of a similarly-named public dataset
-                    # instead of the 1,264 rows actually provided. Prepending
-                    # the true shape — computed from the parsed table, never
-                    # from raw text — gives it away for free.
-                    manifest = self._tabular_manifest(display_name, len(df), df.columns)
-                    # 2026-09-05 (live defect, debug record + stored corpus
-                    # entry 13:44): a 1,264-row CSV rendered via
-                    # df.to_string() put 216,318 of a 270,559-char query into
-                    # raw rows (agentic final prompt: "still over ceiling
-                    # after trimming: 103926/40000 tokens"). Beyond the row
-                    # cap, render a preview (dtypes + numeric summary +
-                    # head/tail sample) instead of every row — the manifest
-                    # above already gives the model the true shape.
-                    if len(df) > ATTACHMENT_TABLE_FULL_MAX_ROWS:
-                        body = self._render_dataframe_preview(df)
-                    else:
-                        body = df.to_string()
-                    result = manifest + "\n\n" + body
+                    result = self._render_table(df, display_name)
 
                 elif file_ext == '.pdf':
                     result = self._extract_pdf_with_tables(safe_path, display_name)
@@ -750,11 +752,58 @@ class FileProcessor:
                 else:
                     result = unsupported_file_notice(display_name)
 
+            except FileContentError:
+                raise
             except Exception as e:
                 logger.error(f"Error processing {basename}: {e}")
                 raise ValueError(f"Failed to process {file_ext} file: {e}")
 
         return result, file_size
+
+    def _render_table(self, df: "pd.DataFrame", display_name: str) -> str:
+        """Sanitized manifest + (preview or full) rendering shared by .csv and .xls."""
+        # SECURITY: Sanitize CSV to prevent formula injection
+        for col in df.columns:
+            if df[col].dtype == 'object':  # String columns
+                df[col] = df[col].apply(self._sanitize_csv_cell)
+        # Deterministic manifest (2026-09-04): true shape from the parsed table.
+        manifest = self._tabular_manifest(display_name, len(df), df.columns)
+        # 2026-09-05: beyond the row cap render a preview, not every row.
+        if len(df) > ATTACHMENT_TABLE_FULL_MAX_ROWS:
+            body = self._render_dataframe_preview(df)
+        else:
+            body = df.to_string()
+        return manifest + "\n\n" + body
+
+    def _extract_xls(self, path: Path, display_name: str) -> str:
+        """`.xls` is often CSV text or HTML saved under that name: sniff the bytes."""
+        head = path.read_bytes()[:8192]
+        if head.startswith(OLE2_MAGIC):
+            try:
+                import xlrd  # noqa: F401  # lazy import: optional-dependency (legacy .xls only)
+                sheets = pd.read_excel(path, sheet_name=None, engine="xlrd")
+            except Exception:  # degrades: legacy .xls unreadable -> honest error entry
+                raise FileContentError(f"{display_name}: {XLS_LEGACY_MESSAGE}")
+            parts = [f"### {name}\n" + self._render_table(df, f"{display_name} [{name}]")
+                     for name, df in sheets.items()]
+            return "\n\n".join(parts) if parts else f"[No data extracted from {display_name}]"
+        sample = head.decode('utf-8', errors='replace')
+        if sample.lstrip().lower().startswith(('<html', '<table', '<!doctype html')):
+            raise FileContentError(f"{display_name}: {XLS_HTML_MESSAGE}")
+        if head.startswith(b'PK') or b'\x00' in head:
+            raise FileContentError(f"{display_name}: {XLS_UNREADABLE_MESSAGE}")
+        try:
+            delim = csv.Sniffer().sniff(sample, delimiters=",\t;").delimiter
+        except csv.Error:
+            lines = [ln for ln in sample.splitlines()[:5] if ln.strip()]
+            delim = next((d for d in ("\t", ",") if lines and all(d in ln for ln in lines)), None)
+        if not delim:
+            raise FileContentError(f"{display_name}: {XLS_UNREADABLE_MESSAGE}")
+        try:
+            df = pd.read_csv(path, sep=delim)
+        except Exception:  # degrades: unparsable text -> honest error entry
+            raise FileContentError(f"{display_name}: {XLS_UNREADABLE_MESSAGE}")
+        return self._render_table(df, display_name)
 
     # Max column names shown by name in a tabular manifest before truncating
     # with an ellipsis (keeps the line short for wide tables).
