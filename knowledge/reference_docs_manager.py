@@ -42,6 +42,7 @@ Features:
 - Auto-seed on GUI startup: docs/ directory synced via content-hash idempotency
 """
 
+import asyncio
 import os
 import re
 import logging
@@ -705,13 +706,17 @@ class ReferenceDocsManager:
             semantic_limit = limit - keyword_limit
 
             # 1. KEYWORD SEARCH
-            keyword_results = self._keyword_search(query, keyword_limit * 3, doc_type=doc_type)
+            # BC-41: sync Chroma reads — worker thread (style of the #84 gatherer-read lane).
+            keyword_results = await asyncio.to_thread(
+                self._keyword_search, query, keyword_limit * 3, doc_type=doc_type
+            )
             # Read status IMMEDIATELY: slicing keyword_results below (for the
             # combine step) drops it, same as any other list-subclass op.
             kw_status, kw_reason = outcome_status(keyword_results)
 
             # 2. SEMANTIC SEARCH
-            semantic_results = self.chroma_store.query_collection(
+            semantic_results = await asyncio.to_thread(
+                self.chroma_store.query_collection,
                 'reference_docs',
                 query,
                 n_results=semantic_limit * 2,

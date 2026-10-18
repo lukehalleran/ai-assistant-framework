@@ -2709,14 +2709,14 @@
         "text": "return []",
         "ordinal": 1
       },
-      "source_sha256": "d6b793a74aed3adfa1201aa1d54118dfdef03644e324cf5e90bc93651e8cb7f4",
+      "source_sha256": "5d5545ec3c0dbfba8c5efb44483f9aca04dfb6d5b3ef0ff188e3916672673de6",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: No proactive insight this turn.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "The empty or None return is the function's Optional contract for optional enrichment or an unknown value (no embedding, no candidate, size unknown, no link to follow, no adjustment, layer unavailable). Consumers treat it as 'unavailable', and review found no downstream false negative claim. Accepted as reviewed debt, not a confirmed defect. Site: No proactive insight this turn. Re-reviewed 2026-10-17 (owner-approved, CGR-20261017-004): file edited by oct17b lane STL; the anchored construct is byte-identical or carries only the reviewed change listed in the CGR doc, and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-17); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-17",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261017-004"
     },
     {
       "anchor": {

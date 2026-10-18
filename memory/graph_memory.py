@@ -315,6 +315,19 @@ class GraphMemory:
         data = dict(self.graph.nodes[eid])
         return GraphNode.from_dict(eid, data)
 
+    def _raw_node_attrs(self, entity_id: str) -> Optional[dict]:
+        """Read-only node attribute dict (no pydantic model construction).
+
+        Same id normalization as ``get_entity``; hot read paths (edge
+        suppression over a hub subgraph) use this instead of building a
+        ``GraphNode`` (datetime parsing + validation) per lookup. Callers
+        must not mutate the returned dict.
+        """
+        eid = str(entity_id or "").lower().strip()
+        if not self.graph.has_node(eid):
+            return None
+        return self.graph.nodes[eid]
+
     def get_relations(self, entity_id: str, direction: str = "both") -> list[GraphEdge]:
         """Get all edges involving an entity.
 
@@ -635,12 +648,12 @@ class GraphMemory:
             # Node-level quarantine (2026-09-05, curation graph adapter): a
             # flagged node hides every edge touching it — reversible, on-disk.
             for nid in (edge.source_id, edge.target_id):
-                node = self.get_entity(str(nid or ""))
-                if node is not None and (getattr(node, "metadata", None) or {}).get("curation_quarantined"):
+                node = self._raw_node_attrs(str(nid or ""))
+                if node is not None and (node.get("metadata") or {}).get("curation_quarantined"):
                     return True
-            tgt = self.get_entity(edge.target_id)
+            tgt = self._raw_node_attrs(edge.target_id)
             if tgt is not None and relation_species_conflict(
-                edge.relation, getattr(tgt, "metadata", None) or {}
+                edge.relation, tgt.get("metadata") or {}
             ):
                 return True
         except Exception:  # degrades: edge suppression check treated as not suppressed on error
@@ -689,9 +702,9 @@ class GraphMemory:
             min_mentions = _DEFAULT_MIN_MENTIONS
 
         def _mentions(nid: str) -> int:
-            node = self.get_entity(nid)
+            node = self._raw_node_attrs(nid)
             try:
-                return int(getattr(node, "mention_count", 0) or 0)
+                return int((node or {}).get("mention_count", 0) or 0)
             except (TypeError, ValueError):
                 return 0
 

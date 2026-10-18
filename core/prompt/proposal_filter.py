@@ -14,6 +14,7 @@ Composite scoring replaces pure semantic match — a proposal's *actual* value
 whether its description happens to contain the word "impactful".
 """
 
+import asyncio
 import hashlib
 import json as _json
 import math
@@ -666,7 +667,9 @@ class ProposalFilter:
         # Step 1: Query proposals with utility query (for goal alignment signal)
         utility_query = self._build_utility_query()
         logger.info(f"[ProposalFilter] Querying with utility_query: {utility_query[:80]}...")
-        proposals = store.query_proposals(
+        # BC-41: sync Chroma query (embeds the utility query) — worker thread.
+        proposals = await asyncio.to_thread(
+            store.query_proposals,
             utility_query,
             n_results=20,
             status_filter=["pending", "approved"],
@@ -683,7 +686,10 @@ class ProposalFilter:
         logger.debug(f"[ProposalFilter] After keyword dedup: {len(proposals)}")
 
         # Step 3: Semantic dedup
-        proposals = self._semantic_dedup(proposals, CODE_PROPOSALS_SEMANTIC_DEDUP_THRESHOLD)
+        # BC-41: SentenceTransformer.encode blocked the loop 0.5-1.0 s live.
+        proposals = await asyncio.to_thread(
+            self._semantic_dedup, proposals, CODE_PROPOSALS_SEMANTIC_DEDUP_THRESHOLD
+        )
         logger.debug(f"[ProposalFilter] After semantic dedup: {len(proposals)}")
 
         if not proposals:
