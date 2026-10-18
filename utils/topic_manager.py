@@ -37,11 +37,16 @@ from dataclasses import dataclass
 from typing import Dict, Optional, List, Set, Tuple
 
 from utils.logging_utils import get_logger
+from utils.paste_shape import authored_head
 import re as _re
 
 # URLs never belong in a topic label (2026-08-29: a chatgpt.com/share link
 # became the stored topic and rendered into [THREAD CONTEXT] verbatim).
 _TOPIC_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
+# Max chars of the message sent to the topic LLM (a topic is 2-5 words;
+# 2026-10-17, BC-09: a 125K-char attachment blob was sent whole).
+TOPIC_LLM_MAX_INPUT_CHARS = 1500
 
 # Optional spaCy NER for stage 2 entity extraction
 _spacy_nlp = None
@@ -526,6 +531,24 @@ class TopicManager:
 
         return best_chunk if best_chunk and len(best_chunk) > 2 else None
 
+    @staticmethod
+    def _bounded_llm_input(text: str) -> str:
+        """Bounded prompt for the topic LLM (2026-10-17: a 125K-char paste was sent whole
+        to produce a 2-5 word topic). The user's authored head when the message is a
+        paste, else the first TOPIC_LLM_MAX_INPUT_CHARS chars cut at whitespace."""
+        head = authored_head(text)
+        if head:
+            return head[:TOPIC_LLM_MAX_INPUT_CHARS].strip()
+        stripped = text.strip()
+        if len(stripped) <= TOPIC_LLM_MAX_INPUT_CHARS:
+            return stripped
+        cut = stripped[:TOPIC_LLM_MAX_INPUT_CHARS]
+        if not stripped[TOPIC_LLM_MAX_INPUT_CHARS].isspace():
+            ws = max(cut.rfind(" "), cut.rfind("\n"), cut.rfind("\t"))
+            if ws > 0:
+                cut = cut[:ws]
+        return cut.strip()
+
     def _llm_fallback(self, text: str) -> Optional[str]:
         """
         Invoke a small LLM to extract a concrete topic when heuristics are
@@ -554,7 +577,7 @@ class TopicManager:
             "fetch is not thereby a dog). "
             "No punctuation. If impossible, return CONTINUE."
         )
-        prompt = text.strip()
+        prompt = self._bounded_llm_input(text)
         try:
             raw = self.model_manager.generate(
                 prompt=prompt,

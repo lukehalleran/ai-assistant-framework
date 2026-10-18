@@ -1413,7 +1413,11 @@ class KnowledgeRetrievalMixin:
             # that has stored images (associative recall, not broad CLIP matching).
             # If no images have entity tags yet, skip retrieval entirely to prevent
             # irrelevant images from leaking into unrelated conversations.
-            visual_entities = self._visual_retriever._store.get_visual_entity_ids()
+            # BC-41: the first call loads the FAISS index from disk (2.9 s
+            # loop stall live, 2026-10-17) - run it on a worker thread.
+            visual_entities = await asyncio.to_thread(
+                self._visual_retriever._store.get_visual_entity_ids
+            )
             if not visual_entities:
                 logger.debug(
                     "[ContextGatherer] Visual memory skipped: no entities tagged on stored images"

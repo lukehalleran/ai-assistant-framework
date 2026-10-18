@@ -331,8 +331,10 @@ def build_personal_evidence(
 
 _SYSTEM_PROMPT = """You audit personal claims in an assistant draft against supplied conversation evidence.
 Return one strict JSON object with exactly this shape: {\"claims\":[{\"text\":string,\"status\":\"supported\"|\"contradicted\"|\"insufficient\",\"kind\":string,\"evidence\":[{\"source_id\":string,\"quote\":string}]}]}.
-Find every material claim IN THE DRAFT about what the user or another person did, including novel actions; do not use a closed action-verb list. Also classify plans, suggestions, conditional/partial/negated/cancelled claims, quoted claims, discussion claims, and claims about another episode or object. The "text" field MUST be a character-exact copy of a contiguous span of the DRAFT: never paraphrase, never prefix it with "User", never restate the user's own message as a claim (the user's message is evidence, not a claim). If you cannot copy the span exactly, omit the claim.
-Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Evidence rows with role "attachment" are the text of files the user attached this turn: they support claims about that document's content, never claims about what the user did. A question or an offer in the draft is not a claim; do not return it.
+Find every material claim IN THE DRAFT about what the user or another person did, including novel actions; do not use a closed action-verb list. Also classify plans, conditional/partial/negated/cancelled claims, quoted claims, discussion claims, and claims about another episode or object. The "text" field MUST be a character-exact copy of a contiguous span of the DRAFT: never paraphrase, never prefix it with "User", never restate the user's own message as a claim (the user's message is evidence, not a claim). If you cannot copy the span exactly, omit the claim.
+The "kind" field is one of: "completion" (the user or another person did something), "plan" (a plan the USER or another person holds or stated), "suggestion" (something the ASSISTANT proposes, offers or recommends doing next, including "we can...", "let's...", "you could...", "when you're back we..."), "discussion" (what was said or covered in the conversation), "quote", "causal", "other".
+Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Evidence rows with role "attachment" are the text of files the user attached this turn: they support claims about that document's content, never claims about what the user did. A question or an offer in the draft is not a claim; do not return it. An assistant-proposed next step may be returned only with kind "suggestion".
+Return at most 8 claims (the most material), and keep each evidence quote to at most 25 words.
 Ambiguous, missing, or incomplete evidence is insufficient, never a negative fact. Cite exact contiguous source quotes and their source IDs; cite no source for an insufficient claim when no exact span supports it.
 """
 
@@ -375,6 +377,14 @@ def _strict_json(raw: Any) -> dict:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         shape = "fenced_not_json" if fenced else ("prose" if text[:1] not in "{[" else "invalid_json")
+        if shape == "invalid_json" and (
+            exc.pos >= len(text) - 2 or exc.msg.startswith("Unterminated string")
+        ):
+            # The decode error sits at the very end -- or is a string that ran
+            # to the end of the text (the parser reports the string's START):
+            # the output was cut off (completion == max_tokens in the
+            # 2026-10-17 live audit).
+            shape = "output_truncated"
         raise ValueError(f"shape={shape} len={len(raw)} at={exc.pos}") from None
     if not isinstance(parsed, dict) or set(parsed) != {"claims"}:
         keys = sorted(parsed)[:6] if isinstance(parsed, dict) else type(parsed).__name__
@@ -540,6 +550,30 @@ def _checked_references(
 
 _TRAILING_CLOSERS = " \t\r\n\"'\u201d\u2019)]}>*_`"
 
+# Assistant-proposal grammar (2026-10-17, BC-84). Closed grammatical categories
+# of English, not vocabulary from any incident: the span must OPEN with a
+# first-person subject governed by a future/ability/deontic modal, or with the
+# "let's" hortative, optionally after one leading temporal/conditional clause
+# ("when you're back we can ..."). Anchored at the span start on purpose: a
+# proposal later in the span ("Since you uploaded the resume, I can tailor the
+# letter") still carries a claim about the user and must stay audited.
+# "would"/"'d" are excluded: "I'd say you finished it" is an assessment, not an
+# offer. Subject "you", and first-person clauses with no modal, never match.
+_PROPOSAL_LEAD = (
+    r"(?:(?:when|whenever|if|once|after|before|until|while|as\s+soon\s+as)\b"
+    r"[^.;:!?]*?[,\s]\s*)?"
+)
+_PROPOSAL_HEAD = (
+    r"(?:let['\u2019]?s\b|let\s+us\b"
+    r"|(?:we|i)\s+(?:[a-z]+ly\s+)?(?:can|could|will|should|might|may|shall)\b(?!\s*n['\u2019]t)"
+    r"|(?:we|i)['\u2019]ll\b)"
+)
+_PROPOSAL_RE = re.compile(r"\A[\s\"'\u201c\u2018(*_]*" + _PROPOSAL_LEAD + _PROPOSAL_HEAD, re.IGNORECASE)
+
+
+def _is_assistant_proposal(span: str) -> bool:
+    return _PROPOSAL_RE.match(span) is not None
+
 
 def _validate_claims(
     response: str, payload: dict, evidence: Sequence[Mapping[str, Any]], *,
@@ -562,7 +596,7 @@ def _validate_claims(
     claims: list[dict] = []
     by_span: dict[str, dict] = {}
     counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0, "relocated": 0,
-              "malformed": 0, "question_drops": 0}
+              "malformed": 0, "question_drops": 0, "proposal_drops": 0}
     drops: list[str] = []
     for raw_claim in payload["claims"]:
         try:
@@ -600,6 +634,12 @@ def _validate_claims(
             # was audited as insufficient). Mechanical, model-independent.
             counts["question_drops"] += 1
             drops.append("claim span is a question")
+            continue
+        if _is_assistant_proposal(text):
+            # An assistant-proposed next step ("when you're back we can ...")
+            # is not a claim about the user, whatever kind the auditor gave it.
+            counts["proposal_drops"] += 1
+            drops.append("claim span is an assistant proposal")
             continue
         if text in by_span:
             # Two claims landed on one sentence: keep ONE claim per span and
@@ -693,6 +733,7 @@ class PersonalClaimResult:
     demoted_count: int = 0
     relocated_count: int = 0
     question_drops: int = 0
+    proposal_drops: int = 0
     # Located response spans of the unsupported PERSONAL-kind claims, ordered by
     # position (class: BC-97): the receipt names WHICH claim was flagged.
     # None = not computed by the caller (a result built outside
@@ -729,6 +770,7 @@ class PersonalClaimResult:
             "demoted_count": int(self.demoted_count),
             "relocated_count": int(self.relocated_count),
             "question_drops": int(self.question_drops),
+            "proposal_drops": int(self.proposal_drops),
         }
         if self.evidence_truncated:
             result["evidence_truncated"] = True
@@ -755,7 +797,7 @@ async def audit_personal_claims(
     # of ALL checks timed out outright (pure waste, zero signal). 6.5s is
     # that measured p90 plus a ~1.8s margin.
     timeout_s: float = 6.5,
-    max_tokens: int = 900,
+    max_tokens: int = 1600,
     overlap_threshold: float = DEFAULT_LOCATE_OVERLAP,
     min_claim_tokens: int = DEFAULT_LOCATE_MIN_TOKENS,
 ) -> PersonalClaimResult:
@@ -793,8 +835,9 @@ async def audit_personal_claims(
         payload = _strict_json(raw)
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         # Constant-string reason only; the raw output is never logged.
-        logger.debug(f"[PersonalClaim] invalid_json: {exc}")
-        return PersonalClaimResult("failed", "invalid_json", elapsed_s=perf_counter() - started,
+        truncated_output = "shape=output_truncated" in str(exc)
+        logger.debug(f"[PersonalClaim] {'output_truncated' if truncated_output else 'invalid_json'}: {exc}")
+        return PersonalClaimResult("failed", "output_truncated" if truncated_output else "invalid_json", elapsed_s=perf_counter() - started,
                                    evidence_truncated=truncated)
     claims, counts, drops = _validate_claims(
         response, payload, evidence,
@@ -820,6 +863,7 @@ async def audit_personal_claims(
                                demoted_count=counts["demoted"],
                                relocated_count=counts["relocated"],
                                question_drops=counts["question_drops"],
+                               proposal_drops=counts["proposal_drops"],
                                flagged_spans=_flagged_spans(response, claims))
 
 

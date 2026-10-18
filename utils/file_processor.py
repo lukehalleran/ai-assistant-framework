@@ -161,6 +161,13 @@ class ProcessedFilesResult:
     documents: List[ProcessedFile] = field(default_factory=list)    # Convenience: just the text files
 
 
+def attachment_header(name: str) -> str:
+    """The ONE header line that names an attached document inside the merged text
+    (2026-10-17, BC-15: documents were appended anonymously, so the model could not
+    tell where one file ended or that they were attachments, not a paste)."""
+    return f"[Attached file: {name}]\n"
+
+
 def attachment_display_name(file: Any) -> str:
     """The user-facing filename of an upload.
 
@@ -269,7 +276,7 @@ class FileProcessor:
                         )
                     else:
                         seen_doc_signatures.add(sig)
-                        result.text_content += "\n\n" + pf.content_text
+                        result.text_content += "\n\n" + attachment_header(pf.filename) + pf.content_text
                 logger.debug(f"Processed document: {pf.filename} ({pf.file_size} bytes)")
             return False
 
