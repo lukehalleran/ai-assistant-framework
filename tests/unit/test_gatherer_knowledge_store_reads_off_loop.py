@@ -140,3 +140,26 @@ async def test_upload_roster_fetch_runs_off_loop(query):
     result = await method(query, 10)
     assert seen["t"] != loop_thread
     assert result[0]["metadata"]["type"] == "upload_roster"
+
+
+@pytest.mark.asyncio
+async def test_upload_existence_probe_runs_off_loop():
+    """2026-10-18, BC-41: the cold _any_user_uploads_exist probe (chroma .get) waited
+    2.3 s on the loop behind another thread's Chroma read on the first turn after a restart."""
+    from unittest.mock import AsyncMock
+    from tests.unit.test_gatherer_outcomes_notes_docs_uploads import _bound
+
+    seen = {}
+
+    def fake_probe():
+        seen["t"] = threading.get_ident()
+        return False  # no uploads -> the method returns early, nothing else runs
+
+    mgr = MagicMock()
+    mgr.get_documents = AsyncMock(return_value=[])
+    g, method = _bound("user_uploads", manager=mgr)
+    g._any_user_uploads_exist = fake_probe
+    loop_thread = threading.get_ident()
+    result = await method("what's in my homework document", 10)
+    assert seen["t"] != loop_thread
+    assert list(result) == []
