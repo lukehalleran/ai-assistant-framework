@@ -355,7 +355,9 @@ class TestT9ReuseGate:
             controller,
             query="q", system_prompt="sys", model_name="test-model",
             initial_search_terms=[], skip_initial_search=True,
-            initial_context={"memories": [{"content": "m"}]},
+            # 2026-10-18: present memories are rendered into the decision
+            # prompt now; the block needs a budget-emptied memories key.
+            initial_context={"memories": [], "_budget_emptied": ["memories"]},
         )
 
         assert captured["called"] is True
@@ -369,7 +371,7 @@ class TestT9ReuseGate:
         # this test guards is unchanged (still blocks, still full synthesis).
         assert (
             session.reuse_skipped_reason
-            == "decision prompt lacked admitted evidence: memories"
+            == "decision prompt lacked admitted evidence: memories (emptied by budget)"
         )
         assert session.answer_call == "final_synthesis"
 
@@ -430,13 +432,16 @@ class TestT9ReuseGate:
             controller,
             query="q", system_prompt="sys", model_name="test-model",
             initial_search_terms=[], skip_initial_search=True,
-            initial_context={"web_search_results": base_web, "memories": [{"content": "m1"}]},
+            initial_context={"web_search_results": base_web, "memories": [],
+                             "_budget_emptied": ["memories"]},
         )
 
         session = controller._last_session
         assert session.seeded_base_web is True
         assert session.answer_call == "final_synthesis"
-        assert session.reuse_skipped_reason == "decision prompt lacked admitted evidence: memories"
+        assert session.reuse_skipped_reason == (
+            "decision prompt lacked admitted evidence: memories (emptied by budget)"
+        )
 
 
 # ---------------------------------------------------------------------------

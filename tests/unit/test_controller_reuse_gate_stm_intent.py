@@ -155,7 +155,10 @@ class TestB1ReuseGate:
             controller,
             query="q", system_prompt="sys", model_name="test-model",
             initial_search_terms=[], skip_initial_search=True,
-            initial_context={"memories": [{"content": "m"}]},
+            # 2026-10-18: a non-empty memories key is now RENDERED into the
+            # decision prompt (reuse allowed); the key still blocks when the
+            # token budget emptied it (neither call could show it).
+            initial_context={"memories": [], "_budget_emptied": ["memories"]},
         )
 
         session = controller._last_session
@@ -163,7 +166,7 @@ class TestB1ReuseGate:
         assert session.answer_call == "final_synthesis"
         assert (
             session.reuse_skipped_reason
-            == "decision prompt lacked admitted evidence: memories"
+            == "decision prompt lacked admitted evidence: memories (emptied by budget)"
         )
 
     @pytest.mark.asyncio
@@ -183,14 +186,16 @@ class TestB1ReuseGate:
             controller,
             query="q", system_prompt="sys", model_name="test-model",
             initial_search_terms=[], skip_initial_search=True,
-            initial_context={"user_uploads": [{"filename": "upload:Homework1.pdf"}]},
+            # 2026-10-18: uploads present are rendered into the decision
+            # prompt; blocking now needs the budget to have emptied them.
+            initial_context={"user_uploads": [], "_budget_emptied": ["user_uploads"]},
         )
 
         session = controller._last_session
         assert session.answer_call == "final_synthesis"
         assert (
             session.reuse_skipped_reason
-            == "decision prompt lacked admitted evidence: user_uploads"
+            == "decision prompt lacked admitted evidence: user_uploads (emptied by budget)"
         )
 
     @pytest.mark.asyncio

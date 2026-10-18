@@ -99,7 +99,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Dict, FrozenSet, List, Optional, Tuple, Union, TYPE_CHECKING
 
 from core.agentic.types import (
     AgentState,
@@ -1275,6 +1275,22 @@ class AgenticSearchController:
                     f"{session.context_inventory.count(chr(10))} sections"
                 )
 
+            # Decision-round evidence block (2026-10-18): render the retrieved
+            # sections ONCE, with the final prompt's renderer + trim ladder, so
+            # the decision round sees what synthesis would see and its answer
+            # can be the reply.
+            (
+                session.decision_evidence_block,
+                session.decision_rendered_keys,
+                session.decision_evidence_headers,
+            ) = self._build_evidence_block(initial_context)
+            if session.decision_evidence_block:
+                logger.info(
+                    f"[AgenticSearch] Decision evidence block: "
+                    f"{self._estimate_tokens(session.decision_evidence_block)} tokens, "
+                    f"keys={sorted(session.decision_rendered_keys)}"
+                )
+
             # Compute a short digest of this session's recent turns (content, not just
             # the counts in the inventory) so the per-round decision can see what was
             # already established and avoid searching to re-derive it (or contradicting it).
@@ -1855,33 +1871,25 @@ class AgenticSearchController:
                         for d in decisions:
                             if d.partial_response:
                                 _answer_text += d.partial_response
-                        _tool_mentions = any(w in _answer_text.lower() for w in (
-                            'github', 'git_stats', 'search', 'let me pull',
-                            'let me grab', 'let me run', 'let me check',
-                            'list_repos', 'commits', 'lines added',
-                            'propose_action', 'send_email', 'send email',
-                            'send_telegram', 'send_discord',
-                        ))
+                        # 2026-10-18: STRUCTURAL test, not a substring list —
+                        # 'search results' / 'commits' in a finished answer
+                        # threw it away and re-asked (+7 s, +15K tokens).
+                        # Nudge only when the text is NOT a usable answer AND
+                        # reads as an unexecuted plan.
+                        _tool_mentions = (
+                            self._usable_decision_answer(_answer_text) is None
+                            and bool(
+                                self._PROMISSORY_RE.search(_answer_text)
+                                or self.narration_shaped_final(_answer_text)
+                            )
+                        )
                         if _tool_mentions:
                             logger.info(
                                 "[AgenticSearch] Model narrated tool intent without "
-                                "using XML markers — retrying with nudge"
+                                "calling a tool — retrying with nudge"
                             )
                             session._tool_nudge_sent = True
-                            # Append the response + nudge to get the model to
-                            # actually emit XML markers this time
-                            _nudge = (
-                                "\n\n[SYSTEM]: You described what tools you would use "
-                                "but did NOT actually call them. You MUST use the XML "
-                                "tool markers to execute tools. For example:\n"
-                                "<github>open issues</github>\n"
-                                "<git_stats>commits this week</git_stats>\n"
-                                "<memory collection=\"facts\">user github</memory>\n"
-                                "<action type=\"send_email\" recipient=\"user@example.com\" "
-                                "reason=\"user asked\">message body</action>\n"
-                                "Do NOT describe what you will do — just call the tools "
-                                "now using the XML format above."
-                            )
+                            _nudge = self._tool_nudge_text(session.protocol)
                             session.accumulated_context += (
                                 f"\n\n[Your previous response (NOT executed)]:\n"
                                 f"{_answer_text[:500]}\n{_nudge}"
@@ -2189,7 +2197,7 @@ class AgenticSearchController:
                 # old sentinel string "decision-answer-reuse" recorded nothing
                 # about which call produced the answer (2026-09-06, A5).
                 session.final_prompt_hash = session.decision_prompt_hash
-                _reuse_sections: List[str] = []
+                _reuse_sections: List[str] = list(session.decision_evidence_headers)
                 if session.recent_conversation_digest:
                     _reuse_sections.append("[RECENT CONVERSATION — EARLIER TURNS]")
                 if session.accumulated_context and session.accumulated_context.strip():
@@ -2201,7 +2209,9 @@ class AgenticSearchController:
                 # only when A3 actually seeded it into accumulated_context —
                 # otherwise it is exactly the evidence the digest/inventory
                 # summarized but never showed in full.
-                _reuse_rendered_keys = {"web_search_results"} if session.seeded_base_web else set()
+                _reuse_rendered_keys = set(session.decision_rendered_keys)
+                if session.seeded_base_web:
+                    _reuse_rendered_keys.add("web_search_results")
                 session.omitted_sections = self._omitted_admitted_sections(
                     initial_context, _reuse_rendered_keys
                 )
@@ -2759,7 +2769,10 @@ class AgenticSearchController:
         session: "AgenticSearchSession",
         initial_context: Optional[Dict[str, Any]],
     ) -> bool:
-        """B1 (2026-09-07, supersedes A4): tool results alone never prove the
+        """2026-10-18: True iff the decision prompt rendered everything the
+        final prompt would render (see _first_unmet_retrieval_key).
+
+        B1 (2026-09-07, supersedes A4): tool results alone never prove the
         BASE retrieval evidence was seen — a turn where the loop only listed
         repo files still counted session.accumulated_context as "evidence
         seen" while the base retrieval's memories/notes/uploads never
@@ -2771,6 +2784,12 @@ class AgenticSearchController:
         reuse regardless of accumulated_context, since that key is real
         retrieved content the decision prompt's bounded digest never
         rendered.
+
+        2026-10-18 rule: the decision prompt now renders the SAME sections the
+        final prompt would (``session.decision_evidence_block``), so reuse is
+        permitted iff the decision prompt rendered everything the final prompt
+        would render — a retrieval key blocks only when neither exemption
+        below applies.
         """
         return self._first_unmet_retrieval_key(initial_context, session) is None
 
@@ -2792,21 +2811,42 @@ class AgenticSearchController:
         if not initial_context:
             return None
         seeded_web = bool(session is not None and getattr(session, "seeded_base_web", False))
+        rendered = (
+            frozenset(getattr(session, "decision_rendered_keys", ()) or ())
+            if session is not None else frozenset()
+        )
         for key in self._RETRIEVAL_EVIDENCE_KEYS:
             if key == "web_search_results" and seeded_web:
+                continue
+            if self._decision_exempt_key(key, rendered):
                 continue
             if self._context_value_nonempty(initial_context.get(key)):
                 return key
         # 2026-10-08 (BC-25, BC-47): evidence the token budget EMPTIED never
         # reached the decision prompt either — post-budget "empty" is not
         # "nothing was retrieved". TokenManager records the names it emptied.
+        # An emptied key the final prompt would render still blocks (the
+        # decision block could not have rendered it either).
         emptied = self._budget_emptied_keys(initial_context)
         for key in self._RETRIEVAL_EVIDENCE_KEYS:
             if key == "web_search_results" and seeded_web:
                 continue
-            if key in emptied:
+            if key in emptied and self._final_prompt_renders_key(key):
                 return key
         return None
+
+    def _final_prompt_renders_key(self, key: str) -> bool:
+        """Does `_build_final_prompt` show this retrieval key at all? (web is
+        shown via accumulated_context, a direct-rendered key via its section.)
+        Keys it never renders (graph_context, relevant_emails,
+        google_calendar) are invisible to synthesis too."""
+        return key == "web_search_results" or key in self._FINAL_PROMPT_DIRECT_RENDERED_KEYS
+
+    def _decision_exempt_key(self, key: str, rendered: frozenset) -> bool:
+        """A retrieval key that cannot make synthesis add anything over the
+        decision round: the decision block rendered it, or neither call can
+        render it."""
+        return key in rendered or not self._final_prompt_renders_key(key)
 
     @staticmethod
     def _budget_emptied_keys(initial_context: Optional[Dict[str, Any]]) -> frozenset:
@@ -3010,6 +3050,31 @@ class AgenticSearchController:
                 continue
             output.append(decision)
         return output
+
+    @staticmethod
+    def _tool_nudge_text(protocol: Any) -> str:
+        """Round-1 retry nudge, protocol-aware: native-tools models call
+        tools through the function-calling interface (XML examples would
+        teach the wrong channel); the XML protocol keeps marker examples."""
+        if protocol == SearchProtocol.NATIVE_TOOLS:
+            return (
+                "\n\n[SYSTEM]: You described what tools you would use but did NOT "
+                "actually call them. Call the tool now through the function-calling "
+                "interface, or, if you already have enough information, write your "
+                "complete final answer. Do NOT describe what you will do."
+            )
+        return (
+            "\n\n[SYSTEM]: You described what tools you would use "
+            "but did NOT actually call them. You MUST use the XML "
+            "tool markers to execute tools. For example:\n"
+            "<github>open issues</github>\n"
+            "<git_stats>commits this week</git_stats>\n"
+            "<memory collection=\"facts\">user github</memory>\n"
+            "<action type=\"send_email\" recipient=\"user@example.com\" "
+            "reason=\"user asked\">message body</action>\n"
+            "Do NOT describe what you will do — just call the tools "
+            "now using the XML format above."
+        )
 
     def narration_shaped_final(self, text: str) -> bool:
         """Is a FINAL synthesis output mid-loop narration instead of an
@@ -3736,12 +3801,22 @@ class AgenticSearchController:
         # Detect tool mentions and add hints
         _tool_hints = self._detect_tool_hints(query, prev_user_text)
 
-        parts = [f"""{_time_ctx}User Question: {query}{_tool_hints}
+        parts = []
+        # Evidence already retrieved for this turn goes FIRST so it is a stable
+        # prefix across rounds (prompt-cache reads); the per-round clock and
+        # search results follow it.
+        if session and session.decision_evidence_block:
+            parts.append(
+                "[EVIDENCE ALREADY RETRIEVED FOR THIS TURN — the same context the "
+                "final answer is written from; no need to search for what is "
+                "shown here]\n" + session.decision_evidence_block
+            )
+        parts.append(f"""{_time_ctx}User Question: {query}{_tool_hints}
 
 Search Results So Far:
 {search_context}
 
-You are in round {round_number} of up to {self.max_rounds} search rounds."""]
+You are in round {round_number} of up to {self.max_rounds} search rounds.""")
 
         # Include context inventory so the LLM knows what RAG already gathered
         if session and session.context_inventory:
@@ -3778,7 +3853,8 @@ You are in round {round_number} of up to {self.max_rounds} search rounds."""]
         )
 
         parts.append("""Based on the search results above:
-1. If you have enough information to fully answer the question, write your COMPLETE final answer to the user now — finished, user-facing prose (it may be shown to them verbatim), with no preamble about what you did or plan to do.
+1. If you have enough information to fully answer the question, write your COMPLETE final answer to the user now — finished, user-facing prose (it may be shown to them verbatim), with no preamble about what you did or plan to do. Write it by these rules (where they say [TIME CONTEXT], use the "Today is" line near the top of this prompt):
+""" + self._final_answer_rules() + """
 2. If you need more specific information, request another search with a focused query.
 3. Consider what's missing: different aspects, more recent data, or more specific details.
 
@@ -3872,14 +3948,46 @@ What would you like to do?""")
         )
         return new_parts, new_tokens
 
-    def _build_final_prompt(
-        self,
-        query: str,
-        session: AgenticSearchSession,
-        initial_context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """Build the final prompt with all accumulated context including RAG data."""
-        parts = []
+    # Header -> initial_context key for every section _render_evidence_sections
+    # emits (2026-10-18): lets a trimmed block report which keys survived.
+    _EVIDENCE_HEADER_KEYS: Tuple[Tuple[str, str], ...] = (
+        ("[RECENT CONVERSATION", "recent_conversations"),
+        ("[RELEVANT MEMORIES]", "memories"),
+        ("[USER PROFILE]", "user_profile"),
+        ("[RECENT SUMMARIES]", "recent_summaries"),
+        ("[SEMANTIC SUMMARIES]", "semantic_summaries"),
+        ("[USER'S PERSONAL NOTES]", "personal_notes"),
+        ("[RECENT DREAMS]", "dreams"),
+        ("[DAEMON DOCUMENTATION]", "reference_docs"),
+        ("[USER UPLOADED ITEMS]", "user_uploads"),
+        ("[RECENT REFLECTIONS]", "recent_reflections"),
+    )
+
+    # Trim order shared by the final prompt and the decision-round evidence
+    # block: least critical sections go first.
+    _TRIMMABLE_PREFIXES: Tuple[str, ...] = (
+        "[RECENT DREAMS]",
+        "[RECENT REFLECTIONS]",
+        "[DAEMON DOCUMENTATION]",
+        "[SEMANTIC SUMMARIES]",
+        "[RECENT SUMMARIES]",
+        "[USER'S PERSONAL NOTES]",
+    )
+
+    def _render_evidence_sections(
+        self, initial_context: Optional[Dict[str, Any]]
+    ) -> Tuple[List[str], FrozenSet[str]]:
+        """Render the prompt builder's retrieved context (everything the final
+        prompt shows before [TIME CONTEXT]) into prompt parts.
+
+        ONE renderer for both the decision round and the final synthesis
+        (2026-10-18): the decision prompt used to see only a digest + counts,
+        so any non-empty retrieval key forced a second full-context call.
+        Returns (parts, keys) where keys are the initial_context keys that
+        produced a non-empty part.
+        """
+        parts: List[str] = []
+        _keys: set = set()
 
         # Add RAG context if available (from prompt builder)
         if initial_context:
@@ -3888,6 +3996,7 @@ What would you like to do?""")
             if recent:
                 recent_text = self._format_recent_conversations(recent)
                 if recent_text:
+                    _keys.add('recent_conversations')
                     parts.append(
                         "[RECENT CONVERSATION — THIS SESSION'S HISTORY]\n"
                         "Context only — do not reply to these turns as if they were the "
@@ -3907,11 +4016,13 @@ What would you like to do?""")
             if memories:
                 mem_text = self._format_memories(memories)
                 if mem_text:
+                    _keys.add('memories')
                     parts.append(f"[RELEVANT MEMORIES]\n{mem_text}")
 
             # User profile (categorized facts)
             user_profile = initial_context.get('user_profile', '')
             if user_profile and isinstance(user_profile, str) and user_profile.strip():
+                _keys.add('user_profile')
                 parts.append(
                     f"[USER PROFILE]\n"
                     "Stored facts — reference naturally but do not add names, apps, or details not written here.\n"
@@ -3929,10 +4040,12 @@ What would you like to do?""")
             if recent_summaries:
                 sum_text = self._format_summaries(recent_summaries)
                 if sum_text:
+                    _keys.add('recent_summaries')
                     parts.append(f"[RECENT SUMMARIES]\n{sum_text}")
             if semantic_summaries:
                 sum_text = self._format_summaries(semantic_summaries)
                 if sum_text:
+                    _keys.add('semantic_summaries')
                     parts.append(f"[SEMANTIC SUMMARIES]\n{sum_text}")
 
             # Personal notes from Obsidian
@@ -3940,6 +4053,7 @@ What would you like to do?""")
             if personal_notes:
                 notes_text = self._format_personal_notes(personal_notes)
                 if notes_text:
+                    _keys.add('personal_notes')
                     parts.append(f"[USER'S PERSONAL NOTES]\n{notes_text}")
 
             # Dreams
@@ -3947,6 +4061,7 @@ What would you like to do?""")
             if dreams:
                 dreams_text = self._format_dreams(dreams)
                 if dreams_text:
+                    _keys.add('dreams')
                     parts.append(f"[RECENT DREAMS]\n{dreams_text}")
 
             # Reference docs (Daemon self-knowledge)
@@ -3970,6 +4085,7 @@ What would you like to do?""")
                     elif isinstance(doc, str) and doc.strip():
                         doc_lines.append(doc.strip())
                 if doc_lines:
+                    _keys.add('reference_docs')
                     parts.append(f"[DAEMON DOCUMENTATION]\n" + "\n\n".join(doc_lines))
 
             # User uploads (2026-09-07): never rendered here before — the
@@ -3980,6 +4096,7 @@ What would you like to do?""")
             if user_uploads:
                 uu_text = self._format_user_uploads(user_uploads)
                 if uu_text:
+                    _keys.add('user_uploads')
                     parts.append(f"[USER UPLOADED ITEMS]\n{uu_text}")
 
             # Reflections
@@ -3994,36 +4111,45 @@ What would you like to do?""")
             if recent_reflections:
                 ref_text = self._format_reflections(recent_reflections)
                 if ref_text:
+                    _keys.add('recent_reflections')
                     parts.append(f"[RECENT REFLECTIONS]\n{ref_text}")
 
-        # Time context (critical for temporal queries — model needs today's date)
-        _now = datetime.now()
-        parts.append(f"[TIME CONTEXT]\nCurrent time: {_now.strftime('%A, %Y-%m-%d %H:%M:%S')}")
+        return parts, frozenset(_keys)
 
-        # Add search results. Header is source-kind-neutral (2026-09-06):
-        # accumulated_context can hold memory/file/computation/fetched-page
-        # results with no web search at all (or pre-gathered base web results
-        # seeded by A3 with no agentic web round) — the old
-        # "[WEB SEARCH RESULTS - N rounds]" label plus the unconditional
-        # "every claim MUST cite [WEB_N]" instruction below misdescribed a
-        # memory-only loop's own tool results as web search.
-        if session.accumulated_context:
-            parts.append(
-                f"[TOOL RESULTS - {len(session.rounds)} rounds] (each block is "
-                f"labeled by its source kind: web search, memory, file, "
-                f"computation, fetched page, pre-gathered web)\n"
-                f"{session.accumulated_context}"
-            )
-
-        # Add the query
-        parts.append(f"[CURRENT USER QUERY — RESPOND TO THIS]\n{query}")
-
-        # Tool health — so the LLM never confabulates about its own capabilities
-        tool_health = self._tool_executor.get_tool_health()
-        parts.append(
-            f"[TOOL STATUS — report these accurately, never claim a tool works if it says UNAVAILABLE]\n{tool_health}"
+    def _build_evidence_block(
+        self, initial_context: Optional[Dict[str, Any]]
+    ) -> Tuple[str, FrozenSet[str], List[str]]:
+        """Decision-round evidence: the SAME sections the final prompt renders,
+        after the SAME trim ladder (counting the block alone against the final
+        prompt's ceiling). Returns (block_text, surviving_keys, headers)."""
+        parts, _ = self._render_evidence_sections(initial_context)
+        if not parts:
+            return "", frozenset(), []
+        prompt_ceiling = self.context_budget_tokens * 5
+        total_tokens = self._estimate_tokens("\n\n".join(parts))
+        if total_tokens > prompt_ceiling:
+            for prefix in self._TRIMMABLE_PREFIXES:
+                parts = [p for p in parts if not p.startswith(prefix)]
+                total_tokens = self._estimate_tokens("\n\n".join(parts))
+                if total_tokens <= prompt_ceiling:
+                    break
+        keys = frozenset(
+            key for part in parts
+            for header, key in self._EVIDENCE_HEADER_KEYS
+            if part.startswith(header)
         )
+        headers: List[str] = []
+        for part in parts:
+            hm = re.match(r"^\[[^\]]+\]", part.split("\n", 1)[0])
+            if hm:
+                headers.append(hm.group(0))
+        return "\n\n".join(parts), keys, headers
 
+    def _final_answer_rules(self) -> str:
+        """The answer-rule block that closes the final prompt (citation, date
+        grounding, uncertainty, focus, tool-status, pending-action lines).
+        Also embedded in the decision prompt so a directly-written answer
+        follows the same rules as the synthesis call."""
         # Check if an action was proposed during this session
         _has_pending_action = False
         try:
@@ -4072,13 +4198,52 @@ What would you like to do?""")
             if has_web else
             "- Use [TIME CONTEXT] above as the authoritative source for today's date and day of the week."
         )
-        parts.append(f"""Please provide a comprehensive answer based on ALL context above:
+        return f"""Please provide a comprehensive answer based on ALL context above:
 - Use your memories, facts, and personal notes to personalize the response
 {citation_line}
 {date_grounding_line}
 - Note any uncertainties or conflicting information
 - Focus on answering the user's specific question
-- If asked about tool status, ONLY report what [TOOL STATUS] says — do NOT rely on prior conversation{action_instruction}""")
+- If asked about tool status, ONLY report what [TOOL STATUS] says — do NOT rely on prior conversation{action_instruction}"""
+
+    def _build_final_prompt(
+        self,
+        query: str,
+        session: AgenticSearchSession,
+        initial_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Build the final prompt with all accumulated context including RAG data."""
+        parts, _ = self._render_evidence_sections(initial_context)
+
+        # Time context (critical for temporal queries — model needs today's date)
+        _now = datetime.now()
+        parts.append(f"[TIME CONTEXT]\nCurrent time: {_now.strftime('%A, %Y-%m-%d %H:%M:%S')}")
+
+        # Add search results. Header is source-kind-neutral (2026-09-06):
+        # accumulated_context can hold memory/file/computation/fetched-page
+        # results with no web search at all (or pre-gathered base web results
+        # seeded by A3 with no agentic web round) — the old
+        # "[WEB SEARCH RESULTS - N rounds]" label plus the unconditional
+        # "every claim MUST cite [WEB_N]" instruction below misdescribed a
+        # memory-only loop's own tool results as web search.
+        if session.accumulated_context:
+            parts.append(
+                f"[TOOL RESULTS - {len(session.rounds)} rounds] (each block is "
+                f"labeled by its source kind: web search, memory, file, "
+                f"computation, fetched page, pre-gathered web)\n"
+                f"{session.accumulated_context}"
+            )
+
+        # Add the query
+        parts.append(f"[CURRENT USER QUERY — RESPOND TO THIS]\n{query}")
+
+        # Tool health — so the LLM never confabulates about its own capabilities
+        tool_health = self._tool_executor.get_tool_health()
+        parts.append(
+            f"[TOOL STATUS — report these accurately, never claim a tool works if it says UNAVAILABLE]\n{tool_health}"
+        )
+
+        parts.append(self._final_answer_rules())
 
         # Budget enforcement: if assembled prompt is too large, trim low-value sections
         # while preserving recent conversations and agentic search results.
@@ -4090,14 +4255,7 @@ What would you like to do?""")
         if total_tokens > prompt_ceiling:
             # Trim sections in priority order: dreams, reflections, reference docs, summaries
             # These are the sections least critical for answering the immediate query
-            trimmable_prefixes = [
-                "[RECENT DREAMS]",
-                "[RECENT REFLECTIONS]",
-                "[DAEMON DOCUMENTATION]",
-                "[SEMANTIC SUMMARIES]",
-                "[RECENT SUMMARIES]",
-                "[USER'S PERSONAL NOTES]",
-            ]
+            trimmable_prefixes = self._TRIMMABLE_PREFIXES
             for prefix in trimmable_prefixes:
                 parts = [p for p in parts if not p.startswith(prefix)]
                 assembled = "\n\n".join(parts)
