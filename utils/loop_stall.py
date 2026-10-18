@@ -16,7 +16,11 @@ Module Contract:
            "entry": "path:line func" | None, "frames": [...]} longest first,
            max 5. ``top`` is the INNERMOST repo frame (where the blocking call
            sits); ``entry`` is the OUTERMOST repo frame (the code that started
-           the chain, i.e. the caller to fix). If the stack is deeper than
+           the chain, i.e. the caller to fix). A stall >= ``OTHER_THREADS_MIN_MS``
+           also carries ``other_threads`` (2026-10-18): a loop thread waiting with
+           no repo frame of its own is waiting on a GIL holder, so the same sample
+           names what every OTHER thread was running ("name: frame <- frame ; ...").
+           Appended to the same [LoopStall] log line. If the stack is deeper than
            ``MAX_STACK_WALK`` frames, ``entry`` is the outermost repo frame
            seen within that walk. Numbers
            and code locations ONLY: no locals, arguments or source text
@@ -43,6 +47,9 @@ MAX_RECORDS = 5
 MAX_FRAMES = 8
 MAX_STACK_WALK = 64
 DEFAULT_THRESHOLD_MS = 250
+OTHER_THREADS_MIN_MS = 1000   # read at call time; stalls this long also name the other threads
+MAX_OTHER_THREADS = 8
+MAX_OTHER_FRAMES = 3
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -69,6 +76,34 @@ def _is_repo_label(label: str) -> bool:
     if os.path.isabs(head) or "site-packages" in head or head.startswith(("venv" + os.sep, ".venv" + os.sep)):
         return False
     return os.path.isfile(os.path.join(_ROOT, head)) and os.sep in head
+
+
+def _other_threads_summary(loop_tid: Optional[int], watcher_tid: int, frames_by_tid: Dict[int, Any]) -> str:
+    """Top frames of every thread except the loop and the watcher, capped.
+
+    Threads running repo code sort first (idle pool workers parked in the stdlib
+    would otherwise crowd out the one holding the GIL). Per thread: the innermost
+    frame, then repo frames innermost-first, at most MAX_OTHER_FRAMES. Code
+    locations only.
+    """
+    names = {t.ident: t.name for t in threading.enumerate()}
+    rows = []
+    for tid, frame in frames_by_tid.items():
+        if tid in (loop_tid, watcher_tid):
+            continue
+        labels: List[str] = []
+        depth = 0
+        while frame is not None and depth < MAX_STACK_WALK:
+            labels.append(_frame_label(frame))
+            frame = frame.f_back
+            depth += 1
+        if not labels:
+            continue
+        repo = [lb for lb in labels if _is_repo_label(lb)]
+        picked = [labels[0]] + [lb for lb in repo if lb != labels[0]]
+        rows.append((not repo, f"{names.get(tid, f'thread-{tid}')}: " + " <- ".join(picked[:MAX_OTHER_FRAMES])))
+    rows.sort(key=lambda r: r[0])  # stable: repo-running threads first
+    return " ; ".join(text for _, text in rows[:MAX_OTHER_THREADS])
 
 
 def read_settings() -> tuple:
@@ -102,6 +137,7 @@ class LoopStallDetector:
         self._pending_frames: Optional[List[str]] = None
         self._pending_ms: float = 0.0
         self._pending_entry: Optional[str] = None
+        self._pending_other: Optional[str] = None
 
     # -- thread side ---------------------------------------------------
     def _watch(self) -> None:
@@ -109,7 +145,8 @@ class LoopStallDetector:
             age_ms = (time.monotonic() - self._stamp) * 1000.0
             if age_ms < self.threshold_ms:
                 continue
-            frame = sys._current_frames().get(self._loop_tid)
+            all_frames = sys._current_frames()
+            frame = all_frames.get(self._loop_tid)
             if frame is None:
                 continue
             # Walk the whole stack (bounded) so the innermost REPO frame is found
@@ -131,9 +168,14 @@ class LoopStallDetector:
                 depth += 1
             if repo_label is not None and repo_label not in labels:
                 labels.append(repo_label)
+            other = None
+            if age_ms >= OTHER_THREADS_MIN_MS:
+                other = _other_threads_summary(self._loop_tid, threading.get_ident(), all_frames) or None
             with self._lock:
                 self._pending_frames = labels
                 self._pending_entry = entry_label
+                if other is not None:
+                    self._pending_other = other
                 self._pending_ms = max(self._pending_ms, age_ms)
 
     # -- loop side -----------------------------------------------------
@@ -150,13 +192,18 @@ class LoopStallDetector:
         with self._lock:
             frames, self._pending_frames, self._pending_ms = self._pending_frames, None, 0.0
             entry, self._pending_entry = self._pending_entry, None
+            other, self._pending_other = self._pending_other, None
         if not frames:
             return
         top = next((f for f in frames if _is_repo_label(f)), frames[0])
         record = {"ms": int(round(ms)), "top": top, "entry": entry, "frames": frames}
+        suffix = ""
+        if other and record["ms"] >= OTHER_THREADS_MIN_MS:
+            record["other_threads"] = other
+            suffix = " | other threads: " + other
         self._records.append(record)
-        logger.warning("[LoopStall] event loop blocked %d ms at %s (entry: %s) | frames: %s",
-                       record["ms"], top, entry, " <- ".join(frames))
+        logger.warning("[LoopStall] event loop blocked %d ms at %s (entry: %s) | frames: %s%s",
+                       record["ms"], top, entry, " <- ".join(frames), suffix)
 
     async def __aenter__(self) -> "LoopStallDetector":
         if not self.enabled:
@@ -194,4 +241,10 @@ class LoopStallDetector:
 
     def turn_fields(self) -> List[Dict[str, Any]]:
         """Content-free form for the turn record: [{ms, top, entry}], longest first."""
-        return [{"ms": r["ms"], "top": r["top"], "entry": r.get("entry")} for r in self.records()]
+        out = []
+        for r in self.records():
+            row = {"ms": r["ms"], "top": r["top"], "entry": r.get("entry")}
+            if r.get("other_threads"):
+                row["other_threads"] = r["other_threads"]  # added key only on long stalls
+            out.append(row)
+        return out

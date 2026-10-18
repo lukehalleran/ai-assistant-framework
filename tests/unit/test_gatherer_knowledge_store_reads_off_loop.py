@@ -114,3 +114,29 @@ def test_store_list_all_forwards_where_to_chroma_get():
     coll.get.reset_mock()
     store.list_all("threads")
     assert "where" not in coll.get.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "what's in my homework document",
+    "    what's in my\n    homework document\n",
+])
+async def test_upload_roster_fetch_runs_off_loop(query):
+    """2026-10-18, BC-41: _fetch_upload_roster (chroma .get) blocked the loop 268 ms live."""
+    from unittest.mock import AsyncMock
+    from tests.unit.test_gatherer_outcomes_notes_docs_uploads import _bound
+
+    seen = {}
+
+    def fake_roster():
+        seen["t"] = threading.get_ident()
+        return [{"title": "syllabus.pdf", "date": "2026-10-17"}]
+
+    mgr = MagicMock()
+    mgr.get_documents = AsyncMock(return_value=[])
+    g, method = _bound("user_uploads", manager=mgr)
+    g._fetch_upload_roster = fake_roster
+    loop_thread = threading.get_ident()
+    result = await method(query, 10)
+    assert seen["t"] != loop_thread
+    assert result[0]["metadata"]["type"] == "upload_roster"
