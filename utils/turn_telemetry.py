@@ -170,6 +170,8 @@ def _sanitize_loop_stalls(value: Any) -> list:
         row = {"ms": ms, "top": top}
         if item.get("entry"):  # outermost repo frame = the caller to fix (2026-10-16)
             row["entry"] = str(item["entry"])[:120]
+        if item.get("other_threads"):  # stalls >= 1 s name the other threads' frames (2026-10-18)
+            row["other_threads"] = str(item["other_threads"])[:600]
         out.append(row)
     out.sort(key=lambda r: r["ms"], reverse=True)
     return out[:5]

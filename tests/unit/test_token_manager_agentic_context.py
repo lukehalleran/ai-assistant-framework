@@ -139,7 +139,10 @@ class TestReuseBlockedOnBudgetEmptiedEvidence:
         from core.agentic.types import AgenticSearchSession
         return AgenticSearchSession(query="what is on my calendar today")
 
-    def test_calendar_emptied_by_budget_blocks_reuse(self):
+    def test_calendar_emptied_by_budget_does_not_block_reuse(self):
+        # 2026-10-18: _build_final_prompt never renders google_calendar, so
+        # neither call could show it -- synthesis adds nothing over the
+        # decision round and reuse is allowed.
         ctx = {
             "recent_conversations": [{"content": "hello there"}],
             # one item larger than the whole budget: the first pass cannot keep it
@@ -149,8 +152,16 @@ class TestReuseBlockedOnBudgetEmptiedEvidence:
         assert not out["google_calendar"], "precondition: the budget emptied the calendar"
         assert out["_budget_emptied"] == ["google_calendar"]
         c = _controller()
-        assert c._first_unmet_retrieval_key(out, self._session()) == "google_calendar"
-        assert c._decision_saw_admitted_evidence(self._session(), out) is False
+        assert c._first_unmet_retrieval_key(out, self._session()) is None
+        assert c._decision_saw_admitted_evidence(self._session(), out) is True
+
+    def test_rendered_key_emptied_by_budget_still_blocks_reuse(self):
+        ctx = {"recent_conversations": [{"content": "hello there"}],
+               "personal_notes": [{"content": "word " * 400, "metadata": {"title": "T"}}]}
+        out = TokenManager(_MM(), _Tok(), 100)._manage_token_budget(ctx)
+        assert not out.get("personal_notes"), "precondition: the budget emptied the notes"
+        c = _controller()
+        assert c._first_unmet_retrieval_key(out, self._session()) == "personal_notes"
 
     def test_genuinely_empty_calendar_does_not_block_reuse(self):
         ctx = {"recent_conversations": [{"content": "hello there"}], "google_calendar": []}

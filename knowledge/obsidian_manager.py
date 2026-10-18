@@ -703,7 +703,9 @@ class ObsidianManager:
             kw_status, kw_reason = outcome_status(keyword_results)
 
             # 2. SEMANTIC SEARCH - vector similarity
-            semantic_results = self.chroma_store.query_collection(
+            # BC-41 (2026-10-18): embeds the query + HNSW read (762 ms live on turn 1).
+            semantic_results = await asyncio.to_thread(
+                self.chroma_store.query_collection,
                 'obsidian_notes',
                 query,
                 n_results=semantic_limit * 2  # Get extra for dedup
@@ -779,7 +781,8 @@ class ObsidianManager:
                     if image_str and file_path:
                         image_names = [img.strip() for img in image_str.split(',') if img.strip()]
                         if image_names:
-                            loaded = self.load_images_for_chunk(
+                            loaded = await asyncio.to_thread(
+                                self.load_images_for_chunk,
                                 image_names,
                                 file_path,
                                 max_images=max_images_per_note

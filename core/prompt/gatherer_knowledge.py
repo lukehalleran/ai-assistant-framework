@@ -1019,7 +1019,10 @@ class KnowledgeRetrievalMixin:
             wants_roster = bool(
                 _DOCUMENT_CONTEXT_RE.search(query) or _UPLOAD_FILENAME_TOKEN_RE.search(query)
             ) if query else False
-            roster: List[Dict[str, str]] = self._fetch_upload_roster() if wants_roster else []
+            # BC-41 (2026-10-18): chroma .get() on the loop (268 ms live).
+            roster: List[Dict[str, str]] = (
+                await asyncio.to_thread(self._fetch_upload_roster) if wants_roster else []
+            )
             # Roster-only failure (CGR-007 #74 contract point 3): a raising
             # roster fetch marks the whole section failed, reason prefixed so
             # it is distinguishable from a documents-leg failure. A documents

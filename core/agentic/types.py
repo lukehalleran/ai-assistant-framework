@@ -295,6 +295,13 @@ class AgenticSearchSession:
     memory_search_counts: Dict[str, int] = field(default_factory=dict)
     expand_count: int = 0
     context_inventory: str = ""
+    # Decision-round evidence (2026-10-18): the same retrieved sections the
+    # final prompt renders (same trim ladder), computed once per session and
+    # placed first in every round's prompt. decision_rendered_keys = the
+    # initial_context keys whose sections survived; the reuse gate trusts them.
+    decision_evidence_block: str = ""
+    decision_rendered_keys: frozenset = field(default_factory=frozenset)
+    decision_evidence_headers: List[str] = field(default_factory=list)
     # Short digest of THIS session's recent turns (content, not just counts) so the
     # per-round decision can avoid re-deriving facts already settled in-session.
     recent_conversation_digest: str = ""
