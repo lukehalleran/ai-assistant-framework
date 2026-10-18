@@ -52,22 +52,22 @@ def test_configure_logging_redirects_file_sink(tmp_path, monkeypatch):
     saved = root.handlers[:]
     try:
         configure_logging(file_path="daemon_debug.log")
-        fhs = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
-        assert fhs, "file handler expected"
-        assert all("test_debug" in h.baseFilename for h in fhs)
+        from utils.logging_utils import get_log_file_path
+        sink = get_log_file_path()
+        assert sink, "file handler expected"
+        assert "test_debug" in sink
         assert not (tmp_path / "daemon_debug.log").exists()
     finally:
-        for h in root.handlers[:]:
-            if isinstance(h, logging.FileHandler):
-                h.close()
+        from utils.logging_utils import stop_logging_listener
+        stop_logging_listener()
         root.handlers.clear()
         root.handlers.extend(saved)
 
 
 def _flush_file_handlers(root):
-    for handler in root.handlers:
-        if isinstance(handler, logging.FileHandler):
-            handler.flush()
+    # Records cross a queue to the listener thread; stopping it drains them.
+    from utils.logging_utils import stop_logging_listener
+    stop_logging_listener()
 
 
 def test_configure_logging_suppresses_raw_transport_debug(tmp_path, monkeypatch):
@@ -95,9 +95,8 @@ def test_configure_logging_suppresses_raw_transport_debug(tmp_path, monkeypatch)
         assert "ordinary-debug-marker" in content
         assert "private-prompt-marker" not in content
     finally:
-        for handler in root.handlers[:]:
-            if isinstance(handler, logging.FileHandler):
-                handler.close()
+        from utils.logging_utils import stop_logging_listener
+        stop_logging_listener()
         root.handlers.clear()
         root.handlers.extend(saved_handlers)
         for name, level in saved_levels.items():

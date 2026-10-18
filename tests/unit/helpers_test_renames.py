@@ -102,10 +102,15 @@ FILES: dict[str, str] = {
 }
 
 
+# pinned commit dates: two synthetic repos built in different seconds must still get the same base
+# SHA, or the sealed map (which records it) and so tests/RENAMES.tsv differ between them
+_GIT_DATES = {"GIT_AUTHOR_DATE": "2026-10-16T12:00:00+0000", "GIT_COMMITTER_DATE": "2026-10-16T12:00:00+0000"}
+
+
 def git(cwd: Path, *args: str) -> str:
     out = subprocess.run(
         ["git", "-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", *args],
-        cwd=str(cwd), check=True, capture_output=True, text=True,
+        cwd=str(cwd), check=True, capture_output=True, text=True, env={**os.environ, **_GIT_DATES},
     )
     return out.stdout
 

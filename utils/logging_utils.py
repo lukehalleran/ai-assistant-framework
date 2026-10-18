@@ -19,6 +19,10 @@ import os
 import time
 import inspect
 import functools
+import atexit
+import logging.handlers
+import queue
+import threading
 
 from utils.bootstrap import store_path
 
@@ -74,6 +78,56 @@ def _sensitive_http_logging_enabled() -> bool:
     )
 
 
+# Queue-based logging (2026-10-17, class: BC-41): a one-line logger.debug on the
+# event loop blocked 1088 ms inside FileHandler.flush (live [LoopStall]). The
+# real sinks now sit behind a QueueListener thread; the root logger carries ONE
+# QueueHandler (an in-memory put) so a slow disk can never stall the loop.
+_listener: Optional[logging.handlers.QueueListener] = None
+_queue_handler: Optional[logging.handlers.QueueHandler] = None
+_listener_lock = threading.Lock()
+_atexit_registered = False
+
+
+def stop_logging_listener() -> None:
+    """Flush queued records, stop the listener thread and close its sinks.
+
+    Safe to call repeatedly. After it returns the root logger no longer holds
+    the queue handler (nothing would drain it).
+    """
+    global _listener, _queue_handler
+    with _listener_lock:
+        listener, qh = _listener, _queue_handler
+        _listener, _queue_handler = None, None
+        if qh is not None:
+            try:
+                logging.getLogger().removeHandler(qh)
+            except Exception:  # degrades: handler stays attached to a dead queue
+                pass
+        if listener is not None:
+            sinks = list(listener.handlers)
+            try:
+                listener.stop()  # drains the queue, joins the thread
+            except Exception:  # degrades: queued tail records may be lost at exit
+                pass
+            for h in sinks:
+                try:
+                    h.flush()
+                    h.close()
+                except Exception:  # degrades: a sink may leak its file handle
+                    pass
+
+
+def get_log_file_path() -> Optional[str]:
+    """Path of the live file sink, or None when file logging is off."""
+    listener = _listener
+    if listener is None:
+        return None
+    for h in listener.handlers:
+        if isinstance(h, logging.FileHandler):
+            return getattr(h, "baseFilename", None)
+    return None
+
+
 def configure_logging(
     level: int = logging.INFO,
     file_path: Optional[str] = "daemon_debug.log",
@@ -100,6 +154,10 @@ def configure_logging(
             file_path,
             "logs/daemon_debug.log" if file_path == "daemon_debug.log" else None,
         )
+
+    # Re-entry: end the previous listener (and flush it) before building a new
+    # one — never two listeners, never a leaked thread.
+    stop_logging_listener()
 
     root = logging.getLogger()
     if root.hasHandlers():
@@ -130,7 +188,7 @@ def configure_logging(
     ch.setLevel(console_level if console_level is not None else level)
     ch.setFormatter(fmt)
     ch.addFilter(transport_filter)
-    root.addHandler(ch)
+    sinks = [ch]
 
     # File handler (optional)
     if file_path:
@@ -160,10 +218,24 @@ def configure_logging(
             fh.setLevel(file_level)
             fh.setFormatter(fmt)
             fh.addFilter(transport_filter)
-            root.addHandler(fh)
+            sinks.append(fh)
         except Exception:
             # If file can't be opened, continue with console-only
             pass
+
+    global _listener, _queue_handler, _atexit_registered
+    log_queue: "queue.SimpleQueue" = queue.SimpleQueue()
+    qh = logging.handlers.QueueHandler(log_queue)
+    listener = logging.handlers.QueueListener(
+        log_queue, *sinks, respect_handler_level=True
+    )
+    with _listener_lock:
+        _listener, _queue_handler = listener, qh
+        root.addHandler(qh)
+        listener.start()
+    if not _atexit_registered:
+        atexit.register(stop_logging_listener)
+        _atexit_registered = True
 
 
 def get_logger(name: str = "daemon_app") -> logging.Logger:

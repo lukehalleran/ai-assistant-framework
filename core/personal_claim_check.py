@@ -29,6 +29,8 @@ from typing import Any, Iterable, Mapping, Sequence
 # One implementation, two consumers (no cycle: grounding_check never imports
 # this module).
 from core.grounding_check import _locate_claim_sentence, _sentence_chunks
+import memory.graph_utils as graph_utils
+from utils.user_identity import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -332,8 +334,8 @@ def build_personal_evidence(
 _SYSTEM_PROMPT = """You audit personal claims in an assistant draft against supplied conversation evidence.
 Return one strict JSON object with exactly this shape: {\"claims\":[{\"text\":string,\"status\":\"supported\"|\"contradicted\"|\"insufficient\",\"kind\":string,\"evidence\":[{\"source_id\":string,\"quote\":string}]}]}.
 Find every material claim IN THE DRAFT about what the user or another person did, including novel actions; do not use a closed action-verb list. Also classify plans, conditional/partial/negated/cancelled claims, quoted claims, discussion claims, and claims about another episode or object. The "text" field MUST be a character-exact copy of a contiguous span of the DRAFT: never paraphrase, never prefix it with "User", never restate the user's own message as a claim (the user's message is evidence, not a claim). If you cannot copy the span exactly, omit the claim.
-The "kind" field is one of: "completion" (the user or another person did something), "plan" (a plan the USER or another person holds or stated), "suggestion" (something the ASSISTANT proposes, offers or recommends doing next, including "we can...", "let's...", "you could...", "when you're back we..."), "discussion" (what was said or covered in the conversation), "quote", "causal", "other".
-Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Evidence rows with role "attachment" are the text of files the user attached this turn: they support claims about that document's content, never claims about what the user did. A question or an offer in the draft is not a claim; do not return it. An assistant-proposed next step may be returned only with kind "suggestion".
+The "kind" field is one of: "completion" (the user or another person did something), "plan" (a plan the USER or another person holds or stated), "suggestion" (something the ASSISTANT proposes, offers or recommends doing next, including "we can...", "let's...", "you could...", "when you're back we..."), "discussion" (what was said or covered in the conversation), "quote", "causal", "subject" (a statement about a subject, a document, software, course material or the world that says nothing about what the user or another person did, holds, plans or is), "other".
+Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Evidence rows with role "attachment" are the text of files the user attached this turn: they support claims about that document's content, never claims about what the user did. A question or an offer in the draft is not a claim; do not return it. Subject-matter statements are not personal claims and should not be returned; if one is returned it must have kind "subject". An assistant-proposed next step may be returned only with kind "suggestion".
 Return at most 8 claims (the most material), and keep each evidence quote to at most 25 words.
 Ambiguous, missing, or incomplete evidence is insufficient, never a negative fact. Cite exact contiguous source quotes and their source IDs; cite no source for an insufficient claim when no exact span supports it.
 """
@@ -410,7 +412,8 @@ def _is_completion_kind(kind: str) -> bool:
 # omission-eligible — the 09-15 incident was a PLAN claim ("a cover letter
 # waiting for tomorrow"). "other" stays eligible: the auditor uses it for
 # personal-state sentences too ("nothing left today that can't wait").
-_NON_PERSONAL_KINDS = frozenset({"discussion", "suggestion", "quote", "causal"})
+# "subject" (2026-10-17, BC-84): course-material / software / world statements.
+_NON_PERSONAL_KINDS = frozenset({"discussion", "suggestion", "quote", "causal", "subject"})
 
 
 def _omission_eligible_kind(kind: str) -> bool:
@@ -575,6 +578,58 @@ def _is_assistant_proposal(span: str) -> bool:
     return _PROPOSAL_RE.match(span) is not None
 
 
+# Subject-matter backstop (2026-10-17, BC-84/BC-75). Closed grammatical
+# categories of English -- personal pronouns/possessives and temporal
+# reference -- not vocabulary from any incident.
+_PERSON_REF_RE = re.compile(
+    r"\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves|you|your|yours|yourself|"
+    r"yourselves|he|him|his|himself|she|her|hers|herself|they|them|their|theirs|"
+    r"themselves|user)\b",
+    re.IGNORECASE,
+)
+_CLOCK_TIME_RES = (
+    re.compile(r"\b\d{1,2}:\d{2}\b"),
+    re.compile(r"\b\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:at|by|until|till|from|around|before|after)\s+\d{1,2}\b", re.IGNORECASE),
+    re.compile(r"\b\d{1,2}(?:st|nd|rd|th)\b", re.IGNORECASE),
+)
+_TIME_WINDOW_TOKEN_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def _has_time_reference(span: str) -> bool:
+    if any(rx.search(span) for rx in _CLOCK_TIME_RES):
+        return True
+    tokens = _TIME_WINDOW_TOKEN_RE.findall(span)
+    for size in (1, 2, 3):
+        for start in range(len(tokens) - size + 1):
+            if graph_utils.is_temporal_deictic(" ".join(tokens[start:start + size])):
+                return True
+    return False
+
+
+def _is_subject_matter_span(span: str, kind: str) -> bool:
+    """True when a non-completion/plan claim names no person and no time."""
+    if _is_completion_kind(kind):
+        return False
+    tokens = [t for t in re.split(r"[\s/_,-]+", kind.lower()) if t]
+    if any(t in ("plan", "cancel") or t.startswith("cancel") for t in tokens):
+        return False
+    if _PERSON_REF_RE.search(span):
+        return False
+    name = (get_user_display_name() or "").strip()
+    if name and re.search(r"\b" + re.escape(name) + r"\b", span, re.IGNORECASE):
+        return False
+    return not _has_time_reference(span)
+
+
+def _kind_status_summary(claims: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    tally: dict[str, int] = {}
+    for claim in claims:
+        key = f"{_as_text(claim.get('kind')).strip().lower()}:{claim.get('status')}"
+        tally[key] = tally.get(key, 0) + 1
+    return tally
+
+
 def _validate_claims(
     response: str, payload: dict, evidence: Sequence[Mapping[str, Any]], *,
     overlap_threshold: float = DEFAULT_LOCATE_OVERLAP,
@@ -596,7 +651,8 @@ def _validate_claims(
     claims: list[dict] = []
     by_span: dict[str, dict] = {}
     counts = {"dropped_claims": 0, "dropped_evidence": 0, "demoted": 0, "relocated": 0,
-              "malformed": 0, "question_drops": 0, "proposal_drops": 0}
+              "malformed": 0, "question_drops": 0, "proposal_drops": 0,
+              "subject_drops": 0}
     drops: list[str] = []
     for raw_claim in payload["claims"]:
         try:
@@ -681,6 +737,16 @@ def _validate_claims(
                 if repeated is not None and _distinct_user_days(checked_refs, sources) < repeated:
                     status = "insufficient"
                     counts["demoted"] += 1
+        if (status in _UNSUPPORTED and _omission_eligible_kind(kind)
+                and _is_subject_matter_span(text, kind)):
+            # A would-be-flagged claim naming no person and no time is about a
+            # subject, not a person (live 2026-10-17: course-material
+            # explanations were flagged and re-rendered as "do not repeat it
+            # as fact"). Supported / non-personal-kind claims are untouched:
+            # nothing is flagged for them, and receipts keep their counts.
+            counts["subject_drops"] += 1
+            drops.append("claim span names no person and no time")
+            continue
         claim = {"text": text, "status": status, "kind": kind.strip(), "evidence": checked_refs}
         by_span[text] = claim
         claims.append(claim)
@@ -734,6 +800,7 @@ class PersonalClaimResult:
     relocated_count: int = 0
     question_drops: int = 0
     proposal_drops: int = 0
+    subject_drops: int = 0
     # Located response spans of the unsupported PERSONAL-kind claims, ordered by
     # position (class: BC-97): the receipt names WHICH claim was flagged.
     # None = not computed by the caller (a result built outside
@@ -771,6 +838,7 @@ class PersonalClaimResult:
             "relocated_count": int(self.relocated_count),
             "question_drops": int(self.question_drops),
             "proposal_drops": int(self.proposal_drops),
+            "subject_drops": int(self.subject_drops),
         }
         if self.evidence_truncated:
             result["evidence_truncated"] = True
@@ -846,6 +914,7 @@ async def audit_personal_claims(
     if drops:
         logger.debug(f"[PersonalClaim] dropped {counts['dropped_claims']} claim(s), "
                      f"{counts['dropped_evidence']} reference(s): {sorted(set(drops))}")
+    logger.debug("[PersonalClaim] kinds: " + json.dumps(_kind_status_summary(claims), sort_keys=True))
     if payload["claims"] and not claims and counts["malformed"]:
         # The model broke the schema and nothing survived: nothing was checked.
         return PersonalClaimResult("failed", "invalid_verdict", elapsed_s=perf_counter() - started,
@@ -864,6 +933,7 @@ async def audit_personal_claims(
                                relocated_count=counts["relocated"],
                                question_drops=counts["question_drops"],
                                proposal_drops=counts["proposal_drops"],
+                               subject_drops=counts["subject_drops"],
                                flagged_spans=_flagged_spans(response, claims))
 
 

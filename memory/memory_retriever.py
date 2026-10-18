@@ -2003,8 +2003,18 @@ class MemoryRetriever:
 
         # ENTITY-AWARE RETRIEVAL: If query mentions specific entities (names like "Graham"),
         # also do semantic search to find older memories about those entities
-        from processing.gate_system import _extract_query_entities, _entity_match_boost
+        from processing.gate_system import (
+            _extract_query_entities, _entity_match_boost, entity_boost_applicable,
+        )
         query_entities = _extract_query_entities(query)
+        if query_entities and not entity_boost_applicable(query_entities):
+            # 2026-10-17 (BC-09): vocabulary, not names - skip the 100-result
+            # semantic search that exists only to feed entity matches.
+            logger.debug(
+                f"[MemoryRetriever] Meta path: entity set too large "
+                f"({len(query_entities)}); entity boost skipped"
+            )
+            query_entities = set()
 
         # Two-query design: reformulated query for semantic lookup,
         # original query for entity extraction and scoring.

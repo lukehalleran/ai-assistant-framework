@@ -598,6 +598,16 @@ def _extract_query_entities(query: str) -> set:
     return entities
 
 
+# 2026-10-17: a real recall query names 1-3 entities; a set larger than 8 is
+# vocabulary, not names - a 1,629-char set boosted nearly every memory +0.25.
+ENTITY_BOOST_MAX_QUERY_ENTITIES = 8
+
+
+def entity_boost_applicable(query_entities: set) -> bool:
+    """True when the entity set is non-empty and small enough to be names."""
+    return bool(query_entities) and len(query_entities) <= ENTITY_BOOST_MAX_QUERY_ENTITIES
+
+
 def _entity_match_boost(query_entities: set, content: str) -> float:
     """
     Calculate boost for memories that contain entities mentioned in the query.
@@ -606,7 +616,7 @@ def _entity_match_boost(query_entities: set, content: str) -> float:
         0.0 if no match
         0.15-0.25 based on match quality
     """
-    if not query_entities or not content:
+    if not entity_boost_applicable(query_entities) or not content:
         return 0.0
 
     content_lower = content.lower()
@@ -1079,7 +1089,13 @@ class MultiStageGateSystem:
 
             # Extract entities from query for boosting (e.g., "Graham", "Diane")
             query_entities = _extract_query_entities(query)
-            if query_entities:
+            if query_entities and not entity_boost_applicable(query_entities):
+                logger.debug(
+                    f"[Batch Gate] Entity set too large ({len(query_entities)}) - "
+                    f"vocabulary, not names; entity boost skipped"
+                )
+                query_entities = set()
+            elif query_entities:
                 logger.debug(f"[Batch Gate] Extracted entities from query: {query_entities}")
 
             # Threshold is loop-invariant (space + deictic only) — hoisted so the

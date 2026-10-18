@@ -524,6 +524,46 @@ def _should_suppress_reference_docs(files_suppress: bool, distress_active: bool,
 # build_full_prompt's `[CURRENT QUERY]` assembly, a separate code path.
 ANALYSIS_QUERY_MAX_CHARS = 2000
 
+
+def _head_tail_cut(text: str, budget: int) -> str:
+    """Head+tail cut of ``text`` to <= ``budget`` chars, each cut at whitespace.
+
+    The user's actual question is often at the END of a long paste, so both
+    ends are kept (joined by an ellipsis line); never head-only.
+    """
+    if len(text) <= budget:
+        return text
+    sep = "\n\u2026\n"
+    half = max(1, (budget - len(sep)) // 2)
+    head = text[:half]
+    if len(text) > half and not text[half].isspace():
+        cut = head.rfind(" ")
+        cut = max(cut, head.rfind("\n"), head.rfind("\t"))
+        if cut > 0:
+            head = head[:cut]
+    tail = text[-half:]
+    if len(text) > half and not text[-half - 1].isspace():
+        m = re.search(r"\s", tail)
+        if m:
+            tail = tail[m.end():]
+    return head.rstrip() + sep + tail.lstrip()
+
+
+def _bounded_analysis_query(processed: str, original: Optional[str]) -> str:
+    """Bound the text retrieval/gating analyzes (2026-10-17, class BC-09).
+
+    The old condition required the original text to be <= the cap; a
+    2,079-char authored paste (plus a PDF) fell off that cliff and the gate
+    analyzed the whole merged blob. Now: short processed text is unchanged;
+    otherwise prefer the original, and head+tail cut whatever is still too long.
+    """
+    if len(processed) <= ANALYSIS_QUERY_MAX_CHARS:
+        return processed
+    base = original if original else processed
+    if len(base) <= ANALYSIS_QUERY_MAX_CHARS:
+        return base
+    return _head_tail_cut(base, ANALYSIS_QUERY_MAX_CHARS)
+
 _SELF_DOC_INTENTS = {"meta_conversational", "technical_help", "project_work"}
 _SELF_REFERENTIAL_CUE_RE = re.compile(
     r"\b(?:daemon|agentic|chroma(?:db)?|"
@@ -2453,17 +2493,16 @@ class UnifiedPromptBuilder:
         # Bounded analysis query (item 2): fall back to the short original
         # (pre-merge) user text when processed_query is pathologically long
         # and the original text is not. See ANALYSIS_QUERY_MAX_CHARS above.
-        _analysis_query = context.processed_query
-        if (context.original_query
-                and len(_analysis_query) > ANALYSIS_QUERY_MAX_CHARS
-                and len(context.original_query) <= ANALYSIS_QUERY_MAX_CHARS):
+        _analysis_query = _bounded_analysis_query(
+            context.processed_query, context.original_query
+        )
+        if _analysis_query is not context.processed_query:
             logger.info(
-                f"[BUILD_PROMPT] processed_query is {len(_analysis_query)} chars — "
-                f"using the {len(context.original_query)}-char original user text for "
-                f"retrieval/gating analysis instead (full content still reaches the "
-                f"rendered prompt via context.file_context)"
+                f"[BUILD_PROMPT] processed_query is {len(context.processed_query)} chars — "
+                f"analysis query bounded to {len(_analysis_query)} chars "
+                f"({'original user text' if _analysis_query == context.original_query else 'head+tail cut'}; "
+                f"full content still reaches the rendered prompt via context.file_context)"
             )
-            _analysis_query = context.original_query
 
         # Map ContextResult to build_prompt parameters
         # When files are uploaded, pass flag to suppress reference docs

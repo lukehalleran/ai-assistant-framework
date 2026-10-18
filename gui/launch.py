@@ -75,6 +75,7 @@ import sys
 import json
 import logging
 import logging as _log
+from utils.logging_utils import get_log_file_path
 import socket
 import subprocess
 import tempfile
@@ -927,12 +928,10 @@ def build_demo(orchestrator, dev_tabs=None):
     def get_app_log_path():
         """Find the app .log file from the root logger's FileHandler if present."""
         try:
-            root = logging.getLogger()
-            for h in root.handlers:
-                if isinstance(h, logging.FileHandler):
-                    # type: ignore[attr-defined]
-                    return getattr(h, 'baseFilename', None)
-        except (AttributeError, TypeError):
+            path = get_log_file_path()
+            if path:
+                return path
+        except (AttributeError, TypeError, ImportError):
             pass
         # Fallback to the default used in utils.logging_utils.configure_logging
         return os.path.abspath(store_path('daemon_debug.log', 'logs/daemon_debug.log'))

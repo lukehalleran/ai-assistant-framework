@@ -3213,9 +3213,16 @@ class AgenticSearchController:
             # "synthesis system.Let me check…". See core/reasoning_stream_filter.py.
             _rfilter = InterleavedReasoningFilter()
             _visible_parts: List[str] = []
+            _stream_usage = None
             if hasattr(stream, '__aiter__'):
                 # It's an async iterator (OpenAI stream)
                 async for chunk in stream:
+                    # Trailing usage chunk (generate_async sets
+                    # stream_options.include_usage; same capture as
+                    # ResponseGenerator's streaming path).
+                    _chunk_usage = getattr(chunk, 'usage', None)
+                    if _chunk_usage:
+                        _stream_usage = _chunk_usage
                     if hasattr(chunk, 'choices') and chunk.choices:
                         delta = chunk.choices[0].delta
                         delta_reasoning = getattr(delta, 'reasoning_content', '') or getattr(delta, 'reasoning', '') or ''
@@ -3233,6 +3240,19 @@ class AgenticSearchController:
                 for _kind, _text in _rfilter.finish():
                     _visible_parts.append(_text)
                     yield _text
+
+                # Usage line for the agentic synthesis call (2026-10-17, lane
+                # AGT): previously the one full-context call of an agentic
+                # turn had no [PromptCache] accounting.
+                if _stream_usage is not None:
+                    try:
+                        self.model_manager._log_cache_usage(
+                            _stream_usage,
+                            model_name=model_name or getattr(self.model_manager, "active_model_name", "?"),
+                            where="agentic_synthesis",
+                        )
+                    except Exception:  # degrades: agentic synthesis usage line not logged
+                        pass
 
                 # Reasoning-only recovery: the model streamed reasoning but never
                 # any visible content (deepseek-v4 etc. occasionally swallow the

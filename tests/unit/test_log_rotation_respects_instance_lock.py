@@ -53,11 +53,8 @@ def _restore_root_logger():
     original_handlers = list(root.handlers)
     original_level = root.level
     yield
-    for h in root.handlers:
-        try:
-            h.close()
-        except Exception:
-            pass
+    from utils.logging_utils import stop_logging_listener
+    stop_logging_listener()
     root.handlers = original_handlers
     root.setLevel(original_level)
 

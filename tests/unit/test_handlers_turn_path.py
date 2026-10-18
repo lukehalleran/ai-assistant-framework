@@ -106,6 +106,8 @@ class TestNoisyLibraryLoggers:
             # privacy floor unchanged
             assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
         finally:
+            from utils.logging_utils import stop_logging_listener
+            stop_logging_listener()
             for h in list(root.handlers):
                 root.removeHandler(h)
             for h in saved_handlers:

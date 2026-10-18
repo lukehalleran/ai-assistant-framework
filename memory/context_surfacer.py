@@ -11,6 +11,7 @@ directly to "user") by classifying user-adjacent entities via the existing
 categorize_relation() from user_profile_schema.py.
 """
 
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -156,21 +157,24 @@ class ContextSurfacer:
 
         try:
             # Build domain clusters
-            clusters = self._classify_user_edges()
+            # BC-41: hub-edge walk + per-entity context sentences are sync graph reads.
+            clusters = await asyncio.to_thread(self._classify_user_edges)
             if len(clusters) < 2:
                 logger.debug("[ContextSurfacer] Fewer than 2 domains, no bridges possible")
                 self._session_insights = []
                 return []
 
             # Identify active domains from query
-            active_domains = self._identify_active_domains(query, clusters)
+            active_domains = await asyncio.to_thread(self._identify_active_domains, query, clusters)
             if not active_domains:
                 logger.debug("[ContextSurfacer] No active domains detected in query")
                 self._session_insights = []
                 return []
 
             # Select bridge candidates
-            candidates = self._select_bridge_candidates(active_domains, clusters, max_candidates=3)
+            candidates = await asyncio.to_thread(
+                self._select_bridge_candidates, active_domains, clusters, max_candidates=3
+            )
             if not candidates:
                 logger.debug("[ContextSurfacer] No bridge candidates after filtering")
                 self._session_insights = []

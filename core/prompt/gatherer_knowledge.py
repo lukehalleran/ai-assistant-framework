@@ -547,6 +547,21 @@ _wiki_cache = {}  # Simple in-memory cache for wiki snippets
 # snippet helper can flag a swallowed live-API timeout without a signature change.
 _WIKI_TIMINGS: contextvars.ContextVar = contextvars.ContextVar("wiki_timings")
 _WIKI_CACHE_MAX_SIZE = 100  # Maximum cache entries to prevent memory leaks
+# 2026-10-17 (BC-69): lookups still pending at the live-fallback deadline keep
+# running here (strong refs) so they finish under their own 5 s wait_for and
+# warm ``_wiki_cache`` for the next turn instead of being thrown away.
+_WIKI_BACKGROUND_LOOKUPS: set = set()
+_WIKI_BACKGROUND_MAX = 8
+
+
+def _wiki_background_done(task) -> None:
+    """Done-callback: drop the strong ref and retrieve any exception."""
+    _WIKI_BACKGROUND_LOOKUPS.discard(task)
+    try:
+        if not task.cancelled():
+            task.exception()
+    except Exception:  # degrades: background lookup outcome is only a cache warm
+        pass
 
 
 def _cleanup_wiki_cache():
@@ -1245,11 +1260,16 @@ class KnowledgeRetrievalMixin:
 
             # Extract entity mentions from query using the shared utility
             # (strips punctuation, filters stopwords/common words, skips wikidata concepts)
-            seen_entities = graph_utils.extract_graph_entities(query, resolver, graph_memory=graph)
+            # BC-41: alias resolution + node lookups are sync graph reads — worker thread.
+            seen_entities = await asyncio.to_thread(
+                graph_utils.extract_graph_entities, query, resolver, graph_memory=graph
+            )
 
             sentences: list[str] = []
             for eid in seen_entities:
-                ctx = graph.get_context_sentences(
+                # BC-41: a hub subgraph walk blocked the loop for 0.7-4.7 s live.
+                ctx = await asyncio.to_thread(
+                    graph.get_context_sentences,
                     eid, depth=KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH,
                     max_sentences=max_sentences - len(sentences),
                     with_attribution=ENABLE_GRAPH_ATTRIBUTION,
@@ -1840,7 +1860,8 @@ class KnowledgeRetrievalMixin:
             # 2026-10-15 (BC-69): concurrent lookups under ONE deadline — the
             # sequential loop paid up to 5s PER term (probe turn: 12.3s wiki
             # task, then emptied by the budget). Results are kept in the
-            # original term order; unfinished lookups are cancelled.
+            # original term order; unfinished lookups keep running in the
+            # background (bounded, 2026-10-17) and warm the cache.
             from config.app_config import WIKI_FALLBACK_DEADLINE_S  # lazy import: live-config read
             terms = list(search_terms[:limit])
             tasks = [_asyncio.ensure_future(self._get_wiki_snippet_cached(t)) for t in terms]
@@ -1854,7 +1875,11 @@ class KnowledgeRetrievalMixin:
                         t.cancel()
                     raise
                 for t in pending:
-                    t.cancel()
+                    if len(_WIKI_BACKGROUND_LOOKUPS) >= _WIKI_BACKGROUND_MAX:
+                        t.cancel()
+                    else:
+                        _WIKI_BACKGROUND_LOOKUPS.add(t)
+                        t.add_done_callback(_wiki_background_done)
                 kept = 0
                 first_exc = None
                 for term, t in zip(terms, tasks):
