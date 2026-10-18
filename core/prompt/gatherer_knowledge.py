@@ -1095,11 +1095,13 @@ class KnowledgeRetrievalMixin:
             recent_limit = max(limit // 3, 1)
             semantic_limit = limit - recent_limit
 
-            # 1/3: Most recent commits (chronological)
-            recent = chroma.get_recent('procedural', limit=recent_limit)
+            # 1/3: Most recent commits (chronological). BC-41 (2026-10-18):
+            # get_recent lists the whole collection (638 ms on the loop live).
+            recent = await asyncio.to_thread(chroma.get_recent, 'procedural', limit=recent_limit)
 
             # 2/3: Semantically relevant commits
-            semantic = chroma.query_collection('procedural', query, n_results=semantic_limit + recent_limit)
+            semantic = await asyncio.to_thread(
+                chroma.query_collection, 'procedural', query, n_results=semantic_limit + recent_limit)
 
             # Deduplicate: recent first, then fill with semantic
             seen_ids = set()
