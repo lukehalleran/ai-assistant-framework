@@ -83,6 +83,12 @@ ATTACHMENT_TABLE_FULL_MAX_ROWS = int(os.getenv("ATTACHMENT_TABLE_FULL_MAX_ROWS",
 ATTACHMENT_TABLE_HEAD_ROWS = 20
 ATTACHMENT_TABLE_TAIL_ROWS = 5
 
+# 2026-10-17 (class: BC-69): a 7.6 MB slide-deck PDF spent ~8 s in pdfplumber
+# table detection (dense vector shapes) before the turn's prompt build could
+# start. Once cumulative table-detection time for ONE document passes this,
+# the remaining pages are read as plain text.
+PDF_TABLE_EXTRACTION_BUDGET_S = 3.0
+
 # Zip attachment limits (2026-10-17): checked against the central directory BEFORE any
 # member is extracted; members are read in memory and never written to disk.
 ZIP_MAX_MEMBERS = 50      # content members (archive metadata excluded)
@@ -906,17 +912,42 @@ class FileProcessor:
         import pdfplumber  # lazy import: optional-dependency
 
         pages = []
+        t_start = time.perf_counter()
+        table_s = 0.0
+        tables_found = 0
+        budget_tripped_at = None
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
+            total_pages = len(pdf.pages)
+            for page_idx, page in enumerate(pdf.pages):
                 page_parts = []
 
-                # Extract tables first
-                tables = page.extract_tables() or []
-                table_regions = []
+                # Past the per-document budget the rest of the document is
+                # text-only (2026-10-17, class: BC-69).
+                if table_s > PDF_TABLE_EXTRACTION_BUDGET_S:
+                    if budget_tripped_at is None:
+                        budget_tripped_at = page_idx
+                        logger.info(
+                            "[FileProcessor] PDF table budget spent after %d/%d pages: %s",
+                            page_idx, total_pages, basename,
+                        )
+                    text = page.extract_text() or ''
+                    if text.strip():
+                        pages.append(text)
+                    continue
+
+                # Detect tables ONCE: the same Table objects give both the
+                # cell data and the bounding boxes (the old code ran detection
+                # twice on every page that had a table).
+                t0 = time.perf_counter()
+                found = page.find_tables() or []
+                tables = [t.extract() for t in found]
+                table_s += time.perf_counter() - t0
+                table_bboxes = [t.bbox for t in found]
 
                 for table_data in tables:
                     if not table_data or not any(table_data):
                         continue
+                    tables_found += 1
                     # Render as markdown table
                     rows = []
                     for row in table_data:
@@ -931,8 +962,6 @@ class FileProcessor:
                 # If tables were found, extract text outside table bounding boxes
                 if tables:
                     try:
-                        # Get table bounding boxes to exclude from text
-                        table_bboxes = [t.bbox for t in page.find_tables()]
                         filtered_page = page
                         for bbox in table_bboxes:
                             filtered_page = filtered_page.outside_bbox(bbox)
@@ -950,6 +979,11 @@ class FileProcessor:
                 if page_parts:
                     pages.append('\n\n'.join(page_parts))
 
+        logger.info(
+            "[FileProcessor] PDF extracted: %d pages, %.0f ms total, %.0f ms tables, %d tables",
+            total_pages, (time.perf_counter() - t_start) * 1000.0,
+            table_s * 1000.0, tables_found,
+        )
         if not pages:
             return f"[No text content extracted from {basename}]"
         return '\n\n'.join(pages)

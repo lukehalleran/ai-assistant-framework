@@ -108,6 +108,8 @@ def root_logger_restored():
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
     yield root
+    from utils.logging_utils import stop_logging_listener
+    stop_logging_listener()
     for h in list(root.handlers):
         if h not in handlers:
             try:
@@ -248,9 +250,8 @@ def test_frozen_default_debug_log_is_under_user_logs(frozen_home, monkeypatch, r
     monkeypatch.chdir(frozen_home.tmp)
     from utils.logging_utils import configure_logging
     configure_logging()
-    files = [h.baseFilename for h in root_logger_restored.handlers
-             if isinstance(h, logging.FileHandler)]
-    assert files == [os.path.join(frozen_home.user_dir, "logs", "daemon_debug.log")]
+    from utils.logging_utils import get_log_file_path
+    assert get_log_file_path() == os.path.join(frozen_home.user_dir, "logs", "daemon_debug.log")
     assert not (frozen_home.tmp / "daemon_debug.log").exists()
 
 
@@ -305,9 +306,8 @@ def test_dev_call_time_defaults_unchanged(monkeypatch, tmp_path, root_logger_res
         _dev("last_query_time.json"), _dev("active_days.json"), _dev("last_session_time.json"))
     assert str(ConversationLogger().log_dir) == "conversation_logs"
     configure_logging()
-    files = [h.baseFilename for h in root_logger_restored.handlers
-             if isinstance(h, logging.FileHandler)]
-    assert files == [str(tmp_path / "daemon_debug.log")]
+    from utils.logging_utils import get_log_file_path
+    assert get_log_file_path() == str(tmp_path / "daemon_debug.log")
 
 
 # ---------------------------------------------------------------- F2: splash
