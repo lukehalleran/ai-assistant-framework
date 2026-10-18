@@ -14,6 +14,8 @@ Contract:
 import re
 from typing import Dict, List
 
+from utils.temporal_resolver import anchor_temporal_references
+
 TRUNCATION_MARKER = " [...truncated]"
 
 
@@ -72,8 +74,13 @@ def drop_navigation_and_duplicate_chunks(results: List[Dict]) -> List[Dict]:
 class AgenticFormatter:
     """Pure formatting methods for agentic search results."""
 
-    def format_recent_conversations(self, conversations: List[Dict]) -> str:
-        """Format recent conversations for the prompt with citation markers."""
+    def format_recent_conversations(self, conversations: List[Dict], now=None) -> str:
+        """Format recent conversations for the prompt with citation markers.
+
+        Relative time words in a turn from an earlier day gain the absolute date
+        they meant (annotated BEFORE clipping, so a clip never separates a word
+        from its bracket). class: BC-100
+        """
         if not conversations:
             return ""
         lines = []
@@ -82,13 +89,16 @@ class AgenticFormatter:
             user_msg = conv.get('query', conv.get('user', ''))
             assistant_msg = conv.get('response', conv.get('assistant', ''))
             if user_msg:
+                user_msg = anchor_temporal_references(user_msg, ts, now)
                 lines.append(f"[MEM_RECENT_{i}] {ts}: User: {clip_text(user_msg, 500)}")
                 if assistant_msg:
+                    assistant_msg = anchor_temporal_references(assistant_msg, ts, now)
                     lines.append(f"   Daemon: {clip_text(assistant_msg, 500)}")
         return "\n".join(lines)
 
-    def format_memories(self, memories: List[Dict]) -> str:
-        """Format memories for the prompt with citation markers."""
+    def format_memories(self, memories: List[Dict], now=None) -> str:
+        """Format memories for the prompt with citation markers (time words
+        anchored to the day they were said, as in format_recent_conversations)."""
         if not memories:
             return ""
         lines = []
@@ -97,8 +107,10 @@ class AgenticFormatter:
             content = mem.get('content', mem.get('query', ''))
             response = mem.get('response', '')
             if content:
+                content = anchor_temporal_references(content, ts, now)
                 lines.append(f"[MEM_SEMANTIC_{i}] {ts}: {clip_text(content, 400)}")
                 if response:
+                    response = anchor_temporal_references(response, ts, now)
                     lines.append(f"   Response: {clip_text(response, 400)}")
         return "\n".join(lines)
 

@@ -67,6 +67,7 @@ from core.response_parser import ResponseParser
 from core.action_claim_guard import annotate_unverified_action_claim
 import utils.read_time_markers as read_time_markers
 import utils.time_manager as _time_manager
+from utils.temporal_resolver import anchor_temporal_references
 
 logger = get_logger("prompt_formatter")
 
@@ -661,6 +662,15 @@ class PromptFormatter:
                 meta = mem.get("metadata", {})
                 timestamp = meta.get("timestamp", "")
 
+            # Relative time words in a turn from an earlier day gain the absolute
+            # date they meant (annotate, never rewrite; before any clipping).
+            # class: BC-100
+            _now = datetime.now()
+            if query:
+                query = anchor_temporal_references(query, timestamp, _now)
+            if response:
+                response = anchor_temporal_references(response, timestamp, _now)
+
             # Format timestamp with relative day label to prevent temporal hallucinations
             from utils.time_manager import format_relative_timestamp
             if isinstance(timestamp, datetime):
@@ -700,7 +710,8 @@ class PromptFormatter:
                 # Fallback to content field if available
                 content = mem.get("content", "")
                 if content:
-                    content = _sanitize_embedded_headers(content)
+                    content = _sanitize_embedded_headers(
+                        anchor_temporal_references(content, timestamp, _now))
                     formatted_content = f"{datetime_str}: {content.strip()}"
                 else:
                     # Last resort - show memory id and basic info
@@ -1080,6 +1091,10 @@ class PromptFormatter:
                 ts = mem.get("timestamp", "")
                 if not ts:
                     ts = mem.get("metadata", {}).get("timestamp", "")
+
+                # Annotate recalled time words with the day they were said
+                # (before tags / SHARED header are added). class: BC-100
+                content = anchor_temporal_references(content, ts, datetime.now())
 
                 # Get tags
                 tags = mem.get("tags", [])
