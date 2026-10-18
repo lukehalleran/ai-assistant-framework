@@ -209,19 +209,20 @@ async def test_bad_reference_is_dropped_not_fatal_and_only_demotes():
     inexact = {"source_id": real_source, "quote": "not present"}
     unknown = {"source_id": "src_nope", "quote": "uploaded"}
     model = ScriptedModel({"claims": [
-        # contradicted needs no evidence: survives with its bad refs dropped
+        # contradicted with ONLY bad evidence: demoted too (2026-10-18 -- a
+        # verdict either way needs a surviving exact quote; same flag)
         {"text": "uploaded it", "status": "contradicted", "kind": "completion", "evidence": [inexact, unknown]},
         # supported with ONLY bad evidence: demoted, never kept as supported
         {"text": "You", "status": "supported", "kind": "discussion", "evidence": [inexact]},
     ]})
     result = await audit_personal_claims("You uploaded it.", evidence, model)
     assert result.status == "checked" and result.reason == "ok"
-    assert [c["status"] for c in result.claims] == ["contradicted", "insufficient"]
+    assert [c["status"] for c in result.claims] == ["insufficient", "insufficient"]
     assert result.claims[0]["evidence"] == []
     assert result.dropped_evidence_count == 3
-    assert result.demoted_count == 1
+    assert result.demoted_count == 2
     receipt = result.receipt()
-    assert receipt["dropped_evidence_count"] == 3 and receipt["demoted_count"] == 1
+    assert receipt["dropped_evidence_count"] == 3 and receipt["demoted_count"] == 2
     assert receipt["source_ids"] == []
 
 

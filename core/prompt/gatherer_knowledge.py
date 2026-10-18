@@ -920,7 +920,10 @@ class KnowledgeRetrievalMixin:
             return []
 
         # Skip the ~0.9s hybrid retrieval entirely when no uploads exist.
-        if not self._any_user_uploads_exist():
+        # BC-41 (2026-10-18): the cold probe is a Chroma .get(); on the first
+        # turn after a restart it waited 2.3 s on the loop behind another
+        # thread's Chroma read (Obsidian keyword search).
+        if not await asyncio.to_thread(self._any_user_uploads_exist):
             return []
 
         try:

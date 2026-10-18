@@ -4305,10 +4305,10 @@ What would you like to do?""")
     # ------------------------------------------------------------------
 
     def _format_recent_conversations(self, conversations):
-        return self._formatter.format_recent_conversations(conversations)
+        return self._formatter.format_recent_conversations(conversations, now=datetime.now())
 
     def _format_memories(self, memories):
-        return self._formatter.format_memories(memories)
+        return self._formatter.format_memories(memories, now=datetime.now())
 
     def _format_summaries(self, summaries):
         return self._formatter.format_summaries(summaries)

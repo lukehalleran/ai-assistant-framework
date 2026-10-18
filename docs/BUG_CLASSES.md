@@ -139,6 +139,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 | BC-97 | Non-specific provenance annotation | E | partial |
 | BC-98 | State flag set on one copy of a dual-stored record | D | partial |
 | BC-99 | Priority admission lets one unbounded section starve the rest | C | partial |
+| BC-100 | Content-relative time words read as now-relative | C | partial |
 
 ## A. Matching and routing (deterministic classifiers)
 
@@ -336,6 +337,13 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 - Find: `grep "Sections emptied by budget"` / `"BEFORE FINAL ASSEMBLY: memories count = 0"` over `daemon_debug*.log`; in code, any priority-sorted admission loop whose sections have no per-section cap.
 - Closure: share caps inside the first pass of `TokenManager._manage_token_budget` — `memory.prompt_recent_prior_session_max_share` (0.40, prior-session turns) and `memory.prompt_recent_max_share` (0.50, the whole section beyond the newest `prompt_min_recent_floor` turns); the session rule is formatter's `_detect_session_boundary` via `current_session_prefix_len`. Both at 1.0 reproduce the old behaviour. Tests: `tests/unit/test_token_manager_recent_share.py`.
 - Status: partial — recent_conversations only; no other section is unbounded today, and there is no guard against a new one.
+
+### BC-100 Content-relative time words read as now-relative
+- Mechanism: recalled text from an earlier day carries relative time words ("today", "tomorrow", "yesterday", "tonight") that were true relative to the day it was SAID. The renderer shows the item's timestamp but leaves the words bare, so a model writing on a later day copies them as if they were relative to NOW. Mirror of BC-96: there the stamp is wrong, here the text's own deixis is unanchored.
+- Incidents: 2026-10-18 14:04 (Sunday) reply to "what did we talk about with my homework yesterday" restated Saturday's "finish HW 6 by end of day today", "HW 7 is due today for them" and "skipping the questions until today" as Sunday facts; the 10-17 synthesized reply made the same slip.
+- Find: for every renderer of recalled text (conversations, memories, summaries, reflections, notes, profile facts), check that relative time words in the body are annotated with the item's date: `rg -n "anchor_temporal_references" core` lists the covered sites; a renderer of recalled text missing from that list is a candidate.
+- Closure: ONE annotate path, `utils.temporal_resolver.anchor_temporal_references(text, said_on, now)` (the same resolution code as `resolve_temporal_references`), applied at each render chokepoint BEFORE clipping: `AgenticFormatter.format_recent_conversations` / `format_memories`, `PromptFormatter` memory/conversation item renderers. Tests: `tests/unit/test_temporal_resolver_recalled_anchor.py`.
+- Status: partial — conversations and memories (agentic + base prompt); summaries, reflections, notes, profile facts, [LAST EXCHANGE FOR CONTEXT], [EARLIER TODAY], [THE USER'S OWN STATEMENTS] not covered; "last night"/"this morning" not resolved.
 
 ### BC-25 Downstream consumer blind to gathered evidence
 - Mechanism: a planner digest, verifier, reuse gate or parallel task gets a narrower or different view than the answering model (hard-coded key lists; parallel context forks).

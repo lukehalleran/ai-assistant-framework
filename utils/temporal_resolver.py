@@ -37,6 +37,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
+from utils.date_coerce import to_naive_local
 from utils.logging_utils import get_logger
 
 logger = get_logger("temporal_resolver")
@@ -82,6 +83,12 @@ def _fmt(dt: datetime) -> str:
     return dt.strftime("%a %Y-%m-%d")
 
 
+# An annotation this module already appended (idempotence guard for annotate mode).
+_ANCHOR_BRACKET_AHEAD = (
+    r'(?!\s*\[(?:week of )?(?:[A-Z][a-z]{2} \d{4}-\d{2}-\d{2}|[A-Z][a-z]+ \d{4})\])'
+)
+
+
 def resolve_temporal_references(text: str,
                                 reference_date: Optional[datetime] = None) -> str:
     """
@@ -98,6 +105,48 @@ def resolve_temporal_references(text: str,
         Text with relative references replaced by absolute dates.
         If no temporal references found, returns text unchanged.
     """
+    return _resolve(text, reference_date, annotate=False)
+
+
+def anchor_temporal_references(text: str, said_on,
+                               now: Optional[datetime] = None) -> str:
+    """Annotate (never rewrite) the relative time words of RECALLED text.
+
+    A stored turn said "finish HW 6 by end of day today" on a Saturday; read
+    on Sunday the words stay but gain the date they meant:
+    ``by end of day today [Sat 2026-10-17]``. Same-day text, text with no
+    parseable ``said_on`` and text with nothing to anchor come back
+    unchanged. One resolution code path (``_resolve``) decides what each
+    expression means; annotate mode only changes how it is emitted.
+    ``said_on`` may be a datetime or an ISO-ish string (see ``parse_said_on``).
+    class: BC-100 (content-relative time words read as now-relative)
+    """
+    if not text or not has_temporal_reference(text):
+        return text
+    said_on = parse_said_on(said_on)
+    if said_on is None:
+        return text
+    if now is None:
+        now = datetime.now()
+    if said_on.date() >= now.date():
+        return text
+    return _resolve(text, said_on, annotate=True)
+
+
+def parse_said_on(value) -> Optional[datetime]:
+    """Best-effort parse of a stored item's timestamp; None when unparseable."""
+    if isinstance(value, datetime):
+        return to_naive_local(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return to_naive_local(
+                datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve(text: str, reference_date: Optional[datetime], annotate: bool) -> str:
     if not text or not has_temporal_reference(text):
         return text
 
@@ -106,6 +155,15 @@ def resolve_temporal_references(text: str,
 
     ref = reference_date.replace(hour=0, minute=0, second=0, microsecond=0)
     result = text
+    guard = _ANCHOR_BRACKET_AHEAD if annotate else ''
+
+    def _sub(pattern, render, string):
+        """re.sub where ``render(match)`` is the absolute form; annotate mode
+        keeps the original words and appends it in brackets."""
+        def _r(m):
+            absolute = render(m)
+            return f"{m.group(0)} [{absolute}]" if annotate else absolute
+        return re.sub(pattern + guard, _r, string, flags=re.IGNORECASE)
 
     # --- Order matters: resolve "tomorrow" before "the following day" ---
 
@@ -114,7 +172,7 @@ def resolve_temporal_references(text: str,
     # "tomorrow"
     if has_tomorrow:
         target = ref + timedelta(days=1)
-        result = re.sub(r'\btomorrow\b', _fmt(target), result, flags=re.IGNORECASE)
+        result = _sub(r'\btomorrow\b', lambda m: _fmt(target), result)
 
     # "the following day" / "the day after"  —  contextual:
     #   if "tomorrow" was present → day after tomorrow (+2)
@@ -123,52 +181,44 @@ def resolve_temporal_references(text: str,
        re.search(r'\bthe\s+day\s+after\b', result, re.IGNORECASE):
         offset = 2 if has_tomorrow else 1
         target = ref + timedelta(days=offset)
-        result = re.sub(r'\bthe\s+following\s+day\b', _fmt(target), result, flags=re.IGNORECASE)
-        result = re.sub(r'\bthe\s+day\s+after\b', _fmt(target), result, flags=re.IGNORECASE)
+        result = _sub(r'\bthe\s+following\s+day\b', lambda m: _fmt(target), result)
+        result = _sub(r'\bthe\s+day\s+after\b', lambda m: _fmt(target), result)
 
     # "today" / "tonight"
-    result = re.sub(r'\b(?:today|tonight)\b', _fmt(ref), result, flags=re.IGNORECASE)
+    result = _sub(r'\b(?:today|tonight)\b', lambda m: _fmt(ref), result)
 
     # "yesterday"
     if re.search(r'\byesterday\b', result, re.IGNORECASE):
         target = ref - timedelta(days=1)
-        result = re.sub(r'\byesterday\b', _fmt(target), result, flags=re.IGNORECASE)
+        result = _sub(r'\byesterday\b', lambda m: _fmt(target), result)
 
     # "next [day_name]"
-    def _replace_next_day(match):
+    def _next_day(match):
         day_str = match.group(1).lower()
-        if day_str in DAY_NAMES:
-            target = _next_weekday(ref, DAY_NAMES[day_str])
-            return _fmt(target)
-        return match.group(0)
+        return _fmt(_next_weekday(ref, DAY_NAMES[day_str]))
 
     day_names_pattern = '|'.join(DAY_NAMES.keys())
-    result = re.sub(
-        rf'\bnext\s+({day_names_pattern})\b',
-        _replace_next_day, result, flags=re.IGNORECASE
-    )
+    result = _sub(rf'\bnext\s+({day_names_pattern})\b', _next_day, result)
 
     # "next week"
     if re.search(r'\bnext\s+week\b', result, re.IGNORECASE):
         target = ref + timedelta(days=7)
-        result = re.sub(r'\bnext\s+week\b', f"week of {_fmt(target)}", result, flags=re.IGNORECASE)
+        result = _sub(r'\bnext\s+week\b',
+                      lambda m: f"week of {_fmt(target)}", result)
 
     # "next month"
     if re.search(r'\bnext\s+month\b', result, re.IGNORECASE):
         # Approximate: +30 days
         target = ref + timedelta(days=30)
-        result = re.sub(r'\bnext\s+month\b', target.strftime("%B %Y"), result, flags=re.IGNORECASE)
+        result = _sub(r'\bnext\s+month\b',
+                      lambda m: target.strftime("%B %Y"), result)
 
-    # "in N days"
-    def _replace_in_n_days(match):
-        n = int(match.group(1))
-        target = ref + timedelta(days=n)
-        return _fmt(target)
+    # "in N days" / "N days from now"
+    def _in_n_days(match):
+        return _fmt(ref + timedelta(days=int(match.group(1))))
 
-    result = re.sub(r'\bin\s+(\d+)\s+days?\b', _replace_in_n_days, result, flags=re.IGNORECASE)
-
-    # "N days from now"
-    result = re.sub(r'\b(\d+)\s+days?\s+from\s+now\b', _replace_in_n_days, result, flags=re.IGNORECASE)
+    result = _sub(r'\bin\s+(\d+)\s+days?\b', _in_n_days, result)
+    result = _sub(r'\b(\d+)\s+days?\s+from\s+now\b', _in_n_days, result)
 
     if result != text:
         logger.debug(f"[TemporalResolver] Resolved: '{text}' → '{result}'")
