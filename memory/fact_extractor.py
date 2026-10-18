@@ -139,6 +139,58 @@ def _relation_allows_adj(rel: str) -> bool:
         return True
     return False
 
+# --- Interrogative / prepositional-state filters (2026-10-17, class BC-06) ---
+# Closed grammatical categories (wh-words, auxiliaries, subject pronouns,
+# prepositions), not vocabulary from any incident.
+_WH_WORDS = frozenset({"what", "why", "how", "when", "where", "who", "whom", "whose", "which"})
+_AUX_WORDS = frozenset({
+    "is", "are", "was", "were", "am", "do", "does", "did", "have", "has", "had",
+    "can", "could", "will", "would", "should", "shall", "may", "might", "must",
+    "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't",
+    "haven't", "hasn't", "hadn't", "can't", "couldn't", "won't", "wouldn't",
+    "shouldn't", "shan't", "mightn't", "mustn't",
+})
+_SUBJECT_PRONOUNS = frozenset({"i", "you", "we", "he", "she", "they", "it"})
+# Degree adverbs allowed between a wh-word and its auxiliary (plus any "-ly" token).
+_WH_DEGREE_ADVERBS = frozenset({"exactly", "really", "even", "else"})
+# A copular object that opens with one of these is a location/state ("am on X").
+_STATE_PREPOSITIONS = frozenset({
+    "on", "in", "at", "with", "from", "by", "for", "to", "about", "into", "onto",
+    "under", "over", "near", "inside", "outside", "behind", "between", "through",
+    "during", "without", "within", "off", "out", "of", "like",
+})
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(line: str) -> List[str]:
+    """Deterministic split on ./!/? followed by whitespace."""
+    return [p.strip() for p in _SENTENCE_SPLIT_RE.split(line or "") if p.strip()]
+
+
+def _is_interrogative(sentence: str) -> bool:
+    """True for a question: ends in '?', opens wh-word [+ one adverb] + auxiliary,
+    or opens auxiliary + subject pronoun. 'What I need is a break' is not."""
+    s = (sentence or "").strip()
+    if not s:
+        return False
+    if s.rstrip("\"')]}\u201d\u2019 ").endswith("?"):
+        return True
+    toks = [t.strip(",;:\"()[]\u201c\u201d").lower().replace("\u2019", "'") for t in s.split()]
+    toks = [t for t in toks if t]
+    if not toks:
+        return False
+    if toks[0] in _WH_WORDS and len(toks) > 1:
+        i = 1
+        if toks[i] not in _AUX_WORDS and len(toks) > 2 and (
+            toks[i].endswith("ly") or toks[i] in _WH_DEGREE_ADVERBS
+        ):
+            i = 2
+        return toks[i] in _AUX_WORDS
+    if toks[0] in _AUX_WORDS and len(toks) > 1:
+        return toks[1] in _SUBJECT_PRONOUNS
+    return False
+
+
 def _is_clause_like(text: str) -> bool:
     """Heuristic: object looks like a clause (infinitive/gerund/passive-pp + prep)."""
     t = (text or "").strip().lower()
@@ -1497,7 +1549,15 @@ class FactExtractor:
                 return ln.split(":", 1)[1].strip()
             return ln
 
-        norm_lines = [strip_prefix(ln) for ln in lines]
+        # Sentence-level filter (BC-06): a QUESTION asserts nothing, so no pattern
+        # family may mine one. Only the question sentences are removed; the rest
+        # of the line is rejoined, so non-question text reaches every family
+        # unchanged (abbreviations like "Mon. Wed." are never split apart).
+        norm_lines = []
+        for ln in lines:
+            kept = [s2 for s2 in _split_sentences(strip_prefix(ln)) if not _is_interrogative(s2)]
+            if kept:
+                norm_lines.append(" ".join(kept))
 
         # 1) Generic patterns
         for pi, pattern in enumerate(self.fact_patterns):
@@ -1529,6 +1589,14 @@ class FactExtractor:
                     obj = (obj if isinstance(obj, str) else str(obj)).strip()
                     # If rel came from attribute phrase, normalize to underscored
                     rel = re.sub(r"\s+", "_", (rel or "").strip().lower())
+
+                    # "<subject> am/is ON|IN|AT ... X" is a location/state, not an
+                    # identity. Checked on the RAW object, before _clean_triple trims
+                    # "on linux rn" down to "linux".
+                    _obj_head = (obj.split(None, 1) or [""])[0].lower()
+                    if pi == 0 and _obj_head in _STATE_PREPOSITIONS:
+                        logger.debug(f"[FactExtractor] Regex dropped prepositional state: obj='{obj}'")
+                        continue
 
                     # Map 1st‑person to stable subject
                     if subj.lower() in {"i", "me", "my", "we", "us"}:
