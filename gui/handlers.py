@@ -691,6 +691,13 @@ def _build_agentic_answer_call_extra(orchestrator, model_name) -> dict:
         return {}
 
 
+def _gate_trigger_source(gate_decision) -> str:
+    """The gate arm that triggered this turn (AgenticDecision.trigger_source),
+    "" when untriggered/unknown. Only a real string passes (mock-safe)."""
+    value = getattr(gate_decision, "trigger_source", "") if gate_decision is not None else ""
+    return value if isinstance(value, str) else ""
+
+
 def _gate_debug_summary(gate_decision) -> str:
     """One-line 'why this turn routed as it did' for the debug record — the
     gate's trigger modes / veto reason + veto-exempt/deferred flags. Added
@@ -725,7 +732,7 @@ def _build_debug_record(
     prompt_tokens, system_tokens, total_tokens,
     citations, orchestrator, provenance=None,
     phase_timings=None, task_timings=None, section_outcomes=None, gather_elapsed=0.0,
-    gate_reason=None, extra=None,
+    gate_reason=None, extra=None, gate_trigger_source=None,
 ):
     """Build a debug record dict for the Debug Trace tab.
 
@@ -785,6 +792,8 @@ def _build_debug_record(
         'gather_elapsed': round(gather_elapsed, 3) if gather_elapsed else 0.0,
         'loop_stalls': list(getattr(orchestrator, '_last_loop_stalls', None) or []),
         'gate_reason': gate_reason or '',
+        # Which gate arm triggered (AgenticDecision.trigger_source; "" = none).
+        'gate_trigger_source': gate_trigger_source or '',
         'response_plan': plan_audit,
     }
     if extra:
@@ -1630,6 +1639,7 @@ async def _run_raw(ctx):
         prompt_tokens=_raw_ptok, system_tokens=0, total_tokens=_raw_ttok,
         citations=[], orchestrator=orchestrator,
         gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+        gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
     )
     yield {"role": "assistant", "content": response_text, "debug": debug_record}
     ctx.handled = True
@@ -1736,6 +1746,7 @@ async def _run_duel(ctx, gens, sels, features_duel):
             citations=citations, orchestrator=orchestrator,
             provenance=_duel_prov,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
         )
 
         # F13c-2b: set before the yield so a later storage-failure receipt can reach it.
@@ -2147,6 +2158,7 @@ async def _run_doc_generation(ctx):
             total_tokens=int(getattr(_doc_result, 'total_tokens', 0) or 0),
             citations=[], orchestrator=orchestrator,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
             extra={"storage_failed": label} if label else None,
         )
         yield {"role": "assistant", "content": _doc_response, "debug": debug_record}
@@ -2854,6 +2866,7 @@ async def _run_insight_mode(ctx):
             total_tokens=total_tokens, citations=[], orchestrator=orchestrator,
             provenance=_prov,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
             phase_timings={**_insight_timings, "total_wall": _time.monotonic() - _insight_started},
         )
         # F13c-2b: set before the yield so a later storage-failure receipt can reach it.
@@ -3004,6 +3017,7 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
         prompt_tokens=0, system_tokens=0, total_tokens=0,
         citations=[], orchestrator=orchestrator,
         gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+        gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
         extra={"storage_failed": label} if label else None,
     )
     yield {"role": "assistant", "content": _resp, "debug": debug_record}
@@ -4924,6 +4938,7 @@ async def _run_agentic_search(ctx):
             section_outcomes=_agentic_sections,
             gather_elapsed=_agentic_gather,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
             extra=_build_agentic_answer_call_extra(orchestrator, model_name),
         )
         # Yield final response with debug record (response was already streamed
@@ -5691,6 +5706,7 @@ async def _run_enhanced(ctx):
             task_timings=_task_timings, section_outcomes=_section_outcomes,
             gather_elapsed=_gather_elapsed,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
+            gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
         )
         _enh_final_chunk = {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
         if _enh_pending_action_id:
@@ -6635,6 +6651,7 @@ async def _handle_submit_inner(
             "gate_triggered": bool(should_use_agentic),
             "gate_modes": list(_gate_decision.modes or []),
             "gate_reason": getattr(_gate_decision, "reason", ""),
+            "gate_trigger_source": _gate_trigger_source(_gate_decision),
         })
 
         # Tone-deferred request (2026-08-21): a tone arm stood the gate down

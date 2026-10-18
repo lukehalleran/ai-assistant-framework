@@ -32,7 +32,8 @@ Typical record fields (all optional — record what the turn produced):
   (2026-10-09 decision-model receipts, BC-72: labels and numbers only — flat
   scalars built by utils.emotional_context.tone_receipt_fields; no message text),
   is_small_talk, plan_points, plan_tone, response_plan, gate_triggered, gate_modes,
-  gate_reason, mode (enhanced|agentic-search|best-of-duel|...),
+  gate_reason, gate_trigger_source (2026-10-17: which gate arm fired; closed vocabulary
+  core.agentic.gate.TRIGGER_SOURCES), mode (enhanced|agentic-search|best-of-duel|...),
   web_trigger_should_search, web_trigger_source, web_trigger_reason,
   web_trigger_confidence, web_results_n, web_error, web_budget_remaining,
   web_evidence (requested/blocked/acquired/fetched — utils.web_evidence_receipt),

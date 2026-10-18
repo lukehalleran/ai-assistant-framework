@@ -1544,6 +1544,18 @@ class ModelManager:
 
                 response = await self.async_client.chat.completions.create(**request_params)
 
+                # Usage line for tool-mode calls (2026-10-17, lane AGT): the
+                # agentic decision/tool rounds were the only LLM calls with no
+                # [PromptCache] accounting, so a loop's cost was unattributable.
+                try:
+                    self._log_cache_usage(
+                        getattr(response, "usage", None),
+                        model_name=target_model,
+                        where="agentic_tools",
+                    )
+                except Exception:  # degrades: agentic tool-round usage line not logged
+                    pass
+
                 # Return the message object (has content and tool_calls)
                 return response.choices[0].message
 

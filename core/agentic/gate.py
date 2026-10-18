@@ -193,6 +193,48 @@ class AgenticDecision:
     # tool via tool_choice/tools_override (native) or an XML marker
     # directive (XML) — see run_agentic_search's round loop.
     tool_continuation: Optional[Dict[str, Any]] = None
+    # WHICH gate path decided to trigger (2026-10-17, lane AGT, BC-72): a
+    # value from TRIGGER_SOURCES, "" when the decision did not trigger. The
+    # free-text ``reason`` ("triggered: memory") names the mode, not the
+    # tier/arm, so 126 agentic turns since 09-30 (115 of which called no tool)
+    # could not be attributed to the arm that started the loop. First arm to
+    # set a trigger flag wins; ``reason`` strings are unchanged.
+    trigger_source: str = ""
+
+
+# Closed vocabulary for AgenticDecision.trigger_source (every trigger path in
+# evaluate_agentic_gate has exactly one; "" = not triggered).
+TRIGGER_SOURCES = (
+    "deferred_affirmation",      # terse yes after a tone-deferred request
+    "insight_offer_affirmation", # terse yes to the one-shot insight offer
+    "offer_affirmation",         # yes to a prior-turn action offer
+    "clarification_answer",      # answer to a forced-round clarifying question
+    "tool_thread_continuation",  # follow-up to the prior turn's read tool call
+    "insight_detect",            # deterministic insight-mode request
+    "insight_pattern_llm",       # LLM-classified pattern-deliberation intent
+    "tier1_computation",
+    "tier1_memory",
+    "tier1_knowledge",
+    "tier1_url",
+    "tier1_web_keyword",
+    "tier1_fresh_public",
+    "tier1_bare_lookup",
+    "tier1_tool_keyword",
+    "tier1_action",              # registry-backed explicit write action
+    "tier1_email",
+    "tier1_file",                # file/doc keyword, pattern, or personal-doc search
+    "tier2_entity_recall",
+    "continuation_request",      # request-shaped follow-up of an agentic turn
+    "continuation_file",         # pronoun/affirmation file-retrieval follow-up
+    "tier3_doc_gen",
+    "tier3_self_note",
+    "tier3_note_save",
+    "tier4_llm_web",
+    "tier4_llm_memory",
+    "tier4_llm_knowledge",
+    "tier4_llm_docgen",
+    "tier4_llm_email",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -849,6 +891,7 @@ async def evaluate_agentic_gate(
                     else:
                         _redo.modes = ["memory"]
                         _redo.web_evidence_blocked = _redo.web_evidence_blocked or _redo_block
+            _redo.trigger_source = "deferred_affirmation"
             _redo.reason = (
                 f"deferred-request affirmation: '{_deferred_query[:80]}' "
                 f"({_redo.reason or 'triggered'})"
@@ -877,6 +920,7 @@ async def evaluate_agentic_gate(
                 should_trigger=True,
                 modes=["insight"],
                 reason=f"insight-offer affirmation: '{_offered_insight[:80]}'",
+                trigger_source="insight_offer_affirmation",
                 veto_exempt=True,
                 insight_intent={
                     "kind": "insight_assessment",
@@ -959,6 +1003,10 @@ async def evaluate_agentic_gate(
             veto_exempt=True,
             forced_action=_offer_action,
             reason=_offer_reason,
+            trigger_source=(
+                "clarification_answer" if _offer_is_clarification
+                else "offer_affirmation"
+            ),
         )
 
     # ── Tool-thread continuation (2026-09-27, BC-58, BC-74, BC-04, BC-15) ─
@@ -986,6 +1034,7 @@ async def evaluate_agentic_gate(
             veto_exempt=True,
             tool_continuation=_tool_continuation,
             reason="tool-thread continuation",
+            trigger_source="tool_thread_continuation",
         )
 
     modes: List[str] = []
@@ -1000,10 +1049,21 @@ async def evaluate_agentic_gate(
     needs_web_search = False
     needs_tools = False
 
+    # trigger_source bookkeeping (2026-10-17): the FIRST arm to set a trigger
+    # flag names the decision's source. Pure observability — never read by
+    # any routing branch.
+    _trigger_sources: List[str] = []
+
+    def _mark(source: str) -> None:
+        if source not in _trigger_sources:
+            _trigger_sources.append(source)
+
     # ── Tier 1: Keyword heuristics (instant, no LLM) ─────────────────
     # Negation-aware (2026-09-04): "I'm not asking you to calculate it" must
     # not force computation mode just because 'calculate' appears.
     needs_computation = _tier1_keyword_hit(user_text, _COMPUTATION_HIT)
+    if needs_computation:
+        _mark("tier1_computation")
 
     # Personal-document search (2026-08-29): "please search for documents
     # related to the ABC class I am currently enrolled in" hit the WEB
@@ -1028,6 +1088,7 @@ async def evaluate_agentic_gate(
     _keyword_web = _tier1_keyword_hit(user_text, _WEB_SEARCH_HIT) and not _personal_doc_search
     if _has_url:
         needs_web_search = True
+        _mark("tier1_url")
         logger.debug("[Agentic Gate] Tier 1: URL detected")
 
     # Clear dated public-event questions must not depend on the optional
@@ -1049,6 +1110,7 @@ async def evaluate_agentic_gate(
                 f"cannot run ({_web_block}) — web arm not routed")
         else:
             needs_web_search = True
+            _mark("tier1_fresh_public" if _fresh_public else "tier1_web_keyword")
             if _fresh_public:
                 search_terms = [user_text]
                 logger.debug("[Agentic Gate] Tier 1: fresh public evidence required")
@@ -1062,15 +1124,18 @@ async def evaluate_agentic_gate(
             and paid_search_block_reason() is None
             and _build_recent_context(corpus_manager)):
         needs_web_search = True
+        _mark("tier1_bare_lookup")
         logger.debug("[Agentic Gate] Tier 1: bare lookup imperative on prior exchange")
 
     if _tier1_keyword_hit(user_text, _TOOL_HIT):
         needs_tools = True
+        _mark("tier1_tool_keyword")
         # Log the trigger — this arm fired SILENTLY for months; the 09-01
         # 'actions' misfire took three probes to attribute because of it.
         logger.debug("[Agentic Gate] Tier 1: tool keyword detected")
     if _explicit_action is not None:
         needs_tools = True
+        _mark("tier1_action")
         try:
             from core.actions.registry import is_amendment_cue
             if is_amendment_cue(user_text):
@@ -1095,6 +1160,7 @@ async def evaluate_agentic_gate(
         _has_email_addr = bool(_re_gate.search(r'\S+@\S+\.\S+', user_text))
         if _has_email_addr and any(w in _lower for w in ('email', 'send', 'message', 'write', 'mail', 'contact')):
             needs_tools = True
+            _mark("tier1_email")
 
     # Email-by-name patterns: "email Maren", "send Maren an email", "email her about X"
     if not needs_tools and _email_action_plausible:
@@ -1109,6 +1175,7 @@ async def evaluate_agentic_gate(
               and _hit_non_negated(_lower, _EMAIL_INTENT_VERB_HIT)):
             needs_tools = True
         if needs_tools:
+            _mark("tier1_email")
             logger.debug("[Agentic Gate] Tier 1: email-by-name intent detected")
 
     # Email search intent (narrow Tier-1 arm, under-fires by design):
@@ -1129,9 +1196,11 @@ async def evaluate_agentic_gate(
             and _is_info_seeking(user_text)
             and len(_words) <= 30):
         needs_tools = True
+        _mark("tier1_email")
         logger.debug("[Agentic Gate] Tier 1: email search intent detected (narrow: cue+info-seeking+terse)")
     elif not needs_tools and _email_search_cue and _email_read_request_clause(user_text):
         needs_tools = True
+        _mark("tier1_email")
         logger.debug("[Agentic Gate] Tier 1: email search intent detected (clause-level read request in a longer message)")
 
     # File / saved-document retrieval intent → route to agentic so file_read /
@@ -1166,13 +1235,18 @@ async def evaluate_agentic_gate(
     )
     if needs_files:
         needs_tools = True
+        _mark("tier1_file")
         logger.debug("[Agentic Gate] Tier 1: file/document access intent detected")
 
     needs_memory = _tier1_keyword_hit(user_text, _MEMORY_HIT)
+    if needs_memory:
+        _mark("tier1_memory")
 
     # Knowledge keywords require 4+ words and no computation trigger
     if len(_words) >= 4 and not needs_computation:
         needs_knowledge = _tier1_keyword_hit(user_text, _KNOWLEDGE_HIT)
+        if needs_knowledge:
+            _mark("tier1_knowledge")
 
     # ── Tier 2: Entity match (instant, no LLM) ───────────────────────
     # 2026-08-29 live-session hardening (three agentic loops on emotional
@@ -1202,6 +1276,7 @@ async def evaluate_agentic_gate(
                 )
                 if _has_recall_signal:
                     needs_memory = True
+                    _mark("tier2_entity_recall")
                     logger.debug(
                         f"[Agentic Gate] Tier 2: entity {matched_entities} + recall signal"
                     )
@@ -1272,6 +1347,7 @@ async def evaluate_agentic_gate(
                             # session gets the tool loop directly — Tier 4's
                             # web-trigger LLM has no repo/file channel.
                             needs_tools = True
+                            _mark("continuation_request")
                         logger.debug(
                             f"[Agentic Gate] Continuation after agentic-intent turn — "
                             f"overriding casual skip (query_signals={_prev_had_signals}, "
@@ -1339,6 +1415,7 @@ async def evaluate_agentic_gate(
                             or (_is_affirmation and _prev_offered_file)):
                         needs_files = True
                         needs_tools = True
+                        _mark("continuation_file")
                         logger.debug(
                             "[Agentic Gate] File retrieval continuation — routing to tools"
                         )
@@ -1368,6 +1445,7 @@ async def evaluate_agentic_gate(
                     should_trigger=True,
                     modes=["insight"],
                     reason=f"insight-mode: {_insight.kind}",
+                    trigger_source="insight_detect",
                     veto_exempt=True,
                     insight_intent=_insight.model_dump(),
                 )
@@ -1411,6 +1489,7 @@ async def evaluate_agentic_gate(
                         should_trigger=True,
                         modes=["insight"],
                         reason="insight-mode: pattern_temporal (LLM-classified)",
+                        trigger_source="insight_pattern_llm",
                         veto_exempt=True,
                         insight_intent={
                             "kind": "pattern_temporal",
@@ -1433,6 +1512,7 @@ async def evaluate_agentic_gate(
         if doc_gen_intent:
             logger.warning(f"[Agentic Gate] Document generation detected: {doc_gen_intent}")
             needs_tools = True
+            _mark("tier3_doc_gen")
     except Exception as e:
         logger.warning(f"[Agentic Gate] Document intent check failed: {e}")
         import traceback
@@ -1444,6 +1524,7 @@ async def evaluate_agentic_gate(
         if self_note_intent:
             logger.warning(f"[Agentic Gate] Self-note detected: {self_note_intent}")
             needs_tools = True
+            _mark("tier3_self_note")
     except Exception as e:  # degrades: self-note intent not detected this turn
         logger.debug(f"[Agentic Gate] Self-note intent check failed: {e}")
 
@@ -1462,6 +1543,7 @@ async def evaluate_agentic_gate(
         if is_note_save_request(user_text):
             _note_save_request = True
             needs_tools = True
+            _mark("tier3_note_save")
             logger.debug("[Agentic Gate] Tier 1: note-save request detected")
 
     # ── Decision: skip, keyword trigger, or LLM fallback ─────────────
@@ -1505,6 +1587,7 @@ async def evaluate_agentic_gate(
                         should_trigger=True,
                         modes=["insight"],
                         reason="insight-mode: pattern_temporal (LLM-classified)",
+                        trigger_source="insight_pattern_llm",
                         veto_exempt=True,
                         insight_intent={
                             "kind": "pattern_temporal",
@@ -1542,6 +1625,7 @@ async def evaluate_agentic_gate(
                 # loop.
                 if should_trigger is True:
                     needs_web_search = True
+                    _mark("tier4_llm_web")
 
                 if getattr(trigger_decision, 'needs_memory_search', False):
                     # Deterministic backstop (2026-09-06, generalized 2026-09-08
@@ -1586,6 +1670,7 @@ async def evaluate_agentic_gate(
                         logger.debug("[Agentic Gate] LLM detected memory search intent")
                         should_trigger = True
                         needs_memory = True
+                        _mark("tier4_llm_memory")
                         search_terms = []
                 elif getattr(trigger_decision, 'needs_knowledge_search', False):
                     # Deterministic backstop: honor knowledge search only when the
@@ -1598,6 +1683,7 @@ async def evaluate_agentic_gate(
                             logger.debug("[Agentic Gate] LLM detected knowledge search intent")
                             should_trigger = True
                         needs_knowledge = True
+                        _mark("tier4_llm_knowledge")
                         search_terms = []
                     else:
                         logger.debug(
@@ -1609,6 +1695,7 @@ async def evaluate_agentic_gate(
                     logger.info("[Agentic Gate] LLM detected document generation intent")
                     should_trigger = True
                     needs_tools = True
+                    _mark("tier4_llm_docgen")
                     search_terms = []
                     doc_gen_intent = {
                         "topic": getattr(trigger_decision, 'document_topic', '') or user_text,
@@ -1643,6 +1730,7 @@ async def evaluate_agentic_gate(
                         logger.info("[Agentic Gate] LLM detected email search intent")
                         should_trigger = True
                         needs_tools = True
+                        _mark("tier4_llm_email")
                         search_terms = []
                     else:
                         logger.debug(
@@ -1748,6 +1836,10 @@ async def evaluate_agentic_gate(
         veto_exempt_url_only=_veto_exempt_url_only,
         forced_action=(_explicit_action.value if _explicit_action is not None else None),
         web_evidence_blocked=_web_block,
+        trigger_source=(
+            (_trigger_sources[0] if _trigger_sources else "")
+            if should_trigger else ""
+        ),
     )
 
     # Intent veto — applied here when intent_info was available at call time.
@@ -2610,6 +2702,7 @@ def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
         decision.should_trigger = False
         decision.search_terms = []
         decision.reason = _veto_reason
+        decision.trigger_source = ""  # vetoed: not triggered (invariant: "" iff not triggered)
         # Visible deferral (2026-08-21): a TONE arm declining a REQUEST-shaped
         # (non-vent) query must not fail silently — mark the decision so
         # handlers tell the model to acknowledge + offer, and arm the one-shot
