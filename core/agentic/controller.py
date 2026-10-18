@@ -2827,6 +2827,14 @@ class AgenticSearchController:
         # "nothing was retrieved". TokenManager records the names it emptied.
         # An emptied key the final prompt would render still blocks (the
         # decision block could not have rendered it either).
+        # 2026-10-18 (live, after #88): once the decision prompt carries the
+        # evidence block, an emptied key no longer blocks: the final prompt
+        # renders the same post-budget initial_context, so synthesis cannot
+        # see the emptied section either and a second call adds nothing (an
+        # emptied 1-item semantic_summaries refused reuse on a memory turn).
+        # Without a block (nothing rendered), the 10-08 rule stands.
+        if session is not None and getattr(session, "decision_evidence_block", ""):
+            return None
         emptied = self._budget_emptied_keys(initial_context)
         for key in self._RETRIEVAL_EVIDENCE_KEYS:
             if key == "web_search_results" and seeded_web:
