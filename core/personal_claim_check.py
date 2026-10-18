@@ -639,9 +639,10 @@ def _validate_claims(
 
     Returns ``(claims, counts, drop_reasons)``. A claim that is not an exact
     response span (or is malformed/duplicated) is dropped and counted; a bad
-    evidence reference is dropped and counted; a ``supported`` claim left
-    without evidence -- or a completion-kind claim without USER-role evidence
-    -- is demoted to ``insufficient`` and counted. Nothing is ever promoted.
+    evidence reference is dropped and counted; a ``supported`` or
+    ``contradicted`` claim left without evidence -- or a supported
+    completion-kind claim without USER-role evidence -- is demoted to
+    ``insufficient`` and counted. Nothing is ever promoted.
     """
     sources: dict[str, list[Mapping[str, Any]]] = {}
     for row in evidence:
@@ -710,7 +711,13 @@ def _validate_claims(
         checked_refs = _checked_references(raw_claim["evidence"], sources, ref_drops)
         counts["dropped_evidence"] += len(ref_drops)
         drops.extend(ref_drops)
-        if status == "supported" and not checked_refs:
+        if status in ("supported", "contradicted") and not checked_refs:
+            # A verdict either way needs a surviving exact quote. A
+            # "contradicted" with none stayed contradicted until 2026-10-18
+            # (live: 5 recall claims contradicted, 0 demoted, their quotes
+            # dropped as inexact; a replay of the same draft returned all
+            # 5 "supported"). Same flag either way; the receipt now tells
+            # the truth about what the evidence showed.
             status = "insufficient"
             counts["demoted"] += 1
         elif status == "supported" and _is_completion_kind(kind):
