@@ -36,6 +36,7 @@ from typing import Dict, List, Optional, Any
 from utils.logging_utils import get_logger
 import utils.read_time_markers as read_time_markers
 from .formatter import _dedupe_keep_order, _sanitize_embedded_headers
+from .token_manager import drop_prior_session_test_turns
 
 logger = get_logger("prompt_hygiene")
 
@@ -275,9 +276,9 @@ class ContentHygiene:
                     break
 
                 # Get more recent conversations from corpus
-                all_recent = corpus_manager.get_recent_memories(
+                all_recent = drop_prior_session_test_turns(corpus_manager.get_recent_memories(
                     count=offset + batch_size
-                )
+                ))
 
                 # Slice to get only the new batch
                 if len(all_recent) <= offset:

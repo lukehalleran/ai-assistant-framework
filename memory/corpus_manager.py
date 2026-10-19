@@ -260,8 +260,13 @@ class CorpusManager:
 
         Summaries, reflections, notes, narrative, threads, skills and facts:
         ``visible_entries()`` minus owner ``[test]...[/test]`` probes. A probe
-        must never become a daily note, summary or narrative. Retrieval keeps
-        using ``visible_entries()`` so an in-session probe can test recall.
+        must never become a daily note, summary or narrative. RETRIEVAL no longer
+        keeps probes either (2026-10-18, superseding the 10-16 rule): a probe's
+        stored reply was recalled and copied by every later probe. Retrieval and
+        recall evidence drop them via ``memory.utils.is_test_conversation_doc`` /
+        ``search_keyword``; only the CURRENT session's probes stay in
+        [RECENT CONVERSATION] (``token_manager.drop_prior_session_test_turns``)
+        so a multi-turn probe can still reach its own previous exchange.
         """
         return [e for e in self.visible_entries() if not is_test_turn(e)]
 
@@ -442,6 +447,8 @@ class CorpusManager:
             if start is not None and (ts is None or ts < start):
                 continue
             if end is not None and (ts is None or ts > end):
+                continue
+            if is_test_turn(entry):  # owner [test] probes are never recalled (2026-10-18)
                 continue
             query = entry.get("query", "") or ""
             if authored_only and "user_text" in entry:

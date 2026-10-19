@@ -19,6 +19,8 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Any
 
+from memory.fact_source import is_test_turn
+
 
 # Bare connectivity-check exchanges ("test") — worthless as memories but they
 # embed close to everything short and compete for retrieval slots.
@@ -42,6 +44,15 @@ def is_quarantined(metadata) -> bool:
     must never surface in a prompt. Checked beside the content predicates
     at every retrieval filter site."""
     return bool(metadata) and bool(metadata.get("curation_quarantined"))
+
+
+def is_test_conversation_doc(content: str = "", metadata=None, query: str = "") -> bool:
+    """True for a stored conversation doc whose USER side is an owner
+    ``[test]...[/test]`` probe (2026-10-18). Probe turns are never recalled
+    after their own session: this sits beside ``is_quarantined`` and
+    ``is_junk_conversation_doc`` at every retrieval filter site. Delegates to
+    THE predicate ``memory.fact_source.is_test_turn`` (no second detector)."""
+    return is_test_turn({"content": content or "", "metadata": metadata or {}, "query": query or ""})
 
 
 def is_junk_conversation_doc(content: str = "", query: str = "", response: str = "") -> bool:

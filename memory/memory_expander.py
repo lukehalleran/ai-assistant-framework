@@ -41,7 +41,9 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from config import app_config as cfg
-from memory.utils import is_junk_conversation_doc, is_junk_summary, is_quarantined
+from memory.utils import (
+    is_junk_conversation_doc, is_junk_summary, is_quarantined, is_test_conversation_doc,
+)
 from utils.retrieval_outcome import RetrievalError
 
 logger = logging.getLogger(__name__)
@@ -219,6 +221,8 @@ class MemoryExpander:
         if collection == "conversations":
             if is_junk_conversation_doc(content=content):
                 return "junk"
+            if is_test_conversation_doc(content=content, metadata=metadata):
+                return "test_turn"
         elif collection in ("summaries", "reflections"):
             if is_junk_summary(content):
                 return "junk"

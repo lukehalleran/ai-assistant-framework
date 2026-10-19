@@ -27,7 +27,7 @@ from utils.logging_utils import get_logger
 from utils.query_rewriter import rewrite_query, _ordered_keywords
 from utils.keyword_matcher import calculate_keyword_score
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
-from memory.utils import is_junk_conversation_doc
+from memory.utils import is_junk_conversation_doc, is_test_conversation_doc
 import memory.utils as utils
 from config.app_config import CHROMA_PATH
 
@@ -153,6 +153,10 @@ class HybridRetriever:
                             content=item.get("content", ""),
                             query=item.get("query", ""),
                             response=item.get("response", ""),
+                        ) or is_test_conversation_doc(
+                            content=item.get("content", ""),
+                            metadata=item.get("metadata"),
+                            query=item.get("query", ""),
                         ):
                             junk_dropped += 1
                             continue
