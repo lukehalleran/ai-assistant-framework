@@ -57,6 +57,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils.logging_utils import get_logger
 from utils.text_budget import fit_text_to_tokens
 from .base import _parse_bool
+from memory.fact_source import is_test_turn
 # ONE session-boundary rule (formatter owns it; builder._session_truth_from_probe
 # applies the same walk). Module-level import verified cycle-free 2026-10-15.
 from .formatter import (
@@ -224,6 +225,22 @@ def current_session_prefix_len(items: List[Any], now: datetime) -> int:
             prev_ts = ts
         n += 1
     return n
+
+def drop_prior_session_test_turns(items: List[Any], now: Optional[datetime] = None) -> List[Any]:
+    """Drop owner ``[test]...[/test]`` probe turns that are NOT in the CURRENT
+    session from a newest-first recent-conversation list (2026-10-18).
+
+    The current session is `current_session_prefix_len` (the ONE session
+    notion the budget and the formatter share), so a multi-turn probe keeps
+    its own previous exchange while a probe from an earlier session — whose
+    stored reply later probes copied verbatim — never reaches the prompt.
+    Real turns of both sessions are kept. THE predicate is
+    ``memory.fact_source.is_test_turn``.
+    """
+    items = list(items or [])
+    keep = current_session_prefix_len(items, now or datetime.now())
+    return [e for i, e in enumerate(items) if i < keep or not is_test_turn(e)]
+
 
 # Token limits and configuration
 ENABLE_MIDDLE_OUT = _parse_bool(os.getenv("ENABLE_MIDDLE_OUT", "1"))

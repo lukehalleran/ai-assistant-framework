@@ -74,6 +74,7 @@ from config.app_config import (
     DEICTIC_THRESHOLD,
     NORMAL_THRESHOLD,
 )
+from memory.fact_source import is_test_turn
 from memory.utils import format_recent_conversations
 from memory.summary_coverage import corpus_anchor_md, corpus_content_time_raw, covers_label
 import re as _re
@@ -618,7 +619,12 @@ class MemoryRetriever:
 
     def _get_recent_conversations(self, k: int = 5) -> List[Dict]:
         """Get recent conversations from corpus (JSON)."""
-        entries = self.corpus_manager.get_recent_memories(k) or []
+        # Retrieval never returns an owner [test] probe (2026-10-18). The probes
+        # are dropped BEFORE the count is applied (over-fetch) so one never
+        # displaces a real turn; the current session's own probes stay visible
+        # in [RECENT CONVERSATION] (gatherer), not here.
+        entries = [e for e in (self.corpus_manager.get_recent_memories(k + 8) or [])
+                   if not is_test_turn(e)][:k]
         return format_recent_conversations(entries)
 
     # ------------------------------------------------------------------
@@ -1319,7 +1325,7 @@ class MemoryRetriever:
                 n_results=n_results
             )
 
-            from memory.utils import is_junk_conversation_doc, is_quarantined
+            from memory.utils import is_junk_conversation_doc, is_quarantined, is_test_conversation_doc
 
             for collection_name, results in batch_results.items():
                 if not results:
@@ -1333,7 +1339,9 @@ class MemoryRetriever:
                         # stored before the storage-time guard, "test" turns),
                         # plus curation-quarantined docs.
                         if is_quarantined(item.get("metadata")) or \
-                                is_junk_conversation_doc(content=item.get("content", "")):
+                                is_junk_conversation_doc(content=item.get("content", "")) or \
+                                is_test_conversation_doc(content=item.get("content", ""),
+                                                         metadata=item.get("metadata")):
                             continue
                         memories.append(self._parse_result(item, collection_name))
 

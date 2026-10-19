@@ -952,7 +952,29 @@ def is_test_turn(entry: Any) -> bool:
     notes, narrative, threads, skills, facts) asks, built on ``authored_text``
     (the authorship chokepoint) and ``test_envelope`` (the structural parser).
     """
-    return test_envelope.has_envelope(authored_text(entry))
+    text = authored_text(entry)
+    if not text and isinstance(entry, Mapping):
+        text = _stored_doc_authored_text(entry)
+    return test_envelope.has_envelope(text)
+
+
+def _stored_doc_authored_text(doc: Mapping) -> str:
+    """User-authored text of a STORED conversation doc (Chroma result shape).
+
+    A Chroma ``conversations`` hit carries no ``query`` key: the turn is one
+    document ``"User: <query>\nAssistant: <response>"`` plus metadata that
+    holds ``user_text`` for an attachment turn. Only the USER side is read —
+    a reply that quotes or echoes the marker is not an owner probe. Requires
+    the ``User:`` prefix so chat-format messages are never reinterpreted.
+    """
+    meta = doc.get("metadata")
+    if isinstance(meta, Mapping) and isinstance(meta.get("user_text"), str):
+        return meta["user_text"]
+    content = doc.get("content")
+    if isinstance(content, str) and content.lstrip().startswith("User:"):
+        head = content.lstrip()[len("User:"):].partition("\nAssistant:")[0]
+        return head
+    return ""
 
 
 def _message_text_and_id(message: Any) -> tuple[str, str] | None:

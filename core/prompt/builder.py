@@ -106,7 +106,7 @@ from .formatter import (
     _parse_entry_timestamp, _detect_session_boundary, SESSION_BOUNDARY_GAP_HOURS,
 )
 from .summarizer import LLMSummarizer
-from .token_manager import TokenManager, USER_PROFILE_MAX_TOKENS
+from .token_manager import TokenManager, USER_PROFILE_MAX_TOKENS, drop_prior_session_test_turns
 from .base import _FallbackMemoryCoordinator
 from .hygiene import ContentHygiene, _canonical_turn_key
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
@@ -809,7 +809,7 @@ def _fetch_session_probe(memory_coordinator, limit: int) -> List[Dict[str, Any]]
     if corpus_manager is None or not hasattr(corpus_manager, "get_recent_memories"):
         return []
     try:
-        return corpus_manager.get_recent_memories(count=limit) or []
+        return drop_prior_session_test_turns(corpus_manager.get_recent_memories(count=limit) or [])
     except (AttributeError, TypeError, KeyError, ValueError, IndexError) as e:
         # degrades: no session-truth honesty or [EARLIER TODAY] timeline this
         # turn; [RECENT CONVERSATION] itself still renders unchanged. Narrow
@@ -2576,7 +2576,7 @@ class UnifiedPromptBuilder:
         last_resp = ""
         try:
             cm = getattr(self.memory_coordinator, "corpus_manager", None)
-            recent = cm.get_recent_memories(count=1) if cm else []
+            recent = drop_prior_session_test_turns(cm.get_recent_memories(count=6))[:1] if cm else []
             if recent:
                 last_resp = recent[0].get("response", "") or ""
         except Exception as e:  # degrades: continuation answers treated as ordinary turns

@@ -37,7 +37,9 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from core.insight.types import EvidenceItem, FacetPlan, FacetQuery
-from memory.utils import is_junk_conversation_doc, is_junk_summary, is_quarantined
+from memory.utils import (
+    is_junk_conversation_doc, is_junk_summary, is_quarantined, is_test_conversation_doc,
+)
 from utils.logging_utils import get_logger
 from utils.ordered_slice import week_bucket_key as _ordered_week_bucket_key
 from utils.ordered_slice import window_fair_sample as _ordered_window_fair_sample
@@ -176,6 +178,8 @@ async def run_sweep(
                 if coll == "conversations":
                     if is_junk_conversation_doc(content=content):
                         continue
+                    if is_test_conversation_doc(content=content, metadata=metadata):
+                        continue
                     if _user_side_is_greeting_or_ack(content):
                         continue
                     # Prior-sweep-output feedback-loop guard (round 3).
@@ -273,6 +277,8 @@ async def run_sweep(
                     if is_quarantined(turn_meta):
                         continue
                     if is_junk_conversation_doc(content=content):
+                        continue
+                    if is_test_conversation_doc(content=content, metadata=turn_meta):
                         continue
                     if (_is_sweep_output_mode(turn_meta.get("response_mode"))
                             or _looks_like_sweep_scaffolding(content)):
@@ -434,6 +440,8 @@ async def run_sweep(
                     continue
                 if coll == "conversations":
                     if is_junk_conversation_doc(content=content):
+                        continue
+                    if is_test_conversation_doc(content=content, metadata=metadata):
                         continue
                     if _user_side_is_greeting_or_ack(content):
                         continue

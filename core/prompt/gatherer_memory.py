@@ -40,6 +40,7 @@ from .formatter import (
     _as_summary_dict, _parse_bool, _detect_session_boundary, _parse_entry_timestamp,
 )
 from memory.user_profile import SENSITIVE_OPEN
+from .token_manager import drop_prior_session_test_turns
 from utils.trigger_match import compile_keyword_matcher, has_non_negated_hit
 from utils.ordered_slice import newest_first as _ordered_newest_first
 from utils.personal_claim_provenance import annotate_personal_claim_memory
@@ -342,7 +343,11 @@ class MemoryRetrievalMixin:
             model = store.get_st_model() if store is not None and hasattr(store, "get_st_model") else None
             if corpus is None or model is None:
                 return OutcomeList(status="unavailable", reason="no_store")
-            entries = corpus.get_recent_memories(count=USER_STATED_SCAN_TURNS * 2)
+            # Recall evidence: a PRIOR-session owner [test] probe is never
+            # evidence (2026-10-18); the current session's stay so a probe can
+            # state a fact and ask about it.
+            entries = drop_prior_session_test_turns(
+                corpus.get_recent_memories(count=USER_STATED_SCAN_TURNS * 2), datetime.now())
             cands = select_user_stated_candidates(entries, query)
             if not cands:
                 return []
@@ -394,8 +399,8 @@ class MemoryRetrievalMixin:
                 if hasattr(corpus_manager, 'get_recent_memories'):
                     # Over-fetch to the paste-aware hard cap, then pick the window
                     # (pastes don't count toward `limit`; B4 2026-10-12).
-                    _wide = corpus_manager.get_recent_memories(
-                        count=max(limit, int(limit * RECENT_WINDOW_PASTE_MAX_MULTIPLE)))
+                    _wide = drop_prior_session_test_turns(corpus_manager.get_recent_memories(
+                        count=max(limit, int(limit * RECENT_WINDOW_PASTE_MAX_MULTIPLE))))
                     memories = paste_aware_recent_window(_wide, limit)
                     logger.debug(f"Got {len(memories or [])} recent conversations from corpus_manager (requested {limit})")
 
