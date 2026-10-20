@@ -56,6 +56,8 @@ import re
 import logging
 from typing import List, Tuple
 
+import utils.read_time_markers as read_time_markers
+
 logger = logging.getLogger("response_parser")
 
 
@@ -261,6 +263,11 @@ class ResponseParser:
         if not text or not isinstance(text, str):
             return text or ""
         text = ResponseParser.strip_stream_special_tokens(text)
+        # Recalled-time anchor brackets the model copied from its prompt
+        # ("Yesterday [Sun 2026-10-18]"): prompt machinery, never content
+        # (2026-10-19, BC-91/BC-100). Folded in here for the same reason as
+        # the special tokens: every display and storage path already calls this.
+        text = read_time_markers.strip_time_anchors(text)
         stripped = text.rstrip()
         if not ResponseParser._TRAILING_STREAM_ARTIFACT_RE.search(stripped):
             return text

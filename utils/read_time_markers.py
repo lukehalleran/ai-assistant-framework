@@ -23,6 +23,8 @@ assistant turn should call first.
 
 from __future__ import annotations
 
+import re
+
 PERSONAL_CLAIM_MARKER = (
     "[Personal-claim check: some claims the ASSISTANT added in this response "
     "were not found in the user's own words. This note is about the "
@@ -172,6 +174,36 @@ def delivery_notice(opening: str, detail: str = "", *, separator: str = "\n\n") 
     return f"{separator}{DELIVERY_NOTICE_PREFIX} {body}"
 
 
+# Recalled-time anchors (2026-10-18, BC-100): utils.temporal_resolver.anchor_temporal_references
+# annotates a time word in RECALLED text with the date it meant ("today [Sat 2026-10-17]").
+# The bracket is prompt machinery; a reply that copies it (live 2026-10-19: "Yesterday
+# [Sun 2026-10-18] was a grind … today [Mon 2026-10-19]?") shows it to the user and stores
+# it. ONE definition: the emitter's idempotence guard and the stripper both use these.
+_WEEKDAY_ABBR = r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"
+_MONTH_NAME = (r"(?:January|February|March|April|May|June|July|August|September|October|"
+               r"November|December)")
+TIME_ANCHOR_BODY = rf"(?:week of )?{_WEEKDAY_ABBR} \d{{4}}-\d{{2}}-\d{{2}}|{_MONTH_NAME} \d{{4}}"
+_TIME_ANCHOR_RE = re.compile(
+    rf"[ \t]?\[(?:week of )?{_WEEKDAY_ABBR} \d{{4}}-\d{{2}}-\d{{2}}\]"
+    rf"|(?<=\bmonth)[ \t]?\[{_MONTH_NAME} \d{{4}}\]",
+    re.IGNORECASE,
+)
+
+
+def strip_time_anchors(text: str) -> str:
+    """Remove recalled-time anchor brackets (``[Sun 2026-10-18]``,
+    ``[week of Sat 2026-10-24]``, ``month [November 2026]``) from assistant
+    text; everything else is byte-identical. A weekday-and-ISO-date bracket is
+    this module's own format, never prose. Non-str or empty input is returned
+    unchanged; this never raises."""
+    try:
+        if not isinstance(text, str) or not text or "[" not in text:
+            return text
+        return _TIME_ANCHOR_RE.sub("", text)
+    except Exception:
+        return text
+
+
 def strip_read_time_markers(text: str) -> str:
     """Drop every line whose stripped form is exactly a read-time marker.
 
@@ -230,7 +262,7 @@ def strip_delivery_notices(text: str) -> str:
 
 
 def strip_machinery(text: str) -> str:
-    """Strip both read-time markers and any trailing delivery notice.
+    """Strip read-time markers, recalled-time anchors and any trailing delivery notice.
 
     The canonical transform for anything that hashes, dedups, or re-renders
     a stored assistant turn: machinery text glued on after generation is not
@@ -240,6 +272,6 @@ def strip_machinery(text: str) -> str:
     try:
         if not isinstance(text, str) or not text:
             return text
-        return strip_delivery_notices(strip_read_time_markers(text))
+        return strip_delivery_notices(strip_read_time_markers(strip_time_anchors(text)))
     except Exception:
         return text

@@ -38,6 +38,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from utils.date_coerce import to_naive_local
+import utils.read_time_markers as read_time_markers
 from utils.logging_utils import get_logger
 
 logger = get_logger("temporal_resolver")
@@ -84,9 +85,9 @@ def _fmt(dt: datetime) -> str:
 
 
 # An annotation this module already appended (idempotence guard for annotate mode).
-_ANCHOR_BRACKET_AHEAD = (
-    r'(?!\s*\[(?:week of )?(?:[A-Z][a-z]{2} \d{4}-\d{2}-\d{2}|[A-Z][a-z]+ \d{4})\])'
-)
+# The bracket format is defined once in utils.read_time_markers (which also strips it
+# from replies that copy it).
+_ANCHOR_BRACKET_AHEAD = rf'(?!\s*\[(?:{read_time_markers.TIME_ANCHOR_BODY})\])'
 
 
 def resolve_temporal_references(text: str,
