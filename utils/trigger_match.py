@@ -131,6 +131,15 @@ def _bare_word_pattern(kw: str) -> "re.Pattern":
     return re.compile(rf"\b(?:{'|'.join(branches)}){_KEYWORD_RIGHT}")
 
 
+_ESCAPED_SPACE_RUN_RE = re.compile(r"(?:\\ )+")
+
+
+def _phrase_pattern(kw: str) -> "re.Pattern":
+    """Substring pattern for a phrase keyword whose spaces match any
+    whitespace run (see KeywordMatcher)."""
+    return re.compile(_ESCAPED_SPACE_RUN_RE.sub(lambda _m: r"\s+", re.escape(kw)))
+
+
 class KeywordMatcher:
     """Callable matcher (`matcher(lower_text) -> bool`, the calling contract
     moved verbatim from core.agentic.gate._compile_keyword_matcher) that also
@@ -152,7 +161,11 @@ class KeywordMatcher:
 
     Keywords containing spaces, apostrophes, or trailing-space sentinels keep
     their original substring semantics ('go to http' must still match
-    "go to https://...").
+    "go to https://..."), except that each space in the keyword matches any
+    whitespace run (2026-10-17/20, BC-58): the client hard-wraps long
+    messages ("do\n    you remember"), and a literal-space phrase went blind
+    on the wrapped form while the bare-word patterns did not. Hit offsets
+    are still positions in the text as given — nothing is rewritten.
     """
 
     __slots__ = ("_word_pats", "_substrings")
@@ -168,14 +181,14 @@ class KeywordMatcher:
                 else:
                     word_pats.append((kw, _bare_word_pattern(kw)))
             else:
-                substrings.append(kw)
+                substrings.append((kw, _phrase_pattern(kw)))
         self._word_pats = word_pats
         self._substrings = substrings
 
     def __call__(self, lower_text: str) -> bool:
         return (
             any(p.search(lower_text) for _, p in self._word_pats)
-            or any(k in lower_text for k in self._substrings)
+            or any(p.search(lower_text) for _, p in self._substrings)
         )
 
     def iter_hits(self, lower_text: str) -> Iterable[KeywordHit]:
@@ -184,10 +197,10 @@ class KeywordMatcher:
             m = pat.search(lower_text)
             if m:
                 yield KeywordHit(kw, m.start(), m.end())
-        for kw in self._substrings:
-            idx = lower_text.find(kw)
-            if idx != -1:
-                yield KeywordHit(kw, idx, idx + len(kw))
+        for kw, pat in self._substrings:
+            m = pat.search(lower_text)
+            if m:
+                yield KeywordHit(kw, m.start(), m.end())
 
 
 def prefix_only_hits(matcher: KeywordMatcher, lower_text: str) -> List[str]:
