@@ -62,6 +62,7 @@ from utils.turn_progress import emit as _progress_emit
 from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
 import utils.safe_json as safe_json
 from utils.date_coerce import to_naive_local
+from core.prompt.token_manager import drop_prior_session_test_turns
 
 if TYPE_CHECKING:
     from utils.topic_manager import TopicManager
@@ -761,13 +762,14 @@ class ContextPipeline:
             recent_memories = []
             if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
                 try:
-                    recent_memories = self.memory_system.corpus_manager.get_recent_memories(3)
+                    recent_memories = drop_prior_session_test_turns(
+                        self.memory_system.corpus_manager.get_recent_memories(3))
                 except Exception as e:
                     logger.warning(f"[ContextPipeline] Could not retrieve recent memories for emotional analysis: {e}")
 
             # Also use provided conversation history
             if conversation_history:
-                recent_memories = conversation_history[:3]
+                recent_memories = drop_prior_session_test_turns(conversation_history)[:3]
 
             # Over-stickiness guard: distress tone is sticky across terse turns
             # WITHIN a session, but a long gap means a new session — a calm
@@ -1183,8 +1185,13 @@ Rewritten query (just the rewritten text, no explanation):"""
                     )
                 else:
                     recent_memories = cm.get_recent_memories(self._stm_max_recent)
+                # Both readers are newest-first (the helper's contract). Owner
+                # [test] probes from a PRIOR session never feed the summary; the
+                # current session's own probes stay (2026-10-18, BC-58).
+                recent_memories = drop_prior_session_test_turns(recent_memories)
             elif conversation_history:
-                recent_memories = conversation_history[:self._stm_max_recent]
+                recent_memories = drop_prior_session_test_turns(
+                    conversation_history)[:self._stm_max_recent]
 
             # Get the immediately preceding assistant response. Corpus entries
             # are normally {query, response} pairs (not role/content messages),

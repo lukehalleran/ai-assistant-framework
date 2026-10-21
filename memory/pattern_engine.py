@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field
 import yaml
 
 import memory.utils as utils
+from memory.fact_source import is_test_turn
 from utils.date_coerce import to_naive_local
 from utils.logging_utils import get_logger
 
@@ -663,6 +664,11 @@ def _corpus_entries(corpus_manager, since: datetime, until: datetime) -> list[di
                 continue
         except Exception:  # degrades: junk conversation entry kept in pattern corpus
             pass
+        # Owner [test] probes are never part of the user's history, in any
+        # session (2026-10-18, BC-58). Numerators AND denominators read this
+        # one function, so they exclude the same turns.
+        if is_test_turn(e):
+            continue
         e = dict(e)
         e["_ts"] = ts
         out.append(e)
@@ -852,6 +858,10 @@ def _events_tone(query, telemetry_path, since, until, result):
             except Exception:  # degrades: malformed tone-log line skipped from pattern events
                 continue
             if row.get("test_env"):
+                continue
+            # A probe's turn record keeps the [test] envelope in its query
+            # (the hook records ctx.user_text); same predicate as the corpus.
+            if is_test_turn({"query": row.get("query") or ""}):
                 continue
             ts = _parse_ts(row.get("ts") or row.get("time"))
             if ts is None:
