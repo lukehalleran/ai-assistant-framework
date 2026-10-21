@@ -1545,6 +1545,13 @@ class AgenticSearchController:
                 # Generate with protocol-appropriate method and record the
                 # decision latency even when the model returns no tools.
                 decision_started = time.monotonic()
+                # 2026-10-18 (BC-27): record whether THIS decision round runs
+                # with native reasoning. The default decision round is a
+                # no-reasoning ROUTER; its text may only be shipped as the
+                # answer when the round was reasoned (see the reuse site).
+                session.decision_reasoned = self._decision_round_reasoned(
+                    session, forced=_this_round_forced_type is not None,
+                )
                 decisions = await self._get_model_decision(
                     prompt=_round_prompt,
                     system_prompt=_round_system_prompt,
@@ -2172,7 +2179,18 @@ class AgenticSearchController:
             # rendered (only a bounded digest + counts). Background-only
             # context (profile/summaries/reflections) does not block reuse.
             _reused_answer = None
-            if _candidate_reused_answer:
+            if _candidate_reused_answer and not session.decision_reasoned:
+                # The decision round is a tool-selection ROUTER run with
+                # reasoning OFF; shipping its text put unreasoned answers in
+                # front of the user (2026-10-18). Synthesis runs reasoned.
+                session.reuse_skipped_reason = (
+                    "decision round ran without reasoning"
+                )
+                logger.info(
+                    "[AgenticSearch] Decision answer not reused: decision "
+                    "round ran without reasoning"
+                )
+            elif _candidate_reused_answer:
                 if self._decision_saw_admitted_evidence(session, initial_context):
                     _reused_answer = _candidate_reused_answer
                 else:
@@ -2511,6 +2529,9 @@ class AgenticSearchController:
                         model_name=model_name,
                         tools=_tools,
                         tool_choice=tool_choice,
+                        reasoned=self._decision_round_reasoned(
+                            session, forced=forced_action_type is not None,
+                        ),
                     ),
                     timeout=app_config.AGENTIC_ROUND_TIMEOUT_S,
                 )
@@ -2546,6 +2567,21 @@ class AgenticSearchController:
             logger.error(f"[AgenticSearch] Decision generation failed: {e}")
             # On error, signal to answer with current context
             return [SearchDecision(wants_answer=True)]
+
+    @staticmethod
+    def _decision_round_reasoned(session, forced: bool = False) -> bool:
+        """True iff this decision round runs WITH native reasoning.
+
+        Only the opt-in ``agentic_search.decision_reasoning`` setting, only on
+        the native-tools protocol (the XML protocol must emit markers inside a
+        small budget, so it always stays no-reasoning), and never on a forced
+        action round (a router call by construction). Read live (BC-82).
+        """
+        return bool(
+            app_config.AGENTIC_DECISION_REASONING
+            and getattr(session, "protocol", None) == SearchProtocol.NATIVE_TOOLS
+            and not forced
+        )
 
     async def _generate_decision_no_reasoning(
         self,
@@ -2590,9 +2626,14 @@ class AgenticSearchController:
         model_name: str,
         tools: List[Dict],
         tool_choice: Any = "auto",
+        reasoned: bool = False,
     ) -> Any:
         """
         Generate with tool calling support.
+
+        ``reasoned`` (2026-10-18): run the round WITH native reasoning and the
+        larger AGENTIC_DECISION_REASONING_MAX_TOKENS budget. Default False
+        keeps the router contract (reasoning off, AGENTIC_DECISION_MAX_TOKENS).
 
         Args:
             prompt: User prompt
@@ -2611,8 +2652,11 @@ class AgenticSearchController:
                 system_prompt=system_prompt,
                 tools=tools,
                 tool_choice=tool_choice,
-                max_tokens=app_config.AGENTIC_DECISION_MAX_TOKENS,
-                disable_reasoning=True,
+                max_tokens=(
+                    app_config.AGENTIC_DECISION_REASONING_MAX_TOKENS
+                    if reasoned else app_config.AGENTIC_DECISION_MAX_TOKENS
+                ),
+                disable_reasoning=not reasoned,
             )
         else:
             # Fallback to standard generation

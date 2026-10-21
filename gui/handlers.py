@@ -4560,6 +4560,10 @@ async def _run_agentic_search(ctx):
             ctx.telemetry["agentic_answer_call"] = str(
                 getattr(_agentic_session, "answer_call", "") or ""
             )
+            # 2026-10-18: why reuse was refused (backward compatible key).
+            ctx.telemetry["agentic_reuse_skip"] = str(
+                getattr(_agentic_session, "reuse_skipped_reason", "") or ""
+            )
         # Tool-call receipts (2026-09-28, BC-72): what each tool did this
         # turn (name + status + machine reason), from the controller's own
         # dispatch record — visible in turn_records.jsonl, not only the log.

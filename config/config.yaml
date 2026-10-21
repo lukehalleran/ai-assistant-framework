@@ -170,6 +170,8 @@ agentic_search:
   memory_search_limit: 7
   reuse_decision_answer: true
   decision_max_tokens: 1600
+  decision_reasoning: false           # true: native-tools decision round keeps reasoning, so its answer may be reused
+  decision_reasoning_max_tokens: 6000
   round_timeout_s: 75      # per-round decision-LLM timeout (backstop vs. stalled call)
   loop_timeout_s: 120      # wall-clock budget for rounds 2-N; then synthesize from context
   fetch_fastpath: true

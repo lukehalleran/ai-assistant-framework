@@ -93,6 +93,9 @@ def controller(monkeypatch):
     monkeypatch.setattr("core.agentic.controller.datetime", _FrozenDatetime)
     monkeypatch.setattr(ToolExecutor, "_get_pending_actions_store",
                         staticmethod(lambda: _NoPending()))
+    # 2026-10-18: reuse needs a reasoned decision round (opt-in, native tools).
+    monkeypatch.setattr("core.agentic.controller.app_config.AGENTIC_DECISION_REASONING", True)
+    c.detect_protocol = lambda m: SearchProtocol.NATIVE_TOOLS
     return c
 
 

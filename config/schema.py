@@ -274,6 +274,8 @@ class AgenticSearchSection(BaseModel):
     memory_search_limit: int = Field(default=7, ge=1)
     reuse_decision_answer: bool = True
     decision_max_tokens: int = Field(default=1600, ge=100)
+    decision_reasoning: bool = False
+    decision_reasoning_max_tokens: int = Field(default=6000, ge=100)
     # Per-round decision-LLM timeout (backstop against a stalled connection /
     # a genuinely hung provider call). Generous so it never cuts a legitimate
     # full-length decision round; on timeout the loop answers with gathered ctx.

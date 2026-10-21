@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from core.agentic.types import SearchProtocol
 from core.agentic.controller import AgenticSearchController
 from core.agentic.tools import ToolExecutor
 from core.agentic.types import AgenticSearchSession, SearchDecision
@@ -61,11 +62,14 @@ def _mock_tool_executor():
 
 
 @pytest.fixture
-def controller():
+def controller(monkeypatch):
     model_manager = MagicMock()
     model_manager.api_models = {}
     c = AgenticSearchController(model_manager=model_manager, web_search_manager=MagicMock())
     c._tool_executor = _mock_tool_executor()
+    # 2026-10-18: reuse needs a reasoned decision round (opt-in, native tools).
+    monkeypatch.setattr("core.agentic.controller.app_config.AGENTIC_DECISION_REASONING", True)
+    c.detect_protocol = lambda m: SearchProtocol.NATIVE_TOOLS
     return c
 
 
