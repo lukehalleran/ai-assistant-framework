@@ -112,7 +112,7 @@ USER_UPLOADS_MIN_RELEVANCE = float(os.getenv("USER_UPLOADS_MIN_RELEVANCE", "0.62
 # hoisted to a module-level constant so the upload-roster trigger below can
 # reuse it without duplicating the pattern.
 _DOCUMENT_CONTEXT_RE = re.compile(
-    r"\b(?:attachments?|uploads?|documents?|pdf|docx|csv|spreadsheet|"
+    r"\b(?:attachments?|uploads?|documents?|files?|folders?|zip|pdf|docx|csv|spreadsheet|"
     r"dataset|homework|assignment|syllabus|lecture|transcript|"
     r"(?:question|task|part|page)\s+\d+)\b",
     re.IGNORECASE,
@@ -417,6 +417,52 @@ def _non_negated_pattern_hit(text: str, pattern: "re.Pattern") -> bool:
     return False
 
 
+# Perceiving verbs: "see/look/watch" say WHO perceives. "show" is request-shaped
+# by itself (the assistant is the one asked to display), so it is exempt.
+_PERCEIVING_VERBS = frozenset({"see", "look", "watch"})
+
+# Words that may sit between a subject pronoun and its verb: modals, "be able
+# to", adverbs of time/stance, contracted negations.
+_SUBJECT_VERB_FILLER = (
+    r"(?:will|would|can|could|should|may|might|must|do|does|did|be|able|to|"
+    r"now|still|not|also|finally|ever|just|then|soon|really|actually|already|"
+    r"cant|cannot|couldnt|wont|wouldnt|shouldnt|dont|didnt)"
+)
+_SECOND_PERSON_GOVERNS_RE = re.compile(
+    r"\byou(?:'?(?:ll|d|ve|re))?(?:\s+" + _SUBJECT_VERB_FILLER + r")*\s*$",
+    re.IGNORECASE,
+)
+_CLAUSE_BOUNDARY_RE = re.compile(r"[.,;:!?()\u2014]+")
+
+
+def _verb_governed_by_second_person(text: str, verb_start: int) -> bool:
+    """True when the clause subject governing the verb at `verb_start` is
+    "you": a question about the ASSISTANT's access ("you will be able to
+    see the files", "can you see it", "did you see"), not the user asking
+    to be shown imagery. Structural: the pronoun immediately governing the
+    verb, allowing modal/auxiliary/adverb filler between (2026-10-17)."""
+    clause = _CLAUSE_BOUNDARY_RE.split(text[:verb_start])[-1]
+    clause = clause.replace("\u2019", "'")
+    return bool(_SECOND_PERSON_GOVERNS_RE.search(clause))
+
+
+def _user_perceiver_weak_verb_hit(query: str) -> bool:
+    """Some non-negated weak-verb match whose perceiver is not the assistant."""
+    for m in _VISUAL_WEAK_VERB_RE.finditer(query):
+        if _trigger_is_negated(query, m.start()):
+            continue
+        if (
+            m.group(0).lower() in _PERCEIVING_VERBS
+            # "look at X" is directed at an object (a request even from
+            # "can you"); bare "see/look/watch" under "you" is an access check.
+            and not re.match(r"\s+at\b", query[m.end():], re.IGNORECASE)
+            and _verb_governed_by_second_person(query, m.start())
+        ):
+            continue
+        return True
+    return False
+
+
 def _long_message_visual_request(query: str) -> bool:
     """In a long message, visual intent must be its own short request line.
 
@@ -476,7 +522,7 @@ def _query_wants_visual(query: str, intent_type: Optional[str]) -> bool:
         words & _VISUAL_WEAK_VERBS
         and n <= _VISUAL_WEAK_VERB_MAX_WORDS
         and not _DOCUMENT_CONTEXT_RE.search(query)
-        and _non_negated_pattern_hit(query, _VISUAL_WEAK_VERB_RE)
+        and _user_perceiver_weak_verb_hit(query)
     ):
         return True
     return (

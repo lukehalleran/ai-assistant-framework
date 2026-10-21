@@ -24,6 +24,7 @@ Module Contract
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import os
@@ -76,10 +77,10 @@ class VisualRetriever:
             pass
 
         # CLIP vector search (primary)
-        clip_results = self._search_clip(query, k=k)
+        clip_results = await asyncio.to_thread(self._search_clip, query, k=k)
 
         # ChromaDB text search (fallback/complement)
-        text_results = self._store.search_by_text(query, k=k)
+        text_results = await asyncio.to_thread(self._store.search_by_text, query, k=k)
         ts_status, ts_reason = outcome_status(text_results)
 
         # Merge + deduplicate by image_path, boost entity matches
@@ -96,7 +97,9 @@ class VisualRetriever:
             ]
             # CLIP missed the target — fetch directly by entity tag
             if not filtered:
-                filtered = self._store.get_by_entity(target_entities)
+                filtered = await asyncio.to_thread(
+                    self._store.get_by_entity, target_entities
+                )
                 if filtered:
                     logger.info(
                         f"[VisualRetrieval] Entity direct lookup: {len(filtered)} results "
@@ -130,7 +133,7 @@ class VisualRetriever:
         # Load actual images for multimodal (capped at max_images)
         images = []
         for r in merged[:max_images]:
-            img_dict = self._load_image_for_multimodal(r)
+            img_dict = await asyncio.to_thread(self._load_image_for_multimodal, r)
             if img_dict:
                 images.append(img_dict)
 
