@@ -111,6 +111,7 @@ import re as _re_gate2
 from utils.trigger_match import compile_keyword_matcher as _compile_keyword_matcher
 from utils.trigger_match import find_hits as _find_trigger_hits
 from utils.trigger_match import is_negated as _trigger_is_negated
+from utils.anchored_sense import math_verb_has_math_object
 from utils.test_envelope import inner_text as _test_envelope_inner
 from utils.url_detect import contains_url
 from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
@@ -246,8 +247,13 @@ COMPUTATION_KEYWORDS = [
     'fibonacci', 'factorial', 'median', 'standard deviation',
     'matrix', 'numpy', 'pandas', 'sympy',
     'regression', 'correlation', 'sum of', 'product of',
-    'simplify', 'differentiate', 'integrate',
+    'simplify',
 ]
+
+# Mathematical VERBS with an everyday sense ("differentiate our entities",
+# "integrate the feedback"): computation only when a math object sits near
+# them (utils.anchored_sense, 2026-10-18, BC-01).
+COMPUTATION_MATH_VERBS = ['differentiate', 'integrate']
 
 WEB_SEARCH_KEYWORDS = [
     'web search', 'search the web', 'search for', 'search online',
@@ -537,6 +543,7 @@ def _tier1_keyword_hit(user_text: str, matcher) -> bool:
 
 
 _COMPUTATION_HIT = _compile_keyword_matcher(COMPUTATION_KEYWORDS)
+_COMPUTATION_MATH_VERB_HIT = _compile_keyword_matcher(COMPUTATION_MATH_VERBS)
 _WEB_SEARCH_HIT = _compile_keyword_matcher(WEB_SEARCH_KEYWORDS)
 _TOOL_HIT = _compile_keyword_matcher(TOOL_KEYWORDS)
 _MEMORY_HIT = _compile_keyword_matcher(MEMORY_KEYWORDS)
@@ -1061,7 +1068,10 @@ async def evaluate_agentic_gate(
     # ── Tier 1: Keyword heuristics (instant, no LLM) ─────────────────
     # Negation-aware (2026-09-04): "I'm not asking you to calculate it" must
     # not force computation mode just because 'calculate' appears.
-    needs_computation = _tier1_keyword_hit(user_text, _COMPUTATION_HIT)
+    needs_computation = _tier1_keyword_hit(user_text, _COMPUTATION_HIT) or (
+        _tier1_keyword_hit(user_text, _COMPUTATION_MATH_VERB_HIT)
+        and math_verb_has_math_object(user_text)
+    )
     if needs_computation:
         _mark("tier1_computation")
 

@@ -6226,6 +6226,11 @@ async def handle_submit(
         _next_turn_token += 1
         _turn_token = _next_turn_token
         _active_turn_starts[_turn_token] = _time_mod.perf_counter()
+    # Owner probe (BC-58): classifiers below see the unwrapped inner text, so
+    # mark the turn for the adaptive-exemplar chokepoint (never teaches).
+    from utils import adaptive_exemplars as _adaptive_exemplars  # lazy import: startup-cost (numpy)
+    _probe_token = _adaptive_exemplars.mark_probe_turn(
+        test_envelope.has_envelope(user_text))
     _fast_entered = False
     if fast_mode:
         _enter_fast_mode_limits()
@@ -6243,6 +6248,7 @@ async def handle_submit(
         try:
             await inner.aclose()
         finally:
+            _adaptive_exemplars.end_probe_turn(_probe_token)
             if _fast_entered:
                 _exit_fast_mode_limits(orchestrator)
             with _turn_state_lock:
