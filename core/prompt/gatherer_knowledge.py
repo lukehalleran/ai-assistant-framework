@@ -194,6 +194,34 @@ def _is_non_contact_entity(graph_memory, name: str) -> bool:
         return False
 
 
+def _is_known_person(graph_memory, name: str) -> bool:
+    """True when ``name`` is a KNOWN PERSON: a knowledge-graph entity of type
+    person (alias-resolved, read-only) or a name already in the Google
+    Contacts cache (cache-only, never an API call). 2026-10-20 (BC-04): the
+    passive email arm used to fire on any TitleCase token ("Python", "Oct").
+    Tries the whole phrase, then each word of it. Unknown → False."""
+    if not name or not name.strip():
+        return False
+    candidates = [name.strip()] + [w for w in name.split() if len(w) >= 3]
+    if graph_memory is not None:
+        for cand in candidates:
+            try:
+                eid = graph_memory.resolve_entity(cand)
+                if not isinstance(eid, str) or not eid.strip():
+                    continue
+                node = graph_memory.get_entity(eid)
+                et = getattr(node, "entity_type", None)
+                if isinstance(et, str) and et.strip().lower() == "person":
+                    return True
+            except Exception:  # degrades: graph lookup failure → try the contacts cache, may under-fire the email arm
+                continue
+    try:
+        from core.actions.google_contacts import is_cached_contact_name  # lazy import: cycle
+        return bool(is_cached_contact_name(name))
+    except Exception:  # degrades: contacts cache unreadable → name not known, email arm under-fires
+        return False
+
+
 def _upload_is_fresh(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     ts_raw = doc.get('metadata', {}).get('timestamp', '')
     try:
@@ -2314,6 +2342,10 @@ class KnowledgeRetrievalMixin:
                 contact_names = [
                     n for n in contact_names if not _is_non_contact_entity(_graph, n)
                 ]
+                # 2026-10-20 (BC-04): a proper-noun SHAPE is not a person — the
+                # arm opens only for a known person (graph person entity or a
+                # cached contact). "Python"/"Process"/"Oct" never fire it.
+                contact_names = [n for n in contact_names if _is_known_person(_graph, n)]
 
             if not email_cue and not contact_names:
                 # No signal to fetch emails

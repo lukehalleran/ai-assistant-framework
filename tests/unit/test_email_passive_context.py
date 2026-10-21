@@ -189,6 +189,14 @@ class TestCoverageAndContactIdentity:
 
         gatherer = gk.KnowledgeRetrievalMixin.__new__(gk.KnowledgeRetrievalMixin)
         gatherer._distress_active = False
+        # 2026-10-20 (BC-04): the passive contact arm needs a KNOWN PERSON, so
+        # these name-anchored scenarios register "Morgan" as a person entity.
+        from types import SimpleNamespace
+        _graph = SimpleNamespace(
+            resolve_entity=lambda m: "morgan" if m.lower() == "morgan" else None,
+            get_entity=lambda eid: SimpleNamespace(entity_type="person"),
+        )
+        gatherer.memory_coordinator = SimpleNamespace(graph_memory=_graph)
         return asyncio.run(
             gk.KnowledgeRetrievalMixin.get_relevant_emails(gatherer, query))
 

@@ -173,7 +173,10 @@ class TestContactsErrorDetail:
     @pytest.mark.asyncio
     async def test_success_clears_previous_error(self):
         mock_auth = _mock_auth()
-        bad_client = _mock_httpx_client(_PERMISSION_DENIED_BODY, status_code=403)
+        # 2026-10-20: a PERMISSION_DENIED 403 is now remembered for the process
+        # (BC-69), so the transient error that a later success clears is a 503.
+        bad_client = _mock_httpx_client(
+            {"error": {"status": "UNAVAILABLE", "message": "try later"}}, status_code=503)
         with patch("config.app_config.GOOGLE_CONTACTS_ENABLED", True), \
              patch("core.actions.google_auth.get_google_auth", return_value=mock_auth), \
              patch("httpx.AsyncClient", return_value=bad_client):

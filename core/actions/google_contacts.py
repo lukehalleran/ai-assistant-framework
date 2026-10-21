@@ -16,6 +16,7 @@ Module Contract
 """
 
 import asyncio
+import re
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -42,6 +43,17 @@ _warmed_up: bool = False
 # visible without reading logs. Diagnostic only — never gates behavior,
 # and no auth/retry logic changes with it.
 _last_error: Optional[str] = None
+
+# 2026-10-20 (BC-69): a People API that is DISABLED for the Cloud project (or
+# a permission-denied grant) is a configuration fact, not a transient fault —
+# every later call in this process would fail the same way and log the same
+# two warning lines per fire. endpoint -> why; cleared only by clear_cache().
+_unavailable_endpoints: Dict[str, str] = {}
+
+# Structured Google error markers that mean "permanently unavailable for this
+# process" (parsed from error.status / error.details[].reason, never prose).
+_PERMANENT_ERROR_STATUSES = frozenset({"PERMISSION_DENIED", "SERVICE_DISABLED"})
+_PERMANENT_ERROR_REASONS = frozenset({"SERVICE_DISABLED", "ACCESS_NOT_CONFIGURED"})
 
 # Google error message bodies can be long HTML-flavored prose; keep the
 # warning/health line readable.
@@ -195,9 +207,29 @@ async def resolve_contact(
     return results
 
 
+def is_cached_contact_name(name: str) -> bool:
+    """True when ``name`` (a phrase or any single word of it) is a word in the
+    display name or address of a contact already held in the local cache.
+
+    Cache-only by contract: this never calls the API, so it is safe to use as
+    a deterministic "is this a known person" test on the prompt-build path.
+    """
+    words = [w for w in re.split(r"\s+", (name or "").strip()) if len(w) >= 2]
+    if not words:
+        return False
+    for results in list(_cache.values()):
+        for contact in results or []:
+            hay = f"{contact.get('name', '')} {contact.get('email', '')}"
+            for w in words:
+                if re.search(r"\b" + re.escape(w) + r"\b", hay, re.IGNORECASE):
+                    return True
+    return False
+
+
 def clear_cache() -> None:
     """Clear the contacts cache."""
     global _cache, _cache_ts, _warmed_up, _last_error
+    _unavailable_endpoints.clear()
     _cache.clear()
     _cache_ts.clear()
     _warmed_up = False
@@ -257,6 +289,13 @@ async def _search_api(
     if cache_key in _cache and (time.time() - _cache_ts.get(cache_key, 0)) < _CACHE_TTL_SECONDS:
         return _cache[cache_key][:max_results]
 
+    if endpoint in _unavailable_endpoints:
+        logger.debug(
+            f"[GoogleContacts] {endpoint} lookup skipped (unavailable this process): "
+            f"{_unavailable_endpoints[endpoint]}"
+        )
+        return []
+
     from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
@@ -311,6 +350,18 @@ async def _search_api(
         if resp.status_code != 200:
             detail = _describe_api_error(resp)
             _last_error = f"HTTP {resp.status_code} ({endpoint}) — {detail}"
+            if resp.status_code == 403 and _is_permanent_api_error(resp):
+                _unavailable_endpoints[endpoint] = detail
+                flag = (
+                    "GOOGLE_CONTACTS_ENABLED" if endpoint == "saved"
+                    else "GOOGLE_OTHER_CONTACTS_ENABLED"
+                )
+                logger.warning(
+                    f"[GoogleContacts] {endpoint} lookups disabled for this process — "
+                    f"{detail}. Enable the People API in the Google Cloud project, "
+                    f"or set {flag} to false to silence this."
+                )
+                return []
             logger.warning(f"[GoogleContacts] API error: HTTP {resp.status_code} ({endpoint}) — {detail}")
             return []
 
@@ -331,6 +382,25 @@ async def _search_api(
         # unavailable_reason() hook must see, not a silent empty result.
         _last_error = f"Google Contacts search failed ({endpoint}): {type(e).__name__}"
         return []
+
+
+def _is_permanent_api_error(resp) -> bool:
+    """True when a non-200 People API body carries a structured marker that the
+    API is disabled / the grant is denied (error.status or a details[].reason).
+    Unparseable bodies are NOT permanent (a transient proxy 403 must retry)."""
+    try:
+        body = resp.json()
+    except Exception:  # degrades: unparseable body is treated as transient, retried next call
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return False
+    if str(error.get("status") or "").strip().upper() in _PERMANENT_ERROR_STATUSES:
+        return True
+    for d in error.get("details") or []:
+        if isinstance(d, dict) and str(d.get("reason") or "").strip().upper() in _PERMANENT_ERROR_REASONS:
+            return True
+    return False
 
 
 def _describe_api_error(resp) -> str:
