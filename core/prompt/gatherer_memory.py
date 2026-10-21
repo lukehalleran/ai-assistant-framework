@@ -1187,10 +1187,16 @@ class MemoryRetrievalMixin:
             sensitive_open = bool(getattr(self, "_distress_active", False)) or is_profile_history_ask(query)
             _token = SENSITIVE_OPEN.set(sensitive_open)
             try:
-                profile_context = self.user_profile.get_context_injection(
+                # BC-41 (2026-10-21): the bge encode of profile facts held the
+                # loop 268 ms. Worker thread; asyncio.to_thread copies the
+                # context, so SENSITIVE_OPEN set above is still visible there.
+                # Shared state: only the module embedding caches (single-key
+                # assignment; a racing clear() degrades to word-overlap rank).
+                profile_context = await asyncio.to_thread(
+                    self.user_profile.get_context_injection,
                     max_tokens=max_tokens,
                     query=query,
-                    facts_per_category=USER_PROFILE_FACTS_PER_CATEGORY
+                    facts_per_category=USER_PROFILE_FACTS_PER_CATEGORY,
                 )
             finally:
                 SENSITIVE_OPEN.reset(_token)

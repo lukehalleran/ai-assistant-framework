@@ -17,6 +17,7 @@ with the candidates listed, and nothing is touched. Delete is irreversible,
 so ambiguity never resolves by guessing.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -132,7 +133,7 @@ async def update_calendar_event(proposal: ActionProposal) -> ActionResult:
     new_end_time (start/end must be supplied TOGETHER), new_description,
     new_location. all_day + time_zone qualify the new times.
     """
-    creds, err = _prereq_error(proposal)
+    creds, err = await asyncio.to_thread(_prereq_error, proposal)  # BC-41: get_credentials may refresh over the network
     if err:
         return err
     p = proposal.params or {}
@@ -219,7 +220,7 @@ async def delete_calendar_event(proposal: ActionProposal) -> ActionResult:
     Irreversible — executes only on an exact single match; the result message
     names exactly what was deleted.
     """
-    creds, err = _prereq_error(proposal)
+    creds, err = await asyncio.to_thread(_prereq_error, proposal)  # BC-41: get_credentials may refresh over the network
     if err:
         return err
     p = proposal.params or {}

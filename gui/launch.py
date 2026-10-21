@@ -386,6 +386,10 @@ def _run_model_warmup(orchestrator):
         # 4) Web-search trigger anchor embeddings (computed once per process).
         try:
             web_search_trigger._get_search_anchors()
+            # BC-41 (2026-10-21): also run the deployed per-query boost once so
+            # the cached MiniLM embedder's first query encode (device move,
+            # 836 ms LoopStall 2026-10-20) is paid here, not on turn 1.
+            web_search_trigger._semantic_search_boost("warm up")
         except Exception as e:
             print(f"[Warmup] anchors skip: {e}")
         # 5) Wiki FAISS cold-touch (USB-backed index): the first semantic
