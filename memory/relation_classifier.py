@@ -67,10 +67,15 @@ Notes
 
 from __future__ import annotations
 
+import functools
 import re
 from typing import Optional
 
-from memory.user_profile_schema import is_emotional_state_relation, is_living_situation_relation
+from memory.user_profile_schema import (
+    RELATION_CATEGORY_MAP,
+    is_emotional_state_relation,
+    is_living_situation_relation,
+)
 
 # --------------------------------------------------------------------------
 # Standard-ephemeral patterns (lifted verbatim from user_profile so profile
@@ -110,6 +115,86 @@ _EPHEMERAL_SUBSTRINGS = (
     "laundry", "dishes", "chore", "vacuum", "groceries", "grocery",
     "tidied", "tidying", "cleaned", "cleaning", "cleans",
 )
+
+# Time-bounded-state, transit and completed-act categories (2026-10-20, class:
+# BC-26). Live profile lines `showered`, `rested_until` and `leaving_for_*` all
+# classified durable (TTL None) and rendered forever. Each category below is a
+# GRAMMATICAL/semantic class with a rationale, not a list of the sightings:
+#
+# (a) Time-bounded state — a relation whose LAST token is a temporal
+#     preposition/subordinator that names the END of a state ("rested_until",
+#     "off_till"). The value only holds until a moment that then passes. `since`
+#     is deliberately NOT here: it anchors a START ("friends_since" stays true).
+_TIME_BOUND_TAILS = frozenset({"until", "till", "untill"})
+# (b) Departure/arrival movement — progressive-motion frames whose truth is the
+#     present trip ("leaving_for_work", "heading_to_class", "arriving_late").
+#     Habitual travel uses a different relation shape (commutes_to, goes_to).
+_TRANSIT_PREFIXES = (
+    "leaving_for", "leaving_to", "heading_", "going_to", "arriving_",
+    "arrived_", "departing_", "on_my_way",
+)
+# (c) A single completed bodily/daily act named by a bare past-tense verb
+#     ("showered", "napped", "ate"). Decided by the parse of the relation's head
+#     word (VBD/VBN). Life-course status transitions are ALSO bare past
+#     participles but stay true for good — they are excluded by category.
+_LIFE_COURSE_PARTICIPLES = frozenset({
+    "married", "divorced", "widowed", "engaged", "separated", "born", "raised",
+    "adopted", "graduated", "enrolled", "enlisted", "retired", "hired",
+    "fired", "promoted", "diagnosed", "immigrated", "emigrated", "relocated",
+    "moved", "founded", "deceased", "died", "baptized", "ordained",
+})
+# Adjective-capable participles naming a STANDING condition or credential
+# ("employed", "disabled", "licensed"): a parse tags them VBD/VBN exactly like
+# an act, but the state persists until revised, so they stay durable.
+_STANDING_STATE_PARTICIPLES = frozenset({
+    "employed", "disabled", "licensed", "certified", "registered", "insured",
+    "qualified", "known", "related", "based", "vaccinated", "incarcerated",
+})
+
+
+def _head_is_bare_past_verb(rel: str) -> bool:
+    """True for a one-word relation that is a past/participle ACTION verb (the
+    parse, not a suffix test: "bed", "hundred" end in "ed" but are nouns;
+    "unemployed" has no verb lemma of its own, so it fails the lemma test)."""
+    if "_" in rel or not rel.isalpha() or rel in _LIFE_COURSE_PARTICIPLES \
+            or rel in _STANDING_STATE_PARTICIPLES:
+        return False
+    # Curated names (the profile schema's own map, the multi-valued event
+    # relations such as `completed`/`attended`) were classified on purpose; the
+    # parse only judges names nobody curated.
+    if rel in RELATION_CATEGORY_MAP or rel in MULTI_VALUED_RELATIONS:
+        return False
+    return _is_past_action_verb(rel)
+
+
+@functools.lru_cache(maxsize=1024)
+def _is_past_action_verb(word: str) -> bool:
+    """Parse test, cached per distinct relation name. The word must (1) be an
+    inflected main verb in "I <word> yesterday" (VBD/VBN, pos VERB — not an
+    auxiliary, lemma differs from the surface form, so noun/identifier look-
+    alikes drop out). Unavailable spaCy or any
+    failure -> False: an unknown relation stays durable."""
+    try:
+        from memory.fact_extractor import _get_nlp  # lazy import: cycle + startup-cost
+        nlp = _get_nlp()
+        if nlp is None:
+            return False
+        verb = nlp(f"I {word} yesterday.")[1]
+        if verb.tag_ not in ("VBD", "VBN") or verb.pos_ != "VERB":
+            return False
+        return verb.lemma_.lower() != word
+    except Exception:  # degrades: bare past-tense relation stays durable
+        return False
+
+
+def _is_transient_act_or_movement(rel: str) -> bool:
+    parts = rel.split("_")
+    if parts[-1] in _TIME_BOUND_TAILS and len(parts) > 1:
+        return True
+    if any(rel.startswith(p) for p in _TRANSIT_PREFIXES):
+        return True
+    return _head_is_bare_past_verb(rel)
+
 
 # Note: bare "appointment" is a one-time event (sibling of "meeting" and of the
 # already-ephemeral "*_appointment" suffix / "appointment_time"). It must age out
@@ -387,6 +472,8 @@ def _is_standard_ephemeral(rel: str) -> bool:
     if any(rel.endswith(s) for s in _EPHEMERAL_SUFFIXES):
         return True
     if any(tok in rel for tok in _EPHEMERAL_SUBSTRINGS):
+        return True
+    if _is_transient_act_or_movement(rel):
         return True
     return False
 

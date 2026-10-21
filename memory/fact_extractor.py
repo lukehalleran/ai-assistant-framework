@@ -414,6 +414,22 @@ def _past_tense(verb) -> bool:
     return verb.tag_ == "VBD"
 
 
+# Temporal subordinators under which a PRESENT-PERFECT clause is prospective
+# ("when/after/once I have finished" = at some later moment), while the past
+# perfect ("had finished") and simple past report what happened.
+_PERFECT_TEMPORAL_MARKS = frozenset({"once", "when", "whenever", "after"})
+
+
+def _present_perfect(verb) -> bool:
+    """Participle carrying a PRESENT-tense ``have`` auxiliary (have/has/'ve)."""
+    if verb.tag_ != "VBN":
+        return False
+    return any(
+        c.dep_ == "aux" and c.lemma_ == "have" and "Pres" in c.morph.get("Tense")
+        for c in verb.children
+    )
+
+
 def _irrealis_conflict(source_text: str, obj: str, nlp=None) -> bool:
     """True when the sentence carrying ``obj`` is conditional/irrealis."""
     nlp = nlp or _get_nlp()
@@ -438,14 +454,21 @@ def _irrealis_conflict(source_text: str, obj: str, nlp=None) -> bool:
 
         def _cond_mark(adv) -> bool:
             for m in adv.children:
-                if m.dep_ == "mark":
+                # "when" parses as an advmod, the other subordinators as mark
+                # (an advmod "once" is the adverb in "I once lived …")
+                if m.dep_ == "mark" or (m.dep_ == "advmod" and m.lower_ == "when"):
                     w = m.lower_
-                    if w in _COND_MARKS:
+                    if w in _COND_MARKS and m.dep_ == "mark":
                         return True
                     if (w in _TEMPORAL_MARKS or (
                             w == "when" and any(
                                 t.lower_ == "then" for t in sent))):
                         return not _past_tense(adv)
+                    # Present perfect under a temporal subordinator ("When /
+                    # After I have finished X, I'll …") is a PROSPECTIVE
+                    # completion, not a report (2026-10-20, BC-51).
+                    if w in _PERFECT_TEMPORAL_MARKS and _present_perfect(adv):
+                        return True
             return False
 
         # modal irrealis on the governing verb
@@ -455,13 +478,70 @@ def _irrealis_conflict(source_text: str, obj: str, nlp=None) -> bool:
             return True
         # antecedent: verb inside a conditional advcl
         vchain = [verb] + list(verb.ancestors)
-        if any(a.dep_ == "advcl" and _cond_mark(a) for a in vchain):
+        # A clause carrying a conditional/temporal subordinator IS the
+        # subordinate clause whatever label the parser gives it: a fragment
+        # ("Once I have finished the draft") parses it as ROOT, and a speaker
+        # label before it makes it an `acl` of the label.
+        if any(_cond_mark(a) for a in vchain):
             return True
         # consequent: main-clause verb of a sentence with a conditional advcl
+        # (the governing verb itself, not only the sentence ROOT: a "User:" /
+        # speaker label before the sentence makes the label the root and the
+        # real main clause one of its dependents)
         root = sent.root
-        if any(c.dep_ == "advcl" and _cond_mark(c) for c in root.children):
+        if any(c.dep_ == "advcl" and _cond_mark(c)
+               for v in (root, verb) for c in v.children):
             return True
     except Exception:  # degrades: conditional guard bypassed, triple kept
+        return False
+    return False
+
+
+def _interrogative_conflict(source_text: str, obj: str, nlp=None) -> bool:
+    """True when the sentence carrying ``obj`` is a QUESTION (2026-10-17,
+    class: BC-51). A question asserts nothing about the asker: the shutdown
+    regex path stored `exactly | is_a | the difference between …`,
+    `user | goal | edit` ("why would i want to edit…") and `user | is | linux`
+    from questions. Interrogative = the sentence ends with "?", or it opens
+    with a wh-word (WDT/WP/WP$/WRB), or it opens with an auxiliary that
+    precedes its own subject (inversion: "Do you remember…", "Is the …").
+    Decided per SENTENCE from the parse; a declarative in a separate sentence
+    ("I finished it. Do you remember?") still extracts. A statement EMBEDDED
+    in a question ("Do you remember I finished it?") is dropped with it: the
+    user presupposed rather than reported it, and the lost fact comes back the
+    next time they state it plainly. Under-fires when the object is not found
+    in a parsed sentence."""
+    nlp = nlp or _get_nlp()
+    o = re.sub(r"\s+", " ", (obj or "")).strip().lower()
+    text = re.sub(r"\s+", " ", source_text or "").strip()
+    if nlp is None or not o or not text:
+        return False
+    try:
+        pos = text.lower().find(o)
+        if pos < 0:
+            return False
+        doc = nlp(text)
+        tok = next((t for t in doc if t.idx <= pos < t.idx + len(t.text)), None)
+        if tok is None:
+            return False
+        sent = tok.sent
+        words = [t for t in sent if not t.is_punct and not t.is_space]
+        if not words:
+            return False
+        if sent.text.rstrip().endswith("?"):
+            return True
+        first = words[0]
+        # wh-opener of the MAIN clause ("What exactly is …", "Why would I …");
+        # a free relative ("What I need is a break") hangs off a subordinate verb
+        if first.tag_ in ("WDT", "WP", "WP$", "WRB") and first.head.dep_ == "ROOT":
+            return True
+        if first.pos_ in ("AUX", "VERB") and first.dep_ in ("aux", "auxpass", "ROOT"):
+            head = first if first.dep_ == "ROOT" else first.head
+            return any(
+                c.dep_ in ("nsubj", "nsubjpass") and c.i > first.i
+                for c in head.children
+            )
+    except Exception:  # degrades: question guard bypassed, triple kept
         return False
     return False
 
@@ -1258,6 +1338,14 @@ class FactExtractor:
             if _irrealis_conflict(text, o3, nlp=nlp_ref):
                 logger.info(
                     f"[FactExtractor] Blocked conditional/irrealis fact: "
+                    f"subj='{s3}' rel='{r3}' obj='{o3}'"
+                )
+                continue
+
+            # Question guard: a question asserts nothing about the asker.
+            if _interrogative_conflict(text, o3, nlp=nlp_ref):
+                logger.info(
+                    f"[FactExtractor] Blocked fact from a question: "
                     f"subj='{s3}' rel='{r3}' obj='{o3}'"
                 )
                 continue
