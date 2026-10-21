@@ -74,10 +74,13 @@ def test_subject_kind_public_event_is_not_flagged(span, wrapped):
 
 @pytest.mark.parametrize("wrapped", [False, True])
 @pytest.mark.parametrize("span", SPANS)
-def test_misbehaving_model_completion_kind_stays_flagged(span, wrapped):
-    # Documents that the prompt, not a backstop, is the fix.
+def test_misbehaving_model_completion_kind_is_dropped_by_the_grammar_backstop(span, wrapped):
+    # 2026-10-20 (CLM5, BC-84/BC-58): the kind label no longer decides. A public
+    # event has no personal subject and no time, so the deterministic backstop
+    # drops it even when the model mislabels it "completion".
     result = _audit(span, "completion", wrapped=wrapped)
-    assert [" ".join(f.split()) for f in result.receipt()["flagged_spans"]] == [span]
+    assert result.receipt()["flagged_spans"] == []
+    assert result.subject_drops == 1
 
 
 @pytest.mark.parametrize("wrapped", [False, True])

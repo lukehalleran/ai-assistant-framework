@@ -664,19 +664,105 @@ def _has_time_reference(span: str) -> bool:
     return False
 
 
-def _is_subject_matter_span(span: str, kind: str) -> bool:
-    """True when a non-completion/plan claim names no person and no time."""
-    if _is_completion_kind(kind):
+# Second-person pronouns are generic in tutoring prose ("you can find ...");
+# for completion-kind spans they only matter when a PAST verb takes them as its
+# subject (_is_personal_completion), so they leave the blanket person check.
+_GENERIC_YOU_RE = re.compile(r"\b(?:you|your|yours|yourself|yourselves)\b", re.IGNORECASE)
+_NON_PERSON_ENTS = frozenset({"ORG", "PRODUCT", "WORK_OF_ART", "LAW", "EVENT", "LANGUAGE"})
+_PERSONAL_SUBJECT_WORDS = frozenset({"i", "we", "you", "he", "she", "they"})
+
+
+def _get_span_nlp():
+    """The ONE spaCy accessor (fact_extractor's lazy singleton); None = unavailable."""
+    try:
+        from memory.fact_extractor import _get_nlp  # lazy import: startup-cost
+        return _get_nlp()
+    except Exception:  # degrades: unavailable parser => fail closed (span stays personal)
+        return None
+
+
+def _is_personal_subject(token: Any, user_name: str) -> bool:
+    if token.pos_ == "PRON" and token.lower_ in _PERSONAL_SUBJECT_WORDS:
+        return True
+    if user_name and token.text.lower() == user_name.lower():
+        return True
+    # A proper noun is a person unless the NER tags it as a non-person entity
+    # (ORG/PRODUCT/GPE...): "Python 3.13 shipped ..." is not someone's act.
+    return token.ent_type_ == "PERSON" or (token.pos_ == "PROPN" and not token.ent_type_)
+
+
+def _is_personal_completion(span: str) -> bool:
+    """True when a clause is a past/perfect act whose subject is a person (or elided).
+
+    Decided from grammar, never from the auditor's kind label. FAILS CLOSED:
+    no parser / a parser error answers True (the span stays flagged).
+    """
+    nlp = _get_span_nlp()
+    if nlp is None:
+        return True
+    try:
+        doc = nlp(span)
+        user_name = (get_user_display_name() or "").strip()
+        # A span that names a person is never subject matter, in any tense: a
+        # proper noun acting as a clause subject ("Rowan has the forms.").
+        # NER labels are too noisy to trust alone ("Queue" -> PERSON, a name ->
+        # GPE), so subject position decides; entities typed as organisations or
+        # products ("GIL disabled") are the only exclusion.
+        for tok in doc:
+            if (tok.pos_ == "PROPN" and tok.dep_ in ("nsubj", "nsubjpass")
+                    and tok.ent_type_ not in _NON_PERSON_ENTS):
+                return True
+        for sent in doc.sents:
+            first_word = next((t for t in sent if t.is_alpha), None)
+            for tok in sent:
+                if tok.pos_ not in ("VERB", "AUX"):
+                    continue
+                morph = tok.morph.to_dict()
+                past = morph.get("Tense") == "Past" and morph.get("VerbForm") == "Fin"
+                perfect = morph.get("VerbForm") == "Part" and any(
+                    c.dep_ in ("aux", "auxpass") and c.lemma_ == "have" for c in tok.children)
+                elided_opener = (
+                    morph.get("Tense") == "Past" and morph.get("VerbForm") == "Part"
+                    and tok.dep_ in ("ROOT", "conj") and first_word is not None
+                    and tok.i == first_word.i
+                    and not any(c.dep_ in ("nsubj", "nsubjpass", "auxpass") for c in tok.children)
+                )  # "Finished the report." parses as a bare past participle
+                if not (past or perfect or elided_opener):
+                    continue
+                subj = [c for c in tok.children if c.dep_ in ("nsubj", "nsubjpass")]
+                if not subj and tok.dep_ == "conj":
+                    subj = [c for c in tok.head.children if c.dep_ in ("nsubj", "nsubjpass")]
+                if subj:
+                    if any(_is_personal_subject(c, user_name) for c in subj):
+                        return True
+                elif tok.dep_ in ("ROOT", "conj") and first_word is not None and tok.i == first_word.i:
+                    return True  # elided subject opening the sentence ("Finished HW6.")
         return False
+    except Exception:  # degrades: parse failure => fail closed (span stays personal)
+        return True
+
+
+def _is_subject_matter_span(span: str, kind: str) -> bool:
+    """True when a claim is about a subject, not a person's act.
+
+    Non-completion kinds: names no person and no time. Completion kinds (the
+    auditor labels tutoring prose "completion"): subject matter unless it has
+    a time reference, names a non-generic person, or some clause is a personal
+    past/perfect act (``_is_personal_completion``). Plan/cancel never qualify.
+    """
     tokens = [t for t in re.split(r"[\s/_,-]+", kind.lower()) if t]
     if any(t in ("plan", "cancel") or t.startswith("cancel") for t in tokens):
         return False
-    if _PERSON_REF_RE.search(span):
+    completion = _is_completion_kind(kind)
+    person_text = _GENERIC_YOU_RE.sub(" ", span) if completion else span
+    if _PERSON_REF_RE.search(person_text):
         return False
     name = (get_user_display_name() or "").strip()
     if name and re.search(r"\b" + re.escape(name) + r"\b", span, re.IGNORECASE):
         return False
-    return not _has_time_reference(span)
+    if _has_time_reference(span):
+        return False
+    return not (completion and _is_personal_completion(span))
 
 
 def _kind_status_summary(claims: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -971,8 +1057,9 @@ async def audit_personal_claims(
         logger.debug(f"[PersonalClaim] {'output_truncated' if truncated_output else 'invalid_json'}: {exc}")
         return PersonalClaimResult("failed", "output_truncated" if truncated_output else "invalid_json", elapsed_s=perf_counter() - started,
                                    evidence_truncated=truncated)
-    claims, counts, drops = _validate_claims(
-        response, payload, evidence,
+    # Off the event loop: the subject-matter backstop may parse spans with spaCy.
+    claims, counts, drops = await asyncio.to_thread(
+        _validate_claims, response, payload, evidence,
         overlap_threshold=overlap_threshold, min_claim_tokens=min_claim_tokens,
     )
     if drops:
