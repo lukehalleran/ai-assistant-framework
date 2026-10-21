@@ -906,8 +906,11 @@ class MultiCollectionChromaStore:
                     return collection_name, []
 
                 # Check if collection is empty
-                collection = self._get_collection(collection_name)
-                count = collection.count()
+                # (lazy open + count are sync Chroma calls -> off the loop, BC-41)
+                def _open_and_count():
+                    return self._get_collection(collection_name).count()
+
+                count = await asyncio.to_thread(_open_and_count)
 
                 if count == 0:
                     logger.debug(f"[BatchQuery] Collection {collection_name} is empty")
