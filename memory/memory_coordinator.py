@@ -210,6 +210,8 @@ class MemoryCoordinator:
             self.graph_memory, self.entity_resolver = graph_future.result()
             self.user_profile = profile_future.result()
             self.claim_index = claims_future.result()
+        from utils.known_person import register_graph  # lazy import: layering
+        register_graph(self.graph_memory)
 
         # User-claim ledger (2026-10-20, BC-75/BC-52): when enabled, load the store NOW so a
         # corrupt or newer-versioned file aborts startup with an actionable message (main.py's

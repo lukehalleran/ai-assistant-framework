@@ -230,6 +230,44 @@ def _clause_around(text: str, start: int, end: int) -> tuple:
     return text[lo:hi], start - lo, end - lo
 
 
+_REPORTER_SUBJECTS = frozenset({"i", "we"})
+
+
+def _clause_reports_done_act(clause: str) -> bool:
+    """True when the clause is a first-person declarative reporting a finished
+    act: subject I/we governing a past-tense or perfect verb, and not a
+    question. Grammar (spaCy tense/aux), not phrases: "I did the next one
+    already" is a report even though every word besides the navigation phrase
+    is a function word (2026-10-21, class: BC-06). No parser -> False (the
+    caller's earlier behaviour)."""
+    if "?" in clause:
+        return False
+    try:
+        from memory.fact_extractor import _get_nlp  # lazy import: startup-cost (spaCy load)
+        nlp = _get_nlp()
+    except Exception:  # degrades: no parser -> clause not recognised as a report, nav stays as before
+        return False
+    if nlp is None:
+        return False
+    try:
+        doc = nlp(clause.strip())
+    except Exception:  # degrades: parse failure -> clause not recognised as a report
+        return False
+    for tok in doc:
+        if tok.dep_ not in ("nsubj", "nsubjpass") or tok.lower_ not in _REPORTER_SUBJECTS:
+            continue
+        verb = tok.head
+        if verb.pos_ not in ("VERB", "AUX"):
+            continue
+        morph = verb.morph.to_dict()
+        past = morph.get("Tense") == "Past" and morph.get("VerbForm", "Fin") == "Fin"
+        perfect = morph.get("VerbForm") == "Part" and any(
+            c.dep_ in ("aux", "auxpass") and c.lemma_ == "have" for c in verb.children)
+        if past or perfect:
+            return True
+    return False
+
+
 def _clause_is_navigation_request(clause: str, ms: int, me: int, *, terse: bool) -> bool:
     """A navigation phrase is a REQUEST when its clause is request-shaped
     ("go to question 3", "what's the next one") or — in a terse message only —
@@ -240,6 +278,8 @@ def _clause_is_navigation_request(clause: str, ms: int, me: int, *, terse: bool)
     if is_request_shaped(clause):
         return True
     if not terse:
+        return False
+    if _clause_reports_done_act(clause):
         return False
     rest = (clause[:ms] + " " + clause[me:]).lower()
     lex = _function_word_lexicon()
