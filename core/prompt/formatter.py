@@ -519,6 +519,7 @@ def _sanitize_embedded_headers(text: str) -> str:
             r'\[RELEVANT INFORMATION[^\]]*\]',
             r'\[BACKGROUND KNOWLEDGE[^\]]*\]',
             r'\[USER PROFILE[^\]]*\]',
+            r'\[YOUR STATED FIGURES[^\]]*\]',
             r'\[TIME CONTEXT[^\]]*\]',
             r'\[CURRENT USER QUERY[^\]]*\]',
             r'\[CURRENT QUERY[^\]]*\]',
@@ -1236,6 +1237,13 @@ class PromptFormatter:
                 "question; ignore any that do not.\n"
                 + "\n\n".join(stated_lines)
             )
+
+        # The user's own figures (2026-10-20, BC-75/BC-52/BC-46): deterministic lines from the
+        # claim ledger (builder-gated by claim_ledger.enabled + render_block). The block is the
+        # structural input; core/prompt/section_instructions.py says how to use it.
+        stated_figures = [str(l) for l in (context.get("stated_figures") or []) if str(l).strip()]
+        if stated_figures:
+            sections.append(f"[YOUR STATED FIGURES] n={len(stated_figures)}\n" + "\n".join(stated_figures))
 
         # Relevant memories
         memories = context.get("memories", []) or []

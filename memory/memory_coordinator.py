@@ -44,6 +44,7 @@ from utils.topic_manager import TopicManager
 import utils.retrieval_outcome as retrieval_outcome
 import utils.time_manager as time_manager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+import memory.claim_ledger_store as claim_ledger_store
 import memory.claim_tracker as claim_tracker
 import memory.context_surfacer as context_surfacer
 from memory.fact_extractor import FactExtractor
@@ -66,6 +67,23 @@ logger = get_logger("memory_coordinator")
 # ---------------------------
 # Memory Coordinator
 # ---------------------------
+
+def _open_claim_ledger() -> None:
+    """Open the user-claim ledger at startup when it is enabled (2026-10-20, BC-75/BC-52).
+
+    A corrupt or newer-versioned store raises CorruptStoreError/StoreVersionError so
+    main.py aborts startup with an actionable message instead of every turn's write
+    failing quietly. Any other failure degrades: the writer retries the open per turn
+    and reports status=error."""
+    if not app_config.CLAIM_LEDGER_ENABLED:
+        return
+    try:
+        claim_ledger_store.get_ledger()
+    except (CorruptStoreError, StoreVersionError):
+        raise
+    except Exception as e:  # degrades: ledger writes retry the open on each turn and report status=error
+        logger.warning(f"[MemoryCoordinator] Claim ledger open failed (non-fatal): {type(e).__name__}")
+
 
 class MemoryCoordinator:
     """
@@ -193,6 +211,11 @@ class MemoryCoordinator:
             self.user_profile = profile_future.result()
             self.claim_index = claims_future.result()
 
+        # User-claim ledger (2026-10-20, BC-75/BC-52): when enabled, load the store NOW so a
+        # corrupt or newer-versioned file aborts startup with an actionable message (main.py's
+        # CorruptStoreError/StoreVersionError path) instead of failing on every turn's write.
+        _open_claim_ledger()
+
         # Initialize fact verification gate (pre-storage conflict checking)
         self.fact_verifier = None
         try:
@@ -216,6 +239,7 @@ class MemoryCoordinator:
             graph_memory=self.graph_memory,
             entity_resolver=self.entity_resolver,
             fact_verifier=self.fact_verifier,
+            model_manager=model_manager,
         )
         # Connect thread detection to storage
         self._storage._thread_detect_fn = self.thread_manager.detect_or_create_thread
@@ -360,6 +384,7 @@ class MemoryCoordinator:
         session_id: Optional[str] = None,
         provenance: Optional[dict] = None,
         user_text: Optional[str] = None,
+        ledger_receipt: Optional[dict] = None,
     ) -> Optional[str]:
         """
         Persist a turn in both corpus & Chroma with computed metadata.
@@ -382,6 +407,7 @@ class MemoryCoordinator:
                 session_id=session_id,
                 provenance=provenance,
                 user_text=user_text,
+                **({"ledger_receipt": ledger_receipt} if ledger_receipt is not None else {}),
             )
         finally:
             # Sync back even on a raise [F10a], or a failed turn drops from

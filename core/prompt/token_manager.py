@@ -86,6 +86,10 @@ PRIORITY_ORDER = [
     # 2026-10-12 (B4): the user's OWN statements relevant to a factual-recall
     # question about them - tiny (<=3 short lines), outranks assistant history.
     ("user_stated_evidence",  8),
+    # 2026-10-20 (BC-75/BC-52/BC-46/BC-99): [YOUR STATED FIGURES] -- the user's own
+    # figures with date + modality, <=12 short lines, capped at claim_ledger.max_block_tokens
+    # upstream. Same tier as the user's own recalled statements: outranks assistant history.
+    ("stated_figures",        8),
     ("recent_conversations",  7),
     # 2026-09-27 (BC-46, BC-30, BC-51): [EARLIER TODAY] recall-timeline lines
     # a truncated [RECENT CONVERSATION] window dropped (temporal_recall-only,
