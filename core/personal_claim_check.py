@@ -30,6 +30,8 @@ from typing import Any, Iterable, Mapping, Sequence
 # this module).
 from core.grounding_check import _locate_claim_sentence, _sentence_chunks
 import memory.graph_utils as graph_utils
+from utils.read_time_markers import strip_machinery
+from utils.trigger_match import normalize_ws
 from utils.user_identity import get_user_display_name
 
 logger = logging.getLogger(__name__)
@@ -519,6 +521,61 @@ def _locate_span(response: str, text: str, *, overlap_threshold: float,
     return span, "relocated"
 
 
+# Diagnostics only (2026-10-18/19/20, BC-84): WHY a cited quote is not an exact
+# span. One small fold table: typographic quotes/dashes/ellipsis -> ASCII.
+_TYPOGRAPHY_FOLD = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"',
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-",
+    "\u2014": "-", "\u2015": "-", "\u2212": "-",
+    "\u2026": "...", "\u00a0": " ",
+})
+QUOTE_MISS_PREFIX = "source quote is not exact"
+QUOTE_MISS_CATEGORIES = ("marker", "whitespace_typography", "case", "other_source", "absent")
+
+
+def _fold_typography(text: str) -> str:
+    return normalize_ws(text.translate(_TYPOGRAPHY_FOLD))
+
+
+def _classify_quote_miss(
+    quote: str, source_id: str, sources: Mapping[str, list[Mapping[str, Any]]],
+) -> str:
+    """Category of a quote that is NOT an exact span of its cited rows.
+
+    Pure diagnostics: the caller drops the reference either way. First
+    applicable category wins; see QUOTE_MISS_CATEGORIES.
+    """
+    rows = [_as_text(row.get("text")) for row in sources.get(source_id, ())]
+    folded_quote = _fold_typography(quote)
+    folded_rows = [_fold_typography(r) for r in rows]
+    stripped_rows = [strip_machinery(r) for r in rows]
+    if strip_machinery(quote) != quote or any(quote in s for s in stripped_rows):
+        return "marker"
+    if folded_quote and not any(folded_quote in r for r in folded_rows) and any(
+            folded_quote in _fold_typography(s) for s in stripped_rows):
+        return "marker"  # machinery in the row AND a wrapped/typographic quote
+    if folded_quote and any(folded_quote in r for r in folded_rows):
+        return "whitespace_typography"
+    if folded_quote and any(folded_quote.casefold() in r.casefold() for r in folded_rows):
+        return "case"
+    for other_id, other_rows in sources.items():
+        if other_id != source_id and any(quote in _as_text(r.get("text")) for r in other_rows):
+            return "other_source"
+    return "absent"
+
+
+def quote_miss_summary(drops: Iterable[str]) -> dict[str, int]:
+    """Count quote-miss categories in a drop-reason list (no quote text)."""
+    tally: dict[str, int] = {}
+    for reason in drops:
+        if not isinstance(reason, str) or not reason.startswith(QUOTE_MISS_PREFIX + " ("):
+            continue
+        category = reason[len(QUOTE_MISS_PREFIX) + 2:].rstrip(")")
+        tally[category] = tally.get(category, 0) + 1
+    return tally
+
+
 def _checked_references(
     refs: Any, sources: Mapping[str, list[Mapping[str, Any]]], drops: list[str],
 ) -> list[dict]:
@@ -545,7 +602,7 @@ def _checked_references(
             drops.append("unknown source id")
             continue
         if not any(quote in _as_text(row.get("text")) for row in rows):
-            drops.append("source quote is not exact")
+            drops.append(f"{QUOTE_MISS_PREFIX} ({_classify_quote_miss(quote, source_id, sources)})")
             continue
         checked.append({"source_id": source_id, "quote": quote})
     return checked
@@ -921,6 +978,9 @@ async def audit_personal_claims(
     if drops:
         logger.debug(f"[PersonalClaim] dropped {counts['dropped_claims']} claim(s), "
                      f"{counts['dropped_evidence']} reference(s): {sorted(set(drops))}")
+    misses = quote_miss_summary(drops)
+    if misses:
+        logger.debug("[PersonalClaim] quote misses: " + json.dumps(misses, sort_keys=True))
     logger.debug("[PersonalClaim] kinds: " + json.dumps(_kind_status_summary(claims), sort_keys=True))
     if payload["claims"] and not claims and counts["malformed"]:
         # The model broke the schema and nothing survived: nothing was checked.
