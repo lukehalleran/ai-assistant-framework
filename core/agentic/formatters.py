@@ -14,7 +14,7 @@ Contract:
 import re
 from typing import Dict, List
 
-from utils.temporal_resolver import anchor_temporal_references
+from utils.temporal_resolver import anchor_recalled_item, anchor_temporal_references
 
 TRUNCATION_MARKER = " [...truncated]"
 
@@ -114,8 +114,8 @@ class AgenticFormatter:
                     lines.append(f"   Response: {clip_text(response, 400)}")
         return "\n".join(lines)
 
-    def format_summaries(self, summaries: List[Dict]) -> str:
-        """Format summaries for the prompt."""
+    def format_summaries(self, summaries: List[Dict], now=None) -> str:
+        """Format summaries for the prompt (single-day spans date-anchored)."""
         if not summaries:
             return ""
         lines = []
@@ -123,6 +123,7 @@ class AgenticFormatter:
             content = s.get('content', s.get('summary', ''))
             ts = s.get('timestamp', '')
             if content:
+                content = anchor_recalled_item(content, s, now, kind="summary")
                 lines.append(f"{i}) [{ts}] {clip_text(content, 600)}")
         return "\n".join(lines)
 
@@ -152,8 +153,8 @@ class AgenticFormatter:
                 lines.append(f"{i}) [{ts}] {clip_text(content, 400)}")
         return "\n".join(lines)
 
-    def format_reflections(self, reflections: List[Dict]) -> str:
-        """Format reflections for the prompt."""
+    def format_reflections(self, reflections: List[Dict], now=None) -> str:
+        """Format reflections for the prompt (anchored to their creation day)."""
         if not reflections:
             return ""
         lines = []
@@ -161,6 +162,7 @@ class AgenticFormatter:
             content = r.get('content', r.get('reflection', ''))
             ts = r.get('timestamp', '')
             if content:
+                content = anchor_recalled_item(content, r, now, kind="reflection")
                 lines.append(f"{i}) [{ts}] {clip_text(content, 400)}")
         return "\n".join(lines)
 

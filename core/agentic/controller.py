@@ -4311,7 +4311,7 @@ What would you like to do?""")
         return self._formatter.format_memories(memories, now=datetime.now())
 
     def _format_summaries(self, summaries):
-        return self._formatter.format_summaries(summaries)
+        return self._formatter.format_summaries(summaries, now=datetime.now())
 
     def _format_personal_notes(self, notes):
         return self._formatter.format_personal_notes(notes)
@@ -4320,7 +4320,7 @@ What would you like to do?""")
         return self._formatter.format_dreams(dreams)
 
     def _format_reflections(self, reflections):
-        return self._formatter.format_reflections(reflections)
+        return self._formatter.format_reflections(reflections, now=datetime.now())
 
     def _is_low_quality_result(self, result, query: str):
         """Check if search result is low quality (empty, irrelevant, or sparse)."""
