@@ -186,7 +186,14 @@ RECENT_ALWAYS_ADMIT = _cfg_int("prompt_min_recent_floor", 5)
 # the very items the floor guarantees. Section -> memory-config key of its floor
 # (the SAME keys builder.PROMPT_MIN_*_FLOOR read; defaults mirror the builder's).
 # Listed in PRIORITY_ORDER order (reserve is granted first-come up to the bound).
+# 2026-10-20 (BC-99 reopened): `memories` joins -- 37 of 54 builds 10-18..10-20
+# emptied [RELEVANT MEMORIES] (priority 5 is reached after ~8.7K of the 10K budget
+# is spent), including distress turns and a recall question. Its floor is the
+# dedicated budget-RESERVE key prompt_memories_reserve_floor (2), distinct from
+# the builder's pre-budget top-up minimum prompt_memory_topup_floor.
+FLOOR_RESERVE_MAX_SHARE_DEFAULT = 0.25  # one value: YAML default, schema default, code fallback
 FLOOR_PROTECTED_SECTIONS = (
+    ("memories", "prompt_memories_reserve_floor", 2),
     ("recent_summaries", "prompt_min_summaries_floor", 2),
     ("recent_reflections", "prompt_min_reflections_floor", 1),
 )
@@ -519,9 +526,9 @@ class TokenManager:
         # `floor` items; sections admitted ahead of them see budget - reserve.
         _reserve: Dict[str, int] = {}
         try:
-            _max_share = float(_live_memory_cfg("prompt_floor_reserve_max_share", 0.15))
+            _max_share = float(_live_memory_cfg("prompt_floor_reserve_max_share", FLOOR_RESERVE_MAX_SHARE_DEFAULT))
         except (TypeError, ValueError):  # degrades: default share
-            _max_share = 0.15
+            _max_share = FLOOR_RESERVE_MAX_SHARE_DEFAULT
         _reserve_bound = int(_max_share * self.token_budget)
         _reserve_total = 0
         _floors: Dict[str, int] = {}

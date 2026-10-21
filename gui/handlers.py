@@ -3624,6 +3624,12 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
     return suffix
 
 
+def _memories_rendered_extra(orchestrator) -> dict:
+    """Debug/turn-record field: memories items that survived the token budget."""
+    n = getattr(orchestrator, '_last_memories_rendered', None)
+    return {'memories_rendered': int(n)} if isinstance(n, int) else {}
+
+
 def _capture_delivery(ctx, debug_record):
     """Freeze timing at final delivery, before background checks or next turn."""
     ctx.debug_record = debug_record
@@ -3637,6 +3643,8 @@ def _capture_delivery(ctx, debug_record):
     debug_record.update({k: v for k, v in ctx.telemetry.items()
                          if k.startswith(("grounding_", "personal_claim_"))
                          or k in {"wall_elapsed_s", "pre_prepare_elapsed_s", "citation_drift"}})
+    if isinstance(debug_record.get("memories_rendered"), int):
+        ctx.telemetry["memories_rendered"] = debug_record["memories_rendered"]
 
 
 async def _apply_grounding_check_for_delivery(ctx, response_text, source_material=""):
@@ -4943,7 +4951,10 @@ async def _run_agentic_search(ctx):
             gather_elapsed=_agentic_gather,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
             gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
-            extra=_build_agentic_answer_call_extra(orchestrator, model_name),
+            extra={
+                **(_build_agentic_answer_call_extra(orchestrator, model_name) or {}),
+                **_memories_rendered_extra(orchestrator),
+            },
         )
         # Yield final response with debug record (response was already streamed
         # chunk-by-chunk during the loop, so only one yield needed here)
@@ -5711,6 +5722,7 @@ async def _run_enhanced(ctx):
             gather_elapsed=_gather_elapsed,
             gate_reason=_gate_debug_summary(getattr(ctx, 'gate_decision', None)),
             gate_trigger_source=_gate_trigger_source(getattr(ctx, 'gate_decision', None)),
+            extra=_memories_rendered_extra(orchestrator),
         )
         _enh_final_chunk = {"role": "assistant", "content": _resp_for_debug, "debug": debug_record}
         if _enh_pending_action_id:

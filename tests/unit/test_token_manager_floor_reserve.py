@@ -117,8 +117,10 @@ class TestLive2205Shape:
 
 class TestBound:
     def test_only_first_floor_reserved_and_logged(self, mem_cfg, caplog):
+        # memories' reserve (2 x 250 here) would still consume this test's 750 bound
+        # before summaries; it pins the summaries/reflections arithmetic only.
         mem_cfg(prompt_min_summaries_floor=2, prompt_min_reflections_floor=1,
-                prompt_floor_reserve_max_share=0.15)
+                prompt_memories_reserve_floor=0, prompt_floor_reserve_max_share=0.15)
         budget = 5000   # bound 750: summaries (600) fit, reflections (+300) do not
         ctx = {
             "user_profile": " ".join(["prof"] * 2900),

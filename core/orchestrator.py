@@ -2001,6 +2001,10 @@ class DaemonOrchestrator:
             _pctx = result[2] or {}
             self._last_task_timings = _pctx.pop("_task_timings", {})
             self._last_section_outcomes = _pctx.pop("_section_outcomes", {})
+            # Memories items that survived the token budget (turn-record key
+            # `memories_rendered`; 2026-10-20, BC-99): the budget empties the
+            # section silently, so the count is the only post-hoc signal.
+            self._last_memories_rendered = len(_pctx.get("memories") or [])
             self._last_gather_elapsed = _pctx.pop("_gather_elapsed", 0.0)
             _pctx.pop("_build_time", None)
             self._last_loop_stalls = _pctx.pop("_loop_stalls", [])
@@ -2008,6 +2012,7 @@ class DaemonOrchestrator:
             self._last_loop_stalls = []
             self._last_task_timings = {}
             self._last_section_outcomes = {}
+            self._last_memories_rendered = None
             self._last_gather_elapsed = 0.0
 
         return result
