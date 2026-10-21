@@ -162,6 +162,28 @@ def fact_extraction_source_text(query: str) -> str:
         return query or ""
 
 
+def prepare_fact_extraction_source(query: str):
+    """Pre-extraction half of THE fact-admission chokepoint (2026-10-20).
+
+    Returns ``(skip_reason, source_text)``: a non-empty ``skip_reason`` means
+    the turn yields no facts at all (lyrics/poem/quote paste); otherwise
+    ``source_text`` is what the regex extractor may mine (pasted
+    correspondence and [test] blocks removed). Every path that feeds the
+    regex ``FactExtractor`` into the facts collection (per-turn, shutdown)
+    goes through this + :func:`admit_extracted_facts` (BC-58: the shutdown
+    path had none of these guards and stored homework-paste sentences)."""
+    reason = fact_extraction_skip_reason(query)
+    if reason:
+        return reason, ""
+    return "", fact_extraction_source_text(query)
+
+
+def admit_extracted_facts(query: str, facts: list) -> list:
+    """Post-extraction half of the admission chokepoint: the paste guard
+    (paste-sized messages keep only user-anchored triples)."""
+    return _paste_guard_filter(query, facts)
+
+
 # Knowledge graph config (imported inside methods to avoid circular imports)
 def _get_graph_enabled():
     try:
@@ -1137,11 +1159,10 @@ class MemoryStorage:
                 _turn_is_heavy = bool(query_checker._is_heavy_topic_heuristic(query))
             except Exception:  # degrades: facts get capture_tone unknown instead of elevated/conversational
                 pass
-            _skip_reason = fact_extraction_skip_reason(query)
+            _skip_reason, _source_text = prepare_fact_extraction_source(query)
             if _skip_reason:
                 logger.info(f"[MemoryStorage] Fact extraction skipped: {_skip_reason}")
                 return
-            _source_text = fact_extraction_source_text(query)
             if _source_text != query:
                 logger.info(
                     f"[MemoryStorage] Fact extraction: pasted correspondence removed "
@@ -1150,7 +1171,7 @@ class MemoryStorage:
             total = len(facts)
             logger.debug(f"[MemoryStorage] Extracted {total} facts (raw)")
 
-            facts = _paste_guard_filter(query, facts)
+            facts = admit_extracted_facts(query, facts)
 
             def _to_dict(item):
                 if isinstance(item, dict):

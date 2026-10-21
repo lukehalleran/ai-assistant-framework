@@ -579,9 +579,19 @@ class ShutdownProcessor:
                 if r.startswith("[API Error]"):
                     r = ""
                 _observed = self._ts(conv)
-                facts = await self.fact_extractor.extract_facts(
-                    q, r, observed_at=_observed if _observed != datetime.min else None,
+                # THE admission chokepoint (2026-10-20, BC-58): same skip
+                # reason / source reduction / paste guard as the per-turn path.
+                from memory.memory_storage import (  # lazy import: patch-point
+                    prepare_fact_extraction_source, admit_extracted_facts,
                 )
+                _skip, _src = prepare_fact_extraction_source(q)
+                if _skip:
+                    logger.info(f"[Shutdown] Fact extraction skipped: {_skip}")
+                    continue
+                facts = await self.fact_extractor.extract_facts(
+                    _src, r, observed_at=_observed if _observed != datetime.min else None,
+                )
+                facts = admit_extracted_facts(q, facts or [])
             except (AttributeError, RuntimeError, ValueError) as e:
                 logger.debug(f"[Shutdown] Fact extraction failed: {e}")
                 facts = []

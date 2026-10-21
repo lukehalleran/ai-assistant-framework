@@ -383,6 +383,89 @@ def _polarity_conflict(source_text: str, rel: str, obj: str) -> bool:
     pattern = _NEG_PREF_GOVERNORS + r"\s+(?:\w+\s+){0,2}?" + re.escape(o)
     return re.search(pattern, text_l) is not None
 
+# Irrealis / conditional guard (2026-10-20, incident 2026-10-18; class: BC-56
+# modality sibling). "If I finish assignment 7 then I am caught up" stored
+# `user | is | caught up with the class` — the consequent of a conditional is
+# a hypothetical, not a state. Decided from the DEPENDENCY PARSE of the
+# sentence that carries the object (never a list of example sentences):
+#   * the governing verb sits inside an `advcl` introduced by a conditional
+#     subordinator (antecedent), or is in the main clause of a sentence that
+#     has such an `advcl` (consequent);
+#   * the governing verb carries a counterfactual/hypothetical modal.
+# Under-fires by design: object not found in a parsed sentence -> not blocked.
+_COND_MARKS = frozenset({"if", "unless", "provided", "providing", "assuming"})
+# once / whenever / when...then are TEMPORAL subordinators: they introduce a
+# conditional only when the clause verb is not past tense ("Once I finished
+# the move I was living in Tampa" reports facts).
+_TEMPORAL_MARKS = frozenset({"once", "whenever"})
+_IRREALIS_MODALS = frozenset({"would", "could", "might"})
+# "I would like/love X" is a polite present preference, not a hypothetical.
+_VOLITION_LEMMAS = frozenset({"like", "love", "prefer", "enjoy", "want", "need"})
+
+
+def _past_tense(verb) -> bool:
+    """Clause verb is past: VBD, or a participle carrying a past auxiliary
+    (had/was). A present auxiliary ("have finished") is not past."""
+    auxes = [c for c in verb.children if c.dep_ in ("aux", "auxpass")]
+    if any("Pres" in c.morph.get("Tense") for c in auxes):
+        return False
+    if any("Past" in c.morph.get("Tense") for c in auxes):
+        return True
+    return verb.tag_ == "VBD"
+
+
+def _irrealis_conflict(source_text: str, obj: str, nlp=None) -> bool:
+    """True when the sentence carrying ``obj`` is conditional/irrealis."""
+    nlp = nlp or _get_nlp()
+    o = re.sub(r"\s+", " ", (obj or "")).strip().lower()
+    text = re.sub(r"\s+", " ", source_text or "").strip()
+    if nlp is None or not o or not text:
+        return False
+    try:
+        doc = nlp(text)
+        low = text.lower()
+        pos = low.find(o)
+        if pos < 0:
+            return False
+        tok = next((t for t in doc if t.idx <= pos < t.idx + len(t.text)), None)
+        if tok is None:
+            return False
+        sent = tok.sent
+        chain = [tok] + list(tok.ancestors)
+        verb = next((a for a in chain if a.pos_ in ("VERB", "AUX")), None)
+        if verb is None:
+            return False
+
+        def _cond_mark(adv) -> bool:
+            for m in adv.children:
+                if m.dep_ == "mark":
+                    w = m.lower_
+                    if w in _COND_MARKS:
+                        return True
+                    if (w in _TEMPORAL_MARKS or (
+                            w == "when" and any(
+                                t.lower_ == "then" for t in sent))):
+                        return not _past_tense(adv)
+            return False
+
+        # modal irrealis on the governing verb
+        if verb.lemma_ not in _VOLITION_LEMMAS and any(
+                c.dep_ == "aux" and c.lower_ in _IRREALIS_MODALS
+                for c in verb.children):
+            return True
+        # antecedent: verb inside a conditional advcl
+        vchain = [verb] + list(verb.ancestors)
+        if any(a.dep_ == "advcl" and _cond_mark(a) for a in vchain):
+            return True
+        # consequent: main-clause verb of a sentence with a conditional advcl
+        root = sent.root
+        if any(c.dep_ == "advcl" and _cond_mark(c) for c in root.children):
+            return True
+    except Exception:  # degrades: conditional guard bypassed, triple kept
+        return False
+    return False
+
+
 # Long-object salvage (2026-08-26). A pasted/quoted message body can become a
 # fact OBJECT wholesale — the live incident was a ~700-char email stored as
 # `user | email_sent | "Hi Morgan, I wanted to reach out …"` (2026-06-15,
@@ -1166,6 +1249,15 @@ class FactExtractor:
             if _polarity_conflict(text, r3, o3):
                 logger.info(
                     f"[FactExtractor] Blocked polarity-inverted fact: "
+                    f"subj='{s3}' rel='{r3}' obj='{o3}'"
+                )
+                continue
+
+            # Irrealis guard: the consequent/antecedent of a conditional (or a
+            # would/could/might clause) is a hypothetical, never a fact.
+            if _irrealis_conflict(text, o3, nlp=nlp_ref):
+                logger.info(
+                    f"[FactExtractor] Blocked conditional/irrealis fact: "
                     f"subj='{s3}' rel='{r3}' obj='{o3}'"
                 )
                 continue
