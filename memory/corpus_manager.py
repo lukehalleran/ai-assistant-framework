@@ -53,6 +53,24 @@ from datetime import timezone
 
 logger = get_logger("corpus_manager")
 
+def is_consolidated_entry(entry: Dict) -> bool:
+    """True for a corpus entry that is a consolidated SUMMARY or REFLECTION
+    (``type`` summary/reflection, or the ``@summary`` / ``type:summary`` /
+    ``type:reflection`` tags) rather than a real conversation turn.
+
+    The ONE predicate for "real conversation turns that may be derived from"
+    (2026-10-20, BC-96): ``derivable_entries()`` keeps summaries/reflections, and
+    their timestamps are WRITE time -- a 00:01 summary of two earlier days is
+    not a conversation of the new day. Derived builders filter with this."""
+    typ = str(entry.get("type") or "").lower()
+    tags = [str(t).lower() for t in (entry.get("tags") or [])]
+    return (
+        "summary" in typ or typ == "reflection"
+        or "@summary" in tags or "type:summary" in tags
+        or "type:reflection" in tags
+    )
+
+
 class CorpusManager:
     """Manages the conversation corpus (short-term memory)"""
 

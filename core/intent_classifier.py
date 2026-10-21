@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
+from utils import anchored_sense
 from utils.logging_utils import get_logger
 from utils.query_checker import is_self_report
 from config import app_config
@@ -523,7 +524,6 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
         r"\b(how (do|can|should|would) (i|you|we|one)"
         r"|fix(ing)?|debug(ging)?|error|bug|exception|traceback"
         r"|github issue|open(ed)? an issue|file[ds]? an issue"
-        r"|doesn'?t work|isn'?t working|not working"
         r"|help me (with|fix|debug|understand|figure))\b",
         IntentType.TECHNICAL_HELP, 0.75,
     )
@@ -533,17 +533,19 @@ def _compile_patterns() -> List[Tuple[re.Pattern, IntentType, float]]:
     # 2026-09-10 (probe dump T1): "Yeah I crashed a bit. So tired. Walking to
     # store now" classified technical_help@0.75 on bare "crashed" and opened
     # the self-docs allow-gate on a plain exhaustion update.
-    _TECH_NOUN_RE = (
-        r"(?:app(?:lication)?|code(?:base)?|script|server|laptop|computer|pc|"
-        r"desktop|phone|python|javascript|java|\br\b|build|test|daemon|"
-        r"program|software|website|site|\bapi\b|database|\bdb\b|"
-        r"repo(?:sitory)?|container|docker|\bvm\b|browser|terminal|shell|"
-        r"module|librar(?:y|ies)|package|function|component|service|system|"
-        r"device|driver|kernel)"
-    )
+    _TECH_NOUN_RE = anchored_sense.TECH_NOUN_RE
     _add(
-        rf"\b(?:crash(?:es|ing|ed)?|broke(?:n)?)\b[\s\S]{{0,40}}\b{_TECH_NOUN_RE}\b"
-        rf"|\b{_TECH_NOUN_RE}\b[\s\S]{{0,40}}\b(?:crash(?:es|ing|ed)?|broke(?:n)?)\b",
+        anchored_sense.near_pattern(
+            r"\b(?:crash(?:es|ing|ed)?|broke(?:n)?)\b", rf"\b{_TECH_NOUN_RE}\b"),
+        IntentType.TECHNICAL_HELP, 0.75,
+    )
+    # "not working"/"doesn't work" is the same everyday-English trap ("its not
+    # working i keep getting angry", "i dont feel good when im not working"):
+    # technical_help only near a tech noun (2026-10-18/19, BC-01/BC-73).
+    _add(
+        anchored_sense.near_pattern(
+            r"\b(?:doesn'?t\s+work|isn'?t\s+working|not\s+working)\b",
+            rf"\b{_TECH_NOUN_RE}\b"),
         IntentType.TECHNICAL_HELP, 0.75,
     )
     _add(

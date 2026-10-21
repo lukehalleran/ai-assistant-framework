@@ -1438,6 +1438,14 @@ AGENTIC_FETCH_PROVENANCE_GUARD: bool = bool(AGENTIC_CFG.get("fetch_provenance_gu
 # check and falls back to the synthesis call. Tool-call rounds emit few
 # tokens regardless, so the ceiling doesn't slow them.
 AGENTIC_DECISION_MAX_TOKENS: int = int(AGENTIC_CFG.get("decision_max_tokens", 1600))
+# Optional reasoned decision round (2026-10-18). Default OFF: the decision round
+# is a no-reasoning tool router and its text is never reused as the answer.
+# When true (native-tools protocol only) the decision call keeps native
+# reasoning, with a larger token budget, and its answer may be reused. Read live.
+AGENTIC_DECISION_REASONING: bool = bool(AGENTIC_CFG.get("decision_reasoning", False))
+AGENTIC_DECISION_REASONING_MAX_TOKENS: int = int(
+    AGENTIC_CFG.get("decision_reasoning_max_tokens", 6000)
+)
 # Latency guards for the agentic loop (2026-07-24). A slow/misbehaving model
 # (observed: kimi-3 narrating tool intent in prose instead of emitting XML
 # markers, ~55-60s/round) could run every round to max_rounds and hang the turn

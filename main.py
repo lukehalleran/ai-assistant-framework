@@ -718,13 +718,25 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
                 corpus_manager=orchestrator.memory_system.corpus_manager,  # the LIVE instance, never a 2nd writer (BC-81)
                 model_manager=orchestrator.model_manager,
             )
-            result = await gen.generate_for_date(date.today())
-            if result.success:
-                logger.info(f"[Shutdown] Daily note generated ({result.conversation_count} conversations)")
-            elif result.skipped_reason:
-                logger.info(f"[Shutdown] Daily note skipped: {result.skipped_reason}")
+            # One note per CONTENT day of the session being closed (2026-10-20,
+            # BC-52): a 00:02 shutdown of yesterday's session must not write a
+            # note for the new, empty day. No real turns in the window -> nothing
+            # to note.
+            _since = getattr(orchestrator.memory_system, "session_start", None)
+            if isinstance(_since, datetime):
+                _note_days = gen.content_dates_since(_since)
             else:
-                logger.warning(f"[Shutdown] Daily note failed: {result.error}")
+                _note_days = [date.today()]  # no session window known: legacy behaviour
+            if not _note_days:
+                logger.info("[Shutdown] Daily note skipped: no real conversation turns this session")
+            for _note_day in _note_days:
+                result = await gen.generate_for_date(_note_day)
+                if result.success:
+                    logger.info(f"[Shutdown] Daily note generated for {_note_day} ({result.conversation_count} conversations)")
+                elif result.skipped_reason:
+                    logger.info(f"[Shutdown] Daily note for {_note_day} skipped: {result.skipped_reason}")
+                else:
+                    logger.warning(f"[Shutdown] Daily note for {_note_day} failed: {result.error}")
     except Exception as e:
         logger.warning(f"[Shutdown] Daily note generation failed (non-critical): {e}")
 

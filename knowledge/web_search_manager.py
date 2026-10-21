@@ -930,6 +930,15 @@ class WebSearchRateLimiter:
 WEB_SEARCH_SAME_QUERY_REUSE_S = int(os.getenv("WEB_SEARCH_SAME_QUERY_REUSE_S", "180"))
 
 
+# The cache is only ever read by deterministic id (never by vector), so it
+# stores one constant unit vector instead of running an embedding model on
+# every write.  384 = the dimension of the all-MiniLM-L6-v2 default embedder
+# that created the existing on-disk collection; a unit vector (never all zeros)
+# keeps the cosine-space HNSW index valid.
+CACHE_EMBEDDING_DIM = 384
+CACHE_CONSTANT_EMBEDDING = [1.0] + [0.0] * (CACHE_EMBEDDING_DIM - 1)
+
+
 class WebSearchCache:
     """
     ChromaDB-backed cache for web search results.
@@ -1112,7 +1121,8 @@ class WebSearchCache:
             self._collection.upsert(
                 ids=[cache_key],
                 documents=[result.query],
-                metadatas=[metadata]
+                metadatas=[metadata],
+                embeddings=[CACHE_CONSTANT_EMBEDDING],
             )
 
             log.debug(f"[WebSearchCache] Cached result for: {result.query[:50]}...")

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
 from utils.url_detect import contains_url
-from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher, prefix_only_hits
+from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher, prefix_only_hits, normalize_ws
 from memory.fact_source import strip_quoted_correspondence
 import utils.temporal_resolver as temporal_resolver
 import re
@@ -211,19 +211,74 @@ _TASK_NAV_PATTERNS: tuple = (
 )
 
 
+_NAV_CLAUSE_SPLIT_RE = re.compile(r"[.!?;]+")
+
+
+def _function_word_lexicon() -> frozenset:
+    from spacy.lang.en.stop_words import STOP_WORDS  # lazy import: startup-cost (imports the spacy package)
+    return frozenset(STOP_WORDS) | ACK_STARTERS
+
+
+def _clause_around(text: str, start: int, end: int) -> tuple:
+    """(clause_text, match_offset_in_clause) for the sentence/line holding the
+    span [start, end)."""
+    lo = 0
+    for m in _NAV_CLAUSE_SPLIT_RE.finditer(text, 0, start):
+        lo = m.end()
+    m2 = _NAV_CLAUSE_SPLIT_RE.search(text, end)
+    hi = m2.start() if m2 else len(text)
+    return text[lo:hi], start - lo, end - lo
+
+
+def _clause_is_navigation_request(clause: str, ms: int, me: int, *, terse: bool) -> bool:
+    """A navigation phrase is a REQUEST when its clause is request-shaped
+    ("go to question 3", "what's the next one") or — in a terse message only —
+    the phrase stands alone, the rest of the clause being function words
+    ("ok next q please"). "Next one due Friday" is a statement about a due
+    date: its remainder carries content words, so it is not a request
+    (2026-10-18, class: BC-04)."""
+    if is_request_shaped(clause):
+        return True
+    if not terse:
+        return False
+    rest = (clause[:ms] + " " + clause[me:]).lower()
+    lex = _function_word_lexicon()
+    toks = re.findall(r"[a-z0-9']+", rest)
+    return all(t in lex for t in toks)
+
+
 def is_task_navigation(text: str) -> bool:
-    """True when the message asks to move between numbered items in an
+    """True when the message ASKS to move between numbered items in an
     attached document/worksheet ("next question", "Q3", "part 2"). Such a
     message can open with an ack word ("ok next q please") without being a
     casual acknowledgment — it needs the active document/passage, not the
-    light path. Negation-guarded: "don't show the next question" is False."""
-    q = (text or "").strip()
+    light path. Negation-guarded: "don't show the next question" is False.
+
+    Scope (2026-10-18, class: BC-04): once a message exceeds the gate's
+    request-continuation word limit a match only counts at its head/tail
+    window AND in a request-shaped clause — "Problem 12" inside a pasted
+    write-up is the write-up's own numbering, not a navigation request. In a
+    terse message the clause must be request-shaped or consist of the
+    navigation phrase plus function words only."""
+    # A client soft line-wrap must not split the clause (A10 chokepoint).
+    # A paragraph break stays a clause boundary.
+    q = normalize_ws(re.sub(r"\n[ \t]*\n+", ". ", text or "")).strip()
     if not q:
         return False
     ql = q.lower()
+    from core.agentic.gate import (  # lazy import: cycle (gate imports this module at call time)
+        REQUEST_CONTINUATION_MAX_WORDS,
+        _hit_within_scope,
+    )
+    terse = len(ql.split()) <= REQUEST_CONTINUATION_MAX_WORDS
     for pat in _TASK_NAV_PATTERNS:
         for m in pat.finditer(ql):
-            if not _trigger_is_negated(ql, m.start()):
+            if _trigger_is_negated(ql, m.start()):
+                continue
+            if not _hit_within_scope(ql, m.start()):
+                continue
+            clause, ms, me = _clause_around(ql, m.start(), m.end())
+            if _clause_is_navigation_request(clause, ms, me, terse=terse):
                 return True
     return False
 

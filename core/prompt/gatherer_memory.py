@@ -460,11 +460,11 @@ class MemoryRetrievalMixin:
         try:
             if hasattr(self.memory_coordinator, 'get_summaries'):
                 # Fetch with buffer to allow hybrid filtering/top-up to reach 'limit'
-                summaries = self.memory_coordinator.get_summaries(limit * 3)
+                summaries = await asyncio.to_thread(self.memory_coordinator.get_summaries, limit * 3)
             elif hasattr(self.memory_coordinator, 'corpus_manager'):
                 corpus_manager = self.memory_coordinator.corpus_manager
                 if hasattr(corpus_manager, 'get_summaries'):
-                    summaries = corpus_manager.get_summaries(limit * 3)
+                    summaries = await asyncio.to_thread(corpus_manager.get_summaries, limit * 3)
                 else:
                     summaries = []
             else:
@@ -543,11 +543,13 @@ class MemoryRetrievalMixin:
         try:
             if hasattr(self.memory_coordinator, 'get_summaries'):
                 # Fetch with buffer to allow semantic filtering to reach semantic_limit
-                summaries = self.memory_coordinator.get_summaries((recent_limit + semantic_limit) * 3)
+                summaries = await asyncio.to_thread(
+                    self.memory_coordinator.get_summaries, (recent_limit + semantic_limit) * 3)
             elif hasattr(self.memory_coordinator, 'corpus_manager'):
                 corpus_manager = self.memory_coordinator.corpus_manager
                 if hasattr(corpus_manager, 'get_summaries'):
-                    summaries = corpus_manager.get_summaries((recent_limit + semantic_limit) * 3)
+                    summaries = await asyncio.to_thread(
+                        corpus_manager.get_summaries, (recent_limit + semantic_limit) * 3)
                 else:
                     summaries = []
             else:

@@ -112,7 +112,7 @@ USER_UPLOADS_MIN_RELEVANCE = float(os.getenv("USER_UPLOADS_MIN_RELEVANCE", "0.62
 # hoisted to a module-level constant so the upload-roster trigger below can
 # reuse it without duplicating the pattern.
 _DOCUMENT_CONTEXT_RE = re.compile(
-    r"\b(?:attachments?|uploads?|documents?|pdf|docx|csv|spreadsheet|"
+    r"\b(?:attachments?|uploads?|documents?|files?|folders?|zip|pdf|docx|csv|spreadsheet|"
     r"dataset|homework|assignment|syllabus|lecture|transcript|"
     r"(?:question|task|part|page)\s+\d+)\b",
     re.IGNORECASE,
@@ -191,6 +191,34 @@ def _is_non_contact_entity(graph_memory, name: str) -> bool:
         et = getattr(node, "entity_type", None)
         return isinstance(et, str) and et.strip().lower() in _NON_CONTACT_ENTITY_TYPES
     except Exception:  # degrades: non-contact entity check fails open, may seed email search
+        return False
+
+
+def _is_known_person(graph_memory, name: str) -> bool:
+    """True when ``name`` is a KNOWN PERSON: a knowledge-graph entity of type
+    person (alias-resolved, read-only) or a name already in the Google
+    Contacts cache (cache-only, never an API call). 2026-10-20 (BC-04): the
+    passive email arm used to fire on any TitleCase token ("Python", "Oct").
+    Tries the whole phrase, then each word of it. Unknown → False."""
+    if not name or not name.strip():
+        return False
+    candidates = [name.strip()] + [w for w in name.split() if len(w) >= 3]
+    if graph_memory is not None:
+        for cand in candidates:
+            try:
+                eid = graph_memory.resolve_entity(cand)
+                if not isinstance(eid, str) or not eid.strip():
+                    continue
+                node = graph_memory.get_entity(eid)
+                et = getattr(node, "entity_type", None)
+                if isinstance(et, str) and et.strip().lower() == "person":
+                    return True
+            except Exception:  # degrades: graph lookup failure → try the contacts cache, may under-fire the email arm
+                continue
+    try:
+        from core.actions.google_contacts import is_cached_contact_name  # lazy import: cycle
+        return bool(is_cached_contact_name(name))
+    except Exception:  # degrades: contacts cache unreadable → name not known, email arm under-fires
         return False
 
 
@@ -417,6 +445,52 @@ def _non_negated_pattern_hit(text: str, pattern: "re.Pattern") -> bool:
     return False
 
 
+# Perceiving verbs: "see/look/watch" say WHO perceives. "show" is request-shaped
+# by itself (the assistant is the one asked to display), so it is exempt.
+_PERCEIVING_VERBS = frozenset({"see", "look", "watch"})
+
+# Words that may sit between a subject pronoun and its verb: modals, "be able
+# to", adverbs of time/stance, contracted negations.
+_SUBJECT_VERB_FILLER = (
+    r"(?:will|would|can|could|should|may|might|must|do|does|did|be|able|to|"
+    r"now|still|not|also|finally|ever|just|then|soon|really|actually|already|"
+    r"cant|cannot|couldnt|wont|wouldnt|shouldnt|dont|didnt)"
+)
+_SECOND_PERSON_GOVERNS_RE = re.compile(
+    r"\byou(?:'?(?:ll|d|ve|re))?(?:\s+" + _SUBJECT_VERB_FILLER + r")*\s*$",
+    re.IGNORECASE,
+)
+_CLAUSE_BOUNDARY_RE = re.compile(r"[.,;:!?()\u2014]+")
+
+
+def _verb_governed_by_second_person(text: str, verb_start: int) -> bool:
+    """True when the clause subject governing the verb at `verb_start` is
+    "you": a question about the ASSISTANT's access ("you will be able to
+    see the files", "can you see it", "did you see"), not the user asking
+    to be shown imagery. Structural: the pronoun immediately governing the
+    verb, allowing modal/auxiliary/adverb filler between (2026-10-17)."""
+    clause = _CLAUSE_BOUNDARY_RE.split(text[:verb_start])[-1]
+    clause = clause.replace("\u2019", "'")
+    return bool(_SECOND_PERSON_GOVERNS_RE.search(clause))
+
+
+def _user_perceiver_weak_verb_hit(query: str) -> bool:
+    """Some non-negated weak-verb match whose perceiver is not the assistant."""
+    for m in _VISUAL_WEAK_VERB_RE.finditer(query):
+        if _trigger_is_negated(query, m.start()):
+            continue
+        if (
+            m.group(0).lower() in _PERCEIVING_VERBS
+            # "look at X" is directed at an object (a request even from
+            # "can you"); bare "see/look/watch" under "you" is an access check.
+            and not re.match(r"\s+at\b", query[m.end():], re.IGNORECASE)
+            and _verb_governed_by_second_person(query, m.start())
+        ):
+            continue
+        return True
+    return False
+
+
 def _long_message_visual_request(query: str) -> bool:
     """In a long message, visual intent must be its own short request line.
 
@@ -476,7 +550,7 @@ def _query_wants_visual(query: str, intent_type: Optional[str]) -> bool:
         words & _VISUAL_WEAK_VERBS
         and n <= _VISUAL_WEAK_VERB_MAX_WORDS
         and not _DOCUMENT_CONTEXT_RE.search(query)
-        and _non_negated_pattern_hit(query, _VISUAL_WEAK_VERB_RE)
+        and _user_perceiver_weak_verb_hit(query)
     ):
         return True
     return (
@@ -2268,6 +2342,10 @@ class KnowledgeRetrievalMixin:
                 contact_names = [
                     n for n in contact_names if not _is_non_contact_entity(_graph, n)
                 ]
+                # 2026-10-20 (BC-04): a proper-noun SHAPE is not a person — the
+                # arm opens only for a known person (graph person entity or a
+                # cached contact). "Python"/"Process"/"Oct" never fire it.
+                contact_names = [n for n in contact_names if _is_known_person(_graph, n)]
 
             if not email_cue and not contact_names:
                 # No signal to fetch emails

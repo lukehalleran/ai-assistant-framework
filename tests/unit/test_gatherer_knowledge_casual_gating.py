@@ -69,9 +69,14 @@ class TestEmailPassiveTweaks:
         assert out == [] and calls == {}
 
     @pytest.mark.asyncio
-    async def test_unknown_name_still_seeds(self, monkeypatch, tmp_path):
+    async def test_known_person_seeds_and_unknown_name_does_not(self, monkeypatch, tmp_path):
+        # 2026-10-20 (BC-04): was test_unknown_name_still_seeds — an unknown
+        # proper noun no longer opens the contact arm; a person entity does.
         gm = GraphMemory(persist_path=str(tmp_path / "g.json"))
         g, calls = self._gatherer(monkeypatch, graph=gm)
+        await gk.KnowledgeRetrievalMixin.get_relevant_emails(g, "I saw Morgan at the store")
+        assert calls == {}
+        gm.add_entity(GraphNode(entity_id="morgan", display_name="Morgan", entity_type="person"))
         await gk.KnowledgeRetrievalMixin.get_relevant_emails(g, "I saw Morgan at the store")
         assert calls.get("terms") == "Morgan"
 

@@ -67,7 +67,7 @@ from core.response_parser import ResponseParser
 from core.action_claim_guard import annotate_unverified_action_claim
 import utils.read_time_markers as read_time_markers
 import utils.time_manager as _time_manager
-from utils.temporal_resolver import anchor_temporal_references
+from utils.temporal_resolver import anchor_recalled_item, anchor_temporal_references
 
 logger = get_logger("prompt_formatter")
 
@@ -185,7 +185,8 @@ def _staleness_prefix(item) -> str:
     return ""
 
 
-def _format_summary_section(items: list, header: str, apply_staleness: bool = True) -> str | None:
+def _format_summary_section(items: list, header: str, apply_staleness: bool = True,
+                            kind: str = "summary") -> str | None:
     """Format a list of summary/reflection items into a numbered prompt section.
 
     Shared formatter for recent_summaries, semantic_summaries,
@@ -194,6 +195,7 @@ def _format_summary_section(items: list, header: str, apply_staleness: bool = Tr
     pattern.  Returns the formatted section string, or None if empty.
     """
     lines: list[str] = []
+    _now = datetime.now()
     for i, item in enumerate(items, start=1):
         if isinstance(item, dict):
             content = item.get("content", "") or str(item)
@@ -204,6 +206,10 @@ def _format_summary_section(items: list, header: str, apply_staleness: bool = Tr
             ts = ""
             covers = ""
         if content:
+            # Date the item's relative time words BEFORE any clipping/prefixing
+            # (single-day summaries by their span, reflections by creation day).
+            # class: BC-100
+            content = anchor_recalled_item(content, item, _now, kind=kind)
             content = _sanitize_embedded_headers(content)
             prefix = _staleness_prefix(item) if apply_staleness else ""
             if covers:
@@ -1258,11 +1264,11 @@ class PromptFormatter:
         if _sec:
             sections.append(_sec)
 
-        _sec = _format_summary_section(context.get("recent_reflections", []) or [], "RECENT REFLECTIONS")
+        _sec = _format_summary_section(context.get("recent_reflections", []) or [], "RECENT REFLECTIONS", kind="reflection")
         if _sec:
             sections.append(_sec)
 
-        _sec = _format_summary_section(context.get("semantic_reflections", []) or [], "SEMANTIC REFLECTIONS")
+        _sec = _format_summary_section(context.get("semantic_reflections", []) or [], "SEMANTIC REFLECTIONS", kind="reflection")
         if _sec:
             sections.append(_sec)
 

@@ -73,6 +73,7 @@ Module Contract
 import os
 import sys
 import json
+import importlib
 import logging
 import logging as _log
 from utils.logging_utils import get_log_file_path
@@ -330,6 +331,16 @@ def _run_reference_docs_seed(chroma_store=None):
     print("[RefDocs] Started background auto-seed...")
 
 
+# Modules imported lazily on the first calendar / email turn (see warmup step 10).
+_FIRST_USE_IMPORT_MODULES = (
+    "core.actions.google_calendar",  # get_google_calendar_events
+    "core.email.registry",           # EmailService.__init__
+    "core.email.gmail_provider",     # registry._build_gmail
+    "core.email.outlook_provider",   # registry._build_outlook
+    "core.email.service",            # get_email_service
+)
+
+
 def _run_model_warmup(orchestrator):
     """
     Warm the models that otherwise cold-load on the user's FIRST message, in a
@@ -446,6 +457,17 @@ def _run_model_warmup(orchestrator):
                 manager.warm()  # skips itself when web search is disabled
         except Exception as e:
             print(f"[Warmup] tavily skip: {e}")
+        # 10) First-use module imports. get_google_calendar_events and
+        #     core.email.service.EmailService.__init__ import these modules
+        #     lazily (deliberate: cycle/live-config — never hoisted), so the
+        #     first turn paid 300-500 ms of importlib on the event loop
+        #     (LoopStall 2026-10-19/20, BC-41). Import them once here, off the
+        #     loop. Importing a module never calls auth.
+        for _mod in _FIRST_USE_IMPORT_MODULES:
+            try:
+                importlib.import_module(_mod)
+            except Exception as e:  # degrades: that module's first import lands on turn 1 (a stall, not a failure)
+                print(f"[Warmup] first-use import {_mod} skip: {e}")
         print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
 
     threading.Thread(target=_warm_task, daemon=True).start()

@@ -42,6 +42,8 @@ Typical record fields (all optional — record what the turn produced):
   grounding_flagged, grounding_confidence, grounding_corrected,
   response_len, model, session_id, prepare_elapsed_s, wall_elapsed_s,
   pre_prepare_elapsed_s, grounding_verifier_elapsed_s, grounding_status,
+  memories_rendered (2026-10-20, BC-99: int, [RELEVANT MEMORIES] items that survived the
+  token budget; 0 on a turn that retrieved some = the budget emptied the section),
   phase_timings, task_timings (seconds; finite, rounded, at most 20 keys), has_images,
   loop_stalls (2026-10-15, utils/loop_stall.py: up to 5 {ms, top, entry} entries -- a blocked-
   event-loop duration and a repo-relative "path:line function"; numbers and code

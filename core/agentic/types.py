@@ -317,6 +317,10 @@ class AgenticSearchSession:
     # audit record can describe decision latency even for tool-less rounds.
     round_telemetry: List[Dict[str, Any]] = field(default_factory=list)
     decision_answer_reuse_fired: bool = False
+    # True iff the decision round that produced the reuse candidate ran with
+    # native reasoning (agentic_search.decision_reasoning, native tools). The
+    # default decision round is a no-reasoning router: its text is never shipped.
+    decision_reasoned: bool = False
     fetch_fastpath_fired: bool = False
     requested_channels: Dict[str, str] = field(default_factory=dict)
 

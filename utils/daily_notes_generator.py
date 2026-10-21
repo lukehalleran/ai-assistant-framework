@@ -705,7 +705,7 @@ class DailyNotesGenerator:
         """Filter corpus entries by date."""
         conversations = []
 
-        for entry in self.corpus_manager.derivable_entries():
+        for entry in self._real_turns():
             ts = entry.get("timestamp")
             if ts is None:
                 continue
@@ -726,6 +726,34 @@ class DailyNotesGenerator:
         # Sort chronologically
         conversations.sort(key=lambda x: x.get("timestamp", datetime.min))
         return conversations
+
+    def _real_turns(self) -> List[Dict[str, Any]]:
+        """Derivable corpus entries that are real conversation turns -- not
+        consolidated summaries/reflections (2026-10-20, BC-96)."""
+        from memory.corpus_manager import is_consolidated_entry  # lazy import: cycle (corpus_manager -> notes consumers)
+        return [e for e in self.corpus_manager.derivable_entries()
+                if not is_consolidated_entry(e)]
+
+    def content_dates_since(self, since: datetime) -> List[date]:
+        """Distinct calendar days (ascending) of the REAL conversation turns
+        stamped at or after ``since`` -- the days a session-end note must cover
+        (2026-10-20, BC-52): a 00:02 shutdown of a session that ran the day
+        before writes yesterday's note, not today's."""
+        days = set()
+        for entry in self._real_turns():
+            ts = entry.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+            if not isinstance(ts, datetime):
+                continue
+            if ts.tzinfo is not None:
+                ts = ts.astimezone().replace(tzinfo=None)
+            if ts >= since:
+                days.add(ts.date())
+        return sorted(days)
 
     def _format_conversations(self, convos: List[Dict[str, Any]]) -> str:
         """Format conversations for LLM prompt."""

@@ -38,6 +38,7 @@ Module Contract:
   labels from silence (a missed detection would then TEACH the miss).
 """
 
+import contextvars
 import json
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 import utils.safe_json as safe_json
+import utils.test_envelope as test_envelope
 from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 
@@ -57,6 +59,30 @@ _MIN_CHARS = 12
 _CLIP_CHARS = 300
 _PER_LABEL_CAP = 40
 _NEAR_DUP_COSINE = 0.92
+
+
+# Probe-turn flag (2026-10-18, BC-58): handlers ingress unwraps an owner
+# "[test]...[/test]" probe BEFORE the classifiers run, so intent/tone/need/
+# gate/web-trigger teachers hand record() the INNER text and the envelope
+# check on the text alone cannot see it. The ingress marks the whole turn
+# instead; record() -- the one write chokepoint -- refuses while it is set.
+_PROBE_TURN: contextvars.ContextVar = contextvars.ContextVar(
+    "adaptive_exemplars_probe_turn", default=False
+)
+
+
+def mark_probe_turn(active: bool) -> contextvars.Token:
+    """Mark (or unmark) the current turn context as an owner probe."""
+    return _PROBE_TURN.set(bool(active))
+
+
+def end_probe_turn(token: contextvars.Token) -> None:
+    """Restore the flag set by mark_probe_turn; never raises (a generator
+    closed from another task cannot reset a foreign context's token)."""
+    try:
+        _PROBE_TURN.reset(token)
+    except ValueError:  # degrades: flag stays set in a context that is discarded with the turn
+        pass
 
 
 class AdaptiveExemplarStore:
@@ -101,6 +127,10 @@ class AdaptiveExemplarStore:
         seed_texts: Optional[List[str]] = None,
     ) -> bool:
         """Store a confirmed exemplar after quality gates. Returns True if kept."""
+        # Owner probes teach nothing: a "[test]...[/test]" envelope in the
+        # text, or a turn the ingress marked as a probe (stripped text).
+        if _PROBE_TURN.get() or test_envelope.has_envelope(text or ""):
+            return False
         t = " ".join((text or "").split()).strip()
         if len(t) < _MIN_CHARS:
             return False

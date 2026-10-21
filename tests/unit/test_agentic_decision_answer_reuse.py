@@ -10,6 +10,7 @@ substantive answer, yields it directly — _generate_final_response is skipped.
 import pytest
 from unittest.mock import MagicMock
 
+from core.agentic.types import SearchProtocol
 from core.agentic.controller import AgenticSearchController
 from core.agentic.types import SearchDecision
 
@@ -26,10 +27,14 @@ LONG_ANSWER = (
 
 
 @pytest.fixture
-def controller():
+def controller(monkeypatch):
     manager = MagicMock()
     manager.api_models = {}
-    return AgenticSearchController(model_manager=manager, web_search_manager=MagicMock())
+    c = AgenticSearchController(model_manager=manager, web_search_manager=MagicMock())
+    # 2026-10-18: reuse needs a reasoned decision round (opt-in, native tools).
+    monkeypatch.setattr("core.agentic.controller.app_config.AGENTIC_DECISION_REASONING", True)
+    c.detect_protocol = lambda m: SearchProtocol.NATIVE_TOOLS
+    return c
 
 
 def _make_final_spy(captured):

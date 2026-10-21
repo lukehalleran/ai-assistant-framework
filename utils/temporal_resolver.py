@@ -55,6 +55,8 @@ DAY_NAMES = {
 _TEMPORAL_KEYWORDS = re.compile(
     r'\b(?:'
     r'tomorrow|today|tonight|yesterday'
+    r'|earlier\s+today|last\s+night'
+    r'|this\s+(?:morning|afternoon|evening)(?![\'\u2019]s)'
     r'|the\s+following\s+day|the\s+day\s+after'
     r'|next\s+(?:' + '|'.join(DAY_NAMES.keys()) + r'|week|month)'
     r'|in\s+\d+\s+days?'
@@ -134,6 +136,33 @@ def anchor_temporal_references(text: str, said_on,
     return _resolve(text, said_on, annotate=True)
 
 
+def anchor_recalled_item(content: str, item, now: Optional[datetime] = None, *,
+                         kind: str) -> str:
+    """Anchor the relative time words of a recalled SUMMARY or REFLECTION.
+
+    ONE date-picking rule for every renderer (prompt formatter and agentic):
+    - an item carrying a ``covers`` span (summaries) anchors to that date ONLY
+      when the span is a single calendar day; a multi-day span is untouched
+      (never guess which day "today" meant);
+    - a summary without a span is untouched;
+    - a reflection (``kind="reflection"``) anchors to its ``timestamp``.
+    class: BC-100
+    """
+    if not content or not isinstance(item, dict):
+        return content
+    covers = item.get("covers")
+    if covers:
+        covers = str(covers).strip()
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', covers):
+            return content  # multi-day / unreadable span
+        said_on = covers
+    elif kind == "reflection":
+        said_on = item.get("timestamp")
+    else:
+        return content
+    return anchor_temporal_references(content, said_on, now)
+
+
 def parse_said_on(value) -> Optional[datetime]:
     """Best-effort parse of a stored item's timestamp; None when unparseable."""
     if isinstance(value, datetime):
@@ -185,13 +214,22 @@ def _resolve(text: str, reference_date: Optional[datetime], annotate: bool) -> s
         result = _sub(r'\bthe\s+following\s+day\b', lambda m: _fmt(target), result)
         result = _sub(r'\bthe\s+day\s+after\b', lambda m: _fmt(target), result)
 
+    # "earlier today" / "this morning|afternoon|evening" — the reference day.
+    # Before the bare "today" scan so "earlier today" is ONE expression (annotate
+    # mode: the bracket the bare scan's guard then sees). A possessive
+    # ("this morning's") is left alone: the bracket would split word from 's.
+    result = _sub(r'\bearlier\s+today\b', lambda m: _fmt(ref), result)
+    result = _sub(r"\bthis\s+(?:morning|afternoon|evening)\b(?![\'\u2019]s)",
+                  lambda m: _fmt(ref), result)
+
     # "today" / "tonight"
     result = _sub(r'\b(?:today|tonight)\b', lambda m: _fmt(ref), result)
 
-    # "yesterday"
-    if re.search(r'\byesterday\b', result, re.IGNORECASE):
+    # "yesterday" / "last night" (the evening before the reference day)
+    if re.search(r'\byesterday\b|\blast\s+night\b', result, re.IGNORECASE):
         target = ref - timedelta(days=1)
         result = _sub(r'\byesterday\b', lambda m: _fmt(target), result)
+        result = _sub(r'\blast\s+night\b', lambda m: _fmt(target), result)
 
     # "next [day_name]"
     def _next_day(match):

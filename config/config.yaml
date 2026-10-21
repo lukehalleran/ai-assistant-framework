@@ -19,6 +19,10 @@ memory:
   mem_importance_score: 0.75
   # Step-6.1 memory top-up survival minimum (NOT a refill-to-max target)
   prompt_memory_topup_floor: 3
+  # Budget RESERVE for memories (items held back inside the token budget so higher-priority
+  # sections cannot empty [RELEVANT MEMORIES]); distinct from prompt_memory_topup_floor,
+  # the builder's pre-budget top-up minimum. 0 = no memories reserve.
+  prompt_memories_reserve_floor: 2
   num_memories: 30
   prompt_max_mems: 30
   child_mem_limit: 3
@@ -63,9 +67,11 @@ memory:
   # the newest prompt_min_recent_floor turns are exempt (total budget only). 1.0 = off.
   prompt_recent_max_share: 0.50
   # Max share of the prompt budget reserved up front for the survival floors of
-  # recent_summaries / recent_reflections (prompt_min_summaries_floor / prompt_min_reflections_floor),
-  # so higher-priority sections cannot empty them. 0.0 = no reserve.
-  prompt_floor_reserve_max_share: 0.15
+  # memories / recent_summaries / recent_reflections (prompt_memories_reserve_floor /
+  # prompt_min_summaries_floor / prompt_min_reflections_floor), so higher-priority sections
+  # cannot empty them. 0.0 = no reserve. 0.25 (was 0.15, 2026-10-20): 2 memories (~435 tok
+  # each) + 2 summaries + 1 reflection must fit the bound or a section's reserve is skipped.
+  prompt_floor_reserve_max_share: 0.25
   semantic_retrieval_limit: 40
   prompt_max_semantic: 15
   force_min_memories: true
@@ -170,6 +176,8 @@ agentic_search:
   memory_search_limit: 7
   reuse_decision_answer: true
   decision_max_tokens: 1600
+  decision_reasoning: false           # true: native-tools decision round keeps reasoning, so its answer may be reused
+  decision_reasoning_max_tokens: 6000
   round_timeout_s: 75      # per-round decision-LLM timeout (backstop vs. stalled call)
   loop_timeout_s: 120      # wall-clock budget for rounds 2-N; then synthesize from context
   fetch_fastpath: true

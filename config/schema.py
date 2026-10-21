@@ -152,7 +152,8 @@ class MemorySection(BaseModel):
     prompt_max_recent: int = Field(default=10, ge=1)
     prompt_recent_prior_session_max_share: float = Field(default=0.40, ge=0.0, le=1.0)
     prompt_recent_max_share: float = Field(default=0.50, ge=0.0, le=1.0)
-    prompt_floor_reserve_max_share: float = Field(default=0.15, ge=0.0, le=1.0)
+    prompt_memories_reserve_floor: int = Field(default=2, ge=0)
+    prompt_floor_reserve_max_share: float = Field(default=0.25, ge=0.0, le=1.0)
     semantic_retrieval_limit: int = Field(default=100, ge=1)
     prompt_max_semantic: int = Field(default=15, ge=0)
     force_min_memories: bool = True
@@ -274,6 +275,8 @@ class AgenticSearchSection(BaseModel):
     memory_search_limit: int = Field(default=7, ge=1)
     reuse_decision_answer: bool = True
     decision_max_tokens: int = Field(default=1600, ge=100)
+    decision_reasoning: bool = False
+    decision_reasoning_max_tokens: int = Field(default=6000, ge=100)
     # Per-round decision-LLM timeout (backstop against a stalled connection /
     # a genuinely hung provider call). Generous so it never cuts a legitimate
     # full-length decision round; on timeout the loop answers with gathered ctx.
