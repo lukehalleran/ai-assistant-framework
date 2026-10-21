@@ -71,13 +71,18 @@ class NumberedItem:
     number: int
     start: int
     end: int
+    # "question" (Question/Q/Task/Problem/Exercise/bare "N."), or "section"
+    # for a "Part N" heading. A document whose only items are its own section
+    # headings must not answer "question 12" (2026-10-18, class: BC-51).
+    kind: str = "question"
 
 
 # Word-labelled family: "Question 1", "Q2", "Task 3.", "# Problem 4",
-# "Part 5" — line-anchored so a mid-sentence "question 1" reference doesn't
+# "Part 5" — line-anchored (a leading table pipe / cell boundary is allowed:
+# a PDF whose questions are table cells reads "| Question 4 1 pts |") so a mid-sentence "question 1" reference doesn't
 # fragment the document. re.MULTILINE so ^ matches after every newline.
 _WORD_ITEM_RE = re.compile(
-    r"^\s*(?:#+\s*)?(?P<word>question|q|task|problem|exercise|part)\s*\.?\s*(?P<num>\d+)\b",
+    r"^[ \t|]*(?:#+\s*)?(?P<word>question|q|task|problem|exercise|part)\s*\.?\s*(?P<num>\d+)\b",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -85,7 +90,7 @@ _WORD_ITEM_RE = re.compile(
 # non-whitespace character right after the marker so a lone "1." on its own
 # line isn't treated as an item boundary.
 _BARE_NUMBER_ITEM_RE = re.compile(
-    r"^\s*(?P<num>\d{1,2})[.)]\s+(?=\S)",
+    r"^[ \t|]*(?P<num>\d{1,2})[.)]\s+(?=\S)",
     re.MULTILINE,
 )
 
@@ -97,6 +102,11 @@ _WORD_LABELS = {
     "exercise": "Exercise",
     "part": "Part",
 }
+
+
+def _item_kind(m: "re.Match") -> str:
+    word = (m.groupdict().get("word") or "").lower()
+    return "section" if word == "part" else "question"
 
 
 def _extract_run(text: str, pattern: "re.Pattern", *, label_fn) -> List[NumberedItem]:
@@ -116,7 +126,10 @@ def _extract_run(text: str, pattern: "re.Pattern", *, label_fn) -> List[Numbered
             break
         last_number = num
         starts.append(m.start())
-        items.append(NumberedItem(label=label_fn(m), number=num, start=m.start(), end=0))
+        items.append(NumberedItem(
+            label=label_fn(m), number=num, start=m.start(), end=0,
+            kind=_item_kind(m),
+        ))
     for i, item in enumerate(items):
         item.end = items[i + 1].start if i + 1 < len(items) else len(text)
     return items
@@ -203,6 +216,15 @@ def _first_non_negated(pattern: "re.Pattern", lower_text: str):
         if not is_negated(lower_text, m.start()):
             return m
     return None
+
+
+def _requested_noun(lower_text: str) -> Optional[str]:
+    """"section" when the user's first non-negated numbered reference names a
+    Part, "question" when it names a question/task/problem, else None."""
+    m = _first_non_negated(_EXPLICIT_NUMBER_RE, lower_text)
+    if not m:
+        return None
+    return "section" if m.group(0).lower().startswith("part") else "question"
 
 
 def _resolve_target_number(lower_text: str, document: ActiveDocument) -> Optional[int]:
@@ -394,6 +416,12 @@ class ActiveDocumentRegistry:
         lower = text.lower()
 
         candidates = [d for d in self._docs.values() if len(d.items) >= 2]
+        # A named question/problem number is not answerable by a document
+        # whose only "items" are its own Part headings (2026-10-18, BC-51).
+        if _requested_noun(lower) == "question":
+            candidates = [
+                d for d in candidates if any(i.kind == "question" for i in d.items)
+            ]
         if not candidates:
             return None
 
@@ -409,7 +437,14 @@ class ActiveDocumentRegistry:
             return None
 
         if target < 1 or target > len(document.items):
-            return Exhausted(document=document, requested=target, count=len(document.items))
+            # Silent: the user may mean another document, or be quoting their
+            # own numbering — "item N does not exist" led the model to call a
+            # correct label mislabeled (2026-10-18, class: BC-51).
+            logger.info(
+                f"[ActiveDocument] Navigation target {target} outside "
+                f"{document.display_name} ({len(document.items)} items) — no note"
+            )
+            return None
 
         item = document.items[target - 1]
         passage_text, complete = _bound_passage(document, item)

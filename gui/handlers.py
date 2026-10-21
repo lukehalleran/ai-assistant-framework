@@ -133,10 +133,8 @@ from core.active_document import (
     ActiveDocumentRegistry,
     ActivePassage,
     Ambiguous,
-    Exhausted,
     format_active_passage,
     format_ambiguity_note,
-    format_exhausted_note,
     select_source_document,
 )
 import json
@@ -921,9 +919,16 @@ def _dispatch_storage(
     orchestrator, merged_input, response_to_store, user_text,
     final_output, personality, file_names, conversation_logger,
     session_id, provenance, mode,
-    *, personal_claim_task=None,
+    *, personal_claim_task=None, prompt_only_suffix: str = "",
 ):
-    """Create a background storage task and track it for graceful shutdown."""
+    """Create a background storage task and track it for graceful shutdown.
+
+    `prompt_only_suffix` (the active-document navigation note/passage) was
+    appended to `merged_input` for the prompt; it is removed here so the
+    stored query — and everything keyed on it — holds only the user's text and
+    attachments (2026-10-18, class: BC-91)."""
+    if prompt_only_suffix and merged_input.endswith(prompt_only_suffix):
+        merged_input = merged_input[: len(merged_input) - len(prompt_only_suffix)]
     tags = [
         f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}",
         "topic:general",
@@ -1403,6 +1408,9 @@ class SubmitContext:
     # which must keep their real structure for storage, display, and
     # content-type detection (lyrics/code section breaks depend on real
     # newlines).
+    # Navigation note/passage appended to merged_input for the prompt only;
+    # removed from the text stored as the user's query (see _dispatch_storage).
+    prompt_only_suffix: str = ""
     user_text_ws: str = ""
     agentic_enabled: bool = False
     # Agentic gate evaluated CONCURRENTLY with prepare_prompt (intent veto
@@ -1757,6 +1765,7 @@ async def _run_duel(ctx, gens, sels, features_duel):
             orchestrator, ctx.merged_input, final_output, ctx.user_text,
             final_output, ctx.personality, ctx.file_names, ctx.conversation_logger,
             _duel_session_id, _duel_prov, 'best-of-duel',
+            prompt_only_suffix=getattr(ctx, "prompt_only_suffix", ""),
         )
         _track_storage_task(ctx, _storage_task)
         _write_turn_telemetry(
@@ -2878,6 +2887,7 @@ async def _run_insight_mode(ctx):
             orchestrator, ctx.merged_input, final_text, ctx.user_text,
             final_text, ctx.personality, ctx.file_names, ctx.conversation_logger,
             _insight_session_id, _prov, 'insight-assembly',
+            prompt_only_suffix=getattr(ctx, "prompt_only_suffix", ""),
         )
         _track_storage_task(ctx, _storage_task)
         _write_turn_telemetry(
@@ -4550,6 +4560,7 @@ async def _run_agentic_search(ctx):
             final_output_sanitized, personality, file_names, conversation_logger,
             _agentic_session_id, _agentic_prov, 'agentic-search',
             personal_claim_task=getattr(ctx, "personal_claim_task", None),
+            prompt_only_suffix=getattr(ctx, "prompt_only_suffix", ""),
         )
         _track_storage_task(ctx, _storage_task)
         logger.info("[Handle Submit] Agentic storage dispatched to background")
@@ -5882,6 +5893,7 @@ async def _run_enhanced(ctx):
                     final_output, personality, file_names, conversation_logger,
                     _store_session_id, _store_prov, _store_mode,
                     personal_claim_task=getattr(ctx, "personal_claim_task", None),
+                    prompt_only_suffix=getattr(ctx, "prompt_only_suffix", ""),
                 )
                 _track_storage_task(ctx, _storage_task)
                 logger.info("[HANDLE_SUBMIT] Storage dispatched to background")
@@ -6393,7 +6405,14 @@ async def _handle_submit_inner(
         _mentions_registered_doc = any(
             name and name.lower() in user_text.lower() for name in _registered_names
         )
-        if is_task_navigation(user_text) or _mentions_registered_doc:
+        # A filename mention alone only routes a TERSE message: a long paste
+        # that names the file would otherwise resolve the numbering of its
+        # own text against the document (2026-10-18, class: BC-04).
+        from core.agentic.gate import REQUEST_CONTINUATION_MAX_WORDS  # lazy import: cycle
+        if is_task_navigation(user_text) or (
+            _mentions_registered_doc
+            and len(user_text.split()) <= REQUEST_CONTINUATION_MAX_WORDS
+        ):
             _nav_turn = active_doc_registry.next_turn()
             _nav = active_doc_registry.resolve_navigation(user_text, _nav_turn)
             if isinstance(_nav, ActivePassage):
@@ -6412,18 +6431,6 @@ async def _handle_submit_inner(
                 _active_doc_note = format_ambiguity_note(_nav)
                 _active_doc_telemetry.update({"action": "ambiguous", "candidates": _nav.names})
                 logger.info(f"[ActiveDocument] Ambiguous navigation candidates: {_nav.names}")
-            elif isinstance(_nav, Exhausted):
-                _active_doc_note = format_exhausted_note(_nav)
-                _active_doc_telemetry.update({
-                    "action": "exhausted",
-                    "document": _nav.document.display_name,
-                    "requested": _nav.requested,
-                    "count": _nav.count,
-                })
-                logger.info(
-                    f"[ActiveDocument] Navigation exhausted: "
-                    f"{_nav.document.display_name} item {_nav.requested}/{_nav.count}"
-                )
     except Exception as e:  # degrades: active-document navigation resolution is skipped this turn
         logger.debug(f"[ActiveDocument] Navigation resolution failed: {e}")
 
@@ -6445,9 +6452,14 @@ async def _handle_submit_inner(
     if _attachment_note:
         merged_input += "\n\n" + _attachment_note
         analysis_text = user_text + "\n\n" + _attachment_note
+    # Prompt-only: the navigation note/passage rides the PROMPT (merged_input
+    # as the prompt's [CURRENT QUERY]) but is never stored as the user's words
+    # — `_dispatch_storage` strips exactly this suffix (2026-10-18, BC-91).
+    _prompt_only_suffix = ""
     if _active_doc_note:
-        merged_input += "\n\n" + _active_doc_note
-        analysis_text = analysis_text + "\n\n" + _active_doc_note
+        _prompt_only_suffix = "\n\n" + _active_doc_note
+        merged_input += _prompt_only_suffix
+        analysis_text = analysis_text + _prompt_only_suffix
 
     # A10 ingress chokepoint (2026-09-10, round 3): ONE normalize_ws call
     # here, threaded to every gate/registry/claim-guard shape predicate
@@ -6499,6 +6511,7 @@ async def _handle_submit_inner(
         files_result=files_result,
         analysis_text=analysis_text,
         user_text_ws=user_text_ws,
+        prompt_only_suffix=_prompt_only_suffix,
         turn_attachments=_turn_attachments,
         t_ingress=t_ingress,
     )

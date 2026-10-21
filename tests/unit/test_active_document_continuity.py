@@ -120,7 +120,7 @@ class TestDocumentContinuityAcrossTurns:
         assert len(ui4.split()) > 8
 
     @pytest.mark.asyncio
-    async def test_exhausted_navigation_note(self):
+    async def test_out_of_range_navigation_adds_no_note(self):
         orch = _fresh_orchestrator()
         await _submit(
             orch, "attaching my homework",
@@ -128,8 +128,9 @@ class TestDocumentContinuityAcrossTurns:
             doc_result=_doc_result("Homework1-2.pdf", THREE_Q_DOC),
         )
         _, ui = await _submit(orch, "can I see question 9 please")
-        assert "does not exist" in ui
-        assert "Homework1-2.pdf" in ui
+        # 2026-10-18: silent — the user may mean another document.
+        assert "does not exist" not in ui
+        assert "ACTIVE DOCUMENT" not in ui
 
     @pytest.mark.asyncio
     async def test_ambiguous_navigation_note(self):

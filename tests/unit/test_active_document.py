@@ -217,13 +217,11 @@ class TestResolveNavigation:
         assert isinstance(nav, ActivePassage)
         assert nav.position == (3, 3)
 
-    def test_exhausted_out_of_range(self):
+    def test_out_of_range_number_is_silent(self):
+        # 2026-10-18: "item 12 does not exist" made the model call a correct
+        # label mislabeled; a number beyond the document yields no result.
         reg = self._registry_with_doc()
-        nav = reg.resolve_navigation("question 9", reg.next_turn())
-        assert isinstance(nav, Exhausted)
-        assert nav.requested == 9
-        assert nav.count == 3
-        assert nav.document.display_name == "Homework1-2.pdf"
+        assert reg.resolve_navigation("question 9", reg.next_turn()) is None
 
     def test_ambiguity_with_two_question_bearing_docs(self):
         reg = ActiveDocumentRegistry()
