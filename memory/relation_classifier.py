@@ -150,6 +150,19 @@ _STANDING_STATE_PARTICIPLES = frozenset({
     "employed", "disabled", "licensed", "certified", "registered", "insured",
     "qualified", "known", "related", "based", "vaccinated", "incarcerated",
 })
+# Membership/enrollment-change verbs (2026-10-21, class: BC-26): bare past verbs
+# that change a LASTING membership or enrollment status — a class, a job, a
+# program, a group ("dropped | <course>", "withdrew", "joined", "quit"). A parse
+# tags them VBD exactly like a bodily act, but the resulting status (no longer
+# enrolled, now a member) holds until revised, so a 24h TTL erased a standing
+# enrollment change from the profile. Accepted cost: "dropped off a package" or
+# "left a message" also stays durable — a stale act lingering is the safe
+# direction (read-time only; nothing is deleted). `enrolled` stays in
+# _LIFE_COURSE_PARTICIPLES: it is already a status transition there.
+_MEMBERSHIP_CHANGE_PARTICIPLES = frozenset({
+    "dropped", "withdrew", "withdrawn", "unenrolled", "deferred", "joined",
+    "quit", "resigned", "transferred", "left", "switched",
+})
 
 
 def _head_is_bare_past_verb(rel: str) -> bool:
@@ -157,7 +170,8 @@ def _head_is_bare_past_verb(rel: str) -> bool:
     parse, not a suffix test: "bed", "hundred" end in "ed" but are nouns;
     "unemployed" has no verb lemma of its own, so it fails the lemma test)."""
     if "_" in rel or not rel.isalpha() or rel in _LIFE_COURSE_PARTICIPLES \
-            or rel in _STANDING_STATE_PARTICIPLES:
+            or rel in _STANDING_STATE_PARTICIPLES \
+            or rel in _MEMBERSHIP_CHANGE_PARTICIPLES:
         return False
     # Curated names (the profile schema's own map, the multi-valued event
     # relations such as `completed`/`attended`) were classified on purpose; the
