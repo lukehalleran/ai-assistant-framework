@@ -151,7 +151,7 @@ def test_worker_wallclock_timeout_is_killed(podman, tmp_path):
                             worker_env={"WORKER_ATTACK_MODE": "timeout"})
     assert report.run.timed_out is True
     assert report.outcome == "killed"
-    assert time.monotonic() - t0 < 60  # killed promptly, not after the 3600s sleep
+    assert time.monotonic() - t0 < 60  # timing-safe: killed promptly, not after the 3600s sleep (60 s vs wallclock 3 s)
 
 
 def test_isolation_holds_with_fs_guard_disabled(podman, tmp_path):

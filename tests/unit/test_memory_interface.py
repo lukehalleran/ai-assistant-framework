@@ -126,7 +126,7 @@ def test_memory_node_last_accessed_default():
 
     # Should be set to a recent time
     assert isinstance(node.last_accessed, datetime)
-    assert (datetime.now() - node.last_accessed).total_seconds() < 1
+    assert (datetime.now() - node.last_accessed).total_seconds() < 1  # timing-safe: stamp taken microseconds earlier, 1 s headroom
 
 
 # =============================================================================
