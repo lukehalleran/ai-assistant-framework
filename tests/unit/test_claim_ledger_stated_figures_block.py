@@ -152,7 +152,7 @@ def test_budget_meters_and_trims_the_section_by_priority():
     assert dict(PRIORITY_ORDER)["stated_figures"] == 8
     from tests.unit.test_independent_prompt_audit import manager
     mgr = manager(40)
-    big = ["- figure %d: %d days — you said \"%s\" (Mon 10-19); earlier: none" % (i, i, "word " * 15) for i in range(12)]
+    big = ["- figure %d: %d days — you said \"%s\" (Mon 10-19)" % (i, i, "word " * 15) for i in range(12)]
     out = mgr._manage_token_budget({"stated_figures": list(big), "wiki": ["W " * 200]})
     assert len(out["stated_figures"]) < len(big) or out["stated_figures"] == []   # metered: the budget acts on it
 
