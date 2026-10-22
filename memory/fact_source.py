@@ -35,6 +35,7 @@ the rest of the package.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import functools
 from datetime import date, datetime, timedelta
 import re
 from typing import Any, Iterable, Iterator, Mapping
@@ -439,6 +440,45 @@ _PAST_TENSE_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+@functools.lru_cache(maxsize=512)
+def _parsed_past_first_person_verb(text: str) -> bool:
+    """Parse fallback of :func:`has_past_tense_cue` (2026-10-16, class: BC-04):
+    a VBD verb whose subject is first-person (directly, or inherited through
+    ``conj`` — "I reviewed chapters and took notes"). "I reviewed chapters
+    yesterday" was `unknown` because the closed word set lacked "reviewed"."""
+    try:
+        from memory.fact_extractor import _get_nlp  # lazy import: cycle (fact_extractor imports this module) + startup-cost
+        nlp = _get_nlp()
+        if nlp is None:
+            return False
+        for tok in nlp(text):
+            if tok.tag_ != "VBD" or tok.dep_ in ("aux", "auxpass"):
+                continue
+            head = tok
+            while head.dep_ == "conj" and not any(
+                    c.dep_ in ("nsubj", "nsubjpass") for c in head.children):
+                head = head.head
+            if any(c.dep_ in ("nsubj", "nsubjpass") and c.lower_ in ("i", "we")
+                   for c in head.children):
+                return True
+    except Exception:  # degrades: past-tense cue falls back to the closed word set only
+        return False
+    return False
+
+
+def has_past_tense_cue(text: str) -> bool:
+    """THE past-tense cue test for a claim span (every ``classify_claim_time``
+    consumer routes through it). Fast path: the closed word set; fallback: a
+    first-person VBD verb in the parse, so a verb outside the set ("reviewed")
+    still counts when the user is the subject."""
+    if not text:
+        return False
+    if _PAST_TENSE_CUE_RE.search(text):
+        return True
+    return _parsed_past_first_person_verb(text)
+
+
 # Prospective framing (2026-09-08): "So ready to take melatonin … but I
 # think it is early for that" minted took=melatonin — readiness, wanting,
 # needing, being about to, are claims about the FUTURE, not a completed act.
@@ -504,7 +544,7 @@ def completion_claim_prospective(relation: str, clause: str) -> bool:
     if rel not in COMPLETION_RELATIONS:
         return False
     text = clause or ""
-    if _PAST_TENSE_CUE_RE.search(text):
+    if has_past_tense_cue(text):
         return False
     return bool(_PROSPECTIVE_RE.search(text))
 
@@ -621,7 +661,7 @@ def _is_spread_weekday_schedule(text: str) -> bool:
         return False
     if not any(not m.group(1).lower().endswith("ed") for m in _FIRST_PERSON_PRESENT_RE.finditer(text)):
         return False
-    if _PAST_TENSE_CUE_RE.search(text) or _WEEKDAY_FUTURE_CUE_RE.search(text):
+    if has_past_tense_cue(text) or _WEEKDAY_FUTURE_CUE_RE.search(text):
         return False
     return True
 
@@ -639,7 +679,7 @@ def _resolve_weekday_sequence_episode(text: str, observed: datetime) -> date | N
     # a verbless fragment (the live shape) marks it as something that happened.
     if any((b - a) % 7 != 1 for a, b in zip(days, days[1:])):
         return None
-    if _FIRST_PERSON_SUBJECT_RE.search(text) and not _PAST_TENSE_CUE_RE.search(text):
+    if _FIRST_PERSON_SUBJECT_RE.search(text) and not has_past_tense_cue(text):
         return None
     today = observed.date()
     delta = (today.weekday() - days[-1]) % 7 or 7
@@ -688,7 +728,7 @@ def classify_claim_time(span: str, *, observed_at: datetime | None = None) -> Cl
     if seq_date is not None:
         return ClaimTime(kind="event", event_date=seq_date, event_date_source="relative")
 
-    if _PAST_TENSE_CUE_RE.search(text):
+    if has_past_tense_cue(text):
         iso, _basis, _conf = resolve_date_expression(text, reference_date=observed)
         if iso:
             try:
@@ -766,7 +806,7 @@ def _own_clause_time(clause: str, observed: datetime) -> ClaimTime:
     ``classify_claim_time`` has no ``today`` anchor, and the profile reader
     only hides events dated BEFORE today)."""
     own = classify_claim_time(clause, observed_at=observed)
-    if own.kind == "unknown" and _TODAY_RE.search(clause) and _PAST_TENSE_CUE_RE.search(clause):
+    if own.kind == "unknown" and _TODAY_RE.search(clause) and has_past_tense_cue(clause):
         return ClaimTime(kind="event", event_date=observed.date(), event_date_source="relative")
     return own
 
@@ -830,7 +870,7 @@ def _inherit_from_neighbours(
         governing = next((c for c in reversed(preceding) if _clause_has_own_subject(c)), None)
         if governing is None:
             return own
-        if _elliptical_head_is_past(clause) and not _PAST_TENSE_CUE_RE.search(governing):
+        if _elliptical_head_is_past(clause) and not has_past_tense_cue(governing):
             return own
         # A clause with its OWN date specification (event anchor / today /
         # a named weekday) is a dated report, not a shared predicate frame —

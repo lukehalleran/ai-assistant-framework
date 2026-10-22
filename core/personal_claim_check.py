@@ -686,9 +686,20 @@ def _is_personal_subject(token: Any, user_name: str) -> bool:
         return True
     if user_name and token.text.lower() == user_name.lower():
         return True
-    # A proper noun is a person unless the NER tags it as a non-person entity
-    # (ORG/PRODUCT/GPE...): "Python 3.13 shipped ..." is not someone's act.
-    return token.ent_type_ == "PERSON" or (token.pos_ == "PROPN" and not token.ent_type_)
+    return _propn_is_person(token)
+
+
+def _propn_is_person(token: Any) -> bool:
+    """A proper noun is a person only when NER types it PERSON or the name is a
+    KNOWN person (graph person entity / cached contact). An unknown TitleCase
+    word is a module/product/place name ("Arena has finished the run").
+    2026-10-21, class: BC-84."""
+    if token.pos_ != "PROPN":
+        return False
+    if token.ent_type_ == "PERSON":
+        return True
+    from utils.known_person import is_known_person  # lazy import: patch-point
+    return is_known_person(None, token.text)
 
 
 def _is_personal_completion(span: str) -> bool:
@@ -710,7 +721,8 @@ def _is_personal_completion(span: str) -> bool:
         # products ("GIL disabled") are the only exclusion.
         for tok in doc:
             if (tok.pos_ == "PROPN" and tok.dep_ in ("nsubj", "nsubjpass")
-                    and tok.ent_type_ not in _NON_PERSON_ENTS):
+                    and tok.ent_type_ not in _NON_PERSON_ENTS
+                    and _is_personal_subject(tok, user_name)):
                 return True
         for sent in doc.sents:
             first_word = next((t for t in sent if t.is_alpha), None)
@@ -734,6 +746,15 @@ def _is_personal_completion(span: str) -> bool:
                     subj = [c for c in tok.head.children if c.dep_ in ("nsubj", "nsubjpass")]
                 if subj:
                     if any(_is_personal_subject(c, user_name) for c in subj):
+                        return True
+                    # "HW4 submitted." -- an unknown proper noun with a bare
+                    # intransitive past verb (no object, no auxiliary) is the
+                    # elided-agent report shape; fail closed (stay personal).
+                    # A module description carries an object or an auxiliary
+                    # ("Arena has finished the run.").
+                    if (any(c.pos_ == "PROPN" for c in subj)
+                            and not any(c.dep_ in ("dobj", "obj", "attr", "aux", "auxpass", "dative", "prep")
+                                        for c in tok.children)):
                         return True
                 elif tok.dep_ in ("ROOT", "conj") and first_word is not None and tok.i == first_word.i:
                     return True  # elided subject opening the sentence ("Finished HW6.")

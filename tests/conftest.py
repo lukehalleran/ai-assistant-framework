@@ -198,6 +198,23 @@ def _sandbox_learned_relations(tmp_path, monkeypatch):
     _lr._store = None
 
 
+# User-claim ledger sandbox (2026-10-20): the live writer saves to data/claim_ledger.json and
+# the store is a process-wide singleton. Every test gets a tmp path + a fresh singleton, and the
+# feature switch is forced OFF so a config.local.yaml that enables it can never make a test
+# spend credits; tests that exercise the ledger turn it on themselves.
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_claim_ledger(tmp_path, monkeypatch):
+    import config.app_config as _app_config
+    import memory.claim_ledger_store as _cls
+    monkeypatch.setattr(_cls, "_PATH_OVERRIDE", str(tmp_path / "claim_ledger.json"))
+    _cls.reset_for_tests()
+    monkeypatch.setattr(_app_config, "CLAIM_LEDGER_ENABLED", False, raising=False)
+    monkeypatch.setattr(_app_config, "CLAIM_LEDGER_RENDER_BLOCK", False, raising=False)
+    monkeypatch.setattr(_app_config, "CLAIM_LEDGER_REPLY_CHECK", "off", raising=False)
+    yield
+    _cls.reset_for_tests()
+
+
 # Generated-documents sandbox (2026-09-20): test_insight_mode_handler's
 # assessment test reached the REAL DocumentGenerator.save_prewritten (agree +
 # INSIGHT_DOC_ON_AGREEMENT) and wrote documents/summaries/my-problem-is-x-*.md

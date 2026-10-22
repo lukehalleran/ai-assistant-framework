@@ -865,6 +865,28 @@ class PersonalClaimCheckSection(BaseModel):
     max_evidence_chars: int = Field(default=12000, ge=500)
 
 
+class ClaimLedgerSection(BaseModel):
+    """User-claim ledger (2026-10-20, class: BC-75/BC-52): the figures the user stated
+    about themselves, kept with a date and a modality. Every switch ships OFF."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = False
+    render_block: bool = False
+    reply_check: Literal["off", "log_only"] = "off"
+    model: str = "deepseek-v4.1-flash"
+    write_timeout_s: float = Field(default=10.0, gt=0.0)
+    max_block_lines: int = Field(default=12, ge=1)
+    max_block_tokens: int = Field(default=450, ge=1)
+    standing_window_days: int = Field(default=30, ge=1)
+    deadline_window_days: int = Field(default=14, ge=0)
+    store_path: str = "data/claim_ledger.json"
+
+    @field_validator("reply_check", mode="before")
+    @classmethod
+    def _bare_off_is_false(cls, v: Any) -> Any:
+        # YAML 1.1 reads an unquoted `off` as False; map it back.
+        return "off" if v is False else v
+
+
 class DecisionModelRolesSection(BaseModel):
     """Per-role rollout mode (D9): off | shadow | active."""
     model_config = ConfigDict(extra="forbid")
@@ -1250,6 +1272,7 @@ class DaemonConfig(BaseModel):
     response_planning: ResponsePlanningSection = Field(default_factory=ResponsePlanningSection)
     grounding_check: GroundingCheckSection = Field(default_factory=GroundingCheckSection)
     personal_claim_check: PersonalClaimCheckSection = Field(default_factory=PersonalClaimCheckSection)
+    claim_ledger: ClaimLedgerSection = Field(default_factory=ClaimLedgerSection)
     decision_model: DecisionModelSection = Field(default_factory=DecisionModelSection)
     email_integration: EmailIntegrationSection = Field(default_factory=EmailIntegrationSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)

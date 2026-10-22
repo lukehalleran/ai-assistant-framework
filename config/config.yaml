@@ -270,6 +270,21 @@ personal_claim_check:      # 2026-09-15: post-generation support check for claim
   max_tokens: 1600        # 2026-10-17 (BC-89): two live audits ended invalid_json at exactly 900
                           # completion tokens (JSON cut mid-object); 900 tokens took 9.82s.
   max_evidence_chars: 12000
+claim_ledger:            # 2026-10-20: user-claim ledger (BC-75/BC-52) -- the figures the USER stated about
+                         # themselves, each with a date + modality; the user is the only source of values
+                         # about the user. Everything ships OFF; the owner enables it in config.local.yaml
+                         # (docs: oct20c_runs/DESIGN_claim_ledger.md 7a). Values with a bare `off` are
+                         # QUOTED: YAML 1.1 reads an unquoted off as boolean false.
+  enabled: false         # live write: one background call per turn after the turn is stored
+  render_block: false    # [YOUR STATED FIGURES] block in the chat prompt (needs enabled)
+  reply_check: "off"     # "off" | "log_only" -- modality findings on delivered replies, receipts only
+  model: deepseek-v4.1-flash   # reasoning is switched off per call (BC-89); ~$0.0002/turn measured
+  write_timeout_s: 10.0
+  max_block_lines: 12
+  max_block_tokens: 450
+  standing_window_days: 30
+  deadline_window_days: 14
+  store_path: data/claim_ledger.json
 decision_model:          # 2026-10-08: Jev (TypeSafe) via OpenRouter System One. Default OFF (egress gate D16).
                          # Endpoint is a code constant, not a key; unknown keys are rejected.
                          # Role values are QUOTED: YAML 1.1 reads a bare `off` as boolean false.

@@ -1598,6 +1598,29 @@ PERSONAL_CLAIM_CHECK_ENABLED = bool(int(os.getenv(
     "1" if PERSONAL_CLAIM_CHECK_ENABLED else "0",
 )))
 
+# --------------------------------------------------------------------
+# User-claim ledger (2026-10-20, class: BC-75/BC-52). Every switch ships OFF; the
+# live consumers read these at call time (`app_config.CLAIM_LEDGER_*`), never a
+# frozen from-import (BC-82). No env overrides: the owner enables it in
+# config.local.yaml, one place.
+# --------------------------------------------------------------------
+CLAIM_LEDGER_CFG = config.get("claim_ledger", {})
+CLAIM_LEDGER_ENABLED: bool = bool(CLAIM_LEDGER_CFG.get("enabled", False))
+CLAIM_LEDGER_RENDER_BLOCK: bool = bool(CLAIM_LEDGER_CFG.get("render_block", False))
+_claim_ledger_reply_check = CLAIM_LEDGER_CFG.get("reply_check", "off")
+CLAIM_LEDGER_REPLY_CHECK: str = (
+    "off" if _claim_ledger_reply_check is False else str(_claim_ledger_reply_check or "off").strip().lower()
+)
+if CLAIM_LEDGER_REPLY_CHECK not in ("off", "log_only"):
+    CLAIM_LEDGER_REPLY_CHECK = "off"
+CLAIM_LEDGER_MODEL: str = str(CLAIM_LEDGER_CFG.get("model") or "deepseek-v4.1-flash")
+CLAIM_LEDGER_WRITE_TIMEOUT_S: float = float(CLAIM_LEDGER_CFG.get("write_timeout_s", 10.0))
+CLAIM_LEDGER_MAX_BLOCK_LINES: int = int(CLAIM_LEDGER_CFG.get("max_block_lines", 12))
+CLAIM_LEDGER_MAX_BLOCK_TOKENS: int = int(CLAIM_LEDGER_CFG.get("max_block_tokens", 450))
+CLAIM_LEDGER_STANDING_WINDOW_DAYS: int = int(CLAIM_LEDGER_CFG.get("standing_window_days", 30))
+CLAIM_LEDGER_DEADLINE_WINDOW_DAYS: int = int(CLAIM_LEDGER_CFG.get("deadline_window_days", 14))
+CLAIM_LEDGER_STORE_PATH: str = str(CLAIM_LEDGER_CFG.get("store_path") or "data/claim_ledger.json")
+
 # Decision model (Jev via OpenRouter System One; 2026-10-08, default OFF). Per-role
 # off|shadow|active. The endpoint is a code constant, never a key; no env reads here.
 # Plan: docs/execution/decision_model/PLAN_20261008.md (D11, D14, D16).

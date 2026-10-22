@@ -742,7 +742,7 @@ JSON:"""
             triples[:] = []
             return
         from memory.fact_source import find_supporting_user_span, iter_user_messages
-        from memory.fact_extractor import _polarity_conflict
+        from memory.fact_extractor import _interrogative_conflict, _polarity_conflict
         # lazy import: startup-cost (memory_storage pulls the model/core stack;
         # needed only to share THE per-turn paste guard's size + anchor tests)
         from memory.memory_storage import is_paste_sized, subject_is_user_anchored
@@ -771,6 +771,17 @@ JSON:"""
             if _polarity_conflict(evidence.text, triple.get("relation", ""), triple.get("object", "")):
                 logger.info(
                     f"[LLM Facts] Blocked polarity conflict: {triple.get('relation')}|"
+                    f"{triple.get('object')} vs source: {evidence.text[:80]!r}"
+                )
+                continue
+            # judged on the WHOLE message (a hard-wrapped question's opener sits
+            # on a different line than the object-bearing excerpt)
+            full = msg_texts.get(evidence.turn_index, "")
+            if _interrogative_conflict(
+                    full if 0 < len(full) <= 5000 else evidence.text,
+                    triple.get("object", "")):
+                logger.info(
+                    f"[LLM Facts] Blocked proposal from a question: {triple.get('relation')}|"
                     f"{triple.get('object')} vs source: {evidence.text[:80]!r}"
                 )
                 continue

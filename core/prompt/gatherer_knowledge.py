@@ -195,31 +195,10 @@ def _is_non_contact_entity(graph_memory, name: str) -> bool:
 
 
 def _is_known_person(graph_memory, name: str) -> bool:
-    """True when ``name`` is a KNOWN PERSON: a knowledge-graph entity of type
-    person (alias-resolved, read-only) or a name already in the Google
-    Contacts cache (cache-only, never an API call). 2026-10-20 (BC-04): the
-    passive email arm used to fire on any TitleCase token ("Python", "Oct").
-    Tries the whole phrase, then each word of it. Unknown → False."""
-    if not name or not name.strip():
-        return False
-    candidates = [name.strip()] + [w for w in name.split() if len(w) >= 3]
-    if graph_memory is not None:
-        for cand in candidates:
-            try:
-                eid = graph_memory.resolve_entity(cand)
-                if not isinstance(eid, str) or not eid.strip():
-                    continue
-                node = graph_memory.get_entity(eid)
-                et = getattr(node, "entity_type", None)
-                if isinstance(et, str) and et.strip().lower() == "person":
-                    return True
-            except Exception:  # degrades: graph lookup failure → try the contacts cache, may under-fire the email arm
-                continue
-    try:
-        from core.actions.google_contacts import is_cached_contact_name  # lazy import: cycle
-        return bool(is_cached_contact_name(name))
-    except Exception:  # degrades: contacts cache unreadable → name not known, email arm under-fires
-        return False
+    """Thin wrapper over ``utils.known_person.is_known_person`` (moved there
+    2026-10-21 so core/personal_claim_check can share it; kept as a patch point)."""
+    from utils.known_person import is_known_person  # lazy import: patch-point
+    return is_known_person(graph_memory, name)
 
 
 def _upload_is_fresh(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:

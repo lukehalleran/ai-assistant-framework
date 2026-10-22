@@ -76,8 +76,17 @@ Example usage:
 **Don't**: Quote the section verbatim or say "According to your temporal grounding..."
 **Do**: Let it inform your understanding and responses naturally, like a friend who's been paying attention"""
 
+_STATED_FIGURES = """### [YOUR STATED FIGURES] — The User's Own Figures
+This section lists figures the USER stated about themselves, each with the date they said it and how sure they were.
+- **Source of truth**: for a number, date, count or status about the user, this block is the source. If a recalled reply, summary or older memory disagrees, that is an older paraphrase (often your own earlier restatement) — the block wins.
+- **CONDITIONAL lines are not facts**: never state a CONDITIONAL figure as something that happened or is true now; it is what the user said would hold IF something happened.
+- **ESTIMATE lines keep their hedge**: say "about" or "you estimated", never plain fact.
+- **Corrections**: a document or tool result IN THIS TURN may correct a figure. When you use one, say so explicitly and name the source; do not silently replace the user's number.
+- **Don't recite the block**: use a figure when it is relevant to the question; do not list the block or mention its header."""
+
 # prompt_ctx key → instruction block (order = injection order)
 SECTION_INSTRUCTIONS = [
+    ("stated_figures", _STATED_FIGURES),
     ("personal_notes", _PERSONAL_NOTES),
     ("reference_docs", _DAEMON_DOCS),
     ("narrative_state", _TEMPORAL_GROUNDING),

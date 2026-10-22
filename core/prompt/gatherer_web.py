@@ -14,6 +14,7 @@ Depends on self.web_search_manager, self.web_search_trigger, self.web_search_tri
 self.model_manager, self.memory_id_map (set by ContextGatherer.__init__).
 """
 
+import asyncio
 import dataclasses
 import os
 import logging
@@ -171,7 +172,8 @@ class WebSearchMixin:
                     self.last_web_decision["reason"] = "trigger unavailable"
                     logger.warning("[ContextGatherer] Web search trigger not available")
                     return None
-                decision = trigger(query)
+                # BC-41 (2026-10-21): heuristic embeds on first use -- off the loop.
+                decision = await asyncio.to_thread(trigger, query)
                 # The heuristic path bypassed the shared budget veto
                 # (2026-09-12, adversarial review F3): at zero budget an
                 # explicit "search" query still went to the provider path.
@@ -205,7 +207,9 @@ class WebSearchMixin:
                     # A spent budget blocks NEW paid searches, not evidence
                     # already in the local cache — the veto used to sit in
                     # front of both.
-                    cached = self._cached_web_evidence(manager, decision, query)
+                    # BC-41 (2026-10-21): up to 3 sync Chroma reads -- worker thread.
+                    cached = await asyncio.to_thread(
+                        self._cached_web_evidence, manager, decision, query)
                     if cached is not None:
                         self.last_web_decision["results"] = len(cached.pages)
                         self.last_web_decision["from_cache"] = True

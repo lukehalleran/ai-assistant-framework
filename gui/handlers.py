@@ -139,6 +139,7 @@ from core.active_document import (
 )
 import json
 from config import app_config
+import memory.claim_ledger_reply_check as claim_ledger_reply_check
 from config.app_config import load_system_prompt
 import re as _re_draft
 import time as _time_mod
@@ -215,6 +216,7 @@ async def _background_store_interaction(
     provenance: dict = None,
     mode: str = "enhanced",
     personal_claim_task=None,
+    ledger_receipt=None,
 ):
     """
     Store interaction in background to avoid blocking response delivery.
@@ -260,6 +262,9 @@ async def _background_store_interaction(
                 # extraction / provenance / heavy-topic never read attachment
                 # content as the user's words (2026-09-05).
                 user_text=user_text,
+                # User-claim ledger receipt (2026-10-20): this task is already off the reply
+                # path, so storage awaits the bounded ledger write and fills the dict.
+                **({"ledger_receipt": ledger_receipt} if ledger_receipt is not None else {}),
             )
             logger.info(f"[HANDLE_SUBMIT] Background storage complete, ID: {memory_id}")
         except retrieval_outcome.StoreWriteError as e:
@@ -882,6 +887,7 @@ _ECHOED_HEADER_RE = _re.compile(
         r"^\s*\[RECENT CONVERSATION[^\]]*\]",
         r"^\s*\[RELEVANT INFORMATION\]",
         r"^\s*\[RELEVANT MEMORIES\]",
+        r"^\s*\[YOUR STATED FIGURES[^\]]*\]",
         r"^\s*\[FACTS[ ^\]]*\]",
         r"^\s*\[RECENT FACTS\]",
         r"^\s*\[CURRENT MESSAGE FACTS\]",
@@ -949,11 +955,17 @@ def _dispatch_storage(
     )
     if personal_claim_task is not None:
         store_kwargs["personal_claim_task"] = personal_claim_task
+    _ledger_receipt = None
+    if app_config.CLAIM_LEDGER_ENABLED:      # live read (BC-82); off = the call is unchanged
+        _ledger_receipt = {}
+        store_kwargs["ledger_receipt"] = _ledger_receipt
     _register_completed_turn(orchestrator, user_text, response_to_store, file_names)
     _pending_turn_owner = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
     if _pending_turn_owner is not None:
         pending_turns.register(_pending_turn_owner, merged_input, response_to_store, user_text)
     task = asyncio.create_task(_background_store_interaction(**store_kwargs))
+    if _ledger_receipt is not None:
+        task.ledger_receipt = _ledger_receipt     # read by _track_storage_task's done-callback
     _pending_storage_tasks.add(task)
     task.add_done_callback(_pending_storage_tasks.discard)
     return task
@@ -979,6 +991,13 @@ def _track_storage_task(ctx, value):
             if task.cancelled():
                 return
             label = task.result()
+            # User-claim ledger receipt (labels + a count, never values): the storage task
+            # awaited the write, so it is complete by the time this callback runs.
+            _ledger = getattr(task, "ledger_receipt", None)
+            if isinstance(_ledger, dict) and _ledger:
+                _row = getattr(ctx, "telemetry", None)
+                if isinstance(_row, dict):
+                    _row.update(_ledger)
             if not label:
                 return
             telemetry = getattr(ctx, "telemetry", None)
@@ -1056,6 +1075,7 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
     try:
         from core.orchestrator import PostResponseHookContext, run_post_response_hooks  # lazy import: startup-cost
         _start_background_grounding(ctx)
+        _start_background_claim_reply_check(ctx, response_text)
         # getattr-defensive: some callers (e.g. _run_pending_proposal's
         # lightweight SimpleNamespace ctx) don't carry every SubmitContext
         # field. The pre-registry code wrapped each ctx.* read in its own
@@ -1073,12 +1093,13 @@ def _write_turn_telemetry(ctx, mode, session_id, model_name, response_len,
         # in production, but a stubbed storage dispatch must not let the
         # row freeze at "pending").
         _personal_claim_task = getattr(ctx, "personal_claim_task", None)
+        _claim_reply_task = getattr(ctx, "claim_reply_task", None)    # 2026-10-20 ledger reply check
         # Only combine real Tasks (asyncio.gather rejects a non-awaitable,
         # e.g. a MagicMock-ctx test's auto-vivified truthy attribute -- that
         # must fall through to the plain-passthrough behaviour below, not
         # raise and skip every hook).
         _real_tasks = [
-            t for t in (_grounding_task, _personal_claim_task, _storage_task)
+            t for t in (_grounding_task, _personal_claim_task, _storage_task, _claim_reply_task)
             if isinstance(t, asyncio.Task)
         ]
         if len(_real_tasks) >= 2:
@@ -3785,6 +3806,47 @@ def _start_background_grounding(ctx):
     ctx.grounding_task = asyncio.create_task(check())
     _pending_storage_tasks.add(ctx.grounding_task)
     ctx.grounding_task.add_done_callback(finished)
+
+
+def _start_background_claim_reply_check(ctx, response_text):
+    """After delivery: one background, log-only check of the reply against the user's
+    standing ledger claims (2026-10-20, BC-75/BC-52). Never blocks or edits the reply and
+    never writes the ledger; tracked like the other receipts so shutdown drains it and the
+    turn row waits for it. Receipt: counts + status on the turn record, the same plus
+    subject keys on the debug record (no quotes, no values)."""
+    if getattr(ctx, "claim_reply_task", None) is not None:
+        return
+    if not claim_ledger_reply_check.enabled():
+        return
+    model_manager = getattr(getattr(ctx, "orchestrator", None), "model_manager", None)
+    if model_manager is None or not isinstance(response_text, str) or not response_text.strip():
+        return
+
+    async def check():
+        return await claim_ledger_reply_check.run(response_text, _dt.now(), model_manager)
+
+    def finished(task):
+        _pending_storage_tasks.discard(task)
+        try:
+            telemetry = getattr(ctx, "telemetry", None)
+            if task.cancelled():
+                receipt = {"claim_ledger_reply_findings": {}, "claim_ledger_reply_status": "cancelled"}
+            else:
+                receipt = task.result()
+            if not receipt:
+                return
+            if isinstance(telemetry, dict):
+                telemetry.update({k: v for k, v in receipt.items() if k != "claim_ledger_reply_subjects"})
+            record = getattr(ctx, "debug_record", None)
+            if isinstance(record, dict):
+                record.update(receipt)
+        except Exception as exc:  # degrades: the reply-check receipt is not attached to the turn
+            logger.debug(f"[ClaimLedger] reply-check receipt skipped: {exc}")
+
+    task = asyncio.create_task(check())
+    ctx.claim_reply_task = task
+    _pending_storage_tasks.add(task)
+    task.add_done_callback(finished)
 
 
 async def _apply_grounding_check(ctx, response_text, source_material: str = "", *, mode=None):

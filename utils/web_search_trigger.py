@@ -1076,7 +1076,9 @@ async def should_search_with_llm(
         WebSearchDecision with final recommendation
     """
     # Always run heuristics first
-    heuristic_result = should_search_heuristic(query)
+    # BC-41 (2026-10-21): the heuristic may run the semantic boost (embedder
+    # device move + encode, 836 ms live) -- worker thread, not the loop.
+    heuristic_result = await asyncio.to_thread(should_search_heuristic, query)
 
     # If heuristics are confident (high or low), use that result
     if heuristic_first:
@@ -2297,8 +2299,12 @@ async def _analyze_for_web_search_llm(
             source="heuristic",
         )
 
-    # Always compute heuristic result (used for blending and fallback)
-    heuristic_result = should_search_heuristic(query)
+    # Always compute heuristic result (used for blending and fallback).
+    # BC-41 (2026-10-21): worker thread -- the semantic boost inside loads/moves
+    # the MiniLM embedder (836 ms on the loop, 2026-10-20). Thread-safety: the
+    # heuristic only reads module constants and fills idempotent module caches
+    # (_search_anchor_embs) by single assignment; a double first build is benign.
+    heuristic_result = await asyncio.to_thread(should_search_heuristic, query)
 
     # Retry-after-inability (2026-08-22, deterministic — LLM-independent):
     # when the ASSISTANT's recent turn disclosed it couldn't search ("I can't

@@ -800,6 +800,7 @@ class ResponseParser:
                 r"^\s*\[RECENT CONVERSATION[^\]]*\]",
                 r"^\s*\[RELEVANT INFORMATION\]",
                 r"^\s*\[RELEVANT MEMORIES\]",
+                r"^\s*\[YOUR STATED FIGURES[^\]]*\]",
                 r"^\s*\[FACTS[ ^\]]*\]",
                 r"^\s*\[RECENT FACTS\]",
                 r"^\s*\[CURRENT MESSAGE FACTS\]",

@@ -120,6 +120,7 @@ import eval.section_registry as section_registry
 import utils.turn_progress as turn_progress
 import utils.loop_stall as loop_stall
 import memory.valence as valence
+import memory.claim_ledger_store as claim_ledger_store
 import knowledge.semantic_search as semantic_index
 
 logger = get_logger("prompt_builder")
@@ -2011,9 +2012,16 @@ class UnifiedPromptBuilder:
             user_stated = _drop_visible_user_stated(
                 gathered.get("user_stated") or [], recent_convos, USER_STATED_MAX_ITEMS)
 
+            # [YOUR STATED FIGURES] (2026-10-20, BC-75/BC-52/BC-46): the user's own figures
+            # with date + modality, rendered deterministically (no LLM). Off unless the ledger
+            # AND render_block are enabled; never on a local repo audit (the light path returns
+            # earlier and never builds this dict).
+            stated_figures = [] if _local_repo_audit else claim_ledger_store.stated_figure_lines()
+
             context = {
                 "recent_conversations": recent_convos,
                 "user_stated_evidence": user_stated,
+                "stated_figures": stated_figures,
                 "recent_window_truncated": _sess_truncated,
                 "session_turns_total": _sess_total,
                 "session_started_at": _sess_started,
@@ -2349,6 +2357,7 @@ class UnifiedPromptBuilder:
             prompt_ctx = {
                 "recent_conversations": context.get("recent_conversations", []),
                 "user_stated_evidence": context.get("user_stated_evidence", []),
+                "stated_figures": context.get("stated_figures", []),
                 "memories": context.get("memories", []),
                 "user_profile": context.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
                 "narrative_state": context.get("narrative_state", ""),  # Temporal grounding (synthesized life context)

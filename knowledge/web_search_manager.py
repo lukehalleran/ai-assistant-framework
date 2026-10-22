@@ -1355,7 +1355,10 @@ class WebSearchManager:
 
         # Check cache first
         if use_cache:
-            cached = self.cache.get(query, depth)
+            # BC-41 (2026-10-21): the Chroma collection.get blocked the loop
+            # 898 ms (also first-use init). Worker thread; the lookup only
+            # reads the collection and pops/reads _recent_by_query by key.
+            cached = await asyncio.to_thread(self.cache.get, query, depth)
             if cached:
                 log.debug(f"[WebSearch] Cache hit for: {query[:50]}...")
                 return cached

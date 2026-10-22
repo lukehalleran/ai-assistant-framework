@@ -52,6 +52,7 @@ Module Contract
   - Triggers narrative context regeneration after summary consolidation [NEW 2026-01-17]
 """
 
+import asyncio
 import os
 import re
 import json
@@ -72,6 +73,7 @@ import core.content_type_detector as content_type_detector
 import core.response_parser as response_parser
 from config import app_config
 from datetime import timedelta
+import memory.claim_ledger_writer as claim_ledger_writer
 import memory.fact_source as fact_source
 import memory.fact_verification as fact_verification
 import memory.graph_models as graph_models
@@ -700,6 +702,10 @@ _COMMON_WORDS = frozenset({
 })
 
 
+# Detached user-claim-ledger writes (strong refs: a bare create_task can be garbage-collected mid-flight).
+_LEDGER_TASKS: set = set()
+
+
 class MemoryStorage:
     """
     Memory storage operations.
@@ -719,6 +725,7 @@ class MemoryStorage:
         graph_memory=None,
         entity_resolver=None,
         fact_verifier=None,
+        model_manager=None,
     ):
         """
         Initialize MemoryStorage.
@@ -734,6 +741,7 @@ class MemoryStorage:
             graph_memory: Optional GraphMemory for knowledge graph ingestion
             entity_resolver: Optional EntityResolver for entity resolution
             fact_verifier: Optional FactVerifier for pre-storage conflict checking
+            model_manager: Optional ModelManager for the user-claim ledger's live write
         """
         self.corpus_manager = corpus_manager
         self.chroma_store = chroma_store
@@ -745,6 +753,7 @@ class MemoryStorage:
         self.graph_memory = graph_memory
         self.entity_resolver = entity_resolver
         self.fact_verifier = fact_verifier
+        self.model_manager = model_manager
 
         # State
         self.conversation_context: deque = deque(maxlen=50)
@@ -841,11 +850,17 @@ class MemoryStorage:
         session_id: Optional[str] = None,
         provenance: Optional[Dict] = None,
         user_text: Optional[str] = None,
+        ledger_receipt: Optional[dict] = None,
     ) -> Optional[str]:
         """
         Persist a turn in both corpus & Chroma with computed metadata.
 
         Args:
+            ledger_receipt: Optional dict the user-claim ledger write fills with its
+                   receipt (``claim_ledger_written`` / ``claim_ledger_status``).
+                   Passed ONLY by the background storage task, which then awaits
+                   the bounded write (no reply latency); every other caller gets a
+                   detached task, so no caller's reply waits on the ledger.
             query: User input (merged user text + attachment content when
                    files were attached)
             user_text: The user's own typed text for an attachment turn
@@ -1063,6 +1078,11 @@ class MemoryStorage:
                     self.interactions_since_consolidation = 0
 
             logger.debug(f"[MemoryStorage] Stored memory {memory_id} (topic={primary_topic}, truth={truth_score:.2f})")
+            # User-claim ledger (2026-10-20, BC-75/BC-52): AFTER the turn is persisted, from the
+            # SAME user-authored text the fact path uses (an attachment turn's merged blob is
+            # never the user's words). Never raises into storage.
+            await self._record_claim_ledger(
+                user_text if isinstance(user_text, str) else query, memory_id, ledger_receipt)
             return memory_id
 
         except StoreWriteError:
@@ -1071,6 +1091,27 @@ class MemoryStorage:
             logger.error(f"Error storing interaction: {e}")
             traceback.print_exc()
             raise StoreWriteError(source="store_interaction", reason=type(e).__name__) from e
+
+    async def _record_claim_ledger(self, authored_text: str, memory_id: Optional[str],
+                                   receipt: Optional[dict]) -> None:
+        """Run the ledger write: awaited when the caller gave a receipt dict (the
+        background storage task), otherwise a detached tracked task so the caller's
+        reply never waits for it."""
+        try:
+            if not app_config.CLAIM_LEDGER_ENABLED:
+                return
+            coro = claim_ledger_writer.record_turn(
+                authored_text, self._now(), str(memory_id or ""), self.model_manager, receipt=receipt)
+            if receipt is not None:
+                await coro
+                return
+            task = asyncio.create_task(coro)
+            _LEDGER_TASKS.add(task)
+            task.add_done_callback(_LEDGER_TASKS.discard)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # degrades: this turn's claims are not recorded; the turn is already stored
+            logger.warning(f"[MemoryStorage] claim ledger hook failed: {type(exc).__name__}")
 
     async def add_reflection(
         self,
