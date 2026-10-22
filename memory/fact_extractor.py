@@ -315,6 +315,67 @@ def is_self_reference(subj: str, obj: str) -> bool:
     return bool(s) and s == o
 
 
+# Identity-attribute slot nouns (2026-10-22, class: BC-55). CATEGORY: the nouns
+# that name a SLOT of a person ("whose name / number / address / email / phone /
+# age?"), never the slot's value. An object that is ONLY such a slot head plus
+# plain lowercase possessor/kinship modifiers ("mom name", "dad number",
+# "my sister's address") names the question, not the answer. "birthday" is
+# deliberately NOT in the category: "mom's birthday" is an event reading
+# ("forgot mom's birthday"), not a slot label. "phone" is NOT in it either
+# (mostly a DEVICE noun: "a new phone"; "phone number" is covered by "number")
+# and neither is "age" ("stone age", "ice age" are eras, not a person's age).
+_IDENTITY_SLOT_NOUNS = frozenset({
+    "name", "names", "number", "numbers", "address", "addresses", "email",
+    "emails",
+})
+_SLOT_MODIFIER_FILLER = frozenset({
+    "the", "a", "an", "my", "our", "his", "her", "their", "your", "its",
+})
+_SLOT_MODIFIER_MAX = 2
+
+
+def is_valueless_slot_label(obj: str) -> bool:
+    """True when *obj* is an identity-attribute slot noun with no value.
+
+    Structure (no session words): the LAST token is an identity-attribute slot
+    noun (``_IDENTITY_SLOT_NOUNS``) and every earlier token is a determiner /
+    possessive pronoun or a plain lowercase alphabetic modifier (a possessor or
+    kinship noun, at most ``_SLOT_MODIFIER_MAX``). Any value token defeats it:
+    a capitalised word (proper noun), a digit, a quoted string, a preposition
+    carrying a complement ("the name of the course") or a different head noun
+    ("phone number 555-0100", "mom's birthday party"). The bare slot noun with
+    no modifier is left to the existing checks (behaviour unchanged).
+    """
+    parse_text = re.sub(r"\s+", " ", (obj or "")).strip(" .,:;!?\"'`")
+    text = re.sub(r"(?i)'s\b|\u2019s\b", "", parse_text)
+    toks = text.split()
+    if len(toks) < 2 or toks[-1].lower() not in _IDENTITY_SLOT_NOUNS:
+        return False
+    mods = toks[:-1]
+    kept = [m for m in mods if m.lower() not in _SLOT_MODIFIER_FILLER]
+    if not kept or len(kept) > _SLOT_MODIFIER_MAX:
+        return False
+    if not all(m.isalpha() and m == m.lower() for m in kept):
+        return False
+    # Modifiers must be possessor/kinship/compound NOUNS, never adjectives
+    # ("new phone", "favorite number", "lucky number" are real values).
+    nlp = _get_nlp()
+    if nlp is None:  # degrades: no parse -> never junk (slot rule abstains)
+        return False
+    try:
+        doc = nlp(parse_text)
+    except Exception:  # degrades: parse failure -> slot rule abstains
+        return False
+    toks = [t for t in doc if t.lower_ not in _SLOT_MODIFIER_FILLER
+            and t.lower_ not in ("'s", "\u2019s") and not t.is_space]
+    if not toks or toks[-1].lower_ not in _IDENTITY_SLOT_NOUNS:
+        return False
+    return all(
+        t.pos_ in ("NOUN", "PROPN") and t.dep_ in ("compound", "poss")
+        for t in toks[:-1]
+    )
+
+
 def _is_junk_object(obj: str, rel: str, subj: str = "") -> bool:
     """True when the object is an adverbial/temporal/negation fragment that
     carries no durable factual content (extraction noise from casual or
@@ -331,6 +392,8 @@ def _is_junk_object(obj: str, rel: str, subj: str = "") -> bool:
     stripped = strip_edge_interjections((obj or "").strip())
     if stripped and stripped != (obj or "").strip() and _is_junk_object(stripped, rel, subj):
         return True  # edge interjection hid a junk remainder; verdict otherwise unchanged
+    if is_valueless_slot_label((obj or "").strip()):
+        return True  # "mom name": the slot, no value
     if relation_is_future_planned(r):
         return True
     if is_living_situation_relation(r) and _BARE_DWELLING_RE.match(o):

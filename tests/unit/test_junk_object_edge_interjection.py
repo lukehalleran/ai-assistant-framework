@@ -6,8 +6,10 @@ only when EVERY token was an interjection. Leading/trailing interjection
 tokens are now stripped and the remainder judged by the EXISTING rules.
 Drives the deployed _is_junk_object / is_junk_entity.
 
-Open: "mom name" is not junk by any existing rule, so "mom name lol" keeps
-its verdict (False/False) -- pinned here so a change is deliberate.
+Closed 2026-10-22 (class: BC-55): "mom name" is a value-less identity-attribute
+slot label; `_is_junk_object` now drops it (see
+test_fact_extractor_valueless_slot_label.py). The graph-node check
+(`is_junk_entity`) is outside that lane's file fence and keeps False, pinned here.
 """
 import pytest
 
@@ -28,7 +30,7 @@ def test_with_food_haha_object_junk():
 
 
 @pytest.mark.parametrize("text", [
-    "mom name lol", "lol mom name", "the gym lmao", "fair lol", "sweet lmao",
+    "the gym lmao", "fair lol", "sweet lmao",
     "cool beans lol", "my dentist omg", "Chicago lol", "Biscuit ugh",
     "lol cat cafe", "Lola",
 ])
@@ -37,7 +39,13 @@ def test_non_junk_remainder_keeps_verdict(text):
     assert is_junk_entity(text) is False
 
 
-@pytest.mark.parametrize("text", ["fair", "sweet", "cool beans", "mom name"])
+@pytest.mark.parametrize("text", ["mom name lol", "lol mom name", "mom name"])
+def test_slot_label_junk_for_facts_entity_check_unchanged(text):
+    assert _is_junk_object(text, "has_name", "user") is True
+    assert is_junk_entity(text) is False
+
+
+@pytest.mark.parametrize("text", ["fair", "sweet", "cool beans"])
 def test_plain_values_unchanged(text):
     assert _is_junk_object(text, "likes", "user") is False
     assert is_junk_entity(text) is False
