@@ -61,3 +61,23 @@ def test_unavailable_parser_leaves_bare_past_relation_durable(monkeypatch):
 def test_health_transient_horizon_still_wins():
     # an illness relation keeps the longer health horizon, unchanged
     assert rc.ephemeral_ttl_hours("recovering_until") == rc._health_transient_ttl_hours()
+
+
+@pytest.mark.parametrize("rel", [
+    "dropped", "withdrew", "withdrawn", "unenrolled", "deferred", "joined",
+    "quit", "resigned", "transferred", "left", "switched",
+])
+def test_membership_change_relations_stay_durable(rel):
+    """Incident 2026-10-21 (class: BC-26): `dropped | <course>` was a 24h
+    ephemeral relation, so a standing enrollment change vanished."""
+    assert rc.ephemeral_ttl_hours(rel) is None, rel
+    assert not rc.is_ephemeral_relation(rel)
+    assert rc.ephemeral_ttl_hours("  " + rel.upper() + " ") is None
+
+
+@pytest.mark.parametrize("rel", [
+    "showered", "eaten", "packed", "took", "started", "rested_until",
+    "leaving_for_work",
+])
+def test_membership_exclusion_does_not_widen_to_acts(rel):
+    assert rc.ephemeral_ttl_hours(rel) == 24.0, rel
