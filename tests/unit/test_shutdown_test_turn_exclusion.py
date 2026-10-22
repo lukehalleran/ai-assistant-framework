@@ -31,6 +31,11 @@ PROBE_INDENTED = f"   [test]\n   {PROBE}\n   [/test]"
 REAL = "Rowan and I finished the Tamsin chapter outline today."
 
 NOW = datetime.now().replace(microsecond=0)
+# Fixture turns sit up to an hour before NOW; in the first hours after midnight they would fall on the
+# previous day while the tests ask for NOW.date() (CI at 00:26 UTC, 2026-10-22). Keep the whole fixture
+# window inside one past day.
+if NOW.hour < 2:
+    NOW = (NOW - timedelta(days=1)).replace(hour=23, minute=0, second=0)
 
 
 def _entry(q, minutes=0, **extra):
