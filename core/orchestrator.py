@@ -375,13 +375,31 @@ class PostResponseHookContext:
     telemetry_task: Any = None
 
 
+# Key prefixes of receipts that land in ``ctx.telemetry`` from BACKGROUND done-callbacks
+# (gui/handlers.py) AFTER ``_hook_turn_telemetry`` has run, and that the deferred row write
+# must therefore copy in. One tuple, read by the copy and by its test (2026-10-22: the
+# 2026-10-20 claim-ledger receipts were never written because the copy was a three-literal
+# allow-list; class: BC-25). Producers:
+#   grounding_      -- gui/handlers._start_background_grounding (log-only verifier)
+#   storage_        -- gui/handlers._track_storage_task (``storage_failed``)
+#   personal_claim_ -- gui/handlers personal-claim shadow check receipt
+#   claim_ledger_   -- gui/handlers._track_storage_task (``claim_ledger_written/_status``
+#                      from task.ledger_receipt) and _start_background_claim_reply_check
+#                      (``claim_ledger_reply_findings/_status``)
+DEFERRED_RECEIPT_PREFIXES = ("grounding_", "storage_", "personal_claim_", "claim_ledger_")
+
+
 def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
     """Append the per-turn telemetry JSONL record (utils/turn_telemetry.py)."""
     from utils.turn_telemetry import record_turn
+    from memory.fact_source import is_test_turn  # lazy import: layering (fact_source pulls the extractor stack)
     rec = dict(getattr(ctx.orchestrator, "_last_turn_signals", {}) or {})
     rec.update(ctx.telemetry or {})
     rec.update({
         "query": (ctx.user_input or "")[:300],
+        # Explicit probe flag from the FULL text (the 300-char query can cut the closing
+        # [/test]); THE corpus predicate, never a re-derivation. class: BC-58
+        "test_probe": bool(is_test_turn({"query": ctx.user_input or ""})),
         "mode": ctx.mode,
         "session_id": ctx.session_id,
         "model": ctx.model_name,
@@ -404,7 +422,7 @@ def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
             # personal-claim receipt (log-only shadow check) lands the same
             # way -- without this prefix the row froze at "pending".
             rec.update({k: v for k, v in ctx.telemetry.items()
-                        if k.startswith(("grounding_", "storage_", "personal_claim_"))})
+                        if k.startswith(DEFERRED_RECEIPT_PREFIXES)})
             record_turn(rec)
         except Exception as exc:
             logger.debug(f"[TurnTelemetry] deferred write skipped: {exc}")
