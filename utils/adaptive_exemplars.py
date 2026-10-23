@@ -19,9 +19,14 @@ Module Contract:
 - API:
   - get_store() -> AdaptiveExemplarStore (process singleton)
   - store.get_learned(domain, label) -> list[str]
-  - store.record(domain, label, text, source, embedder=None, seed_texts=None)
+  - store.record(domain, label, text, source, embedder=None, seed_texts=None,
+                 support_span=None)
       -> bool — applies quality gates before storing:
-      * length bounds (min 12 chars, clipped to 300)
+      * length bounds (min 12 chars; over 300 chars a window of <=300 chars
+        containing `support_span` — the (start, end) offsets, in the text as
+        passed, of the text the teacher's verdict rested on — is stored;
+        an over-long text with no usable span is DECLINED, never head-clipped:
+        2026-10-23 A06, a neutral head would be taught under a distress label)
       * exact-duplicate check vs seeds + learned (case-folded)
       * near-duplicate check vs seeds + learned when an embedder is provided
         (cosine >= 0.92 rejected — repeats must not dominate the prototype)
@@ -40,9 +45,10 @@ Module Contract:
 
 import contextvars
 import json
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -99,12 +105,43 @@ class AdaptiveExemplarStore:
             if self._path.exists():
                 raw = json.loads(self._path.read_text())
                 if isinstance(raw, dict):
-                    self._data = raw
-                    n = sum(len(v) for d in raw.values() for v in d.values())
+                    self._data = self._validated(raw)
+                    n = sum(len(v) for d in self._data.values() for v in d.values())
                     logger.info(f"[AdaptiveExemplars] Loaded {n} learned exemplars")
         except Exception as e:
             logger.warning(f"[AdaptiveExemplars] Load skipped (starting empty): {e}")
             self._data = {}
+
+    @staticmethod
+    def _validated(raw: dict) -> Dict[str, Dict[str, List[dict]]]:
+        """Keep only well-shaped entries (A09, 2026-10-23): the store is
+        derived, self-healing state, so a malformed domain/label/entry is
+        dropped (debug log) instead of poisoning get_learned() with a KeyError."""
+        out: Dict[str, Dict[str, List[dict]]] = {}
+        dropped = 0
+        for domain, labels in raw.items():
+            if not isinstance(domain, str) or not isinstance(labels, dict):
+                dropped += 1
+                continue
+            for label, entries in labels.items():
+                if not isinstance(label, str) or not isinstance(entries, list):
+                    dropped += 1
+                    continue
+                good = []
+                for e in entries:
+                    if (
+                        isinstance(e, dict)
+                        and isinstance(e.get("text"), str)
+                        and e["text"].strip()
+                    ):
+                        good.append(e)
+                    else:
+                        dropped += 1
+                if good:
+                    out.setdefault(domain, {})[label] = good
+        if dropped:
+            logger.debug(f"[AdaptiveExemplars] Dropped {dropped} malformed entries on load")
+        return out
 
     def _save(self) -> None:
         try:
@@ -125,6 +162,7 @@ class AdaptiveExemplarStore:
         source: str,
         embedder=None,
         seed_texts: Optional[List[str]] = None,
+        support_span: Optional[Tuple[int, int]] = None,
     ) -> bool:
         """Store a confirmed exemplar after quality gates. Returns True if kept."""
         # Owner probes teach nothing: a "[test]...[/test]" envelope in the
@@ -134,7 +172,16 @@ class AdaptiveExemplarStore:
         t = " ".join((text or "").split()).strip()
         if len(t) < _MIN_CHARS:
             return False
-        t = t[:_CLIP_CHARS]
+        if len(t) > _CLIP_CHARS:
+            t = _support_window(text or "", support_span)
+            if t is None:
+                logger.debug(
+                    f"[AdaptiveExemplars] {domain}/{label} not learned: over-long "
+                    "text with no supporting span"
+                )
+                return False
+            if len(t) < _MIN_CHARS:
+                return False
 
         existing = self.get_learned(domain, label)
         pool = [*(seed_texts or []), *existing]
@@ -164,6 +211,44 @@ class AdaptiveExemplarStore:
             f"(source={source}, n={len(entries)}): {t[:60]!r}"
         )
         return True
+
+
+def _support_window(text: str, span: Optional[Tuple[int, int]]) -> Optional[str]:
+    """Whitespace-normalised window of <= _CLIP_CHARS chars, on word
+    boundaries, centred on / containing `span` (character offsets into `text`
+    as given). None when there is no usable span. A span wider than the clip
+    keeps its own start (the window cannot contain it whole)."""
+    try:
+        s0, e0 = int(span[0]), int(span[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not (0 <= s0 < e0 <= len(text)):
+        return None
+    words = [(m.start(), m.end(), m.group()) for m in re.finditer(r"\S+", text)]
+    idx = [i for i, (a, b, _) in enumerate(words) if a < e0 and b > s0]
+    if not idx:
+        return None
+    lo, hi = idx[0], idx[-1]
+
+    def width(l: int, h: int) -> int:
+        return sum(len(w[2]) for w in words[l:h + 1]) + (h - l)
+
+    while hi > lo and width(lo, hi) > _CLIP_CHARS:
+        hi -= 1  # span wider than the clip: keep its start
+    take_left = True
+    while True:
+        grew = False
+        for side in ("L", "R") if take_left else ("R", "L"):
+            if side == "L" and lo > 0 and width(lo - 1, hi) <= _CLIP_CHARS:
+                lo -= 1
+                grew = True
+            elif side == "R" and hi < len(words) - 1 and width(lo, hi + 1) <= _CLIP_CHARS:
+                hi += 1
+                grew = True
+        if not grew:
+            break
+    out = " ".join(w[2] for w in words[lo:hi + 1])
+    return out[:_CLIP_CHARS] if out else None
 
 
 _store: Optional[AdaptiveExemplarStore] = None

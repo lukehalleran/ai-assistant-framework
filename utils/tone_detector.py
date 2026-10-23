@@ -813,6 +813,22 @@ def _get_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
     return prototypes
 
 
+def _keyword_support_span(message: str):
+    """(start, end) offsets in `message` of the keyword the deterministic stage
+    matched — the text the confirmed label rests on (A06, 2026-10-23). The
+    most severe category wins, earliest hit on ties. None when no hit can be
+    located (offsets are only trusted when lowercasing preserved length)."""
+    lower = message.lower()
+    if len(lower) != len(message):
+        return None
+    for matcher in (_HIGH_MATCHER, _MEDIUM_MATCHER, _CONCERN_MATCHER, _EVENT_MATCHER):
+        hits = sorted(matcher.iter_hits(lower), key=lambda h: h.start)
+        if hits:
+            return (hits[0].start, hits[0].end)
+    m = _SUBSTANCE_USE_RE.search(lower)
+    return (m.start(), m.end()) if m else None
+
+
 def _learn_tone_exemplar(message: str, level_key: str, source: str,
                          model_manager=None) -> None:
     """Teach the adaptive store a CONFIRMED distress classification.
@@ -832,6 +848,9 @@ def _learn_tone_exemplar(message: str, level_key: str, source: str,
             "tone", level_key, message, source,
             embedder=_get_embedder(model_manager),
             seed_texts=CRISIS_EXEMPLARS.get(level_key, []),
+            # Only the keyword stage knows where its verdict rests; an
+            # over-long message from any other source is declined by record().
+            support_span=_keyword_support_span(message) if source == "keyword" else None,
         )
     except Exception as e:  # degrades: confirmed tone exemplar not learned, adaptive store unchanged
         logger.warning(f"[ToneDetector] exemplar learning skipped: {e}")
