@@ -46,8 +46,8 @@ def _current_values(profile):
 def test_profile_expires_stale_health_transient(temp_profile):
     from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
     profile = UserProfile(temp_profile)
-    old_ts = datetime.now() - timedelta(hours=H + 48)
-    fresh_ts = datetime.now() - timedelta(hours=2)
+    old_ts = datetime.now() - timedelta(hours=H + 48)  # clock-safe: per-relation TTL is an elapsed-hours compare, no date test
+    fresh_ts = datetime.now() - timedelta(hours=2)  # clock-safe: per-relation TTL is an elapsed-hours compare, no date test
 
     # Values avoid temporal words ("today"/weekday) so the profile's temporal
     # resolver doesn't rewrite them out from under the assertion.
@@ -77,7 +77,7 @@ def test_profile_standard_ephemeral_uses_short_ttl(temp_profile):
     )
     assert E < H  # precondition for a meaningful test
     profile = UserProfile(temp_profile)
-    between = datetime.now() - timedelta(hours=(E + H) / 2)  # past E, within H
+    between = datetime.now() - timedelta(hours=(E + H) / 2)  # clock-safe: per-relation TTL is an elapsed-hours compare, no date test; past E, within H
     profile.add_fact("current_activity", "walking to the store",
                      confidence=0.9, category=ProfileCategory.HOBBIES, timestamp=between)
     assert "walking to the store" not in _current_values(profile)
@@ -140,9 +140,9 @@ def test_retriever_ages_out_stale_health_transient():
     from config.app_config import PROFILE_HEALTH_TRANSIENT_TTL_HOURS as H
     rows = [
         _row("user | health_status | recovering from illness",
-             ts=datetime.now() - timedelta(hours=H + 72)),       # stale → drop
+             ts=datetime.now() - timedelta(hours=H + 72)),  # clock-safe: per-relation TTL is an elapsed-hours compare, no date test; stale → drop
         _row("user | symptoms | nausea today",
-             ts=datetime.now() - timedelta(hours=2)),            # fresh → keep
+             ts=datetime.now() - timedelta(hours=2)),  # clock-safe: per-relation TTL is an elapsed-hours compare, no date test; fresh → keep
     ]
     out = _contents(_get_facts(rows))
     assert "user | symptoms | nausea today" in out
@@ -183,7 +183,7 @@ def _mem(content, collection, age_hours, rel_score=0.8):
         "content": content,
         "collection": collection,
         "relevance_score": rel_score,
-        "timestamp": (datetime.now() - timedelta(hours=age_hours)).isoformat(),
+        "timestamp": (datetime.now() - timedelta(hours=age_hours)).isoformat(),  # clock-safe: per-relation TTL is an elapsed-hours compare, no date test
         "metadata": {},
     }
 

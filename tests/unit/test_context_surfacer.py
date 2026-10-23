@@ -200,7 +200,7 @@ class TestSurfacingHistory:
             h = SurfacingHistory(persist_path=path)
             # Manually insert an old entry
             h._entries["old_key"] = {
-                "last_surfaced": (datetime.now() - timedelta(hours=100)).isoformat(),
+                "last_surfaced": (datetime.now() - timedelta(hours=100)).isoformat(),  # clock-safe: surfacing cooldown is elapsed hours vs last_surfaced, no date test
                 "count": 1,
             }
             assert not h.was_recently_shown("old_key", cooldown_hours=72)

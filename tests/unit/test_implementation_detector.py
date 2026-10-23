@@ -88,13 +88,13 @@ class TestDetectionResult:
 
 class TestCooldown:
     def test_skip_within_cooldown(self):
-        p = _make_proposal(last_tracked_at=time.time() - 100)
+        p = _make_proposal(last_tracked_at=time.time() - 100)  # clock-safe: tracking interval is elapsed seconds vs last_tracked_at, no date test
         detector = ImplementationDetector()
         with patch("config.app_config.IMPL_TRACKING_COOLDOWN", 86400):
             assert detector._should_skip_cooldown(p) is True
 
     def test_expired_cooldown(self):
-        p = _make_proposal(last_tracked_at=time.time() - 100000)
+        p = _make_proposal(last_tracked_at=time.time() - 100000)  # clock-safe: tracking interval is elapsed seconds vs last_tracked_at, no date test
         detector = ImplementationDetector()
         with patch("config.app_config.IMPL_TRACKING_COOLDOWN", 86400):
             assert detector._should_skip_cooldown(p) is False
@@ -105,14 +105,14 @@ class TestCooldown:
         assert detector._should_skip_cooldown(p) is False
 
     def test_cooldown_zero(self):
-        p = _make_proposal(last_tracked_at=time.time() - 1)
+        p = _make_proposal(last_tracked_at=time.time() - 1)  # clock-safe: tracking interval is elapsed seconds vs last_tracked_at, no date test
         detector = ImplementationDetector()
         with patch("config.app_config.IMPL_TRACKING_COOLDOWN", 0):
             assert detector._should_skip_cooldown(p) is False
 
     def test_detect_single_returns_cached_on_cooldown(self):
         p = _make_proposal(
-            last_tracked_at=time.time() - 10,
+            last_tracked_at=time.time() - 10,  # clock-safe: tracking interval is elapsed seconds vs last_tracked_at, no date test
             implementation_confidence=0.75,
             implementation_status="likely",
             implementation_evidence="cached evidence",
@@ -547,7 +547,7 @@ class TestBatchDetection:
     @pytest.mark.asyncio
     async def test_cooldown_filtering(self):
         p = _make_proposal(
-            last_tracked_at=time.time() - 10,
+            last_tracked_at=time.time() - 10,  # clock-safe: tracking interval is elapsed seconds vs last_tracked_at, no date test
             implementation_confidence=0.5,
             implementation_status="uncertain",
         )

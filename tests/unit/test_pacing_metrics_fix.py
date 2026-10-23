@@ -45,8 +45,8 @@ class TestMarkSequence:
 
     def test_new_session_resets_previous(self):
         tm = _bare_tm()
-        tm.last_query_time = datetime.now() - timedelta(hours=5)
-        tm.last_session_end_time = datetime.now() - timedelta(hours=4)
+        tm.last_query_time = datetime.now() - timedelta(hours=5)  # clock-safe: 5h gap is past the session timeout either way; asserts the 'first message in session' sentinel, no date test
+        tm.last_session_end_time = datetime.now() - timedelta(hours=4)  # clock-safe: 5h gap is past the session timeout either way; asserts the 'first message in session' sentinel, no date test
         tm.mark_query_time()
         assert tm.time_since_previous_message() == "N/A (first message in session)"
 

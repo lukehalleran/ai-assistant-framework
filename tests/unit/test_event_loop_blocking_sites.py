@@ -84,7 +84,7 @@ class TestGetCodebaseChangesOffMainThread:
              patch("config.app_config.SESSION_DIFF_EXTENSIONS", [".py"]), \
              patch("subprocess.run", side_effect=mock_run):
             result = await gatherer.get_codebase_changes(
-                datetime.now() - timedelta(hours=2)
+                datetime.now() - timedelta(hours=2)  # clock-safe: `since` only feeds an elapsed-duration label; the assertion is about thread identity
             )
 
         # The three git subprocess calls (log, diff, status) fired. B1

@@ -581,7 +581,7 @@ def test_belongs_to_thread_too_old():
     last_conv = {
         "query": "tell me about neural networks",
         "response": "Neural networks are models",
-        "timestamp": datetime.now() - timedelta(hours=3),  # Too old
+        "timestamp": datetime.now() - timedelta(hours=3),  # clock-safe: belongs_to_thread compares elapsed seconds against a window, no date test; Too old
         "is_heavy_topic": False,
         "topic": "machine_learning"
     }

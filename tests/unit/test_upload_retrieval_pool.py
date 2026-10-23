@@ -280,7 +280,7 @@ def _roster_gatherer(metadatas):
 
 
 def _upload_meta(title, age_hours=1.0, is_image=False):
-    ts = (datetime.now() - timedelta(hours=age_hours)).isoformat()
+    ts = (datetime.now() - timedelta(hours=age_hours)).isoformat()  # clock-safe: upload freshness is elapsed age vs a max-age, no date test
     meta = {"type": "user_upload", "title": title, "timestamp": ts}
     if is_image:
         meta["is_image"] = True
@@ -523,7 +523,7 @@ class TestKeywordContentOverlapNotAdmittedByFreshness:
             "relevance_score": score,
             "match_type": match_type,
             "metadata": {"type": "user_upload", "title": title,
-                         "timestamp": (datetime.now() - timedelta(hours=age_hours)).isoformat()},
+                         "timestamp": (datetime.now() - timedelta(hours=age_hours)).isoformat()},  # clock-safe: upload freshness is elapsed age vs a max-age, no date test
         }
 
     def test_weak_keyword_hit_rejected_despite_freshness_and_cue(self):

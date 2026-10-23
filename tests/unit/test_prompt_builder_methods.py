@@ -373,7 +373,7 @@ def test_last_exchange_skipped_across_session_boundary(formatter):
     """A previous-session exchange must NOT sit adjacent to the current query
     (stale-continuity confabulation: model answers last night's question)."""
     from datetime import timedelta
-    ts = datetime.now() - timedelta(hours=14)
+    ts = datetime.now() - timedelta(hours=14)  # clock-safe: 14h exceeds the session gap, so the boundary holds with or without a date change
     prompt = formatter._assemble_prompt(
         context={"recent_conversations": [_recent_entry(ts)]},
         user_input="Hey",

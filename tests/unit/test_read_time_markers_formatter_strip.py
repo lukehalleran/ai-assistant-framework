@@ -80,7 +80,7 @@ class TestRecentConversationMachineryStrip:
     def test_trailing_calendar_notice_stripped_body_kept(self):
         fmt = _get_formatter()
         body = "Sounds like a rough morning — glad you got a little rest."
-        old_ts = (datetime.now() - timedelta(hours=5)).isoformat()
+        old_ts = (datetime.now() - timedelta(hours=5)).isoformat()  # clock-safe: 5h exceeds the session gap, so the prior-session boundary holds with or without a date change
         entry = {
             "query": "did you add it",
             "response": body + CALENDAR_NOTICE,
@@ -97,7 +97,7 @@ class TestRecentConversationMachineryStrip:
         back in because display == storage) is left exactly where it is."""
         fmt = _get_formatter()
         body = "Saved the note for you already."
-        old_ts = (datetime.now() - timedelta(hours=5)).isoformat()
+        old_ts = (datetime.now() - timedelta(hours=5)).isoformat()  # clock-safe: 5h exceeds the session gap, so the prior-session boundary holds with or without a date change
         response = body + "\n" + UNVERIFIED_CLAIM_MARKER + CALENDAR_NOTICE
         entry = {
             "query": "did that get saved",
@@ -119,7 +119,7 @@ class TestRecentConversationMachineryStrip:
             "> ⚠️ heads up, mid text\n\n"
             "A normal paragraph follows and is the last line."
         )
-        old_ts = (datetime.now() - timedelta(hours=5)).isoformat()
+        old_ts = (datetime.now() - timedelta(hours=5)).isoformat()  # clock-safe: 5h exceeds the session gap, so the prior-session boundary holds with or without a date change
         entry = {
             "query": "what happened earlier",
             "response": response,

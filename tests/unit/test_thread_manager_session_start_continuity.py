@@ -126,7 +126,7 @@ class TestThreadContextSessionStart:
 
     @pytest.mark.asyncio
     async def test_stale_last_timestamp_without_time_manager(self):
-        stale = (datetime.now() - timedelta(hours=13)).isoformat()
+        stale = (datetime.now() - timedelta(hours=13)).isoformat()  # clock-safe: gap is elapsed hours vs the session-gap threshold, no date test
         ctx = _make_context(
             thread_context={**_THREAD_CTX, "last_timestamp": stale},
             original_query="Hey", primary_topic="general",
@@ -159,7 +159,7 @@ class TestThreadContextSessionStart:
         assert _thread_context_is_stale("garbage") is False
         five_min = (datetime.now() - timedelta(minutes=5)).isoformat()  # clock-safe: recent-history gate compares an elapsed gap in hours, no date test
         assert _thread_context_is_stale({"last_timestamp": five_min}) is False
-        three_h = datetime.now() - timedelta(hours=3)
+        three_h = datetime.now() - timedelta(hours=3)  # clock-safe: gap is elapsed hours vs the session-gap threshold, no date test
         assert _thread_context_is_stale({"last_timestamp": three_h}) is True
         assert _thread_context_is_stale({"last_timestamp": three_h.isoformat()}) is True
         # "Z"-suffixed ISO strings parse too

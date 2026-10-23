@@ -75,7 +75,7 @@ def env(monkeypatch):
     corpus = _Corpus()
     models = _FakeModels()
     storage = _FakeStorage()
-    process_start = datetime.now() - timedelta(hours=3)
+    process_start = datetime.now() - timedelta(hours=3)  # clock-safe: session window is an elapsed span from process_start; checked at 00:00:30 and 23:59:50
 
     proc = ShutdownProcessor.__new__(ShutdownProcessor)
     proc.corpus_manager = corpus
@@ -219,7 +219,7 @@ def test_coordinator_window_is_forward_only(env):
     later = env.coord.session_start + timedelta(hours=1)
     env.coord.session_start = later
     env.proc.session_start = later
-    env.coord.advance_session_window(time.time() - 5 * 3600)  # 5h ago < later
+    env.coord.advance_session_window(time.time() - 5 * 3600)  # clock-safe: session-window advance is an elapsed-seconds compare; 5h ago < later
     assert env.coord.session_start == later
     assert env.proc.session_start == later
 

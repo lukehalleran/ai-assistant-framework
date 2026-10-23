@@ -271,7 +271,7 @@ class TestGraphBoostedScoring:
 
     def _make_memory(self, content: str, relevance: float = 0.5, ts_offset_hours: int = 1):
         """Create a minimal memory dict."""
-        ts = datetime.now() - timedelta(hours=ts_offset_hours)
+        ts = datetime.now() - timedelta(hours=ts_offset_hours)  # clock-safe: recency decay is elapsed hours, no date test
         return {
             "query": "",
             "response": content,

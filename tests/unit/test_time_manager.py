@@ -147,7 +147,7 @@ def test_elapsed_since_last_hours(time_manager):
 
 def test_elapsed_since_last_days(time_manager):
     """elapsed_since_last() formats days correctly"""
-    time_manager.last_query_time = datetime.now() - timedelta(days=3, hours=5)
+    time_manager.last_query_time = datetime.now() - timedelta(days=3, hours=5)  # clock-safe: elapsed_since_last formats the total timedelta (days/hours), not a date difference
     result = time_manager.elapsed_since_last()
     assert "d" in result
     assert "h" in result

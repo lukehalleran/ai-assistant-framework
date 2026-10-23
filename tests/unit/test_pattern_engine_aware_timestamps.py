@@ -118,8 +118,8 @@ def test_edge_is_stale_transient_naive_timestamp_unaffected():
     """Naive last_seen (the common case) must behave exactly as before —
     the fix only changes the aware-input path."""
     ttl = relation_classifier.ephemeral_ttl_hours("meeting")
-    fresh = _make_edge(datetime.now() - timedelta(hours=ttl / 2))
-    stale = _make_edge(datetime.now() - timedelta(hours=ttl * 2))
+    fresh = _make_edge(datetime.now() - timedelta(hours=ttl / 2))  # clock-safe: edge TTL is an elapsed-hours compare, no date test
+    stale = _make_edge(datetime.now() - timedelta(hours=ttl * 2))  # clock-safe: edge TTL is an elapsed-hours compare, no date test
     assert GraphMemory._edge_is_stale_transient(fresh) is False
     assert GraphMemory._edge_is_stale_transient(stale) is True
 

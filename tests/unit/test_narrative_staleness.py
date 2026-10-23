@@ -33,7 +33,7 @@ def _sandbox(tmp_path, monkeypatch):
 class TestFlagPrimitives:
     def test_mark_then_is_stale_against_older_narrative(self):
         assert ns.mark_stale("test correction")
-        assert ns.is_stale(time.time() - 3600)  # narrative generated an hour ago
+        assert ns.is_stale(time.time() - 3600)  # clock-safe: staleness is elapsed seconds vs generated-at, no date test; narrative generated an hour ago
 
     def test_not_stale_when_narrative_newer_than_mark(self):
         ns.mark_stale("test correction")
@@ -82,7 +82,7 @@ class TestCorpusManagerIntegration:
         cm, narrative = self._cm(_sandbox, monkeypatch)
         assert cm.save_narrative_context("User is on day 8 off the medication.")
         # Backdate the narrative file so the mark lands after it.
-        old = time.time() - 3600
+        old = time.time() - 3600  # clock-safe: staleness is elapsed seconds vs generated-at, no date test
         os.utime(str(narrative), (old, old))
         ns.mark_stale("6 weeks off vryalr not 1.")
         out = cm.get_narrative_context()
@@ -98,7 +98,7 @@ class TestCorpusManagerIntegration:
     def test_fresh_save_clears_flag(self, _sandbox, monkeypatch):
         cm, narrative = self._cm(_sandbox, monkeypatch)
         cm.save_narrative_context("Old narrative.")
-        old = time.time() - 3600
+        old = time.time() - 3600  # clock-safe: staleness is elapsed seconds vs generated-at, no date test
         os.utime(str(narrative), (old, old))
         ns.mark_stale("correction")
         assert "[CAUTION:" in cm.get_narrative_context()
@@ -112,7 +112,7 @@ class TestCorpusManagerIntegration:
             self, _sandbox, monkeypatch):
         cm, narrative = self._cm(_sandbox, monkeypatch)
         cm.save_narrative_context("Good narrative.")
-        old = time.time() - 3600
+        old = time.time() - 3600  # clock-safe: staleness is elapsed seconds vs generated-at, no date test
         os.utime(str(narrative), (old, old))
         ns.mark_stale("correction")
         assert not cm.save_narrative_context("[API Error] 402 whatever")

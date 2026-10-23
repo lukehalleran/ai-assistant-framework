@@ -511,11 +511,11 @@ class TestCompositeScoring:
         assert pf._score_recency(new) > 0.95
 
         # 14 days old = ~0.5 (half-life)
-        two_weeks = _make_proposal("2 weeks", created_at=time.time() - 14 * 86400)
+        two_weeks = _make_proposal("2 weeks", created_at=time.time() - 14 * 86400)  # clock-safe: proposal age is elapsed days vs a cutoff, no date test
         assert 0.4 < pf._score_recency(two_weeks) < 0.6
 
         # 28 days old = ~0.25
-        month = _make_proposal("Month", created_at=time.time() - 28 * 86400)
+        month = _make_proposal("Month", created_at=time.time() - 28 * 86400)  # clock-safe: proposal age is elapsed days vs a cutoff, no date test
         assert pf._score_recency(month) < 0.35
 
     def test_recency_unknown_age(self):
@@ -542,7 +542,7 @@ class TestCompositeScoring:
             priority=1,
             tags=[],
             affected_files=[],
-            created_at=time.time() - 60 * 86400,
+            created_at=time.time() - 60 * 86400,  # clock-safe: proposal age is elapsed days vs a cutoff, no date test
         )
         score_low = pf._compute_composite_score(worst, goal_alignment=0.1)
         assert score_low < 0.15
@@ -552,7 +552,7 @@ class TestCompositeScoring:
         pf = self._get_filter()
         # High priority but narrow and old
         p1 = _make_proposal("High-P", priority=10, tags=[], affected_files=[],
-                            created_at=time.time() - 30 * 86400)
+                            created_at=time.time() - 30 * 86400)  # clock-safe: proposal age is elapsed days vs a cutoff, no date test
         # Low priority but broad and new
         p2 = _make_proposal("Broad-New", priority=3, tags=["a", "b", "c", "d"],
                             affected_files=["core/a.py", "mem/b.py", "utils/c.py", "cfg/d.py", "x/e.py"],

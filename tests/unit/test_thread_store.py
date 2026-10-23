@@ -279,7 +279,7 @@ class TestGetTopThreads:
         chroma = MockChromaStore()
         store = ThreadStore(chroma_store=chroma)
 
-        stale_time = time.time() - 20 * 86400  # 20 days ago
+        stale_time = time.time() - 20 * 86400  # clock-safe: thread age is elapsed days/seconds, no date test; 20 days ago
         fresh_time = time.time()
 
         stale_t = _make_thread(topic="Old", thread_id="old", last_referenced=stale_time)
@@ -327,7 +327,7 @@ class TestGetTopThreads:
         store = ThreadStore(chroma_store=chroma)
 
         # Thread 10 days old — stale if default < 10, fresh if default >= 10
-        ten_days_ago = time.time() - 10 * 86400
+        ten_days_ago = time.time() - 10 * 86400  # clock-safe: thread age is elapsed days/seconds, no date test
         t = _make_thread(topic="Config test", thread_id="ct", last_referenced=ten_days_ago)
         _seed_store(store, [t])
 
@@ -358,7 +358,7 @@ class TestGetTopThreads:
         store = ThreadStore(chroma_store=chroma)
 
         # 10-day-old thread should be stale with 7-day default
-        ten_days_ago = time.time() - 10 * 86400
+        ten_days_ago = time.time() - 10 * 86400  # clock-safe: thread age is elapsed days/seconds, no date test
         t = _make_thread(topic="Import test", thread_id="it", last_referenced=ten_days_ago)
         _seed_store(store, [t])
 
@@ -808,7 +808,7 @@ class TestTouchThread:
     def test_touch_updates_last_referenced_and_persists(self):
         chroma = MockChromaStore()
         store = ThreadStore(chroma_store=chroma)
-        old_ts = time.time() - 86400
+        old_ts = time.time() - 86400  # clock-safe: thread age is elapsed days/seconds, no date test
         thread = _make_thread(topic="Tracked task", thread_id="tt1",
                               last_referenced=old_ts)
         _seed_store(store, [thread])
