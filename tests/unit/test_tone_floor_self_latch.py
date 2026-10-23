@@ -70,7 +70,7 @@ class TestSeedTriggerAwareness:
         pipe = _bare_pipeline(tmp_path, {
             "level": "light_support",
             "trigger": "semantic",
-            "ts": (datetime.now() - timedelta(hours=3)).isoformat(),
+            "ts": (datetime.now() - timedelta(hours=3)).isoformat(),  # clock-safe: stickiness gap is elapsed time vs a max gap, no date test
         })
         assert pipe._load_persisted_tone() is None
 
@@ -110,7 +110,7 @@ class TestHistoryScanOrderAgnostic:
 
     def test_stale_heavy_rows_still_excluded(self):
         from utils.tone_detector import _recent_distress_from_history
-        old = (datetime.now() - timedelta(hours=4)).isoformat()
+        old = (datetime.now() - timedelta(hours=4)).isoformat()  # clock-safe: stickiness gap is elapsed time vs a max gap, no date test
         rows = [{"query": "political rant", "timestamp": old, "is_heavy_topic": True}]
         assert _recent_distress_from_history(rows) is False
 

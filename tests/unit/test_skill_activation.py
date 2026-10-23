@@ -34,7 +34,7 @@ def _make_skill(skill_id: str, score: float = 0.5, trigger: str = "debug issue",
             "category": category,
             "tags_json": json.dumps(tags or []),
             "confidence": 0.8,
-            "created_at": time.time() - 86400,
+            "created_at": time.time() - 86400,  # clock-safe: cooldown is an elapsed-hours compare, no date test
             "times_retrieved": 3,
         },
     }
@@ -88,7 +88,7 @@ class TestSkillCooldownStore:
 
     def test_expired_cooldown(self, cooldown_store):
         cooldown_store._entries["sk1"] = {
-            "last_surfaced": (datetime.now() - timedelta(hours=72)).isoformat(),
+            "last_surfaced": (datetime.now() - timedelta(hours=72)).isoformat(),  # clock-safe: cooldown is an elapsed-hours compare, no date test
             "count": 1,
         }
         assert not cooldown_store.is_cooling_down("sk1", cooldown_hours=48.0)
@@ -219,7 +219,7 @@ class TestSkillActivationPolicy:
     def test_expired_cooldown_allows_skill(self, policy, cooldown_store, candidates):
         """Skill whose cooldown expired should be allowed again."""
         cooldown_store._entries["sk1"] = {
-            "last_surfaced": (datetime.now() - timedelta(hours=72)).isoformat(),
+            "last_surfaced": (datetime.now() - timedelta(hours=72)).isoformat(),  # clock-safe: cooldown is an elapsed-hours compare, no date test
             "count": 1,
         }
         result = policy.filter(candidates, intent_type="TECHNICAL_HELP")

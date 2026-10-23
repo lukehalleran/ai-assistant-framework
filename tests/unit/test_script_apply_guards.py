@@ -52,7 +52,7 @@ class TestCleanupStaleIllnessGuard:
     VALUE = "flu"
 
     def _patch_scans(self, monkeypatch, tmp_path):
-        old_ts = (datetime.now() - timedelta(hours=200)).isoformat()
+        old_ts = (datetime.now() - timedelta(hours=200)).isoformat()  # clock-safe: stale-illness TTL is an elapsed-hours compare, no date test
         profile = {"categories": {"health": [
             {"relation": self.RELATION, "value": self.VALUE,
              "is_current": True, "timestamp": old_ts},

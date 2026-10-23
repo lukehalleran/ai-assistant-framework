@@ -25,7 +25,7 @@ def _recent(ts):
 
 def test_long_gap_resets_stickiness():
     p = _pipeline_with_carried_tone()
-    two_hours_ago = datetime.now() - timedelta(hours=2)
+    two_hours_ago = datetime.now() - timedelta(hours=2)  # clock-safe: stickiness reset is an elapsed-gap compare, no date test
     assert p._should_reset_tone_stickiness(_recent(two_hours_ago)) is True
 
 
@@ -37,7 +37,7 @@ def test_within_session_keeps_stickiness():
 
 def test_no_carried_tone_never_resets():
     p = _pipeline_with_carried_tone(tone=None)
-    assert p._should_reset_tone_stickiness(_recent(datetime.now() - timedelta(hours=5))) is False
+    assert p._should_reset_tone_stickiness(_recent(datetime.now() - timedelta(hours=5))) is False  # clock-safe: stickiness reset is an elapsed-gap compare, no date test
 
 
 def test_no_recent_memories_treated_as_fresh_session():
@@ -47,7 +47,7 @@ def test_no_recent_memories_treated_as_fresh_session():
 
 def test_iso_string_timestamp_parsed():
     p = _pipeline_with_carried_tone()
-    old_iso = (datetime.now() - timedelta(hours=3)).isoformat()
+    old_iso = (datetime.now() - timedelta(hours=3)).isoformat()  # clock-safe: stickiness reset is an elapsed-gap compare, no date test
     assert p._should_reset_tone_stickiness(_recent(old_iso)) is True
     fresh_iso = (datetime.now() - timedelta(minutes=1)).isoformat()  # clock-safe: gap compared as elapsed minutes (_should_reset_tone_stickiness), no date logic
     assert p._should_reset_tone_stickiness(_recent(fresh_iso)) is False
@@ -78,7 +78,7 @@ def test_history_distress_ignores_stale_heavy_turn(monkeypatch):
         "query": "my old heavy turn",
         "response": "...",
         "is_heavy_topic": True,
-        "timestamp": datetime.now() - timedelta(hours=12),
+        "timestamp": datetime.now() - timedelta(hours=12),  # clock-safe: stickiness reset is an elapsed-gap compare, no date test
     }
     fresh = dict(stale, timestamp=datetime.now() - timedelta(minutes=2))  # clock-safe: gap compared as elapsed minutes (_should_reset_tone_stickiness), no date logic
 

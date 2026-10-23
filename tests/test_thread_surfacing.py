@@ -456,7 +456,7 @@ class TestDuplicateThreadRegression:
         and the tracked thread's last_referenced is refreshed instead."""
         store = ThreadStore(chroma_store=MockChromaStore())
 
-        old_ts = time.time() - 5 * 86400
+        old_ts = time.time() - 5 * 86400  # clock-safe: thread age is elapsed days vs stale_days, no date test
         t_open = _make_thread(
             topic="Sim project progress report",
             thread_type=ThreadType.DEADLINE,

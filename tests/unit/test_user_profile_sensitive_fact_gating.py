@@ -55,7 +55,7 @@ def fake_embedder(monkeypatch):
 
 def _profile(tmp_path):
     p = UserProfile(str(tmp_path / "profile.json"))
-    base = datetime.now() - timedelta(hours=2)
+    base = datetime.now() - timedelta(hours=2)  # clock-safe: only the relative minute offsets order the facts; no date test
     # The sensitive fact is the NEWEST, so recency alone would surface it.
     rows = [
         ("loan_servicer", "synthetic servicer", 0),

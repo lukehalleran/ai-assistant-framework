@@ -93,17 +93,17 @@ class TestChromaDue:
 
     def test_not_due_when_recent_chroma_backup(self, tmp_path):
         _make_backup_dir(tmp_path, "20260714_120000", includes_chroma=True,
-                         ts=datetime.now() - timedelta(hours=1))
+                         ts=datetime.now() - timedelta(hours=1))  # clock-safe: backup age is an elapsed-hours compare (min_interval/retention); the timestamp only names the dest dir
         assert _chroma_due(_list_backups(str(tmp_path)), 12) is False
 
     def test_due_when_chroma_backup_old(self, tmp_path):
         _make_backup_dir(tmp_path, "20260710_120000", includes_chroma=True,
-                         ts=datetime.now() - timedelta(hours=48))
+                         ts=datetime.now() - timedelta(hours=48))  # clock-safe: backup age is an elapsed-hours compare (min_interval/retention); the timestamp only names the dest dir
         assert _chroma_due(_list_backups(str(tmp_path)), 12) is True
 
     def test_json_only_backups_dont_satisfy(self, tmp_path):
         _make_backup_dir(tmp_path, "20260714_120000", includes_chroma=False,
-                         ts=datetime.now() - timedelta(hours=1))
+                         ts=datetime.now() - timedelta(hours=1))  # clock-safe: backup age is an elapsed-hours compare (min_interval/retention); the timestamp only names the dest dir
         assert _chroma_due(_list_backups(str(tmp_path)), 12) is True
 
 
@@ -196,7 +196,7 @@ class TestRunBackup:
         backups_dir = tmp_path / "backups"
         backups_dir.mkdir()
         _make_backup_dir(backups_dir, "20260714_000001", includes_chroma=True,
-                         ts=datetime.now() - timedelta(hours=1))
+                         ts=datetime.now() - timedelta(hours=1))  # clock-safe: backup age is an elapsed-hours compare (min_interval/retention); the timestamp only names the dest dir
         store = tmp_path / "graph.json"
         store.write_text("{}")
         chroma = tmp_path / "chroma_db_v4"
@@ -212,7 +212,7 @@ class TestRunBackup:
         backups_dir = tmp_path / "backups"
         backups_dir.mkdir()
         _make_backup_dir(backups_dir, "20260714_000001", includes_chroma=True,
-                         ts=datetime.now() - timedelta(hours=1))
+                         ts=datetime.now() - timedelta(hours=1))  # clock-safe: backup age is an elapsed-hours compare (min_interval/retention); the timestamp only names the dest dir
         store = tmp_path / "graph.json"
         store.write_text("{}")
         chroma = tmp_path / "chroma_db_v4"

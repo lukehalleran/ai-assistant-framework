@@ -61,7 +61,7 @@ def _profile(tmp_path):
     p = UserProfile(str(tmp_path / "profile.json"))
     # Relative to now: apartment_condition is a 24h-TTL relation in
     # relation_classifier (see handoff), so fixture facts must be fresh.
-    base = datetime.now() - timedelta(hours=12)
+    base = datetime.now() - timedelta(hours=12)  # clock-safe: fact TTL is an elapsed-hours compare; relative offsets only order the facts
     rows = [
         # (relation, value, minutes-after-base) — the housing facts are OLDER
         # than the dating/IBM ones, so recency alone can never surface them.

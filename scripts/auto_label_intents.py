@@ -30,6 +30,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts.label_intents import load_turn_records  # noqa: E402
+
 RECORDS = Path("logs/turn_records.jsonl")
 LABELS = Path("data/intent_labels.jsonl")
 
@@ -87,19 +89,13 @@ async def main() -> int:
     from models.model_manager import ModelManager
     mm = ModelManager()
 
-    records = []
-    for line in RECORDS.read_text().splitlines():
-        try:
-            r = json.loads(line)
-            if r.get("ts") and r.get("query"):
-                records.append(r)
-        except json.JSONDecodeError:
-            continue
+    records, n_probes = load_turn_records(RECORDS)
     done = _load_labeled_ts()
     todo = [r for r in records if r["ts"] not in done]
     if args.limit:
         todo = todo[: args.limit]
-    print(f"{len(records)} records, {len(done)} labeled, labeling {len(todo)} now")
+    print(f"{len(records)} records, {len(done)} labeled, labeling {len(todo)} now "
+          f"(skipped {n_probes} probe turns)")
 
     async def _label_one(query, model):
         raw = await mm.generate_once(

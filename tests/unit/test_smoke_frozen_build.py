@@ -52,7 +52,7 @@ def test_find_newer_matches_find_newer_semantics(smoke, tmp_path):
     (tmp_path / "home" / ".daemon").mkdir(parents=True)
     stamp = tmp_path / ".stamp"
     stamp.touch()
-    old = time.time() - 100
+    old = time.time() - 100  # clock-safe: mtime stamp vs file mtimes, an elapsed-only compare
     os.utime(stamp, (old, old))  # make the stamp clearly older than what follows
     (tmp_path / "home" / ".daemon" / "a.json").write_text("{}")
     (tmp_path / "data").mkdir()

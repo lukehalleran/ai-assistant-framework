@@ -12,6 +12,14 @@ Each test drives the deployed method with a fake corpus holding a real and a
 probe turn from the current session and from a prior session, over the
 inline / whole-line envelope forms, clean and wrapped/indented. Invented
 content only.
+
+2026-10-23, class BC-94 (wall-clock fixture crossing a calendar boundary):
+the entries were stamped with a wall-clock now minus N hours while the
+session helper reads its own ``datetime.now()`` and treats a date change as a
+session boundary, so the "current" probe (0.2 h ago) was YESTERDAY for the first
+12 minutes of every day (and a fixture built before midnight was read after
+it) and the prior-session probe survived. The clock the deployed code reads is
+now pinned to the instant the fixtures are built from.
 """
 
 import asyncio
@@ -32,8 +40,27 @@ PROBE_FORMS = {
 FORMS = pytest.mark.parametrize("probe", list(PROBE_FORMS.values()), ids=list(PROBE_FORMS))
 
 
+PINNED_NOW = datetime(2026, 10, 18, 15, 0, 0)
+
+
+class _PinnedDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return PINNED_NOW
+
+
+@pytest.fixture(autouse=True)
+def _pinned_clock(monkeypatch):
+    """Every clock the deployed STM/tone/session path reads is PINNED_NOW."""
+    import core.context_pipeline as cp
+    import core.prompt.token_manager as tm
+
+    monkeypatch.setattr(tm, "datetime", _PinnedDatetime)
+    monkeypatch.setattr(cp, "datetime", _PinnedDatetime)
+
+
 def _entry(hours_ago, query):
-    ts = (datetime.now() - timedelta(hours=hours_ago)).isoformat()
+    ts = (PINNED_NOW - timedelta(hours=hours_ago)).isoformat()
     return {"query": query, "response": f"reply to {query[:20]}", "timestamp": ts}
 
 

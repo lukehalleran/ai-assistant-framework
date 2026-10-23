@@ -74,7 +74,7 @@ class TestGetCodebaseChanges:
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 20), \
              patch("config.app_config.SESSION_DIFF_EXTENSIONS", [".py"]), \
              patch("subprocess.run", return_value=_make_subprocess_result(returncode=128)):
-            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))
+            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))  # clock-safe: since_label renders an elapsed duration, no date test
         assert result == {}
 
     @pytest.mark.asyncio
@@ -98,7 +98,7 @@ class TestGetCodebaseChanges:
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 20), \
              patch("config.app_config.SESSION_DIFF_EXTENSIONS", [".py"]), \
              patch("subprocess.run", side_effect=mock_run):
-            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))
+            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))  # clock-safe: since_label renders an elapsed duration, no date test
 
         assert len(result["committed"]) == 2
         assert "abc1234 feat: Add login" in result["committed"]
@@ -124,7 +124,7 @@ class TestGetCodebaseChanges:
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 20), \
              patch("config.app_config.SESSION_DIFF_EXTENSIONS", [".py"]), \
              patch("subprocess.run", side_effect=mock_run):
-            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))
+            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))  # clock-safe: since_label renders an elapsed duration, no date test
 
         assert len(result["uncommitted_modified"]) == 2
         assert "core/orchestrator.py" in result["uncommitted_modified"]
@@ -150,7 +150,7 @@ class TestGetCodebaseChanges:
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 20), \
              patch("config.app_config.SESSION_DIFF_EXTENSIONS", [".py"]), \
              patch("subprocess.run", side_effect=mock_run):
-            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))
+            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))  # clock-safe: since_label renders an elapsed duration, no date test
 
         assert len(result["uncommitted_new"]) == 2
         assert "memory/new_module.py" in result["uncommitted_new"]
@@ -176,7 +176,7 @@ class TestGetCodebaseChanges:
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 20), \
              patch("config.app_config.SESSION_DIFF_EXTENSIONS", [".py"]), \
              patch("subprocess.run", side_effect=mock_run):
-            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))
+            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))  # clock-safe: since_label renders an elapsed duration, no date test
 
         # Only core/module.py should pass — .pyc excluded by extension,
         # venv/ and __pycache__ excluded by path pattern
@@ -206,7 +206,7 @@ class TestGetCodebaseChanges:
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 3), \
              patch("config.app_config.SESSION_DIFF_EXTENSIONS", [".py"]), \
              patch("subprocess.run", side_effect=mock_run):
-            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))
+            result = await gatherer.get_codebase_changes(datetime.now() - timedelta(hours=2))  # clock-safe: since_label renders an elapsed duration, no date test
 
         assert len(result["committed"]) == 5
         assert len(result["uncommitted_modified"]) == 3
@@ -253,7 +253,7 @@ class TestGetCodebaseChanges:
                 return _make_subprocess_result(stdout="")
             return _make_subprocess_result()
 
-        since = datetime.now() - timedelta(days=2, hours=5)
+        since = datetime.now() - timedelta(days=2, hours=5)  # clock-safe: since_label renders an elapsed duration, no date test
         with patch("config.app_config.SESSION_DIFF_ENABLED", True), \
              patch("config.app_config.SESSION_DIFF_MAX_COMMITTED", 20), \
              patch("config.app_config.SESSION_DIFF_MAX_UNCOMMITTED", 20), \

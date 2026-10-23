@@ -45,7 +45,7 @@ def _fresh_ts() -> str:
 
 
 def _stale_ts() -> str:
-    return (datetime.now() - timedelta(hours=6)).isoformat()
+    return (datetime.now() - timedelta(hours=6)).isoformat()  # clock-safe: history age is elapsed hours vs a window, no date test
 
 
 class TestPublicNewsHeavyRowIsNotDistress:

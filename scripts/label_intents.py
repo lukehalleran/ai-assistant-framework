@@ -40,19 +40,46 @@ INTENTS = [
 ]
 
 
-def _load_records():
-    if not RECORDS.exists():
-        print(f"No telemetry at {RECORDS}")
-        return []
-    out = []
-    with open(RECORDS) as f:
+def is_probe_record(r) -> bool:
+    """True for a [test]...[/test] probe turn (never a real user turn).
+
+    ONE definition for every labeling reader (2026-10-23, class: BC-58).
+    Records since #97 carry a boolean ``test_probe`` (the orchestrator's
+    ``is_test_turn`` on the FULL input) - trusted when present. Older records
+    have no key: fall back to the SAME predicate on the stored (300-char cut)
+    query, so a probe whose ``[/test]`` lies past the cut is undetectable.
+    """
+    if "test_probe" in r:
+        return bool(r["test_probe"])
+    from memory.fact_source import is_test_turn  # lazy import: layering (fact_source pulls the extractor stack)
+    return bool(is_test_turn({"query": r.get("query") or ""}))
+
+
+def load_turn_records(path=None):
+    """Return (records, n_probes_skipped) from a turn_records.jsonl file."""
+    path = Path(path) if path is not None else RECORDS
+    out, skipped = [], 0
+    with open(path) as f:
         for line in f:
             try:
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if r.get("ts") and r.get("query"):
-                out.append(r)
+            if not (r.get("ts") and r.get("query")):
+                continue
+            if is_probe_record(r):
+                skipped += 1
+                continue
+            out.append(r)
+    return out, skipped
+
+
+def _load_records():
+    if not RECORDS.exists():
+        print(f"No telemetry at {RECORDS}")
+        return []
+    out, skipped = load_turn_records(RECORDS)
+    print(f"skipped {skipped} probe turns")
     return out
 
 
@@ -118,8 +145,24 @@ def label(limit=None):
 
 
 def report():
+    probe_ts = set()
+    if RECORDS.exists():
+        with open(RECORDS) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("ts") and is_probe_record(r):
+                    probe_ts.add(r["ts"])
     labels = [d for d in _load_labels().values()
               if d.get("true") and not d.get("skipped")]
+    # Drop labels already written for probe turns (by record ts, else by the
+    # label's own stored query).
+    n_before = len(labels)
+    labels = [d for d in labels
+              if d["ts"] not in probe_ts and not is_probe_record({"query": d.get("query")})]
+    print(f"skipped {n_before - len(labels)} probe turns")
     if not labels:
         print("No labels yet — run without --report first.")
         return

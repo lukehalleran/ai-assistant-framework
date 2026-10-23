@@ -23,7 +23,7 @@ def _pipeline(depth=0, min_depth=3, use_stm=True, analyzer=object()):
 
 
 def _history(hours_ago):
-    ts = (datetime.now() - timedelta(hours=hours_ago)).isoformat()
+    ts = (datetime.now() - timedelta(hours=hours_ago)).isoformat()  # clock-safe: _has_recent_history is an elapsed-hours compare, no date test
     return [{"query": "q", "response": "r", "timestamp": ts}]
 
 
@@ -59,7 +59,7 @@ class TestHasRecentHistory:
         assert ContextPipeline._has_recent_history(entries)
 
     def test_datetime_objects_accepted(self):
-        entries = [{"timestamp": datetime.now() - timedelta(hours=1)}]
+        entries = [{"timestamp": datetime.now() - timedelta(hours=1)}]  # clock-safe: _has_recent_history is an elapsed-hours compare, no date test
         assert ContextPipeline._has_recent_history(entries)
 
     def test_boundary_respects_max_gap(self):

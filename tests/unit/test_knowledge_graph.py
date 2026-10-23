@@ -396,7 +396,7 @@ class TestGraphMemoryTraversal:
         relation_classifier TTL.
         """
         from datetime import datetime
-        old = datetime.now() - timedelta(hours=500)  # well past the 96h health TTL
+        old = datetime.now() - timedelta(hours=500)  # clock-safe: edge TTL is an elapsed-hours compare (24h/96h), no date test; well past the 96h health TTL
         graph.add_relation(GraphEdge(
             source_id="user", relation="health_status",
             target_id="recovering_from_illness", last_seen=old, first_seen=old,
@@ -411,7 +411,7 @@ class TestGraphMemoryTraversal:
     def test_context_sentences_keeps_fresh_illness(self, graph):
         """A fresh illness edge is still surfaced (only stale ones age out)."""
         from datetime import datetime
-        recent = datetime.now() - timedelta(hours=2)
+        recent = datetime.now() - timedelta(hours=2)  # clock-safe: edge TTL is an elapsed-hours compare (24h/96h), no date test
         graph.add_relation(GraphEdge(
             source_id="user", relation="health_status",
             target_id="recovering_from_illness", last_seen=recent, first_seen=recent,
@@ -440,7 +440,7 @@ class TestGraphMemoryTraversal:
         (appointment_time, therapy_appointment); durable edges are unaffected.
         """
         from datetime import datetime
-        old = datetime.now() - timedelta(hours=72)  # past the 24h ephemeral TTL
+        old = datetime.now() - timedelta(hours=72)  # clock-safe: edge TTL is an elapsed-hours compare (24h/96h), no date test; past the 24h ephemeral TTL
         graph.add_relation(GraphEdge(
             source_id="user", relation="appointment",
             target_id="psychiatry", last_seen=old, first_seen=old,
@@ -455,7 +455,7 @@ class TestGraphMemoryTraversal:
     def test_context_sentences_keeps_fresh_appointment(self, graph):
         """A freshly-mentioned appointment edge is still surfaced (only stale ages out)."""
         from datetime import datetime
-        recent = datetime.now() - timedelta(hours=2)
+        recent = datetime.now() - timedelta(hours=2)  # clock-safe: edge TTL is an elapsed-hours compare (24h/96h), no date test
         graph.add_relation(GraphEdge(
             source_id="user", relation="appointment",
             target_id="psychiatry", last_seen=recent, first_seen=recent,
