@@ -104,19 +104,29 @@ class FakeMM:
         self.llm, self.jev, self.confidence, self.echo = llm, jev, confidence, echo
         self.llm_delay, self.jev_delay = llm_delay, jev_delay
         self.llm_prompts, self.jev_bodies = [], []
+        # (start, end) monotonic stamps per fake call; end stays None for a call
+        # that never finished. Timing tests assert ORDER/OVERLAP on these, never
+        # an absolute elapsed bound (CI flake 2026-10-22, class: BC-101 draft).
+        self.llm_spans, self.jev_spans = [], []
 
     async def generate_once(self, prompt, **kw):
         self.llm_prompts.append(prompt)
+        span = [time.monotonic(), None]
+        self.llm_spans.append(span)
         if self.llm_delay:
             await asyncio.sleep(self.llm_delay)
+        span[1] = time.monotonic()
         if isinstance(self.llm, Exception):
             raise self.llm
         return self.llm
 
     async def post_system_one(self, url, body, *, timeout_s):
         self.jev_bodies.append(body)
+        span = [time.monotonic(), None]
+        self.jev_spans.append(span)
         if self.jev_delay:
             await asyncio.sleep(self.jev_delay)
+        span[1] = time.monotonic()
         if self.jev == "http_500":
             return 500, None, "{}"
         if self.jev == "hang":
@@ -434,19 +444,25 @@ async def test_only_the_llm_arbiter_ever_teaches_the_exemplar_store(mode, llm, j
 async def test_shadow_wall_time_is_the_max_of_the_two_not_the_sum(set_mode):
     set_mode("shadow")
     mm = FakeMM(llm="CONCERN", jev=[0, 1, 0, 0], llm_delay=0.3, jev_delay=0.3)
-    t0 = time.monotonic()
     got = await run(BORDER_MSG, "CONVERSATIONAL", 0.302, "distress", mm)
-    assert time.monotonic() - t0 < 0.5 and got.arbiter_receipt["status"] == "ok"
+    assert got.arbiter_receipt["status"] == "ok"
+    # "max, not sum" = the two calls overlapped: each started before the other ended.
+    (l_start, l_end), (j_start, j_end) = mm.llm_spans[0], mm.jev_spans[0]
+    assert l_end is not None and j_end is not None
+    assert l_start < j_end and j_start < l_end, (mm.llm_spans, mm.jev_spans)
 
 
 @pytest.mark.asyncio
-async def test_active_jev_timeout_then_llm_finishes_inside_two_seconds(set_mode):
+async def test_active_jev_timeout_then_llm_runs_after_the_jev_timeout(set_mode):
     set_mode("active")
     mm = FakeMM(llm="MEDIUM", jev="hang", llm_delay=0.3)
     t0 = time.monotonic()
     got = await run(BORDER_MSG, "CONVERSATIONAL", 0.302, "distress", mm, t=3)
     elapsed = time.monotonic() - t0
-    assert 1.4 < elapsed < 2.0
+    # ORDER: the LLM fallback only starts once the hung JEV call has been cut
+    # (lower bound only: a slow runner can't break it).
+    assert mm.llm_spans[0][0] - mm.jev_spans[0][0] > 1.4, (mm.llm_spans, mm.jev_spans)
+    assert elapsed < 6.0  # timing-safe: genuine timeout test, expected ~1.8 s, bound >2x
     assert got.level == M and got.arbiter_receipt["backend"] == "llm_after_jev"
     assert got.arbiter_receipt["reason"] == "timeout"
 

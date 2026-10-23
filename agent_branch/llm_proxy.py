@@ -62,6 +62,46 @@ class _Handler(BaseHTTPRequestHandler):
     def _reject(self, code: int, reason: str) -> None:
         self._respond(code, json.dumps({"error": reason}).encode())
 
+    _DRAIN_TIMEOUT_S = 5.0
+
+    def _reject_early(self, code: int, reason: str) -> None:
+        """Refuse a call BEFORE its body was read (host/path 403, budget 429).
+
+        http.client sends headers and body in separate sends; answering and
+        closing before the body arrives makes the client's second send fail
+        with EPIPE/ECONNRESET, so a worker saw a socket error instead of the
+        status (CI flake, 2026-10-22). So first drain the declared body: read
+        and discard Content-Length bytes when 0 < length <= max_body_bytes,
+        bounded by a short socket timeout so a worker that declares a body
+        and never sends it cannot pin the handler thread. The 413 path does
+        NOT use this: a body above the cap is exactly what must not be read
+        (that is the OOM guard), so a 413 client may still see a reset.
+        Metering is unchanged: a refused call is not forwarded and not
+        metered, drained body or not."""
+        proxy: "LLMProxy" = self.server.proxy  # type: ignore[attr-defined]
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        if 0 < length <= proxy.max_body_bytes:
+            old = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(self._DRAIN_TIMEOUT_S)
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                pass  # degrades: slow/absent body -> reject anyway (client may see a reset)
+            finally:
+                try:
+                    self.connection.settimeout(old)
+                except OSError:
+                    pass
+        self._reject(code, reason)
+
     def _respond(self, code: int, body: bytes) -> None:
         # One request per connection: workers make one-shot calls, and closing
         # avoids a keep-alive read on a hung-up socket (broken-pipe noise).
@@ -83,7 +123,7 @@ class _Handler(BaseHTTPRequestHandler):
         target_host = self._forward_proxy_host()
         if target_host is not None and target_host not in proxy.allowed_hosts:
             proxy._log({"event": "rejected_host", "host": target_host})
-            return self._reject(403, f"host {target_host!r} not allowlisted")
+            return self._reject_early(403, f"host {target_host!r} not allowlisted")
 
         # Pin the path too: the worker may hit only the chat endpoint, never other
         # (e.g. key-management, upload, differently-priced) routes on the upstream
@@ -91,11 +131,11 @@ class _Handler(BaseHTTPRequestHandler):
         req_path = self._request_path()
         if not proxy.path_allowed(req_path):
             proxy._log({"event": "rejected_path", "path": req_path})
-            return self._reject(403, f"path {req_path!r} not allowlisted")
+            return self._reject_early(403, f"path {req_path!r} not allowlisted")
 
         if proxy.budget_exceeded():
             proxy._log({"event": "rejected_budget", "tokens": proxy.tokens_spent})
-            return self._reject(429, "token budget exceeded")
+            return self._reject_early(429, "token budget exceeded")
 
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length > proxy.max_body_bytes:

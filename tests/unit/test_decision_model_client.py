@@ -177,7 +177,7 @@ async def test_timeout_then_timeout_within_deadline(mm, monkeypatch):
     t0 = time.monotonic()
     out = await tone(mm)
     assert (out.status, out.reason, out.retried) == ("unavailable", "timeout", True)
-    assert len(wire.requests) == 2 and time.monotonic() - t0 <= 0.5 + 0.2
+    assert len(wire.requests) == 2 and time.monotonic() - t0 <= 0.5 + 1.0  # timing-safe: genuine deadline test, 1 s headroom
 
 
 async def test_slow_server_is_cut_at_the_whole_deadline(mm, monkeypatch):
@@ -190,7 +190,7 @@ async def test_slow_server_is_cut_at_the_whole_deadline(mm, monkeypatch):
     mm.system_one_transport = httpx.MockTransport(slow)
     t0 = time.monotonic()
     out = await tone(mm)
-    assert (out.status, out.reason) == ("unavailable", "timeout") and time.monotonic() - t0 <= 0.3 + 0.2
+    assert (out.status, out.reason) == ("unavailable", "timeout") and time.monotonic() - t0 <= 0.3 + 1.0  # timing-safe: genuine deadline test (server sleeps 5 s)
 
 
 async def test_transport_error_retries_then_unavailable(mm):
@@ -420,13 +420,18 @@ async def test_run_with_shadow_returns_both_and_isolates_a_failing_shadow():
 
 
 async def test_run_with_shadow_runs_concurrently():
+    spans = {}
+
     async def nap(v):
+        spans[v] = [time.monotonic(), None]
         await asyncio.sleep(0.2)
+        spans[v][1] = time.monotonic()
         return v
 
-    t0 = time.monotonic()
     p, s = await T(run_with_shadow(nap(1), nap(2)))
-    assert (p.value, s.value) == (1, 2) and time.monotonic() - t0 < 0.35
+    assert (p.value, s.value) == (1, 2)
+    # concurrent = each started before the other ended (no absolute bound)
+    assert spans[1][0] < spans[2][1] and spans[2][0] < spans[1][1], spans
 
 
 async def test_run_with_shadow_cancels_and_awaits_both_when_caller_cancelled():

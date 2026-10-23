@@ -145,8 +145,17 @@ def load_local_overrides(filename="config.local.yaml"):
     Searched next to config.yaml. Deep-merged over the base config so personal data
     (e.g. user_profile.personal_vocabulary, private paths) stays out of the committed
     config.yaml. Missing file → {} (fully generic install).
+
+    2026-10-22: DAEMON_IGNORE_LOCAL_CONFIG=1 (set by tests/conftest.py) returns {}
+    without reading any file, so a developer's personal override can never decide a
+    test's outcome (it blocked a push from the live checkout). One meaning per
+    switch: this is NOT DAEMON_TEST_MODE (log isolation).
     """
     paths_to_try = _candidate_config_paths(filename)
+    if os.environ.get("DAEMON_IGNORE_LOCAL_CONFIG") == "1":
+        if any(p.exists() for p in paths_to_try):
+            logger.info("local overrides ignored (DAEMON_IGNORE_LOCAL_CONFIG)")
+        return {}
     for path in paths_to_try:
         if path.exists():
             try:

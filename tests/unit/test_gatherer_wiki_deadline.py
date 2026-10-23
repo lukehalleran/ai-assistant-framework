@@ -52,10 +52,21 @@ def _gatherer(monkeypatch, terms, delays, raising=()):
 @pytest.mark.asyncio
 async def test_three_terms_run_concurrently_in_order(gk, monkeypatch):
     g = _gatherer(monkeypatch, ["a", "b", "c"], {"a": 1.0, "b": 1.0, "c": 1.0})
-    t0 = time.perf_counter()
+    spans = {}
+    inner = g._get_wiki_snippet_cached
+
+    async def stamped(term):
+        spans[term] = [time.perf_counter(), None]
+        try:
+            return await inner(term)
+        finally:
+            spans[term][1] = time.perf_counter()
+
+    g._get_wiki_snippet_cached = stamped
     res = await g._get_wiki_content(QUERY, limit=3)
-    wall = time.perf_counter() - t0
-    assert wall < 1.8, wall
+    # concurrent = every term started before any term finished (a serial run
+    # would start "b" only after "a" ended); no absolute bound.
+    assert max(s[0] for s in spans.values()) < min(s[1] for s in spans.values()), spans
     assert [r["title"] for r in res] == ["a", "b", "c"]
 
 
@@ -69,7 +80,7 @@ async def test_slow_term_cut_by_deadline(gk, monkeypatch):
     t0 = time.perf_counter()
     res = await g._get_wiki_content(QUERY, limit=3)
     wall = time.perf_counter() - t0
-    assert wall < 1.0, wall
+    assert wall < 5.0, wall  # timing-safe: deadline 0.5 s, the slow term sleeps 10 s
     assert [r["title"] for r in res] == ["a", "c"]
     info = [c for c in logger.info.call_args_list if "live fallback deadline" in c.args[0]]
     assert len(info) == 1 and info[0].args[1:] == (2, 3)

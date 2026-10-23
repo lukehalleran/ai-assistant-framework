@@ -107,3 +107,76 @@ def test_budget_exceeded_refuses_further_calls(proxy_factory, uds_post):
     s2, _ = uds_post(proxy.uds_path, "/v1/chat/completions", {"q": "2"})
     assert s2 == 429
     assert proxy.calls == 1  # the refused call was never forwarded
+
+
+# -- early rejects drain the declared body (CI flake 2026-10-22) -------------
+
+def _raw_headers_only(uds_path, request_uri, body_len):
+    import socket
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(uds_path)
+    s.sendall((f"POST {request_uri} HTTP/1.1\r\nHost: llm\r\n"
+               f"Content-Type: application/json\r\nContent-Length: {body_len}\r\n\r\n").encode())
+    return s
+
+
+def _readable_within(sock, seconds):
+    import select
+    r, _, _ = select.select([sock], [], [], seconds)
+    return bool(r)
+
+
+def _read_all(sock):
+    chunks = []
+    while True:
+        c = sock.recv(65536)
+        if not c:
+            break
+        chunks.append(c)
+    return b"".join(chunks)
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_budget_refusal_waits_for_the_body_before_answering(proxy_factory, uds_post, wrapped):
+    proxy, _ = proxy_factory(tokens=2000, token_budget=2000)
+    assert uds_post(proxy.uds_path, "/v1/chat/completions", {"q": "1"})[0] == 200
+    payload = json.dumps({"q": "2" if not wrapped else "  2\n  and more"}).encode()
+    s = _raw_headers_only(proxy.uds_path, "/v1/chat/completions", len(payload))
+    try:
+        # base: the server answered and closed before reading the body
+        assert not _readable_within(s, 0.3)
+        s.sendall(payload)
+        resp = _read_all(s)
+    finally:
+        s.close()
+    assert resp.startswith(b"HTTP/1.1 429")
+    assert b"token budget exceeded" in resp
+    assert proxy.calls == 1  # refused call neither forwarded nor metered
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_disallowed_path_refusal_waits_for_the_body_before_answering(proxy_factory, wrapped):
+    proxy, _ = proxy_factory()
+    payload = json.dumps({"q": "x" if not wrapped else "  x\n  y"}).encode()
+    s = _raw_headers_only(proxy.uds_path, "/v1/admin/api-keys", len(payload))
+    try:
+        assert not _readable_within(s, 0.3)
+        s.sendall(payload)
+        resp = _read_all(s)
+    finally:
+        s.close()
+    assert resp.startswith(b"HTTP/1.1 403")
+    assert proxy.calls == 0
+
+
+def test_oversized_body_413_is_not_drained(proxy_factory):
+    """The 413 path must answer without reading the (over-cap) body."""
+    proxy, _ = proxy_factory()
+    proxy.max_body_bytes = 10
+    s = _raw_headers_only(proxy.uds_path, "/v1/chat/completions", 1000)
+    try:
+        assert _readable_within(s, 2.0)
+        assert _read_all(s).startswith(b"HTTP/1.1 413")
+    finally:
+        s.close()
