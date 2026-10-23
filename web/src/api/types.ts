@@ -147,7 +147,7 @@ export interface ModelListResponse {
 }
 
 export interface ActionOutcome {
-  status: 'executed' | 'failed' | 'rejected' | 'not_found'
+  status: 'executed' | 'failed' | 'rejected' | 'not_found' | 'interrupted'
   message: string
   action_type: string | null
   summary: string | null
