@@ -26,6 +26,7 @@ Module Contract
 """
 
 import os
+from datetime import datetime
 import re
 import sys
 from enum import Enum
@@ -776,7 +777,15 @@ async def _handle_background(
         try:
             logger.info(f"[Wizard] Extracting facts from background text: '{user_input[:100]}...'")
             extractor = llm_fact_extractor.LLMFactExtractor(orchestrator.model_manager)
-            facts = await extractor.extract_triples([user_input])
+            # The background text is user-authored by construction. A message
+            # dict (not a bare string) gives the provenance join a turn time so
+            # claim-time classification anchors to when the user typed it
+            # (BC-58); extract_triples runs THE fact_source join (BC-46).
+            facts = await extractor.extract_triples([{
+                "role": "user",
+                "user_text": user_input,
+                "timestamp": datetime.now().isoformat(),
+            }])
 
             if facts:
                 # Separate user facts from entity facts using fact_scope
@@ -803,6 +812,25 @@ async def _handle_background(
             # Continue anyway - not critical
 
     return await _finalize_wizard(state, orchestrator, facts_summary)
+
+
+def _wizard_source_dict(fact: dict, scope: str, default_conf: float) -> dict:
+    """Chroma source metadata for a wizard fact: the provenance fields
+    LLMFactExtractor._attach_source_excerpts stamped (same keys the shutdown
+    path forwards), so wizard facts are not second-class."""
+    src = {
+        "source": "onboarding_wizard",
+        "confidence": fact.get('confidence', default_conf),
+        "fact_scope": scope,
+    }
+    if fact.get('source_excerpt'):
+        src["source_excerpt"] = str(fact['source_excerpt'])[:200]
+    for key in ("source_role", "source_turn_id", "source_support",
+                "source_anchor", "claim_kind", "event_date", "observed_at",
+                "stance", "timestamp"):
+        if fact.get(key) not in (None, ""):
+            src[key] = str(fact[key])[:80]
+    return src
 
 
 async def _finalize_wizard(
@@ -868,8 +896,12 @@ async def _finalize_wizard(
                 relation=relation,
                 value=obj,
                 confidence=fact.get('confidence', 0.7),
-                source_excerpt="Initial wizard background",
-                category=None  # Auto-categorized
+                source_excerpt=fact.get('source_excerpt') or "Initial wizard background",
+                category=None,  # Auto-categorized
+                timestamp=fact.get('timestamp'),
+                stance=fact.get('stance', ''),
+                claim_kind=fact.get('claim_kind', ''),
+                event_date=fact.get('event_date', ''),
             )
             profile_added += 1
 
@@ -880,11 +912,7 @@ async def _finalize_wizard(
                 try:
                     chroma_store.add_fact(
                         fact=fact_text,
-                        source={
-                            "source": "onboarding_wizard",
-                            "confidence": fact.get('confidence', 0.7),
-                            "fact_scope": "user",
-                        },
+                        source=_wizard_source_dict(fact, "user", 0.7),
                     )
                     chroma_added += 1
                 except Exception as e:
@@ -902,11 +930,7 @@ async def _finalize_wizard(
                 continue
 
             fact_text = f"{subj} | {relation} | {obj}"
-            source_dict = {
-                "source": "onboarding_wizard",
-                "confidence": fact.get('confidence', 0.55),
-                "fact_scope": "entity",
-            }
+            source_dict = _wizard_source_dict(fact, "entity", 0.55)
             for key in ("entity_type", "user_connection"):
                 val = fact.get(key)
                 if val:
