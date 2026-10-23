@@ -50,6 +50,17 @@ Notes:
   after setup the app serves the SPA at http://127.0.0.1:8000 (Gradio dev tabs at `/admin`).
 - User data lives in `~/.daemon/` (see User Data Directory), never the install dir.
 
+### Docs manifest (what the build ships)
+
+`daemon.spec` bundles docs from `config/reference_docs_manifest.txt`, the reviewed
+list (one repo-relative path per line, `#` comments), as one data entry per file;
+the `docs/` directory is never bundled. A listed path that is missing or not
+git-tracked fails the build (`python scripts/check_bundle_manifest.py` checks it
+without freezing). Add a doc to the manifest only after reviewing it for
+owner-private content. Build from a clean clone: PyInstaller does not honour
+`.gitignore`, so a build from a working checkout can pick up other local files
+(the SPA `web/dist` and staged `build/` dirs are the only intended extras).
+
 ### Smoke test
 
 One command builds (optional) and proves the frozen binary works:

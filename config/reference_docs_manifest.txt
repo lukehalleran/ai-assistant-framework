@@ -1,0 +1,22 @@
+# Reviewed docs shipped AND seeded in the frozen build (daemon.spec; audit A01).
+# One repo-relative path per line. Every path must exist and be git-tracked or the
+# build fails. Add a file here only after reviewing it for owner-private content.
+# Excluded by category (enforced by tests): HANDOFF/PLAN/REVIEW/AUDIT docs, audits/,
+# execution/, postmortems/, history/, retrospectives, changelogs, workplans/goals,
+# metrics snapshots, private/career files.
+docs/ADAPTIVE_LEARNING.md
+docs/AGENTIC_SEARCH.md
+docs/ARCHITECTURE_GUIDE.md
+docs/AUTONOMOUS_CURATION_DESIGN.md
+docs/FORMAL_MODEL.md
+docs/MEMORY_SYSTEM.md
+docs/PATTERN_ANALYSIS.md
+docs/PROJECT_SKELETON.md
+docs/PROMPT_BUILDING_PIPELINE.md
+docs/PROPOSAL_SYSTEM.md
+docs/QUICK_REFERENCE.md
+docs/SYNTHESIS_FILTER.md
+docs/TAG_GENERATION.md
+docs/THINKING_BLOCKS_IMPLEMENTATION.md
+docs/TONE_DETECTION_SUMMARY.md
+docs/WEB_FRONTEND.md

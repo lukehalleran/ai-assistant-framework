@@ -66,9 +66,6 @@ datas = [
     ('config/prompts/directives.txt', 'config/prompts'),
     ('config/prompts/system_prompts.txt', 'config/prompts'),
 
-    # Reference docs (auto-seeded into ChromaDB on startup)
-    ('docs', 'docs'),
-
     # Problem-report rollup (utils/problem_report loads it by path, 2026-10-12)
     ('scripts/diagnostic_rollup.py', 'scripts'),
     # App version for problem reports
@@ -79,6 +76,13 @@ datas = [
     ('assets/daemon_icon.png', 'assets'),
     ('assets/splash.png', 'assets'),
 ]
+
+# Reference docs (seeded into ChromaDB): ONLY the reviewed manifest, one entry per
+# file, never the docs/ directory (audit A01, 2026-10-23: the directory entry swept in
+# untracked/ignored owner files). A manifest path that is missing or untracked aborts.
+sys.path.insert(0, os.path.join(spec_dir, 'scripts'))
+import check_bundle_manifest
+datas += check_bundle_manifest.load_docs_entries(spec_dir)
 
 # Embedding models + tiktoken encoding staged by scripts/stage_frozen_models.py.
 # bootstrap (frozen) points HF_HUB_CACHE at _internal/models and

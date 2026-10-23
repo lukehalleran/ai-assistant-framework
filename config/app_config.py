@@ -788,6 +788,11 @@ REFERENCE_DOCS_GATE_THRESHOLD: float = float(REFERENCE_DOCS_CFG.get("gate_thresh
 REFERENCE_DOCS_AUTO_SEED: bool = bool(REFERENCE_DOCS_CFG.get("auto_seed", True))
 # Paths to auto-seed (directories scanned for *.md, files uploaded directly)
 REFERENCE_DOCS_SEED_PATHS: list = REFERENCE_DOCS_CFG.get("seed_paths", ["docs"])
+if getattr(sys, "frozen", False):
+    # Frozen: a relative seed path resolves against the BUNDLE (<_internal>/docs, which holds
+    # only the reviewed config/reference_docs_manifest.txt files - daemon.spec), never the
+    # launch cwd (2026-10-23, audit A01). Dev keeps the configured paths untouched.
+    REFERENCE_DOCS_SEED_PATHS = [resolve_bundled_path(str(_p)) for _p in REFERENCE_DOCS_SEED_PATHS]
 
 # Environment variable overrides for Reference Docs
 REFERENCE_DOCS_ENABLED = bool(int(os.getenv("REFERENCE_DOCS_ENABLED", "1" if REFERENCE_DOCS_ENABLED else "0")))
