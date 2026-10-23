@@ -47,6 +47,8 @@ If you only want the single most distinctive subsystem, start with synthesis val
 
 ## Demo
 
+> **Note:** this video was recorded in 2025 and is over a year old. It does not reflect the current system. It shows memory persisting across sessions and Daemon answering questions about its own design, both of which still work.
+
 https://github.com/user-attachments/assets/38e4c2ff-d992-4152-a98e-df58faa54533
 
 ---
@@ -112,9 +114,10 @@ Two concepts that sit far apart in embedding space but are *discussed together* 
 
 Recent validation work (see [docs/SYNTHESIS_VALIDATION.md](docs/SYNTHESIS_VALIDATION.md)) treats *literature as the ground truth you don't have to be an expert in*:
 
-- The coherence judge is **tested for discrimination** — literature-confirmed connections vs. surface metaphors — not trusted blindly. (A regression here recently found the judge had silently degraded after a model swap, and a stage-3 "known" gate whose signal was *inverted* — both caught by the harness, zero human grading.)
-- A **document-co-occurrence oracle**, independent of embedding distance, was built and validated at **~97% recall / ~4% false-positive** on a labeled set. It catches cross-domain connections cosine misses entirely — e.g. `simulated annealing ↔ metallurgy` at cosine **0.09**.
-- A **discovery miner** surfaces low-cosine, corpus-supported candidate pairs from Wikipedia.
+- **Pre-registered test:** pairs built around a well-known concept are documented together in Wikipedia far more often than random pairs at the same semantic distance (29.9% vs 10.4%, n=144/arm, p<0.0001; same-article co-listing 11.1% vs 2.1%, p=0.002). The first run of the same test was underpowered and is recorded as a failure.
+- **Oracle:** a document-co-occurrence check, independent of embedding distance (~97% recall / ~4% false positives, n=99), catches cross-domain connections cosine misses entirely — e.g. `simulated annealing ↔ metallurgy` at cosine **0.09**.
+- **The judge is tested, not trusted.** The coherence judge is tested for discrimination (literature-confirmed connections vs. surface metaphors). The harness caught a judge that had silently degraded after a model swap, and a stage-3 "known" gate whose signal was *inverted* (2026-06), with zero human grading.
+- **Main negative result:** pairing prominent concepts mostly rediscovers the canon. 11/11 sampled accepted candidates were already published, so the current generator's novel yield is ≈0. The open problem is where candidate concepts come from, not the filter. A claim-level arXiv check to measure this is built and pre-registered but not yet run; synthesis has been paused since 2026-07 for API cost.
 
 The long-term direction is **cross-corpus knownness** — labeling each candidate by where it is already documented:
 
@@ -367,7 +370,7 @@ Cross-collection deduplication detects cosine duplicates (≥0.92) and fact cont
 
 A generator feeds a 7-stage filter; the filter is the product (generation is cheap, *deciding what's evidence-backed and non-obvious* is the value):
 
-- **Primary — Pooled Concept** (`synthesis_pooled_generator.py`, 2026-06-30): pairs *prominent* curated cross-domain concepts in the non-obvious cosine band (0.2–0.45). The lever is concept prominence, not anchoring; it is the sole generator dreaming uses when `SYNTHESIS_POOLED_ENABLED`.
+- **Primary — Pooled Concept** (`synthesis_pooled_generator.py`, 2026-06-30): pairs *prominent* curated cross-domain concepts in the non-obvious cosine band (0.2–0.45). Prominence raised coherence (~17% accepted, ~46% rated moderate or strong), but sampled accepts were already-published results, so it is a coherence win, not a novelty win (see the negative result above). It is the sole generator dreaming uses when `SYNTHESIS_POOLED_ENABLED`, which has been off since 2026-07-15.
 - **Retired tiers** (`enabled: false`): Tier 0 Retrieval (`synthesis_retriever.py`), Tier 1 Graph Walk (`graph_walk_generator.py`), Tier 2 Cross-Store (`synthesis_generator.py`) — kept for reference; each paired thin/low-prominence concepts and yielded ≈0 accepts.
 
 | Stage | Gate | What it does |
@@ -498,9 +501,9 @@ Daemon is an **active solo research/engineering project**, not a polished SaaS p
 
 A few subsystems are research/developer features rather than always-on defaults, and degrade gracefully when their data is absent:
 
-- **Synthesis pipeline** — generators feed a human audit queue; dreaming runs at session-end only, behind an auto-halt.
+- **Synthesis pipeline** — generators feed a human audit queue; dreaming runs at session-end only, behind an auto-halt. Paused (generators off) since 2026-07-15 for API cost.
 - **Code proposals + `agent_branch/`** — sandboxed, human-gated; nothing auto-commits, pushes, or merges.
-- **External corpora** — the Wikipedia FAISS index (~41M vectors) and arXiv/PubMed knownness are **optional**; the assistant runs fully without them.
+- **External corpora** — the Wikipedia FAISS index (~41M vectors) is **optional**; the assistant runs fully without it. Claim-level arXiv knownness is built but not yet calibrated or run; PubMed knownness is planned.
 - **Debug / provenance tooling** — surfaced in the GUI for inspection, not required for normal chat.
 
 ---
