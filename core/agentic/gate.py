@@ -115,6 +115,8 @@ from utils.anchored_sense import math_verb_has_math_object
 from utils.test_envelope import inner_text as _test_envelope_inner
 from utils.url_detect import contains_url
 from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
+from memory.fact_source import is_test_turn as _is_test_turn
+from utils.test_envelope import has_envelope as _has_test_envelope
 from utils.date_coerce import to_naive_local as _to_naive_local
 from core.agentic import tool_thread
 
@@ -790,6 +792,24 @@ def _tone_is_acute(tone_level) -> bool:
     return any(marker in _t for marker in _ACUTE_TONE_MARKERS)
 
 
+_PRIOR_TURN_PROBE_LOOKBACK = 12
+
+
+def _prior_turns(corpus_manager, n: int, user_text: str) -> list:
+    """The ``n`` newest REAL prior turns (newest-first) for the action/offer routes.
+
+    2026-10-23 (class BC-58): an owner probe turn ("[test]...[/test]") must not
+    be the "prior turn" an action route reads when the CURRENT text is not
+    itself a probe — a probe reply's recap bullet became an offer and the next
+    real message was forced into send_email. A probe -> probe chain still sees
+    its probe predecessor.
+    """
+    if _has_test_envelope(user_text or ""):
+        return list(corpus_manager.get_recent_memories(n) or [])
+    pulled = list(corpus_manager.get_recent_memories(n + _PRIOR_TURN_PROBE_LOOKBACK) or [])
+    return [m for m in pulled if not _is_test_turn(m)][:n]
+
+
 def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
     """Build a compact recent-conversation digest for the web-search trigger.
 
@@ -1331,7 +1351,7 @@ async def evaluate_agentic_gate(
         ) or _request_continuation
         if _is_continuation and corpus_manager is not None:
             try:
-                _recent = corpus_manager.get_recent_memories(2)
+                _recent = _prior_turns(corpus_manager, 2, user_text)
                 for _prev in _recent:
                     _prev_query = (_prev.get('query', '') or '').lower()
                     _prev_response = (_prev.get('response', '') or '')[:800]
@@ -1411,7 +1431,7 @@ async def evaluate_agentic_gate(
         )
         if _is_pronoun_retrieval or _is_affirmation:
             try:
-                _recent = corpus_manager.get_recent_memories(2)
+                _recent = _prior_turns(corpus_manager, 2, user_text)
                 for _prev in _recent:
                     _resp = (_prev.get('response', '') or '')[:800].lower()
                     _blob = (_prev.get('query', '') or '').lower() + ' ' + _resp
@@ -2230,7 +2250,7 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[s
         # three checks above fire on it (extra tokens beat _affirm, no retry
         # verb, no field-cue question), so a failure report joins the family.
         _failure = is_failure_report(user_text)
-        _recent = corpus_manager.get_recent_memories(1)
+        _recent = _prior_turns(corpus_manager, 1, user_text)
         if not _recent:
             return None, False
         _prev = _recent[0]
@@ -2241,7 +2261,9 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[s
         _offer = offer_action_type(_prev_response)
         _narrated = False
         if _offer is None:
-            _offer = narrated_unbacked_action_type(_prev_response)
+            _offer = narrated_unbacked_action_type(
+                _prev_response,
+                prior_user_text=(_prev.get("query") or _prev.get("user_text") or ""))
             _narrated = _offer is not None
         _is_clarification = False
         if _offer is None and _clarify:
@@ -2440,7 +2462,7 @@ def _prior_tool_followup(user_text: str, corpus_manager) -> Optional[Dict[str, A
         return None
     try:
         from core.actions.registry import is_offer_affirmation  # lazy import: cycle
-        recent = corpus_manager.get_recent_memories(1)
+        recent = _prior_turns(corpus_manager, 1, user_text)
     except Exception as e:  # degrades: tool-thread continuation skipped this turn; normal tiers run
         logger.debug(f"[Agentic Gate] Tool-continuation check failed (non-fatal): {e}")
         return None
