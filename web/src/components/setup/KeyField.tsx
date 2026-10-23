@@ -32,6 +32,7 @@ export default function KeyField({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [unreachable, setUnreachable] = useState(false)
+  const [restartNeeded, setRestartNeeded] = useState(false)
 
   const run = async (unverified: boolean) => {
     setBusy(true)
@@ -42,6 +43,7 @@ export default function KeyField({
         setKey('')
         setReplacing(false)
         setUnreachable(false)
+        setRestartNeeded(res.restart_required === true)
         await onSaved()
       } else {
         setError(res.error ?? 'Could not save this key.')
@@ -64,6 +66,11 @@ export default function KeyField({
           <Badge color="green" variant="light">
             found{hint ? ` ${hint}` : ''}
           </Badge>
+          {restartNeeded && (
+            <Text size="xs" c="orange" role="status">
+              Saved. Restart Daemon for this feature to start using it.
+            </Text>
+          )}
         </Group>
         <Button variant="subtle" size="xs" onClick={() => setReplacing(true)}>
           Replace

@@ -1019,39 +1019,36 @@ Prioritize brevity and clarity. Trim anything that doesn't add information.
 
 def _apply_personality_style(style: str) -> None:
     """
-    Generate custom_personality.txt from default + style modifier.
-    For 'balanced', remove any existing custom file so default is used.
+    Generate the custom personality file (under the user data root) from
+    default + style modifier. For 'balanced', remove any existing custom file
+    so the default is used.
+
+    RAISES on a write/read failure (2026-10-23, A05, class: BC-47): the old
+    version swallowed it, so Setup reported success for a style that never
+    reached the prompt. An unknown style is a no-op (nothing to write).
     """
-    try:
-        from config.app_config import PERSONALITY_CUSTOM_PATH, PERSONALITY_DEFAULT_PATH  # lazy import: live-config
+    from config.app_config import PERSONALITY_DEFAULT_PATH, get_personality_custom_path  # lazy import: live-config
+    from utils.safe_json import atomic_write_text  # lazy import: layering
 
-        if style == 'balanced':
-            # Use default personality — remove custom if it exists
-            custom_path = Path(PERSONALITY_CUSTOM_PATH)
-            if custom_path.exists():
-                custom_path.unlink()
-                logger.info("[Wizard] Removed custom personality — using default (balanced)")
-            return
+    custom_path = Path(get_personality_custom_path())
 
-        modifier = _STYLE_MODIFIERS.get(style)
-        if not modifier:
-            logger.warning(f"[Wizard] Unknown style '{style}', skipping personality generation")
-            return
+    if style == 'balanced':
+        # Use default personality -- remove custom if it exists
+        if custom_path.exists():
+            custom_path.unlink()
+            logger.info("[Wizard] Removed custom personality -- using default (balanced)")
+        return
 
-        # Read default personality as base
-        default_path = Path(PERSONALITY_DEFAULT_PATH)
-        if not default_path.exists():
-            logger.warning("[Wizard] Default personality file not found, skipping")
-            return
+    modifier = _STYLE_MODIFIERS.get(style)
+    if not modifier:
+        logger.warning(f"[Wizard] Unknown style '{style}', skipping personality generation")
+        return
 
-        base_text = default_path.read_text(encoding='utf-8')
-        custom_text = base_text + modifier
+    default_path = Path(PERSONALITY_DEFAULT_PATH)
+    if not default_path.exists():
+        raise FileNotFoundError("default personality file not found")
 
-        # Write custom personality
-        custom_path = Path(PERSONALITY_CUSTOM_PATH)
-        custom_path.parent.mkdir(parents=True, exist_ok=True)
-        custom_path.write_text(custom_text, encoding='utf-8')
-        logger.info(f"[Wizard] Generated '{style}' personality ({len(custom_text)} chars)")
-
-    except Exception as e:
-        logger.warning(f"[Wizard] Personality generation failed (non-critical): {e}")
+    custom_text = default_path.read_text(encoding='utf-8') + modifier
+    custom_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(str(custom_path), custom_text)
+    logger.info(f"[Wizard] Generated '{style}' personality ({len(custom_text)} chars)")

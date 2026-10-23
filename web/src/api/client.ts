@@ -214,6 +214,8 @@ export interface SetupResult {
   hint?: string | null
   /** True when the key could not be checked (OpenRouter unreachable). */
   unreachable?: boolean
+  /** True when the key was saved but a running feature needs an app restart to use it. */
+  restart_required?: boolean
 }
 export type SetupKeyName = 'tavily' | 'wolfram' | 'e2b'
 
@@ -233,6 +235,7 @@ async function setupResult(resp: Response): Promise<SetupResult> {
       error: body.error ?? null,
       hint: body.hint ?? null,
       unreachable: body.unreachable === true,
+      restart_required: body.restart_required === true,
     }
   }
   if (!resp.ok) throw new Error(body.detail || `${resp.status} ${resp.statusText}`)
