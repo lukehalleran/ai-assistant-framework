@@ -331,13 +331,18 @@ def _run_reference_docs_seed(chroma_store=None):
     print("[RefDocs] Started background auto-seed...")
 
 
-# Modules imported lazily on the first calendar / email turn (see warmup step 10).
+# Modules imported lazily on the first calendar / email turn (see warmup step 10; calendar/email and proposal modules).
 _FIRST_USE_IMPORT_MODULES = (
     "core.actions.google_calendar",  # get_google_calendar_events
     "core.email.registry",           # EmailService.__init__
     "core.email.gmail_provider",     # registry._build_gmail
     "core.email.outlook_provider",   # registry._build_outlook
     "core.email.service",            # get_email_service
+    # get_proposed_features builds ProposalFilter on the first turn
+    # (LoopStall 3020 ms, 2026-10-23: importlib work on the loop).
+    "core.prompt.proposal_filter",   # gatherer_knowledge.get_proposed_features
+    "memory.proposal_store",         # ProposalFilter.proposal_store
+    "memory.code_proposal",          # proposal_store (7 ms cold import)
 )
 
 

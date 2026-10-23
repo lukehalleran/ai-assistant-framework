@@ -78,3 +78,14 @@ def test_failing_import_is_logged_and_later_modules_still_import(monkeypatch, ca
     for mod in mods[1:]:
         assert mod in sys.modules, mod
     assert "Model warmup complete" in out
+
+
+def test_warmup_imports_the_proposal_filter_modules(monkeypatch):
+    """LoopStall 3020 ms 2026-10-23: get_proposed_features imported these on turn 1 (BC-41)."""
+    wanted = ("core.prompt.proposal_filter", "memory.proposal_store", "memory.code_proposal")
+    for mod in wanted:
+        assert mod in launch._FIRST_USE_IMPORT_MODULES
+        monkeypatch.delitem(sys.modules, mod, raising=False)
+    _warm()
+    for mod in wanted:
+        assert mod in sys.modules, mod

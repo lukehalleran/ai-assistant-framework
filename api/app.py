@@ -61,6 +61,14 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if start_background:
+            # Pre-spawn the serving loop's default-executor workers so a turn's
+            # to_thread gather never starts a thread on the loop under GIL
+            # contention (first-turn LoopStall 2995 ms, 2026-10-23, BC-41).
+            try:
+                from utils.executor_prespawn import install_prespawned_default_executor  # lazy import: layering (startup-only hook)
+                install_prespawned_default_executor(asyncio.get_running_loop())
+            except Exception as e:  # degrades: workers start lazily on the loop (a stall, not a failure)
+                logger.warning(f"[API] Executor pre-spawn skipped: {e}")
             try:
                 from gui.launch import start_background_tasks  # lazy import: cycle
                 start_background_tasks(orchestrator)
