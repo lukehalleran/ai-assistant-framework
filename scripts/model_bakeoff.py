@@ -36,8 +36,12 @@ Run under a memory cap:  systemd-run --user --scope -p MemoryMax=9G python scrip
 import os
 import sys
 
-# MUST precede any repo import — app_config reads env at import time.
-os.environ["WEB_SEARCH_ENABLED"] = "0"
+# MUST precede any repo import — app_config reads env at import time. Only when run as a
+# script: an import (tests, the bake-off importing this module) must not switch web search
+# off for the whole importing process (2026-10-23: the pre-push unit pass failed ~hundreds of
+# web tests after collecting tests/unit/test_model_bakeoff_cost_safety.py).
+if __name__ == "__main__":
+    os.environ["WEB_SEARCH_ENABLED"] = "0"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

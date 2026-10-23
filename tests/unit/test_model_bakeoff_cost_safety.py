@@ -281,3 +281,17 @@ def test_dry_run_never_spends_or_boots(monkeypatch, capsys):
     assert bo.main(["--models", "kimi-3", "gpt-6.1"]) == 0
     out = capsys.readouterr().out
     assert "DRY RUN" in out and "ESTIMATE" in out and "9 queries x 2 models" in out
+
+
+def test_importing_the_scripts_leaves_the_environment_alone():
+    """2026-10-23: both scripts set WEB_SEARCH_ENABLED=0 at import, so collecting this
+    file switched web search off for every later test in the pre-push unit pass."""
+    import subprocess
+    import sys
+    code = (
+        "import os, sys; sys.path.insert(0, '.'); os.environ.pop('WEB_SEARCH_ENABLED', None); "
+        "import scripts.model_bakeoff, scripts.budget_experiment; "
+        "assert 'WEB_SEARCH_ENABLED' not in os.environ, os.environ['WEB_SEARCH_ENABLED']"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
