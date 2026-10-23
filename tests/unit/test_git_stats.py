@@ -116,19 +116,19 @@ class TestParseTimeWindow:
         assert result is not None
         expected = datetime.now() - timedelta(weeks=1)
         # Should be within a second
-        assert abs((result - expected).total_seconds()) < 2
+        assert abs((result - expected).total_seconds()) < 2  # timing-safe: both sides use the same datetime.now() moment within microseconds; 2 s headroom
 
     def test_last_n_days(self):
         result = _parse_time_window("commits last 7 days")
         assert result is not None
         expected = datetime.now() - timedelta(days=7)
-        assert abs((result - expected).total_seconds()) < 2
+        assert abs((result - expected).total_seconds()) < 2  # timing-safe: both sides use the same datetime.now() moment within microseconds; 2 s headroom
 
     def test_last_n_weeks(self):
         result = _parse_time_window("activity last 2 weeks")
         assert result is not None
         expected = datetime.now() - timedelta(weeks=2)
-        assert abs((result - expected).total_seconds()) < 2
+        assert abs((result - expected).total_seconds()) < 2  # timing-safe: both sides use the same datetime.now() moment within microseconds; 2 s headroom
 
     def test_this_month(self):
         result = _parse_time_window("commits this month")

@@ -859,9 +859,13 @@ def _events_tone(query, telemetry_path, since, until, result):
                 continue
             if row.get("test_env"):
                 continue
-            # A probe's turn record keeps the [test] envelope in its query
-            # (the hook records ctx.user_text); same predicate as the corpus.
-            if is_test_turn({"query": row.get("query") or ""}):
+            # Rows carry an explicit ``test_probe`` flag computed from the FULL
+            # user text (2026-10-22); older rows keep the envelope in their
+            # 300-char query, so fall back to the same corpus predicate.
+            if "test_probe" in row:
+                if row["test_probe"]:
+                    continue
+            elif is_test_turn({"query": row.get("query") or ""}):
                 continue
             ts = _parse_ts(row.get("ts") or row.get("time"))
             if ts is None:

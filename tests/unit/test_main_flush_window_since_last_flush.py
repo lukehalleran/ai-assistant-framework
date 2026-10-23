@@ -170,7 +170,7 @@ def test_both_session_start_copies_advance_together(env):
     assert env.proc.session_start == env.coord.session_start
     # the new window opens at the run's START (not process start, not its end)
     delta = (datetime.now() - env.coord.session_start).total_seconds()
-    assert 0 <= delta <= time.time() - before + 1
+    assert 0 <= delta <= time.time() - before + 1  # timing-safe: bound is the test's own measured span + 1 s
 
 
 def test_failed_flush_does_not_advance_the_window(env):

@@ -15,6 +15,12 @@ import os
 #    found benchmark/test rows mixed un-flagged into turn_records.jsonl)
 os.environ.setdefault("DAEMON_TEST_MODE", "1")
 
+# 2026-10-22: tests never load the owner's gitignored config/config.local.yaml
+# (config.app_config.load_local_overrides returns {} when this is "1"). It must stay
+# above every project import: app_config merges the file at import time. Tests that
+# exercise override loading monkeypatch.delenv it for their own scope.
+os.environ["DAEMON_IGNORE_LOCAL_CONFIG"] = "1"
+
 # Cap parallelism BEFORE any torch/numpy imports.
 # Default: half the cores, minimum 2, so the system stays responsive.
 _max_threads = str(max(2, os.cpu_count() // 2))

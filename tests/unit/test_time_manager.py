@@ -196,7 +196,7 @@ def test_mark_query_time_saves_to_file(time_manager):
 
     assert "last_query_time" in data
     saved_time = datetime.fromisoformat(data["last_query_time"])
-    assert abs((saved_time - datetime.now()).total_seconds()) < 2
+    assert abs((saved_time - datetime.now()).total_seconds()) < 2  # timing-safe: saved stamp taken microseconds earlier; 2 s headroom
 
 
 def test_mark_query_time_returns_timestamp(time_manager):
@@ -301,7 +301,7 @@ def test_persistence_roundtrip(temp_time_file):
     # Should load the same time
     assert tm2.last_query_time is not None
     # Allow 1 second difference due to file I/O timing
-    assert abs((tm2.last_query_time - marked_time).total_seconds()) < 1
+    assert abs((tm2.last_query_time - marked_time).total_seconds()) < 1  # timing-safe: round-trip of a stored stamp, no clock read in between; 1 s headroom
 
 
 def test_save_only_when_time_set(time_manager):

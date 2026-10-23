@@ -514,6 +514,90 @@ def parse_modality(text: str, offset: int, nlp=None) -> Optional[str]:
     return None
 
 
+MAX_WIDENED_QUOTE_CHARS = 200
+
+
+def modality_marker_span(text: str, offset: int, modality: str, nlp=None) -> Optional[tuple[int, int]]:
+    """``(start, end)`` char span in ``text`` of the clause that makes the claim at
+    ``offset`` ``modality`` ("conditional" | "estimate"), or None when the parse
+    finds no structural marker. Sibling of ``parse_modality`` (same parse, same
+    token rules; its return contract is untouched).
+
+    conditional: the clause headed by the conditional/temporal subordinator
+    (``mark`` token of an advcl; "when" with a "then" in the sentence) -- the
+    whole subordinate clause, preferring a marker on the value's own ancestor
+    chain; else the irrealis modal auxiliary. estimate: the approximating
+    adverb on the number, the ``~``/``≈`` glyph, the epistemic modal, or the
+    first-person epistemic verb together with its subject ("i think")."""
+    from memory.fact_extractor import _COND_MARKS, _IRREALIS_MODALS, _TEMPORAL_MARKS, _get_nlp  # lazy import: startup-cost (spaCy model + extractor module)
+
+    nlp = nlp or _get_nlp()
+    if nlp is None or not text or modality not in ("conditional", "estimate"):
+        return None
+    try:
+        doc = nlp(text)
+        tok = next((t for t in doc if t.idx <= offset < t.idx + len(t.text)), None)
+        if tok is None:
+            return None
+        sent = tok.sent
+        if modality == "conditional":
+            has_then = any(t.lower_ == "then" for t in sent)
+            marks = [t for t in sent
+                     if (t.dep_ == "mark" and (t.lower_ in _COND_MARKS or t.lower_ in _TEMPORAL_MARKS))
+                     or (t.dep_ == "advmod" and t.lower_ == "when" and has_then)]
+            if marks:
+                chain = {a.i for a in [tok] + list(tok.ancestors)}
+                on_chain = [m for m in marks if m.head.i in chain]
+                m = (on_chain or marks)[0]
+                head = m.head
+                left = min(m.idx, head.left_edge.idx)
+                right = head.right_edge
+                return left, right.idx + len(right.text)
+            for t in sent:
+                if t.lower_ in _IRREALIS_MODALS and t.dep_ == "aux":
+                    return t.idx, t.idx + len(t.text)
+            return None
+        spans: list[tuple[int, int]] = []
+        for n in (tok, tok.head):
+            for c in n.children:
+                if c.lower_ in _APPROXIMATORS:
+                    spans.append((c.idx, c.idx + len(c.text)))
+        for i in (offset - 1, offset - 2):
+            if i >= 0 and text[i:i + 1] in ("~", "≈"):
+                spans.append((i, i + 1))
+        for t in sent:
+            if t.lower_ in _EPISTEMIC_MODALS and t.pos_ in ("AUX", "VERB"):
+                spans.append((t.idx, t.idx + len(t.text)))
+            if t.lemma_ in _EPISTEMIC_VERBS and t.pos_ == "VERB":
+                subj = [c for c in t.children if c.dep_ == "nsubj" and c.lower_ in ("i", "we")]
+                if subj:
+                    spans.append((min(subj[0].idx, t.idx), t.idx + len(t.text)))
+        if spans:    # every hedge present ("i think it was about 12 days"), as one covering span
+            return min(x[0] for x in spans), max(x[1] for x in spans)
+    except Exception:  # degrades: quote is not widened, the original quote stands
+        return None
+    return None
+
+
+def widen_quote_to_marker(text: str, qstart: int, qend: int, modality: str,
+                          value_offset: int, nlp=None) -> tuple[int, int]:
+    """``(start, end)`` of the smallest span of ``text`` covering the quote
+    ``[qstart, qend)`` AND its modality marker clause. Unchanged when the marker
+    is already inside the quote, none is found, or the widened span would exceed
+    ``MAX_WIDENED_QUOTE_CHARS`` (a partial clause is never stored: the original
+    quote is kept whole instead). 2026-10-22, class: BC-75."""
+    span = modality_marker_span(text, value_offset, modality, nlp=nlp)
+    if span is None:
+        return qstart, qend
+    ms, me = span
+    if ms >= qstart and me <= qend:
+        return qstart, qend
+    ws, we = min(qstart, ms), max(qend, me)
+    if we - ws > MAX_WIDENED_QUOTE_CHARS:
+        return qstart, qend
+    return ws, we
+
+
 # ---------------------------------------------------------------------------
 # Quote normalisation (A6): the exact-span check is exact up to this fold
 # ---------------------------------------------------------------------------
@@ -888,6 +972,12 @@ def validate_claims(raw_json: Any, user_text: str, said_on: Any,
         parsed = parse_modality(base_text, qpos + voff, nlp=nlp)
         if parsed == "conditional":
             final_modality = "conditional"   # the parse wins; never the other way round
+        if parsed == final_modality and final_modality in ("conditional", "estimate"):
+            # The quote must carry the clause that makes the claim non-asserted, or the
+            # render reads like a plain assertion. Stored quote stays an exact substring.
+            ws, we = widen_quote_to_marker(base_text, qpos, qpos + len(nq),
+                                           final_modality, qpos + voff, nlp=nlp)
+            nq = base_text[ws:we]
         sig = (key, kind, value, final_modality, nq, scope)
         if sig in seen:
             drops.append(_drop("duplicate", item))
@@ -1119,19 +1209,36 @@ def _fmt_figure(c: LedgerClaim) -> str:
     return c.value
 
 
-def _render_quote(text: str) -> str:
+def _render_quote(text: str, *, head_tail: bool = False) -> str:
+    """Over-long quotes are cut head-only (asserted) or head+tail (conditional /
+    estimate: the antecedent sits at the head, the figure at the tail)."""
     one = " ".join(strip_machinery(text or "").split()).replace('"', "'")
     if len(one) > MAX_RENDER_QUOTE_CHARS:
-        one = one[:MAX_RENDER_QUOTE_CHARS - 1].rstrip() + "…"
+        if head_tail:
+            room = MAX_RENDER_QUOTE_CHARS - 3
+            head = (room + 1) // 2
+            one = one[:head].rstrip() + " … " + one[len(one) - (room - head):].lstrip()
+        else:
+            one = one[:MAX_RENDER_QUOTE_CHARS - 1].rstrip() + "…"
     return one
 
 
-def _earlier_clause(items: Sequence[LedgerClaim], rep: LedgerClaim, *, always: bool) -> str:
-    older = sorted((c for c in items if c.superseded_by and c.modality != "conditional"
-                    and c.id != rep.id), key=lambda c: _dt(c.stated_at), reverse=True)
+def _earlier_clause(items: Sequence[LedgerClaim], rep: LedgerClaim) -> str:
+    """Superseded non-conditional older values that differ from the current figure;
+    equal older values collapse to the newest. Empty when there is nothing to say."""
+    cur = _fmt_figure(rep)
+    older: list[LedgerClaim] = []
+    seen = {cur}
+    for c in sorted((c for c in items if c.superseded_by and c.modality != "conditional"
+                     and c.id != rep.id), key=lambda c: _dt(c.stated_at), reverse=True):
+        fig = _fmt_figure(c)
+        if fig in seen:
+            continue
+        seen.add(fig)
+        older.append(c)
     older = older[:MAX_EARLIER_VALUES]
     if not older:
-        return "; earlier: none" if always else ""
+        return ""
     return "; earlier: " + ", ".join(f"{_fmt_figure(c)} ({_fmt_day(c.stated_at)})" for c in older)
 
 
@@ -1139,15 +1246,17 @@ def _render_line(rep: LedgerClaim, items: Sequence[LedgerClaim]) -> str:
     label = " ".join(rep.description.split()) or rep.subject_key
     figure = _fmt_figure(rep)
     said = _fmt_day(rep.stated_at)
-    quote = _render_quote(rep.quote)
     only = f"; applies to {_fmt_day(rep.occurrence_date)} only" if rep.scope == "occurrence" else ""
     if rep.modality == "conditional":
+        quote = _render_quote(rep.quote, head_tail=True)
         return (f'- {label}: {figure} — CONDITIONAL, you said "{quote}" ({said}); not a fact{only}')
     if rep.modality == "estimate":
+        quote = _render_quote(rep.quote, head_tail=True)
         return (f'- {label}: ~{figure} — your ESTIMATE ("{quote}", {said})'
-                f'{_earlier_clause(items, rep, always=False)}{only}')
+                f'{_earlier_clause(items, rep)}{only}')
+    quote = _render_quote(rep.quote)
     return (f'- {label}: {figure} — you said "{quote}" ({said})'
-            f'{_earlier_clause(items, rep, always=True)}{only}')
+            f'{_earlier_clause(items, rep)}{only}')
 
 
 def render_stated_figures(ledger: ClaimLedger, now: Any, *, max_lines: int,
@@ -1159,8 +1268,12 @@ def render_stated_figures(ledger: ClaimLedger, now: Any, *, max_lines: int,
       * date/deadline subjects whose VALUE lies within +-``deadline_window_days`` of ``now``;
       * occurrence subjects whose occurrence_date is today or yesterday.
     A conditional-only subject is shown as CONDITIONAL ("not a fact"); an estimate
-    keeps its hedge; asserted lines carry up to two ``earlier:`` values. Quotes are
-    cut to 90 characters and pass through ``strip_machinery``. Dates are
+    keeps its hedge. Asserted and estimate lines carry up to two ``earlier:`` values,
+    only when they say something: older values equal to the current figure are not
+    listed (equal older values collapse to the newest) and there is never an
+    "earlier: none". Quotes pass through ``strip_machinery`` and are cut to 90
+    characters: head-only for asserted lines, head+tail for conditional/estimate
+    lines (the condition must survive the cut). Dates are
     weekday + MM-DD. Returns [] for an unusable ``now`` or ``max_lines <= 0``."""
     ref = _dt(now)
     if ref is None or max_lines <= 0:

@@ -50,10 +50,10 @@ def test_estimate_line_keeps_its_hedge():
     assert lines == ['- days spent on the material: ~12 days — your ESTIMATE ("12 days i think?", Sun 10-18)']
 
 
-def test_asserted_line_shows_value_date_and_earlier_none():
+def test_asserted_line_shows_value_and_date_without_empty_earlier():
     lines = render(lc("loan_deadline", "2026-09-28", at="2026-09-27T09:00:00", kind="deadline", unit="",
                       desc="loan deadline", quote="tomorrow"))
-    assert lines == ['- loan deadline: 2026-09-28 — you said "tomorrow" (Sun 09-27); earlier: none']
+    assert lines == ['- loan deadline: 2026-09-28 — you said "tomorrow" (Sun 09-27)']
 
 
 def test_superseded_values_are_listed_as_earlier_max_two_newest_first():
@@ -125,7 +125,7 @@ def test_occurrence_dates_of_one_subject_are_separate_lines():
         lc("sleep_hours", "7", at="2026-10-20T08:00:00", unit="hours", desc="hours slept",
            scope="occurrence", occ="2026-10-20"))
     assert len(lines) == 2 and "applies to Tue 10-20 only" in lines[0] and "applies to Mon 10-19 only" in lines[1]
-    assert "earlier: none" in lines[0]     # a different date is not an earlier value of this one
+    assert "earlier" not in lines[0]       # a different date is not an earlier value of this one
 
 
 def test_newest_first_and_capped():

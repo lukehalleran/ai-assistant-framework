@@ -414,7 +414,7 @@ def test_now_no_time_manager(coordinator):
     result = coordinator._now()
 
     assert isinstance(result, datetime)
-    assert (datetime.now() - result).total_seconds() < 1
+    assert (datetime.now() - result).total_seconds() < 1  # timing-safe: stamp taken microseconds earlier, 1 s headroom
 
 
 def test_now_with_time_manager(coordinator):
@@ -614,7 +614,7 @@ def test_parse_result_invalid_timestamp(coordinator):
 
     assert isinstance(result['timestamp'], datetime)
     # Should be recent (within last second)
-    assert (datetime.now() - result['timestamp']).total_seconds() < 2
+    assert (datetime.now() - result['timestamp']).total_seconds() < 2  # timing-safe: stamp taken microseconds earlier, 2 s headroom
 
 
 def test_parse_result_timestamp_already_datetime(coordinator):
@@ -908,7 +908,7 @@ def test_format_hierarchical_memory_missing_timestamp(coordinator):
     result = coordinator._format_hierarchical_memory(memory)
 
     assert isinstance(result['timestamp'], datetime)
-    assert (datetime.now() - result['timestamp']).total_seconds() < 1
+    assert (datetime.now() - result['timestamp']).total_seconds() < 1  # timing-safe: stamp taken microseconds earlier, 1 s headroom
 
 
 def test_format_hierarchical_memory_empty_content(coordinator):

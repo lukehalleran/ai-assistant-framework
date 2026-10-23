@@ -89,20 +89,24 @@ async def test_tracking_does_not_block_sibling_phase_b_task(tracking_on):
     proc = _processor()
     store = _SlowStore([_proposal(i, None) for i in range(10)], delay=0.1)
     done_at = {}
-    t0 = time.monotonic()  # gather start: a loop-blocking sibling delays us
 
     async def thread_pass():  # stands in for _process_open_threads
         await asyncio.sleep(0.05)
-        done_at["thread"] = time.monotonic() - t0
+        done_at["thread"] = time.monotonic()
+
+    async def tracking():
+        await proc._check_implementation_tracking()
+        done_at["tracking"] = time.monotonic()
 
     with patch("memory.proposal_store.ProposalStore", return_value=store), \
          patch("knowledge.implementation_detector.ImplementationDetector",
                return_value=_detector()):
-        await asyncio.gather(proc._check_implementation_tracking(), thread_pass())
+        await asyncio.gather(tracking(), thread_pass())
 
     # tracking takes ~1.0 s of blocking sleeps; the sibling must finish in
-    # about its own 50 ms, not wait behind the loop-blocking sync loop.
-    assert done_at["thread"] < 0.5, done_at
+    # about its own 50 ms, i.e. BEFORE tracking does, not wait behind the
+    # loop-blocking sync loop (order, not an absolute bound).
+    assert done_at["thread"] < done_at["tracking"], done_at
     assert len(store.updated) == 10
 
 
