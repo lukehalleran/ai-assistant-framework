@@ -1296,15 +1296,7 @@ def build_demo(orchestrator, dev_tabs=None):
                     sync_notes_button = gr.Button("📝 Sync Notes")
 
                     # --- Active Model selector (on chat page for visibility) ---
-                    try:
-                        _mm = orchestrator.model_manager
-                        _api_aliases = list(getattr(_mm, 'api_models', {}).keys())
-                        _local_models = list(getattr(_mm, 'models', {}).keys())
-                        _model_choices = sorted(set(_api_aliases + _local_models)) or [_mm.get_active_model_name() or 'gpt-4-turbo']
-                        _current_active = _mm.get_active_model_name() or (_model_choices[0] if _model_choices else 'gpt-4-turbo')
-                    except (AttributeError, TypeError, KeyError):
-                        _model_choices = ['claude-fable-5', 'claude-opus-4.8', 'gpt-5.1', 'gpt-5', 'gpt-4-turbo', 'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5']
-                        _current_active = 'gpt-5.1'
+                    _model_choices, _current_active = settings_core.chat_model_selection(orchestrator)
 
                     model_dd = gr.Dropdown(
                         label="Model",

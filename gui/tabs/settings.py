@@ -110,10 +110,7 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
             _duel_enabled_default = False
             _gens_default = []
 
-        _all_model_choices = settings_core.model_choices(orchestrator) or [
-            'claude-fable-5', 'claude-opus-4.8', 'gpt-5.1', 'gpt-5', 'gpt-4-turbo',
-            'claude-opus-4.5', 'claude-opus', 'sonnet-4.6', 'sonnet-4.5', 'gpt-4o', 'gpt-4o-mini'
-        ]
+        _all_model_choices = settings_core.model_choices(orchestrator) or settings_core.registry_model_choices()
 
         _m1_value = _gens_default[0] if len(_gens_default) > 0 else (_all_model_choices[0] if _all_model_choices else None)
         _m2_value = _gens_default[1] if len(_gens_default) > 1 else (next((m for m in _all_model_choices if m != _m1_value), _m1_value))
