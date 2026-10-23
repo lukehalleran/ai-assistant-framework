@@ -33,6 +33,7 @@ from typing import Optional
 
 from memory.graph_memory import GraphMemory
 from memory.graph_models import GraphNode
+from memory.graph_utils import PERSON_ROLE_NOUNS
 from utils.logging_utils import get_logger
 from utils.safe_json import atomic_write_json, load_critical_json
 
@@ -176,10 +177,7 @@ def extract_possessive_aliases(text: str) -> list[tuple[str, str]]:
     """
     type_map = {
         "cat": "pet", "dog": "pet", "pet": "pet", "kitten": "pet", "puppy": "pet",
-        "boss": "person", "manager": "person", "wife": "person", "husband": "person",
-        "partner": "person", "friend": "person", "brother": "person", "sister": "person",
-        "mom": "person", "dad": "person", "mother": "person", "father": "person",
-        "son": "person", "daughter": "person",
+        **dict.fromkeys(PERSON_ROLE_NOUNS, "person"),
         "project": "project", "app": "project", "system": "project",
         "car": "other", "apartment": "place", "house": "place", "home": "place",
     }

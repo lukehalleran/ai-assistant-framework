@@ -12,9 +12,10 @@ import pytest
 from memory import fact_extractor as fe
 from memory import llm_fact_extractor as lfe
 
-# "home address"/"work email": a noun-compound slot label with no value -> junk (documented decision)
-JUNK = ["mom name", "mom name lol", "dad number", "my sister's address", "home address", "work email"]
-KEPT = ["Tamsin", "mom's birthday party", "phone number 555-0100",
+# A slot label needs a PERSON-role owner (referee revision 2026-10-23): "home address"/
+# "work email" have none, so they are accepted misses (kept), like "domain name".
+JUNK = ["mom name", "mom name lol", "dad number", "my sister's address", "boss email"]
+KEPT = ["Tamsin", "home address", "work email", "mom's birthday party", "phone number 555-0100",
         "the name of the course", "new phone", "old phone", "my new phone", "the stone age",
         "favorite number", "lucky number", "Rowan's name is Tamsin", "name"]
 

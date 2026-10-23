@@ -218,6 +218,87 @@ def _is_single_function_word(n: str, *, entity_type: str = "") -> bool:
     return n.lower() in _stop_lexicon()
 
 
+# Identity-attribute slot nouns (2026-10-22, class: BC-55; moved here from
+# fact_extractor 2026-10-23 so the graph-entity chokepoint can share it). CATEGORY: the nouns
+# that name a SLOT of a person ("whose name / number / address / email / phone /
+# age?"), never the slot's value. An object that is ONLY such a slot head plus
+# plain lowercase possessor/kinship modifiers ("mom name", "dad number",
+# "my sister's address") names the question, not the answer. "birthday" is
+# deliberately NOT in the category: "mom's birthday" is an event reading
+# ("forgot mom's birthday"), not a slot label. "phone" is NOT in it either
+# (mostly a DEVICE noun: "a new phone"; "phone number" is covered by "number")
+# and neither is "age" ("stone age", "ice age" are eras, not a person's age).
+_IDENTITY_SLOT_NOUNS = frozenset({
+    "name", "names", "number", "numbers", "address", "addresses", "email",
+    "emails",
+})
+_SLOT_MODIFIER_FILLER = frozenset({
+    "the", "a", "an", "my", "our", "his", "her", "their", "your", "its",
+})
+_SLOT_MODIFIER_MAX = 2
+
+# Category: person-role nouns (kinship / relationship / workplace roles). The
+# ONE definition; entity_resolver.extract_possessive_aliases maps them to
+# entity type "person". A slot label needs a PERSON as the slot's owner
+# ("mom name"), else concept names like "domain name"/"Gettysburg Address"
+# would be junked. Lives here (leaf) because entity_resolver -> graph_memory
+# -> graph_utils would cycle the other way.
+PERSON_ROLE_NOUNS = frozenset({
+    "boss", "manager", "wife", "husband", "partner", "friend", "brother",
+    "sister", "mom", "dad", "mother", "father", "son", "daughter",
+})
+
+
+def is_valueless_slot_label(obj: str) -> bool:
+    """True when *obj* is an identity-attribute slot noun with no value.
+
+    Structure (no session words): the LAST token is an identity-attribute slot
+    noun (``_IDENTITY_SLOT_NOUNS``) and every earlier token is a determiner /
+    possessive pronoun or a plain lowercase alphabetic modifier (a possessor or
+    kinship noun, at most ``_SLOT_MODIFIER_MAX``). Any value token defeats it:
+    a capitalised word (proper noun), a digit, a quoted string, a preposition
+    carrying a complement ("the name of the course") or a different head noun
+    ("phone number 555-0100", "mom's birthday party"). The bare slot noun with
+    no modifier is left to the existing checks (behaviour unchanged).
+    """
+    parse_text = re.sub(r"\s+", " ", (obj or "")).strip(" .,:;!?\"'`")
+    text = re.sub(r"(?i)'s\b|\u2019s\b", "", parse_text)
+    toks = text.split()
+    if len(toks) < 2 or toks[-1].lower() not in _IDENTITY_SLOT_NOUNS:
+        return False
+    mods = toks[:-1]
+    kept = [m for m in mods if m.lower() not in _SLOT_MODIFIER_FILLER]
+    if not kept or len(kept) > _SLOT_MODIFIER_MAX:
+        return False
+    if not all(m.isalpha() and m == m.lower() for m in kept):
+        return False
+    if not any(m in PERSON_ROLE_NOUNS for m in kept):
+        return False  # no person owns the slot ("domain name", "pen name")
+    # Modifiers must be possessor/kinship/compound NOUNS, never adjectives
+    # ("new phone", "favorite number", "lucky number" are real values).
+    nlp = _slot_nlp()
+    if nlp is None:  # degrades: no parse -> never junk (slot rule abstains)
+        return False
+    try:
+        doc = nlp(parse_text)
+    except Exception:  # degrades: parse failure -> slot rule abstains
+        return False
+    toks = [t for t in doc if t.lower_ not in _SLOT_MODIFIER_FILLER
+            and t.lower_ not in ("'s", "\u2019s") and not t.is_space]
+    if not toks or toks[-1].lower_ not in _IDENTITY_SLOT_NOUNS:
+        return False
+    return all(
+        t.pos_ in ("NOUN", "PROPN") and t.dep_ in ("compound", "poss")
+        for t in toks[:-1]
+    )
+
+
+def _slot_nlp():
+    """The shared spaCy pipeline (owned by fact_extractor; None when absent)."""
+    from memory.fact_extractor import _get_nlp  # lazy import: cycle (fact_extractor imports graph_utils at module level) + startup-cost
+    return _get_nlp()
+
+
 def is_junk_entity(name: str, *, entity_type: str = "") -> bool:
     """Return True if *name* is a stopword, pronoun, measurement, or other
     non-entity that should never be a graph node.
@@ -246,6 +327,10 @@ def is_junk_entity(name: str, *, entity_type: str = "") -> bool:
     if _TEMPORAL_RE.match(n) or _FREQUENCY_RE.match(n) or _MEASUREMENT_RE.match(n):
         return True
     if is_temporal_deictic(n):
+        return True
+    # Value-less identity slot label ("mom name", "Mom Name"): graph labels are
+    # often title-cased, so judge the lowercased form (2026-10-23, BC-75).
+    if is_valueless_slot_label(n):
         return True
     first_word = n.split()[0]
     if first_word in _VERB_STEMS:
