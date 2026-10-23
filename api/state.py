@@ -12,7 +12,7 @@ import asyncio
 import os
 import uuid
 from types import SimpleNamespace
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from core.active_document import ActiveDocumentRegistry
 from utils.logging_utils import get_logger
@@ -147,8 +147,15 @@ class AppState:
         self._uploads[file_id] = {"path": path, "name": name, "size": size}
         return file_id
 
-    def resolve_uploads(self, file_ids: List[str]) -> List[SimpleNamespace]:
-        """Resolve file_ids to shim objects with `.name` (the FileProcessor contract).
+    def resolve_uploads(self, file_ids: List[str]) -> Tuple[List[SimpleNamespace], List[dict]]:
+        """Resolve file_ids to ``(resolved, missing)``.
+
+        ``resolved`` are shim objects with `.name` (the FileProcessor contract).
+        ``missing`` lists every requested attachment that cannot be served, as
+        ``{"file_id", "name", "reason"}`` (reason ``unknown_id`` | ``file_missing``;
+        ``name`` is the original upload name when known, else None). Callers must
+        refuse the turn when ``missing`` is non-empty (2026-10-23, audit A08):
+        silently dropping an attachment turned the request into a text-only turn.
 
         Dedupes file_ids first, preserving order (2026-09-04, homework-
         attachment turn audit item 1): a repeated id in the request — e.g. a
@@ -158,16 +165,19 @@ class AppState:
         file rather than two files with identical content.
         """
         files = []
+        missing: List[dict] = []
         for fid in dict.fromkeys(file_ids or []):
             entry = self._uploads.get(fid)
             if not entry:
                 logger.warning(f"[API] Unknown upload file_id: {fid}")
+                missing.append({"file_id": fid, "name": None, "reason": "unknown_id"})
                 continue
             if not os.path.exists(entry["path"]):
                 logger.warning(f"[API] Upload temp file missing: {entry['path']}")
+                missing.append({"file_id": fid, "name": entry.get("name"), "reason": "file_missing"})
                 continue
             files.append(SimpleNamespace(name=entry["path"], orig_name=entry["name"]))
-        return files
+        return files, missing
 
     def unregister_upload(self, file_id: str) -> None:
         """Remove an upload registration after a failed batch request."""

@@ -102,7 +102,8 @@ class TestResolveUploadsDedupe:
         fid1 = state.register_upload(path=str(p1), name="one.txt", size=3)
         fid2 = state.register_upload(path=str(p2), name="two.txt", size=3)
 
-        files = state.resolve_uploads([fid1, fid2, fid1])
+        files, missing = state.resolve_uploads([fid1, fid2, fid1])
+        assert missing == []
 
         assert len(files) == 2
         assert [f.orig_name for f in files] == ["one.txt", "two.txt"]
