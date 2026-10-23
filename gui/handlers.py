@@ -3245,13 +3245,13 @@ def _turn_expected_an_action(ctx) -> bool:
             return True
         if registry.is_action_retry_request(text) or registry.is_offer_affirmation(text):
             return True
-        return bool(_pending_proposal_kinds(getattr(ctx, "orchestrator", None)))
+        return bool(_pending_proposal_kinds(getattr(ctx, "orchestrator", None), text))
     except Exception as e:
         logger.warning(f"[ActionGuard] action-context check failed (treated as expected): {e}")
         return True
 
 
-def _pending_proposal_kinds(orchestrator):
+def _pending_proposal_kinds(orchestrator, user_text: str = ""):
     """ActionKinds with a prior-turn offer still pending ("Want me to email X?").
 
     Two sources: the NOTE-only PendingProposalStore, and (2026-09-07) the
@@ -3271,7 +3271,8 @@ def _pending_proposal_kinds(orchestrator):
         pass
     try:
         _cm = getattr(getattr(orchestrator, 'memory_system', None), 'corpus_manager', None)
-        _recent = _cm.get_recent_memories(1) if _cm is not None else []
+        # 2026-10-23 (class BC-58): same probe-skipping prior-turn rule as the gate
+        _recent = gate._prior_turns(_cm, 1, user_text) if _cm is not None else []
         if _recent:
             _offer = registry.offer_action_type(_recent[0].get('response', '') or '')
             _kind = registry.action_kind_of(_offer) if _offer is not None else None
@@ -3545,7 +3546,7 @@ async def _apply_action_guard(ctx, response_text, *, executed_kinds, proposed_ki
         # ctx stand-in without the A10 user_text_ws field — fall back to the
         # raw text (identical behavior for anything that isn't wrapped).
         _actionable_text = getattr(ctx, "user_text_ws", None) or ctx.user_text
-        actionable = _user_requested_external_kinds(_actionable_text) | _pending_proposal_kinds(ctx.orchestrator)
+        actionable = _user_requested_external_kinds(_actionable_text) | _pending_proposal_kinds(ctx.orchestrator, _actionable_text)
         external = [
             a for a in rec.external_unbacked
             if a.kind not in set(proposed_kinds)
