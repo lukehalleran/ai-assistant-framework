@@ -39,6 +39,7 @@ from typing import Dict, List, Optional, Set
 from knowledge.git_memory import GitMemoryExtractor
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 import utils.bootstrap as bootstrap
+from utils.safe_json import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -348,12 +349,7 @@ class GitMemoryLoader:
 
     @staticmethod
     def _save_last_hash(hash_val: str) -> None:
-        path = last_hash_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w") as f:
-            f.write(hash_val)
-        os.replace(tmp, path)
+        atomic_write_text(last_hash_path(), hash_val)
 
     @staticmethod
     def _load_last_hash() -> Optional[str]:
