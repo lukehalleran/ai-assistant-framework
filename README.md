@@ -219,7 +219,7 @@ git clone https://github.com/lukehalleran/ai-assistant-framework.git
 cd ai-assistant-framework
 
 python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -c requirements.lock.txt   # reproducible; refresh the lock with `python scripts/refresh_lock.py` (--check to verify)
 python -m spacy download en_core_web_sm
 
 # Build the React web UI (without it, :8000 serves only the API + /admin)

@@ -61,6 +61,7 @@ Enhanced (2026-03):
 - Entity metadata: fact_scope, entity_type, user_connection added to MemoryNode
 - Helper functions: _detect_entity_type(), _detect_user_connection()
 """
+import importlib.util
 import os
 import os as _os
 import re
@@ -756,8 +757,21 @@ def _get_nlp():
         import spacy  # lazy import: startup-cost
         _NLP = spacy.load("en_core_web_sm")
         logger.debug("[FactExtractor] spaCy loaded: en_core_web_sm")
-    except Exception as e:  # degrades: spaCy parsing and entity typing unavailable
-        logger.debug(f"[FactExtractor] spaCy not available or failed to load: {e}")
+    except ImportError as e:  # degrades: spaCy not installed (optional dependency) — regex-only extraction
+        logger.debug(f"[FactExtractor] spaCy not available: {e}")
+    except Exception as e:  # degrades: spaCy parsing and entity typing unavailable (cached; not retried per call)
+        if importlib.util.find_spec("en_core_web_sm") is None:
+            # Model simply not installed — preflight already warns about that.
+            logger.debug(
+                "[FactExtractor] en_core_web_sm not installed "
+                "(python -m spacy download en_core_web_sm)")
+        else:
+            # 2026-10-24: a preshed release made spacy.load raise OverflowError and this
+            # line was DEBUG — 167 tests silently took the no-parser fallback.
+            logger.warning(
+                f"[FactExtractor] spaCy model failed to load ({type(e).__name__}: {e}) "
+                "— parsing degraded; check dependency versions"
+            )
     return _NLP
 
 
