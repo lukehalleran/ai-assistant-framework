@@ -23,6 +23,10 @@ memory:
   # sections cannot empty [RELEVANT MEMORIES]); distinct from prompt_memory_topup_floor,
   # the builder's pre-budget top-up minimum. 0 = no memories reserve.
   prompt_memories_reserve_floor: 2
+  # Budget RESERVE for commit history on a turn routed to LIVE local git history
+  # (status report / own-code activity question). Ambient git_commits keep priority 3
+  # and may still be emptied. 0 = no git reserve.
+  prompt_git_commits_reserve_floor: 5
   num_memories: 30
   prompt_max_mems: 30
   child_mem_limit: 3

@@ -131,6 +131,10 @@ PRIORITY_ORDER = [
     ("dreams",                2),  # Still included; trimmed early if needed
     ("codebase_changes",      2),  # First message only, session diff
     ("wiki",                  1),
+    # 2026-10-24 (BC-46): the one-line "[NOT SHOWN FOR SPACE]" note naming
+    # sections this budget emptied (computed AFTER the passes below; ~30 tokens, deliberately outside the
+    # budget-compliance total).
+    ("budget_omitted_note",  10),
 ]
 
 # Small, time-sensitive sections: metered before history in the first pass
@@ -201,6 +205,65 @@ FLOOR_PROTECTED_SECTIONS = (
     ("recent_summaries", "prompt_min_summaries_floor", 2),
     ("recent_reflections", "prompt_min_reflections_floor", 1),
 )
+
+
+# 2026-10-24 (BC-99/BC-24): a turn routed to LIVE local git history (status
+# report or own-code activity question) reserves room for its first N commits.
+# CONDITIONAL: ambient git_commits (index retrieval, priority 3) stay emptiable.
+GIT_ROUTED_RESERVE = ("git_commits", "prompt_git_commits_reserve_floor", 5)
+
+# Human labels for the omitted-context note (unlisted keys fall back to the key
+# with underscores spaced out).
+_OMITTED_LABELS = {
+    "git_commits": "commit history",
+    "semantic_summaries": "semantic summaries",
+    "recent_summaries": "recent summaries",
+    "semantic_reflections": "semantic reflections",
+    "recent_reflections": "recent reflections",
+    "daemon_self_notes": "your own notes",
+    "proactive_insights": "proactive insights",
+    "proposed_features": "proposed features",
+    "user_uploads": "uploaded items",
+    "personal_notes": "personal notes",
+    "reference_docs": "reference docs",
+    "memories": "relevant memories",
+    "google_calendar": "calendar events",
+    "upcoming_schedule": "scheduled events",
+    "unresolved_threads": "open threads",
+    "web_search_results": "web results",
+    "stated_figures": "your stated figures",
+    "recent_conversations": "recent conversation",
+}
+OMITTED_NOTE_MAX_SECTIONS = 4
+
+
+def _is_routed_git(context: Dict[str, Any]) -> bool:
+    """True when git_commits carries live local history (a routed turn)."""
+    return any(
+        isinstance(item, dict)
+        and (item.get("metadata") or {}).get("retrieval_source") == "local_git"
+        for item in (context.get("git_commits") or [])
+    )
+
+
+def build_omitted_note(emptied: List[str], context: Dict[str, Any]) -> str:
+    """ONE short line naming (human labels, counts) the non-empty sections the
+    budget emptied, highest-priority first, so absence is not read as evidence."""
+    prio = {name: p for name, p in PRIORITY_ORDER}
+    rows = []
+    for name in sorted(emptied, key=lambda n: -prio.get(n, 0)):
+        val = context.get(name)
+        if not val or name in ("budget_omitted_note", "stm_summary"):
+            continue
+        count = len(val) if isinstance(val, list) else 1
+        rows.append(f"{_OMITTED_LABELS.get(name, name.replace('_', ' '))} ({count})")
+    if not rows:
+        return ""
+    shown, extra = rows[:OMITTED_NOTE_MAX_SECTIONS], len(rows) - OMITTED_NOTE_MAX_SECTIONS
+    listing = ", ".join(shown) + (f", +{extra} more" if extra > 0 else "")
+    return (f"[NOT SHOWN FOR SPACE] {listing} - absence here is not evidence "
+            "that nothing happened \u2014 context for you; do not mention it unless "
+            "the user asks what you can see.")
 
 
 def _live_memory_cfg(key: str, default_val: Any) -> Any:
@@ -536,7 +599,10 @@ class TokenManager:
         _reserve_bound = int(_max_share * self.token_budget)
         _reserve_total = 0
         _floors: Dict[str, int] = {}
-        for _rname, _rkey, _rdef in FLOOR_PROTECTED_SECTIONS:
+        _protected = list(FLOOR_PROTECTED_SECTIONS)
+        if _is_routed_git(context):
+            _protected.insert(0, GIT_ROUTED_RESERVE)
+        for _rname, _rkey, _rdef in _protected:
             try:
                 _floor = int(_live_memory_cfg(_rkey, _rdef))
             except (TypeError, ValueError):  # degrades: default floor
@@ -789,8 +855,14 @@ class TokenManager:
             name for name, _ in PRIORITY_ORDER
             if name != "stm_summary" and context.get(name) and not trimmed.get(name)
         )
+        trimmed.pop("budget_omitted_note", None)
         if _emptied:
             trimmed["_budget_emptied"] = _emptied
+            _note = build_omitted_note(_emptied, context)
+            if _note:
+                trimmed["budget_omitted_note"] = _note
+                # Not added to `usage`: <=~40 tokens, emitted only when the budget
+                # already cut something, and usage is the budget-compliance number.
             logger.info(f"[TOKEN BUDGET] Sections emptied by budget: {_emptied}"
                         + (f" (floor reserve {_reserve_total} tokens)" if _reserve_total else ""))
 
