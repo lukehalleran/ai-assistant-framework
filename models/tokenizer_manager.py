@@ -47,7 +47,7 @@ def _choose_tiktoken_encoding(model_name: str) -> str:
     cl100k_base is compatible with GPT-3.5/4 families.
     """
     n = (model_name or "").lower()
-    if any(k in n for k in ["o3", "o4", "gpt-4.1", "gpt-4o", "gpt-4o-mini", "gpt-5"]):
+    if any(k in n for k in ["o3", "o4", "gpt-4.1", "gpt-4o", "gpt-4o-mini", "gpt-5", "gpt-6"]):
         # If tiktoken lacks o200k_base in your env, we'll fall back to cl100k_base below.
         return "o200k_base"
     return "cl100k_base"

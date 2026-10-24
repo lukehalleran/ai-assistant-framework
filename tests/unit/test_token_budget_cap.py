@@ -103,10 +103,13 @@ class TestGetContextLimit:
         assert ModelManager.get_context_limit(m) == DEFAULT_API_CONTEXT_LIMIT
 
     def test_claude_models_have_context_rows(self):
-        # Every Claude row in the registry carries the 200K standard limit.
+        # Every Claude row carries its catalog limit: the 4.x / Fable rows keep the
+        # 200K standard limit; the 5.5 family serves 1M (OpenRouter catalog, 2026-10-23).
         claude = [s for s in MODEL_CONTEXT_LIMITS if s.startswith("anthropic/claude")]
         assert claude, "expected Claude entries in MODEL_CONTEXT_LIMITS"
-        assert all(MODEL_CONTEXT_LIMITS[s] == 200_000 for s in claude)
+        for s in claude:
+            expected = 1_000_000 if "-5.5" in s else 200_000
+            assert MODEL_CONTEXT_LIMITS[s] == expected, s
 
     def test_registry_values_are_positive_ints(self):
         for slug, ctx in MODEL_CONTEXT_LIMITS.items():

@@ -134,6 +134,34 @@ def model_choices(orchestrator) -> list:
         return []
 
 
+def registry_model_choices() -> list:
+    """Every registered API alias, straight from the model registry.
+
+    The fallback for a chooser whose live ModelManager is unreachable. It used to
+    be a hand-typed list (gpt-5.1, claude-opus-4.5 ...) that drifted from the
+    roster — a newly registered model was unreachable from the legacy GUI. (BC-10)
+    """
+    from models.model_manager import API_MODEL_ALIASES  # lazy import: startup-cost (model_manager pulls torch)
+    return sorted(API_MODEL_ALIASES)
+
+
+def chat_model_selection(orchestrator) -> tuple:
+    """(choices, active) for the chat-page model dropdown.
+
+    Live ModelManager first; if it is unreachable, the registry's aliases and the
+    persisted ``models.active`` (never a hardcoded model name).
+    """
+    try:
+        mm = orchestrator.model_manager
+        choices = model_choices(orchestrator) or registry_model_choices()
+        active = mm.get_active_model_name() or (choices[0] if choices else None)
+        return choices, active
+    except (AttributeError, TypeError, KeyError):
+        choices = registry_model_choices()
+        persisted = (load_settings().get("models", {}) or {}).get("active")
+        return choices, (persisted if persisted in choices else (choices[0] if choices else None))
+
+
 def _availability() -> dict:
     """2026-09-30 (D2c): read-only capability flags for the SPA — live reads."""
     import config.app_config as app_cfg  # lazy import: live-config

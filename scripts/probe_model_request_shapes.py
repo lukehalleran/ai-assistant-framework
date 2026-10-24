@@ -15,8 +15,13 @@ outcome with the model's MODEL_CAPABILITIES row:
                row forced_tool_choice=False  -> the route must REFUSE
                otherwise                     -> the route must ACCEPT
 
+  sampling     temperature + top_p, as Daemon sends them by default (a forced_top_p
+               row's value; DEFAULT_TOP_P otherwise)
+               row sampling_params=False     -> the route must REFUSE
+               otherwise                     -> the route must ACCEPT
+
 and, for a model whose row declares a constraint, the shape Daemon sends instead
-(THE deployed reasoning_request_config / resolve_tool_choice output) must be
+(THE deployed reasoning_request_config / resolve_tool_choice / resolve_sampling output) must be
 accepted. Exit 1 on any disagreement: a row is missing a constraint (the next
 disable_reasoning call will 400) or carries a stale one.
 
@@ -41,8 +46,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from models.model_manager import (  # noqa: E402
     API_MODEL_ALIASES,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
     MODEL_CAPABILITIES,
     reasoning_request_config,
+    resolve_sampling,
     resolve_tool_choice,
 )
 
@@ -113,6 +121,19 @@ def _requests_for(slug: str) -> list:
                          {"messages": NOTE, "max_tokens": 200, "tools": TOOLS,
                           "tool_choice": resolve_tool_choice(slug, FORCED)},
                          True))
+    # Sampling shape: what Daemon sends on every API path. Always planned (every
+    # route gets temperature/top_p from the deployed builders).
+    refuses_sampling = row.get("sampling_params") is False
+    sent_top_p = row.get("forced_top_p", DEFAULT_TOP_P)
+    plan.append(("sampling temperature+top_p",
+                 {"messages": PING, "max_tokens": 16,
+                  "temperature": DEFAULT_TEMPERATURE, "top_p": sent_top_p},
+                 not refuses_sampling))
+    if refuses_sampling:
+        plan.append(("deployed sampling substitute",
+                     {"messages": PING, "max_tokens": 16,
+                      **resolve_sampling(slug, DEFAULT_TEMPERATURE, sent_top_p)},
+                     True))
     return plan
 
 

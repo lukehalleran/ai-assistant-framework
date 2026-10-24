@@ -26,6 +26,8 @@ Module Contract
     (Kimi K3 400s on anything but 0.95). resolve_top_p(model, requested) is applied on every
     API path that sends top_p (generate_with_openai / generate_once / generate_async) and
     overrides caller-supplied values for such models; tests/unit/test_forced_top_p.py.
+    [2026-10-23] Rows may declare "sampling_params": False (route refuses temperature/top_p/top_k);
+    resolve_sampling(slug, temperature, top_p) builds those request keys on ALL four API paths.
   - supports_tools(): checks if a model supports function/tool calling
   - supports_vision(model_name): image/vision input (GPT-4o+, ALL Claude incl. fable-5, Gemini,
     Kimi K3/K2.6; False for DeepSeek, GLM). generate_async() now requests reasoning separation even
@@ -223,11 +225,17 @@ API_MODEL_ALIASES = {
     # Anthropic Claude (all are reasoning + vision + tools + explicit caching)
     # "claude-opus" is the generic alias; repointed 2026-07-22 from the retired
     # anthropic/claude-3-opus (no longer served on OpenRouter) to the current opus.
-    "claude-opus": "anthropic/claude-opus-4.8",
+    # Repointed 2026-10-23 to Opus 5.5 (the current opus on OpenRouter).
+    "claude-opus": "anthropic/claude-opus-5.5",
     "claude-opus-4.5": "anthropic/claude-opus-4.5",
-    "claude-opus-4.6": "anthropic/claude-opus-4.6",
-    "claude-opus-4.7": "anthropic/claude-opus-4.7",
     "claude-opus-4.8": "anthropic/claude-opus-4.8",
+    # 5.5 generation (2026-10-23 roster refresh). Request shapes (reasoning_mandatory /
+    # forced_tool_choice / sampling) are UNKNOWN until scripts/probe_model_request_shapes.py
+    # --run has been run against the route — rows deliberately declare none.
+    "claude-opus-5.5": "anthropic/claude-opus-5.5",
+    "opus-5.5": "anthropic/claude-opus-5.5",
+    "sonnet-5.5": "anthropic/claude-sonnet-5.5",
+    "haiku-5.5": "anthropic/claude-haiku-5.5",
     # Mythos-class (2026-06-09); ~2x Opus 4.8 price. Falls back to Opus 4.8 on
     # high-risk queries.
     "claude-fable-5": "anthropic/claude-fable-5",
@@ -235,37 +243,37 @@ API_MODEL_ALIASES = {
     "claude-fable-5.1": "anthropic/claude-fable-5.1",
     "fable-5.1": "anthropic/claude-fable-5.1",
     "sonnet-4.5": "anthropic/claude-sonnet-4.5",
-    "sonnet-4.6": "anthropic/claude-sonnet-4.6",
     "haiku-4.5": "anthropic/claude-haiku-4.5",
     # OpenAI via OpenRouter
     "gpt-4o-mini": "openai/gpt-4o-mini",
     "gpt-4o": "openai/gpt-4o",
-    "gpt-4.1": "openai/gpt-4.1",
     "gpt-5": "openai/gpt-5",
-    "gpt-5.1": "openai/gpt-5.1",
     "gpt-5.5": "openai/gpt-5.5",
     "gpt-6-astra": "openai/gpt-6-astra",
     "gpt-6": "openai/gpt-6-astra",
+    "gpt-6.1": "openai/gpt-6.1-sol",
+    "gpt-6.1-sol": "openai/gpt-6.1-sol",
+    "gpt-6-luna": "openai/gpt-6-luna",
     # GLM
     "glm-4.6": "z-ai/glm-4.6",
-    "glm-4.7": "z-ai/glm-4.7",
-    "glm-5": "z-ai/glm-5",
-    "glm-5-turbo": "z-ai/glm-5-turbo",
     "glm-5.2": "z-ai/glm-5.2",
     # DeepSeek
     "deepseek-v3.1": "deepseek/deepseek-chat-v3.1",
     "deepseek-v4": "deepseek/deepseek-v4-pro",
     "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
     "deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
+    "deepseek-v4.1-flash-1017": "deepseek/deepseek-v4.1-flash-1017",
     "deepseek-r1": "deepseek/deepseek-r1-0528",
     # Moonshot AI (Kimi) via OpenRouter. Kimi K3: 2.8T-param multimodal reasoning
-    # model, 1.05M ctx ($3/M in, $15/M out). "kimi-3" alias matches common usage.
+    # model, 1.05M ctx ($0.24/M in, $10.80/M out per the OpenRouter catalog,
+    # 2026-10-23). "kimi-3" alias matches common usage.
     "kimi-k3": "moonshotai/kimi-k3",
     "kimi-3": "moonshotai/kimi-k3",
-    "kimi-k2-thinking": "moonshotai/kimi-k2-thinking",
-    "kimi-k2.6": "moonshotai/kimi-k2.6",
+    "kimi-k3.1-pro": "moonshotai/kimi-k3.1-pro",
+    "kimi-3.1": "moonshotai/kimi-k3.1-pro",
     # Google Gemini
     "gemini-3-pro": "google/gemini-3.1-pro-preview",
+    "gemini-4-argon": "google/gemini-4-argon",
 }
 
 # Per-model capability truth, keyed by full slug.
@@ -284,27 +292,28 @@ API_MODEL_ALIASES = {
 #                        off-switch becomes low effort + exclude
 #   forced_tool_choice:  False = a named/"required" tool_choice is refused;
 #                        the selector is sent as "auto"
+#   sampling_params:     False = the route refuses temperature/top_p/top_k;
+#                        resolve_sampling() sends none of them (absent = send as today)
 _CLAUDE = {"reasoning": True, "vision": True, "tools": True, "caching": "explicit"}
 _GPT = {"reasoning": False, "vision": True, "tools": True, "caching": "explicit"}
 # Mythos-class Claude routes: reasoning cannot be switched off (probed 2026-09-21).
 _CLAUDE_MANDATORY = {**_CLAUDE, "reasoning_mandatory": True}
 MODEL_CAPABILITIES = {
     "anthropic/claude-opus-4.5": _CLAUDE,
-    "anthropic/claude-opus-4.6": _CLAUDE,
-    "anthropic/claude-opus-4.7": _CLAUDE,
     "anthropic/claude-opus-4.8": _CLAUDE,
+    # Probed 2026-10-23: reasoning off-switch and a named tool_choice both HTTP 400 (as Fable 5.1).
+    "anthropic/claude-opus-5.5": {**_CLAUDE_MANDATORY, "forced_tool_choice": False},
+    "anthropic/claude-sonnet-5.5": {**_CLAUDE_MANDATORY, "forced_tool_choice": False},
+    "anthropic/claude-haiku-5.5": _CLAUDE,
     "anthropic/claude-fable-5": _CLAUDE_MANDATORY,
     # Fable 5.1 additionally refuses a forced tool_choice ("type tool and any
     # are not supported for this model") although the catalog lists the parameter.
     "anthropic/claude-fable-5.1": {**_CLAUDE_MANDATORY, "forced_tool_choice": False},
     "anthropic/claude-sonnet-4.5": _CLAUDE,
-    "anthropic/claude-sonnet-4.6": _CLAUDE,
     "anthropic/claude-haiku-4.5": _CLAUDE,
     "openai/gpt-4o-mini": _GPT,
     "openai/gpt-4o": _GPT,
-    "openai/gpt-4.1": _GPT,
     "openai/gpt-5": _GPT,
-    "openai/gpt-5.1": _GPT,
     "openai/gpt-5.5": _GPT,
     # GPT-6 Astra: reasoning is mandatory; image input and tools (forced
     # tool_choice accepted). Sampling params are silently ignored, not rejected.
@@ -312,11 +321,16 @@ MODEL_CAPABILITIES = {
     # prefix came back 4,192 cached tokens on the second plain request).
     "openai/gpt-6-astra": {"reasoning": True, "vision": True, "tools": True,
                            "caching": "implicit", "reasoning_mandatory": True},
+    # GPT-6.1 Sol / GPT-6 Luna (catalog 2026-10-23: tools + reasoning + image). Caching
+    # follows the Astra family (server-side, no markers). NO request-shape keys:
+    # whether reasoning is mandatory / tool_choice is forced-able is unknown until
+    # the paid probe has run.
+    # Probed 2026-10-23: reasoning off-switch HTTP 400.
+    "openai/gpt-6.1-sol": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit",
+                           "reasoning_mandatory": True},
+    "openai/gpt-6-luna": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
     # All GLM models on OpenRouter support tools (verified 2026-07-22).
     "z-ai/glm-4.6": {"reasoning": False, "vision": False, "tools": True, "caching": None},
-    "z-ai/glm-4.7": {"reasoning": False, "vision": False, "tools": True, "caching": None},
-    "z-ai/glm-5": {"reasoning": False, "vision": False, "tools": True, "caching": None},
-    "z-ai/glm-5-turbo": {"reasoning": False, "vision": False, "tools": True, "caching": None},
     "z-ai/glm-5.2": {"reasoning": False, "vision": False, "tools": True, "caching": None},
     "deepseek/deepseek-chat-v3.1": {"reasoning": False, "vision": False, "tools": True, "caching": None},
     "deepseek/deepseek-v4-pro": {"reasoning": True, "vision": False, "tools": True, "caching": None},
@@ -325,6 +339,7 @@ MODEL_CAPABILITIES = {
     # switches off normally (enabled=false); low effort + exclude instead spent a
     # 16-token budget on reasoning and returned empty content.
     "deepseek/deepseek-v4.1-flash": {"reasoning": True, "vision": True, "tools": True, "caching": None},
+    "deepseek/deepseek-v4.1-flash-1017": {"reasoning": True, "vision": True, "tools": True, "caching": None},
     # deepseek-r1 tools=True: verified against OpenRouter's supported_parameters
     # (tools + tool_choice present) on 2026-07-22.
     "deepseek/deepseek-r1-0528": {"reasoning": True, "vision": False, "tools": True, "caching": None},
@@ -333,10 +348,15 @@ MODEL_CAPABILITIES = {
     # ("Invalid value for 'top_p': 0.9. This endpoint requires top_p=0.95",
     # observed 2026-07-30) — resolve_top_p() overrides whatever the caller asked for.
     "moonshotai/kimi-k3": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit", "forced_top_p": 0.95},
-    "moonshotai/kimi-k2-thinking": {"reasoning": True, "vision": False, "tools": True, "caching": "implicit"},
-    "moonshotai/kimi-k2.6": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
+    # K3.1 Pro: the catalog lists NO temperature/top_p/top_k. Whether the route
+    # refuses them (sampling_params=False) or ignores them, and whether it keeps
+    # K3's forced top_p, is unknown until the paid probe — no shape keys yet.
+    "moonshotai/kimi-k3.1-pro": {"reasoning": True, "vision": True, "tools": True, "caching": "implicit"},
     # Gemini caching disabled pending OpenRouter support (see supports below).
     "google/gemini-3.1-pro-preview": {"reasoning": False, "vision": True, "tools": True, "caching": None},
+    # Probed 2026-10-23: reasoning off-switch HTTP 400.
+    "google/gemini-4-argon": {"reasoning": True, "vision": True, "tools": True, "caching": None,
+                              "reasoning_mandatory": True},
 }
 
 # Context-window sizes by full slug — ONLY models whose limits are confidently
@@ -352,7 +372,15 @@ MODEL_CONTEXT_LIMITS = {
     **{slug: 200_000 for slug in MODEL_CAPABILITIES if slug.startswith("anthropic/claude")},
     "openai/gpt-4o": 128_000,
     "openai/gpt-4o-mini": 128_000,
+    "anthropic/claude-opus-5.5": 1_000_000,
+    "anthropic/claude-sonnet-5.5": 1_000_000,
+    "anthropic/claude-haiku-5.5": 1_000_000,
     "openai/gpt-6-astra": 1_050_000,
+    "openai/gpt-6.1-sol": 1_050_000,
+    "openai/gpt-6-luna": 1_050_000,
+    "google/gemini-4-argon": 1_048_576,
+    "moonshotai/kimi-k3.1-pro": 1_048_576,
+    "deepseek/deepseek-v4.1-flash-1017": 1_048_576,
     "deepseek/deepseek-v4.1-flash": 1_048_576,
     # Kimi K3: 1.05M ctx (see alias comment above).
     "moonshotai/kimi-k3": 1_050_000,
@@ -409,6 +437,28 @@ def _slug_forced_top_p(full_slug: str):
     of clamping it. Declared per model in MODEL_CAPABILITIES ("forced_top_p").
     """
     return MODEL_CAPABILITIES.get(str(full_slug), {}).get("forced_top_p")
+
+
+def resolve_sampling(full_slug: str, temperature=None, top_p=None) -> dict:
+    """The sampling parameters a route will accept — the ONE place they are built.
+
+    Returns a dict to splat into the request (``**resolve_sampling(...)``): the
+    keys whose value is not None. Callers pass ``top_p`` already resolved by
+    ``resolve_top_p`` (a route's ``forced_top_p`` wins there, not here). A route
+    declaring ``sampling_params: False`` refuses
+    temperature/top_p/top_k outright (HTTP 400), so it gets an EMPTY dict.
+    A slug with no row, or a row without the key, behaves exactly as before.
+    """
+    row = MODEL_CAPABILITIES.get(str(full_slug), {})
+    if row.get("sampling_params") is False:
+        logger.debug(f"[Sampling] {full_slug} refuses sampling params; sending none")
+        return {}
+    out = {}
+    if temperature is not None:
+        out["temperature"] = temperature
+    if top_p is not None:
+        out["top_p"] = top_p
+    return out
 
 
 def _slug_supports_reasoning(full_slug: str) -> bool:
@@ -1107,8 +1157,7 @@ class ModelManager:
                 model=model_name,
                 messages=messages,
                 max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
+                **resolve_sampling(self.api_models.get(model_name, model_name), temperature, top_p),
                 stop=stop_sequences,
                 # Ask OpenRouter to include usage accounting (cost + cache stats)
                 # in the response, so prompt-cache hits are observable.
@@ -1329,8 +1378,11 @@ class ModelManager:
                     model=self.api_models[target_model],
                     messages=messages,
                     max_tokens=(max_tokens if max_tokens is not None else self.default_max_tokens),
-                    temperature=temperature if temperature is not None else self.default_temperature,
-                    top_p=self.resolve_top_p(target_model, top_p),
+                    **resolve_sampling(
+                        self.api_models[target_model],
+                        temperature if temperature is not None else self.default_temperature,
+                        self.resolve_top_p(target_model, top_p),
+                    ),
                     stop=stop_sequences,
                     stream=False,
                 )
@@ -1511,9 +1563,12 @@ class ModelManager:
                     "model": self.api_models[target_model],
                     "messages": messages,
                     "max_tokens": max_tokens,
-                    "temperature": temperature,
                     "stream": False,
                 }
+                # temperature only (this path never sent top_p); a route that
+                # refuses sampling params gets none.
+                request_params.update(resolve_sampling(
+                    self.api_models[target_model], temperature=temperature))
 
                 # Add tools if provided
                 if tools:
@@ -1713,8 +1768,11 @@ class ModelManager:
                     model=self.api_models[target_model],
                     messages=messages,
                     max_tokens=kwargs.get('max_tokens', self.default_max_tokens),
-                    temperature=kwargs.get('temperature', self.default_temperature),
-                    top_p=self.resolve_top_p(target_model, kwargs.get('top_p')),
+                    **resolve_sampling(
+                        self.api_models[target_model],
+                        kwargs.get('temperature', self.default_temperature),
+                        self.resolve_top_p(target_model, kwargs.get('top_p')),
+                    ),
                     stop=stop_sequences,
                     stream=True,
                     # Ask the provider to emit a trailing usage chunk so the
