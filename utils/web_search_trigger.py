@@ -852,6 +852,103 @@ def _personal_health_terms() -> tuple:
     return tuple(str(token).strip() for token in tokens if str(token).strip())
 
 
+# 2026-10-24 (class: BC-01 keyword scored without its clause's subject): a
+# personal check-in ("nothing urgent on my end right now ... I'll get back to
+# the homework later today") scored two STRONG recency keywords (conf 0.80),
+# skipped the classifier and paid for four Tavily sub-queries. A recency word
+# anchors WORLD recency only when its clause is not first-person narration.
+_CLAUSE_SPLIT_RE = re.compile(
+    r"[.!?;:,]+|\s+(?:and|but|once|so|because|while|then)\s+", re.I)
+# Subject/possessive forms only: object "me" ("show me new frameworks",
+# "tell me about modern ...") is a request addressed to the assistant.
+_OWN_PRONOUN_RE = re.compile(
+    r"\b(?:i|i'm|im|i've|ive|i'd|id|i'll|ill|my|mine|myself)\b")
+_ADDRESSEE_RE = re.compile(r"\b(?:you|your|you're|yours|yourself)\b")
+
+
+def _flat(text: str) -> str:
+    """Lowercase with hard-wrapped/indented whitespace collapsed to single
+    spaces, so a wrapped paste clause-splits exactly like its clean form."""
+    return re.sub(r"\s+", " ", _normalize(text))
+
+
+def _own_pronoun_present(clause: str) -> bool:
+    """First-person pronoun in what remains after epistemic markers are
+    stripped (the gate's own vent-shape doctrine; lazy import: cycle)."""
+    try:
+        # lazy import: cycle (gate imports web_search_trigger at call time)
+        from core.agentic.gate import strip_epistemic_markers
+        stripped = strip_epistemic_markers(clause)
+    except Exception:  # degrades: epistemic markers not stripped, "I think X today" reads as narration
+        stripped = clause.lower()
+    return bool(_OWN_PRONOUN_RE.search(stripped))
+
+
+# An embedded wh-/whether-question anywhere in the clause ("I'm wondering what's
+# happening in Gaza right now") is an information request about the world even
+# though the clause opens with a first-person frame.
+_EMBEDDED_WH_RE = re.compile(
+    r"\b(?:what|what's|whats|who|whom|whose|which|when|where|why|how|whether)\b")
+
+
+def _clause_is_own_narration(clause: str) -> bool:
+    """A clause narrating the user's own state/plans: first-person, and not an
+    information request (no interrogative opener, no lookup cue)."""
+    c = clause.strip()
+    if (not c or _INTERROGATIVE_OPENER_RE.match(c) or _LOOKUP_CUE_RE.search(c)
+            or _EMBEDDED_WH_RE.search(c)):
+        return False
+    return _own_pronoun_present(c)
+
+
+def _world_recency_matches(text: str, keywords: Set[str]) -> Tuple[int, List[str]]:
+    """_count_keyword_matches restricted to keywords found in a clause that is
+    NOT first-person narration ("what's the weather today" counts; "I'll do it
+    later today" and "nothing urgent on my end right now" do not)."""
+    clauses = [c for c in _CLAUSE_SPLIT_RE.split(_flat(text)) if c and c.strip()]
+    matched: List[str] = []
+    for clause in clauses:
+        if _clause_is_own_narration(clause):
+            continue
+        for kw in _count_keyword_matches(clause, keywords)[1]:
+            if kw not in matched:
+                matched.append(kw)
+    return len(matched), matched
+
+
+_NARRATIVE_MIN_WORDS = 12
+
+
+def is_first_person_narrative(query: str) -> bool:
+    """True for a multi-clause message that is mostly the user narrating their
+    own state/plans with no information request about the outside world.
+
+    Predicate (all must hold): at least _NARRATIVE_MIN_WORDS words (short
+    explicit lookups keep the heuristic fast path); no lookup cue anywhere;
+    at least TWO first-person narration clauses (continuation clauses without
+    a pronoun -- "seeing how everything feels" -- belong to the narrator, so a
+    word-share test would undercount them); and no
+    clause is an interrogative about an external subject (an interrogative
+    containing a first-/second-person pronoun is addressed to the assistant or
+    about the user, e.g. "how are things looking on your side?").
+    """
+    text = _flat(query)
+    words = re.findall(r"[\w']+", text)
+    if len(words) < _NARRATIVE_MIN_WORDS or _LOOKUP_CUE_RE.search(text):
+        return False
+    narration_clauses = 0
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        c = (clause or "").strip()
+        if not c:
+            continue
+        if _clause_is_own_narration(c):
+            narration_clauses += 1
+        elif _INTERROGATIVE_OPENER_RE.match(c) and not (
+                _OWN_PRONOUN_RE.search(c) or _ADDRESSEE_RE.search(c)):
+            return False
+    return narration_clauses >= 2
+
+
 def should_search_heuristic(query: str) -> WebSearchDecision:
     """
     Determine if query needs web search using heuristics only.
@@ -972,14 +1069,14 @@ def should_search_heuristic(query: str) -> WebSearchDecision:
         reasons.append("explicit search request")
 
     # Strong recency keywords
-    strong_count, strong_matches = _count_keyword_matches(query, RECENCY_KEYWORDS_STRONG)
+    strong_count, strong_matches = _world_recency_matches(query, RECENCY_KEYWORDS_STRONG)
     if strong_count > 0:
         confidence += min(strong_count * 0.4, 0.8)
         all_matched_keywords.extend(strong_matches)
         reasons.append(f"{strong_count} strong recency keyword(s)")
 
     # Moderate recency keywords
-    mod_count, mod_matches = _count_keyword_matches(query, RECENCY_KEYWORDS_MODERATE)
+    mod_count, mod_matches = _world_recency_matches(query, RECENCY_KEYWORDS_MODERATE)
     if mod_count > 0:
         confidence += min(mod_count * 0.2, 0.4)
         all_matched_keywords.extend(mod_matches)
@@ -2374,8 +2471,13 @@ async def _analyze_for_web_search_llm(
             return heuristic_result
         else:
             logger.debug("[WebSearchTrigger] conf=0.0 referential follow-up with context — consulting LLM")
+    # 2026-10-24 (class: BC-05): keyword confidence is decisive only for an
+    # information request. A first-person narrative message (is_first_person_
+    # narrative) consults the classifier even at high keyword confidence.
     if (heuristic_result.confidence >= 0.7 and heuristic_result.should_search
-            and not pattern_candidate):
+            and not pattern_candidate
+            and (heuristic_result.matched_patterns
+                 or not is_first_person_narrative(query))):
         logger.debug(f"[WebSearchTrigger] Skipping LLM: heuristic confident search (conf={heuristic_result.confidence:.2f})")
         _llm_trigger_cache[cache_key] = (now, heuristic_result)
         return heuristic_result
