@@ -648,6 +648,41 @@ def _run_shutdown_tasks(orchestrator):
         _end_shutdown_run()
 
 
+async def _sync_git_index(orchestrator):
+    """Shutdown step: bring the procedural git index up to date IN-PROCESS
+    against the daemon's OWN chroma store (a second store/embedder would be
+    BC-81). Non-fatal; a timeout leaves the anchor unchanged so the next
+    shutdown resumes (class: BC-58 — the manual-only sync was a silent no-op
+    for 7 weeks after the 2026-09-03 history rewrite)."""
+    import threading
+    cancel = threading.Event()
+    try:
+        if not (app_config.GIT_MEMORY_ENABLED and app_config.GIT_MEMORY_SYNC_ON_SHUTDOWN):
+            return
+        store = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
+        if store is None:
+            logger.info("[Shutdown] Git index sync skipped: no live chroma store")
+            return
+        from knowledge.git_memory_loader import GitMemoryLoader  # lazy import: startup-cost
+        loader = GitMemoryLoader(chroma_store=store)
+        print(f"[Shutdown] Git index sync (≤{app_config.GIT_MEMORY_SYNC_TIMEOUT_S:.0f}s)…")
+        _n = await asyncio.wait_for(
+            asyncio.to_thread(
+                loader.incremental_update,
+                app_config.GIT_MEMORY_INCLUDE_DIFFS,
+                None,
+                cancel,
+            ),
+            timeout=app_config.GIT_MEMORY_SYNC_TIMEOUT_S,
+        )
+        logger.info(f"[Shutdown] Git index sync: {_n} commits indexed")
+    except asyncio.TimeoutError:
+        cancel.set()
+        logger.warning("[Shutdown] Git index sync timed out — resumes next shutdown")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Git index sync failed (non-fatal): {e}")
+
+
 async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
     """The session-end shutdown sequence (pending storage → reflection/facts →
     daily note → synthesis dreaming). Shared by the legacy sync path
@@ -792,6 +827,8 @@ async def _do_shutdown_async(orchestrator, session_convos, session_summaries):
         logger.warning("[Shutdown] Curation scan timed out — queue resumes next shutdown")
     except Exception as e:
         logger.warning(f"[Shutdown] Curation scan failed (non-fatal): {e}")
+
+    await _sync_git_index(orchestrator)
 
     # Backup — LAST, after every store write above has landed. Local file
     # copies (a few MB of JSON always; the ~600MB chroma tree only when the
@@ -1572,7 +1609,11 @@ if __name__ == "__main__":
             print(f"{'='*60}")
 
             loader = GitMemoryLoader()
-            count = loader.incremental_update()
+            try:
+                count = loader.incremental_update()
+            except Exception as e:
+                print(f"Git update failed: {e}")
+                sys.exit(1)
 
             if count:
                 print(f"Added {count} new commits")
@@ -1596,7 +1637,8 @@ if __name__ == "__main__":
             print(f"PROCEDURAL collection: {count} memories")
 
             try:
-                with open("data/git_memory_last_hash.txt") as f:
+                from knowledge.git_memory_loader import last_hash_path
+                with open(last_hash_path()) as f:
                     print(f"Last synced commit: {f.read().strip()[:8]}")
             except FileNotFoundError:
                 print("No sync history (run git-backfill first)")

@@ -24,6 +24,9 @@ e2b-code-interpreter>=0.0.11
 
 # NLP and text processing
 spacy==3.8.7
+# preshed 3.0.14 (2026-10-24) breaks spaCy 3.8.7's tokenizer load:
+# OverflowError in Tokenizer._flush_specials, so en_core_web_sm never loads.
+preshed>=3.0.2,<3.0.14
 scikit-learn==1.6.1
 
 # Visual memory (CLIP cross-modal image search)

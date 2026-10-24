@@ -1056,7 +1056,7 @@ class ModelManager:
             }
         ]
 
-    def _log_cache_usage(self, usage, *, model_name=None, where=""):
+    def _log_cache_usage(self, usage, *, model_name=None, where="", duration_s=None):
         """Log prompt-cache + token usage from an API response's ``usage`` object.
 
         Best-effort and fully exception-safe — never raises into the generation
@@ -1070,6 +1070,12 @@ class ModelManager:
           - ``HIT``   — tokens were served from cache (cheap read)
           - ``WRITE`` — tokens were written to cache this turn (~1.25x premium)
           - ``MISS``  — no cache activity (neither read nor write)
+
+        The line's original fields keep their order; ``reasoning_tokens`` (the
+        provider's ``completion_tokens_details.reasoning_tokens``, ``None`` when
+        not reported) and, when the caller timed the call, ``duration_s`` are
+        APPENDED (2026-10-24, lane AGT: a 25 s / 321-token synthesis could not be
+        explained because reasoning tokens were never logged).
         """
         if usage is None:
             return
@@ -1098,6 +1104,10 @@ class ModelManager:
             cache_read = d.get("cache_read_input_tokens")
             cache_creation = d.get("cache_creation_input_tokens")
             cache_discount = d.get("cache_discount")
+            ctd = d.get("completion_tokens_details") or {}
+            if not isinstance(ctd, dict):
+                ctd = getattr(ctd, "__dict__", {}) or {}
+            reasoning_tokens = ctd.get("reasoning_tokens")
 
             served = next((v for v in (cache_read, cached_read) if v), 0) or 0
             written = cache_creation or 0
@@ -1105,9 +1115,10 @@ class ModelManager:
 
             logger.info(
                 "[PromptCache] %s model=%s where=%s prompt=%s completion=%s "
-                "cache_read=%s cache_write=%s cache_discount=%s",
+                "cache_read=%s cache_write=%s cache_discount=%s reasoning_tokens=%s%s",
                 status, model_name or "?", where or "?", prompt, completion,
-                served, written, cache_discount,
+                served, written, cache_discount, reasoning_tokens,
+                f" duration_s={duration_s:.2f}" if isinstance(duration_s, (int, float)) else "",
             )
         except Exception as e:  # pragma: no cover - diagnostic only
             # degrades: prompt cache stats line lost, diagnostics only
@@ -1597,7 +1608,9 @@ class ModelManager:
                         self.api_models[target_model], disable_reasoning=True
                     )
 
+                _call_started = time.perf_counter()
                 response = await self.async_client.chat.completions.create(**request_params)
+                _call_duration = time.perf_counter() - _call_started
 
                 # Usage line for tool-mode calls (2026-10-17, lane AGT): the
                 # agentic decision/tool rounds were the only LLM calls with no
@@ -1607,6 +1620,7 @@ class ModelManager:
                         getattr(response, "usage", None),
                         model_name=target_model,
                         where="agentic_tools",
+                        duration_s=_call_duration,
                     )
                 except Exception:  # degrades: agentic tool-round usage line not logged
                     pass

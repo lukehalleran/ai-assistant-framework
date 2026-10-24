@@ -1258,6 +1258,13 @@ class PromptFormatter:
         else:
             logger.debug("PROMPT BUILD: FINAL COUNT - No memories to display in [RELEVANT MEMORIES] section")
 
+        # 2026-10-24 (BC-46): sections the token budget emptied are named, so the
+        # model cannot read their absence as "nothing happened". One metered line
+        # (PRIORITY_ORDER row budget_omitted_note), built by TokenManager.
+        _omitted_note = context.get("budget_omitted_note")
+        if isinstance(_omitted_note, str) and _omitted_note.strip():
+            sections.append(_omitted_note.strip())
+
         # Summaries and reflections (4 sections, shared format via _format_summary_section)
         recent_summaries = context.get("recent_summaries", []) or []
         logger.debug(f"PROMPT ASSEMBLY: Got {len(recent_summaries)} recent summaries")
