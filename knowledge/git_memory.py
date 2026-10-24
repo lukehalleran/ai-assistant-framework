@@ -386,6 +386,48 @@ class GitMemoryExtractor:
 
         return tags
 
+    _HASH_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+    def is_reachable(self, commit_hash: str) -> bool:
+        """True when ``commit_hash`` names a commit that exists in this repo.
+
+        A sync anchor can outlive its commit (history rewrite, 2026-09-03
+        privacy cleanup): ``rev-list <hash>..HEAD`` then fails and the caller
+        used to read that as "nothing new" for weeks. Callers ask this first.
+        """
+        if not commit_hash or not self._HASH_RE.match(commit_hash.strip()):
+            return False
+        try:
+            result = subprocess.run(
+                ["git", "cat-file", "-e", f"{commit_hash.strip()}^{{commit}}"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
+            logger.error(f"Git command failed: {e}")
+            return False
+        return result.returncode == 0
+
+    def list_head_hashes(self) -> List[str]:
+        """Full hashes of every commit reachable from HEAD, newest first."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "HEAD"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
+            logger.error(f"Git command failed: {e}")
+            return []
+        if result.returncode != 0:
+            logger.error(f"git rev-list HEAD failed: {result.stderr}")
+            return []
+        return [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+
     def get_recent_since_hash(self, last_hash: str) -> List[Dict]:
         """Get commits since a specific hash (for incremental updates)."""
         cmd = [

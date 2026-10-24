@@ -412,6 +412,16 @@ log_maintenance:
   audit_max_mb: 20
   debug_compress_age_days: 7
   debug_keep_days: 90
+git_memory:
+  enabled: true
+  include_diffs: false
+  default_limit: 200
+  # Shutdown step: index commits on HEAD missing from the procedural collection
+  # (recovers from a rewritten-history anchor). Bounded; a timeout leaves the
+  # anchor unchanged so the next shutdown resumes.
+  sync_on_shutdown: true
+  sync_timeout_s: 30
+  max_commits_per_sync: 300
 curation:
   enabled: true
   # Global disposition ceiling: no curator may exceed this regardless of its

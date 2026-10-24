@@ -464,6 +464,9 @@ GIT_MEMORY_CFG = config.get("git_memory", {})
 GIT_MEMORY_ENABLED: bool = bool(GIT_MEMORY_CFG.get("enabled", True))
 GIT_MEMORY_INCLUDE_DIFFS: bool = bool(GIT_MEMORY_CFG.get("include_diffs", False))
 GIT_MEMORY_DEFAULT_LIMIT: int = int(GIT_MEMORY_CFG.get("default_limit", 200))
+GIT_MEMORY_SYNC_ON_SHUTDOWN: bool = bool(GIT_MEMORY_CFG.get("sync_on_shutdown", True))
+GIT_MEMORY_SYNC_TIMEOUT_S: float = float(GIT_MEMORY_CFG.get("sync_timeout_s", 30))
+GIT_MEMORY_MAX_COMMITS_PER_SYNC: int = int(GIT_MEMORY_CFG.get("max_commits_per_sync", 300))
 
 # Environment variable overrides for Git Memory
 GIT_MEMORY_ENABLED = bool(int(os.getenv("GIT_MEMORY_ENABLED", "1" if GIT_MEMORY_ENABLED else "0")))

@@ -1031,6 +1031,10 @@ class GitMemorySection(BaseModel):
     enabled: bool = True
     include_diffs: bool = False
     default_limit: int = Field(default=200, ge=1)
+    # Shutdown sync of the procedural git index (2026-10-24).
+    sync_on_shutdown: bool = True
+    sync_timeout_s: float = Field(default=30.0, gt=0)
+    max_commits_per_sync: int = Field(default=300, ge=1)
 
 
 class ProceduralSkillsSection(BaseModel):
