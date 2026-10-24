@@ -31,6 +31,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from core.actions.types import ActionType
+from utils.query_checker import ACK_STARTERS
+from utils.test_envelope import inner_text as _probe_inner_text
 import utils.temporal_resolver as temporal_resolver
 import utils.timezone_resolver as timezone_resolver
 from utils.trigger_match import is_negated as _is_trigger_negated
@@ -1312,7 +1314,9 @@ def extract_calendar_title(query: str) -> str:
     return " ".join(out).strip()
 
 
-def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
+def narrated_unbacked_action_type(
+    response_text: str, *, prior_user_text: Optional[str] = None,
+) -> Optional[ActionType]:
     """The EXTERNAL ActionType a prior reply NARRATED without backing (it
     carried the no-card notice or an unbacked-claim correction, or a
     completion claim of an external kind) — or None.
@@ -1328,6 +1332,7 @@ def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
     try:
         from core.action_claim_guard import (  # lazy import: cycle
             NO_CARD_NOTICE, ActionKind, detect_completion_claims, detect_kind,
+            is_first_person_claim,
         )
     except Exception:  # degrades: claim guard import failure disables no-card action inference
         return None
@@ -1335,11 +1340,24 @@ def narrated_unbacked_action_type(response_text: str) -> Optional[ActionType]:
     claims = [c for c in detect_completion_claims(text)
               if c.kind in (ActionKind.CALENDAR, ActionKind.EMAIL,
                             ActionKind.MESSAGE, ActionKind.GITHUB)]
+    if prior_user_text is not None:
+        # 2026-10-23 (class BC-04): with the prior user turn known, a claim
+        # counts only when it is the ASSISTANT's own (first-person) or the
+        # user asked for that kind of action — mirrors the reply-time rule in
+        # gui/handlers._apply_action_guard. A passive recap of the USER's
+        # action ("notes sent to Rowan with the meeting email") is neither.
+        _asked = action_kind_of(detect_action_intent(_strip_probe(prior_user_text)))
+        claims = [c for c in claims
+                  if is_first_person_claim(c.matched_text or "") or c.kind == _asked]
     if not notice and not claims:
         return None
     kind = claims[-1].kind if claims else detect_kind(text)
     clause = claims[-1].matched_text if claims else text
     return _kind_to_action_type(kind, clause)
+
+
+def _strip_probe(text: str) -> str:
+    return _probe_inner_text(text or "") or (text or "")
 
 
 def _kind_to_action_type(kind, clause: str) -> Optional[ActionType]:
@@ -1547,6 +1565,11 @@ def is_offer_affirmation(user_text: str) -> bool:
     if not clauses:
         return False
     if _clause_affirms(clauses[0]):
+        # 2026-10-23 (class BC-55): a LONG message whose head is only an ack
+        # filler ("Alright." + a status update) accepts nothing.
+        if (len(text.split()) > OFFER_AFFIRMATION_MAX_WORDS
+                and _head_is_bare_ack(clauses[0])):
+            return False
         return True
     # The go-ahead often CLOSES a short message ("ok that link is right, go
     # ahead and create it"). Judge the tail clause too, but only for a
@@ -1557,6 +1580,18 @@ def is_offer_affirmation(user_text: str) -> bool:
 
 
 OFFER_AFFIRMATION_MAX_WORDS = 40
+
+
+def _head_is_bare_ack(clause: str) -> bool:
+    """True when the head clause is ONLY ack filler ("Alright.", "yeah",
+    "ok sure"): it reduces to nothing after the shared head-filler strip, or
+    every word is in the shared ACK_STARTERS category. "please do" /
+    "yes please send it" carry an acceptance or directive and are not bare."""
+    norm = re.sub(r"\s+", " ", clause.lower()).strip(" .!")
+    core = _HEAD_FILLER_RE.sub("", norm).strip(" .!")
+    if not core:
+        return True
+    return all(w in ACK_STARTERS for w in re.findall(r"[a-z']+", core))
 
 
 def _clause_affirms(clause: str) -> bool:
