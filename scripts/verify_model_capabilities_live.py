@@ -31,7 +31,7 @@ from pathlib import Path
 # (in a clone the login shell's path resolves the live repo's modules — BC-83).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from models.model_manager import API_MODEL_ALIASES, MODEL_CAPABILITIES  # noqa: E402
+from models.model_manager import API_MODEL_ALIASES, MODEL_CAPABILITIES, MODEL_CONTEXT_LIMITS  # noqa: E402
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -93,6 +93,15 @@ def main() -> int:
         for dim in ("tools", "vision"):
             if declared.get(dim) != actual[dim]:
                 hard_mismatches.append((slug, dim, declared.get(dim), actual[dim]))
+        # Advisories (not hard facts): a declared context length that disagrees with the
+        # catalog, and sampling parameters the catalog does not list for a route whose row
+        # does not declare sampling_params=False (only a request shows whether it refuses).
+        ctx = model.get("context_length")
+        if ctx and slug in MODEL_CONTEXT_LIMITS and MODEL_CONTEXT_LIMITS[slug] != ctx:
+            advisories.append((slug, "context", MODEL_CONTEXT_LIMITS[slug], ctx))
+        sp = set(model.get("supported_parameters", []) or [])
+        if not ({"temperature", "top_p"} & sp) and declared.get("sampling_params") is not False:
+            advisories.append((slug, "sampling_params", "unset", "catalog lists no temperature/top_p; run the probe"))
         if declared.get("reasoning") != actual["reasoning"]:
             advisories.append((slug, "reasoning", declared.get("reasoning"), actual["reasoning"]))
 
@@ -100,8 +109,10 @@ def main() -> int:
     if missing:
         print(f"\n⚠️  {len(missing)} registered model(s) not found on OpenRouter: {missing}")
     for slug, dim, d, a in advisories:
-        print(f"  advisory: {slug} {dim} declared={d} but OpenRouter={a} "
-              f"(ok if intentional — reasoning-separation policy)")
+        note = {"reasoning": "ok if intentional — reasoning-separation policy",
+                "context": "update MODEL_CONTEXT_LIMITS if the catalog is right",
+                "sampling_params": "only scripts/probe_model_request_shapes.py --run can say"}[dim]
+        print(f"  advisory: {slug} {dim} declared={d} but OpenRouter={a} ({note})")
     if hard_mismatches:
         print(f"\n❌ {len(hard_mismatches)} HARD mismatch(es) — declared caps disagree with OpenRouter:")
         for slug, dim, d, a in hard_mismatches:
