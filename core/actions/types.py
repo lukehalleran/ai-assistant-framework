@@ -79,9 +79,12 @@ class ActionProposal(BaseModel):
     reversible: bool = True
     proposed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc) + timedelta(seconds=300))
-    status: Literal["pending", "approved", "rejected", "executed", "failed"] = "pending"
+    status: Literal["pending", "approved", "rejected", "executed", "failed", "interrupted"] = "pending"
     result: Optional[str] = None
     error: Optional[str] = None
+    # When approval happened (UTC); lets a proposal stuck in "approved" with no
+    # live execution be recovered to "interrupted" (2026-10-23, audit A07).
+    approved_at: Optional[datetime] = None
 
 
 class ActionResult(BaseModel):
@@ -99,7 +102,7 @@ class ActionOutcome(BaseModel):
     consumed by both the Gradio button wrappers and the FastAPI action routes.
     `message` is the assistant-styled chat line to append to the conversation.
     """
-    status: Literal["executed", "failed", "rejected", "not_found"]
+    status: Literal["executed", "failed", "rejected", "not_found", "interrupted"]
     message: str
     action_type: Optional[str] = None
     summary: Optional[str] = None
@@ -114,6 +117,16 @@ class ActionOutcome(BaseModel):
 # ---------------------------------------------------------------------------
 # Pending Actions Store
 # ---------------------------------------------------------------------------
+
+# An approved proposal with no outcome after this long has no live execution
+# (a single executor call is one API round-trip, seconds; 15 min is generous)
+# and is reconciled to "interrupted" rather than holding a capacity slot forever.
+APPROVED_STUCK_SECONDS = 900
+
+INTERRUPTED_REASON = (
+    "execution was interrupted before an outcome was recorded; "
+    "whether it happened is unknown"
+)
 
 class PendingActionsStore:
     """JSON-backed store of pending action proposals, keyed by action_id.
@@ -154,15 +167,29 @@ class PendingActionsStore:
             logger.warning(f"[Actions] Could not load pending actions; cold start: {exc}")
             return
         restored = 0
+        reconciled = 0
         for data in payload.get("proposals", []) if isinstance(payload, dict) else []:
             try:
                 proposal = ActionProposal.model_validate(data)
-                if proposal.status == "pending":
+                if proposal.status == "approved":
+                    # No live execution can survive a restart: the outcome is
+                    # unknown. Keep the record (visibility/audit), never retry.
+                    proposal.status = "interrupted"
+                    proposal.error = INTERRUPTED_REASON
+                    reconciled += 1
+                    self._store[proposal.action_id] = proposal
+                elif proposal.status in ("pending", "interrupted"):
                     self._store[proposal.action_id] = proposal
                     restored += 1
             except Exception as exc:
                 logger.warning(f"[Actions] Ignoring malformed persisted proposal: {exc}")
         self._prune_expired(restart=True)
+        if reconciled:
+            logger.warning(
+                f"[Actions] {reconciled} approved proposal(s) found at load; "
+                "marked interrupted (outcome unknown, not retried)"
+            )
+            self._save()
         if restored:
             logger.info(f"[Actions] Restored {restored} pending proposal(s) from disk")
 
@@ -202,6 +229,7 @@ class PendingActionsStore:
         proposal = self.get(action_id)
         if proposal and proposal.status == "pending":
             proposal.status = "approved"
+            proposal.approved_at = datetime.now(timezone.utc)
             self._save()
             return proposal
         return None
@@ -222,6 +250,24 @@ class PendingActionsStore:
             proposal.status = "executed"
             proposal.result = result
             self._save()
+
+    def mark_interrupted(self, action_id: str, reason: str = INTERRUPTED_REASON) -> None:
+        """Mark a proposal whose execution was cancelled mid-flight.
+
+        Terminal and NEVER auto-retried: an external side effect may already
+        have happened. Frees the capacity slot (only pending/approved count).
+        """
+        proposal = self._store.get(action_id)
+        if proposal and proposal.status in ("approved", "pending"):
+            proposal.status = "interrupted"
+            proposal.error = reason
+            self._save()
+
+    def peek_status(self, action_id: str) -> Optional[str]:
+        """Status of a stored proposal regardless of state (None if unknown)."""
+        self._prune_expired()
+        proposal = self._store.get(action_id)
+        return proposal.status if proposal else None
 
     def mark_failed(self, action_id: str, error: str) -> None:
         """Mark a proposal as failed."""
@@ -294,5 +340,15 @@ class PendingActionsStore:
                 logger.warning(f"[Actions] Proposal {aid} expired during restart")
             else:
                 logger.debug(f"[Actions] Proposal {aid} expired")
-        if expired:
+        stuck = [
+            aid for aid, p in self._store.items()
+            if p.status == "approved"
+            and (p.approved_at is None
+                 or (now - p.approved_at).total_seconds() > APPROVED_STUCK_SECONDS)
+        ]
+        for aid in stuck:
+            self._store[aid].status = "interrupted"
+            self._store[aid].error = INTERRUPTED_REASON
+            logger.warning(f"[Actions] Proposal {aid} stuck in approved; marked interrupted")
+        if expired or stuck:
             self._save()

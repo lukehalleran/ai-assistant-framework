@@ -44,6 +44,12 @@ def _strip_xml_artifacts(text: str) -> str:
     return text
 
 
+def missing_attachments_message(missing: list) -> str:
+    names = [m.get("name") or "an unknown attachment (id not recognised)" for m in missing]
+    return ("These attachments are no longer available \u2014 please re-attach: "
+            + ", ".join(names))
+
+
 async def submit_stream(req: ChatRequest, state: AppState) -> AsyncGenerator[ChatEvent, None]:
     """Run one chat turn through handle_submit, yielding typed ChatEvents.
 
@@ -54,7 +60,20 @@ async def submit_stream(req: ChatRequest, state: AppState) -> AsyncGenerator[Cha
 
     session = state.session
     orchestrator = state.orchestrator
-    files = state.resolve_uploads(req.file_ids)
+    files, missing = state.resolve_uploads(req.file_ids)
+
+    # A08 (2026-10-23): a requested attachment that cannot be served REFUSES the
+    # whole turn (partial batch included — the user asked about all of them).
+    # Nothing reaches handle_submit and the user message is not appended to
+    # history, so a retry after re-attaching is a clean turn. The SPA renders
+    # the existing `error` event.
+    if missing:
+        yield ChatEvent(event="error", data={
+            "message": missing_attachments_message(missing),
+            "code": "attachments_missing",
+            "missing": missing,
+        })
+        return
 
     # Same per-turn citation-mode toggle the Gradio submit path sets
     orchestrator.enable_citations = req.enable_citations

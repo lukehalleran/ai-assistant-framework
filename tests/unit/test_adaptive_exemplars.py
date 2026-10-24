@@ -70,10 +70,14 @@ class TestStore:
         s = AdaptiveExemplarStore(str(p))
         assert s.get_learned("tone", "concern") == []
 
-    def test_long_text_clipped(self, tmp_path):
+    def test_long_text_without_span_declined_not_head_clipped(self, tmp_path):
+        # 2026-10-23 (A06): an over-long text with no supporting span is
+        # declined; with a span the stored window is <= 300 chars.
         s = AdaptiveExemplarStore(str(tmp_path / "ex.json"))
-        s.record("tone", "medium", "x" * 1000, "test")
-        assert len(s.get_learned("tone", "medium")[0]) == 300
+        assert not s.record("tone", "medium", "x " * 500, "test")
+        assert s.get_learned("tone", "medium") == []
+        assert s.record("tone", "medium", "x " * 500, "test", support_span=(400, 405))
+        assert len(s.get_learned("tone", "medium")[0]) <= 300
 
 
 class TestToneLearningLoop:

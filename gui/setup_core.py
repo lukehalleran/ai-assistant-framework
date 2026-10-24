@@ -15,6 +15,7 @@ Rules:
 
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -68,11 +69,23 @@ def _read_env_lines(path: Path) -> list:
         return []
 
 
+# ONE lock for the whole read -> modify -> atomic-publish transaction on the
+# profile .env (2026-10-23, A02, class: BC-38). atomic_write_text makes the
+# PUBLISH atomic, not the read/modify/write: two overlapping saves (the API runs
+# them in worker threads, one per optional-key field) both read the old file and
+# the last publish dropped the other's key. write_env_vars is the only writer.
+_ENV_WRITE_LOCK = threading.RLock()
+
+_ENV_ASSIGN_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+
 def write_env_vars(mapping: dict) -> bool:
     """Atomically write/update KEY=VALUE pairs in the profile .env (0600).
 
     Other lines and comments are preserved; an existing key is updated in
-    place; new keys append. Also sets os.environ. Returns False (nothing
+    place and any later duplicate assignment of it is dropped (the effective
+    value changes, not just the first line); new keys append. The whole
+    transaction holds one lock. Also sets os.environ. Returns False (nothing
     written) on an invalid name/value or an I/O failure. Never logs values.
     """
     try:
@@ -81,18 +94,30 @@ def write_env_vars(mapping: dict) -> bool:
                 raise ValueError(f"invalid env var name {name!r}")
             if _BAD_VALUE_RE.search(str(value)):
                 raise ValueError(f"invalid characters in value for {name}")
-        path = env_path()
-        lines = _read_env_lines(path)
-        pending = {str(k): str(v) for k, v in mapping.items()}
-        for i, line in enumerate(lines):
-            m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-            if m and m.group(1) in pending:
-                lines[i] = f"{m.group(1)}={pending.pop(m.group(1))}"
-        for name, value in pending.items():
-            lines.append(f"{name}={value}")
-        atomic_write_text(str(path), "\n".join(lines) + "\n", mode=0o600)
-        for name, value in mapping.items():
-            os.environ[str(name)] = str(value)
+        with _ENV_WRITE_LOCK:
+            path = env_path()
+            lines = _read_env_lines(path)
+            pending = {str(k): str(v) for k, v in mapping.items()}
+            written: set = set()
+            out: list = []
+            for line in lines:
+                m = _ENV_ASSIGN_RE.match(line)
+                name = m.group(1) if m else None
+                if name is not None and name in pending:
+                    if name in written:
+                        # Canonicalize (A03): dotenv takes the LAST assignment, so a
+                        # stale later duplicate of an updated key would win at restart.
+                        continue
+                    out.append(f"{name}={pending[name]}")
+                    written.add(name)
+                else:
+                    out.append(line)
+            for name, value in pending.items():
+                if name not in written:
+                    out.append(f"{name}={value}")
+            atomic_write_text(str(path), "\n".join(out) + "\n", mode=0o600)
+            for name, value in mapping.items():
+                os.environ[str(name)] = str(value)
         logger.info("[Setup] wrote %d env var(s) to the profile .env", len(mapping))
         return True
     except Exception as e:
@@ -219,8 +244,69 @@ def _reload_model_manager(orchestrator) -> bool:
         return False
 
 
-def _refresh_live_managers(orchestrator, env_var: str, value: str) -> None:
-    """Make a saved optional key live: app_config constant + live managers."""
+def _live_agentic_controller(orchestrator):
+    """The already-built agentic controller, or None. Reads the PRIVATE slot:
+    the public property lazily BUILDS one (which would read the new config
+    itself, but must not be triggered by a save)."""
+    return getattr(orchestrator, "_agentic_controller", None)
+
+
+def _controller_holders(ctrl) -> list:
+    """Objects that hold their own wolfram_manager/sandbox_manager reference."""
+    holders = [ctrl]
+    ex = getattr(ctrl, "_tool_executor", None)
+    if ex is not None:
+        holders.append(ex)
+    return holders
+
+
+def _refresh_wolfram(orchestrator, value: str) -> bool:
+    """Make a saved Wolfram App ID live in every existing consumer. False when
+    a consumer could not be refreshed (caller reports restart_required)."""
+    ctrl = _live_agentic_controller(orchestrator)
+    if ctrl is None:
+        return True  # a controller built later reads the live constant itself
+    holders = _controller_holders(ctrl)
+    mgr = next((h.wolfram_manager for h in holders if getattr(h, "wolfram_manager", None)), None)
+    if mgr is not None:
+        mgr.app_id = value
+    else:
+        import config.app_config as app_cfg  # lazy import: live-config
+        if not getattr(app_cfg, "WOLFRAM_ENABLED", False):
+            return False  # tool is switched off by config: a key alone won't enable it
+        from knowledge.wolfram_manager import WolframManager  # lazy import: startup-cost
+        mgr = WolframManager(app_id=value)
+    for h in holders:
+        if hasattr(h, "wolfram_manager"):
+            h.wolfram_manager = mgr
+    return mgr.is_available()
+
+
+def _refresh_sandbox(orchestrator, value: str) -> bool:
+    """Make a saved E2B key live: the process singleton + any controller slot
+    that cached None because the tool was unavailable at construction."""
+    from knowledge.sandbox_manager import get_sandbox_manager  # lazy import: startup-cost
+    mgr = get_sandbox_manager()
+    mgr.api_key = value
+    mgr.enabled = bool(getattr(mgr, "_config_enabled", True)) and bool(value)
+    if not mgr.enabled:
+        return False  # tool disabled by config: a key alone won't enable it
+    ctrl = _live_agentic_controller(orchestrator)
+    if ctrl is not None:
+        for h in _controller_holders(ctrl):
+            if hasattr(h, "sandbox_manager"):
+                h.sandbox_manager = mgr
+    return True
+
+
+def _refresh_live_managers(orchestrator, env_var: str, value: str) -> bool:
+    """Make a saved optional key live: app_config constant + live managers.
+
+    Returns True when every existing consumer now sees the key; False when one
+    could not be refreshed, so the save result says ``restart_required`` instead
+    of a silent success (2026-10-23, A04, class: BC-11, BC-58).
+    """
+    live = True
     try:
         import config.app_config as app_cfg  # lazy import: live-config
         attr = {"TAVILY_API_KEY": "WEB_SEARCH_API_KEY", "WOLFRAM_APP_ID": "WOLFRAM_APP_ID",
@@ -228,7 +314,7 @@ def _refresh_live_managers(orchestrator, env_var: str, value: str) -> None:
         if attr:
             setattr(app_cfg, attr, value)
     except Exception:  # degrades: next start picks the key up from .env
-        pass
+        live = False
     if env_var == "TAVILY_API_KEY":
         from gui import settings_core  # lazy import: layering
         for mgr in settings_core._live_web_search_managers(orchestrator):
@@ -236,6 +322,19 @@ def _refresh_live_managers(orchestrator, env_var: str, value: str) -> None:
             mgr._api_key_invalid = False
             mgr._tavily_client = None
             mgr._initialized = False
+    elif env_var == "WOLFRAM_APP_ID":
+        try:
+            live = _refresh_wolfram(orchestrator, value) and live
+        except Exception as e:  # degrades: key saved, tool needs a restart
+            logger.warning("[Setup] wolfram refresh failed: %s", type(e).__name__)
+            live = False
+    elif env_var == "E2B_API_KEY":
+        try:
+            live = _refresh_sandbox(orchestrator, value) and live
+        except Exception as e:  # degrades: key saved, tool needs a restart
+            logger.warning("[Setup] sandbox refresh failed: %s", type(e).__name__)
+            live = False
+    return live
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +365,12 @@ def save_optional_key(orchestrator, name: str, key: str) -> dict:
     key = key.strip()
     if not write_env_vars({env_var: key}):
         return {"ok": False, "error": "Could not save the key to your profile folder.", "hint": None}
-    _refresh_live_managers(orchestrator, env_var, key)
-    return {"ok": True, "error": None, "hint": key_hint(env_var)}
+    live = _refresh_live_managers(orchestrator, env_var, key)
+    result = {"ok": True, "error": None, "hint": key_hint(env_var)}
+    if not live:
+        # Saved to .env, but a running consumer could not be refreshed: say so.
+        result["restart_required"] = True
+    return result
 
 
 def save_profile(orchestrator, name: str, pronouns: Optional[str], style: Optional[str]) -> dict:
@@ -294,7 +397,14 @@ def save_profile(orchestrator, name: str, pronouns: Optional[str], style: Option
         if style is not None:
             profile.update_preferences(style=style)
             from gui.wizard import _apply_personality_style  # lazy import: cycle (wizard imports setup_core)
-            _apply_personality_style(style)
+            try:
+                _apply_personality_style(style)
+            except Exception as e:
+                # A05: the style never reached the prompt -- never report success.
+                logger.error("[Setup] personality write failed: %s", type(e).__name__)
+                return {"ok": False,
+                        "error": "Your name was saved, but the response style could not be written "
+                                 "to your profile folder. Check that it is writable and try again."}
     except Exception as e:
         logger.error("[Setup] profile save failed: %s", type(e).__name__)
         return {"ok": False, "error": "Could not save your profile."}

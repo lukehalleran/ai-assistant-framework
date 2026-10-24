@@ -53,16 +53,19 @@ class TestUploads:
         assert info["size"] == 11
 
         # file_id resolves to a shim object with .name pointing at a real temp file
-        shims = app.state.daemon.resolve_uploads([info["file_id"]])
+        shims, missing = app.state.daemon.resolve_uploads([info["file_id"]])
+        assert missing == []
         assert len(shims) == 1
         assert shims[0].name.endswith(".txt")
         with open(shims[0].name, "rb") as f:
             assert f.read() == b"hello world"
 
     @pytest.mark.asyncio
-    async def test_unknown_file_id_is_skipped(self):
+    async def test_unknown_file_id_is_reported_missing(self):
         app = create_app(_make_orchestrator(), start_background=False)
-        assert app.state.daemon.resolve_uploads(["nope"]) == []
+        resolved, missing = app.state.daemon.resolve_uploads(["nope"])
+        assert resolved == []
+        assert missing == [{"file_id": "nope", "name": None, "reason": "unknown_id"}]
 
     @pytest.mark.asyncio
     async def test_upload_limit_rolls_back_prior_files(self, monkeypatch):

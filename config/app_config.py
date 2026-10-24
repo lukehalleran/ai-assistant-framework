@@ -788,6 +788,11 @@ REFERENCE_DOCS_GATE_THRESHOLD: float = float(REFERENCE_DOCS_CFG.get("gate_thresh
 REFERENCE_DOCS_AUTO_SEED: bool = bool(REFERENCE_DOCS_CFG.get("auto_seed", True))
 # Paths to auto-seed (directories scanned for *.md, files uploaded directly)
 REFERENCE_DOCS_SEED_PATHS: list = REFERENCE_DOCS_CFG.get("seed_paths", ["docs"])
+if getattr(sys, "frozen", False):
+    # Frozen: a relative seed path resolves against the BUNDLE (<_internal>/docs, which holds
+    # only the reviewed config/reference_docs_manifest.txt files - daemon.spec), never the
+    # launch cwd (2026-10-23, audit A01). Dev keeps the configured paths untouched.
+    REFERENCE_DOCS_SEED_PATHS = [resolve_bundled_path(str(_p)) for _p in REFERENCE_DOCS_SEED_PATHS]
 
 # Environment variable overrides for Reference Docs
 REFERENCE_DOCS_ENABLED = bool(int(os.getenv("REFERENCE_DOCS_ENABLED", "1" if REFERENCE_DOCS_ENABLED else "0")))
@@ -1056,19 +1061,39 @@ def load_system_prompt(cfg: Optional[Dict] = None) -> str:
 # Personality / Operating Principles (file-based, not YAML)
 # --------------------------------------------------------------------
 PERSONALITY_DEFAULT_PATH = str(Path(__file__).parent / "prompts" / "default_personality.txt")
-PERSONALITY_CUSTOM_PATH = str(Path(__file__).parent / "prompts" / "custom_personality.txt")
+# The CUSTOM personality is user data: it lives under the user data root
+# (DAEMON_DATA_DIR / the frozen profile dir), never beside the installed config
+# module (2026-10-23, A05, class: BC-83). The DEFAULT stays a bundled read-only
+# resource. The path is resolved at CALL time (BC-82): ``PERSONALITY_CUSTOM_PATH``
+# is served by the module ``__getattr__`` below so every reader sees the live root.
+PERSONALITY_CUSTOM_FILENAME = "custom_personality.txt"
+
+
+def get_personality_custom_path() -> str:
+    """Live path of the user's custom personality file (under the data root)."""
+    from utils.bootstrap import get_user_data_dir  # lazy import: live-config (DAEMON_DATA_DIR read per call)
+    return str(Path(get_user_data_dir()) / PERSONALITY_CUSTOM_FILENAME)
+
+
+def __getattr__(name):  # PEP 562: live, call-time constants
+    if name == "PERSONALITY_CUSTOM_PATH":
+        return get_personality_custom_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 OPERATING_PRINCIPLES_PATH = str(Path(__file__).parent / "prompts" / "operating_principles.txt")
 # Hard cap on personality text to prevent prompt budget blowout (~2x the default)
 PERSONALITY_MAX_CHARS = 15000
 
 def load_personality_text() -> str:
     """Load custom personality if it exists, otherwise default. Truncates to PERSONALITY_MAX_CHARS."""
-    for path in (PERSONALITY_CUSTOM_PATH, PERSONALITY_DEFAULT_PATH):
+    custom_path = get_personality_custom_path()
+    for path in (custom_path, PERSONALITY_DEFAULT_PATH):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 text = f.read().strip()
                 if text:
-                    is_custom = (path == PERSONALITY_CUSTOM_PATH)
+                    is_custom = (path == custom_path)
                     source = "custom" if is_custom else "default"
                     if len(text) > PERSONALITY_MAX_CHARS:
                         logger.warning(f"[Personality] Truncated {source}: {len(text)} -> {PERSONALITY_MAX_CHARS} chars")

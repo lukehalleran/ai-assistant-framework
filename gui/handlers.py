@@ -6871,6 +6871,12 @@ def _chain_next_pending(store, outcome):
     return outcome
 
 
+_INTERRUPTED_MESSAGE = (
+    "Interrupted — check whether it happened before retrying. "
+    "That action was cancelled mid-execution, so I can't tell if it went through."
+)
+
+
 async def execute_pending_action_core(action_id: str, orchestrator=None):
     """Approve + execute a pending internet action; transport-agnostic core.
 
@@ -6887,6 +6893,8 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
     proposal = store.approve(action_id)
 
     if not proposal:
+        if store.peek_status(action_id) == "interrupted":
+            return types.ActionOutcome(status="interrupted", message=_INTERRUPTED_MESSAGE)
         return types.ActionOutcome(status="not_found",
                              message="Action expired or not found. Ask me again if you still want this.")
 
@@ -6915,6 +6923,19 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
             action_type=proposal.action_type.value,
             summary=proposal.summary,
         ))
+    except asyncio.CancelledError:
+        # Cancelled mid-execution: an external effect may already have happened,
+        # so the outcome is UNKNOWN — terminal, never auto-retried, slot freed.
+        # Record it, then propagate (cancellation must never be swallowed).
+        store.mark_interrupted(action_id)
+        try:
+            audit.log_execution(action_id, types.ActionResult(
+                action_id=action_id, success=False,
+                message=f"[INTERRUPTED] {types.INTERRUPTED_REASON}"))
+        except Exception:  # degrades: audit line lost; the status is already set
+            logger.warning(f"[Actions] Could not audit interruption of {action_id}")
+        logger.warning(f"[Actions] Execution of {action_id} cancelled; marked interrupted")
+        raise
     except Exception as e:
         store.mark_failed(action_id, str(e))
         logger.error(f"[Actions] Execution failed for {action_id}: {e}")

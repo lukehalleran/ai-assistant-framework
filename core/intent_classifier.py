@@ -857,7 +857,8 @@ def _query_is_ack_shaped(query: str) -> bool:
         r"^(?:oh |ah |yeah|yep|ok(?:ay)?|right|true|exactly|fair|good point|"
         r"makes sense|got it|i see|no they|no it)\b", ql)) and len(ql.split()) <= 8
 
-def _learn_intent_exemplar(query: str, label: str, source: str) -> None:
+def _learn_intent_exemplar(query: str, label: str, source: str,
+                           support_span=None) -> None:
     """Teach the adaptive store a CONFIRMED intent classification.
 
     Teachers are channels independent of the semantic prototypes: confident
@@ -876,6 +877,7 @@ def _learn_intent_exemplar(query: str, label: str, source: str) -> None:
         get_store().record(
             "intent", label, query, source,
             seed_texts=INTENT_EXEMPLARS.get(label, []),
+            support_span=support_span,
         )
     except Exception as e:  # degrades: adaptive exemplar store misses this confirmed intent example
         logger.warning(f"intent exemplar learning skipped: {e}")
@@ -926,12 +928,17 @@ class IntentClassifier:
         # --- Regex pattern matching (first match wins) -------------------
         best_intent = IntentType.GENERAL
         best_conf = 0.0
+        best_span = None  # offsets of the regex hit the verdict rests on (A06)
 
         for pattern, intent, conf in _PATTERNS:
-            if pattern.search(query_stripped):
+            _m = pattern.search(query_stripped)
+            if _m:
                 if conf > best_conf:
                     best_intent = intent
                     best_conf = conf
+                    # Python-predicate patterns (_CallablePattern) return the
+                    # text itself, not a match: no span, long texts decline.
+                    best_span = _m.span() if hasattr(_m, "span") else None
                     # High confidence → stop early
                     if best_conf >= 0.90:
                         break
@@ -973,7 +980,9 @@ class IntentClassifier:
             and best_conf >= 0.85
             and not _tone_is_elevated(tone_level)
         ):
-            _learn_intent_exemplar(query_stripped, best_intent.value, "regex")
+            _learn_intent_exemplar(
+                query_stripped, best_intent.value, "regex", support_span=best_span
+            )
 
         # Thread temporal anchor for TEMPORAL_RECALL so the scorer can
         # reshape the recency decay curve around the referenced time window.
