@@ -46,7 +46,7 @@ class TestWordingIsGeneric:
     def test_length_caps(self):
         # ~4 chars/token. Universal rides in EVERY cached prefix; decision block
         # rides uncached on decision turns only.
-        assert len(UNIVERSAL_GROUNDING) <= 4 * 150, len(UNIVERSAL_GROUNDING)
+        assert len(UNIVERSAL_GROUNDING) <= 4 * 250, len(UNIVERSAL_GROUNDING)  # 150 -> 250 on 2026-10-24: self-identity rule added
         assert len(DECISION_SUPPORT_GROUNDING) <= 4 * 180, len(DECISION_SUPPORT_GROUNDING)
 
     def test_combined_constant_is_both(self):

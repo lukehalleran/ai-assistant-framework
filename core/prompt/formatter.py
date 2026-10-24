@@ -1647,10 +1647,15 @@ class PromptFormatter:
                 gc_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")
 
         if gc_lines:
-            scope = ""
+            # lazy import: live-config (ASSISTANT_NAME may be changed at runtime)
+            from config.app_config import ASSISTANT_NAME as _assistant_name
+            scope = (
+                f"This is the commit history of your own codebase ({_assistant_name or 'the assistant'}); "
+                "first-person framing applies.\n"
+            )
             if any(isinstance(c, dict) and c.get("metadata", {}).get("retrieval_source") == "local_git"
                    for c in git_commits):
-                scope = (
+                scope += (
                     "Recent local repository records. Commit dates are not push dates; "
                     "authors do not identify the person or process that pushed them. "
                     "Do not infer automation or a surprise push from older assistant replies.\n"
