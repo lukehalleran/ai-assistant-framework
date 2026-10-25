@@ -153,6 +153,7 @@ class MemorySection(BaseModel):
     prompt_recent_prior_session_max_share: float = Field(default=0.40, ge=0.0, le=1.0)
     prompt_recent_max_share: float = Field(default=0.50, ge=0.0, le=1.0)
     prompt_memories_reserve_floor: int = Field(default=2, ge=0)
+    prompt_git_commits_reserve_floor: int = Field(default=5, ge=0)
     prompt_floor_reserve_max_share: float = Field(default=0.25, ge=0.0, le=1.0)
     semantic_retrieval_limit: int = Field(default=100, ge=1)
     prompt_max_semantic: int = Field(default=15, ge=0)
@@ -1030,6 +1031,10 @@ class GitMemorySection(BaseModel):
     enabled: bool = True
     include_diffs: bool = False
     default_limit: int = Field(default=200, ge=1)
+    # Shutdown sync of the procedural git index (2026-10-24).
+    sync_on_shutdown: bool = True
+    sync_timeout_s: float = Field(default=30.0, gt=0)
+    max_commits_per_sync: int = Field(default=300, ge=1)
 
 
 class ProceduralSkillsSection(BaseModel):

@@ -2394,6 +2394,8 @@ class UnifiedPromptBuilder:
             # reuse gate reads it so "trimmed away" is not read as "absent").
             if context.get("_budget_emptied"):
                 prompt_ctx["_budget_emptied"] = list(context["_budget_emptied"])
+            if context.get("budget_omitted_note"):
+                prompt_ctx["budget_omitted_note"] = context["budget_omitted_note"]
 
             build_time = time.perf_counter() - start_time
             logger.info(f"Prompt built in {build_time:.2f}s")

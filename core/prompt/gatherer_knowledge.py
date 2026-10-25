@@ -1124,8 +1124,8 @@ class KnowledgeRetrievalMixin:
             if not GIT_MEMORY_ENABLED or limit <= 0:
                 return []
 
-            from utils.repository_context import is_repository_status_report  # lazy import: cycle
-            if is_repository_status_report(query):
+            from utils.repository_context import wants_live_repository_history  # lazy import: cycle
+            if wants_live_repository_history(query):
                 # The procedural index is manually synced; it cannot establish
                 # what just landed. Read local git without writing the index.
                 extractor = git_memory.GitMemoryExtractor(str(Path(__file__).resolve().parents[2]))
