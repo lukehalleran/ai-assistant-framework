@@ -12,6 +12,9 @@ Purpose:
       - Google token expired, no refresh   → WARNING (2026-09-27, BC-47,
         BC-58, BC-70, BC-72: disk-only check, no network — every downstream
         Gmail/Calendar/Contacts read would otherwise silently read empty)
+      - installed packages drift from requirements.lock.txt → WARNING
+        (2026-10-24: one floating transitive release broke spaCy loading;
+        advisory only — never installs, skipped when frozen / no lock)
       - spaCy en_core_web_sm missing       → NOTE (fact extraction degrades
         to regex-only; core paths already guard this lazily)
 
@@ -25,8 +28,11 @@ Key decision: only unrecoverable-data conditions are fatal. Everything
     project-wide pattern).
 """
 
+import importlib.metadata
 import importlib.util
 import os
+import re
+import sys
 from dataclasses import dataclass, field
 from typing import List
 
@@ -139,11 +145,61 @@ def _check_spacy_model(result: PreflightResult) -> None:
         )
 
 
+_LOCK_LINE_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([^\s;#]+)")
+_LOCK_FIX_COMMAND = "pip install -r requirements.txt -c requirements.lock.txt"
+
+
+def _pep503(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _repo_lock_path() -> str:
+    # Resolved from this module's location, never the cwd.
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "requirements.lock.txt")
+
+
+def _installed_version(name: str):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _check_dependency_drift(result: PreflightResult) -> None:
+    """One advisory warning when installed packages differ from the lock."""
+    if getattr(sys, "frozen", False):
+        return  # the frozen build carries its own bundled environment
+    lock_path = _repo_lock_path()
+    if not os.path.isfile(lock_path):
+        return
+    drifted = []
+    with open(lock_path, encoding="utf-8") as fh:
+        for line in fh:
+            m = _LOCK_LINE_RE.match(line)
+            if not m:
+                continue
+            name, want = m.group(1), m.group(2).split("+", 1)[0]
+            have = _installed_version(_pep503(name))
+            if have is None:
+                drifted.append(f"{name}: not installed, lock {want}")
+            elif have.split("+", 1)[0] != want:
+                drifted.append(f"{name}: installed {have.split('+', 1)[0]}, lock {want}")
+    if drifted:
+        examples = "; ".join(drifted[:5])
+        result.warnings.append(
+            f"{len(drifted)} installed package(s) differ from requirements.lock.txt "
+            f"({examples}). Behaviour may differ from the tested environment. "
+            f"Fix: {_LOCK_FIX_COMMAND}"
+        )
+
+
 def run_preflight() -> PreflightResult:
     """Run all startup checks. Never raises; returns findings."""
     result = PreflightResult()
     for check in (_check_data_dir_writable, _check_llm_key,
-                  _check_web_search_key, _check_google_token, _check_spacy_model):
+                  _check_web_search_key, _check_google_token, _check_spacy_model,
+                  _check_dependency_drift):
         try:
             check(result)
         except Exception as e:  # a broken check must not block startup itself

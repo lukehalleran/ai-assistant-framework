@@ -74,6 +74,7 @@ import os
 import sys
 import json
 import importlib
+import importlib.util
 import logging
 import logging as _log
 from utils.logging_utils import get_log_file_path
@@ -477,6 +478,18 @@ def _run_model_warmup(orchestrator):
                 importlib.import_module(_mod)
             except Exception as e:  # degrades: that module's first import lands on turn 1 (a stall, not a failure)
                 print(f"[Warmup] first-use import {_mod} skip: {e}")
+        # 11) spaCy pipeline. Nothing warmed it, so the first fact extraction paid the
+        #     model load; and a load that fails (dependency drift, e.g. 2026-10-24
+        #     preshed OverflowError) was only visible as degraded extraction.
+        try:
+            from memory.fact_extractor import _get_nlp  # lazy import: startup-cost
+            if _get_nlp() is None and importlib.util.find_spec("en_core_web_sm") is not None:
+                logger.warning(
+                    "[Warmup] spaCy model is installed but failed to load — fact "
+                    "extraction is degraded; see the [Preflight] dependency drift line"
+                )
+        except Exception as e:  # degrades: spaCy loads (or fails loudly) on first extraction instead
+            print(f"[Warmup] spacy skip: {e}")
         print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
 
     threading.Thread(target=_warm_task, daemon=True).start()

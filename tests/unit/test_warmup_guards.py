@@ -68,3 +68,35 @@ class TestWarmupGuards:
         with patch("threading.Thread", _InlineThread):
             _run_model_warmup(orch)
         assert getattr(_fake_get_memories, "called", None) is not None
+
+
+class TestWarmupSpacy:
+    """2026-10-24: warmup loads spaCy and warns once if an installed model fails."""
+
+    def _run(self, monkeypatch, nlp, installed, caplog):
+        import importlib.util
+        import logging
+
+        import memory.fact_extractor as fe
+        from gui.launch import _run_model_warmup
+
+        monkeypatch.setattr(fe, "_get_nlp", lambda: nlp)
+        real = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util, "find_spec",
+            lambda n, *a, **k: object() if n == "en_core_web_sm" and installed
+            else (None if n == "en_core_web_sm" else real(n, *a, **k)))
+        with caplog.at_level(logging.WARNING, logger="gui.launch"), \
+                patch("threading.Thread", _InlineThread):
+            _run_model_warmup(MagicMock())
+        return [r.getMessage() for r in caplog.records if "spaCy" in r.getMessage()]
+
+    def test_failed_load_with_model_installed_warns(self, monkeypatch, caplog):
+        msgs = self._run(monkeypatch, None, True, caplog)
+        assert len(msgs) == 1 and "Preflight" in msgs[0]
+
+    def test_healthy_load_is_quiet(self, monkeypatch, caplog):
+        assert self._run(monkeypatch, object(), True, caplog) == []
+
+    def test_model_absent_is_quiet(self, monkeypatch, caplog):
+        assert self._run(monkeypatch, None, False, caplog) == []

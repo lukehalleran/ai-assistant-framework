@@ -3,8 +3,9 @@
 # Install for development:
 #     python3.11 -m venv venv && venv/bin/pip install -r requirements.txt
 #     venv/bin/python -m spacy download en_core_web_sm
-# Reproducible install (exact known-good versions from the dev machine):
-#     venv/bin/pip install -r requirements.lock.txt
+# Reproducible install (every transitive package at its known-good version):
+#     venv/bin/pip install -r requirements.txt -c requirements.lock.txt
+# Refresh the lock from the dev interpreter: python scripts/refresh_lock.py (--check to verify)
 # Frozen executable: pyinstaller daemon.spec --clean --noconfirm
 
 [project]

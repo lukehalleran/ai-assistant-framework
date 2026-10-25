@@ -10,7 +10,7 @@ This guide covers building Daemon as a standalone desktop executable using PyIns
 
 1. **Python 3.11+** (tested with 3.11.9)
 2. **PyInstaller 6.0+**: `pip install pyinstaller`
-3. **All Daemon dependencies**: `pip install -r requirements.txt`
+3. **All Daemon dependencies**: `pip install -r requirements.txt -c requirements.lock.txt` (the lock pins every transitive package; refresh with `python scripts/refresh_lock.py`, verify with `--check`)
 4. **spaCy model**: `python -m spacy download en_core_web_sm`
 5. **Inno Setup 6** (for installer): https://jrsoftware.org/issetup.html
 
@@ -21,7 +21,7 @@ Run from the repo root, in order. Linux is the primary, current path.
 ```bash
 # 1. venv + dependencies (+ spaCy model, see Prerequisites)
 python3.11 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt pyinstaller
+pip install -r requirements.txt -c requirements.lock.txt pyinstaller
 
 # 2. Build the React SPA (daemon.spec refuses to run without web/dist/index.html)
 cd web && npm ci && npm run build && cd ..

@@ -58,12 +58,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy requirements first for better layer caching
 WORKDIR /tmp
-COPY requirements.txt .
+COPY requirements.txt requirements.lock.txt ./
 
-# Install Python dependencies
+# Install Python dependencies, constrained by the known-good lock (the lock
+# excludes the nvidia-*/triton GPU stack, so torch resolves exactly as before).
 # Note: This may take 5-10 minutes due to torch, transformers, sentence-transformers
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt -c requirements.lock.txt
 
 # Download spaCy language model (required for NLP)
 RUN python -m spacy download en_core_web_sm

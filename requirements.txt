@@ -3,7 +3,7 @@
 # Python 3.11.8
 
 # Core AI/ML frameworks
-torch==2.7.1
+torch==2.11.0
 transformers==4.51.3
 sentence-transformers==4.1.0
 sentencepiece==0.2.0
@@ -39,7 +39,7 @@ Pillow>=10.0.0
 networkx==3.6.1
 
 # Data processing
-numpy==2.3.1
+numpy==1.26.4
 pandas==2.2.3
 pyarrow==20.0.0
 
@@ -65,11 +65,11 @@ uvicorn>=0.27.0
 # HTTP clients
 beautifulsoup4==4.13.4  # page_extract visible-text layer (was venv-only — CI red since 08-29)
 httpx==0.28.1
-requests==2.32.3
+requests==2.33.0
 
 # Google integrations (OAuth for Gmail send / Calendar / Contacts;
 # API calls themselves go over raw REST via requests — no googleapiclient)
-google-auth==2.56.0
+google-auth==2.53.0
 google-auth-oauthlib==1.4.0
 
 # Configuration and utilities
