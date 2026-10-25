@@ -8,7 +8,8 @@ Module Contract
   - measure_response(start, end), elapsed_since_last(), time_since_previous_message()
   - elapsed_since_last_session() [NEW]
   - get_active_days_since(timestamp), calculate_active_day_decay(timestamp, decay_rate)
-  - format_relative_timestamp(ts, now): Format datetime with relative day label for LLM consumption
+  - format_relative_timestamp(ts, now): Format datetime with relative age label (sub-day ages included) for LLM consumption
+  - render_timestamp_label(ts, now): same for any stored shape (datetime / ISO str); never raises
 - Side effects:
   - Maintains in‑memory timestamps for latency reporting.
   - Tracks active days in persistent storage for decay calculation.
@@ -24,41 +25,74 @@ import json, os, logging
 from datetime import datetime, date, timedelta
 import utils.safe_json as safe_json
 from utils.bootstrap import store_path
+from utils.date_coerce import to_naive_local
 
 logger = logging.getLogger(__name__)
 
 
-def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
-    """Format a datetime with a relative day label for LLM consumption.
+def _sub_day_age(seconds: int) -> str:
+    """Whole-unit age for a same-day item (seconds >= 0)."""
+    minutes = seconds // 60
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min"
+    if minutes < 180:
+        h, m = divmod(minutes, 60)
+        return f"{h} h {m} min" if m else f"{h} h"
+    return f"{minutes // 60} h"
 
-    Prevents temporal hallucinations by making day-relative context explicit
-    instead of forcing the LLM to compute it from raw ISO timestamps.
+
+def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
+    """Format a datetime with a relative age label for LLM consumption.
+
+    Prevents temporal hallucinations by making the age explicit instead of
+    forcing the LLM to compute it from raw ISO timestamps.
 
     Examples:
-        "2026-04-03 08:15 (today)"
+        "2026-04-03 08:15 (today, 1 min ago)"
+        "2026-04-03 08:15 (today, 1 h 20 min ago)"
+        "2026-04-03 08:15 (today, 5 h ago)"
         "2026-04-02 22:45 (yesterday)"
         "2026-04-01 14:30 (2 days ago)"
         "2026-03-28 09:00 (6 days ago)"
         "2026-02-11 15:00 (4 months ago)"
         "2025-02-11 15:00 (1 year ago)"
+        future: "2026-04-03 09:30 (today, in 45 min)", "(tomorrow)", "(in 3 days)"
 
-    Every label carries an explicit relative age — including old memories.
-    Returning a bare ISO date for anything >= 30 days (the prior behavior)
-    forced the LLM to compute the age itself, which it gets wrong: a months-old
-    state would surface as if it happened "earlier today." Keep the relative
-    anchor at every range so stale context is never mistaken for current.
+    Every label carries an explicit relative age, including sub-day ages
+    (2026-10-25: "an hour ago" was invented from "16:06 (today)" one minute
+    after it) and old memories. Aware datetimes are converted to naive local
+    time first (utils.date_coerce.to_naive_local). class: BC-103
     """
     if now is None:
         now = datetime.now()
+    ts = to_naive_local(ts)
+    now = to_naive_local(now)
 
     delta_days = (now.date() - ts.date()).days
 
     time_str = ts.strftime('%Y-%m-%d %H:%M')
 
     if delta_days == 0:
-        return f"{time_str} (today)"
+        seconds = int((now - ts).total_seconds())
+        if seconds >= 0:
+            age = _sub_day_age(seconds)
+            return f"{time_str} (today, {age if age == 'just now' else age + ' ago'})"
+        ahead = _sub_day_age(-seconds)
+        return f"{time_str} (today, {'just now' if ahead == 'just now' else 'in ' + ahead})"
     elif delta_days == 1:
+        seconds = int((now - ts).total_seconds())
+        if seconds < 86400:
+            return f"{time_str} (yesterday, {_sub_day_age(seconds)} ago)"
         return f"{time_str} (yesterday)"
+    elif delta_days == -1:
+        seconds = int((ts - now).total_seconds())
+        if seconds < 86400:
+            return f"{time_str} (tomorrow, in {_sub_day_age(seconds)})"
+        return f"{time_str} (tomorrow)"
+    elif delta_days < 0:
+        return f"{time_str} (in {-delta_days} days)"
     elif delta_days < 14:
         return f"{time_str} ({delta_days} days ago)"
     elif delta_days < 30:
@@ -70,6 +104,31 @@ def format_relative_timestamp(ts: datetime, now: datetime = None) -> str:
     else:
         years = delta_days // 365
         return f"{time_str} ({years} year{'s' if years != 1 else ''} ago)"
+
+
+def render_timestamp_label(ts, now: datetime = None) -> str:
+    """Prompt-safe timestamp label for any stored shape (datetime / ISO str / other).
+
+    Parseable values go through format_relative_timestamp; anything else is
+    returned as its plain string (never raises, empty -> ""). class: BC-103
+    """
+    if not ts:
+        return ""
+    try:
+        if isinstance(ts, datetime):
+            return format_relative_timestamp(ts, now)
+        text = str(ts).strip()
+        if len(text) == 10:
+            # Date-only value: keep the day granularity it actually has (no
+            # invented 00:00 clock, no hour-level age for "today").
+            day = datetime.fromisoformat(text)
+            full = format_relative_timestamp(day, now)
+            if full.startswith(f"{text} 00:00 (today"):
+                return f"{text} (today)"
+            return full.replace(" 00:00", "", 1)
+        return format_relative_timestamp(datetime.fromisoformat(text), now)
+    except (ValueError, TypeError):
+        return str(ts)
 
 
 class TimeManager:
