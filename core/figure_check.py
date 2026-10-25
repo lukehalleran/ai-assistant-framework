@@ -536,7 +536,7 @@ def build_source_pool(raw_context: Any, history: Iterable[Any], source_material:
                 break
             text, ts = _entry_text_ts(entry)
             if text and text.strip():
-                # Content-derived id (BC-95): a list position is not identity, and ids reach checker_findings.
+                # Content-derived id (BC-95): a list position is not identity, and ids reach the findings log.
                 item_id = hashlib.sha1(f"{text}|{ts}".encode("utf-8")).hexdigest()[:10]
                 items.append(SourceItem(id=f"{key}:{item_id}", text=text[:_ITEM_CHARS], role=role, timestamp=ts,
                                         section=str(key)))
