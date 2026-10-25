@@ -57,7 +57,6 @@ function snapshot(availability: Availability): SettingsSnapshot {
     streaming: {
       disable_best_of: false,
       disable_query_rewrite: false,
-      disable_llm_summaries: false,
       best_of_latency_budget_s: 0,
     },
     web_search: { enabled: true, daily_credit_limit: 100 },

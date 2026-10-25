@@ -81,7 +81,6 @@ class DebugRecordsResponse(BaseModel):
 class StreamingSettings(BaseModel):
     disable_best_of: bool = False
     disable_query_rewrite: bool = False
-    disable_llm_summaries: bool = False
     best_of_latency_budget_s: float = Field(default=0.0, ge=0, le=120)
 
 

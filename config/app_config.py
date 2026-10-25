@@ -271,7 +271,6 @@ DEFAULT_TEMPERATURE = config.get("models", {}).get("default_temperature", 0.7)
 LOCAL_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("local_model_context_limit", 4096)
 API_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("api_model_context_limit", 128000)
 LOAD_LOCAL_MODEL = config.get("models", {}).get("load_local_model", True)
-SEMANTIC_ONLY_MODE = config.get("features", {}).get("semantic_only_mode", False)
 CONFIDENCE_THRESHOLD = config.get("gating", {}).get("confidence_threshold", 1.5)
 GATE_REL_THRESHOLD = config.get("gating", {}).get("gate_rel_threshold", 0.18)
 # Retrieval-space (bge) equivalents used when the gate shares the ChromaDB

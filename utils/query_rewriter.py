@@ -17,8 +17,9 @@ Module Contract:
   run-to-run for the same query.
 """
 
+import contextvars
 import re
-from typing import Set, List
+from typing import List, NamedTuple, Optional, Set
 from utils.logging_utils import get_logger
 import utils.topic_manager as topic_manager
 
@@ -73,13 +74,16 @@ def _ordered_keywords(text: str) -> List[str]:
     words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
     return [w for w in dict.fromkeys(words) if w not in NOISE_WORDS]
 
-def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
+def rewrite_query(query: str, use_topic_extraction: bool = True,
+                  topics: Optional[List[str]] = None) -> str:
     """
     Rewrite a casual query into a semantic-rich version for better retrieval.
 
     Args:
         query: Original user query (e.g., "No more body image issue than determination lmao")
         use_topic_extraction: Whether to use topic_manager for entity extraction
+        topics: topics already extracted this turn (ContextPipeline Stage 1);
+            when given they replace the TopicManager call (an LLM round-trip)
 
     Returns:
         Expanded query string with additional keywords
@@ -100,16 +104,19 @@ def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
     #    user's words, in topic order)
     if use_topic_extraction:
         try:
-            topic_mgr = topic_manager.TopicManager()
-            topic = topic_mgr.get_primary_topic(query)
-            topics = [topic] if topic else []
-
             if topics:
-                for topic in topics[:5]:  # Limit to top 5
+                found = list(topics)
+            else:
+                topic_mgr = topic_manager.TopicManager()
+                topic = topic_mgr.get_primary_topic(query)
+                found = [topic] if topic else []
+
+            if found:
+                for topic in found[:5]:  # Limit to top 5
                     for word in _ordered_keywords(topic):
                         if word not in ordered:
                             ordered.append(word)
-                logger.debug(f"[QueryRewriter] Extracted topics: {topics[:5]}")
+                logger.debug(f"[QueryRewriter] Extracted topics: {found[:5]}")
         except Exception as e:
             logger.debug(f"[QueryRewriter] Topic extraction failed: {e}")
 
@@ -135,6 +142,59 @@ def rewrite_query(query: str, use_topic_extraction: bool = True) -> str:
     logger.debug(f"[QueryRewriter] Keyword count: {len(ordered)} original + {len(additional_keywords[:10])} expanded")
 
     return rewritten
+
+# ---------------------------------------------------------------------------
+# Per-turn hand-off from ContextPipeline (2026-10-25, class: BC-31, BC-82)
+#
+# Two independent pieces, both published once per turn by ContextPipeline:
+#   * topics     — the Stage-1 topic extraction. rewrite_query() used to call
+#                  TopicManager (a ~1 s LLM round-trip) for the SAME topic;
+#                  the hybrid retriever now reuses it. Not a rewrite: published
+#                  regardless of the rewrite switch.
+#   * rewritten  — the pipeline's LLM rewrite sentence (only when
+#                  features.enable_query_rewrite). An ADDITIONAL candidate
+#                  query for the hybrid retriever; the local keyword/synonym/
+#                  graph expansion and the memory gate (raw query) are
+#                  unchanged.
+# Keyed to the raw turn text so an unrelated retrieval in the same turn
+# (agentic tool query, "" fallbacks) never picks it up; a task created after
+# set() inherits it (same seam as context_pipeline._PRECOMPUTED_FILES).
+# ---------------------------------------------------------------------------
+class TurnHint(NamedTuple):
+    rewritten: Optional[str]
+    topics: Optional[List[str]]
+
+
+_TURN_HINT: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar(
+    "daemon_turn_query_hint", default=None
+)
+
+
+def set_turn_hint(raw_query: Optional[str], rewritten: Optional[str] = None,
+                  topics: Optional[List[str]] = None) -> None:
+    """Publish this turn's hint (or clear the previous turn's with no args)."""
+    raw = (raw_query or "").strip()
+    new = (rewritten or "").strip() or None
+    tops = [t for t in (topics or []) if isinstance(t, str) and t.strip()] or None
+    _TURN_HINT.set((raw, TurnHint(new, tops)) if raw and (new or tops) else None)
+
+
+def get_turn_hint(query: Optional[str]) -> Optional[TurnHint]:
+    """The turn's hint when ``query`` is the raw turn text or that text with
+    terms appended (graph expansion); None otherwise."""
+    hint = _TURN_HINT.get()
+    if not hint or not query:
+        return None
+    raw, value = hint
+    return value if query.strip().startswith(raw) else None
+
+
+def query_rewrite_enabled() -> bool:
+    """The ONE live switch (features.enable_query_rewrite). Read at call
+    time: Settings flips it mid-process (BC-82)."""
+    from config import app_config  # lazy import: live-config read
+    return bool(app_config.ENABLE_QUERY_REWRITE)
+
 
 def extract_query_keywords(query: str) -> List[str]:
     """

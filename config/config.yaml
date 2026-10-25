@@ -127,16 +127,10 @@ paths:
     name: daemon
     system_prompt_file: core/system_prompt.txt
 features:
-  enable_wikipedia: true
-  enable_semantic_search: true
-  enable_facts: true
-  enable_dreams: false
-  semantic_only_mode: false
   enable_best_of: false
   enable_query_rewrite: true
-  disable_llm_summaries: false
   best_of_latency_budget_s: 0.0
-  rewrite_timeout_s: 0
+  rewrite_timeout_s: 1.2
   best_of_model: gpt-4o
   best_of_max_tokens: 8816
   best_of_min_question: false

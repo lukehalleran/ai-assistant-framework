@@ -201,14 +201,8 @@ class GatingSection(BaseModel):
 
 class FeaturesSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enable_wikipedia: bool = True
-    enable_semantic_search: bool = True
-    enable_facts: bool = True
-    enable_dreams: bool = False
-    semantic_only_mode: bool = False
     enable_best_of: bool = True
     enable_query_rewrite: bool = True
-    disable_llm_summaries: bool = False
     best_of_latency_budget_s: float = Field(default=2.0, ge=0.0)
     rewrite_timeout_s: float = Field(default=1.2, ge=0.0)
     best_of_model: Optional[str] = None

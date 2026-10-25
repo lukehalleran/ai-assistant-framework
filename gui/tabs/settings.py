@@ -26,16 +26,13 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
             _feat = (_settings.get('features', {}) or {})
             _disable_bestof_default = not bool(_feat.get('enable_best_of', True))
             _disable_rewrite_default = not bool(_feat.get('enable_query_rewrite', True))
-            _disable_summaries_default = bool(_feat.get('disable_llm_summaries', False))
         except (AttributeError, TypeError, KeyError):
             _disable_bestof_default = False
             _disable_rewrite_default = False
-            _disable_summaries_default = False
 
         with gr.Row():
             disable_bestof = gr.Checkbox(label="Disable Best-of (no multi-sample reranking)", value=_disable_bestof_default)
             disable_rewrite = gr.Checkbox(label="Disable Query Rewrite (skip pre-call)", value=_disable_rewrite_default)
-            disable_summaries = gr.Checkbox(label="Disable LLM Summaries (skip pre-call)", value=_disable_summaries_default)
         try:
             _bo_budget_default = float((_settings.get('features', {}) or {}).get('best_of_latency_budget_s', 0))
         except (ValueError, TypeError, KeyError):
@@ -44,17 +41,16 @@ def build_settings_tab(orchestrator, _load_settings, _save_settings):
         apply_fast_btn = gr.Button("Apply Streaming Settings")
         fast_status = gr.Markdown(visible=True)
 
-        def _apply_fast(disable_bo: bool, disable_rw: bool, disable_sums: bool, bo_budget: float):
+        def _apply_fast(disable_bo: bool, disable_rw: bool, bo_budget: float):
             return settings_core.apply_streaming(
                 orchestrator,
                 disable_best_of=disable_bo,
                 disable_query_rewrite=disable_rw,
-                disable_llm_summaries=disable_sums,
                 best_of_latency_budget_s=bo_budget,
                 save=_save_settings,
             )["message"]
 
-        apply_fast_btn.click(_apply_fast, inputs=[disable_bestof, disable_rewrite, disable_summaries, bestof_budget], outputs=[fast_status])
+        apply_fast_btn.click(_apply_fast, inputs=[disable_bestof, disable_rewrite, bestof_budget], outputs=[fast_status])
 
         # --- Web Search Settings ---
         gr.Markdown("### 🔍 Web Search (Tavily API)")

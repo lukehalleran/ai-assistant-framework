@@ -58,6 +58,7 @@ from config.app_config import (
 from config import app_config
 from core.intent_classifier import IntentClassifier, IntentResult, IntentType
 from utils.bootstrap import store_path
+from utils.query_rewriter import set_turn_hint
 from utils.turn_progress import emit as _progress_emit
 from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
 import utils.safe_json as safe_json
@@ -164,6 +165,13 @@ class ContextResult:
     # just-persisted chunk of a file whose full content is already present
     # verbatim in [CURRENT QUERY] this same turn.
     uploaded_filenames: List[str] = field(default_factory=list)
+
+    # This turn's early LLM rewrite (2026-10-25, class: BC-06, BC-31). Used
+    # ONLY as the hybrid retriever's candidate-generation query (published via
+    # utils.query_rewriter.set_turn_hint). ``processed_query`` — which the
+    # memory gate scores and which carries an upload's merged text — is never
+    # replaced by it.
+    retrieval_query: Optional[str] = None
 
     # Thread context
     thread_context: Optional[Dict[str, Any]] = None
@@ -396,8 +404,12 @@ class ContextPipeline:
         # Track conversation depth
         self._conversation_depth += 1
 
+        # A previous turn's rewrite must never leak into this one.
+        set_turn_hint(None)
+
         # Initialize result components
         processed_query = user_input
+        retrieval_query: Optional[str] = None
         file_context = None
         tone_level = ToneLevel.CONVERSATIONAL
         emotional_context = None
@@ -491,20 +503,11 @@ class ContextPipeline:
                     and len(user_input.split()) < 12
                     and intent_result.intent != IntentType.EMOTIONAL_SUPPORT):
                 skip_heavy = True
-        if not skip_heavy:
-            _progress_emit("📋 Topic analysis + fact extraction…")
-            is_heavy_topic, extracted_facts, query_analysis = await self._check_heavy_topics(
-                user_input,
-                topics
-            )
-            if is_heavy_topic:
-                logger.debug(f"Stage 4b (Heavy Topic): detected, {len(extracted_facts)} facts extracted")
-        elif skip_heavy:
-            logger.debug(f"Stage 4b (Heavy Topic): SKIPPED (intent={intent_result.intent.value if intent_result else '?'}, words={len(user_input.split())})")
-
-        # Stages 5+6: Query Rewriting + STM Analysis (parallelized — independent LLM calls)
-        # Skip rewriting for short queries and casual/meta intents — the original
-        # phrasing is already good enough and rewriting adds 500-1500ms.
+        # Stages 4b+5+6 run CONCURRENTLY (2026-10-25, class: BC-72): the heavy-
+        # topic LLM check, the one query rewrite and STM analysis are
+        # independent LLM calls; the heavy check used to finish (0.7 s) before
+        # STM / the rewrite started. Skip rewriting for short queries and
+        # casual/meta intents — the original phrasing is already good enough.
         _word_count = len(user_input.split())
         _skip_rewrite_intents = {IntentType.CASUAL_SOCIAL, IntentType.META_CONVERSATIONAL}
         run_rewrite = (
@@ -524,47 +527,54 @@ class ContextPipeline:
             and self._should_run_stm(conversation_history)
         )
 
-        if run_rewrite and run_stm:
-            # Both needed — run in parallel for ~1-2s savings
-            _progress_emit("✍️ Refining query + reading short-term context…")
+        if skip_heavy:
+            logger.debug(f"Stage 4b (Heavy Topic): SKIPPED (intent={intent_result.intent.value if intent_result else '?'}, words={len(user_input.split())})")
+        # The rewrite's should-rewrite decision reads the heuristic analysis
+        # (cheap, no LLM) that the heavy check used to hand it serially; the
+        # heavy check recomputes the same heuristic itself.
+        _pre_analysis = None if skip_heavy else self._quick_query_analysis(user_input)
 
-            async def _do_rewrite():
-                return await self._rewrite_query(user_input, query_analysis)
+        async def _do_heavy():
+            return await self._check_heavy_topics(user_input, topics)
 
-            async def _do_stm():
-                try:
-                    async with asyncio.timeout(10.0):
-                        return await self._analyze_stm(user_input, conversation_history)
-                except asyncio.TimeoutError:
-                    logger.warning("Stage 6 (STM): analysis timed out")
-                    return None
+        async def _do_rewrite():
+            return await self._rewrite_query(user_input, _pre_analysis)
 
-            rewritten, stm_summary = await asyncio.gather(
-                _do_rewrite(), _do_stm()
-            )
-            if rewritten and rewritten != user_input:
-                processed_query = rewritten
-                logger.debug("Stage 5 (Rewrite): query rewritten")
-            if stm_summary:
-                logger.debug("Stage 6 (STM): analysis complete")
-
-        elif run_rewrite:
-            _progress_emit("✍️ Refining query for retrieval…")
-            rewritten = await self._rewrite_query(user_input, query_analysis)
-            if rewritten and rewritten != user_input:
-                processed_query = rewritten
-                logger.debug("Stage 5 (Rewrite): query rewritten")
-
-        elif run_stm:
-            _progress_emit("🧵 Reading short-term context…")
+        async def _do_stm():
             try:
                 async with asyncio.timeout(10.0):
-                    stm_summary = await self._analyze_stm(user_input, conversation_history)
-                if stm_summary:
-                    logger.debug("Stage 6 (STM): analysis complete")
+                    return await self._analyze_stm(user_input, conversation_history)
             except asyncio.TimeoutError:
                 logger.warning("Stage 6 (STM): analysis timed out")
-                stm_summary = None
+                return None
+
+        _jobs: Dict[str, Any] = {}
+        if not skip_heavy:
+            _jobs["heavy"] = _do_heavy()
+        if run_rewrite:
+            _jobs["rewrite"] = _do_rewrite()
+        if run_stm:
+            _jobs["stm"] = _do_stm()
+        if _jobs:
+            _progress_emit("📋 Topic analysis, query refinement + short-term context…")
+            _done = dict(zip(_jobs.keys(), await asyncio.gather(*_jobs.values())))
+            if "heavy" in _done:
+                is_heavy_topic, extracted_facts, query_analysis = _done["heavy"]
+                if is_heavy_topic:
+                    logger.debug(f"Stage 4b (Heavy Topic): detected, {len(extracted_facts)} facts extracted")
+            rewritten = _done.get("rewrite")
+            if rewritten and rewritten != user_input:
+                retrieval_query = rewritten
+                logger.debug("Stage 5 (Rewrite): retrieval query rewritten")
+            stm_summary = _done.get("stm")
+            if stm_summary:
+                logger.debug("Stage 6 (STM): analysis complete")
+        # Hand-off for the hybrid retriever: the Stage-1 topic (replaces its
+        # own TopicManager LLM call) + the rewrite sentence when there is one.
+        set_turn_hint(
+            user_input, retrieval_query,
+            [primary_topic] if primary_topic else None,
+        )
 
         # Stage 6b: Refine intent with STM (no LLM, just keyword matching)
         if stm_summary and intent_result and self._intent_classifier:
@@ -606,6 +616,7 @@ class ContextPipeline:
             is_heavy_topic=is_heavy_topic,
             extracted_facts=extracted_facts,
             query_analysis=query_analysis,
+            retrieval_query=retrieval_query,
             last_exchange=last_exchange,
             intent=intent_result,
             is_small_talk=is_small_talk,
@@ -1034,6 +1045,15 @@ class ContextPipeline:
             logger.warning(f"Heavy topic check failed: {e}")
             return False, [], None
 
+    def _quick_query_analysis(self, query: str) -> Optional[Any]:
+        """Heuristic (no-LLM) analysis shared by the heavy check and the
+        rewrite decision; None on any failure (callers recompute/skip)."""
+        try:
+            from utils.query_checker import analyze_query  # lazy import: cycle
+            return analyze_query(query, self.model_manager)
+        except Exception:  # degrades: rewrite decision uses its fallback heuristic
+            return None
+
     async def _rewrite_query(
         self,
         query: str,
@@ -1045,15 +1065,15 @@ class ContextPipeline:
         Uses LLM to expand casual queries into semantic-rich versions.
         Only rewrites if query is a question or command with sufficient tokens.
 
-        DISABLED by default: config.yaml ships `features.rewrite_timeout_s: 0`,
-        which app_config resolves to REWRITE_TIMEOUT_S=0.0 — the `_rewrite_timeout
-        == 0` guard below returns None immediately in the shipped config (see
-        DaemonOrchestrator._build_context_pipeline_config for the wiring that
-        used to silently override this with a nonzero default). Enabling it is
-        not a free win: it changes the retrieval vector fed to the memory gate
-        (the bge cosine thresholds — gate_rel_threshold_retrieval etc. — were
-        calibrated against RAW queries, not LLM-rewritten ones), and it can
-        overwrite an already-processed_query set by a file upload.
+        ON by default (owner decision 2026-10-24): config.yaml ships
+        `features.rewrite_timeout_s: 1.2`; 0 disables the call. The output is
+        an ADDITIONAL retrieval candidate query only (ContextResult.retrieval_query,
+        published for the hybrid retriever, which merges its candidates into
+        the pool built by its local keyword expansion): the memory gate's bge thresholds were
+        calibrated on RAW queries, so ``processed_query`` is never replaced,
+        and an upload's merged text can never be overwritten by it. It runs
+        concurrently with the heavy-topic check and STM, bounded by the
+        timeout; on timeout the hybrid retriever falls back to its own rewrite.
 
         Returns:
             Rewritten query or None if no rewrite needed
