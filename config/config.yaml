@@ -736,3 +736,17 @@ prompts:
     - core
     - directive
     - safety
+figure_check:            # 2026-10-25 (BC-103): every number/time the reply asserts about the user, the conversation,
+                         # the user's data or Daemon must be COPIED from a source in context, DERIVED by a fixed
+                         # deterministic operation (clock, timestamps, weekday, sum/difference, list count, unit
+                         # conversion), or it is UNSUPPORTED. Pure code (no model call); runs first in the
+                         # delivery-revision pipeline so grounding/personal-claim audit the corrected body.
+  enabled: true
+  correct_classes:       # findings rewritten in the delivered reply (display == storage)
+  - elapsed_precise      # "an hour ago" that every unambiguous referent contradicts -> the real age
+  - weekday_date         # an impossible weekday/date pair -> the actual weekday
+  log_classes:           # findings recorded to checker_findings.jsonl (never edited)
+  - elapsed_vague
+  - elapsed_unconfirmed   # precise phrase that is ambiguous / weakly bound (never edited)
+  - copied_mismatch      # (unsupported is counted in the receipt but not logged: mostly counted-noun noise)
+  min_referent_overlap: 1   # content lemmas a source item must share with the figure's clause to be its referent

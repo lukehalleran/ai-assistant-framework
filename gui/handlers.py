@@ -162,6 +162,7 @@ import core.agentic.tools as tools
 import core.citation_drift as citation_drift
 import core.citation_extractor as citation_extractor
 import core.email.service as service
+import core.figure_check as figure_check
 import core.grounding_check as grounding_check
 import core.insight.assessor as assessor
 import core.insight.coordinator as coordinator
@@ -4239,11 +4240,94 @@ def _record_citation_drift(ctx, body):
         logger.debug(f"[CitationDrift] check failed (non-fatal): {exc}")
 
 
+_FIGURE_CHECK_WARNED = False
+
+
+def _figure_check_run(body, raw_context, history, source_material, user_text, now, min_overlap):
+    """Pure-CPU part of the figure check (runs in a worker thread)."""
+    pool = figure_check.build_source_pool(
+        raw_context, history, source_material, now, user_text=user_text)
+    return figure_check.check_reply(body, pool, now, min_overlap=min_overlap)
+
+
+async def _apply_figure_check(ctx, body, *, source_material=""):
+    """Figure provenance check (2026-10-25, BC-103): every number/time the reply
+    asserts about the user, the conversation or Daemon is copied from, or derived
+    from, a source in context. Corrects only the classes in
+    ``figure_check.correct_classes`` (precise elapsed phrases every unambiguous
+    referent contradicts; impossible weekday/date pairs); everything else is
+    log-only. Returns the revised body or None. Receipt (counts/labels only):
+    figure_check_status / figure_check_findings / figure_check_corrected /
+    figure_check_nlp. Never raises: fail-open, status ``error``."""
+    global _FIGURE_CHECK_WARNED
+    tel = getattr(ctx, "telemetry", None)
+    receipt = {"figure_check_status": "ok", "figure_check_findings": {}, "figure_check_corrected": 0}
+
+    def _publish():
+        if isinstance(tel, dict):
+            tel.update(receipt)
+
+    try:
+        if not app_config.FIGURE_CHECK_ENABLED:
+            receipt["figure_check_status"] = "skipped:disabled"
+            return None
+        if not body or not str(body).strip():
+            receipt["figure_check_status"] = "skipped:empty"
+            return None
+        now = _dt.now()
+        user_text = getattr(ctx, "user_text", "") or ""
+        report = await asyncio.to_thread(
+            _figure_check_run, body, getattr(ctx, "raw_context", None) or {},
+            getattr(ctx, "history", None) or (), source_material or "", user_text, now,
+            app_config.FIGURE_CHECK_MIN_REFERENT_OVERLAP,
+        )
+        correct = tuple(app_config.FIGURE_CHECK_CORRECT_CLASSES)
+        log_classes = set(app_config.FIGURE_CHECK_LOG_CLASSES)
+        revised, corrected = figure_check.apply_corrections(body, report, correct)
+        receipt["figure_check_findings"] = report.counts()
+        receipt["figure_check_corrected"] = corrected
+        receipt["figure_check_nlp"] = bool(report.nlp)
+        if report.status != "ok":
+            receipt["figure_check_status"] = "ok:" + report.status
+        for f in report.findings:
+            was_corrected = bool(f.replacement) and f.cls in correct
+            if not was_corrected and f.cls not in log_classes:
+                continue
+            checker_findings.record_finding(
+                "figure_check", mode="correct" if was_corrected else "log_only",
+                session_id=_get_session_id(getattr(ctx, "orchestrator", None)),
+                verdict=f.cls, reason=f.reason, claim_span=f.figure.text,
+                evidence_excerpt=f.evidence_excerpt,
+                reply_excerpt=checker_findings.reply_excerpt_around(body, f.figure.text),
+                query_excerpt=user_text, overlap=f.overlap,
+                actual_age_s=None if f.actual_age_s is None else round(float(f.actual_age_s)),
+                probe_texts=[user_text, body],
+            )
+        if corrected and revised != body:
+            logger.info(f"[FigureCheck] corrected {corrected} figure(s) in the reply")
+            return revised
+        return None
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        receipt["figure_check_status"] = "error"
+        if not _FIGURE_CHECK_WARNED:
+            _FIGURE_CHECK_WARNED = True
+            logger.warning(f"[FigureCheck] failed (non-fatal, reply unchanged): {exc}")
+        else:
+            logger.debug(f"[FigureCheck] failed (non-fatal): {exc}")
+        return None
+    finally:
+        _publish()
+
+
 async def _apply_delivery_revisions(ctx, response_text, *, source_material="", regenerate_fn=None):
     """Apply content revisions in delivery order and return the clean body.
 
     The action-guard suffix is kept by the caller and reattached once after
-    this pipeline. Grounding corrections become the input to the personal
+    this pipeline. The figure-provenance check (BC-103) runs right after the
+    tool-marker guard so grounding and the personal-claim audit see the
+    corrected body. Grounding corrections become the input to the personal
     claim audit, so a later correction cannot restore the original draft and
     discard the grounding fix. In log-only mode, each check records the body
     it actually audits; when no earlier pass revises, that is also the body
@@ -4298,6 +4382,12 @@ async def _apply_delivery_revisions(ctx, response_text, *, source_material="", r
                 ctx.telemetry["tool_marker_notice"] = True
     except Exception as exc:
         logger.warning(f"[DeliveryRevision] Tool-marker guard failed (non-fatal): {exc}")
+    try:
+        figured = await _apply_figure_check(ctx, body, source_material=source_material)
+        if figured:
+            body = figured
+    except Exception as exc:
+        logger.warning(f"[DeliveryRevision] Figure check failed (non-fatal): {exc}")
     _record_citation_drift(ctx, body)
     try:
         grounded, _ = await _apply_grounding_check_for_delivery(
