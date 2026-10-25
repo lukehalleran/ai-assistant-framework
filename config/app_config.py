@@ -35,6 +35,7 @@ from datetime import datetime
 from typing import Optional, Dict
 from utils.logging_utils import get_logger
 from utils.bootstrap import resolve_bundled_path, store_path
+from config.config_errors import ConfigParseError
 
 logger = get_logger("config")
 
@@ -110,13 +111,17 @@ def load_yaml_config(config_path="config.yaml"):
             try:
                 with open(path, "r") as f:
                     config = yaml.safe_load(f)
-                    if not isinstance(config, dict):
-                        logger.error("Config file is not a valid dictionary.")
-                        config = {}
-                    break
             except Exception as e:
-                logger.error(f"Error loading config: {e}")
-                config = {}
+                # A present-but-unparseable config.yaml must not degrade to {} (that
+                # silently re-enables every built-in default) -- abort startup.
+                raise ConfigParseError(path, "Configuration file", e) from e
+            if config is None:
+                config = {}  # empty file: same as no overrides
+            elif not isinstance(config, dict):
+                raise ConfigParseError(
+                    path, "Configuration file",
+                    ValueError(f"top level must be a mapping, got {type(config).__name__}"))
+            break
 
     if not config:
         logger.warning(f"Config file not found in any of: {paths_to_try}, using defaults.")
@@ -161,11 +166,17 @@ def load_local_overrides(filename="config.local.yaml"):
             try:
                 with open(path, "r") as f:
                     data = yaml.safe_load(f)
-                if isinstance(data, dict):
-                    logger.info(f"Loading local config overrides from: {path}")
-                    return resolve_vars(data)
             except Exception as e:
-                logger.warning(f"Error loading local overrides {path}: {e}")
+                # Present-but-broken local overrides: abort, never drop them silently.
+                raise ConfigParseError(path, "Local config overrides", e) from e
+            if data is None:
+                return {}  # empty file
+            if not isinstance(data, dict):
+                raise ConfigParseError(
+                    path, "Local config overrides",
+                    ValueError(f"top level must be a mapping, got {type(data).__name__}"))
+            logger.info(f"Loading local config overrides from: {path}")
+            return resolve_vars(data)
     return {}
 
 # --------------------------------------------------------------------
@@ -250,7 +261,6 @@ Path(os.getenv("CHROMA_PATH", CHROMA_PATH)).mkdir(parents=True, exist_ok=True)
 # --------------------------------------------------------------------
 
 IN_HARM_TEST = config.get("daemon", {}).get("in_harm_test", False)
-DEBUG_MODE = config.get("daemon", {}).get("debug_mode", True)
 
 # --------------------------------------------------------------------
 # Daemon Mode: "user" (streamlined) or "dev" (all features)
@@ -262,7 +272,6 @@ if DAEMON_MODE not in ("user", "dev"):
     logger.warning(f"Unknown DAEMON_MODE '{DAEMON_MODE}', defaulting to 'user'")
     DAEMON_MODE = "user"
 DEFAULT_MODEL_NAME = config.get("models", {}).get("default", "llama")
-DREAM_MODEL_NAME = config.get("models", {}).get("dream_model", "gpt-neo")
 DEFAULT_MAX_TOKENS = config.get("models", {}).get("default_max_tokens", 2048)
 HEAVY_TOPIC_MAX_TOKENS = config.get("models", {}).get("heavy_topic_max_tokens", 8192)
 DEFAULT_TOP_P = config.get("models", {}).get("default_top_p", 0.9)
@@ -270,23 +279,13 @@ DEFAULT_TOP_K = config.get("models", {}).get("default_top_k", 5)
 DEFAULT_TEMPERATURE = config.get("models", {}).get("default_temperature", 0.7)
 LOCAL_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("local_model_context_limit", 4096)
 API_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("api_model_context_limit", 128000)
-LOAD_LOCAL_MODEL = config.get("models", {}).get("load_local_model", True)
-CONFIDENCE_THRESHOLD = config.get("gating", {}).get("confidence_threshold", 1.5)
 GATE_REL_THRESHOLD = config.get("gating", {}).get("gate_rel_threshold", 0.18)
 # Retrieval-space (bge) equivalents used when the gate shares the ChromaDB
 # store's embedder — quantile-matched to the MiniLM-space values (see
 # scripts/probe_gate_embedding_mismatch.py + config.yaml comments).
 GATE_REL_THRESHOLD_RETRIEVAL = config.get("gating", {}).get("gate_rel_threshold_retrieval", 0.60)
 GATE_DEICTIC_MIN_RETRIEVAL = config.get("gating", {}).get("gate_deictic_min_retrieval", 0.61)
-MAX_FINAL_MEMORIES = config.get("memory", {}).get("max_final_memories", 5)
-RERANK_USE_LLM = config.get("gating", {}).get("rerank_use_llm", True)
-CROSS_ENCODER_WEIGHT = config.get("gating", {}).get("cross_encoder_weight", 0.7)
-MEM_NO = config.get("memory", {}).get("mem_no", 5)
-MEM_IMPORTANCE_SCORE = config.get("memory", {}).get("mem_importance_score", 0.6)
-MAX_WORKING_MEMORY = config.get("memory", {}).get("max_working_memory", 10)
-CHILD_MEM_LIMIT = config.get("memory", {}).get("child_mem_limit", 3)
 CORPUS_MAX_ENTRIES = int(config.get("memory", {}).get("corpus_max_entries", 2000))
-COSINE_SIMILARITY_THRESHOLD = config.get("gating", {}).get("cosine_similarity_threshold", 0.25)
 # Minimum FAISS similarity for wiki semantic chunks to be included in prompt
 # IVFPQ scores run ~0.15-0.20 lower than exact cosine; 0.35 filters out noise
 SEMANTIC_CHUNKS_GATE_THRESHOLD: float = float(
@@ -299,8 +298,6 @@ SEMANTIC_CHUNKS_GATE_THRESHOLD: float = float(
 # When enabled, uses n/4 recent + 3n/4 semantic for summaries (1:3 ratio)
 # and n/3 recent + 2n/3 semantic for reflections (1:2 ratio)
 # Falls back to pure recency if disabled or unavailable
-HYBRID_SUMMARIES_ENABLED = bool(config.get("memory", {}).get("hybrid_summaries_enabled", True))
-HYBRID_REFLECTIONS_ENABLED = bool(config.get("memory", {}).get("hybrid_reflections_enabled", True))
 
 # Summary/Reflection Budget Ratios
 # --------------------------------
@@ -310,24 +307,12 @@ HYBRID_REFLECTIONS_ENABLED = bool(config.get("memory", {}).get("hybrid_reflectio
 # SUMMARY_RECENT_RATIO = float(config.get("memory", {}).get("summary_recent_ratio", 0.25))
 # REFLECTION_RECENT_RATIO = float(config.get("memory", {}).get("reflection_recent_ratio", 0.33))
 
-# Cosine Filtering Thresholds
-# ---------------------------
-# Threshold for cosine similarity filtering of summaries/reflections
-# Range: 0.0-1.0, higher = more selective
-# Summaries use 0.30 (should be clearly relevant, dense content)
-# Reflections use 0.25 (more abstract, cast wider net)
-SUMMARY_COSINE_THRESHOLD = float(config.get("gating", {}).get("summary_cosine_threshold", 0.30))
-REFLECTION_COSINE_THRESHOLD = float(config.get("gating", {}).get("reflection_cosine_threshold", 0.25))
-
 # Legacy config (keep for backward compatibility)
 DEFAULT_SUMMARY_PROMPT_HEADER = config.get("memory", {}).get("default_summary_prompt_header", "Summary of last 20 exchanges:\n")
 DEFAULT_TAGGING_PROMPT = config.get("memory", {}).get("default_tagging_prompt", "...")
 
 OpenAPIKey = config.get("models", {}).get("openai_api_key", "")
-topic_confidence_threshold = config.get("gating", {}).get("topic_confidence_threshold", 0.7)
 RECENCY_DECAY_RATE = config.get("memory", {}).get("recency_decay_rate", 0.05)
-TRUTH_SCORE_UPDATE_RATE = config.get("memory", {}).get("truth_score_update_rate", 0.02)
-TRUTH_SCORE_MAX = config.get("memory", {}).get("truth_score_max", 0.95)
 COLLECTION_BOOSTS = config.get("memory", {}).get("collection_boosts", {
     "facts": 0.15,
     "summaries": 0.10,
@@ -378,7 +363,21 @@ WEB_SEARCH_PER_QUERY_LIMIT: int = int(WEB_SEARCH_CFG.get("per_query_limit", 5))
 # Cache TTL in hours
 WEB_SEARCH_CACHE_TTL_HOURS: int = int(WEB_SEARCH_CFG.get("cache_ttl_hours", 72))
 # Confidence threshold for triggering search (0.0-1.0)
-WEB_SEARCH_CONFIDENCE_THRESHOLD: float = float(WEB_SEARCH_CFG.get("confidence_threshold", 0.5))
+WEB_SEARCH_CONFIDENCE_THRESHOLD: float = float(
+    os.getenv("WEB_SEARCH_CONFIDENCE_THRESHOLD", WEB_SEARCH_CFG.get("confidence_threshold", 0.5))
+)
+# Web-search TRIGGER classifier (utils/web_search_trigger.py reads these; 2026-10-25:
+# it used to read env only, so the YAML keys were dead -- BC-88/BC-15). YAML default,
+# env still overrides. trigger_max_tokens is 400 (the 2026-10-08 fix), not the old 150.
+WEB_SEARCH_TRIGGER_MODEL: str = os.getenv("WEB_SEARCH_TRIGGER_MODEL", str(WEB_SEARCH_CFG.get("trigger_model", "gpt-4o-mini")))
+WEB_SEARCH_TRIGGER_TIMEOUT: float = float(os.getenv("WEB_SEARCH_TRIGGER_TIMEOUT", WEB_SEARCH_CFG.get("trigger_timeout_s", 5.0)))
+WEB_SEARCH_TRIGGER_MAX_TOKENS: int = int(os.getenv("WEB_SEARCH_TRIGGER_MAX_TOKENS", WEB_SEARCH_CFG.get("trigger_max_tokens", 400)))
+_llm_first_env = os.getenv("WEB_SEARCH_LLM_FIRST_ENABLED")
+WEB_SEARCH_LLM_FIRST_ENABLED: bool = (
+    _llm_first_env.lower() == "true" if _llm_first_env is not None
+    else bool(WEB_SEARCH_CFG.get("llm_first_enabled", True))
+)
+WEB_SEARCH_LLM_HEURISTIC_WEIGHT: float = float(os.getenv("WEB_SEARCH_LLM_WEIGHT", WEB_SEARCH_CFG.get("llm_heuristic_weight", 0.7)))
 # Model for DEEP search link selection
 WEB_SEARCH_LINK_SELECTOR_MODEL: str = WEB_SEARCH_CFG.get("link_selector_model", "gpt-4o-mini")
 
@@ -507,11 +506,9 @@ SKILL_ACTIVATION_COOLDOWN_HOURS = float(os.getenv("SKILL_ACTIVATION_COOLDOWN_HOU
 # --------------------------------------------------------------------
 # Goal-directed code change proposals generated from project analysis
 PROPOSALS_CFG = config.get("code_proposals", {})
-CODE_PROPOSALS_ENABLED: bool = bool(PROPOSALS_CFG.get("enabled", True))
-CODE_PROPOSALS_COLLECTION: str = PROPOSALS_CFG.get("collection", "proposals")
+CODE_PROPOSALS_ENABLED: bool = bool(PROPOSALS_CFG.get("enabled", False))
 CODE_PROPOSALS_DEDUP_THRESHOLD: float = float(PROPOSALS_CFG.get("dedup_threshold", 0.70))
 CODE_PROPOSALS_MAX_PER_SESSION: int = int(PROPOSALS_CFG.get("max_per_session", 5))
-CODE_PROPOSALS_REQUIRE_TESTS: bool = bool(PROPOSALS_CFG.get("require_tests", True))
 
 # Prompt integration: surface proposals in [PROPOSED FEATURES] section
 CODE_PROPOSALS_PROMPT_ENABLED: bool = bool(PROPOSALS_CFG.get("prompt_enabled", True))
@@ -548,7 +545,6 @@ IMPL_TRACKING_CONFIDENCE_CONFIRMED = float(IMPL_TRACKING_CFG.get("confidence_con
 IMPL_TRACKING_CONFIDENCE_LIKELY = float(IMPL_TRACKING_CFG.get("confidence_likely", 0.60))
 IMPL_TRACKING_GIT_DEPTH = int(IMPL_TRACKING_CFG.get("git_depth", 50))
 IMPL_TRACKING_AT_SHUTDOWN = bool(IMPL_TRACKING_CFG.get("at_shutdown", True))
-IMPL_TRACKING_AUTO_COMPLETE = bool(IMPL_TRACKING_CFG.get("auto_complete", False))
 
 # Environment variable overrides for Implementation Tracking
 IMPL_TRACKING_ENABLED = bool(int(os.getenv("IMPL_TRACKING_ENABLED", "1" if IMPL_TRACKING_ENABLED else "0")))
@@ -1353,7 +1349,6 @@ KNOWLEDGE_GRAPH_CFG = config.get("knowledge_graph", {})
 KNOWLEDGE_GRAPH_ENABLED: bool = bool(KNOWLEDGE_GRAPH_CFG.get("enabled", True))
 KNOWLEDGE_GRAPH_PERSIST_PATH: str = os.getenv("KNOWLEDGE_GRAPH_PERSIST_PATH", str(KNOWLEDGE_GRAPH_CFG.get("persist_path", os.path.join("data", "knowledge_graph.json"))))
 KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH: int = int(KNOWLEDGE_GRAPH_CFG.get("retrieval_depth", 2))
-KNOWLEDGE_GRAPH_MAX_SENTENCES: int = int(KNOWLEDGE_GRAPH_CFG.get("max_sentences", 15))
 KNOWLEDGE_GRAPH_AUTO_SAVE_THRESHOLD: int = int(KNOWLEDGE_GRAPH_CFG.get("auto_save_threshold", 50))
 KNOWLEDGE_GRAPH_MIN_CONFIDENCE: float = float(KNOWLEDGE_GRAPH_CFG.get("min_confidence", 0.50))
 KNOWLEDGE_GRAPH_ALIASES_PATH: str = os.getenv("KNOWLEDGE_GRAPH_ALIASES_PATH", str(KNOWLEDGE_GRAPH_CFG.get("aliases_path", os.path.join("data", "entity_aliases.json"))))
@@ -1514,7 +1509,7 @@ AGENTIC_FETCH_FASTPATH_MIN_CHARS: int = int(
 # Uncertainty Fallback (retry via agentic search on "I don't know" responses)
 # --------------------------------------------------------------------
 UNCERTAINTY_CFG = config.get("uncertainty_fallback", {})
-UNCERTAINTY_FALLBACK_ENABLED: bool = bool(UNCERTAINTY_CFG.get("enabled", True))
+UNCERTAINTY_FALLBACK_ENABLED: bool = bool(UNCERTAINTY_CFG.get("enabled", False))
 UNCERTAINTY_SEMANTIC_THRESHOLD: float = float(UNCERTAINTY_CFG.get("semantic_threshold", 0.70))
 UNCERTAINTY_MAX_LENGTH: int = int(UNCERTAINTY_CFG.get("max_length", 400))
 
@@ -1628,8 +1623,8 @@ if PERSONAL_CLAIM_MODE not in ("log_only", "correct"):
 PERSONAL_CLAIM_CHECK_MODEL: Optional[str] = (
     PERSONAL_CLAIM_CFG.get("model") or RESPONSE_REVIEW_MODEL
 )
-PERSONAL_CLAIM_TIMEOUT_S: float = float(PERSONAL_CLAIM_CFG.get("timeout_s", 5.0))
-PERSONAL_CLAIM_MAX_TOKENS: int = int(PERSONAL_CLAIM_CFG.get("max_tokens", 900))
+PERSONAL_CLAIM_TIMEOUT_S: float = float(PERSONAL_CLAIM_CFG.get("timeout_s", 18.0))
+PERSONAL_CLAIM_MAX_TOKENS: int = int(PERSONAL_CLAIM_CFG.get("max_tokens", 1600))
 PERSONAL_CLAIM_MAX_EVIDENCE_CHARS: int = int(
     PERSONAL_CLAIM_CFG.get("max_evidence_chars", 12000)
 )
@@ -1763,8 +1758,6 @@ EXPAND_CFG = config.get("memory_expansion", {})
 EXPAND_MEMORY_ENABLED: bool = bool(EXPAND_CFG.get("enabled", True))
 EXPAND_MAX_PER_SESSION: int = int(EXPAND_CFG.get("max_per_session", 3))
 EXPAND_MAX_WINDOW: int = int(EXPAND_CFG.get("max_window", 5))
-EXPAND_DEFAULT_WINDOW: int = int(EXPAND_CFG.get("default_window", 3))
-EXPAND_MAX_TOTAL_TOKENS: int = int(EXPAND_CFG.get("max_total_tokens", 2000))
 EXPAND_ANCHOR_CHAR_LIMIT: int = int(EXPAND_CFG.get("anchor_char_limit", 600))
 EXPAND_CONTEXT_CHAR_LIMIT: int = int(EXPAND_CFG.get("context_char_limit", 300))
 # Long-form collections (obsidian_notes, reference_docs) need higher limits
@@ -1833,7 +1826,6 @@ INTERNET_ACTIONS_SMTP_PASSWORD: str = str(
 )
 INTERNET_ACTIONS_SMTP_FROM: str = str(INTERNET_ACTIONS_CFG.get("smtp_from", ""))
 INTERNET_ACTIONS_GITHUB_WRITE_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("github_write_enabled", False))
-INTERNET_ACTIONS_PLAYWRIGHT_ENABLED: bool = bool(INTERNET_ACTIONS_CFG.get("playwright_enabled", False))
 INTERNET_ACTIONS_PLAYWRIGHT_TIMEOUT: int = int(INTERNET_ACTIONS_CFG.get("playwright_timeout_s", 30))
 INTERNET_ACTIONS_TTL: int = int(INTERNET_ACTIONS_CFG.get("action_ttl_seconds", 300))
 INTERNET_ACTIONS_MAX_PENDING: int = int(INTERNET_ACTIONS_CFG.get("max_pending_actions", 5))
@@ -1873,7 +1865,7 @@ INTERNET_ACTIONS_ENABLED = bool(int(os.getenv("INTERNET_ACTIONS_ENABLED", "1" if
 # Token Budget (model-aware prompt budget)
 # --------------------------------------------------------------------
 TOKEN_BUDGET_CFG = config.get("token_budget", {})
-PROMPT_TOKEN_BUDGET_DEFAULT: int = int(TOKEN_BUDGET_CFG.get("default", 15000))
+PROMPT_TOKEN_BUDGET_DEFAULT: int = int(TOKEN_BUDGET_CFG.get("default", 10000))
 PROMPT_TOKEN_BUDGET_LOCAL: int = int(TOKEN_BUDGET_CFG.get("local_model", 12000))
 PROMPT_TOKEN_BUDGET_FLOOR: int = int(TOKEN_BUDGET_CFG.get("floor", 8000))
 PROMPT_TOKEN_BUDGET_CEILING: int = int(TOKEN_BUDGET_CFG.get("ceiling", 16000))
@@ -1910,7 +1902,6 @@ PROVENANCE_THINKING_MAX_CHARS = int(PROV_CFG.get("thinking_max_chars", 4000))
 # Filters candidates from knowledge graph random walks to find genuinely
 # novel, coherent cross-domain connections. Cheap stages first, LLM last.
 SYNTHESIS_CFG = config.get("synthesis", {})
-SYNTHESIS_ENABLED: bool = bool(SYNTHESIS_CFG.get("enabled", True))
 
 # Stage 0: Text Sanity
 SYNTHESIS_MIN_TOKEN_LENGTH: int = int(SYNTHESIS_CFG.get("min_token_length", 10))
@@ -1978,13 +1969,12 @@ SYNTHESIS_DEFAULT_BATCH_SIZE: int = int(SYNTHESIS_CFG.get("batch_size", 100))
 SYNTHESIS_LOG_ALL_REJECTIONS: bool = bool(SYNTHESIS_CFG.get("log_rejections", True))
 
 # Environment variable overrides for Synthesis Pipeline
-SYNTHESIS_ENABLED = bool(int(os.getenv("SYNTHESIS_ENABLED", "1" if SYNTHESIS_ENABLED else "0")))
 
 # ── Synthesis Generator (cross-store candidate generation) ────────────
 # Samples entities from personal stores + Wikipedia and uses LLM to
 # articulate cross-domain connections.  Runs at shutdown as a "dreaming" step.
 SYNTHESIS_GEN_CFG = config.get("synthesis_generator", {})
-SYNTHESIS_GENERATOR_ENABLED: bool = bool(SYNTHESIS_GEN_CFG.get("enabled", True))
+SYNTHESIS_GENERATOR_ENABLED: bool = bool(SYNTHESIS_GEN_CFG.get("enabled", False))
 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION: int = int(SYNTHESIS_GEN_CFG.get("candidates_per_session", 5))
 SYNTHESIS_GENERATOR_LLM_CONCURRENCY: int = int(SYNTHESIS_GEN_CFG.get("llm_concurrency", 5))
 SYNTHESIS_GENERATOR_MIN_GRAPH_NODES: int = int(SYNTHESIS_GEN_CFG.get("min_graph_nodes", 20))
@@ -2022,7 +2012,7 @@ SYNTHESIS_POOLED_ENABLED = bool(int(os.getenv(
 # facts, search FAISS for cross-domain matches, adversarially evaluate.
 # --------------------------------------------------------------------
 SYNTHESIS_RETRIEVAL_CFG = config.get("synthesis_retrieval", {})
-SYNTHESIS_RETRIEVAL_ENABLED: bool = bool(SYNTHESIS_RETRIEVAL_CFG.get("enabled", True))
+SYNTHESIS_RETRIEVAL_ENABLED: bool = bool(SYNTHESIS_RETRIEVAL_CFG.get("enabled", False))
 SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS: int = int(SYNTHESIS_RETRIEVAL_CFG.get("structural_query_max_tokens", 100))
 SYNTHESIS_RETRIEVAL_K: int = int(SYNTHESIS_RETRIEVAL_CFG.get("retrieval_k", 5))
 SYNTHESIS_RETRIEVAL_MIN_SIMILARITY: float = float(SYNTHESIS_RETRIEVAL_CFG.get("min_similarity", 0.25))
@@ -2050,7 +2040,6 @@ SYNTHESIS_AUDIT_MIN_GRADED: int = int(SYNTHESIS_AUDIT_CFG.get("min_graded", 10))
 # for structured graph walks in synthesis candidate generation.
 # --------------------------------------------------------------------
 WIKIDATA_CFG = config.get("wikidata_import", {})
-WIKIDATA_IMPORT_ENABLED: bool = bool(WIKIDATA_CFG.get("enabled", True))
 WIKIDATA_PERSIST_PATH: str = os.getenv("WIKIDATA_PERSIST_PATH", str(WIKIDATA_CFG.get("persist_path", "data/wikidata_cache.json")))
 WIKIDATA_ENTITIES_PER_DOMAIN: int = int(WIKIDATA_CFG.get("entities_per_domain", 5000))
 WIKIDATA_MAX_TOTAL: int = int(WIKIDATA_CFG.get("max_total_entities", 50000))
@@ -2058,9 +2047,6 @@ WIKIDATA_SPARQL_BATCH_SIZE: int = int(WIKIDATA_CFG.get("sparql_batch_size", 500)
 WIKIDATA_EMBEDDING_MATCH_THRESHOLD: float = float(WIKIDATA_CFG.get("embedding_match_threshold", 0.60))
 
 # Environment variable overrides
-WIKIDATA_IMPORT_ENABLED = bool(int(os.getenv(
-    "WIKIDATA_IMPORT_ENABLED", "1" if WIKIDATA_IMPORT_ENABLED else "0"
-)))
 
 # --------------------------------------------------------------------
 # Wikidata Enrichment (anchored shutdown-time typed edges)
@@ -2094,13 +2080,12 @@ WIKIDATA_ENRICHMENT_ENABLED = bool(int(os.getenv(
 # synthesis candidate generation.
 # --------------------------------------------------------------------
 GRAPH_WALK_CFG = config.get("graph_walk", {})
-GRAPH_WALK_ENABLED: bool = bool(GRAPH_WALK_CFG.get("enabled", True))
+GRAPH_WALK_ENABLED: bool = bool(GRAPH_WALK_CFG.get("enabled", False))
 GRAPH_WALK_MAX_LENGTH: int = int(GRAPH_WALK_CFG.get("max_walk_length", 8))
 GRAPH_WALK_WALKS_PER_SEED: int = int(GRAPH_WALK_CFG.get("walks_per_seed", 20))
 GRAPH_WALK_RESTART_PROB: float = float(GRAPH_WALK_CFG.get("restart_probability", 0.15))
 GRAPH_WALK_MIN_PATH: int = int(GRAPH_WALK_CFG.get("min_path_length", 3))
 GRAPH_WALK_MAX_CANDIDATES: int = int(GRAPH_WALK_CFG.get("max_candidates_per_session", 10))
-GRAPH_WALK_BOUNDARY_REQUIRED: bool = bool(GRAPH_WALK_CFG.get("boundary_crossing_required", True))
 GRAPH_WALK_MIN_BRIDGE_EDGES: int = int(GRAPH_WALK_CFG.get("min_bridge_edges", 40))
 GRAPH_WALK_PERSONAL_RETURN_BIAS: float = float(GRAPH_WALK_CFG.get("personal_return_bias", 2.0))
 GRAPH_WALK_HUB_DEGREE_THRESHOLD: int = int(GRAPH_WALK_CFG.get("hub_degree_threshold", 15))
@@ -2146,7 +2131,6 @@ VISUAL_MEMORY_INDEX_PATH: str = os.getenv("VISUAL_MEMORY_INDEX_PATH", str(VISUAL
 VISUAL_MEMORY_META_PATH: str = os.getenv("VISUAL_MEMORY_META_PATH", str(VISUAL_MEMORY_CFG.get("meta_path", "data/clip_metadata.json")))
 VISUAL_MEMORY_SIMILARITY_THRESHOLD: float = float(VISUAL_MEMORY_CFG.get("similarity_threshold", 0.20))
 VISUAL_MEMORY_INGEST_ON_UPLOAD: bool = bool(VISUAL_MEMORY_CFG.get("ingest_on_upload", True))
-VISUAL_MEMORY_INGEST_ON_OBSIDIAN_SYNC: bool = bool(VISUAL_MEMORY_CFG.get("ingest_on_obsidian_sync", True))
 
 # Environment variable overrides
 VISUAL_MEMORY_ENABLED = bool(int(os.getenv(
@@ -2183,7 +2167,6 @@ DAEMON_NOTES_CFG = config.get("daemon_notes", {})
 DAEMON_NOTES_ENABLED: bool = bool(DAEMON_NOTES_CFG.get("enabled", True))
 DAEMON_NOTES_OUTPUT_DIR: str = str(DAEMON_NOTES_CFG.get("output_dir", "daemon_notes"))
 DAEMON_NOTES_MAX_PER_PROMPT: int = int(DAEMON_NOTES_CFG.get("max_per_prompt", 2))
-DAEMON_NOTES_COLLECTION_BOOST: float = float(DAEMON_NOTES_CFG.get("collection_boost", -0.05))
 
 # Environment variable overrides
 DAEMON_NOTES_ENABLED = bool(int(os.getenv(

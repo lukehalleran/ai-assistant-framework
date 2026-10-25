@@ -11,6 +11,7 @@ Tests configuration functionality:
 import pytest
 import os
 from pathlib import Path
+from config.config_errors import ConfigParseError
 from config.app_config import (
     resolve_vars,
     load_yaml_config,
@@ -179,14 +180,12 @@ corpus_file: corpus.json
 
 
 def test_load_yaml_config_invalid_yaml(tmp_path):
-    """load_yaml_config handles invalid YAML gracefully"""
+    """A present-but-unparseable config.yaml aborts startup (ConfigParseError), never {}."""
     config_file = tmp_path / "invalid.yaml"
     config_file.write_text("{invalid yaml content [")
 
-    result = load_yaml_config(str(config_file))
-
-    # Should return empty dict or not crash
-    assert isinstance(result, dict)
+    with pytest.raises(ConfigParseError):
+        load_yaml_config(str(config_file))
 
 
 def test_load_yaml_config_empty_file(tmp_path):

@@ -5,18 +5,11 @@ daemon:
   data_dir: ./data
   log_dir: ./conversation_logs
   in_harm_test: false
-  debug_mode: false
-  log_level: INFO
   device: cuda
 memory:
   corpus_file: ./data/corpus_v4.json
   chroma_path: ./data/chroma_db_v4
-  max_recent: 50
   max_memories: 30
-  max_final_memories: 30
-  max_working_memory: 30
-  mem_no: 5
-  mem_importance_score: 0.75
   # Step-6.1 memory top-up survival minimum (NOT a refill-to-max target)
   prompt_memory_topup_floor: 3
   # Budget RESERVE for memories (items held back inside the token budget so higher-priority
@@ -27,12 +20,8 @@ memory:
   # (status report / own-code activity question). Ambient git_commits keep priority 3
   # and may still be emptied. 0 = no git reserve.
   prompt_git_commits_reserve_floor: 5
-  num_memories: 30
   prompt_max_mems: 30
-  child_mem_limit: 3
   recency_decay_rate: 0.05
-  truth_score_update_rate: 0.02
-  truth_score_max: 0.95
   collection_boosts:
     facts: 0.1
     summaries: 0.1
@@ -51,17 +40,9 @@ memory:
     Tags:
 
     '
-  retrieve_conversations: true
-  max_conversations: 15
   conversation_collection: conversations
-  retrieve_summaries: true
-  max_summaries: 10
   summary_collection: summaries
   summary_interval: 20
-  max_facts: 15
-  max_reflections: 6
-  hybrid_summaries_enabled: true
-  hybrid_reflections_enabled: true
   user_profile_facts_per_category: 5
   prompt_max_recent: 10
   # Max share of the prompt token budget that PRIOR-session [RECENT CONVERSATION]
@@ -78,12 +59,8 @@ memory:
   prompt_floor_reserve_max_share: 0.25
   semantic_retrieval_limit: 40
   prompt_max_semantic: 15
-  force_min_memories: true
+  semantic_force_min_memories: true
 models:
-  default: llama
-  dream_model: gpt-neo
-  openrouter_base: https://openrouter.ai/api/v1
-  load_local_model: true
   local_model_context_limit: 4096
   api_model_context_limit: 128000
   default_max_tokens: 9984
@@ -96,22 +73,13 @@ models:
   openai_api_key: ''
   active: kimi-3
 gating:
-  confidence_threshold: 2.0
   gate_rel_threshold: 0.18
   gate_rel_threshold_retrieval: 0.6
   gate_deictic_min_retrieval: 0.61
-  cosine_threshold: 0.15
-  cosine_similarity_threshold: 0.15
   deictic_threshold: 0.25
   normal_threshold: 0.15
   deictic_anchor_penalty: 0.25
   deictic_continuity_min: 0.25
-  use_reranking: true
-  rerank_use_llm: false
-  cross_encoder_weight: 0.9
-  topic_confidence_threshold: 0.85
-  summary_cosine_threshold: 0.2
-  reflection_cosine_threshold: 0.15
   score_weights:
     relevance: 0.3
     recency: 0.22
@@ -155,7 +123,7 @@ web_search:
   llm_first_enabled: true
   trigger_model: gpt-4o-mini
   trigger_timeout_s: 5.0
-  trigger_max_tokens: 150
+  trigger_max_tokens: 400
   llm_heuristic_weight: 0.7
   confidence_threshold: 0.5
 location:
@@ -169,8 +137,6 @@ agentic_search:
   max_rounds: 5
   context_budget_tokens: 8000
   compression_model: sonnet-4.5
-  prefer_native_tools: true
-  memory_search_enabled: true
   memory_search_limit: 7
   reuse_decision_answer: true
   decision_max_tokens: 1600
@@ -353,8 +319,6 @@ memory_expansion:
   enabled: true
   max_per_session: 3
   max_window: 5
-  default_window: 3
-  max_total_tokens: 2000
   anchor_char_limit: 600
   context_char_limit: 300
 daily_notes:
@@ -485,7 +449,6 @@ knowledge_graph:
   enabled: true
   persist_path: data/knowledge_graph.json
   retrieval_depth: 2
-  max_sentences: 15
   auto_save_threshold: 50
   min_confidence: 0.5
   aliases_path: data/entity_aliases.json
@@ -545,12 +508,10 @@ implementation_tracking:
   confidence_likely: 0.6
   git_depth: 50
   at_shutdown: true
-  auto_complete: false
 provenance:
   enabled: true
   thinking_max_chars: 4000
 synthesis:
-  enabled: true
   batch_size: 100
   log_rejections: true
   min_token_length: 10
@@ -597,7 +558,6 @@ synthesis_audit:
   fp_halt_threshold: 0.5
   min_graded: 10
 wikidata_import:
-  enabled: true
   persist_path: data/wikidata_cache.json
   entities_per_domain: 5000
   max_total_entities: 50000
@@ -626,7 +586,6 @@ graph_walk:
   restart_probability: 0.15
   min_path_length: 3
   max_candidates_per_session: 10
-  boundary_crossing_required: true
   min_bridge_edges: 40
   personal_return_bias: 2.0
 visual_memory:
@@ -638,7 +597,6 @@ visual_memory:
   caption_timeout_s: 10.0
   similarity_threshold: 0.2
   ingest_on_upload: true
-  ingest_on_obsidian_sync: true
 wiki:
   fallback_deadline_s: 2.5
 wiki_enrichment:
@@ -662,10 +620,8 @@ skill_activation:
   use_stm: true
 code_proposals:
   enabled: false
-  collection: proposals
   dedup_threshold: 0.7
   max_per_session: 5
-  require_tests: true
 escalation_tracker:
   enabled: true
   threshold: 3
@@ -733,7 +689,6 @@ daemon_notes:
   enabled: true
   output_dir: daemon_notes
   max_per_prompt: 2
-  collection_boost: -0.05
 action_guard:
   pending_proposal_enabled: true
   pending_proposal_ttl_turns: 2
@@ -761,7 +716,6 @@ internet_actions:
   google_contacts_enabled: true
   google_other_contacts_enabled: true
   google_gmail_search_enabled: true
-  playwright_enabled: false
   playwright_timeout_s: 30
   action_ttl_seconds: 300
   max_pending_actions: 5

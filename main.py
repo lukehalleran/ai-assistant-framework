@@ -85,6 +85,16 @@ load_dotenv(resolve_env_path(), override=True)
 _llm_key_set = bool(os.environ.get('OPENROUTER_API_KEY') or os.environ.get('OPENAI_API_KEY'))
 print(f"[DEBUG] LLM API key (OPENROUTER_API_KEY or OPENAI_API_KEY) loaded: {'SET' if _llm_key_set else 'NOT SET'}")
 
+# A syntax error in config.yaml / config.local.yaml aborts here with an actionable message
+# (same shape as the CorruptStoreError abort below) instead of loading {} and silently
+# dropping every override. The first app_config import is the one that parses the files.
+from config.config_errors import ConfigParseError
+try:
+    import config.app_config  # noqa: F401  (import-time parse of both YAML files)
+except ConfigParseError as _cfg_err:
+    print(f"\n[Startup] FATAL: {_cfg_err}")
+    sys.exit(1)
+
 
 import asyncio
 import asyncio as _a2

@@ -93,6 +93,7 @@ from utils.trigger_match import (
     has_non_negated_hit,
 )
 from core.actions.registry import detect_action_intent
+import config.app_config as app_config
 import utils.institution_resolver as institution_resolver
 import utils.location_resolver as location_resolver
 import json
@@ -411,20 +412,22 @@ class LLMSearchTriggerResponse:
 
 # ===== Configuration =====
 
+# Values come from config.yaml `web_search.*` via app_config (env still overrides there;
+# BC-88). Module-level names kept for existing importers/patch points.
 # Minimum confidence to trigger search
-SEARCH_CONFIDENCE_THRESHOLD = float(os.getenv("WEB_SEARCH_CONFIDENCE_THRESHOLD", "0.5"))
+SEARCH_CONFIDENCE_THRESHOLD = app_config.WEB_SEARCH_CONFIDENCE_THRESHOLD
 
 # LLM classification settings
-SEARCH_TRIGGER_MODEL = os.getenv("WEB_SEARCH_TRIGGER_MODEL", "gpt-4o-mini")
-SEARCH_TRIGGER_TIMEOUT = float(os.getenv("WEB_SEARCH_TRIGGER_TIMEOUT", "5.0"))  # Increased from 2.0
+SEARCH_TRIGGER_MODEL = app_config.WEB_SEARCH_TRIGGER_MODEL
+SEARCH_TRIGGER_TIMEOUT = app_config.WEB_SEARCH_TRIGGER_TIMEOUT
 # 150 -> 400 (2026-10-08): a long "reason" + 4 search_terms hit the 150 cap
 # mid-object twice in the 10-07/08 session (completion=150, JSON cut) and the
 # parse failure fell through to "Classifier unavailable". class: BC-89, BC-47.
-SEARCH_TRIGGER_MAX_TOKENS = int(os.getenv("WEB_SEARCH_TRIGGER_MAX_TOKENS", "400"))
+SEARCH_TRIGGER_MAX_TOKENS = app_config.WEB_SEARCH_TRIGGER_MAX_TOKENS
 
 # LLM-first mode settings
-LLM_FIRST_ENABLED = os.getenv("WEB_SEARCH_LLM_FIRST_ENABLED", "true").lower() == "true"
-LLM_HEURISTIC_BLEND_WEIGHT = float(os.getenv("WEB_SEARCH_LLM_WEIGHT", "0.7"))  # 70% LLM, 30% heuristic
+LLM_FIRST_ENABLED = app_config.WEB_SEARCH_LLM_FIRST_ENABLED
+LLM_HEURISTIC_BLEND_WEIGHT = app_config.WEB_SEARCH_LLM_HEURISTIC_WEIGHT  # 70% LLM, 30% heuristic
 
 
 # ===== Keyword Sets =====

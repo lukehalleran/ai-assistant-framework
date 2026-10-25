@@ -68,8 +68,8 @@ class TestEmptyConfig:
         model = DaemonConfig()
         assert model.daemon.version == "v4"
         assert model.memory.corpus_file == "./data/corpus_v4.json"
-        assert model.gating.cosine_similarity_threshold == 0.25
-        assert model.token_budget.default == 15000
+        assert model.gating.gate_rel_threshold == 0.18
+        assert model.token_budget.default == 10000
 
 
 class TestTypeRejection:
@@ -78,17 +78,17 @@ class TestTypeRejection:
     def test_string_for_int(self):
         """A non-numeric string for an int field should fail."""
         with pytest.raises(ValidationError):
-            MemorySection(max_recent="not_a_number")
+            MemorySection(prompt_max_recent="not_a_number")
 
     def test_string_for_float(self):
         """A non-numeric string for a float field should fail."""
         with pytest.raises(ValidationError):
-            GatingSection(cosine_similarity_threshold="high")
+            GatingSection(gate_rel_threshold="high")
 
     def test_string_for_bool(self):
         """A non-boolean string for a bool field should fail."""
         with pytest.raises(ValidationError):
-            DaemonSection(debug_mode="maybe")
+            DaemonSection(in_harm_test="maybe")
 
     def test_list_for_string(self):
         """A list for a string field should fail."""
@@ -101,18 +101,18 @@ class TestStringCoercion:
 
     def test_string_int_coercion(self):
         """String-encoded integers should be coerced to int."""
-        m = MemorySection(max_recent="50")
-        assert m.max_recent == 50
+        m = MemorySection(prompt_max_recent="50")
+        assert m.prompt_max_recent == 50
 
     def test_string_float_coercion(self):
         """String-encoded floats should be coerced to float."""
-        g = GatingSection(cosine_similarity_threshold="0.25")
-        assert g.cosine_similarity_threshold == 0.25
+        g = GatingSection(gate_rel_threshold="0.25")
+        assert g.gate_rel_threshold == 0.25
 
     def test_string_bool_coercion(self):
         """String-encoded booleans should be coerced."""
-        d = DaemonSection(debug_mode="true")
-        assert d.debug_mode is True
+        d = DaemonSection(in_harm_test="true")
+        assert d.in_harm_test is True
 
 
 class TestRangeRejection:
@@ -121,27 +121,22 @@ class TestRangeRejection:
     def test_threshold_above_one(self):
         """A 0-1 threshold above 1.0 should fail."""
         with pytest.raises(ValidationError, match="less than or equal to 1"):
-            GatingSection(cosine_similarity_threshold=1.5)
+            GatingSection(gate_rel_threshold=1.5)
 
     def test_threshold_below_zero(self):
         """A threshold below 0.0 should fail."""
         with pytest.raises(ValidationError, match="greater than or equal to 0"):
-            GatingSection(cosine_similarity_threshold=-0.1)
+            GatingSection(gate_rel_threshold=-0.1)
 
     def test_negative_count(self):
         """A count that must be >= 1 should reject 0."""
         with pytest.raises(ValidationError, match="greater than or equal to 1"):
-            MemorySection(max_recent=0)
+            MemorySection(prompt_max_recent=0)
 
     def test_zero_timeout(self):
         """A timeout that must be > 0.0 should reject 0."""
         with pytest.raises(ValidationError, match="greater than 0"):
             WebSearchSection(timeout_s=0.0)
-
-    def test_confidence_threshold_allows_above_one(self):
-        """confidence_threshold is special — it allows values > 1.0."""
-        g = GatingSection(confidence_threshold=2.0)
-        assert g.confidence_threshold == 2.0
 
     def test_temperature_allows_up_to_two(self):
         """Temperature can go up to 2.0."""
@@ -281,8 +276,8 @@ class TestPartialSections:
     """Validate partial section configs (some fields present, others defaulted)."""
 
     def test_partial_memory_section(self):
-        m = MemorySection(max_recent=100)
-        assert m.max_recent == 100
+        m = MemorySection(prompt_max_recent=100)
+        assert m.prompt_max_recent == 100
         assert m.corpus_file == "./data/corpus_v4.json"  # Default
 
     def test_partial_features_section(self):
@@ -294,8 +289,8 @@ class TestPartialSections:
         """Root config with only daemon section should fill in all other defaults."""
         model = DaemonConfig(daemon={"version": "v5"})
         assert model.daemon.version == "v5"
-        assert model.memory.max_recent == 50  # Default
-        assert model.gating.cosine_similarity_threshold == 0.25  # Default
+        assert model.memory.prompt_max_recent == 10  # Default
+        assert model.gating.gate_rel_threshold == 0.18  # Default
 
 
 class TestWebSearchSection:
