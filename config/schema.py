@@ -106,8 +106,6 @@ class DaemonSection(BaseModel):
     data_dir: str = "./data"
     log_dir: str = "./conversation_logs"
     in_harm_test: bool = False
-    debug_mode: bool = False
-    log_level: str = "INFO"
     device: str = "cuda"
 
     @field_validator("mode")
@@ -122,32 +120,15 @@ class MemorySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     corpus_file: str = "./data/corpus_v4.json"
     chroma_path: str = "./data/chroma_db_v4"
-    max_recent: int = Field(default=50, ge=1)
     max_memories: int = Field(default=30, ge=1)
-    max_final_memories: int = Field(default=5, ge=1)
-    max_working_memory: int = Field(default=10, ge=1)
-    mem_no: int = Field(default=5, ge=1)
-    mem_importance_score: float = Field(default=0.6, ge=0.0, le=1.0)
-    num_memories: int = Field(default=30, ge=1)
     prompt_max_mems: int = Field(default=15, ge=1)
-    child_mem_limit: int = Field(default=3, ge=0)
     recency_decay_rate: float = Field(default=0.05, gt=0.0, le=1.0)
-    truth_score_update_rate: float = Field(default=0.02, gt=0.0, le=1.0)
-    truth_score_max: float = Field(default=0.95, ge=0.0, le=1.0)
     collection_boosts: CollectionBoosts = Field(default_factory=CollectionBoosts)
     default_summary_prompt_header: str = "Summary of last 20 exchanges:\n"
     default_tagging_prompt: str = ""
-    retrieve_conversations: bool = True
-    max_conversations: int = Field(default=15, ge=0)
     conversation_collection: str = "conversations"
-    retrieve_summaries: bool = True
-    max_summaries: int = Field(default=10, ge=0)
     summary_collection: str = "summaries"
     summary_interval: int = Field(default=20, ge=1)
-    max_facts: int = Field(default=15, ge=0)
-    max_reflections: int = Field(default=6, ge=0)
-    hybrid_summaries_enabled: bool = True
-    hybrid_reflections_enabled: bool = True
     user_profile_facts_per_category: int = Field(default=5, ge=1)
     prompt_max_recent: int = Field(default=10, ge=1)
     prompt_recent_prior_session_max_share: float = Field(default=0.40, ge=0.0, le=1.0)
@@ -157,15 +138,11 @@ class MemorySection(BaseModel):
     prompt_floor_reserve_max_share: float = Field(default=0.25, ge=0.0, le=1.0)
     semantic_retrieval_limit: int = Field(default=100, ge=1)
     prompt_max_semantic: int = Field(default=15, ge=0)
-    force_min_memories: bool = True
+    semantic_force_min_memories: bool = True
 
 
 class ModelsSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    default: str = "llama"
-    dream_model: str = "gpt-neo"
-    openrouter_base: str = "https://openrouter.ai/api/v1"
-    load_local_model: bool = True
     local_model_context_limit: int = Field(default=4096, ge=128)
     api_model_context_limit: int = Field(default=128000, ge=1024)
     default_max_tokens: int = Field(default=2048, ge=1)
@@ -179,36 +156,21 @@ class ModelsSection(BaseModel):
 
 class GatingSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    confidence_threshold: float = Field(default=1.5, ge=0.0)
     gate_rel_threshold: float = Field(default=0.18, ge=0.0, le=1.0)
     gate_rel_threshold_retrieval: float = Field(default=0.60, ge=0.0, le=1.0)
     gate_deictic_min_retrieval: float = Field(default=0.61, ge=0.0, le=1.0)
-    cosine_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
-    cosine_similarity_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
     deictic_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
     normal_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
     deictic_anchor_penalty: float = Field(default=0.1, ge=0.0, le=1.0)
     deictic_continuity_min: float = Field(default=0.12, ge=0.0, le=1.0)
-    use_reranking: bool = True
-    rerank_use_llm: bool = True
-    cross_encoder_weight: float = Field(default=0.7, ge=0.0, le=1.0)
-    topic_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    summary_cosine_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
-    reflection_cosine_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
     semantic_chunks_gate_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
     score_weights: ScoreWeights = Field(default_factory=ScoreWeights)
 
 
 class FeaturesSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enable_wikipedia: bool = True
-    enable_semantic_search: bool = True
-    enable_facts: bool = True
-    enable_dreams: bool = False
-    semantic_only_mode: bool = False
     enable_best_of: bool = True
     enable_query_rewrite: bool = True
-    disable_llm_summaries: bool = False
     best_of_latency_budget_s: float = Field(default=2.0, ge=0.0)
     rewrite_timeout_s: float = Field(default=1.2, ge=0.0)
     best_of_model: Optional[str] = None
@@ -247,7 +209,7 @@ class WebSearchSection(BaseModel):
     llm_first_enabled: bool = True
     trigger_model: str = "gpt-4o-mini"
     trigger_timeout_s: float = Field(default=5.0, gt=0.0)
-    trigger_max_tokens: int = Field(default=150, ge=1)
+    trigger_max_tokens: int = Field(default=400, ge=1)
     llm_heuristic_weight: float = Field(default=0.7, ge=0.0, le=1.0)
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     per_query_limit: int = Field(default=5, ge=1)
@@ -271,8 +233,6 @@ class AgenticSearchSection(BaseModel):
     max_rounds: int = Field(default=5, ge=1)
     context_budget_tokens: int = Field(default=8000, ge=1000)
     compression_model: str = "sonnet-4.5"
-    prefer_native_tools: bool = True
-    memory_search_enabled: bool = True
     memory_search_limit: int = Field(default=7, ge=1)
     reuse_decision_answer: bool = True
     decision_max_tokens: int = Field(default=1600, ge=100)
@@ -289,6 +249,7 @@ class AgenticSearchSection(BaseModel):
     fetch_fastpath: bool = True
     fetch_fastpath_min_chars: int = Field(default=400, ge=1)
     fetch_provenance_guard: bool = True
+    synthesis_reasoning_effort: Literal["low", "medium", "high"] = "medium"
 
 
 class InsightModeSection(BaseModel):
@@ -338,8 +299,6 @@ class MemoryExpansionSection(BaseModel):
     enabled: bool = True
     max_per_session: int = Field(default=3, ge=1)
     max_window: int = Field(default=5, ge=1)
-    default_window: int = Field(default=3, ge=1)
-    max_total_tokens: int = Field(default=2000, ge=100)
     anchor_char_limit: int = Field(default=600, ge=50)
     context_char_limit: int = Field(default=300, ge=50)
     anchor_char_limit_long: int = Field(default=3000, ge=100)
@@ -348,7 +307,7 @@ class MemoryExpansionSection(BaseModel):
 
 class TokenBudgetSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    default: int = Field(default=15000, ge=1000)
+    default: int = Field(default=10000, ge=1000)
     local_model: int = Field(default=12000, ge=1000)
     floor: int = Field(default=8000, ge=1000)
     ceiling: int = Field(default=16000, ge=1000)
@@ -368,7 +327,6 @@ class KnowledgeGraphSection(BaseModel):
     enabled: bool = True
     persist_path: str = "data/knowledge_graph.json"
     retrieval_depth: int = Field(default=2, ge=1)
-    max_sentences: int = Field(default=15, ge=1)
     auto_save_threshold: int = Field(default=50, ge=1)
     min_confidence: float = Field(default=0.50, ge=0.0, le=1.0)
     aliases_path: str = "data/entity_aliases.json"
@@ -381,7 +339,6 @@ class KnowledgeGraphSection(BaseModel):
 
 class SynthesisSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
     batch_size: int = Field(default=100, ge=1)
     log_rejections: bool = True
     min_token_length: int = Field(default=10, ge=1)
@@ -420,7 +377,7 @@ class SynthesisSection(BaseModel):
 
 class SynthesisGeneratorSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
+    enabled: bool = False
     candidates_per_session: int = Field(default=5, ge=1)
     llm_concurrency: int = Field(default=5, ge=1)
     min_graph_nodes: int = Field(default=20, ge=1)
@@ -437,7 +394,7 @@ class SynthesisPooledSection(BaseModel):
 
 class SynthesisRetrievalSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
+    enabled: bool = False
     structural_query_max_tokens: int = Field(default=100, ge=1)
     retrieval_k: int = Field(default=5, ge=1)
     min_similarity: float = Field(default=0.25, ge=0.0, le=1.0)
@@ -454,13 +411,12 @@ class SynthesisAuditSection(BaseModel):
 
 class GraphWalkSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
+    enabled: bool = False
     max_walk_length: int = Field(default=8, ge=2)
     walks_per_seed: int = Field(default=20, ge=1)
     restart_probability: float = Field(default=0.15, ge=0.0, le=1.0)
     min_path_length: int = Field(default=3, ge=2)
     max_candidates_per_session: int = Field(default=10, ge=1)
-    boundary_crossing_required: bool = True
     min_bridge_edges: int = Field(default=40, ge=0)
     personal_return_bias: float = Field(default=2.0, ge=0.0)
     hub_degree_threshold: int = Field(default=15, ge=1)
@@ -513,7 +469,6 @@ class VisualMemorySection(BaseModel):
     caption_timeout_s: float = Field(default=10.0, gt=0.0)
     similarity_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
     ingest_on_upload: bool = True
-    ingest_on_obsidian_sync: bool = True
     index_path: str = "data/clip_index.faiss"
     meta_path: str = "data/clip_metadata.json"
 
@@ -530,7 +485,6 @@ class WikiEnrichmentSection(BaseModel):
 
 class WikidataImportSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
     persist_path: str = "data/wikidata_cache.json"
     entities_per_domain: int = Field(default=5000, ge=1)
     max_total_entities: int = Field(default=50000, ge=1)
@@ -702,6 +656,7 @@ class TurnTelemetrySection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
     path: str = "logs/turn_records.jsonl"
+    checker_findings_enabled: bool = True
     loop_stall_detector: bool = True
     loop_stall_threshold_ms: int = Field(default=250, ge=20, le=60000)
 
@@ -861,8 +816,8 @@ class PersonalClaimCheckSection(BaseModel):
     enabled: bool = True
     mode: Literal["log_only", "correct"] = "log_only"
     model: Optional[str] = None  # None → falls back to response_planning.review_model
-    timeout_s: float = Field(default=5.0, gt=0.0)
-    max_tokens: int = Field(default=900, ge=1)
+    timeout_s: float = Field(default=18.0, gt=0.0)
+    max_tokens: int = Field(default=1600, ge=1)
     max_evidence_chars: int = Field(default=12000, ge=500)
 
 
@@ -983,7 +938,7 @@ class EmailIntegrationSection(BaseModel):
 
 class UncertaintyFallbackSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
+    enabled: bool = False
     semantic_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     max_length: int = Field(default=400, ge=1)
 
@@ -1058,11 +1013,9 @@ class SkillActivationSection(BaseModel):
 
 class CodeProposalsSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    enabled: bool = True
-    collection: str = "proposals"
+    enabled: bool = False
     dedup_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     max_per_session: int = Field(default=5, ge=1)
-    require_tests: bool = True
     prompt_enabled: bool = True
     prompt_max: int = Field(default=3, ge=0)
     keyword_dedup_tag_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
@@ -1090,7 +1043,6 @@ class ImplTrackingSection(BaseModel):
     confidence_likely: float = Field(default=0.60, ge=0.0, le=1.0)
     git_depth: int = Field(default=50, ge=1)
     at_shutdown: bool = True
-    auto_complete: bool = False
 
 
 class NarrativeContextSection(BaseModel):
@@ -1206,7 +1158,6 @@ class DaemonNotesSection(BaseModel):
     enabled: bool = True
     output_dir: str = "daemon_notes"
     max_per_prompt: int = Field(default=2, ge=0, le=10)
-    collection_boost: float = Field(default=-0.05, ge=-1.0, le=1.0)
 
 
 class ActionGuardSection(BaseModel):
@@ -1236,7 +1187,6 @@ class InternetActionsSection(BaseModel):
     # GitHub write (reuses existing gh CLI auth)
     github_write_enabled: bool = False
     # Headless browser
-    playwright_enabled: bool = False
     playwright_timeout_s: int = Field(default=30, ge=5, le=120)
     # Google OAuth2
     google_client_id: str = ""

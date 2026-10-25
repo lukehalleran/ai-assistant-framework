@@ -122,6 +122,7 @@ import utils.loop_stall as loop_stall
 import memory.valence as valence
 import memory.claim_ledger_store as claim_ledger_store
 import knowledge.semantic_search as semantic_index
+import config.app_config as _app_config
 
 logger = get_logger("prompt_builder")
 
@@ -610,15 +611,18 @@ def _should_include_note_images(model_name: str, query: str, intent_type=None) -
         return False
     from .gatherer_knowledge import _query_wants_visual  # lazy import: cycle
     return _query_wants_visual(query or "", intent_type)
+# Section caps below are read from the YAML section that owns each knob (via app_config);
+# before 2026-10-25 these read `memory.*` keys that no YAML carried, so the section-level
+# keys were dead (class: BC-15, BC-88). Module-level names stay: Fast Mode patches them.
 PROMPT_MAX_REFERENCE_DOCS = _cfg_int("prompt_max_reference_docs", 15)
 PROMPT_MAX_GIT_COMMITS = _cfg_int("prompt_max_git_commits", 10)
-PROMPT_MAX_SKILLS = _cfg_int("prompt_max_skills", 5)
+PROMPT_MAX_SKILLS = _app_config.PROMPT_MAX_SKILLS  # procedural_skills.prompt_max_skills
 PROMPT_MAX_PROPOSALS = _cfg_int("prompt_max_proposals", 3)
 PROMPT_MAX_USER_UPLOADS = _cfg_int("prompt_max_user_uploads", 5)
-PROMPT_MAX_GRAPH_SENTENCES = _cfg_int("prompt_max_graph_sentences", 12)
-PROMPT_MAX_SURFACED_THREADS = _cfg_int("prompt_max_surfaced_threads", 3)
-PROMPT_MAX_PROACTIVE_INSIGHTS = _cfg_int("prompt_max_proactive_insights", 2)
-PROMPT_MAX_VISUAL_MEMORIES = _cfg_int("prompt_max_visual_memories", 3)
+PROMPT_MAX_GRAPH_SENTENCES = _app_config.PROMPT_MAX_GRAPH_SENTENCES  # knowledge_graph.max_prompt_sentences
+PROMPT_MAX_SURFACED_THREADS = _app_config.THREAD_MAX_SURFACED  # thread_surfacing.max_surfaced
+PROMPT_MAX_PROACTIVE_INSIGHTS = _app_config.PROMPT_MAX_PROACTIVE_INSIGHTS  # proactive_surfacing.max_prompt_insights
+PROMPT_MAX_VISUAL_MEMORIES = _app_config.VISUAL_MEMORY_MAX_IMAGES  # visual_memory.max_images_prompt
 
 # Feature toggles
 REFLECTIONS_ON_DEMAND = _parse_bool(os.getenv("REFLECTIONS_ON_DEMAND", "0"))  # Off by default — blocks prompt build with LLM call

@@ -42,7 +42,6 @@ export default function SettingsPage({
   // Streaming
   const [disableBestOf, setDisableBestOf] = useState(false)
   const [disableRewrite, setDisableRewrite] = useState(false)
-  const [disableSummaries, setDisableSummaries] = useState(false)
   const [bestOfBudget, setBestOfBudget] = useState(0)
   // Web search
   const [wsEnabled, setWsEnabled] = useState(true)
@@ -71,7 +70,6 @@ export default function SettingsPage({
         setSnap(s)
         setDisableBestOf(s.streaming.disable_best_of)
         setDisableRewrite(s.streaming.disable_query_rewrite)
-        setDisableSummaries(s.streaming.disable_llm_summaries)
         setBestOfBudget(s.streaming.best_of_latency_budget_s)
         setWsEnabled(s.web_search.enabled)
         setWsLimit(s.web_search.daily_credit_limit)
@@ -140,11 +138,6 @@ export default function SettingsPage({
             checked={disableRewrite}
             onChange={(e) => setDisableRewrite(e.currentTarget.checked)}
           />
-          <Switch
-            label="Disable LLM summaries (skip pre-call)"
-            checked={disableSummaries}
-            onChange={(e) => setDisableSummaries(e.currentTarget.checked)}
-          />
           <NumberInput
             label="Best-of latency budget (seconds)"
             min={0}
@@ -161,7 +154,6 @@ export default function SettingsPage({
                 apply('streaming', {
                   disable_best_of: disableBestOf,
                   disable_query_rewrite: disableRewrite,
-                  disable_llm_summaries: disableSummaries,
                   best_of_latency_budget_s: bestOfBudget,
                 })
               }

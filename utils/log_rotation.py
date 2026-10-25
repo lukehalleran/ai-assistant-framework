@@ -8,7 +8,7 @@ Purpose:
     file a live handler is writing.
 
 Strategies by file:
-    - turn_records.jsonl, daily_notes.log → numbered rotation when over the
+    - turn_records.jsonl, checker_findings.jsonl, daily_notes.log → numbered rotation when over the
       size cap (file → file.1 → file.2 …, oldest beyond `keep` dropped).
     - actions_audit.jsonl → timestamped archive rename when over the cap
       (audit history is never deleted, only split).
@@ -122,6 +122,9 @@ def run_startup_log_maintenance() -> Dict[str, int]:
     try:
         mb = 1024 * 1024
         if rotate_if_large(TURN_TELEMETRY_PATH,
+                           int(LOG_MAINTENANCE_TURN_RECORDS_MAX_MB * mb)):
+            summary["rotated"] += 1
+        if rotate_if_large(os.path.join(os.path.dirname(TURN_TELEMETRY_PATH), "checker_findings.jsonl"),
                            int(LOG_MAINTENANCE_TURN_RECORDS_MAX_MB * mb)):
             summary["rotated"] += 1
         if rotate_if_large(store_path(os.path.join("logs", "daily_notes.log")),

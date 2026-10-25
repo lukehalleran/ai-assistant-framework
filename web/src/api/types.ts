@@ -64,7 +64,6 @@ export interface DebugRecordsResponse {
 export interface StreamingSettings {
   disable_best_of: boolean
   disable_query_rewrite: boolean
-  disable_llm_summaries: boolean
   best_of_latency_budget_s: number
 }
 

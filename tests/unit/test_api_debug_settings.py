@@ -208,7 +208,6 @@ class TestSettingsRoutes:
             resp = await client.put("/api/settings/streaming", json={
                 "disable_best_of": True,
                 "disable_query_rewrite": False,
-                "disable_llm_summaries": True,
                 "best_of_latency_budget_s": 5.0,
             })
         assert resp.status_code == 200
@@ -216,7 +215,6 @@ class TestSettingsRoutes:
         assert body["ok"] is True and body["persisted"] is True
         # Live orchestrator mutated (same as the Gradio button)
         assert orch.config["features"]["enable_best_of"] is False
-        assert orch.config["features"]["disable_llm_summaries"] is True
         # Persisted to the scratch config.yaml
         import yaml
         data = yaml.safe_load(open(tmp_path / "config" / "config.local.yaml"))  # 2026-09-28: settings persist to the untracked local override

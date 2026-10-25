@@ -400,16 +400,19 @@ def _declared(full_slug: str, key: str):
     return None if row is None else row.get(key)
 
 
-def reasoning_request_config(full_slug: str, disable_reasoning: bool = False) -> dict:
+def reasoning_request_config(
+    full_slug: str, disable_reasoning: bool = False, effort: str = "medium"
+) -> dict:
     """The `reasoning` request object for a route — the ONE place it is built.
 
-    Enabled: medium effort. Disabled: OpenRouter's explicit off-switch, except on
+    Enabled: ``effort`` (default medium; a caller may lower/raise it per call,
+    e.g. the agentic synthesis knob). Disabled: OpenRouter's explicit off-switch, except on
     a route where reasoning is mandatory — that route answers enabled=false with
     HTTP 400, so the closest available request is low effort with the reasoning
     text excluded from the response.
     """
     if not disable_reasoning:
-        return {"effort": "medium"}
+        return {"effort": effort or "medium"}
     if _declared(full_slug, "reasoning_mandatory"):
         return {"effort": "low", "exclude": True}
     return {"enabled": False}
@@ -1681,6 +1684,9 @@ class ModelManager:
         # Recovery flag: suppress native reasoning separation even for reasoning
         # models. Popped so it never leaks into local-model / create() kwargs.
         disable_reasoning = bool(kwargs.pop('disable_reasoning', False))
+        # Per-call reasoning effort for the enabled path (agentic synthesis
+        # knob). Popped so it never reaches local-model / create() kwargs.
+        reasoning_effort = kwargs.pop('reasoning_effort', None) or "medium"
         # Callers (insight synthesizer, grounding check, handlers) still pass a
         # per-call model_name= even though routing is by active_model_name.
         # Both local branches below forward **kwargs beside an explicit
@@ -1806,7 +1812,7 @@ class ModelManager:
 
                 if self.supports_reasoning(target_model) and not disable_reasoning:
                     create_kwargs["extra_body"]["reasoning"] = reasoning_request_config(
-                        self.api_models[target_model]
+                        self.api_models[target_model], effort=reasoning_effort
                     )
                     logger.info(f"[generate_async] Enabled native reasoning for {target_model}"
                                 + (" (images present)" if images else ""))

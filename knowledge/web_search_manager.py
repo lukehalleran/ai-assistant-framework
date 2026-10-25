@@ -1160,6 +1160,98 @@ class WebSearchCache:
             return 0
 
 
+
+# Communicative/reference-verb CATEGORY (a categorized generic, matched by
+# spaCy lemma so inflections are covered): a first-person clause whose main
+# verb is one of these points at the TOPIC being asked about ("I am referring
+# to voting", "I mean ...", "I was talking about ...") -- it is not narration
+# of the user's own life, so its words count as world words.
+_TOPIC_POINTER_VERBS = frozenset({
+    "refer", "mean", "ask", "talk", "speak", "wonder", "inquire",
+})
+# "look for" / "want to know": verb + governed preposition / complement.
+_TOPIC_POINTER_PREP = {"look": "for"}
+_TOPIC_POINTER_XCOMP = frozenset({"know"})
+_FIRST_PERSON_SUBJECTS = frozenset({"i", "we"})
+
+
+def _is_topic_pointer(clause: str) -> bool:
+    """True when the head verb of the clause's first-person subject belongs to
+    the communicative/reference-verb category. No spaCy -> False (the old
+    narration behaviour)."""
+    from memory.fact_extractor import _get_nlp  # lazy import: startup-cost (spaCy load)
+    nlp = _get_nlp()
+    if nlp is None:
+        return False
+    for tok in nlp(clause):
+        if tok.dep_ != "nsubj" or tok.lower_ not in _FIRST_PERSON_SUBJECTS:
+            continue
+        head = tok.head
+        if head.lemma_ in _TOPIC_POINTER_VERBS:
+            return True
+        prep = _TOPIC_POINTER_PREP.get(head.lemma_)
+        if prep and any(c.dep_ == "prep" and c.lower_ == prep for c in head.children):
+            return True
+        if any(c.dep_ == "xcomp" and c.lemma_ in _TOPIC_POINTER_XCOMP
+               for c in head.children):
+            return True
+    return False
+
+
+def drop_narration_subqueries(original: str, sub_queries: List[str]) -> List[str]:
+    """Drop sub-queries whose words that occur in the ORIGINAL message come only
+    from clauses classified as the user's own narration (and none from a world
+    clause). Words the sub-query adds on its own are neutral. A narration clause
+    carrying a lookup cue is not narration (see _clause_is_own_narration), so
+    its sub-queries stay. Reuses the trigger's clause splitter/classifier."""
+    # lazy import: layering (knowledge keeps utils.web_search_trigger off module load)
+    from utils.web_search_trigger import (
+        _CLAUSE_SPLIT_RE, _clause_is_own_narration, _flat,
+    )
+    from spacy.lang.en.stop_words import STOP_WORDS  # lazy import: startup-cost
+
+    def _words(text: str) -> set:
+        out = set()
+        for w in re.findall(r"[a-z0-9']+", text.lower()):
+            w = w.strip("'")
+            if len(w) > 3 and w.endswith("s"):
+                w = w[:-1]
+            if w and w not in STOP_WORDS and w + "s" not in STOP_WORDS:
+                out.add(w)
+        return out
+
+    narration: set = set()
+    world: set = set()
+    # Continuation clauses belong to the narrator (same doctrine as
+    # is_first_person_narrative): within ONE sentence, a pronoun-less clause
+    # after a narration clause ("I had coffee and couldn't focus") inherits
+    # it unless it is an information request. A new sentence never inherits
+    # (an imperative to the assistant is a world request).
+    from utils.web_search_trigger import (
+        _ADDRESSEE_RE, _EMBEDDED_WH_RE, _INTERROGATIVE_OPENER_RE, _LOOKUP_CUE_RE,
+    )
+    for sentence in re.split(r"[.!?;]+", _flat(original)):
+        prev_narration = False
+        for clause in _CLAUSE_SPLIT_RE.split(sentence):
+            if not clause or not clause.strip():
+                continue
+            c = clause.strip()
+            is_narr = not _is_topic_pointer(c) and (_clause_is_own_narration(c) or (
+                prev_narration and not (
+                    _INTERROGATIVE_OPENER_RE.match(c) or _EMBEDDED_WH_RE.search(c)
+                    or _LOOKUP_CUE_RE.search(c) or _ADDRESSEE_RE.search(c))))
+            (narration if is_narr else world).update(_words(c))
+            prev_narration = is_narr
+    if not narration:
+        return list(sub_queries)
+    kept = []
+    for sq in sub_queries:
+        words = _words(sq)
+        if words & narration and not (words & world):
+            continue
+        kept.append(sq)
+    return kept
+
 class WebSearchManager:
     """
     Main interface for web search operations.
@@ -2206,6 +2298,23 @@ If not splitting, leave SUB_QUERIES empty."""
                 sub_queries = scope_identity_terms(
                     sub_queries, query, user_location, user_institution
                 )
+
+            # Narration backstop (2026-10-25, class: BC-05/BC-38): a sub-query
+            # built only from a clause of the message that is the user's own
+            # narration ("I had coffee and couldn't focus") is not a world
+            # lookup -- drop it. All dropped -> original query (below).
+            if sub_queries:
+                kept = drop_narration_subqueries(query, sub_queries)
+                dropped = len(sub_queries) - len(kept)
+                if dropped:
+                    log.info(
+                        f"[WebSearch] Dropped {dropped} narration-derived "
+                        f"sub-query(ies) of {len(sub_queries)}"
+                    )
+                    if not kept:
+                        should_split = False
+                        reason = "All sub-queries were own-narration; using original query"
+                    sub_queries = kept
 
             # Validate we have enough sub-queries
             if should_split and len(sub_queries) < 2:

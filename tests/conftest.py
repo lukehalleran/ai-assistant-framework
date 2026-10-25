@@ -236,6 +236,18 @@ def _sandbox_generated_documents(tmp_path, monkeypatch):
     yield
 
 
+# Query-rewrite switch sandbox (2026-10-25): gui.settings_core.apply_streaming
+# now writes app_config.ENABLE_QUERY_REWRITE (the hybrid retriever's live
+# read). Snapshot/restore it per test so a Settings test cannot leak "off".
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_query_rewrite_switch(monkeypatch):
+    import config.app_config as _app_config
+    monkeypatch.setattr(
+        _app_config, "ENABLE_QUERY_REWRITE", _app_config.ENABLE_QUERY_REWRITE, raising=False,
+    )
+    yield
+
+
 # B2 (2026-10-12): first-run setup / wizard key saves write the .env the
 # launch path loads -- in a source checkout that is the repo-root .env, so an
 # unpatched test (tests/test_wizard.py drives a real key save) would overwrite

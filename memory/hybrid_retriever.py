@@ -24,7 +24,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 
 from utils.logging_utils import get_logger
-from utils.query_rewriter import rewrite_query, _ordered_keywords
+from utils.query_rewriter import rewrite_query, _ordered_keywords, query_rewrite_enabled
 from utils.keyword_matcher import calculate_keyword_score
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from memory.utils import is_junk_conversation_doc, is_test_conversation_doc
@@ -58,13 +58,22 @@ class HybridRetriever:
         # Fast mode flag (set by context_gatherer for mobile/quick queries)
         self._fast_mode = False
 
-    async def retrieve(self, query: str, limit: int = 30) -> List[Dict]:
+    async def retrieve(
+        self, query: str, limit: int = 30, rewritten_query: Optional[str] = None,
+        topics: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """
         Main retrieval method combining all three approaches.
 
         Args:
             query: Original user query
             limit: Number of results to return
+            rewritten_query: the pipeline's LLM rewrite sentence — an
+                ADDITIONAL candidate query merged (deduped by id) into the
+                pool before hybrid scoring. Only when the live
+                enable_query_rewrite switch is on.
+            topics: topics ContextPipeline already extracted this turn; they
+                replace rewrite_query's TopicManager LLM call.
 
         Returns:
             List of memories with hybrid scores
@@ -83,16 +92,41 @@ class HybridRetriever:
         # round-trip (TopicManager._llm_fallback -> generate_with_openai); live
         # loop-stall records showed 0.7-1.3 s on the event loop. Keep
         # rewrite_query sync (other callers) and run it on a worker thread.
-        expanded_query = await asyncio.to_thread(rewrite_query, query)
+        # The local keyword/synonym expansion ALWAYS runs (not an LLM call;
+        # the enable_query_rewrite switch does not remove it). 2026-10-25
+        # (BC-31): its topic step reuses the pipeline's Stage-1 topics instead
+        # of a second TopicManager LLM round-trip; with no hint it makes its
+        # own call as before.
+        if topics:
+            expanded_query = await asyncio.to_thread(rewrite_query, query, topics=topics)
+        else:
+            expanded_query = await asyncio.to_thread(rewrite_query, query)
         logger.debug(f"[HybridRetriever] Expanded query: '{expanded_query}'")
 
         # Step 2: Semantic search with expanded query.
         # Per-collection cap: n_results is PER collection (×4 collections), so
         # an uncapped limit×3 with a 200-doc limit meant 600/collection →
         # ~1700 candidates encoded by the downstream gate (2026-07-15 trace).
-        semantic_results = await self._semantic_search(
-            expanded_query, min(limit * candidate_multiplier, 200)
-        )
+        per_collection = min(limit * candidate_multiplier, 200)
+        extra_query = (rewritten_query or "").strip()
+        if extra_query and query_rewrite_enabled() and extra_query != expanded_query:
+            # ADDITIONAL candidates: its own per-collection cap, run beside
+            # the bag query, merged AFTER it so bag candidates and their
+            # scores are never displaced or altered.
+            semantic_results, extra_results = await asyncio.gather(
+                self._semantic_search(expanded_query, per_collection),
+                self._semantic_search(extra_query, per_collection),
+            )
+            seen_ids = {r.get("id") for r in semantic_results if r.get("id") is not None}
+            added = [r for r in extra_results
+                     if r.get("id") is None or r.get("id") not in seen_ids]
+            semantic_results = list(semantic_results) + added
+            logger.debug(
+                f"[HybridRetriever] Rewrite query added {len(added)} candidates "
+                f"({len(extra_results) - len(added)} duplicates)"
+            )
+        else:
+            semantic_results = await self._semantic_search(expanded_query, per_collection)
 
         # Step 3: Keyword matching
         # Steps 3+4 are CPU-bound over up to 200 candidates (keyword scoring

@@ -199,7 +199,6 @@ def get_settings_snapshot(orchestrator) -> dict:
             # False but test_api_debug_settings pins it — left for the owner.
             "disable_best_of": not bool(feat.get("enable_best_of", True)),
             "disable_query_rewrite": not bool(feat.get("enable_query_rewrite", True)),
-            "disable_llm_summaries": bool(feat.get("disable_llm_summaries", False)),
             "best_of_latency_budget_s": float(feat.get("best_of_latency_budget_s", 0) or 0),
         },
         "web_search": {
@@ -240,7 +239,7 @@ def get_settings_snapshot(orchestrator) -> dict:
 # ---- apply functions (one per Settings section) ----------------------------
 
 def apply_streaming(orchestrator, *, disable_best_of: bool, disable_query_rewrite: bool,
-                    disable_llm_summaries: bool, best_of_latency_budget_s: float,
+                    best_of_latency_budget_s: float,
                     save: Optional[Callable] = None) -> dict:
     save = save or save_settings
     try:
@@ -248,14 +247,7 @@ def apply_streaming(orchestrator, *, disable_best_of: bool, disable_query_rewrit
         feats = cfg.setdefault("features", {}) if isinstance(cfg, dict) else {}
         feats["enable_best_of"] = not bool(disable_best_of)
         feats["enable_query_rewrite"] = not bool(disable_query_rewrite)
-        feats["disable_llm_summaries"] = bool(disable_llm_summaries)
         feats["best_of_latency_budget_s"] = float(best_of_latency_budget_s)
-        try:
-            pb = getattr(orchestrator, "prompt_builder", None)
-            if pb is not None:
-                setattr(pb, "force_llm_summaries", not disable_llm_summaries)
-        except (AttributeError, TypeError):
-            pass
         # 2026-09-09 (audit F10): ContextPipeline copied enable_query_rewrite
         # into a private field at init and reads THAT — the config-dict write
         # above never reached the running pipeline.
@@ -268,10 +260,17 @@ def apply_streaming(orchestrator, *, disable_best_of: bool, disable_query_rewrit
                     cp_cfg["enable_query_rewrite"] = not bool(disable_query_rewrite)
         except (AttributeError, TypeError):
             pass
+        # 2026-10-25 (BC-82, BC-31): features.enable_query_rewrite is the ONE
+        # rewrite switch — the hybrid retriever's own rewrite reads
+        # app_config.ENABLE_QUERY_REWRITE at call time, so keep it in step.
+        try:
+            from config import app_config  # lazy import: live-config write
+            app_config.ENABLE_QUERY_REWRITE = not bool(disable_query_rewrite)
+        except (ImportError, AttributeError):
+            pass
         ok, err = save(lambda d: d.setdefault("features", {}).update({
             "enable_best_of": not bool(disable_best_of),
             "enable_query_rewrite": not bool(disable_query_rewrite),
-            "disable_llm_summaries": bool(disable_llm_summaries),
             "best_of_latency_budget_s": float(best_of_latency_budget_s),
         }))
         if not ok:

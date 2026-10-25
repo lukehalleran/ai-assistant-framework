@@ -121,6 +121,7 @@ from typing import Any, Optional
 from core.response_parser import ResponseParser
 import core.response_generator as _response_generator_mod
 import core.context_pipeline as _context_pipeline_mod
+from utils import checker_findings
 from utils.logging_utils import log_and_time
 from utils.conversation_logger import get_conversation_logger
 from utils.file_processor import FileProcessor, ProcessedFilesResult, attachment_display_name, is_unsupported_notice
@@ -5623,6 +5624,25 @@ async def _run_enhanced(ctx):
                                 "review_passed": bool(_review.passes),
                                 "review_confidence": round(float(_review.confidence), 3),
                             })
+                            # Persist the finding itself (issues + plan digest) so the
+                            # log-only gate's precision can be labelled later (BC-58).
+                            try:
+                                _plan_digest = _plan.model_dump_json()
+                            except Exception:  # degrades: plan digest omitted from the finding line
+                                _plan_digest = str(_plan)
+                            checker_findings.record_finding(
+                                "review", mode="log_only",
+                                session_id=_get_session_id(orchestrator),
+                                verdict="pass" if _review.passes else "fail",
+                                confidence=round(float(_review.confidence), 3),
+                                reason="; ".join(str(i) for i in _review.issues),
+                                issues=_review.issues,
+                                claim_span="; ".join(str(i) for i in _review.issues),
+                                evidence_excerpt=_plan_digest,
+                                reply_excerpt=checker_findings.reply_excerpt_around(final_output, ""),
+                                query_excerpt=user_text,
+                                probe_texts=[user_text],
+                            )
                         if (
                             _review
                             and not _review.passes

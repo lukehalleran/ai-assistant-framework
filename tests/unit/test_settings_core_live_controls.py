@@ -216,7 +216,7 @@ def _pipeline(enable: bool):
 class TestQueryRewriteToggleReachesPipeline:
     def _apply(self, orch, disable):
         return apply_streaming(orch, disable_best_of=True, disable_query_rewrite=disable,
-                               disable_llm_summaries=True, best_of_latency_budget_s=0,
+                               best_of_latency_budget_s=0,
                                save=_OK_SAVE)
 
     def test_disable_on_enabled_pipeline(self):
@@ -279,17 +279,22 @@ class TestQueryRewriteToggleReachesPipeline:
 
         r1 = _run(cp.build(query))
         assert invoked == [query]
-        assert r1.processed_query.startswith("REWRITTEN: ")
+        # 2026-10-25: the rewrite is a retrieval-query hint; the gate-scored
+        # processed_query stays raw (tests/unit/test_context_pipeline_query_rewrite.py).
+        assert r1.retrieval_query.startswith("REWRITTEN: ")
+        assert r1.processed_query == query
 
         assert self._apply(orch, disable=True)["ok"]
         r2 = _run(cp.build(query))
         assert invoked == [query], "disabled: build() must not invoke the rewriter"
         assert r2.processed_query == query
+        assert r2.retrieval_query is None
 
         assert self._apply(orch, disable=False)["ok"]
         r3 = _run(cp.build(query))
         assert invoked == [query, query], "re-enabled: build() rewrites again"
-        assert r3.processed_query.startswith("REWRITTEN: ")
+        assert r3.retrieval_query.startswith("REWRITTEN: ")
+        assert r3.processed_query == query
 
     def test_orchestrator_without_pipeline_still_ok(self):
         orch = NS(config={"features": {}}, prompt_builder=None)

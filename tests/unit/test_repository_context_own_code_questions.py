@@ -1,5 +1,8 @@
 """Own-code activity QUESTIONS route to live local git history.
 
+Oct-25 GITSTAT lane adds "what did I push yesterday?" and "working on ... codebase"
+(BC-05/BC-06: predicate coverage via the git-verb / work-on categories).
+
 Incident 2026-10-24 13:57: "what have I been building lately, and how much code
 went into it?" is a question, so ``is_repository_status_report`` (request-free
 reports only) never routed it to live history; the stale procedural index fed
@@ -37,6 +40,8 @@ POSITIVE = [
     "what did I ship this week? Anything big?",
     "what did we ship to Daemon in October?",
     "Did I merge the GitHub PR yesterday?",
+    "what did I push yesterday?",
+    "what have I been working on in the codebase lately?",
 ]
 NEGATIVE = [
     "why isn't my code working?",
@@ -60,6 +65,11 @@ NEGATIVE = [
     "Rowan merged a lot of code this week, what did I ship?",
     "what have I been lifting at the gym lately?",
     "how is my OMSA homework going this week?",
+    "I worked on my essay yesterday",
+    "what did Rowan push?",
+    "push-ups yesterday?",
+    "what did I do for push-ups yesterday?",
+    "what have I been working on in the garage lately?",
 ]
 
 
@@ -109,4 +119,7 @@ async def test_deployed_gatherer_reads_local_git_for_the_incident_query(monkeypa
     commits = await _gatherer().get_git_commits(q)
     assert len(commits) == 3
     assert all(c["metadata"]["retrieval_source"] == "local_git" for c in commits)
-    run.assert_called_once()
+    # one `git log` for the records + ONE `git log --numstat` for the window's
+    # line stats (never one `git show` per commit)
+    assert run.call_count == 2
+    assert "--numstat" in run.call_args_list[1].args[0]

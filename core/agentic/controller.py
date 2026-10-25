@@ -3320,6 +3320,8 @@ class AgenticSearchController:
                 system_prompt=system_prompt,
                 max_tokens=8192,
                 images=_images,
+                # BC-82: live read of the synthesis effort knob (default medium)
+                reasoning_effort=app_config.AGENTIC_SYNTHESIS_REASONING_EFFORT,
             )
 
             # Handle different return types. The InterleavedReasoningFilter

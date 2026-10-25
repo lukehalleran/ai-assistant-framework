@@ -100,3 +100,79 @@ class TestWarmupSpacy:
 
     def test_model_absent_is_quiet(self, monkeypatch, caplog):
         assert self._run(monkeypatch, None, False, caplog) == []
+
+
+class _RecordingStore:
+    def __init__(self, fail_on=None):
+        self.opened = []
+        self._fail_on = fail_on
+
+    def _get_collection(self, name):
+        if name == self._fail_on:
+            raise RuntimeError("boom")
+        self.opened.append(name)
+
+
+class TestWarmupTurn1ColdPaths:
+    """2026-10-24 first turn: four collections opened during the turn + a 5 s
+    google-auth token parse on the event loop. Warmup opens/touches them."""
+
+    def test_opens_turn1_cold_collections_through_store_accessor(self):
+        from gui.launch import _run_model_warmup
+
+        orch = MagicMock()
+        store = _RecordingStore()
+        orch.memory_system.chroma_store = store
+        with patch("threading.Thread", _InlineThread):
+            _run_model_warmup(orch)
+        assert {"obsidian_notes", "proposals", "threads", "daemon_self_notes"} <= set(store.opened)
+
+    def test_one_failing_collection_does_not_skip_the_rest(self):
+        from gui.launch import _run_model_warmup
+
+        orch = MagicMock()
+        store = _RecordingStore(fail_on="proposals")
+        orch.memory_system.chroma_store = store
+        with patch("threading.Thread", _InlineThread):
+            _run_model_warmup(orch)
+        assert "proposals" not in store.opened
+        assert {"obsidian_notes", "threads", "daemon_self_notes"} <= set(store.opened)
+
+    def test_google_auth_touched_when_configured(self, monkeypatch):
+        import core.actions.google_auth as ga
+        from gui.launch import _run_model_warmup
+
+        touched = []
+
+        class _Auth:
+            is_configured = True
+
+            @property
+            def is_authenticated(self):
+                touched.append(1)
+                return True
+
+        monkeypatch.setattr(ga, "get_google_auth", lambda: _Auth())
+        with patch("threading.Thread", _InlineThread):
+            _run_model_warmup(MagicMock())
+        assert touched == [1]
+
+    def test_google_auth_not_touched_when_unconfigured_or_absent(self, monkeypatch):
+        import core.actions.google_auth as ga
+        from gui.launch import _run_model_warmup
+
+        touched = []
+
+        class _Auth:
+            is_configured = False
+
+            @property
+            def is_authenticated(self):
+                touched.append(1)
+                return True
+
+        for fake in (_Auth(), None):
+            monkeypatch.setattr(ga, "get_google_auth", lambda f=fake: f)
+            with patch("threading.Thread", _InlineThread):
+                _run_model_warmup(MagicMock())
+        assert touched == []

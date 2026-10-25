@@ -1129,7 +1129,8 @@ class KnowledgeRetrievalMixin:
                 # The procedural index is manually synced; it cannot establish
                 # what just landed. Read local git without writing the index.
                 extractor = git_memory.GitMemoryExtractor(str(Path(__file__).resolve().parents[2]))
-                commits = await asyncio.to_thread(extractor.extract_commits, limit=limit)
+                commits = await asyncio.to_thread(
+                    extractor.extract_commits, limit=limit, include_stats=True)
                 for idx, commit in enumerate(commits, start=1):
                     # A status update needs subjects, hashes and dates; long
                     # commit bodies would crowd out the rest of the batch.

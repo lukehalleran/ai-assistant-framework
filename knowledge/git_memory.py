@@ -70,6 +70,7 @@ class GitMemoryExtractor:
         since: Optional[str] = None,
         include_diffs: bool = False,
         diff_max_lines: int = 50,
+        include_stats: bool = False,
     ) -> List[Dict]:
         """
         Extract commit history as memory-ready dicts.
@@ -79,6 +80,10 @@ class GitMemoryExtractor:
             since: Only commits after this date (e.g. "2025-01-01").
             include_diffs: Whether to include --stat diff summaries.
             diff_max_lines: Truncate diff stats longer than this.
+            include_stats: Attach line/file counts only (no diff text) from ONE
+                `git log --numstat` call for the whole window, not one
+                `git show` per commit. Merge commits carry no diff of their own
+                and are marked ``is_merge`` with no counts.
 
         Returns:
             List of dicts ready for ChromaDB storage, newest first.
@@ -108,6 +113,8 @@ class GitMemoryExtractor:
         if result.returncode != 0:
             logger.error(f"Git log failed: {result.stderr}")
             return []
+
+        stats_by_hash = self._get_window_line_stats(limit, since) if include_stats else {}
 
         memories = []
         for record in result.stdout.split("\x00"):
@@ -155,6 +162,15 @@ class GitMemoryExtractor:
                 metadata["lines_added"] = stats["lines_added"]
                 metadata["lines_removed"] = stats["lines_removed"]
 
+            if include_stats and hash_full in stats_by_hash:
+                st = stats_by_hash[hash_full]
+                metadata["is_merge"] = st["is_merge"]
+                if not st["is_merge"]:
+                    metadata["files_changed"] = ",".join(st["files"])
+                    metadata["files_changed_count"] = len(st["files"])
+                    metadata["lines_added"] = st["added"]
+                    metadata["lines_removed"] = st["removed"]
+
             memory = {
                 "id": f"git-{hash_short}",
                 "content": content,
@@ -164,6 +180,45 @@ class GitMemoryExtractor:
 
         logger.info(f"Extracted {len(memories)} commits")
         return memories
+
+    def _get_window_line_stats(self, limit: int, since: Optional[str]) -> Dict[str, Dict]:
+        """Per-commit numstat for the newest ``limit`` commits in one git call.
+
+        Returns {full_hash: {"files": [...], "added": n, "removed": n,
+        "is_merge": bool}}. A failed call returns {} (stats are then simply
+        absent, never invented).
+        """
+        cmd = ["git", "log", "--numstat", "--pretty=format:\x01%H %P", f"-n{limit}"]
+        if since:
+            cmd.append(f"--since={since}")
+        try:
+            result = subprocess.run(
+                cmd, cwd=self.repo_path, capture_output=True, text=True, timeout=5,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
+            logger.error(f"Git numstat failed: {e}")
+            return {}
+        if result.returncode != 0:
+            logger.error(f"Git numstat failed: {result.stderr}")
+            return {}
+        out: Dict[str, Dict] = {}
+        for block in result.stdout.split("\x01"):
+            if not block.strip():
+                continue
+            lines = block.split("\n")
+            ids = lines[0].split()
+            if not ids:
+                continue
+            entry = {"files": [], "added": 0, "removed": 0, "is_merge": len(ids) > 2}
+            for line in lines[1:]:
+                parts = line.strip().split("\t")
+                if len(parts) < 3:
+                    continue
+                entry["added"] += int(parts[0]) if parts[0].isdigit() else 0
+                entry["removed"] += int(parts[1]) if parts[1].isdigit() else 0
+                entry["files"].append(self._rename_new_path("\t".join(parts[2:])))
+            out[ids[0]] = entry
+        return out
 
     # Conventional-commit tag -> single change_type label.
     _CHANGE_TYPE_TAGS = frozenset({

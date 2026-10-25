@@ -52,7 +52,6 @@ async def put_streaming(request: Request, body: StreamingSettings):
         _orchestrator(request),
         disable_best_of=body.disable_best_of,
         disable_query_rewrite=body.disable_query_rewrite,
-        disable_llm_summaries=body.disable_llm_summaries,
         best_of_latency_budget_s=body.best_of_latency_budget_s,
     ))
 

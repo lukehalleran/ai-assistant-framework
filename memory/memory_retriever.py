@@ -68,6 +68,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 from utils.logging_utils import get_logger
+from utils.query_rewriter import get_turn_hint
 from utils.retrieval_outcome import RetrievalError
 from utils.trigger_match import compile_keyword_matcher
 from config.app_config import (
@@ -1269,13 +1270,27 @@ class MemoryRetriever:
 
         return results
 
-    async def _get_semantic_memories(self, query: str, n_results: int = 30) -> List[Dict]:
-        """Get semantic memories using hybrid retrieval."""
+    async def _get_semantic_memories(
+        self, query: str, n_results: int = 30, rewritten_query: Optional[str] = None,
+        topics: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Get semantic memories using hybrid retrieval.
+
+        ``rewritten_query`` (additional candidate query) and ``topics``
+        (replaces the topic LLM call) come from the turn hint (ContextPipeline).
+        """
         logger.info(f"[Semantic] Using hybrid retrieval for query: '{query[:50]}...'")
 
         try:
             if self.hybrid_retriever:
-                hybrid_results = await self.hybrid_retriever.retrieve(query, limit=n_results)
+                _hint_kwargs = {}
+                if rewritten_query:
+                    _hint_kwargs["rewritten_query"] = rewritten_query
+                if topics:
+                    _hint_kwargs["topics"] = topics
+                hybrid_results = await self.hybrid_retriever.retrieve(
+                    query, limit=n_results, **_hint_kwargs
+                )
 
                 memories = []
                 for result in hybrid_results:
@@ -1527,9 +1542,22 @@ class MemoryRetriever:
             topic_filter = None
 
         # Gather from both sources — semantic uses retrieval_query
+        # The turn's hint (ContextPipeline): Stage-1 topics replace the hybrid
+        # retriever's TopicManager LLM call; the LLM rewrite sentence is an
+        # ADDITIONAL candidate query. Kwargs are passed only when a hint
+        # exists so other callers/doubles keep their two-argument contract.
+        _semantic_kwargs = {}
+        _hint = get_turn_hint(query)
+        if _hint is not None:
+            if _hint.rewritten:
+                _semantic_kwargs["rewritten_query"] = _hint.rewritten
+            if _hint.topics:
+                _semantic_kwargs["topics"] = _hint.topics
         tasks = [
             asyncio.to_thread(self._get_recent_conversations, k=cfg['recent_count']),
-            self._get_semantic_memories(retrieval_query, n_results=cfg['semantic_count'])
+            self._get_semantic_memories(
+                retrieval_query, n_results=cfg['semantic_count'], **_semantic_kwargs
+            )
         ]
         very_recent, semantic = await asyncio.gather(*tasks)
 
