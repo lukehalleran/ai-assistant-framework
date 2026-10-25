@@ -39,6 +39,7 @@ from typing import Literal, NamedTuple, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
+from utils import checker_findings
 from utils.logging_utils import get_logger
 from utils.trigger_match import normalize_ws
 
@@ -777,6 +778,20 @@ def claim_date_in_source(claim: str, source: str) -> bool:
     return False
 
 
+def _record_grounding_finding(verdict, query, response, source_material, outcome):
+    """Persist the flagged verdict (claim + the source it was judged against)."""
+    checker_findings.record_finding(
+        "grounding", mode="verifier", verdict=outcome,
+        confidence=verdict.confidence,
+        reason=verdict.why_false, claim_span=verdict.claim,
+        correction=verdict.correction,
+        evidence_excerpt=source_material or "",
+        reply_excerpt=checker_findings.reply_excerpt_around(response, verdict.claim),
+        query_excerpt=query,
+        probe_texts=[query],
+    )
+
+
 async def verify_grounding(
     query: str,
     response: str,
@@ -841,31 +856,37 @@ async def verify_grounding(
                 "[GroundingCheck] Verifier 'correction' restates the response "
                 f"— demoted: {verdict.correction[:100]!r}"
             )
+            _record_grounding_finding(verdict, query, response, source_material, "demoted:correction_restates_response")
             return None
         if _TERMINOLOGY_POLICING_RE.search(verdict.correction or ""):
             logger.warning(
                 "[GroundingCheck] Verifier is policing terminology, not facts "
                 f"— demoted: {verdict.correction[:100]!r}"
             )
+            _record_grounding_finding(verdict, query, response, source_material, "demoted:terminology_policing")
             return None
         if claim_date_user_stated(verdict.claim, query):
             logger.warning(
                 "[GroundingCheck] Flagged claim's date matches a date the "
                 f"user stated — demoted: {verdict.claim[:100]!r}"
             )
+            _record_grounding_finding(verdict, query, response, source_material, "demoted:claim_date_user_stated")
             return None
         if claim_figure_user_stated(verdict.claim, query):
             logger.warning(
                 "[GroundingCheck] Flagged claim's figure matches one the "
                 f"user stated — demoted: {verdict.claim[:100]!r}"
             )
+            _record_grounding_finding(verdict, query, response, source_material, "demoted:claim_figure_user_stated")
             return None
         if claim_date_in_source(verdict.claim, source_material):
             logger.warning(
                 "[GroundingCheck] Flagged claim's date is corroborated by "
                 f"source material — demoted: {verdict.claim[:100]!r}"
             )
+            _record_grounding_finding(verdict, query, response, source_material, "demoted:claim_date_in_source")
             return None
+        _record_grounding_finding(verdict, query, response, source_material, "flagged")
     return verdict
 
 

@@ -30,6 +30,7 @@ from typing import Any, Iterable, Mapping, Sequence
 # this module).
 from core.grounding_check import _locate_claim_sentence, _sentence_chunks
 import memory.graph_utils as graph_utils
+from utils import checker_findings
 from utils.read_time_markers import strip_machinery
 from utils.trigger_match import normalize_ws
 from utils.user_identity import get_user_display_name
@@ -1021,6 +1022,28 @@ class PersonalClaimResult:
         return result
 
 
+def _record_unsupported_claims(response: str, evidence: Sequence[Mapping[str, Any]],
+                               claims: Sequence[Mapping[str, Any]]) -> None:
+    """Persist each contradicted/insufficient claim with the quote it was judged on."""
+    flagged = set(_flagged_spans(response, claims))
+    probe_texts = [response, *(_as_text(row.get("text")) for row in evidence)]
+    for claim in claims:
+        if claim.get("status") not in _UNSUPPORTED:
+            continue
+        text = _as_text(claim.get("text"))
+        quotes = [_as_text(ref.get("quote")) for ref in claim.get("evidence") or ()
+                  if isinstance(ref, Mapping)]
+        checker_findings.record_finding(
+            "personal_claim", mode="log_only", verdict=claim.get("status"),
+            reason=_as_text(claim.get("kind")), claim_span=text,
+            flagged=text.replace("\n", " ").strip()[:FLAGGED_SPAN_MAX_CHARS] in flagged
+            or any(f and text.startswith(f) for f in flagged),
+            evidence_excerpt=" | ".join(q for q in quotes if q) or "(no surviving evidence quote)",
+            reply_excerpt=checker_findings.reply_excerpt_around(response, text),
+            probe_texts=probe_texts,
+        )
+
+
 async def audit_personal_claims(
     response: str,
     evidence: Sequence[Mapping[str, Any]],
@@ -1100,6 +1123,7 @@ async def audit_personal_claims(
     # user's message, nothing in the draft) are a CHECKED audit with no
     # candidates -- the counts say what was dropped.
     reason = "ok" if claims or not payload["claims"] else "no_claims"
+    _record_unsupported_claims(response, evidence, claims)
     return PersonalClaimResult("checked", reason, claims=claims, elapsed_s=perf_counter() - started,
                                evidence_truncated=truncated,
                                dropped_claim_count=counts["dropped_claims"],

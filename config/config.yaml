@@ -387,6 +387,9 @@ intent_classifier:
 turn_telemetry:
   enabled: true
   path: logs/turn_records.jsonl
+  # Local-only log of the log-only checkers' findings (claim span, evidence, reply
+  # excerpt) so their precision can be labelled; never a share surface.
+  checker_findings_enabled: true
   # Event-loop stall detector (utils/loop_stall.py): names the frame that blocks
   # the loop during prompt gathering; stalls land in the turn record as loop_stalls.
   loop_stall_detector: true
