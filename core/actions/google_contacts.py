@@ -299,10 +299,12 @@ async def _search_api(
     from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
-    if auth is None or not auth.is_authenticated:
+    # BC-41: is_authenticated parses the token file (disk + google-auth import);
+    # run it off the loop (a cold first turn stalled the loop 5 s here).
+    if auth is None or not await asyncio.to_thread(lambda: auth.is_authenticated):
         return []
 
-    if not auth.has_scope(scope):
+    if not await asyncio.to_thread(auth.has_scope, scope):  # BC-41: reads the token file
         logger.warning(f"[GoogleContacts] Missing scope: {scope}")
         # 2026-09-28 (BC-47, BC-58): a token without the contacts scope is
         # an UNAVAILABLE lookup (re-consent needed), not "no such contact".

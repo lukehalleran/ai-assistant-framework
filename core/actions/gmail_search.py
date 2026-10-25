@@ -113,10 +113,12 @@ async def search_gmail_contacts(
     from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
-    if auth is None or not auth.is_authenticated:
+    # BC-41: is_authenticated parses the token file (disk + google-auth import);
+    # run it off the loop (a cold first turn stalled the loop 5 s here).
+    if auth is None or not await asyncio.to_thread(lambda: auth.is_authenticated):
         return []
 
-    if not auth.has_scope(GMAIL_READONLY_SCOPE):
+    if not await asyncio.to_thread(auth.has_scope, GMAIL_READONLY_SCOPE):  # BC-41: reads the token file
         logger.warning("[GmailSearch] Missing scope: gmail.readonly")
         # 2026-09-28 (BC-47, BC-58): missing scope = unavailable, not "no match".
         _record_failure("Gmail scope missing (gmail.readonly): re-authorize with: python scripts/reauth_google.py")

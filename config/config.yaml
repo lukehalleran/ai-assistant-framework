@@ -187,6 +187,7 @@ agentic_search:
   fetch_fastpath: true
   fetch_fastpath_min_chars: 400
   fetch_provenance_guard: true  # block model-built fetch_url URLs carrying text not from the user's message / this turn's tool results (injection exfiltration)
+  synthesis_reasoning_effort: medium  # reasoning effort of the final synthesis call: low | medium | high
 insight_mode:
   enabled: true
   max_facets: 6            # facet decomposition cap (distinct search angles per theme)

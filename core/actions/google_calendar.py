@@ -105,7 +105,9 @@ async def fetch_upcoming_events(
     from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
     auth = get_google_auth()
-    if auth is None or not auth.is_authenticated:
+    # BC-41: is_authenticated parses the token file (disk + google-auth import);
+    # run it off the loop (a cold first turn stalled the loop 5 s here).
+    if auth is None or not await asyncio.to_thread(lambda: auth.is_authenticated):
         return []
 
     creds = await asyncio.to_thread(auth.get_credentials)  # BC-41: off the loop

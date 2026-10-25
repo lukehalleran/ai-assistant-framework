@@ -1462,7 +1462,6 @@ HEALTH_FRAMING_DECAY_ENABLED = bool(int(os.getenv("HEALTH_FRAMING_DECAY_ENABLED"
 # Agentic Memory Search
 # --------------------------------------------------------------------
 AGENTIC_CFG = config.get("agentic_search", {})
-AGENTIC_MEMORY_SEARCH_ENABLED: bool = bool(AGENTIC_CFG.get("memory_search_enabled", True))
 AGENTIC_MEMORY_SEARCH_LIMIT: int = int(AGENTIC_CFG.get("memory_search_limit", 7))
 # Reuse a substantive answer written during the decision round as the final
 # response, skipping the second full-context synthesis call (saves ~20-30s
@@ -1482,6 +1481,11 @@ AGENTIC_DECISION_MAX_TOKENS: int = int(AGENTIC_CFG.get("decision_max_tokens", 16
 AGENTIC_DECISION_REASONING: bool = bool(AGENTIC_CFG.get("decision_reasoning", False))
 AGENTIC_DECISION_REASONING_MAX_TOKENS: int = int(
     AGENTIC_CFG.get("decision_reasoning_max_tokens", 6000)
+)
+# Reasoning effort of the agentic final-synthesis call (2026-10-25). Default
+# "medium" == the former hardcoded value. Read live (app_config.X at call time).
+AGENTIC_SYNTHESIS_REASONING_EFFORT: str = str(
+    AGENTIC_CFG.get("synthesis_reasoning_effort", "medium")
 )
 # Latency guards for the agentic loop (2026-07-24). A slow/misbehaving model
 # (observed: kimi-3 narrating tool intent in prose instead of emitting XML

@@ -332,6 +332,9 @@ def _run_reference_docs_seed(chroma_store=None):
     print("[RefDocs] Started background auto-seed...")
 
 
+# Collections opened lazily DURING turn 1 before the warmup opened them (2026-10-24).
+_TURN1_COLD_COLLECTIONS = ("obsidian_notes", "proposals", "threads", "daemon_self_notes")
+
 # Modules imported lazily on the first calendar / email turn (see warmup step 10; calendar/email and proposal modules).
 _FIRST_USE_IMPORT_MODULES = (
     "core.actions.google_calendar",  # get_google_calendar_events
@@ -490,6 +493,27 @@ def _run_model_warmup(orchestrator):
                 )
         except Exception as e:  # degrades: spaCy loads (or fails loudly) on first extraction instead
             print(f"[Warmup] spacy skip: {e}")
+        # 12) Collections the turn-1 gather still opened lazily (2026-10-24 first
+        #     turn: obsidian_notes/proposals/threads/daemon_self_notes opened
+        #     DURING the turn, contending with the other gather tasks). Open them
+        #     through THE store's own accessor — read-only, idempotent.
+        for _coll in _TURN1_COLD_COLLECTIONS:
+            try:
+                _store = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
+                if _store is not None:
+                    _store._get_collection(_coll)
+            except Exception as e:  # degrades: that collection opens lazily on turn 1 instead
+                print(f"[Warmup] collection {_coll} skip: {e}")
+        # 13) Google auth: the first is_authenticated paid the google-auth import +
+        #     token parse (5 s LoopStall on turn 1, 2026-10-24). Touch it here, off
+        #     the loop, only when Google is configured; never refreshes or networks.
+        try:
+            from core.actions.google_auth import get_google_auth  # lazy import: cycle
+            _auth = get_google_auth()
+            if _auth is not None and _auth.is_configured:
+                _auth.is_authenticated  # noqa: B018 — property read IS the warm touch
+        except Exception as e:  # degrades: the token parse lands on turn 1 (off-loop since S1)
+            print(f"[Warmup] google auth skip: {e}")
         print(f"[Warmup] Model warmup complete ({_t.time() - t0:.1f}s)")
 
     threading.Thread(target=_warm_task, daemon=True).start()

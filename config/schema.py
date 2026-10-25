@@ -271,8 +271,6 @@ class AgenticSearchSection(BaseModel):
     max_rounds: int = Field(default=5, ge=1)
     context_budget_tokens: int = Field(default=8000, ge=1000)
     compression_model: str = "sonnet-4.5"
-    prefer_native_tools: bool = True
-    memory_search_enabled: bool = True
     memory_search_limit: int = Field(default=7, ge=1)
     reuse_decision_answer: bool = True
     decision_max_tokens: int = Field(default=1600, ge=100)
@@ -289,6 +287,7 @@ class AgenticSearchSection(BaseModel):
     fetch_fastpath: bool = True
     fetch_fastpath_min_chars: int = Field(default=400, ge=1)
     fetch_provenance_guard: bool = True
+    synthesis_reasoning_effort: Literal["low", "medium", "high"] = "medium"
 
 
 class InsightModeSection(BaseModel):
