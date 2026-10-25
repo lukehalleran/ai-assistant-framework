@@ -6,7 +6,9 @@
 #   CI and the frozen CPU build install different torch variants) and
 #   en_core_web_sm (a URL package a constraints file cannot hold; `spacy download`
 #   picks the model matching the pinned spaCy). torch/torchvision are pinned
-#   WITHOUT their local label (2.11.0, not 2.11.0+cu126).
+#   WITHOUT their local label (2.11.0, not 2.11.0+cu126). pip/setuptools/wheel
+#   are the installer's own toolchain (the runner's Python provides them; the
+#   torch CPU index does not carry old setuptools, so pinning one broke CI).
 aiofiles==24.1.0
 altgraph==0.17.5
 annotated-types==0.7.0
@@ -147,7 +149,6 @@ scipy==1.16.3
 semantic-version==2.10.0
 sentence-transformers==4.1.0
 sentencepiece==0.2.0
-setuptools==65.5.0
 shellingham==1.5.4
 six==1.17.0
 smart-open==7.5.0

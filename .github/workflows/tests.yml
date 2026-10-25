@@ -78,11 +78,13 @@ jobs:
           # upstream release must not change what CI tests (2026-10-24 preshed).
           # The default PyPI torch wheel pulls the full CUDA stack and exceeds
           # the disk available on GitHub's CPU-only runner; the CPU build's
-          # versions come from the lock (local label +cpu appended here).
+          # versions come from the lock (local label +cpu appended here); torch's own
+          # dependencies resolve at their locked versions from PyPI.
           TORCH_VER=$(sed -n 's/^torch==//p' requirements.lock.txt)
           TV_VER=$(sed -n 's/^torchvision==//p' requirements.lock.txt)
           python -m pip install --no-cache-dir -c requirements.lock.txt \
             --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
             "torch==${TORCH_VER}+cpu" "torchvision==${TV_VER}+cpu"
           python -m pip install --no-cache-dir -r requirements.txt -c requirements.lock.txt
           python -m pip install --no-cache-dir -c requirements.lock.txt pytest pytest-asyncio pytest-cov fpdf2 ruff

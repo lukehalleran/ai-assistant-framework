@@ -31,7 +31,8 @@ DISTS = {
     "extra-leaf": ("4.0", []),
     "nvidia-cublas-cu12": ("12.0", []),
     "triton": ("3.0", []),
-    "torch": ("2.11.0+cu126", ["nvidia-cublas-cu12"]),
+    "torch": ("2.11.0+cu126", ["nvidia-cublas-cu12", "setuptools<82"]),
+    "setuptools": ("65.5.0", []),
     "en-core-web-sm": ("3.8.0", []),
     "pytest": ("9.0.0", []),
     "unrelated": ("1.0", []),
@@ -55,6 +56,15 @@ def test_closure_honours_extras_named_in_requirements():
 def test_gpu_stack_and_model_package_excluded_local_label_stripped():
     pins = rl.closure(reqs("torch==2.11.0", "en_core_web_sm"), DISTS, ENV)
     assert pins == {"torch": "2.11.0"}
+
+
+def test_installer_toolchain_is_never_pinned():
+    """PR #104 CI: torch requires setuptools; a lock pin of the dev env's
+    setuptools 65.5.0 made the torch CPU-index install unresolvable (that index
+    carries no such version). pip/setuptools/wheel belong to the runner."""
+    assert all(rl.is_excluded(n) for n in ("setuptools", "pip", "wheel"))
+    pins = rl.closure(reqs("torch==2.11.0"), DISTS, ENV)
+    assert "setuptools" not in pins
 
 
 def test_unsatisfied_requirement_is_an_error_and_names_each():
