@@ -1601,6 +1601,8 @@ class PromptFormatter:
         # Git commit history (procedural memory)
         git_commits = context.get("git_commits", []) or []
         gc_lines: list[str] = []
+        _stat_added = _stat_removed = _stat_commits = 0
+        _stat_files: set[str] = set()
         for i, commit in enumerate(git_commits, start=1):
             if isinstance(commit, dict):
                 content = commit.get("content", "")
@@ -1634,9 +1636,23 @@ class PromptFormatter:
                 else:
                     age = meta.get("age_relative", "")
                 tags = meta.get("tags", "")
+                # Line stats ride only on the live local-git route; the indexed
+                # route carries none and renders unchanged.
+                if meta.get("is_merge"):
+                    stat_text = "merge"
+                elif "lines_added" in meta:
+                    stat_text = (f"+{meta['lines_added']}/\u2212{meta['lines_removed']}, "
+                                 f"{meta.get('files_changed_count', 0)} files")
+                    _stat_added += int(meta["lines_added"])
+                    _stat_removed += int(meta["lines_removed"])
+                    _stat_files.update(f for f in str(meta.get("files_changed", "")).split(",") if f)
+                    _stat_commits += 1
+                else:
+                    stat_text = ""
             else:
                 content = str(commit)
                 commit_hash, author, age, tags = "", "", "", ""
+                stat_text = ""
 
             if content:
                 header_parts = []
@@ -1646,6 +1662,8 @@ class PromptFormatter:
                     header_parts.append(f"by {author}")
                 if age:
                     header_parts.append(f"({age})")
+                if stat_text:
+                    header_parts.append(f"[{stat_text}]")
                 if tags:
                     tag_list = [t.strip() for t in tags.split(",") if t.strip() and t.strip() != "git-commit"]
                     if tag_list:
@@ -1666,6 +1684,11 @@ class PromptFormatter:
                     "Recent local repository records. Commit dates are not push dates; "
                     "authors do not identify the person or process that pushed them. "
                     "Do not infer automation or a surprise push from older assistant replies.\n"
+                )
+            if _stat_commits:
+                scope += (
+                    f"Window total (non-merge commits): {_stat_commits} commits, "
+                    f"+{_stat_added}/\u2212{_stat_removed} lines, {len(_stat_files)} files.\n"
                 )
             sections.append(f"[PROJECT COMMIT HISTORY] n={len(gc_lines)}\n" + scope + "\n\n".join(gc_lines))
 

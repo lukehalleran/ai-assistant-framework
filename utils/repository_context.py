@@ -62,12 +62,22 @@ _SOFTWARE_ACTIVITY = {
         "bugfix", "bugfixes",
     ),
     "verbs": ("ship", "merge", "deploy", "refactor", "release", "implement"),
+    # git operations as a category. "commit" is deliberately NOT here: bare
+    # "what did I commit last week?" is ambiguous (a pinned negative); "push" is
+    # git-only once its non-git senses are removed (_NON_GIT_SENSE).
+    "git_verbs": ("push",),
 }
 _SOFTWARE_ARTIFACT_MATCHER = compile_keyword_matcher(
     list(_SOFTWARE_ACTIVITY["artifacts"]) + list(_REPOSITORY_CUES["artifacts"])
     + list(_REPOSITORY_CUES["systems"])
 )
-_SOFTWARE_VERB_MATCHER = compile_keyword_matcher(list(_SOFTWARE_ACTIVITY["verbs"]))
+_SOFTWARE_VERB_MATCHER = compile_keyword_matcher(
+    list(_SOFTWARE_ACTIVITY["verbs"]) + list(_SOFTWARE_ACTIVITY["git_verbs"])
+)
+# Non-git senses of the git verbs: a hyphenated compound ("push-ups", "push-back").
+_NON_GIT_SENSE = re.compile(r"\bpush\w*-\s*\w+", re.IGNORECASE)
+# Progressive/past "work on": software only with a software object.
+_WORK_ON = re.compile(r"\bwork(?:ed|ing)\s+on\b(?P<tail>[^?.!]*)", re.IGNORECASE)
 _BUILD_VERB = re.compile(r"\bbuil(?:d|ding|t)\b(?:\s+(?P<next>[a-z']+))?", re.IGNORECASE)
 # What may follow a bare "build": an adverbial/recency word, not an object.
 _BARE_BUILD_FOLLOWERS = frozenset({
@@ -126,7 +136,18 @@ def _past_activity_verb(lower: str, bases=None) -> bool:
 
 
 def _software_verb_in_past(lower: str) -> bool:
-    return _past_activity_verb(lower, bases=set(_SOFTWARE_ACTIVITY["verbs"]))
+    return _past_activity_verb(
+        lower, bases=set(_SOFTWARE_ACTIVITY["verbs"]) | set(_SOFTWARE_ACTIVITY["git_verbs"])
+    )
+
+
+def _work_on_software(text: str) -> bool:
+    """'working on' + a software artifact noun, or on a software build anchor."""
+    for m in _WORK_ON.finditer(text):
+        tail = m.group("tail")
+        if _SOFTWARE_ARTIFACT_MATCHER(tail.lower()) or _software_build_anchor(tail):
+            return True
+    return False
 
 
 def _names_another_person(text: str) -> bool:
@@ -211,6 +232,10 @@ def is_own_code_activity_question(query: str) -> bool:
     # ACTIVITY framing is what separates "what did I build/ship" from "why is my
     # code broken": a question about a code artifact's correctness, behaviour or
     # structure has no PAST activity verb, so it never qualifies (no help-phrase list).
+    lower = _NON_GIT_SENSE.sub(" ", lower)
+    text = _NON_GIT_SENSE.sub(" ", text)
+    if _work_on_software(text):
+        return True                                   # "what have I been working on in the codebase?"
     past = _past_activity_verb(lower)
     if not past:
         return False

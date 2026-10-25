@@ -79,7 +79,7 @@ async def test_live_git_works_without_an_index_and_renders(git_log, wrapped):
     assert len(commits) == 6
     assert len(g.memory_id_map) == 6
     assert all("Long body" not in c["content"] for c in commits)
-    git_log.assert_called_once()
+    assert git_log.call_count == 2  # records + one batched --numstat call (oct25 GITSTAT)
     assert git_log.call_args.args[0][0:2] == ["git", "log"]
     assert git_log.call_args.kwargs["timeout"] == 5
 
