@@ -1653,6 +1653,17 @@ async def evaluate_agentic_gate(
                 # F3). It used to route with modes=[] ("llm-fallback"), so
                 # neither the receipt nor telemetry said the loop was a web
                 # loop.
+                # Empty-terms guard (2026-10-25, class: BC-05/BC-38): a web
+                # verdict with NO search terms (cached/prefetched or fresh)
+                # makes the loop insist on one real search of its own
+                # (controller `_web_mode_no_seed`) -- a paid call the trigger
+                # never justified. No terms, no web arm; the other arms below
+                # (memory/knowledge/doc/email) still route on their own flags.
+                if should_trigger is True and not search_terms:
+                    logger.info(
+                        "[Agentic Gate] LLM web verdict has no search terms — "
+                        "not routing a web round")
+                    should_trigger = False
                 if should_trigger is True:
                     needs_web_search = True
                     _mark("tier4_llm_web")

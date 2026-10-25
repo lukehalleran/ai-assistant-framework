@@ -1467,7 +1467,13 @@ _REFERENTIAL_TOKEN_RE = re.compile(
 _FIRST_PERSON_OPENER_RE = re.compile(r"^(?:i|i'm|im|i've|ive|i'd|id|my)\b", re.I)
 _INTERROGATIVE_OPENER_RE = re.compile(
     r"^(?:what|what's|how|why|when|where|who|which|can|could|should|would|"
-    r"is|are|do|does|did|will|any\b)", re.I)
+    r"is|are|do|does|did|will|any)\b"
+    # INVERTED negative contraction ("Isn't it raining", "Couldn't you check"):
+    # a contracted negative auxiliary followed by its subject. Without
+    # inversion ("...and couldn't focus") it is narration, not a question.
+    # "won't" is wo+n't.
+    r"|^(?:is|are|was|were|do|does|did|can|could|would|should|wo|have|has|had)"
+    r"n['\u2019]t\s+(?:i|you|we|they|he|she|it|there|that|this|the)\b", re.I)
 _LOOKUP_CUE_RE = re.compile(
     r"\b(?:look\s+up|search|google|find\s+out|latest|news|current|what'?s\s+the)\b", re.I)
 
