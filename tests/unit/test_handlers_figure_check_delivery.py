@@ -16,7 +16,7 @@ BAD = "Given how wrecked you were feeling an hour ago, take care."
 
 
 def _ctx():
-    stamp = (datetime.now() - timedelta(minutes=1)).isoformat()
+    stamp = (datetime.now() - timedelta(minutes=1)).isoformat()  # clock-safe: the check compares elapsed seconds, never calendar days
     return SimpleNamespace(
         user_text="still rough tonight", telemetry={}, personal_claim_mode="log_only",
         raw_context={"recent_conversations": [

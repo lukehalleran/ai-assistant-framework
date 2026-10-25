@@ -53,6 +53,7 @@ Classes (FigureFinding.cls): copied, derived:<op>, unsupported, elapsed_unconfir
 from __future__ import annotations
 
 import calendar
+import hashlib
 import re
 import time
 from dataclasses import dataclass, field
@@ -530,12 +531,14 @@ def build_source_pool(raw_context: Any, history: Iterable[Any], source_material:
             continue
         else:
             seq = [value]
-        for i, entry in enumerate(seq[:100]):
+        for entry in seq[:100]:
             if len(items) >= _MAX_ITEMS:
                 break
             text, ts = _entry_text_ts(entry)
             if text and text.strip():
-                items.append(SourceItem(id=f"{key}:{i}", text=text[:_ITEM_CHARS], role=role, timestamp=ts,
+                # Content-derived id (BC-95): a list position is not identity, and ids reach checker_findings.
+                item_id = hashlib.sha1(f"{text}|{ts}".encode("utf-8")).hexdigest()[:10]
+                items.append(SourceItem(id=f"{key}:{item_id}", text=text[:_ITEM_CHARS], role=role, timestamp=ts,
                                         section=str(key)))
     if source_material and str(source_material).strip():
         items.append(SourceItem(id="source_material", text=str(source_material)[:_ITEM_CHARS * 4], role="tool",
