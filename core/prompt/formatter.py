@@ -288,6 +288,9 @@ def _session_time_span(span: Optional[tuple]) -> str:
         return ""
 
 
+# "(today, 5 min ago)" -> "(today)" (also yesterday/tomorrow): a session header names the day, not the sub-day age.
+_TODAY_AGE_RE = re.compile(r"\((today|yesterday|tomorrow),[^)]*\)")
+
 def _format_session_header(
     ts: datetime, span: Optional[tuple] = None,
     truncation: Optional[tuple] = None,
@@ -321,7 +324,9 @@ def _format_session_header(
     suffix = _session_time_span(span)
     try:
         from utils.time_manager import format_relative_timestamp
-        rel = format_relative_timestamp(ts)
+        # The sub-day age ("(today, 5 min ago)") is irrelevant to a session
+        # header's day label: collapse it back to the bare day label.
+        rel = _TODAY_AGE_RE.sub(r"(\1)", format_relative_timestamp(ts))
         # rel looks like "2026-05-17 11:41 (today)" — extract the day label
         # and the date for the header
         day_name = ts.strftime("%a, %b %-d")
@@ -609,7 +614,15 @@ class PromptFormatter:
         if self.time_manager:
             time_since_msg = self.time_manager.time_since_previous_message()
             time_since_session = self.time_manager.elapsed_since_last_session()
-            lines.append(f"Time since last message: {time_since_msg}")
+            prev_msg_at = getattr(self.time_manager, "previous_query_time", None)
+            if isinstance(prev_msg_at, datetime):
+                # Bind the gap to the message it measures (BC-103): an unbound
+                # "1 m" invited the model to guess when that message was.
+                same_day = prev_msg_at.date() == now.date()
+                prev_str = prev_msg_at.strftime('%H:%M' if same_day else '%Y-%m-%d %H:%M')
+                lines.append(f"Time since last message: {time_since_msg} (your message at {prev_str})")
+            else:
+                lines.append(f"Time since last message: {time_since_msg}")
             lines.append(f"Time since last session: {time_since_session}")
 
         if session_started_at and session_turns_total:

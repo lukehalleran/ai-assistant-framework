@@ -821,6 +821,21 @@ class PersonalClaimCheckSection(BaseModel):
     max_evidence_chars: int = Field(default=12000, ge=500)
 
 
+class FigureCheckSection(BaseModel):
+    """Figure provenance check (2026-10-25, BC-103): every number/time the reply
+    asserts about the user, the conversation, the user's data or Daemon is copied
+    from, or derived from, a source in context. Pure code; no model call."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    correct_classes: list[Literal["elapsed_precise", "weekday_date"]] = Field(
+        default_factory=lambda: ["elapsed_precise", "weekday_date"])
+    log_classes: list[Literal[
+        "elapsed_vague", "elapsed_unconfirmed", "elapsed_precise", "weekday_date", "unsupported",
+        "copied_mismatch", "unbound"]] = Field(
+        default_factory=lambda: ["elapsed_vague", "elapsed_unconfirmed", "copied_mismatch"])
+    min_referent_overlap: int = Field(default=1, ge=1)
+
+
 class ClaimLedgerSection(BaseModel):
     """User-claim ledger (2026-10-20, class: BC-75/BC-52): the figures the user stated
     about themselves, kept with a date and a modality. Every switch ships OFF."""
@@ -1228,6 +1243,7 @@ class DaemonConfig(BaseModel):
     grounding_check: GroundingCheckSection = Field(default_factory=GroundingCheckSection)
     personal_claim_check: PersonalClaimCheckSection = Field(default_factory=PersonalClaimCheckSection)
     claim_ledger: ClaimLedgerSection = Field(default_factory=ClaimLedgerSection)
+    figure_check: FigureCheckSection = Field(default_factory=FigureCheckSection)
     decision_model: DecisionModelSection = Field(default_factory=DecisionModelSection)
     email_integration: EmailIntegrationSection = Field(default_factory=EmailIntegrationSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)

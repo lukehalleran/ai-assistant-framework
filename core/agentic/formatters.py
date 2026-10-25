@@ -15,6 +15,7 @@ import re
 from typing import Dict, List
 
 from utils.temporal_resolver import anchor_recalled_item, anchor_temporal_references
+from utils.time_manager import render_timestamp_label
 
 TRUNCATION_MARKER = " [...truncated]"
 
@@ -90,7 +91,7 @@ class AgenticFormatter:
             assistant_msg = conv.get('response', conv.get('assistant', ''))
             if user_msg:
                 user_msg = anchor_temporal_references(user_msg, ts, now)
-                lines.append(f"[MEM_RECENT_{i}] {ts}: User: {clip_text(user_msg, 500)}")
+                lines.append(f"[MEM_RECENT_{i}] {render_timestamp_label(ts, now)}: User: {clip_text(user_msg, 500)}")
                 if assistant_msg:
                     assistant_msg = anchor_temporal_references(assistant_msg, ts, now)
                     lines.append(f"   Daemon: {clip_text(assistant_msg, 500)}")
@@ -108,7 +109,7 @@ class AgenticFormatter:
             response = mem.get('response', '')
             if content:
                 content = anchor_temporal_references(content, ts, now)
-                lines.append(f"[MEM_SEMANTIC_{i}] {ts}: {clip_text(content, 400)}")
+                lines.append(f"[MEM_SEMANTIC_{i}] {render_timestamp_label(ts, now)}: {clip_text(content, 400)}")
                 if response:
                     response = anchor_temporal_references(response, ts, now)
                     lines.append(f"   Response: {clip_text(response, 400)}")
@@ -124,7 +125,7 @@ class AgenticFormatter:
             ts = s.get('timestamp', '')
             if content:
                 content = anchor_recalled_item(content, s, now, kind="summary")
-                lines.append(f"{i}) [{ts}] {clip_text(content, 600)}")
+                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {clip_text(content, 600)}")
         return "\n".join(lines)
 
     def format_personal_notes(self, notes: List[Dict]) -> str:
@@ -141,7 +142,7 @@ class AgenticFormatter:
                 lines.append(f"{i}) {title}{tag_str}: {content}")
         return "\n".join(lines)
 
-    def format_dreams(self, dreams: List[Dict]) -> str:
+    def format_dreams(self, dreams: List[Dict], now=None) -> str:
         """Format dreams for the prompt."""
         if not dreams:
             return ""
@@ -150,7 +151,7 @@ class AgenticFormatter:
             content = d.get('content', d.get('dream', ''))
             ts = d.get('timestamp', '')
             if content:
-                lines.append(f"{i}) [{ts}] {clip_text(content, 400)}")
+                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {clip_text(content, 400)}")
         return "\n".join(lines)
 
     def format_reflections(self, reflections: List[Dict], now=None) -> str:
@@ -163,7 +164,7 @@ class AgenticFormatter:
             ts = r.get('timestamp', '')
             if content:
                 content = anchor_recalled_item(content, r, now, kind="reflection")
-                lines.append(f"{i}) [{ts}] {clip_text(content, 400)}")
+                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {clip_text(content, 400)}")
         return "\n".join(lines)
 
     def format_search_context(
@@ -278,7 +279,7 @@ class AgenticFormatter:
             elif collection in ("conversations", "summaries", "reflections"):
                 ts = meta.get("timestamp", "")
                 if ts:
-                    header_parts.append(ts[:19])
+                    header_parts.append(render_timestamp_label(ts))
 
             header_parts.append(f"(score: {score:.2f})")
             header_parts.append(f"[{collection}]")
@@ -340,7 +341,7 @@ class AgenticFormatter:
             if source_turns:
                 lines.append(f"\n--- ORIGINAL CONVERSATIONS ({len(source_turns)}) ---")
                 for t in source_turns:
-                    ts = t.get("timestamp", "")[:19]
+                    ts = render_timestamp_label(t.get("timestamp", ""))
                     tid = t.get("id", "")[:8]
                     content = t.get("content", "")
                     lines.append(f"[{tid}] {ts}")
@@ -352,7 +353,7 @@ class AgenticFormatter:
                 lines.append(f"Note: {error}")
             for t in turns:
                 marker = "  <<<< TARGET" if t.get("is_anchor") else ""
-                ts = t.get("timestamp", "")[:19]
+                ts = render_timestamp_label(t.get("timestamp", ""))
                 tid = t.get("id", "")[:8]
                 content = t.get("content", "")
                 lines.append(f"--- [{tid}] {ts}{marker} ---")

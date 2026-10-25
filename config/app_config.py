@@ -1634,6 +1634,22 @@ PERSONAL_CLAIM_CHECK_ENABLED = bool(int(os.getenv(
 )))
 
 # --------------------------------------------------------------------
+# Figure provenance check (2026-10-25, class: BC-103). Pure code; consumers read
+# these at call time (`app_config.FIGURE_CHECK_*`), never a frozen from-import (BC-82).
+# --------------------------------------------------------------------
+FIGURE_CHECK_CFG = config.get("figure_check", {}) or {}
+FIGURE_CHECK_ENABLED: bool = bool(FIGURE_CHECK_CFG.get("enabled", True))
+def _figure_classes(key: str, default: tuple) -> tuple:
+    value = FIGURE_CHECK_CFG.get(key)  # an explicit [] means "none", not "default"
+    return default if value is None else tuple(str(c) for c in value)
+
+
+FIGURE_CHECK_CORRECT_CLASSES: tuple = _figure_classes("correct_classes", ("elapsed_precise", "weekday_date"))
+FIGURE_CHECK_LOG_CLASSES: tuple = _figure_classes(
+    "log_classes", ("elapsed_vague", "elapsed_unconfirmed", "copied_mismatch"))
+FIGURE_CHECK_MIN_REFERENT_OVERLAP: int = max(1, int(FIGURE_CHECK_CFG.get("min_referent_overlap", 1)))
+
+# --------------------------------------------------------------------
 # User-claim ledger (2026-10-20, class: BC-75/BC-52). Every switch ships OFF; the
 # live consumers read these at call time (`app_config.CLAIM_LEDGER_*`), never a
 # frozen from-import (BC-82). No env overrides: the owner enables it in
