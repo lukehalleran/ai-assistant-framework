@@ -206,8 +206,8 @@ def build_report(generations: list, judgments: list, models: list, judge_model: 
              f"Generated: {datetime.now().isoformat(timespec='seconds')}",
              f"Baseline: {baseline} | judge: {judge_model}", "",
              "## Generation cost and latency", "",
-             "| model | n | median gen ms | $/turn | $/50 turns | api errors |",
-             "|---|---|---|---|---|---|"]
+             "| model | n | median gen ms | $/turn | $/50 turns | api errors | empty |",
+             "|---|---|---|---|---|---|---|"]
     for m in models:
         rs = [g for g in generations if g["model"] == m]
         clean = [g for g in rs if not g.get("api_error")]
@@ -216,12 +216,14 @@ def build_report(generations: list, judgments: list, models: list, judge_model: 
         med = statistics.median(g["generation_ms"] for g in clean) if clean else 0
         per_turn = statistics.mean(g["cost_usd"] for g in clean) if clean else 0.0
         lines.append(f"| {m} | {len(rs)} | {med:.0f} | ${per_turn:.4f} | ${per_turn * 50:.2f} "
-                     f"| {len(rs) - len(clean)} |")
+                     f"| {len(rs) - len(clean)} | {sum(1 for g in clean if _rec_empty(g))} |")
     lines += ["", "## Quality vs baseline (position-randomized pairwise judge)"]
     for m in models[1:]:
         vs = [j for j in judgments if j["variant_id"] == m]
+        n_empty = sum(1 for g in generations if g["model"] == m and not g.get("api_error") and _rec_empty(g))
         if not vs:
-            lines += ["", f"### {m}: no judgments yet"]
+            lines += ["", f"### {m}: no judgments yet"
+                      + (f" (empty replies, not judged: {n_empty})" if n_empty else "")]
             continue
         wins = sum(1 for v in vs if v["winner_is_baseline"] is False)
         losses = sum(1 for v in vs if v["winner_is_baseline"] is True)
@@ -236,6 +238,7 @@ def build_report(generations: list, judgments: list, models: list, judge_model: 
         mean_d = {c: (sum(d) / len(d) if d else 0.0) for c, d in deltas.items()}
         lines += ["", f"### {m} vs {baseline} (n={len(vs)})", "",
                   f"- candidate wins {wins} | ties {ties} | candidate losses {losses}",
+                  f"- empty replies (not judged, not losses): {n_empty}",
                   f"- mean score delta (candidate - baseline, out of 25): {sum(mean_d.values()):+.2f}",
                   "- per criterion: " + ", ".join(f"{c} {mean_d[c]:+.2f}" for c in CRITERIA)]
     return "\n".join(lines) + "\n"
@@ -312,6 +315,38 @@ class Spend:
         self.total += usd
 
 
+def is_empty_reply(text) -> bool:
+    """A reply with no visible text (a reasoning model that spent its cap thinking).
+
+    Its own outcome: counted as `empty`, never sent to the judge, never a win/loss
+    (2026-10-25: 3 of 9 kimi-k3.1-pro replies were empty at max_tokens=1024 and scored as losses).
+    """
+    return not (text or "").strip()
+
+
+def _rec_empty(rec: dict) -> bool:
+    """Empty flag of a stored generation (legacy rows without the key: derive from the text)."""
+    if "empty" in rec:
+        return bool(rec["empty"])
+    return not rec.get("api_error") and is_empty_reply(rec.get("response"))
+
+
+def deployed_max_tokens() -> int:
+    """The token cap Daemon answers with (models.default_max_tokens), read at call time (BC-82)."""
+    from config import app_config  # lazy import: live-config read
+    return int(app_config.DEFAULT_MAX_TOKENS)
+
+
+def load_project_env() -> None:
+    """Load .env through the project's ONE .env authority (BC-83), as main.py does.
+
+    Called from `_run` only: importing this script must not mutate os.environ.
+    """
+    from dotenv import load_dotenv  # lazy import: optional-dependency
+    from utils.bootstrap import resolve_env_path  # lazy import: bootstrap pulls platform setup
+    load_dotenv(resolve_env_path(), override=True)
+
+
 def _is_credit_stop(text: str) -> bool:
     return (text or "").lstrip().startswith("[CREDITS EXHAUSTED]")
 
@@ -343,12 +378,14 @@ async def generate_phase(outdir: Path, queries: list, models: list, build_prompt
                    "prompt_tokens": meter["prompt_tokens"], "response_tokens": meter["response_tokens"],
                    "generation_ms": r.generation_time_ms, "cost_usd": meter["cost_usd"],
                    "response": r.response_text, "api_error": _bx._is_api_error(r.response_text),
+                   "empty": is_empty_reply(r.response_text),
                    "ts": datetime.now().isoformat(timespec="seconds")}
             _bx._append_jsonl(path, rec)
             done.add((q["query_id"], m))
             print(f"[bakeoff] {q['query_id']} {m}: {meter['prompt_tokens']}in/{meter['response_tokens']}out "
                   f"${meter['cost_usd']:.4f} {r.generation_time_ms}ms"
-                  + (" API-ERROR" if rec["api_error"] else ""))
+                  + (" API-ERROR" if rec["api_error"] else "")
+                  + (" EMPTY" if rec["empty"] else ""))
 
 
 async def judge_phase(outdir: Path, queries: list, models: list, judge, judge_generator,
@@ -359,12 +396,12 @@ async def judge_phase(outdir: Path, queries: list, models: list, judge, judge_ge
     baseline = models[0]
     for q in queries:
         base = gens.get((q["query_id"], baseline))
-        if not base or base["api_error"]:
-            print(f"[bakeoff] judge: skipping {q['query_id']} (no clean baseline)")
+        if not base or base["api_error"] or _rec_empty(base):
+            print(f"[bakeoff] judge: skipping {q['query_id']} (no clean, non-empty baseline)")
             continue
         for m in models[1:]:
             cand = gens.get((q["query_id"], m))
-            if (q["query_id"], m) in done or not cand or cand["api_error"]:
+            if (q["query_id"], m) in done or not cand or cand["api_error"] or _rec_empty(cand):
                 continue
             est_in = max(1, (len(base["response"]) + len(cand["response"]) + len(q["query_text"])) // 4 + 600)
             spend.check(call_cost(prices, resolve_slug(judge_model), est_in, JUDGE_MAX_TOKENS))
@@ -389,10 +426,31 @@ def spent_so_far(outdir: Path) -> float:
     return total
 
 
+def summarize(generations: list, judgments: list, models: list) -> dict:
+    """Per-model counts for report.json: `empty` is separate from judged wins/losses."""
+    out = {}
+    for i, m in enumerate(models):
+        gs = [g for g in generations if g["model"] == m]
+        row = {"generations": len(gs),
+               "api_errors": sum(1 for g in gs if g.get("api_error")),
+               "empty": sum(1 for g in gs if not g.get("api_error") and _rec_empty(g))}
+        if i:
+            vs = [j for j in judgments if j["variant_id"] == m]
+            row["wins"] = sum(1 for v in vs if v["winner_is_baseline"] is False)
+            row["losses"] = sum(1 for v in vs if v["winner_is_baseline"] is True)
+            row["ties"] = len(vs) - row["wins"] - row["losses"]
+        out[m] = row
+    return out
+
+
 def write_report(outdir: Path, models: list, judge_model: str) -> str:
-    report = build_report(_bx._load_jsonl(outdir / "generations.jsonl"),
-                          _bx._load_jsonl(outdir / "judgments.jsonl"), models, judge_model)
+    gens = _bx._load_jsonl(outdir / "generations.jsonl")
+    judgments = _bx._load_jsonl(outdir / "judgments.jsonl")
+    report = build_report(gens, judgments, models, judge_model)
     (outdir / "report.md").write_text(report, encoding="utf-8")
+    (outdir / "report.json").write_text(
+        json.dumps({"baseline": models[0], "judge_model": judge_model,
+                    "models": summarize(gens, judgments, models)}, indent=2), encoding="utf-8")
     return report
 
 
@@ -405,6 +463,7 @@ def _fetch_catalog() -> dict:
 
 
 async def _run(args, outdir: Path, queries: list, prices: dict, plan: dict) -> int:
+    load_project_env()  # BEFORE the key check; main's import (build_orchestrator) loads it too late
     key = os.environ.get("OPENROUTER_API_KEY", "")
     if not key:
         print("ERROR: OPENROUTER_API_KEY is not set")
@@ -458,12 +517,15 @@ def main(argv=None) -> int:
                     help="aliases or slugs; FIRST is the baseline (default: kimi-3)")
     ap.add_argument("--judge-model", default="claude-opus-4.8")
     ap.add_argument("--per-intent", type=int, default=1, help="queries per intent (default 1 -> 9)")
-    ap.add_argument("--max-tokens", type=int, default=1024)
+    ap.add_argument("--max-tokens", type=int, default=None,
+                    help="generation cap (default: the deployed models.default_max_tokens)")
     ap.add_argument("--max-usd", type=float, default=2.00)
     ap.add_argument("--output-dir", default="eval/runs")
     ap.add_argument("--resume", default=None, help="existing run dir")
     ap.add_argument("--run", action="store_true", help="spend credits (default: dry run)")
     args = ap.parse_args(argv)
+    if args.max_tokens is None:
+        args.max_tokens = deployed_max_tokens()
 
     from eval.corpus import SEED_CORPUS
     queries = select_queries(SEED_CORPUS, args.per_intent)
