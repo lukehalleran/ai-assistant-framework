@@ -233,6 +233,11 @@ class WebSearchDecision:
     blocked_reason: str = ""  # "" | "budget"
     blocked_search_terms: List[str] = None  # the terms the veto withheld
     budget_remaining: Optional[float] = None  # credits the decision was made against
+    # 2026-10-26 (BC-27): True only when the decision came from a consulted
+    # classifier. A heuristic short-circuit entry in the trigger cache never
+    # saw the routing outcomes (memory/knowledge/doc/email/file), so a routing
+    # call must not be satisfied by it.
+    llm_consulted: bool = False
 
     def __post_init__(self):
         """Initialize mutable defaults."""
@@ -2270,20 +2275,34 @@ async def analyze_for_web_search_llm(
     remaining_credits: Optional[float] = None,
     timeout: float = None,
     conversation_context: str = None,
+    *,
+    consult_for_routing: bool = False,
 ) -> WebSearchDecision:
     """Public entry point: resolve the live toggle and budget, classify, then
     veto a search the budget cannot fund (one chokepoint — every early return
-    inside `_analyze_for_web_search_llm` passes through here)."""
+    inside `_analyze_for_web_search_llm` passes through here).
+
+    ``consult_for_routing`` (2026-10-26, BC-27): the caller also wants the
+    NON-web outcomes (memory/knowledge/doc/email/file). The web-only
+    short-circuits (conf-0 heuristic, strong heuristic yes, web toggle off,
+    heuristic-only cache entry) then do not stand in for the classifier."""
     credits = _resolve_remaining_credits(remaining_credits)
+    web_on = _resolve_web_search_enabled(web_search_enabled)
     decision = await _analyze_for_web_search_llm(
         query,
         model_manager=model_manager,
         crisis_level=crisis_level,
-        web_search_enabled=_resolve_web_search_enabled(web_search_enabled),
+        web_search_enabled=web_on,
         remaining_credits=credits,
         timeout=timeout,
         conversation_context=conversation_context,
+        consult_for_routing=consult_for_routing,
     )
+    if (consult_for_routing and not web_on and isinstance(decision, WebSearchDecision)
+            and (decision.should_search or decision.search_terms)):
+        # Web stays off; the classifier's other outcomes survive.
+        decision = replace(decision, should_search=False, search_terms=[],
+                           num_searches=0)
     decision = _apply_budget_veto(decision, credits)
     if isinstance(decision, WebSearchDecision) and decision.budget_remaining is None:
         # Freeze the budget this decision was made against (2026-09-12,
@@ -2300,6 +2319,8 @@ async def _analyze_for_web_search_llm(
     remaining_credits: float = 100,
     timeout: float = None,
     conversation_context: str = None,
+    *,
+    consult_for_routing: bool = False,
 ) -> WebSearchDecision:
     """
     LLM-first web search trigger analysis with heuristic fallback.
@@ -2326,6 +2347,9 @@ async def _analyze_for_web_search_llm(
             turns. Threaded into the trigger prompt so elliptical follow-ups
             ("check the news", "any updates") resolve to topic-specific terms
             instead of generic ones. Part of the cache key.
+        consult_for_routing: the caller also needs the non-web outcomes, so
+            web-only short-circuits do not skip the LLM (not in the cache key;
+            a heuristic-only cache entry is ignored for such a call).
 
     Returns:
         WebSearchDecision with should_search, search_terms, depth, num_searches
@@ -2343,7 +2367,8 @@ async def _analyze_for_web_search_llm(
     now = time.time()
     if cache_key in _llm_trigger_cache:
         cached_time, cached_result = _llm_trigger_cache[cache_key]
-        if now - cached_time < _LLM_TRIGGER_CACHE_TTL:
+        if now - cached_time < _LLM_TRIGGER_CACHE_TTL and not (
+                consult_for_routing and not getattr(cached_result, "llm_consulted", False)):
             logger.debug(f"[WebSearchTrigger] Cache hit for query (age={now - cached_time:.2f}s)")
             return cached_result
 
@@ -2355,7 +2380,7 @@ async def _analyze_for_web_search_llm(
         }
 
     # Quick exits
-    if not web_search_enabled:
+    if not web_search_enabled and not consult_for_routing:
         return WebSearchDecision(
             should_search=False,
             depth=WebSearchDepth.QUICK,
@@ -2504,6 +2529,8 @@ async def _analyze_for_web_search_llm(
             logger.debug(
                 "[WebSearchTrigger] conf=0.0 public-actor statement — consulting LLM"
             )
+        elif consult_for_routing:
+            logger.debug("[WebSearchTrigger] conf=0.0 but routing call — consulting LLM")
         elif not _referential_followup and not pattern_candidate:
             logger.debug("[WebSearchTrigger] Skipping LLM: heuristic confident no-search (conf=0.0, no keywords)")
             _llm_trigger_cache[cache_key] = (now, heuristic_result)
@@ -2514,7 +2541,7 @@ async def _analyze_for_web_search_llm(
     # information request. A first-person narrative message (is_first_person_
     # narrative) consults the classifier even at high keyword confidence.
     if (heuristic_result.confidence >= 0.7 and heuristic_result.should_search
-            and not pattern_candidate
+            and not pattern_candidate and not consult_for_routing
             and (heuristic_result.matched_patterns
                  or not is_first_person_narrative(query))):
         logger.debug(f"[WebSearchTrigger] Skipping LLM: heuristic confident search (conf={heuristic_result.confidence:.2f})")
@@ -2572,6 +2599,7 @@ async def _analyze_for_web_search_llm(
             num_searches=0,
             source="llm",
             needs_pattern_analysis=True,
+            llm_consulted=True,
         )
         _llm_trigger_cache[cache_key] = (time.time(), result)
         return result
@@ -2582,6 +2610,7 @@ async def _analyze_for_web_search_llm(
     # confident "no" — so it should not block the LLM.
     veto_result = _heuristic_veto_decision(heuristic_result, "LLM overridden")
     if veto_result is not None:
+        veto_result = replace(veto_result, llm_consulted=True)
         logger.debug(
             f"[WebSearchTrigger] Heuristic veto: active suppression detected "
             f"(reason={heuristic_result.reason}), LLM wanted search={llm_response.should_search} but heuristic says no"
@@ -2653,6 +2682,7 @@ async def _analyze_for_web_search_llm(
         email_query=llm_response.email_query,
         needs_file_search=llm_response.needs_file_search,
         file_query=llm_response.file_query,
+        llm_consulted=True,
     )
 
     # Cache the result to avoid duplicate LLM calls within same request
