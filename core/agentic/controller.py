@@ -3333,12 +3333,16 @@ class AgenticSearchController:
             _rfilter = InterleavedReasoningFilter()
             _visible_parts: List[str] = []
             _stream_usage = None
+            _stream_provider = None
             if hasattr(stream, '__aiter__'):
                 # It's an async iterator (OpenAI stream)
                 async for chunk in stream:
                     # Trailing usage chunk (generate_async sets
                     # stream_options.include_usage; same capture as
                     # ResponseGenerator's streaming path).
+                    _cp = getattr(chunk, 'provider', None)
+                    if not _stream_provider and isinstance(_cp, str) and _cp.strip():
+                        _stream_provider = _cp
                     _chunk_usage = getattr(chunk, 'usage', None)
                     if _chunk_usage:
                         _stream_usage = _chunk_usage
@@ -3369,6 +3373,7 @@ class AgenticSearchController:
                             _stream_usage,
                             model_name=model_name or getattr(self.model_manager, "active_model_name", "?"),
                             where="agentic_synthesis",
+                            provider=_stream_provider,
                         )
                     except Exception:  # degrades: agentic synthesis usage line not logged
                         pass
