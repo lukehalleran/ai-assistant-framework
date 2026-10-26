@@ -22,6 +22,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Tuple, Dict, List, Optional
 import utils.adaptive_exemplars as adaptive_exemplars
+from utils.read_time_markers import USER_SIDE_NOTE_PREFIXES
 from utils.logging_utils import get_logger
 
 logger = get_logger("need_detector")
@@ -488,7 +489,12 @@ def _combine_scores(
         )
 
 
-_NEED_TEACH_SKIP_MARKERS = ("[ACTIVE DOCUMENT", "[ATTACHMENT NOTE", "[DEADLINE NOTE")
+# Stems of the shared user-side note prefixes (trailing "]"/"—" dropped so the
+# historical open-ended match is preserved, e.g. "[ATTACHMENT NOTE: x.csv ...").
+# Superset of the pre-2026-10-25 members: adds the self-reference note.
+_NEED_TEACH_SKIP_MARKERS = tuple(sorted({
+    re.split(r"[\]—]", _p)[0].rstrip() for _p in USER_SIDE_NOTE_PREFIXES
+}))
 _NEED_TEACH_MAX_WORDS = 60
 
 

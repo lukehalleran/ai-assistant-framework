@@ -52,6 +52,11 @@ from typing import Any, Iterable, Iterator, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from utils.logging_utils import get_logger
+from utils.read_time_markers import (  # noqa: F401  (SELF_REFERENCE_NOTE_PREFIX re-exported)
+    ATTACHMENT_NOTE_PREFIX,
+    DEADLINE_NOTE_PREFIX,
+    SELF_REFERENCE_NOTE_PREFIX,
+)
 from utils.timezone_resolver import get_user_timezone
 
 logger = get_logger("attachment_audit")
@@ -281,7 +286,7 @@ def audit_attachments(user_text: str, files: Optional[Iterable[Any]],
                 f"Attached {label} is titled '{title}'; other parts may exist."
             )
         segments.append("Ask before estimating scope.")
-        return "[ATTACHMENT NOTE] " + " ".join(segments)
+        return ATTACHMENT_NOTE_PREFIX + " " + " ".join(segments)
     except Exception as e:
         logger.debug(f"[AttachmentAudit] audit_attachments failed: {e}")
         return ""
@@ -434,7 +439,7 @@ def deadline_timezone_note(text: str, user_tz: Optional[str] = None,
         source_dt, source_display, target_dt = converted
         target_str = _format_12h(target_dt)
         note = (
-            f"[DEADLINE NOTE] {_format_12h(source_dt)} {source_display} = "
+            f"{DEADLINE_NOTE_PREFIX} {_format_12h(source_dt)} {source_display} = "
             f"{target_str} {target_display} (your timezone)."
         )
 
@@ -460,7 +465,6 @@ def deadline_timezone_note(text: str, user_tz: Optional[str] = None,
 # Self-reference note (2026-10-12)
 # ---------------------------------------------------------------------------
 
-SELF_REFERENCE_NOTE_PREFIX = "[SELF-REFERENCE NOTE]"
 
 
 def _function_words():

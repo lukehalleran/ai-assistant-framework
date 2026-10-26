@@ -261,6 +261,37 @@ def strip_delivery_notices(text: str) -> str:
         return text
 
 
+# ---------------------------------------------------------------------------
+# User-side note family (2026-10-25, class: BC-91, BC-58)
+# ---------------------------------------------------------------------------
+# Notes Daemon's own deterministic audits append to the USER's message so the
+# model sees them in [CURRENT QUERY]. They are machinery, not the user's words:
+# they ride the prompt only (gui.handlers prompt-only suffix) and must never
+# reach classifier input or stored query text. Producers
+# (utils.attachment_audit, core.active_document) build their notes from these
+# constants. Deliberately NOT part of strip_machinery/strip_delivery_notices:
+# those are assistant-side strippers with other callers.
+ATTACHMENT_NOTE_PREFIX = "[ATTACHMENT NOTE]"
+DEADLINE_NOTE_PREFIX = "[DEADLINE NOTE]"
+SELF_REFERENCE_NOTE_PREFIX = "[SELF-REFERENCE NOTE]"
+ACTIVE_DOCUMENT_PASSAGE_PREFIX = "[ACTIVE DOCUMENT —"
+ACTIVE_DOCUMENT_NOTE_PREFIX = "[ACTIVE DOCUMENT NOTE]"
+USER_SIDE_NOTE_PREFIXES = (
+    ATTACHMENT_NOTE_PREFIX,
+    DEADLINE_NOTE_PREFIX,
+    SELF_REFERENCE_NOTE_PREFIX,
+    ACTIVE_DOCUMENT_PASSAGE_PREFIX,
+    ACTIVE_DOCUMENT_NOTE_PREFIX,
+)
+
+
+def is_user_side_note_line(line: str) -> bool:
+    """True when ``line`` (after leading whitespace) opens with a user-side note prefix."""
+    if not isinstance(line, str):
+        return False
+    return line.lstrip().startswith(USER_SIDE_NOTE_PREFIXES)
+
+
 def strip_machinery(text: str) -> str:
     """Strip read-time markers, recalled-time anchors and any trailing delivery notice.
 
