@@ -38,6 +38,9 @@ Module Contract:
       [NEW 2026-08-24]; normalized to ""|"research"|"conversation"|"attachment" in LLMSearchTriggerResponse.parse,
       consumed by the agentic gate's Tier-4 doc_gen_intent and gui/handlers'
       _resolve_doc_source (which also has a deterministic regex backstop)
+    - needs_file_search + file_query -- a request to open/read one of the user's
+      OWN files that Tier 1's lexical file arm missed (misspelled noun); gate
+      routes it to the file tools when file access is configured.
     - needs_email_search + email_query — an email-read intent with NO email
       noun in the current message (Tier-1's narrow e-mail/inbox/gmail/outlook
       cue can't see it), e.g. "Northwind. Search that" after a prior
@@ -216,6 +219,11 @@ class WebSearchDecision:
     # the user's own inbox. Mirrors needs_document_generation's shape.
     needs_email_search: bool = False  # LLM detected an email-read intent
     email_query: str = ""  # optimized query for the email search, if any
+    # 2026-10-25 (BC-15, BC-27): a Tier-1 file-arm miss (misspelled/abbreviated
+    # document noun) had no Tier-4 fallback -- this carries the LLM's read of
+    # "the user wants one of their OWN files opened/read/checked".
+    needs_file_search: bool = False
+    file_query: str = ""  # the document's likely name or topic, if any
     # Evidence need vs. paid-search capability (2026-09-12, adversarial
     # review F3/F4). The budget veto used to erase the need together with the
     # search: should_search=False read exactly like "no evidence wanted", so
@@ -248,9 +256,11 @@ _REQUIRED_TRIGGER_FIELDS = ("should_search", "search_terms")
 _TRIGGER_BOOL_FIELDS = (
     "needs_memory_search", "needs_knowledge_search",
     "needs_document_generation", "needs_pattern_analysis",
-    "needs_email_search",
+    "needs_email_search", "needs_file_search",
 )
-_TRIGGER_STR_FIELDS = ("reason", "document_topic", "document_type", "email_query")
+_TRIGGER_STR_FIELDS = (
+    "reason", "document_topic", "document_type", "email_query", "file_query",
+)
 _TRIGGER_WHITELIST_STR_FIELDS = ("search_depth", "document_source")
 
 
@@ -316,6 +326,8 @@ class LLMSearchTriggerResponse:
     document_source: str = ""  # "research" | "conversation" | "attachment" | ""
     needs_email_search: bool = False  # Whether query wants the user's own email read/searched
     email_query: str = ""  # Optimized query for the email search, if any
+    needs_file_search: bool = False  # Whether query wants one of the user's own files read/opened
+    file_query: str = ""  # The document's likely name or topic, if any
 
     @classmethod
     def parse(cls, json_str: str) -> Optional['LLMSearchTriggerResponse']:
@@ -407,6 +419,8 @@ class LLMSearchTriggerResponse:
             document_source=document_source,
             needs_email_search=bool(data.get("needs_email_search", False)),
             email_query=str(data.get("email_query", "")),
+            needs_file_search=bool(data.get("needs_file_search", False)),
+            file_query=str(data.get("file_query", "")),
         )
 
 
@@ -1728,6 +1742,20 @@ EMAIL SEARCH CRITERIA (needs_email_search):
   connection to the user's own mailbox.
 - When TRUE, also set email_query to the topic/sender/subject to search for.
 
+FILE SEARCH CRITERIA (needs_file_search):
+- TRUE if: the user wants one of THEIR OWN files or saved documents read, opened,
+  checked or quoted (a syllabus, assignment, PDF, notes file, resume, a document
+  they or the assistant saved) -- including when the document's name is
+  misspelled or abbreviated, and including a follow-up where the conversation
+  above established which document is meant.
+- Examples: "can you open my lab report and check the due date", "pull up the
+  notes doc we saved", "check the assignment pdf for the page limit"
+- FALSE if: the file is attached to THIS message (its text is already in the
+  prompt), the user wants a document WRITTEN or saved (that is
+  needs_document_generation), their email (needs_email_search), a web page, or
+  general recall of what was said (needs_memory_search).
+- When TRUE, also set file_query to the document's likely name or topic.
+
 DOCUMENT GENERATION CRITERIA (needs_document_generation):
 - TRUE if: the user wants a document SAVED to disk — a report, summary, or research document written and stored as a file
 - Examples: "write a report about climate change", "create a document about AI", "save a summary on quantum computing", "prepare a report on economic trends", "make me a research document about X", "generate a report and save it", "draft a report about Y", "I need a written report on Z"
@@ -1752,7 +1780,9 @@ OUTPUT (JSON only, no markdown):
   "document_type": "report or summary (only if needs_document_generation is true)",
   "document_source": "research or conversation or attachment (only if needs_document_generation is true)",
   "needs_email_search": true or false,
-  "email_query": "topic/sender/subject to search for (only if needs_email_search is true)"
+  "email_query": "topic/sender/subject to search for (only if needs_email_search is true)",
+  "needs_file_search": true or false,
+  "file_query": "document name or topic to open (only if needs_file_search is true)"
 }}
 
 GUIDELINES:
@@ -1761,7 +1791,7 @@ GUIDELINES:
 - num_searches: Use 2-4 only for comparison queries or multi-faceted topics
 - search_depth: "quick" for simple facts, "standard" for news/analysis, "deep" for research
 - If not searching, return empty search_terms and num_searches: 0
-- At most one of should_search, needs_memory_search, needs_knowledge_search, needs_pattern_analysis, needs_document_generation, needs_email_search should be true. A mixed personal pattern request owns the turn via needs_pattern_analysis and records its required evidence channels inside the later frozen plan.
+- At most one of should_search, needs_memory_search, needs_knowledge_search, needs_pattern_analysis, needs_document_generation, needs_email_search, needs_file_search should be true. A mixed personal pattern request owns the turn via needs_pattern_analysis and records its required evidence channels inside the later frozen plan.
 
 JSON:"""
 
@@ -2621,6 +2651,8 @@ async def _analyze_for_web_search_llm(
         document_source=llm_response.document_source,
         needs_email_search=llm_response.needs_email_search,
         email_query=llm_response.email_query,
+        needs_file_search=llm_response.needs_file_search,
+        file_query=llm_response.file_query,
     )
 
     # Cache the result to avoid duplicate LLM calls within same request
