@@ -1600,10 +1600,27 @@ async def evaluate_agentic_gate(
                     trigger_decision = _prefetched_trigger_decision
                 else:
                     _recent_ctx = _build_recent_context(corpus_manager)
+                    # 2026-10-26 (BC-27, BC-58): the web trigger's web-only
+                    # short-circuits (conf-0 heuristic, web toggle off) used to
+                    # return before the classifier ran, so no non-web outcome
+                    # (memory/knowledge/doc/email/file) was ever evaluated on a
+                    # message without web keywords. A request-shaped message
+                    # (the memory branch's corroboration predicates) asks for
+                    # the routing outcomes; a statement does not, which bounds
+                    # the added LLM calls to request-shaped turns.
+                    # lazy import: patch point (tests monkeypatch query_checker predicates)
+                    from utils.query_checker import is_request_shaped as _qc_rs_route
+                    _consult_routing = bool(
+                        _recall_signal_hit(_lower)
+                        or _is_info_seeking(user_text)
+                        or _is_request_shaped(user_text)
+                        or _qc_rs_route(user_text)
+                    )
                     trigger_decision = await analyze_for_web_search_llm(
                         query=_tier4_query_text(user_text),
                         model_manager=model_manager,
                         conversation_context=_recent_ctx,
+                        consult_for_routing=_consult_routing,
                     )
                 from core.insight.detector import allows_pattern_classification
                 if (getattr(trigger_decision, 'needs_pattern_analysis', False) is True

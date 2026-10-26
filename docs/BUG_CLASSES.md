@@ -364,7 +364,7 @@ produced ~90 candidate blocks; duplicates were merged here by mechanism.
 
 ### BC-27 Fallback path omits a check the primary enforces
 - Mechanism: the secondary implementation of a step skips a validation, filter, budget or hygiene the primary applies (anchor vs neighbour; light path vs full; XML vs native).
-- Incidents: 2026-09-05 light-context path bypassed the token budget (INDEPENDENT F1); 2026-08-31 `<propose_action>`/`<invoke>` skipped `forward_params` (F6); 2026-09-09 expander hygiene on neighbours only (F08); wiki fallback unfiltered (09-06).
+- Incidents: 2026-09-05 light-context path bypassed the token budget (INDEPENDENT F1); 2026-08-31 `<propose_action>`/`<invoke>` skipped `forward_params` (F6); 2026-09-09 expander hygiene on neighbours only (F08); wiki fallback unfiltered (09-06); 2026-10-26 the web trigger's web-only pre-checks (conf-0 heuristic short-circuit, web toggle off) returned before the classifier ran, so the Tier-4 gate's non-web outcomes (memory/knowledge/doc/email/file) were never evaluated on a message without web keywords — fixed by `consult_for_routing`.
 - Find: grep the guard-function name used in the primary branch and confirm it appears in every sibling branch; black-box: send the same input through each path.
 - Closure: per-site; `_hygiene_block_reason()` centralized in the expander.
 - Status: partial.
