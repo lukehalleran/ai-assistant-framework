@@ -178,6 +178,7 @@ class ResponseGenerator:
                 _was_reasoning = False  # Track if we were in a reasoning phase
                 _reasoning_seen = False  # Track if any reasoning chunk ever arrived
                 _stream_usage = None  # usage chunk (prompt-cache stats) if include_usage is set
+                _stream_provider = None  # upstream provider (OpenRouter chunk field), first non-empty
                 _stream_done = False  # set once finish_reason seen; drain trailing usage chunk
                 STOP_MARKERS = {"<|user|>", "<|assistant|>", "<|system|>", "<|end|>", "<|eot_id|>", "<｜end▁of▁sentence｜>"}
                 STREAM_TIMEOUT = 120.0  # 2 minute timeout for streaming (GLM/slower models)
@@ -219,6 +220,9 @@ class ResponseGenerator:
                         try:
                             # Capture prompt-cache/usage stats. With stream_options.include_usage
                             # the provider emits a trailing chunk carrying usage and empty choices.
+                            _cp = getattr(chunk, "provider", None)
+                            if not _stream_provider and isinstance(_cp, str) and _cp.strip():
+                                _stream_provider = _cp
                             _u = getattr(chunk, "usage", None)
                             if _u:
                                 _stream_usage = _u
@@ -408,6 +412,7 @@ class ResponseGenerator:
                                 _stream_usage,
                                 model_name=model_name or getattr(self.model_manager, "active_model_name", "?"),
                                 where="streaming",
+                                provider=_stream_provider,
                             )
                         except Exception:  # degrades: prompt cache usage stats not logged for streamed turn
                             pass

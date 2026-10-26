@@ -237,6 +237,7 @@ TRIGGER_SOURCES = (
     "tier4_llm_knowledge",
     "tier4_llm_docgen",
     "tier4_llm_email",
+    "tier4_llm_files",
 )
 
 
@@ -1778,6 +1779,48 @@ async def evaluate_agentic_gate(
                             "[Agentic Gate] LLM email-search suppressed — "
                             "no configured email provider"
                         )
+                elif getattr(trigger_decision, 'needs_file_search', False) is True:
+                    # Strict `is True` (mock-safety, as the email branch).
+                    # 2026-10-25 (BC-15, BC-27, BC-46): Tier 1's file arm is
+                    # lexical, so a misspelled/abbreviated document noun
+                    # ("could you pull <typo'd name> and confirm") missed it
+                    # and Tier 4 had NO file outcome -- the turn ran tool-less
+                    # and the reply denied file access that existed. Route to
+                    # the file tools only when file access is configured
+                    # (read live, BC-82; same condition the orchestrator uses
+                    # to build the FileAccessManager) and the message is
+                    # request-shaped (the memory branch's corroboration
+                    # predicates, no new word list).
+                    # lazy import: live-config (BC-82; Fast Mode / env toggles)
+                    from config import app_config as _ac
+                    _file_access_on = bool(
+                        getattr(_ac, 'FILE_ACCESS_ENABLED', False)
+                        and getattr(_ac, 'FILE_ACCESS_APPROVED_FOLDERS', None)
+                    )
+                    # lazy import: cycle (see the memory branch above)
+                    from utils.query_checker import is_request_shaped as _qc_rs_file
+                    _file_corroborated = (
+                        _is_info_seeking(user_text)
+                        or _is_request_shaped(user_text)
+                        or _qc_rs_file(user_text)
+                    )
+                    if not _file_access_on:
+                        logger.debug(
+                            "[Agentic Gate] LLM file-search suppressed — "
+                            "file access not configured"
+                        )
+                    elif not _file_corroborated:
+                        logger.info(
+                            "[Agentic Gate] LLM file-search suppressed — "
+                            "statement-shaped, no request cue"
+                        )
+                    else:
+                        logger.info("[Agentic Gate] LLM detected file request")
+                        should_trigger = True
+                        needs_files = True
+                        needs_tools = True
+                        _mark("tier4_llm_files")
+                        search_terms = []
 
                 logger.debug(
                     f"[Agentic Gate] LLM trigger: should_search={should_trigger}, "

@@ -110,6 +110,36 @@ API_ERROR_PREFIXES: tuple = (
 )
 
 
+def provider_of(obj):
+    """Upstream provider string OpenRouter attaches to a response or stream chunk.
+
+    OpenRouter's top-level ``provider`` (e.g. "Moonshot AI") is an EXTRA field in
+    the openai SDK: reachable by attribute, ``model_extra`` or ``model_dump()``;
+    a plain dict also works. Returns a non-empty str, else None. Never raises.
+    """
+    try:
+        if obj is None:
+            return None
+        cands = []
+        if isinstance(obj, dict):
+            cands.append(obj.get("provider"))
+        else:
+            cands.append(getattr(obj, "provider", None))
+            extra = getattr(obj, "model_extra", None)
+            if isinstance(extra, dict):
+                cands.append(extra.get("provider"))
+        for v in cands:
+            if isinstance(v, str) and v.strip():
+                return v
+        if not isinstance(obj, dict) and hasattr(obj, "model_dump"):
+            v = obj.model_dump().get("provider")
+            if isinstance(v, str) and v.strip():
+                return v
+    except Exception:  # degrades: provider not recorded on the usage line
+        return None
+    return None
+
+
 def _classify_api_error(e: Exception) -> str:
     """Classify an OpenAI/API error into a user-friendly message with a prefix tag.
 
@@ -1059,7 +1089,7 @@ class ModelManager:
             }
         ]
 
-    def _log_cache_usage(self, usage, *, model_name=None, where="", duration_s=None):
+    def _log_cache_usage(self, usage, *, model_name=None, where="", duration_s=None, provider=None):
         """Log prompt-cache + token usage from an API response's ``usage`` object.
 
         Best-effort and fully exception-safe — never raises into the generation
@@ -1078,7 +1108,10 @@ class ModelManager:
         provider's ``completion_tokens_details.reasoning_tokens``, ``None`` when
         not reported) and, when the caller timed the call, ``duration_s`` are
         APPENDED (2026-10-24, lane AGT: a 25 s / 321-token synthesis could not be
-        explained because reasoning tokens were never logged).
+        explained because reasoning tokens were never logged). ``provider=<name>``
+        (the upstream OpenRouter routed to; 2026-10-25, lane PROV: kimi-3 cache
+        reads fell to 0 with no way to tell whether the route changed) is appended
+        after those, only when known: trimmed to 40 chars, whitespace flattened.
         """
         if usage is None:
             return
@@ -1116,12 +1149,18 @@ class ModelManager:
             written = cache_creation or 0
             status = "HIT" if served else ("WRITE" if written else "MISS")
 
+            _prov = ""
+            if isinstance(provider, str):
+                _flat = " ".join(provider.split())[:40]
+                if _flat:
+                    _prov = f" provider={_flat}"
             logger.info(
                 "[PromptCache] %s model=%s where=%s prompt=%s completion=%s "
-                "cache_read=%s cache_write=%s cache_discount=%s reasoning_tokens=%s%s",
+                "cache_read=%s cache_write=%s cache_discount=%s reasoning_tokens=%s%s%s",
                 status, model_name or "?", where or "?", prompt, completion,
                 served, written, cache_discount, reasoning_tokens,
                 f" duration_s={duration_s:.2f}" if isinstance(duration_s, (int, float)) else "",
+                _prov,
             )
         except Exception as e:  # pragma: no cover - diagnostic only
             # degrades: prompt cache stats line lost, diagnostics only
@@ -1182,6 +1221,7 @@ class ModelManager:
                 getattr(response, "usage", None),
                 model_name=model_name,
                 where="generate_with_openai",
+                provider=provider_of(response),
             )
 
             content = response.choices[0].message.content
@@ -1424,6 +1464,7 @@ class ModelManager:
                     getattr(response, "usage", None),
                     model_name=self.api_models[target_model],
                     where="generate_once",
+                    provider=provider_of(response),
                 )
 
                 msg = response.choices[0].message
@@ -1624,6 +1665,7 @@ class ModelManager:
                         model_name=target_model,
                         where="agentic_tools",
                         duration_s=_call_duration,
+                        provider=provider_of(response),
                     )
                 except Exception:  # degrades: agentic tool-round usage line not logged
                     pass

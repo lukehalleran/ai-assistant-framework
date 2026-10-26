@@ -923,6 +923,15 @@ def _strip_echoed_headers(text):
     return "\n".join(lines).strip()
 
 
+def _strip_prompt_only_suffix(merged_input: str, prompt_only_suffix: str) -> str:
+    """The user's words + attachments: ``merged_input`` minus the prompt-only
+    suffix (notes Daemon appended for the prompt). The ONE strip every storage
+    path uses (2026-10-18/10-25, class: BC-91)."""
+    if prompt_only_suffix and merged_input.endswith(prompt_only_suffix):
+        return merged_input[: len(merged_input) - len(prompt_only_suffix)]
+    return merged_input
+
+
 def _dispatch_storage(
     orchestrator, merged_input, response_to_store, user_text,
     final_output, personality, file_names, conversation_logger,
@@ -931,12 +940,12 @@ def _dispatch_storage(
 ):
     """Create a background storage task and track it for graceful shutdown.
 
-    `prompt_only_suffix` (the active-document navigation note/passage) was
+    `prompt_only_suffix` (the attachment/deadline/self-reference notes and the
+    active-document navigation note/passage) was
     appended to `merged_input` for the prompt; it is removed here so the
     stored query — and everything keyed on it — holds only the user's text and
     attachments (2026-10-18, class: BC-91)."""
-    if prompt_only_suffix and merged_input.endswith(prompt_only_suffix):
-        merged_input = merged_input[: len(merged_input) - len(prompt_only_suffix)]
+    merged_input = _strip_prompt_only_suffix(merged_input, prompt_only_suffix)
     tags = [
         f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}",
         "topic:general",
@@ -1434,6 +1443,10 @@ class SubmitContext:
     # Navigation note/passage appended to merged_input for the prompt only;
     # removed from the text stored as the user's query (see _dispatch_storage).
     prompt_only_suffix: str = ""
+    # The attachment/deadline/self-reference notes (prompt-only): published via
+    # context_pipeline.set_prompt_only_notes so build_full_prompt renders them
+    # in [CURRENT QUERY]; never part of analysis_text or the stored query.
+    prompt_only_notes: str = ""
     user_text_ws: str = ""
     agentic_enabled: bool = False
     # Agentic gate evaluated CONCURRENTLY with prepare_prompt (intent veto
@@ -1541,6 +1554,7 @@ async def _prepare_submit_context(ctx):
         _context_pipeline_mod.set_precomputed_files(
             ctx.files, ctx.user_text, ctx.files_result.text_content,
         )
+        _context_pipeline_mod.set_prompt_only_notes(ctx.prompt_only_notes)
         prepare_task = asyncio.create_task(orchestrator.prepare_prompt(
             # user_input=ctx.user_text, NOT ctx.merged_input (2026-09-04,
             # homework-attachment turn audit items 1+2): ctx.merged_input is
@@ -1592,6 +1606,7 @@ async def _prepare_submit_context(ctx):
     finally:
         utils.turn_progress.end_turn()
         _context_pipeline_mod.clear_precomputed_files()
+        _context_pipeline_mod.clear_prompt_only_notes()
 
     ctx.t_prepare_elapsed = _time_mod.perf_counter() - ctx.t_prepare_start
 
@@ -1645,7 +1660,8 @@ async def _run_raw(ctx):
         user_input=ctx.merged_input,
         files=None,
         use_raw_mode=True,
-        personality=ctx.personality
+        personality=ctx.personality,
+        stored_query=_strip_prompt_only_suffix(ctx.merged_input, ctx.prompt_only_suffix),
     )
     # kimi-3 lone-'e' stream artifact (display path — storage strips separately)
     response_text = ResponseParser.strip_trailing_stream_artifact(response_text)
@@ -6493,9 +6509,9 @@ async def _handle_submit_inner(
 
     # Deterministic attachment audit + deadline-timezone notes (2026-09-04,
     # homework-attachment turn audit items 8-9). No LLM calls; silent when
-    # nothing to flag. Appended once to the analysis/merge text so both the
-    # rendered [CURRENT QUERY] (via merged_input / ContextPipeline Stage 3)
-    # and enhanced-mode classification (via analysis_text) see it.
+    # nothing to flag. Appended once to the prompt-only suffix so the rendered
+    # [CURRENT QUERY] (via merged_input / ContextPipeline Stage 3) sees it;
+    # classification input (analysis_text) and the stored query do NOT.
     _attachment_note = ""
     _active_doc_telemetry: dict = {}
     _turn_attachments: list = []
@@ -6627,18 +6643,24 @@ async def _handle_submit_inner(
     except Exception as e:  # degrades: self-reference note is omitted this turn
         logger.debug(f"[SelfReference] note failed: {type(e).__name__}")
 
-    analysis_text = user_text
-    if _attachment_note:
-        merged_input += "\n\n" + _attachment_note
-        analysis_text = user_text + "\n\n" + _attachment_note
-    # Prompt-only: the navigation note/passage rides the PROMPT (merged_input
-    # as the prompt's [CURRENT QUERY]) but is never stored as the user's words
-    # — `_dispatch_storage` strips exactly this suffix (2026-10-18, BC-91).
-    _prompt_only_suffix = ""
-    if _active_doc_note:
-        _prompt_only_suffix = "\n\n" + _active_doc_note
-        merged_input += _prompt_only_suffix
-        analysis_text = analysis_text + _prompt_only_suffix
+    # Prompt-only (2026-10-25, class: BC-91, BC-58): the attachment/deadline/
+    # self-reference notes and the active-document navigation note/passage ride
+    # the PROMPT (merged_input as the rendered [CURRENT QUERY]) but are never the
+    # user's words — `_dispatch_storage` strips exactly this suffix from the
+    # stored query. The attachment notes are ALSO kept out of `analysis_text`
+    # (classifier/retrieval input: topic, tone, intent, STM, query rewrite) —
+    # the live incident made "Deadline Note" the turn's topic. In enhanced mode
+    # they reach the rendered query through ONE carrier, files or not:
+    # context_pipeline.set_prompt_only_notes, read only by
+    # Orchestrator.build_full_prompt's final assembly (after every analysis and
+    # retrieval consumer ran). The active-document passage stays in
+    # analysis_text on purpose (see its comment above).
+    _attachment_suffix = ("\n\n" + _attachment_note) if _attachment_note else ""
+    _active_suffix = ("\n\n" + _active_doc_note) if _active_doc_note else ""
+    _prompt_only_suffix = _attachment_suffix + _active_suffix
+    merged_input += _prompt_only_suffix
+    analysis_text = user_text + _active_suffix
+    _prompt_only_notes = _attachment_note
 
     # A10 ingress chokepoint (2026-09-10, round 3): ONE normalize_ws call
     # here, threaded to every gate/registry/claim-guard shape predicate
@@ -6691,6 +6713,7 @@ async def _handle_submit_inner(
         analysis_text=analysis_text,
         user_text_ws=user_text_ws,
         prompt_only_suffix=_prompt_only_suffix,
+        prompt_only_notes=_prompt_only_notes,
         turn_attachments=_turn_attachments,
         t_ingress=t_ingress,
     )

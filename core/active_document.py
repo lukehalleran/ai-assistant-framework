@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from utils.logging_utils import get_logger
+from utils.read_time_markers import ACTIVE_DOCUMENT_NOTE_PREFIX, ACTIVE_DOCUMENT_PASSAGE_PREFIX
 from utils.trigger_match import is_negated
 
 logger = get_logger("active_document")
@@ -483,19 +484,19 @@ class ActiveDocumentRegistry:
 
 def format_active_passage(p: ActivePassage) -> str:
     k, n = p.position
-    return f"[ACTIVE DOCUMENT — {p.document.display_name}, {p.item.label} ({k} of {n})]\n{p.text}"
+    return f"{ACTIVE_DOCUMENT_PASSAGE_PREFIX} {p.document.display_name}, {p.item.label} ({k} of {n})]\n{p.text}"
 
 
 def format_ambiguity_note(a: Ambiguous) -> str:
     names = ", ".join(a.names)
     return (
-        "[ACTIVE DOCUMENT NOTE] Several attached documents contain numbered "
+        ACTIVE_DOCUMENT_NOTE_PREFIX + " Several attached documents contain numbered "
         f"items: {names} — ask which one before answering."
     )
 
 
 def format_exhausted_note(e: Exhausted) -> str:
     return (
-        f"[ACTIVE DOCUMENT NOTE] {e.document.display_name} has {e.count} "
+        f"{ACTIVE_DOCUMENT_NOTE_PREFIX} {e.document.display_name} has {e.count} "
         f"numbered items; item {e.requested} does not exist."
     )

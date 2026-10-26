@@ -289,6 +289,32 @@ def clear_precomputed_files() -> None:
     _PRECOMPUTED_FILES.set(None)
 
 
+# Prompt-only user-side notes (2026-10-25, class: BC-91, BC-58). The
+# attachment / deadline / self-reference notes Daemon's own audits add to the
+# user's message must reach the rendered [CURRENT QUERY] but never the
+# classifier or retrieval input (topic, tone, intent, STM, query rewrite,
+# memory retrieval all key off ``user_input`` / ``processed_query``). The
+# handler publishes them here (files or not); the ONLY reader is
+# ``Orchestrator.build_full_prompt``'s final assembly step, after every
+# analysis/retrieval consumer has already run. Rides a ContextVar for the same
+# reason as _PRECOMPUTED_FILES: the seam crosses prepare_prompt/build_context.
+_PROMPT_ONLY_NOTES: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "daemon_prompt_only_notes", default=""
+)
+
+
+def set_prompt_only_notes(text: str) -> None:
+    _PROMPT_ONLY_NOTES.set(text if isinstance(text, str) else "")
+
+
+def get_prompt_only_notes() -> str:
+    return _PROMPT_ONLY_NOTES.get()
+
+
+def clear_prompt_only_notes() -> None:
+    _PROMPT_ONLY_NOTES.set("")
+
+
 class ContextPipeline:
     """
     Builder that transforms raw user input into processed context.

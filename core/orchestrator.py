@@ -210,7 +210,7 @@ from integrations.wikipedia_api import WikipediaAPI
 from utils.tone_detector import CrisisLevel
 from utils.emotional_context import EmotionalContext, tone_receipt_fields, tone_semantic_source_field
 from utils.need_detector import NeedType
-from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel
+from core.context_pipeline import ContextPipeline, ContextResult, ToneLevel, get_prompt_only_notes
 from core.best_of_handler import BestOfHandler
 from core.escalation_tracker import EscalationTracker
 from core.correction_detector import CorrectionDetector, CorrectionEvent, _MIN_CONFIDENCE as _CORRECTION_MIN_CONFIDENCE
@@ -304,6 +304,10 @@ class _QueryFlow:
     use_raw_mode: bool = False
     personality: Optional[str] = None
     use_agentic_search: bool = False
+    # What memory stores as the user's query when it differs from what the model
+    # received (prompt-only machinery stripped by the caller). None = store
+    # ``user_input`` unchanged (2026-10-25, class: BC-91).
+    stored_query: Optional[str] = None
     debug_info: Dict[str, Any] = field(default_factory=dict)
     model_name: Optional[str] = None
     context: Any = None
@@ -1921,6 +1925,12 @@ class DaemonOrchestrator:
 
         # --- 3) Assemble final prompt ---
         user_input = context.file_context if context.has_files else context.original_query
+        # Prompt-only user-side notes (attachment/deadline/self-reference): the
+        # rendered [CURRENT QUERY] sees them; every analysis/retrieval consumer
+        # above already ran on the user's own words (BC-91, 2026-10-25).
+        _prompt_only_notes = get_prompt_only_notes()
+        if _prompt_only_notes:
+            user_input = f"{user_input}\n\n{_prompt_only_notes}"
         prompt = self.prompt_builder._assemble_prompt(
             context=prompt_ctx,
             user_input=user_input,
@@ -2052,6 +2062,8 @@ class DaemonOrchestrator:
         use_raw_mode: bool = False,
         personality: Optional[str] = None,
         use_agentic_search: bool = False,
+        *,
+        stored_query: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Orchestrates the full request:
@@ -2068,6 +2080,9 @@ class DaemonOrchestrator:
             use_raw_mode: If True, skip memory/context gathering
             personality: Optional personality to switch to
             use_agentic_search: If True, use multi-round agentic search
+            stored_query: Keyword-only. When given, memory stores THIS as the
+                user's query at every store site this call reaches; the model
+                still receives ``user_input``. None = store ``user_input``.
 
         Note: Agentic search requires:
             - agentic_search.enabled = true in config
@@ -2080,6 +2095,7 @@ class DaemonOrchestrator:
             use_raw_mode=use_raw_mode,
             personality=personality,
             use_agentic_search=use_agentic_search,
+            stored_query=stored_query,
         )
         flow.debug_info = {
             "start_time": datetime.now(),
@@ -2157,7 +2173,8 @@ class DaemonOrchestrator:
                     response = "I'm not sure what you're referring to. Could you be more specific?"
                     try:
                         await self.memory_system.store_interaction(
-                            query=user_input, response=response, tags=["clarification"]
+                            query=flow.stored_query if flow.stored_query is not None else user_input,
+                            response=response, tags=["clarification"]
                         )
                     except Exception as e:
                         label = _storage_failure_label(e)
@@ -2322,7 +2339,7 @@ class DaemonOrchestrator:
                 if self.memory_system:
                     try:
                         await self.memory_system.store_interaction(
-                            query=user_input,
+                            query=flow.stored_query if flow.stored_query is not None else user_input,
                             response=full_response.strip(),
                             tags=["document_generation"]
                         )
@@ -2459,7 +2476,7 @@ class DaemonOrchestrator:
                     if self.memory_system:
                         try:
                             await self.memory_system.store_interaction(
-                                query=user_input,
+                                query=flow.stored_query if flow.stored_query is not None else user_input,
                                 response=full_response.strip(),
                                 tags=["agentic_search"]
                             )
@@ -2641,7 +2658,7 @@ class DaemonOrchestrator:
         if self.memory_system and not use_raw_mode:
             try:
                 await self.memory_system.store_interaction(
-                    query=user_input,
+                    query=flow.stored_query if flow.stored_query is not None else user_input,
                     response=answer_for_storage,
                     tags=["conversation"],
                     session_id=getattr(self.memory_system, 'session_id', None),
