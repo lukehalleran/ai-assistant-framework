@@ -51,7 +51,8 @@ Contract:
       is skipped (~20-30s saved). Config: agentic_search.reuse_decision_answer (default true),
       agentic_search.decision_max_tokens (default 1600, both decision paths — high enough that
       complete answers don't truncate; capped answers fail the boundary check and fall back).
-      Provenance: final_prompt_hash is set to the sentinel "decision-answer-reuse".
+      Provenance (since 2026-09-06): final_prompt_hash is the real decision-prompt hash
+      (session.decision_prompt_hash) and session.answer_call = "decision_reuse".
     - Latency guards [NEW 2026-07-24]: the rounds-2-N loop is bounded two ways so a
       slow/misbehaving model can't hang the turn (observed: kimi-3 narrating tool
       intent in prose instead of emitting XML markers, ~55-60s/round, hung a turn

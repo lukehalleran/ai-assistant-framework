@@ -1,6 +1,6 @@
 # Adaptive Exemplar Learning
 
-*Created: 2026-08-03*
+*Created: 2026-08-03 · Last updated: 2026-10-27*
 
 The subsystem that replaces hand-maintained keyword/exemplar lists with
 per-user learned exemplars. Before 2026-08-02, every semantic classifier in
@@ -24,7 +24,7 @@ semantic tier see `ARCHITECTURE_GUIDE.md` §4 and `QUICK_REFERENCE.md`.
 JSON-backed store at `data/adaptive_exemplars.json`:
 
 - `record(domain, label, text, source, embedder=None, seed_texts=None)` —
-  add a learned exemplar. Quality gates: ≥ 12 chars, clipped to 300; exact
+  add a learned exemplar. Quality gates: ≥ 12 chars, over-300-char text windowed around `support_span` (declined with no span); exact
   duplicates (case-folded) rejected; near-duplicates rejected via cosine
   ≥ 0.92 against seeds + already-learned (when an embedder is provided);
   per-label cap 40 with oldest-evicted.
@@ -66,7 +66,7 @@ channels bootstrap the cheap channel.
 
 ---
 
-## Adopters (4 domains)
+## Adopters (5 domains)
 
 | Domain | Consumer | Prototypes | Teachers (independent channels) | Never teaches |
 |--------|----------|------------|--------------------------------|---------------|
@@ -74,6 +74,10 @@ channels bootstrap the cheap channel.
 | `need` | `utils/need_detector.py` semantic stage | `NEED_EXEMPLARS` seeds + learned | High-confidence (≥ 0.8) keyword fast-path | `neutral` (absence of signal) |
 | `web_search` | `utils/web_search_trigger.py` `_get_search_anchors()` — learned `search_worthy` merge into positive anchors, `no_search` into negative | seed anchors + learned | OUTCOME-based: response actually citing `[WEB_` markers → `search_worthy` (hook in `handlers._write_turn_telemetry(response_text=…)`, all 3 call sites); tone-corroborated agentic-gate veto → `no_search` (`gate.apply_intent_veto`) | Elevated-tone turns; the trigger's own semantic decision |
 | `intent` | `core/intent_classifier.py` semantic tier (fires when regex conf < 0.50; cos ≥ 0.45 + 0.05 margin → conf 0.60, `source="semantic"`) | `INTENT_EXEMPLARS` seeds + learned (8 intents; GENERAL has no prototype) | Confident regex hits (≥ 0.85); STM refinements (`refine_with_stm(query=…)`) | The semantic tier itself; GENERAL |
+
+| `action_claim` | `core/action_claim_guard.py` semantic claim-narration check (`_get_claim_anchors`, threshold `_CLAIM_SEMANTIC_THRESHOLD` 0.85; labels `card_claim`, `calendar_state`) — added 2026-09-10 | seed `_CLAIM_SEED_EXEMPLARS` + learned | A user failure report (`registry.is_failure_report`, via `core/agentic/gate.py`) or an explicit next-turn correction, written only by `record_claim_exemplar()` | The guard's own verdict (self-reinforcement, BC catalog CM-09) |
+
+**Probe turns teach nothing** (2026-10-18): `AdaptiveExemplarStore.record()` — the one write chokepoint — refuses a text carrying a `[test]…[/test]` envelope and any turn the handlers ingress marked via `mark_probe_turn()`. `record()` also takes an optional `support_span` (start, end offsets of the text the teacher's verdict rested on): an over-300-char text is stored as a window around that span, and with no usable span it is declined rather than head-clipped (2026-10-23).
 
 Deliberate non-adopters: checks that key on FORM rather than vocabulary stay
 structural — `gate._is_info_seeking` (question shape), casual-ack detection,
@@ -104,13 +108,14 @@ embeddings at startup (they were previously computed inside turn 1).
 
 ## Tests
 
-- `tests/unit/test_adaptive_exemplars.py` (14) — store gates, cap, version,
+- `tests/unit/test_adaptive_exemplars.py` — store gates, cap, version,
   lenient load, singleton.
-- `tests/unit/test_adaptive_adopters.py` (10) — need + web-search adopters,
+- `tests/unit/test_adaptive_adopters.py` — need + web-search adopters,
   outcome teachers, elevated-tone guard.
-- `tests/unit/test_intent_semantic_tier.py` (11) — tier firing/thresholds,
+- `tests/unit/test_intent_semantic_tier.py` — tier firing/thresholds,
   teacher channels, GENERAL-never-learned, prototype merge.
 - Tone learning covered inside `tests/unit/test_tone_arbiter_hardening.py`.
+- `action_claim` teachers: `tests/unit/test_exemplar_teachers_support_span.py`, `tests/unit/test_gate_action_offer_and_calendar_shape.py`.
 
 ## Failure Modes to Watch
 

@@ -9,14 +9,12 @@
 ```python
 # core/orchestrator.py
 class DaemonOrchestrator:
-    async def process_user_query(user_input: str, ...) -> Tuple[str, dict]:
-        """Main entry: context pipeline → prompt build → LLM → store → response"""
-        context = await self.context_pipeline.build(user_input)
-        system_prompt = self._compose_system_prompt(context)
-        prompt_ctx = await self.prompt_builder.build_prompt_from_context(context)
-        response = await self._generate_response(prompt_ctx, system_prompt)
-        await self.memory_system.store_interaction(user_input, response)
-        return response, debug_info
+    async def process_user_query(self, user_input: str, files=None, use_raw_mode=False, personality=None,
+                                 use_agentic_search=False, *, stored_query=None) -> Tuple[str, dict]:
+        """Programmatic entry (CLI/eval): prepare_prompt → generate (or agentic loop) → store → (text, debug_info).
+        The web/GUI path runs the same stages from gui/handlers.handle_submit (streaming, agentic gate, post-response hooks)."""
+        # flow: context_pipeline.build() → build_full_prompt(context) [system prompt + prompt_builder.build_prompt_from_context
+        #       + ResponsePlanner after the gather] → _generate_response(flow) → _store_interaction(flow)
 ```
 
 ---
@@ -65,6 +63,8 @@ class ContextResult:
     extracted_facts: List[Dict]   # Inline facts
     intent: Optional[IntentResult]# Intent classification [NEW 2026-02-15]
     is_small_talk: bool           # True when CASUAL_SOCIAL >= 0.70 [NEW 2026-04]
+    # ... plus emotional_context, uploaded_filenames, retrieval_query, user_name, query_analysis,
+    #     last_exchange, metadata (read the dataclass for the full field list)
 
 # Usage in orchestrator
 context = await self.build_context(user_input, files, use_raw_mode)
@@ -81,7 +81,7 @@ prompt_ctx = await prompt_builder.build_prompt_from_context(context)
 ## Memory Operations
 
 ```python
-# memory/memory_coordinator.py — Thin orchestrator (~639 lines, plus new component wiring)
+# memory/memory_coordinator.py — Thin orchestrator
 # All methods delegate to modular components. No inline logic.
 # Init: parallel disk reads via ThreadPoolExecutor(3) for graph, profile, claims [CHANGED 2026-05-19]
 class MemoryCoordinator:
@@ -97,15 +97,16 @@ class MemoryCoordinator:
         self.user_profile = UserProfile()      # Shared with orchestrator [CHANGED 2026-05-19]
 
     # Retrieval — delegates to MemoryRetriever
-    async def get_memories(query, limit=30, topics=None) -> List[Dict]:
-        return await self._retriever.get_memories(query, limit, topics)
+    async def get_memories(query, limit=20, topic_filter=None, min_gated=None) -> List[Dict]:
+        return await self._retriever.get_memories(query, limit, topic_filter, min_gated)
 
     async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
         return await self._retriever.get_semantic_top_memories(query, limit)
 
     # Storage — delegates to MemoryStorage
-    async def store_interaction(query, response, tags=None):
-        await self._storage.store_interaction(query, response, tags)
+    async def store_interaction(query, response, tags=None, session_id=None, provenance=None,
+                                user_text=None, ledger_receipt=None) -> Optional[str]:
+        return await self._storage.store_interaction(...)  # same params, forwarded
 
     # Shutdown — delegates to ShutdownProcessor
     async def process_shutdown_memory(session_conversations=None):
@@ -115,9 +116,9 @@ class MemoryCoordinator:
         return await self._shutdown.run_shutdown_reflection(session_conversations, session_summaries)
 
 
-# memory/memory_retriever.py — Retrieval pipeline (~1800 lines)
+# memory/memory_retriever.py — Retrieval pipeline
 class MemoryRetriever:
-    async def get_memories(query, limit, topic_filter) -> List[Dict]:
+    async def get_memories(query, limit=20, topic_filter=None, min_gated=None) -> List[Dict]:
         """
         1. Get recent from corpus (last N conversations)
         2. Query ChromaDB collections in parallel
@@ -153,7 +154,7 @@ class MemoryRetriever:
     async def get_semantic_top_memories(query, limit=10) -> List[Dict]:
         """Top memories with meta-conversational routing and gating."""
 
-    async def get_facts(query, limit=8) -> List[Dict]:
+    async def get_facts(query, limit=8, sensitive_open=None) -> List[Dict]:
         """Semantic-primary fact ranking: 0.60*semantic + 0.20*confidence + 0.20*recency.
         Semantic floor: relevance < 0.30 caps recency weight at 0.05.
         Pulls limit*2 candidates for better selection."""
@@ -198,13 +199,17 @@ class MemoryScorer:
 
 # memory/shutdown_processor.py — Session-end processing [ENHANCED 2026-03]
 class ShutdownProcessor:
-    def __init__(..., memory_coordinator=None, claim_index=None):
+    def __init__(self, corpus_manager, chroma_store, consolidator, fact_extractor, model_manager,
+                 user_profile, storage, session_start, memory_coordinator=None,
+                 thread_store=None, claim_index=None):
         """memory_coordinator enables pipeline-enriched proposal generation.
         claim_index enables staleness tracking on summary creation. [NEW 2026-03-25]"""
 
     async def process_shutdown_memory(session_conversations=None):
         """Parallelized pipeline [CHANGED 2026-05-19]:
-        1) block summaries (source IDs via get_ids_by_timestamp_range),
+        1) summaries: ShutdownProcessor.summarize_uncovered_blocks(cap) — blocks newer than the
+           content-time watermark (memory/summary_coverage.py), at most SUMMARY_MAX_BLOCKS_PER_SHUTDOWN
+           (default 1) per shutdown; source IDs via get_ids_by_timestamp_range,
         Phase A (parallel): session facts, LLM facts, behavioral patterns, procedural skills,
         Phase B (parallel): proposals, impl tracking, threads, wiki enrichment,
         Phase C (sequential): graph save, category cache, cross-dedup (dry_run only).
@@ -223,11 +228,12 @@ class ShutdownProcessor:
         Generation is the PooledConceptSynthesisGenerator when SYNTHESIS_POOLED_ENABLED
         (the retired Tier 0/1/2 personal->wiki path only runs if pooled is off).
         Pulled out of process_shutdown_memory so its slow per-candidate LLM coherence judge
-        isn't cancelled by the 60s reflection/fact budget. Self-gating (config/auto-halt)."""
+        isn't cancelled by the 60s reflection/fact budget. Self-gating (config/auto-halt). All generators are OFF in the shipped config
+        (paused 2026-07-15; Settings toggle), so this step is a no-op unless the owner enables them."""
 
     async def _run_cross_collection_dedup():
-        """User mode (CROSS_DEDUP_AUTO_EXECUTE=True): executes deletions automatically.
-        Dev mode: dry-run only — logs findings but NEVER deletes. Guarded to run once per process."""
+        """Dry-run preview only: CROSS_DEDUP_AUTO_EXECUTE is False in every mode, so the shutdown pass
+        logs findings but NEVER deletes (execution is a manual GUI action). Guarded to run once per process."""
 
     async def run_shutdown_reflection(session_conversations=None, session_summaries=None) -> bool:
         """LLM reflection generation + ChromaDB storage"""
@@ -268,7 +274,7 @@ class CrossCollectionDeduplicator:
 CROSS_DEDUP_ENABLED = True
 CROSS_DEDUP_DUPLICATE_THRESHOLD = 0.92
 CROSS_DEDUP_CONTRADICTION_THRESHOLD = 0.85
-CROSS_DEDUP_ON_SHUTDOWN = True  # dev mode: dry_run=True only (CROSS_DEDUP_AUTO_EXECUTE=False); user mode auto-executes
+CROSS_DEDUP_ON_SHUTDOWN = True  # shutdown pass is dry_run=True only (CROSS_DEDUP_AUTO_EXECUTE = False in all modes)
 CROSS_DEDUP_MAX_DOCS_PER_COLLECTION = 1000  # Per-collection cap
 
 # Protected (never scanned): conversations, obsidian_notes, reference_docs, wiki_knowledge
@@ -287,10 +293,11 @@ class ResponseStrategy(Enum):
     GENTLE_REENGAGEMENT    # After de-escalation: carefully re-engage
 
 class EscalationTracker:
-    def __init__(escalation_threshold=3, deescalation_window=2, max_history=10):
+    def __init__(self, escalation_threshold=3, deescalation_window=2, max_history=10,
+                 distress_threshold=5, distress_grounding_max=3):
         """Tracks consecutive elevated/calm counts, suggestion engagement, tone velocity."""
 
-    def update(tone_level, user_message, need_type=None) -> ResponseStrategy:
+    def update(self, tone_level, user_message, need_type=None, tone_trigger=None) -> ResponseStrategy:
         """Update with new message, return strategy. Tracks engagement with previous suggestions."""
 
     def record_response(response) -> None:
@@ -525,7 +532,7 @@ INTENT_STYLE_INSTRUCTIONS_ENABLED = True  # [NEW 2026-07-03] per-intent style bl
 ```python
 # processing/gate_system.py
 class MultiStageGateSystem:
-    async def filter_memories(query: str, memories: List[Dict]) -> List[Dict]:
+    async def filter_memories(self, query: str, memories: List[Dict], min_results: Optional[int] = None) -> List[Dict]:
         """
         Stage 1: candidate generation happens UPSTREAM — ChromaDB HNSW query
                  in the retriever (~50 candidates). No FAISS in the live memory path.
@@ -546,7 +553,7 @@ class MultiStageGateSystem:
     # memory_coordinator.get_memories(min_gated=) → memory_retriever → gate.
     # On 08-18 a bare "Hey" (casual_social max_mems=3) got 8 below-threshold
     # memories forced in and 21 rendered.
-    # Tests: tests/unit/test_gate_min_results_cap.py (9)
+    # Tests: tests/unit/test_gate_min_results_cap.py
 
     # Forced-backfill QUALITY floor [2026-08-23]: forced items must still score
     # above threshold − GATE_FORCED_FLOOR_MARGIN (env, default 0.05) — fail-soft
@@ -583,9 +590,9 @@ class UnifiedPromptBuilder:
                            crisis_level: str = None,
                            retrieval_overrides: Dict[str, int] = None,
                            weight_overrides: Dict[str, float] = None,
-                           intent_type: str = None, **kwargs) -> Dict[str, Any]:
+                           intent_type: str = None, intent_confidence: float = None, **kwargs) -> Dict[str, Any]:
         """
-        Main entry. Gathers context from all sources in PARALLEL (asyncio.gather via
+        Main entry. Gathers context from all sources in PARALLEL (asyncio.wait, 30s timeout, completed results kept, via
         ContextGatherer), applies hygiene (dedup/caps/backfill), gating, and token
         budget management (TokenManager, middle-out compression), then returns a
         structured context dict with sections: recent_conversations, memories, facts,
@@ -616,7 +623,7 @@ class UnifiedPromptBuilder:
         request, not an ack — the light path no longer swallows it).
         """
 
-    async def build_prompt_from_context(context: ContextResult, ...) -> Dict[str, Any]:
+    async def build_prompt_from_context(self, context: ContextResult, memories=None, config=None) -> Dict[str, Any]:
         """Preferred entry from the orchestrator: reuses ContextPipeline results
         (tone, topics, intent, STM) instead of recomputing them."""
 ```
@@ -714,7 +721,7 @@ class ResponseParser:
         the moment content follows (sets thinking_complete); all four
         enhanced-path display yields also run strip_trailing_stream_artifact
         (edge <|sep|> no longer flashes mid-stream).
-        Tests: tests/unit/test_stream_artifacts.py::TestEmptyShellThenContent (6)."""
+        Tests: tests/unit/test_stream_artifacts.py::TestEmptyShellThenContent."""
 ```
 
 ---
@@ -724,14 +731,13 @@ class ResponseParser:
 ```python
 # core/response_generator.py
 class ResponseGenerator:
-    async def generate_response_stream(prompt: str, model: str = "gpt-4o-mini") -> AsyncIterator[str]:
+    async def generate_streaming_response(self, prompt: str, model_name: str, system_prompt: str = None,
+                                          max_tokens: int = None, images: list = None) -> AsyncGenerator[str, None]:
         """Stream LLM response chunks.
         Detects reasoning/thinking content in streaming chunks and emits synthetic
         <thinking>/<\/thinking> wrapper tags for downstream handling."""  # [ENHANCED 2026-03-26]
-        async for chunk in self.model_manager.generate_stream(prompt, model):
-            yield chunk
 
-    async def _recover_reasoning_only(prompt, system_prompt, max_tokens):  # [NEW 2026-06]
+    async def _recover_reasoning_only(self, prompt, system_prompt, max_tokens, model_name=None):  # [NEW 2026-06]
         """Recovery retry when streaming returned reasoning but empty visible content
         (some reasoning models swallow the whole answer into the reasoning channel).
         Retries once non-streaming via generate_once(disable_reasoning=True), forcing
@@ -749,13 +755,18 @@ class ResponseGenerator:
     #   the user or storage. Complements _recover_reasoning_only above (whole-answer-swallowed
     #   -> retry; interleaved -> filtered inline).
 
-    async def generate_best_of(prompt: str, n: int = 3) -> str:
+    async def generate_best_of(self, prompt, model_name, system_prompt, question_text, context_hint="",
+                               n=2, temps=(0.2, 0.7), max_tokens=512) -> str:
         """Generate N responses with temp variation, score and pick best"""
 
-    async def generate_duel_and_judge(prompt, model_a, model_b, judge_model) -> dict:
+    async def generate_duel_and_judge(self, prompt, model_a, model_b, judge_model, system_prompt,
+                                      question_text, context_hint="", max_tokens=512, temperature_a=None, ...) -> dict:
         """Two models compete, judge picks winner. Returns {'answer', 'winner', ...}"""
 
-    async def generate_best_of_ensemble(prompt, generators, selectors) -> str:
+    async def generate_best_of_ensemble(self, prompt, generator_models, system_prompt, question_text,
+                                        context_hint="", n_total=2, temps=(0.2, 0.7), max_tokens=512,
+                                        selector_models=None, selector_max_tokens=64,
+                                        weight_heuristic=0.5, weight_llm=0.5, judge_top_k=0, ...) -> ...:
         """Multiple generators + multiple judges with weighted scoring"""
 ```
 
@@ -775,7 +786,7 @@ class BestOfResult:
 class BestOfHandler:
     """Orchestrates best-of-N response generation modes"""
 
-    def should_use_best_of(user_input: str, use_raw_mode: bool = False) -> bool:
+    def should_use_best_of(self, user_input: str, use_raw_mode: bool = False) -> bool:
         """Check if query qualifies (is question, meets token threshold)"""
         cfg = self._get_runtime_config()
         if not cfg["enable"] or use_raw_mode:
@@ -783,7 +794,7 @@ class BestOfHandler:
         qinfo = analyze_query(user_input)
         return qinfo.is_question and qinfo.token_count >= cfg["min_tokens"]
 
-    async def generate(prompt, user_input, system_prompt, model_name) -> BestOfResult:
+    async def generate(self, prompt, user_input, system_prompt, model_name, response_max_tokens=None) -> BestOfResult:
         """
         Mode selection:
         1. Duel: 2 generators + 1 judge (duel_mode=True, 2 generators)
@@ -801,10 +812,10 @@ class BestOfHandler:
             return await self._generate_single(...)
 
 # Config (app_config.py; live values from config.yaml `features` section):
-ENABLE_BEST_OF = False                              # live config.yaml: enable_best_of: false
+ENABLE_BEST_OF = False                              # shipped config.yaml enable_best_of: false (code default True)
 BEST_OF_DUEL_MODE = False
-BEST_OF_GENERATOR_MODELS = ["claude-opus-4.8", "gemini-3-pro"]  # Duel needs exactly 2
-BEST_OF_SELECTOR_MODELS = ["gpt-4o-mini", "gpt-4.1"]            # Judges
+BEST_OF_GENERATOR_MODELS = [...]   # shipped `features.best_of_generator_models` (list in config.yaml); duel needs exactly 2
+BEST_OF_SELECTOR_MODELS = [...]    # shipped `features.best_of_selector_models` (judges); model names must resolve via models/model_manager.py
 BEST_OF_LATENCY_BUDGET_S = 0.0                      # live yaml (app_config default 2.0)
 ```
 
@@ -825,7 +836,7 @@ class CorpusManager:
 
     def get_recent_within_hours(hours: int = 24, max_count: int = 30) -> List[Dict]: ...
 
-    def add_summary(content):  # [2026-08-21] accepts dict payloads too
+    def add_summary(content, tags=None, timestamp=None):  # [2026-08-21] accepts dict payloads too
         """Append a summary/reflection. Dict payloads are normalized
         (content/timestamp/created_at/type) — memory_storage.py passes a dict,
         and the old str-only path crashed so reflections never reached the
@@ -842,11 +853,11 @@ class MultiCollectionChromaStore:
     def add_to_collection(name: str, text: str, metadata: Dict) -> str:
         """Embed text and store in the named ChromaDB collection. Returns doc_id."""
 
-    def query_collection(collection_name: str, query_text: str, n_results: int = 5) -> List[Dict]:
+    def query_collection(collection_name: str, query_text: str, n_results: int = 5, query_embedding=None, where=None, **kwargs) -> List[Dict]:
         """Semantic search in one collection. Returns flat list of dicts with
         {id, content, metadata, relevance_score, collection, rank} (already un-nested)."""
 
-    async def query_multiple_collections(collection_names, query_text, ...) -> Dict[str, List[Dict]]:
+    async def query_multiple_collections(collection_names, query_text, n_results=10, query_embedding=None) -> Dict[str, List[Dict]]:
         """Parallel multi-collection query; pre-embeds the query once."""
 
     def get_by_id(collection_name: str, doc_id: str) -> Optional[Dict]:  # [NEW 2026-03-26]
@@ -889,21 +900,21 @@ class CodeProposal(BaseModel):
     test_files: List[str]          # Actual test file paths
     outcome: Optional[ProposalOutcome]  # Review record (accepted, notes, merged_at, reviewed_by)
 
-    def to_metadata() -> dict:     # Flat dict for ChromaDB
-    def from_metadata(meta) -> CodeProposal:  # Reconstruct from ChromaDB (backward-compat)
+    def to_metadata(self) -> dict:     # Flat dict for ChromaDB
+    @classmethod from_metadata(cls, metadata) -> CodeProposal:  # Reconstruct from ChromaDB (backward-compat)
     def record_outcome(accepted, notes, merge_branch, reviewed_by):  # Human review outcome
 
 # config/feature_registry.py — Retrospective shipped-feature catalog
-load_registry() -> List[FeatureEntry]           # Cached YAML loader
+load_registry(force=False) -> List[FeatureEntry]  # Cached YAML loader
 get_feature(proposal_id) -> FeatureEntry        # Single lookup
 get_dependencies(proposal_id) -> List[str]      # Transitive BFS
 get_core_features() -> List[FeatureEntry]       # touches_core_system=True
-check_conflicts(files) -> List[FeatureEntry]    # File overlap detection
+check_conflicts(proposed_files) -> List[FeatureEntry]    # File overlap detection
 
 
 # knowledge/proposal_generator.py — LLM-based proposal generation
 class GoalDirectedGenerator:
-    def __init__(model_manager, repo_path=".", model_alias="claude-opus-4.8", max_proposals=5):
+    def __init__(self, model_manager=None, repo_path=".", model_alias="claude-opus-4.8", max_proposals=5):
         pass
 
     async def generate_proposals(extra_context="", max_proposals=None) -> List[CodeProposal]:
@@ -929,19 +940,20 @@ class GoalDirectedGenerator:
 
 # memory/proposal_store.py — ChromaDB-backed storage
 class ProposalStore:
-    def __init__(chroma_store: MultiCollectionChromaStore):
+    def __init__(self, chroma_store=None):
         pass
 
-    def store_proposal(proposal: CodeProposal) -> str:
+    def store_proposal(self, proposal: CodeProposal) -> Optional[str]:
         """Embed title+reasoning, store in 'proposals' collection. Returns doc_id."""
 
-    def query_proposals(query_text, n_results=20, status=None, proposal_type=None) -> List[CodeProposal]:
-        """Semantic search with optional status/type filters."""
+    def query_proposals(self, query: str, n_results: int = 10, status_filter: Optional[List[str]] = None) -> List[CodeProposal]:
+        """Semantic search with an optional status filter."""
 
-    def check_similarity(proposal, threshold=0.70) -> bool:
-        """True if similar proposal exists (cosine OR title word overlap >= 0.60 Jaccard)."""
+    def check_similarity(self, proposal, threshold: Optional[float] = None) -> Optional[str]:
+        """ID of a similar existing proposal, else None (cosine OR title word overlap >= 0.60 Jaccard;
+        threshold defaults to CODE_PROPOSALS_DEDUP_THRESHOLD)."""
 
-    def get_for_dedup(limit=25) -> str:
+    def get_for_dedup(self, limit: int = 25) -> str:
         """Get recent proposal titles for dedup context in generator prompt."""
 
 
@@ -983,14 +995,15 @@ class ShutdownProcessor:
         git commits, user profile. Builds structured context sections."""
 
 
-# Config (app_config.py):
-CODE_PROPOSALS_ENABLED = True
+# Config (app_config.py; config.yaml `code_proposals:`). OFF in the shipped config (`enabled: false`, Settings
+# toggle) and forced off in DAEMON_MODE=user (the shipped mode), which also forces CODE_PROPOSALS_PROMPT_ENABLED off:
+CODE_PROPOSALS_ENABLED = False
 CODE_PROPOSALS_MAX_PER_SESSION = 5
 CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
 # Proposal generation context: CLAUDE.md, QUICK_REFERENCE.md (full),
 # PROJECT_SKELETON.md (filtered, excludes Core Components section),
 # GOALS.md, git log (last 10 commits). All read live from disk.
-# Prompt integration:
+# Prompt integration (code default True; off in user mode):
 CODE_PROPOSALS_PROMPT_ENABLED = True
 CODE_PROPOSALS_PROMPT_MAX = 3
 CODE_PROPOSALS_KEYWORD_DEDUP_TAG_THRESHOLD = 0.60
@@ -1054,7 +1067,7 @@ async def get_reference_docs(query, limit) -> List[Dict]:
     """Fetch from reference_docs, filter OUT type='user_upload'."""
 
 # Config (app_config.py):
-FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.md', '.json', '.yaml', '.yml', '.log', '.html', '.xml', '.docx', '.xlsx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']  # expanded [2026-05-18]
+FILE_UPLOAD_ALLOWED_EXTENSIONS = [...]  # defined in config/app_config.py: text/code/office/PDF/image types (also .srt, .vtt, .zip, .r, .rmd, .odt, .xls) — read the constant for the full list
 FILE_UPLOAD_IMAGE_DIR = "data/uploads"
 PROMPT_MAX_USER_UPLOADS = 5
 ```
@@ -1083,8 +1096,7 @@ unlock_allowed(env=None, root=None) -> bool             # Checks ALLOW_DESTRUCTI
 # utils/shell_cmd_guard.py — Shell command classifier (rm, mv, rmdir, chmod, truncate, find)
 classify_shell_cmd(args: list[str], repo_root=None) -> dict  # {command, destructive, severity, reason, targets}
 is_destructive_shell_cmd(args: list[str], repo_root=None) -> bool
-# PROTECTED_DIRS: 16 dirs (.git, data/, config/, memory/, core/, etc.)
-# PROTECTED_FILES: 6 files (main.py, daemon.spec, pytest.ini, pyproject.toml, etc.)
+# PROTECTED_DIRS / PROTECTED_FILES: frozensets in utils/shell_cmd_guard.py (.git, data/, config/, memory/, core/, main.py, daemon.spec, ...)
 # ALWAYS_BLOCKED_TARGETS: ., .., /, ~, * — cannot be unlocked
 # Classifiers for: rm, mv, rmdir, chmod, truncate, find
 
@@ -1109,7 +1121,7 @@ daemon_running(repo_root=None) -> bool   # Resolves each main.py candidate's /pr
 # Replaces the per-script pgrep-cmdline "Daemon_v1" grep (defeated 2026-08-21 by a
 # relative-path launch; an --apply ran against a live store). All 8 store-writing
 # scripts delegate; old heuristic kept as import-failure fallback.
-# Tests: tests/unit/test_daemon_guard.py (14)
+# Tests: tests/unit/test_daemon_guard.py
 #   (when scripts/bin/ on PYTHONPATH; skipped during pytest/coverage; disable with DISABLE_FS_GUARD=1)
 
 # Shell scripts:
@@ -1162,7 +1174,7 @@ EXTRACTIVE_SUMMARY_PROMPT   # one copy of the extractive-bullets prompt (was dup
 class ConsolidatedSummary(BaseModel):  # content, timestamp, tags, importance_score
     ...
 class MemoryConsolidator:
-    async def consolidate_memories(memories: List[Dict]) -> Optional[ConsolidatedSummary]:
+    async def consolidate_memories(self, memories: List[Dict[str, Any]]) -> Optional[ConsolidatedSummary]:
         """Single entry point for BOTH mid-session ({'query','response'}) and shutdown
         ({'content','q','a'}) shapes. Normalizes via _entries_to_excerpts(), then:
         <=2 slices -> pass through extractively (NO LLM); larger -> EXTRACTIVE_SUMMARY_PROMPT.
@@ -1172,7 +1184,7 @@ class MemoryConsolidator:
 
 # memory/fact_extractor.py [ENHANCED 2026-03: entity facts, 2026-05: ephemeral filtering]
 class FactExtractor:
-    def extract_facts(query, response, conversation_context) -> List[MemoryNode]:
+    async def extract_facts(query, response, conversation_context=None, observed_at=None) -> List[MemoryNode]:
         """
         Multi-stage extraction with dual-budget system:
         1. Correction detection (0.9+ confidence): "I'm X, not Y", "actually X"
@@ -1235,21 +1247,25 @@ class GraphNode(BaseModel):
     entity_id: str; display_name: str; entity_type: str = ""; metadata: Dict = {}
 class GraphEdge(BaseModel):
     source_id: str; target_id: str; relation: str; weight: float = 1.0
-    def to_natural_language() -> str:  # "Luke has brother Drew"
+    def to_natural_language(self, source_display="", target_display="", with_attribution=False) -> str:  # "<user> has brother <name>" (stance-aware since 2026-08-23)
 
 # memory/graph_memory.py — NetworkX DiGraph wrapper
 class GraphMemory:
-    add_entity(node: GraphNode)          # Upsert (merges metadata)
-    add_edge(edge: GraphEdge)            # Add or strengthen weight
-    get_entity(entity_id) -> GraphNode
-    neighbors(entity_id, depth=1) -> Dict[str, List[GraphEdge]]  # BFS
-    save() / load()                       # JSON at data/knowledge_graph.json
+    add_entity(node: GraphNode) -> str   # Upsert (merges metadata)
+    add_relation(edge: GraphEdge, fact_id="")  # Add or strengthen weight (there is no add_edge)
+    get_entity(entity_id) -> Optional[GraphNode]
+    get_relations(entity_id, direction="both") -> list[GraphEdge]
+    neighbors(entity_id, depth=1, *, hub_barrier=False, hub_degree=None, skip_relations=frozenset()) -> Dict[str, List[GraphEdge]]  # BFS
+    subgraph_around(entity_id, depth=2) / shortest_path(source, target) / remove_entity(entity_id)
+    resolve_entity(mention) / register_alias(alias, entity_id)
+    save(*, raise_on_error=False) / load()   # JSON at data/knowledge_graph.json
 
 # memory/entity_resolver.py — Alias resolution
 class EntityResolver:
-    resolve(text) -> Optional[str]        # Alias → canonical entity_id
-    resolve_or_create(text, display_name) -> str
-    save() / load()                       # JSON at data/entity_aliases.json
+    resolve(mention) -> Optional[str]     # Alias → canonical entity_id (delegates to GraphMemory.resolve_entity)
+    resolve_or_create(mention, entity_type="other", ...) -> str
+    learn_alias(alias, entity_id, context="")
+    save_external_aliases()               # JSON at data/entity_aliases.json
 
 # utils/safe_json.py — Persistence safety for critical JSON stores [NEW 2026-07-14]
 # Used by: graph, entity aliases, user profile, corpus, claim index
@@ -1293,7 +1309,7 @@ def run_startup_log_maintenance():        # turn_records.jsonl / daily_notes.log
 # supported files (StoreVersionError → same startup-abort path as corruption).
 
 # memory/graph_utils.py — Shared helpers for scoring + expansion
-def extract_graph_entities(text, resolver) -> Set[str]:
+def extract_graph_entities(text, resolver, graph_memory=None) -> Set[str]:
     """Trigram→bigram→single word alias resolution, strips punctuation, skips stopwords."""
 def get_related_display_names(entity_ids, graph_memory, depth=1, skip_ids=None) -> Set[str]:
     """BFS neighbor display names."""
@@ -1301,17 +1317,17 @@ def get_related_entity_ids(entity_ids, graph_memory, depth=1) -> Set[str]:
     """BFS neighbor entity IDs."""
 def _is_expansion_junk(name) -> bool:  # [NEW 2026-03-15]
     """Rejects empty/≤2 chars, 4+ words, digit-starting, temporal, measurement, verb phrases."""
-def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_terms=8, hub_degree=None) -> List[str]:  # [NEW 2026-03-15; hub-aware BFS + read-time TTL 2026-06]
+def rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_terms=8, hub_degree=None, min_mentions=None) -> List[str]:  # [NEW 2026-03-15; hub-aware BFS + read-time TTL 2026-06]
     """Ranks by non-hub edge count (lateral connectivity), filters junk, returns ordered names.
     Hub-aware BFS: a hub node (in skip_ids, or degree >= GRAPH_EXPANSION_HUB_DEGREE, default 30)
     may be REACHED but is never expanded THROUGH — an incidental token linking to the "user" star
-    hub (~797/889 edges) can't dump the whole personal neighbourhood (pets/project terms) into
+    hub can't dump the whole personal neighbourhood (pets/project terms) into
     unrelated queries; only seed entities fan out. Honours read-time TTL: stale transient edges
     (past their per-relation horizon, via GraphMemory._edge_is_stale_transient -> relation_classifier)
     are dropped from traversal + scoring (no deletion; a fresh mention refreshes last_seen).
     Stance [2026-08-23]: edges with EXPLICIT appraisal/inferred stance metadata are excluded.
     Min-mentions evidence bar [2026-08-23]: candidates with mention_count below
-    GRAPH_EXPANSION_MIN_MENTIONS (default 2; env-overridable, 0 disables) are skipped —
+    GRAPH_EXPANSION_MIN_MENTIONS (default 2; env var read in memory/graph_utils.py, 0 disables) are skipped —
     single-mention nodes never become expansion terms (nodes without the field pass)."""
 
 # Ingestion (memory_storage.py:_ingest_fact_to_graph):
@@ -1380,8 +1396,8 @@ capture_tone_from_level(tone_level)       # shutdown LLM path joins triples to t
 #   graph_memory.add_relation — appraisal_days/appraisal_tones distinct-ISO-day tracking;
 #     ≥3 distinct non-elevated days → settled=True (elevated/unknown days never count)
 # Backfill: scripts/backfill_stance.py (dry-run default; refuses --apply while Daemon runs;
-#   pre-image backups to data/backups/stance_backfill_<ts>/; hard sentinel: tamsin|is|evil must
-#   classify appraisal. Dry-run validated 2026-08-23: 3268 facts / 20 appraisal, 987 edges)
+#   pre-image backups to data/backups/stance_backfill_<ts>/; hard sentinel: a `<name>|is|evil`
+#   triple must classify as appraisal)
 # Tests: tests/unit/test_stance_classifier.py, test_stance_write_path.py,
 #   test_stance_consumers.py, test_appraisal_settledness.py, test_backfill_stance.py
 ```
@@ -1424,7 +1440,7 @@ class OpenThread(BaseModel):
 
 # memory/thread_store.py — ChromaDB-backed storage
 class ThreadStore:
-    def __init__(chroma_store):
+    def __init__(self, chroma_store=None):
         """Uses 'threads' collection. Delete-and-re-add for updates."""
 
     def store_thread(thread: OpenThread) -> Optional[str]:
@@ -1433,7 +1449,7 @@ class ThreadStore:
     def list_open_threads() -> List[OpenThread]:
         """Get all threads with OPEN status."""
 
-    def get_top_threads(max_results=3, stale_days=14, deadline_grace_hours=48) -> List[OpenThread]:
+    def get_top_threads(max_results=3, stale_days=None, deadline_grace_hours=None) -> List[OpenThread]:
         """Priority-ranked open threads for session surfacing.
         Lazy staleness: marks stale threads during retrieval."""
 
@@ -1447,7 +1463,7 @@ class ThreadStore:
         """Refresh last_referenced + persist. Called when a new extraction
         duplicates an already-open thread (dupe dropped, tracked thread kept live)."""
 
-    def enforce_cap(max_open=50) -> int:
+    def enforce_cap(max_open=None) -> int:
         """Prune lowest-priority threads when over cap. Returns count pruned."""
 
 # Module-level duplicate helpers [NEW 2026-07-03 — duplicate-thread incident fix]:
@@ -1463,7 +1479,7 @@ class ThreadStore:
 
 # memory/thread_extractor.py — LLM-based extraction [ENHANCED 2026-07-03]
 class ThreadExtractor:
-    def __init__(model_manager):
+    def __init__(self, model_manager=None):
         """Two-phase LLM approach: extraction + resolution detection."""
 
     async def extract_new_threads(session_conversations, open_threads=None) -> List[OpenThread]:
@@ -1482,7 +1498,7 @@ class ThreadExtractor:
 
 
 # Integration:
-# - Shutdown: step 6.5 in process_shutdown_memory() — extract new threads + resolve existing
+# - Shutdown: Phase B of process_shutdown_memory() (`_process_open_threads`) — extract new threads + resolve existing
 # - Prompt: [UNRESOLVED THREADS] section (after [KNOWLEDGE GRAPH])
 # - Collection: 'threads' in ChromaDB (14 total collections)
 # - Builder: top threads retrieved via ThreadStore.get_top_threads() in build_prompt()
@@ -1509,10 +1525,11 @@ class FactVerdict(str, Enum):
     SKIP = "skip"                # Ephemeral relation
 
 class FactVerifier:
-    def __init__(chroma_store, model_manager=None):
+    def __init__(self, chroma_store, model_manager=None):
         """Pre-storage conflict gate. Checks new facts against existing."""
 
-    async def verify_fact(fact_text, collection="facts") -> VerificationResult:
+    async def verify(subject, predicate, object_val, fact_text, source="conversation",
+                      confidence=0.7, fact_scope="user") -> VerificationResult:
         """Flow: ephemeral check → candidate query → confirmation → user-trust override
         → entity-scope rejection → LLM adjudication → fallback trust-newer."""
 
@@ -1562,7 +1579,7 @@ PROACTIVE_SURFACING_MAX_INSIGHTS = 2
 ```python
 # core/uncertainty_detector.py
 class UncertaintyDetector:
-    def detect(response: str) -> UncertaintyResult:
+    def detect(response, embedder=None, semantic_threshold=0.70, max_length=400) -> UncertaintyResult:   # (static)
         """Dual-layer detection of 'I don't know' responses:
         Layer 1: Keyword regex (~18 compiled patterns, confidence 0.75-0.90)
         Layer 2: Semantic embedding (8 pre-embedded anchor sentences, cosine threshold 0.70)
@@ -1570,12 +1587,14 @@ class UncertaintyDetector:
         Returns: UncertaintyResult(is_uncertain, confidence, method, matched_pattern)"""
 
 # Integration:
-# gui/handlers.py: after standard streaming, if flagged, retries via agentic search
+# gui/handlers.py: after standard streaming, if flagged AND enabled, retries via agentic search
+# OFF by default since 2026-08-28 (config `uncertainty_fallback.enabled: false`) — detection
+# still runs for telemetry but the retry does not fire.
 # Single boolean prevents infinite retry; only fires on non-agentic responses
-# Provenance: response_mode="uncertainty-fallback"
+# Provenance (when it fires): response_mode="uncertainty-fallback"
 
-# Config:
-UNCERTAINTY_FALLBACK_ENABLED = True
+# Config (config/config.yaml `uncertainty_fallback:`; code default and shipped value are both off):
+UNCERTAINTY_FALLBACK_ENABLED = False
 UNCERTAINTY_SEMANTIC_THRESHOLD = 0.70
 UNCERTAINTY_MAX_LENGTH = 400
 ```
@@ -1587,33 +1606,42 @@ UNCERTAINTY_MAX_LENGTH = 400
 ```python
 # core/response_planner.py
 class ResponsePlan(BaseModel):
-    key_points: List[str]; tone: str; avoid: List[str]; strategy: str; raw_llm_output: str
+    key_points: List[str]; dropped_points: List[str]; tone: str; avoid: List[str]; strategy: str
+    raw_llm_output: str; planner_source: str; planner_model: str; context_digest_sha256: str ...  # see class for full field list
 
 class ReviewResult(BaseModel):
     passes: bool; confidence: float; issues: List[str]; suggestion: str
 
 class ResponsePlanner:
+    def __init__(self, model_manager)
+
+    @staticmethod
     def should_plan(context) -> bool:
         """Skips for: small-talk, crisis/elevated/concern tone (CONCERN = LIGHT SUPPORT mode, a plan contradicts it — 2026-08-05), CASUAL_SOCIAL intent, <8 word queries, disabled config."""
 
-    async def create_plan(query, context_signals) -> Optional[ResponsePlan]:
-        """Lightweight LLM call (~200 tokens, 5s timeout) → ResponsePlan."""
+    @staticmethod
+    def build_context_digest(prompt_context, *, max_chars=6000, max_section_chars=1200) -> tuple[str, List[str]]:
+        """Bounded digest of the FINAL gathered prompt context (2026-09-02); returns (digest, section names)."""
 
-    async def review_answer(query, answer, plan) -> ReviewResult:
-        """Post-answer review (~300 tokens). If passes=False and confidence >= 0.90, triggers silent agentic retry."""
+    async def create_plan(self, query, context, *, context_digest="", context_sections=None) -> Optional[ResponsePlan]:
+        """Lightweight LLM call (~200 tokens, 5s timeout) → ResponsePlan; None on any failure."""
+
+    async def review_answer(self, plan, response, query) -> Optional[ReviewResult]:
+        """Post-answer review (~200 tokens). LOG-ONLY since 2026-08-28: the verdict is recorded to
+        telemetry/findings but a failed review NEVER retries or replaces the response."""
 
 # Integration:
-# orchestrator.py: plan runs in parallel with build_prompt_from_context() via asyncio.wait()
-# Plan injected into system prompt before _assemble_prompt()
-# gui/handlers.py: review gate after uncertainty fallback, similarity-guarded retry
+# orchestrator.build_full_prompt(): the planner runs AFTER build_prompt_from_context() (since 2026-09-02),
+#   from ResponsePlanner.build_context_digest(prompt_ctx); the plan is injected into the system prompt tail.
+# gui/handlers.py: review gate runs after streaming, record-only (checker_findings "review", mode log_only)
 
-# Config:
-RESPONSE_PLANNING_ENABLED = True
-RESPONSE_PLANNING_MODEL = None         # None → active model (config.yaml overrides to gpt-4o-mini)
+# Config (config.yaml `response_planning:`; code default / shipped value where they differ):
+RESPONSE_PLANNING_ENABLED = True       # code default True; shipped true
+RESPONSE_PLANNING_MODEL = None         # code default None → active model; shipped gpt-4o-mini
 RESPONSE_PLANNING_MAX_TOKENS = 200
 RESPONSE_PLANNING_TIMEOUT = 5.0
 RESPONSE_REVIEW_ENABLED = True
-RESPONSE_REVIEW_CONFIDENCE_THRESHOLD = 0.90
+RESPONSE_REVIEW_CONFIDENCE_THRESHOLD = 0.80   # code default; shipped review_confidence_threshold: 0.9 (only gates the warning log now)
 ```
 
 ---
@@ -1675,20 +1703,21 @@ STALENESS_MAX_PENALTY = 0.4
 ```python
 # knowledge/implementation_detector.py
 class DetectionResult(BaseModel):
-    proposal_id: str; confidence: float; status: str; evidence: List[str]; stage_reached: int
+    proposal_id: str; confidence: float; status: str; evidence: str; file_existence_ratio: float
+    code_match_ratio: float; git_match_score: float; llm_adjusted: bool; skipped_reason: str
 
 class ImplementationDetector:
-    async def detect(proposal, lightweight=False) -> DetectionResult:
+    def detect_single(self, proposal, lightweight=False) -> DetectionResult:   # sync
         """4-stage: file existence → code grep → git history → LLM judgment (borderline only).
         Lightweight = stage 1 only (~50ms). Cooldown prevents re-checking (86400s)."""
 
-    async def detect_batch(proposals, lightweight=False) -> List[DetectionResult]:
+    async def detect_batch(self, proposals, lightweight=False) -> List[DetectionResult]:
         """Batch with cooldown respect."""
 
 # Confidence: confirmed (≥0.85), likely (≥0.60), uncertain (≥0.30), not_implemented (<0.30)
 
 # Integration:
-# Shutdown: Phase 6.5 (lightweight file-existence check)
+# Shutdown: Phase B of process_shutdown_memory() (`_check_implementation_tracking`, lightweight file-existence check)
 # CLI: python main.py check-proposals [--id UUID] [--verbose]
 # GUI: "Check Implementation" button (batch), "Check This" (single), badges
 
@@ -1714,7 +1743,7 @@ IMPL_TRACKING_COOLDOWN = 86400
 # Codebase changes gathered BEFORE small-talk fork (even "Yo" gets change awareness)
 
 # Config:
-SESSION_DIFF_ENABLED = True
+SESSION_DIFF_ENABLED = True        # config.yaml session_diff.enabled: true; forced False in DAEMON_MODE=user (the shipped mode)
 SESSION_DIFF_MAX_COMMITTED = 20    # max committed-change entries
 SESSION_DIFF_MAX_UNCOMMITTED = 20  # max uncommitted-change entries
 ```
@@ -1731,25 +1760,32 @@ CORPUS_FILE = "./data/corpus_v4.json"
 CHROMA_PATH = "./data/chroma_db_v4"
 
 # Token budgets (model-aware — see config.yaml token_budget: section)
-# Auto-computed: min(context_window * 0.25, ceiling) clamped to [floor, ceiling]
+# Auto-computed: context_window * PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION (token_budget.context_fraction = 0.12),
+# clamped to [floor, ceiling]; API-model budgets are additionally capped at PROMPT_TOKEN_BUDGET_DEFAULT
+# (the fraction can only lower it); local models use PROMPT_TOKEN_BUDGET_LOCAL
 # Override: PROMPT_TOKEN_BUDGET=10000 env var forces a specific value
 PROMPT_TOKEN_BUDGET_DEFAULT = 10000   # API models default (deployed config.yaml token_budget.default)
 PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
 PROMPT_TOKEN_BUDGET_CEILING = 16000   # Maximum budget
 # PROMPT_MIN_RECENT_FLOOR = 5  — defined in core/prompt/builder.py (not app_config.py)
-PROMPT_MAX_MEMS = int(os.getenv("PROMPT_MAX_MEMS", "15"))
+# Floors are survival MINIMUMS: recent conversations 5, summaries 2 (prompt_min_summaries_floor), reflections 1
+#   (prompt_min_reflections_floor); the budget RESERVES their tokens (FLOOR_PROTECTED_SECTIONS,
+#   memory.prompt_floor_reserve_max_share = 0.25) so trimming never cuts below them
+# PROMPT_MAX_MEMS / PROMPT_MAX_RECENT — also defined in core/prompt/builder.py via _cfg_int("prompt_max_mems", ...)
+#   (config.yaml `memory:`): code defaults prompt_max_recent 15, prompt_max_mems 15, prompt_max_semantic 8; SHIPPED config.yaml: prompt_max_mems 30,
+#   prompt_max_recent 10, prompt_max_semantic 15. Not env-driven.
 
 # Decay & scoring
 RECENCY_DECAY_RATE = 0.05
-TRUTH_SCORE_UPDATE_RATE = 0.02
-TRUTH_SCORE_MAX = 0.95
+# Truth scoring: TRUTH_SCORER_* constants (config.yaml `truth_scorer:`) — INITIAL_SCORE, CONFIRMED_BOOST,
+#   CORRECTION_PENALTY, CONTRADICTION_PENALTY, DECAY_RATE (per week), DECAY_FLOOR; read config/app_config.py
 
 # Gating thresholds
 GATE_REL_THRESHOLD = 0.18            # MiniLM space (wiki/semantic-chunk gate paths)
 GATE_REL_THRESHOLD_RETRIEVAL = 0.60  # bge space (memory/summary gating; deictic floor 0.61)
-GATE_COSINE_THRESHOLD = float(os.getenv("GATE_COSINE_THRESHOLD", "0.50"))  # gate_system.py DEFAULT_THRESHOLD
-GATE_FORCED_FLOOR_MARGIN = 0.05      # [2026-08-23] forced-minimum backfill quality floor: never force items below threshold − margin (env var in gate_system.py)
+# processing/gate_system.py (module-level, NOT app_config): DEFAULT_THRESHOLD = env GATE_COSINE_THRESHOLD (0.50);
+#   env GATE_FORCED_FLOOR_MARGIN (0.05) [2026-08-23] forced-minimum backfill quality floor: never force items below threshold − margin
 
 # Collection boosts (live config.yaml memory.collection_boosts)
 COLLECTION_BOOSTS = {
@@ -1791,26 +1827,25 @@ PROFILE_EPHEMERAL_MAX_HISTORY = 20       # Max historical entries per ephemeral 
 
 # Schedule Extraction [NEW 2026-05]
 SCHEDULE_EXTRACTION_ENABLED = True       # Toggle schedule pattern detection in fact extraction
-SCHEDULE_PROMPT_MAX_EVENTS = 5           # Max events in [UPCOMING SCHEDULE] section
+SCHEDULE_PROMPT_MAX_EVENTS = 10          # Max events in [UPCOMING SCHEDULE] section (shipped config.yaml prompt_max_events: 10)
 SCHEDULE_PROMPT_LOOKAHEAD_DAYS = 7       # Days ahead to show in upcoming schedule
 # 5 patterns: work_schedule, class_schedule, exam_date, shift_pattern, day_off
 # Stored as facts with fact_type="schedule" metadata
 # Time normalization: utils/temporal_resolver.py — normalize_time_range(), expand_day_abbreviations(), resolve_date_expression()
 # Supersession: same kind + same day → old fact marked superseded via FactVerifier._check_schedule_supersession()
-# Tests: 64 in tests/unit/test_schedule_extraction.py
+# Tests: tests/unit/test_schedule_extraction.py
 
 # Knowledge Graph [NEW 2026-03]
 KNOWLEDGE_GRAPH_ENABLED = True           # Toggle knowledge graph system
-KNOWLEDGE_GRAPH_MAX_DEPTH = 2            # BFS traversal depth
-KNOWLEDGE_GRAPH_MAX_EDGES = 50           # Max edges in prompt
+KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH = 2      # BFS traversal depth (config.yaml knowledge_graph.retrieval_depth)
 GRAPH_SCORING_BOOST_ENABLED = True       # Graph-boosted memory scoring
 GRAPH_SCORING_BOOST_CAP = 0.15          # Max graph bonus (0.05 per entity)
 GRAPH_QUERY_EXPANSION_ENABLED = True     # Append neighbors to search query
 GRAPH_QUERY_EXPANSION_MAX_TERMS = 8      # Max neighbor names appended
-GRAPH_EXPANSION_MIN_MENTIONS = 2         # [2026-08-23] evidence bar for expansion candidates: single-mention nodes never become expansion terms (env-overridable in graph_utils.py; 0 disables)
+# GRAPH_EXPANSION_MIN_MENTIONS = 2       # [2026-08-23] (env var in memory/graph_utils.py, not app_config) evidence bar for expansion candidates: single-mention nodes never become expansion terms (env-overridable in graph_utils.py; 0 disables)
 
 # Personal Notes Gate [NEW 2026-03-20]
-PERSONAL_NOTES_GATE_THRESHOLD = 0.45     # Post-gate threshold for Obsidian notes (general gate is 0.18)
+PERSONAL_NOTES_GATE_THRESHOLD = 0.60     # Post-gate threshold for Obsidian notes (config.yaml obsidian.gate_threshold)
 
 # Thread Surfacing [NEW 2026-03-23]
 THREAD_SURFACING_ENABLED = True          # Toggle thread extraction/surfacing
@@ -1849,7 +1884,7 @@ IMPL_TRACKING_COOLDOWN = 86400          # seconds between re-checks
 EXPAND_MEMORY_ENABLED = True            # Toggle expand_memory agentic tool
 EXPAND_MAX_PER_SESSION = 3             # Max expansions per agentic session
 EXPAND_MAX_WINDOW = 5                  # Max temporal window (±N turns)
-EXPAND_DEFAULT_WINDOW = 3              # Default temporal window
+# MemoryExpander.expand(memory_id, window=3, collection) — the default window is the method's own param, not a constant
 EXPAND_ANCHOR_CHAR_LIMIT = 600        # Char limit for anchor document
 EXPAND_CONTEXT_CHAR_LIMIT = 300       # Char limit for context documents
 EXPAND_ANCHOR_CHAR_LIMIT_LONG = 3000  # Long-form collections (obsidian_notes, reference_docs)
@@ -1857,7 +1892,7 @@ EXPAND_CONTEXT_CHAR_LIMIT_LONG = 2000 # Long-form context limit
 
 # Visual Memory [NEW 2026-05]
 VISUAL_MEMORY_ENABLED = True             # live config.yaml: enabled: true (app_config default False)
-VISUAL_MEMORY_CLIP_MODEL = "ViT-B-32"   # OpenCLIP model for image/text embedding (512-dim)
+VISUAL_MEMORY_CLIP_MODEL = "ViT-B-32-quickgelu"   # OpenCLIP model for image/text embedding (512-dim)
 VISUAL_MEMORY_MAX_IMAGES = 3            # Max images in prompt (max_images_prompt)
 VISUAL_MEMORY_CAPTION_MODEL = "gpt-4o-mini"  # Vision LLM for captions
 VISUAL_MEMORY_INDEX_PATH = "data/clip_index.faiss"  # CLIP vector index path
@@ -1881,12 +1916,12 @@ SKILL_ACTIVATION_USE_STM = True          # Enable STM topic bonus
 API_ALLOWED_HOSTS = []  # config.yaml api.allowed_hosts — exact hostnames/IPs trusted as a Host header beyond loopback (e.g. a Tailscale address); api.host trusted automatically when specific/non-wildcard
 
 # Config Schema Validation [NEW 2026-05-10]
-# config/schema.py — Pydantic v2 validation for config.yaml (~70 Pydantic models; 66 section fields on DaemonConfig)
+# config/schema.py — Pydantic v2 validation for config.yaml (one model per YAML section; DaemonConfig is the root)
 # Validates at startup after YAML load, before constant extraction
 # validate_config(config) → returns dict unchanged or sys.exit(1) with errors
 
 # LLM Compression [NEW 2026-03-26] [OPT 2026-05-22]
-LLM_COMPRESSION_ENABLED = True         # Use LLM to compress heavily oversized items
+LLM_COMPRESSION_ENABLED = False        # OFF (config.yaml llm_compression.enabled: false); LLM compression of heavily oversized items
 LLM_COMPRESSION_MODEL = "gpt-4o-mini"  # Model for compression calls
 LLM_COMPRESSION_TIMEOUT = 3.0          # Per-item timeout (seconds)
 LLM_COMPRESSION_RATIO_THRESHOLD = 3.0  # Only compress items >= 3x over token limit
@@ -1898,7 +1933,7 @@ PROVENANCE_ENABLED = True              # Toggle provenance metadata on interacti
 PROVENANCE_THINKING_MAX_CHARS = 4000   # Max chars for thinking block in metadata
 
 # Uncertainty Fallback [NEW 2026-04]
-UNCERTAINTY_FALLBACK_ENABLED = True    # Retry uncertain responses via agentic search
+UNCERTAINTY_FALLBACK_ENABLED = False   # OFF since 2026-08-28 (config.yaml uncertainty_fallback.enabled); retry uncertain responses via agentic search
 UNCERTAINTY_SEMANTIC_THRESHOLD = 0.70  # Cosine sim threshold for semantic anchor match
 UNCERTAINTY_MAX_LENGTH = 400           # Skip detection for responses longer than this
 
@@ -1907,7 +1942,7 @@ RESPONSE_PLANNING_ENABLED = True       # Pre-answer plan from query + context si
 RESPONSE_PLANNING_MODEL = "gpt-4o-mini"  # live config.yaml (None → active model)
 RESPONSE_PLANNING_MAX_TOKENS = 200     # Plan LLM call budget
 RESPONSE_PLANNING_TIMEOUT = 5.0        # Seconds before plan skipped
-RESPONSE_REVIEW_ENABLED = True         # Post-answer review against plan
+RESPONSE_REVIEW_ENABLED = True         # Post-answer review against plan — LOG-ONLY (never retries/replaces the reply)
 RESPONSE_REVIEW_MODEL = "gpt-4o-mini"  # live config.yaml (None → active model)
 RESPONSE_REVIEW_MAX_TOKENS = 200       # Review LLM call budget
 RESPONSE_REVIEW_CONFIDENCE_THRESHOLD = 0.90  # live config.yaml (app_config default 0.80)
@@ -1915,13 +1950,14 @@ RESPONSE_REVIEW_TIMEOUT = 5.0         # Seconds before review skipped
 
 # Personality / Operating Principles (file-based) [NEW 2026-03-26]
 PERSONALITY_DEFAULT_PATH = "config/prompts/default_personality.txt"
-PERSONALITY_CUSTOM_PATH = "config/prompts/custom_personality.txt"
+PERSONALITY_CUSTOM_PATH = <data root>/custom_personality.txt   # resolved at call time (get_personality_custom_path(), BC-82)
 OPERATING_PRINCIPLES_PATH = "config/prompts/operating_principles.txt"
 PERSONALITY_MAX_CHARS = 15000          # Hard cap on personality text
 
-# Summarization (env-driven, defined in memory/ modules, not app_config.py)
-SUMMARY_EVERY_N = int(os.getenv("SUMMARY_EVERY_N", "20"))          # memory_consolidator.py
-SUMMARIZE_AT_SHUTDOWN_ONLY = True   # env SUMMARIZE_AT_SHUTDOWN_ONLY, memory_storage.py
+# Summarization: cadence is read from env SUMMARY_EVERY_N (memory/memory_coordinator.py; also written by
+#   gui/settings_core.py) over the config value; there is no app_config constant. Shutdown summaries are
+#   ShutdownProcessor.summarize_uncovered_blocks (content-time watermark, memory/summary_coverage.py), at most
+#   SUMMARY_MAX_BLOCKS_PER_SHUTDOWN (env, default 1; defined in memory/shutdown_processor.py) per shutdown.
 
 # Insight / Evidence-Assembly Mode [NEW 2026-08-23] (YAML: insight_mode: → schema.py InsightModeSection)
 INSIGHT_MODE_ENABLED = True            # Master toggle
@@ -1933,7 +1969,7 @@ INSIGHT_KEYWORD_SCAN_MAX = 50          # Max corpus keyword-scan hits
 INSIGHT_EXPAND_TOP_K = 3               # Top conversation hits expanded via MemoryExpander
 INSIGHT_EXPAND_WINDOW = 2              # Expansion window per hit
 INSIGHT_DECOMPOSE_MAX_TOKENS = 700     # Facet-decomposition LLM budget
-INSIGHT_SYNTHESIS_MAX_TOKENS = 2600    # Synthesis LLM budget
+INSIGHT_SYNTHESIS_MAX_TOKENS = 4200    # Synthesis LLM budget
 INSIGHT_SWEEP_TIMEOUT_S = 45           # Sweep timeout (partial results returned)
 INSIGHT_OFFER_ENABLED = True           # Consent-offer arming (max 1/session)
 INSIGHT_DOC_ON_AGREEMENT = True        # Save doc on agree/partial assessment
@@ -1990,13 +2026,10 @@ PATTERN_KEYWORD_HIT_CAP = 5000         # Corpus keyword-scan ceiling for countin
 # disabled once TONE_FLOOR_CHAIN_MAX spent (allow_sticky_floor threading).
 
 # Models
-DEFAULT_MODEL_NAME = config["models"]["default"]   # yaml: "llama" (local fallback)
-# API alias registry (models/model_manager.py API_MODEL_ALIASES): gpt-4o-mini, gpt-4o, gpt-4.1,
-#   gpt-5, gpt-5.1, gpt-5.5, gpt-6-astra (alias gpt-6), claude-opus (→4.8) / -4.5/-4.6/-4.7/-4.8,
-#   claude-fable-5 (alias fable-5), claude-fable-5.1 (alias fable-5.1),
-#   sonnet-4.5, sonnet-4.6, haiku-4.5, glm-4.6, glm-4.7, glm-5, glm-5-turbo, glm-5.2,
-#   deepseek-v3.1, deepseek-v4, deepseek-v4-flash, deepseek-v4.1-flash, deepseek-r1, gemini-3-pro,
-#   kimi-k3 (alias kimi-3), kimi-k2-thinking, kimi-k2.6
+DEFAULT_MODEL_NAME = config.get("models", {}).get("default", "llama")   # code fallback; the model actually used is `models.active` in config.yaml (owner-switchable, Settings)
+# API alias registry: models/model_manager.py `API_MODEL_ALIASES` (alias -> OpenRouter slug) — read the dict
+#   for the current list instead of copying it here. Examples of the alias style: gpt-4o-mini, gpt-6-astra (alias gpt-6),
+#   claude-opus, claude-fable-5.1 (alias fable-5.1), sonnet-4.5, haiku-4.5, deepseek-v4, kimi-k3 (alias kimi-3), glm-5.2.
 # A REGISTERED slug is answered from its MODEL_CAPABILITIES row; the substring heuristics only answer
 #   for a slug with no row. Rows may also declare request-shape constraints a route ENFORCES with
 #   HTTP 400: forced_top_p, reasoning_mandatory (off-switch -> low effort + exclude, built only by
@@ -2011,25 +2044,25 @@ DEFAULT_MODEL_NAME = config["models"]["default"]   # yaml: "llama" (local fallba
 
 ## Common Patterns (Copy-Paste Templates)
 
-### Adding a new memory type:
+### Adding a new memory collection:
 ```python
-# 1. corpus_manager.py - add enum
-class MemoryType(Enum):
-    NEW_TYPE = "new_type"
+# 1. memory/storage/multi_collection_chroma_store.py - add the name to the self.collections dict in
+#    __init__ (14 collections today; there is no COLLECTIONS list; opened lazily via _get_collection)
+self.collections = {..., 'new_type': None}
 
-# 2. multi_collection_chroma_store.py - initialize collection
-COLLECTIONS = ["episodic", "semantic", "procedural", "procedural_skills", "summary", "meta", "new_type"]
+# 2. (only if a new enum member is wanted) memory/memory_interface.py - class MemoryType(Enum)
+#    (NOT corpus_manager.py)
 
-# 3. memory/memory_retriever.py - handle in get_memories() pipeline
-new_type_results = await self.chroma_store.query(query, "new_type", limit)
+# 3. memory/memory_retriever.py - handle in the get_memories() pipeline
+new_type_results = self.chroma_store.query_collection("new_type", query, ...)   # see the def for the full params
 
 # 4. memory/memory_coordinator.py - add delegation wrapper (if new public method needed)
 async def get_new_type(self, query, limit=10):
     return await self._retriever.get_new_type(query, limit)
 
-# 5. prompt/formatter.py - add to prompt assembly
-new_type_mems = [m for m in memories if m.get('memory_type') == 'new_type']
-sections.append(self._format_memories(new_type_mems, budget * 0.05))
+# 5. core/prompt/formatter.py - render the section; ALSO add a PRIORITY_ORDER row
+#    or the budget cannot meter/trim it (PRIORITY_ORDER is in core/prompt/token_manager.py, the
+#    table TokenManager uses; parity test: tests/unit/test_budget_meters_rendered_sections.py)
 ```
 
 ### Testing a method:
@@ -2063,8 +2096,9 @@ logger.error(f"Error occurred: {e}")
 ## Critical Formulas (Quick Lookup)
 
 ```python
-# Recency decay (standard)
-recency = 1.0 / (1.0 + 0.05 * age_hours)
+# Recency decay (standard, production): ACTIVE-DAY decay — days the user was actually active, not calendar time
+recency = time_manager.calculate_active_day_decay(ts, RECENCY_DECAY_RATE)   # 1.0 / (1.0 + 0.05 * active_days)
+# Hourly decay 1.0 / (1.0 + 0.05 * age_hours) is only the fallback when no time_manager is wired
 
 # Two-regime temporal decay [UPDATED 2026-05]
 # Small anchor (<=48h, "today"/"yesterday") — flat plateau + grace zone:
@@ -2111,8 +2145,8 @@ score = (
     structure_score +          # additive (0.15 * density_alignment), NOT a dict weight
     anchor_bonus +
     graph_bonus +
-    penalties
-)
+    penalties            # staleness, size, health-framing, etc.; plus a small timeline/meta bonus for some cases
+)  # (memory/memory_scorer.py rank_memories is the source of truth)
 ```
 
 ---
@@ -2120,8 +2154,12 @@ score = (
 ## Knowledge Sources (Prompt Sections)
 
 ```python
-# Prompt section ordering (formatter.py _assemble_prompt, attention-optimized):
+# Prompt section ordering (formatter.py _assemble_prompt, attention-optimized; a section is omitted when empty;
+# _assemble_prompt is the source of truth for render order; budget priority is PRIORITY_ORDER in
+# core/prompt/token_manager.py):
 [RECENT CONVERSATION]          # 1. Session continuity (1-15 items)
+[YOUR STATED FIGURES]          # 1b. Claim-ledger lines of the user's own stated figures (claim_ledger.enabled)
+[YOUR DAY COUNTS — dated, already projected to today]  # 1c. Stored dated day counts projected to today (config `day_counts:`, 2026-10-27)
 [RELEVANT MEMORIES]            # 2. Semantic hits (1-15 items)
 [RECENT SUMMARIES]             # 3. Compressed recent history (1-5)
 [SEMANTIC SUMMARIES]           # 4. Query-relevant compressed history (1-5)
@@ -2130,8 +2168,8 @@ score = (
 [BACKGROUND KNOWLEDGE]         # 7. Wiki snippets (1-3)
 [WEB SEARCH RESULTS]           # 8. Real-time web with [WEB_N] source IDs + citation instruction
 [RELEVANT INFORMATION]         # 9. Semantic chunks (1-8)
-[DREAMS]                       # 10. Synthesis insights (dreaming enabled via PooledConceptSynthesisGenerator; tiers 0/1/2 retired)
-[USER'S PERSONAL NOTES]        # 11. Obsidian vault notes; post-filtered by PERSONAL_NOTES_GATE_THRESHOLD (0.45)
+[DREAMS]                       # 10. Synthesis insights (generators are OFF in the shipped config — usually absent; tiers 0/1/2 retired)
+[USER'S PERSONAL NOTES]        # 11. Obsidian vault notes; post-filtered by PERSONAL_NOTES_GATE_THRESHOLD (0.60)
 [USER UPLOADED ITEMS]          # 12. Persisted user file/image uploads from reference_docs collection
 [VISUAL MEMORIES]              # 12b. CLIP-retrieved image memories with captions (entity-gated via extract_graph_entities + intent-proximity disambiguation)
 [DAEMON DOCUMENTATION]         # 13. Self-knowledge: architecture docs, PROJECT_SKELETON
@@ -2142,6 +2180,7 @@ score = (
 [UNRESOLVED THREADS]           # 18. Open commitments, deadlines, unfinished topics
 [UPCOMING SCHEDULE]            # 19. Extracted schedule facts (work, class, exams) [NEW 2026-05]
 [GOOGLE CALENDAR]              # 20. Real-time Google Calendar events via OAuth2 [NEW 2026-05]
+[RELEVANT EMAILS]              # 20b. Gmail header search results (when the email integration is enabled)
 [PROACTIVE INSIGHTS]           # 21. Cross-domain insights from knowledge graph
 [USER PROFILE]                 # 22. Categorized facts + anti-confabulation instruction + source excerpts (high-attention zone)
 [ACTIVE FEATURES]              # 23. Feature inventory (always present)
@@ -2183,8 +2222,9 @@ python main.py migrate-monthly               # Just run weekly-to-monthly folder
 python main.py refresh-narrative             # Regenerate life state from monthly/weekly/daily notes
 
 # Daemon Documentation (self-knowledge)
-# Auto-seeded from docs/ on GUI startup (mtime-based idempotency, skips unchanged files)
-# Config: REFERENCE_DOCS_AUTO_SEED=True, REFERENCE_DOCS_SEED_PATHS=["docs"]
+# Auto-seeded on GUI startup from the docs listed in config/reference_docs_manifest.txt
+# (mtime-based idempotency, skips unchanged files); only manifest docs render as [DAEMON DOCUMENTATION].
+# Config: YAML `reference_docs:` (auto_seed, seed_paths) -> REFERENCE_DOCS_AUTO_SEED / REFERENCE_DOCS_SEED_PATHS
 python main.py upload-doc <file> [title]     # Upload doc to [DAEMON DOCUMENTATION]
 python main.py list-docs                     # List uploaded docs
 python main.py delete-doc <title>            # Delete specific doc
@@ -2197,8 +2237,8 @@ python main.py vault-stats                   # Show indexed chunk count
 python main.py clear-vault                   # Clear obsidian_notes collection
 
 # Obsidian Relevance Filtering [NEW 2026-03-20]
-# Post-gate threshold: PERSONAL_NOTES_GATE_THRESHOLD=0.45 (YAML: obsidian.gate_threshold)
-# Notes below this relevance_score are dropped after multi-stage gating (general gate is 0.18)
+# Post-gate threshold: PERSONAL_NOTES_GATE_THRESHOLD=0.60 (YAML: obsidian.gate_threshold)
+# Notes below this relevance_score are dropped after multi-stage gating
 # Each note header in prompt includes [relevance: X.XX] tag for LLM visibility
 
 # Obsidian Image Support (multimodal models) [NEW 2026-01-30]
@@ -2231,7 +2271,7 @@ python main.py show-profile                  # Print profile to console
 ```python
 # utils/daily_notes_generator.py
 class DailyNotesGenerator:
-    async def generate_for_date(date: date, force: bool = False) -> GenerationResult:
+    async def generate_for_date(self, target_date: date, force: bool = False) -> GenerationResult:
         """
         1. Get conversations for date from corpus
         2. Skip if no conversations or note exists (unless force)
@@ -2335,7 +2375,7 @@ class TagGenerator:
 ```python
 # memory/memory_consolidator.py
 class MemoryConsolidator:
-    async def generate_narrative_context(weeklies=None, monthlies=None) -> str:
+    async def generate_narrative_context(self, recent_weeklies=None, recent_monthlies=None, ...) -> str:
         """
         Synthesize monthly/weekly/daily notes into 'Current Life State' narrative. [3-tier hierarchy]
 
@@ -2383,18 +2423,18 @@ class MemoryConsolidator:
 Casual skip filter (< 5 words, "thanks", etc.) only applies when no keyword/entity/knowledge/tool-name trigger fired.
 `skip_initial_search=True` for computation, memory, knowledge, and tool-name queries. When Tier 1 fires without LLM-generated search terms, initial search is also skipped.
 
-**Post-generation trigger** [NEW 2026-04]: If standard response is uncertain ("I don't know"), `UncertaintyDetector` (`core/uncertainty_detector.py`) retries via agentic search. Keyword regex (~18 patterns) + semantic embedding layer. Config: `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
+**Post-generation trigger** [NEW 2026-04; OFF by default since 2026-08-28 — `uncertainty_fallback.enabled: false`]: If enabled and the standard response is uncertain ("I don't know"), `UncertaintyDetector` (`core/uncertainty_detector.py`) retries via agentic search. Keyword regex (~18 patterns) + semantic embedding layer. Config: `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
 
 ```python
 # core/agentic/controller.py — orchestration, prompt building, model interaction, quality heuristics,
 #   nudge retry (re-prompts model when it narrates tools instead of calling them),
 #   no-reasoning decision phase (_generate_decision_no_reasoning bypasses chain-of-thought for XML tool emission),
 #   tool hints (_detect_tool_hints injects usage hints when query mentions tool names)
-# core/agentic/tools.py — ToolExecutor: DISPATCH_TABLE routing (21 rows / 20 tools) + 18 _dispatch_* handlers + get_tool_health() (incl. lookup_contact + email recipient resolution)
+# core/agentic/tools.py — ToolExecutor: DISPATCH_TABLE routing (23 rows; 22 offered in the loop — `recall_image` is excluded to save API credits — plus `done_searching`) + the `_dispatch_*` handlers + get_tool_health() (incl. lookup_contact, email_search + email recipient resolution)
 # core/agentic/gate.py — 4-tier agentic gate: keyword → entity → tool-name → LLM fallback, email-by-name patterns [NEW 2026-05]
 #   Tier 1 also routes file/saved-document RETRIEVAL → tools (FILE_ACCESS_KEYWORDS + regex + pronoun/affirmation continuation); counts as explicit request (bypasses intent veto) [2026-06-08]
 #   "Check it out" routing chain [2026-08-22]: FILE_RETRIEVAL_PRONOUN_PATTERN gains check/review/read/inspect/verify/examine/look verbs (+ optional "at", "now" tail; first-person self-reports "I checked it out" excluded); FILE_DOC_CONTEXT_WORDS gains repo/repositor/commit/codebase/docs/pushed; a REQUEST-shaped imperative after prior file/repo context routes to tools with NO pronoun needed ("pull up the veto logic"); _REQUEST_SHAPED_RE tolerates leading ack/discourse markers ("Alright, check it out now", incl. "sure"/"right"); affirmative-directive continuation: ack-opener + request-shaped ≤12 words after a stored-agentic turn continues the agentic session with tools (benzo-turn guard holds — statements aren't request-shaped). Tests: tests/unit/test_pronoun_retrieval_repo.py (10)
-# core/agentic/formatters.py — AgenticFormatter: 19 pure formatting methods
+# core/agentic/formatters.py — AgenticFormatter: stateless pure formatting methods
 # core/actions/ — Internet action executors: telegram.py, discord.py, email.py, google_auth.py, google_calendar.py, google_calendar_create.py, google_calendar_modify.py [NEW 2026-09], google_contacts.py, gmail_search.py, types.py, audit.py, executors.py [NEW 2026-05]
 class AgenticSearchController:
     """ReAct loop: Reason → Act (search/compute) → Observe → repeat until done.
@@ -2403,7 +2443,9 @@ class AgenticSearchController:
     async def run_agentic_search(query: str, system_prompt: str, model_name: str,
                                    initial_search_terms: List[str], initial_context=None,
                                    crisis_level=None, skip_initial_search=False,
-                                   initial_urls: List[str] = None) -> AsyncGenerator[Union[ProgressEvent, str], None]:
+                                   initial_urls: List[str] = None, fetch_fastpath=False, gate_modes=None,
+                                   forced_action=None, action_query_ws=None,
+                                   tool_continuation=None) -> AsyncGenerator[Union[ProgressEvent, str], None]:
         """
         Main loop:
         1. Build prompt with gathered context + tool instructions
@@ -2425,7 +2467,8 @@ class AgenticSearchController:
     # ToolExecutor.get_tool_health() → "[TOOL STATUS]" prompt section [UPDATED 2026-05]
     # Reports per-tool availability: web_search (+ site param), wiki_knowledge (FAISS),
     # memory_search (ChromaDB), wolfram, file_access, git_stats, github, expand_memory, visual_memory,
-    # fetch_url, search_stackexchange, search_arxiv, search_pubmed, search_hackernews,
+    # fetch_url, search_stackexchange, search_arxiv, search_pubmed, search_hackernews, email_search,
+    # generate_document, create_daemon_note (recall_image reports NOT OFFERED),
     # propose_action (lists calendar_create_event when GOOGLE_CALENDAR_ENABLED).
     # Dedicated API tools are always AVAILABLE (free, no auth).
     # Injected into agentic system prompt + iteration prompts + final prompt.
@@ -2607,7 +2650,7 @@ class WolframResult:
 class SandboxManager:
     """E2B Code Sandbox for secure Python execution"""
 
-    async def execute_code(code: str) -> SandboxResult:
+    async def execute_code(code: str, use_cache: bool = True, timeout: Optional[int] = None) -> SandboxResult:
         """Execute code in ephemeral sandbox"""
 
     async def create_session() -> PersistentSession:
@@ -2619,7 +2662,7 @@ class SandboxManager:
 # System prompt instructs LLM to reuse existing variables.
 # Cleanup: controller.close_sandbox() called in main.py _do_shutdown()
 
-    def format_for_prompt(result: SandboxResult, purpose: str) -> str:
+    def format_for_prompt(result: SandboxResult, purpose: Optional[str] = None) -> str:
         """Format result for LLM context injection"""
 
     def is_available() -> bool:
@@ -2656,7 +2699,7 @@ class MemoryExpander:
 
 
 # Protocol handlers (core/agentic/protocols.py) [ENHANCED 2026-05]
-# XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <git_stats>, <github>, <recall_image>, <done>
+# XMLMarkerHandler - for local models: <search>, <fetch_url>, <wolfram>, <python>, <memory>, <expand_memory>, <file_read>, <file_grep>, <file_list>, <get_full_document>, <git_stats>, <github>, <pubmed>, <pattern_scan>, <email_search>, <propose_action>, <lookup_contact>, <done> (see the *_PATTERN constants in core/agentic/protocols.py)
 #   Alias patterns: <web_search>/<web_search query="..."> → <search>, <search_memory query="..."> → <memory>
 #   Nested XML: <search_memory><query>X</query></search_memory> (DeepSeek-style) via MEMORY_NESTED_PATTERN
 #   Nested file/doc/url forms [2026-06-08]: <file_read><path>X</path></file_read> etc. via FILE_*/FETCH_URL/GET_FULL_DOCUMENT _NESTED_PATTERN (+ bare-content path); match attribute-less opening tag only (no double-parse)
@@ -2696,7 +2739,7 @@ WEB_SEARCH_CACHE_TTL_HOURS = 72
 
 # User Location (query localization) [NEW 2026-07-02]
 LOCATION_ENABLED = True                 # master switch (YAML section `location`)
-LOCATION_IP_LOOKUP_ENABLED = True       # IP geolocation (ipinfo.io → ip-api.com), background-refreshed
+LOCATION_IP_LOOKUP_ENABLED = False      # IP geolocation (ipinfo.io → ip-api.com), background-refreshed; shipped location.ip_lookup_enabled: false (opt-in)
 LOCATION_IP_CACHE_TTL_HOURS = 6.0
 LOCATION_OVERRIDE = ""                  # set in config.local.yaml or DAEMON_USER_LOCATION env
 # Chain: override → IP geo (cached, non-blocking) → profile lives_in fact (place-shaped only).
@@ -2731,17 +2774,17 @@ SANDBOX_CACHE_TTL_SECONDS = 3600
 SANDBOX_RATE_LIMIT_PER_MINUTE = 30
 
 # Git Stats [NEW 2026-03-29]
-GIT_STATS_ENABLED = True
+GIT_STATS_ENABLED = True               # config.yaml git_stats.enabled: true; forced False in DAEMON_MODE=user (the shipped mode)
 GIT_STATS_TIMEOUT = 10                 # subprocess timeout (seconds)
 GIT_STATS_MAX_OUTPUT_LINES = 50        # cap git command output
 
 # Internet Actions [NEW 2026-05, ENHANCED 2026-05]
-INTERNET_ACTIONS_ENABLED = False       # disabled by default
+INTERNET_ACTIONS_ENABLED = True        # shipped config.yaml internet_actions.enabled: true (code default False); each action type still needs its own credentials + user approval
 INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN    # env: TELEGRAM_BOT_TOKEN
 INTERNET_ACTIONS_TELEGRAM_CHAT_ID      # env: TELEGRAM_CHAT_ID
 INTERNET_ACTIONS_DISCORD_WEBHOOK_URL   # env: DISCORD_WEBHOOK_URL
 INTERNET_ACTIONS_SMTP_HOST / _PORT / _USER / _PASSWORD / _FROM
-INTERNET_ACTIONS_GITHUB_WRITE_ENABLED = False
+INTERNET_ACTIONS_GITHUB_WRITE_ENABLED = True   # shipped internet_actions.github_write_enabled: true; forced False in DAEMON_MODE=user
 INTERNET_ACTIONS_TTL = 300             # action expiry (seconds)
 INTERNET_ACTIONS_MAX_PENDING = 5       # max queued actions
 INTERNET_ACTIONS_AUDIT_LOG = "logs/actions_audit.jsonl"
@@ -2749,9 +2792,9 @@ INTERNET_ACTIONS_AUDIT_LOG = "logs/actions_audit.jsonl"
 INTERNET_ACTIONS_GOOGLE_CLIENT_ID     # env: GOOGLE_CLIENT_ID
 INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET  # env: GOOGLE_CLIENT_SECRET
 INTERNET_ACTIONS_GOOGLE_TOKEN_PATH = "data/google_token.json"
-GOOGLE_CALENDAR_ENABLED = False        # env: GOOGLE_CALENDAR_ENABLED
+GOOGLE_CALENDAR_ENABLED = True         # env: GOOGLE_CALENDAR_ENABLED; shipped config true (needs Google OAuth to do anything)
 GOOGLE_CALENDAR_MAX_EVENTS = 10        # max events in prompt
-GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7     # days ahead to fetch
+GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 14    # days ahead to fetch (code default 7; shipped internet_actions.google_calendar_lookahead_days: 14)
 #   YAML section: internet_actions
 ```
 
@@ -2759,7 +2802,7 @@ GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7     # days ahead to fetch
 
 ```python
 # Added to system prompt for agentic mode (types.py AGENTIC_SYSTEM_PROMPT_INJECTION).
-# 14 numbered tools advertised (recall_image is deliberately NOT advertised —
+# 15 numbered tools advertised (recall_image is deliberately NOT advertised —
 # excluded from the agentic loop to save vision-API credits):
 """
 Available Tools:
@@ -2776,7 +2819,8 @@ Available Tools:
 11. <get_full_document title="...">reason</get_full_document> - Full uploaded doc by exact title
 12. <fetch_url url="...">reason</fetch_url> - Fetch web page content by URL
 13. <github>query</github> - Read-only GitHub queries (issues, PRs, actions, releases, code search)
-14. <propose_action type="send_email" recipient="..." subject="..." reason="...">body</propose_action> - Propose a write action (user-confirmed)
+14. <email_search query="optional search terms" window_days="7">reason</email_search> - Search the user's email headers
+15. <propose_action type="send_email" recipient="..." subject="..." reason="...">body</propose_action> - Propose a write action (user-confirmed)
 """
 # Followed by a Tool Selection Guidelines table (task type → best tool), email-by-name
 # and fetch_url-vs-search directives, a {max_rounds} tool budget, multi-tool-per-response
@@ -2856,9 +2900,9 @@ def load_operating_principles() -> str:
     """Load immutable operating principles (AI limitations, behavioral rules, claim grounding, etc.)."""
 
 # Files:
-# config/prompts/default_personality.txt — 94 lines: tone, interaction style, response approach, examples
-# config/prompts/custom_personality.txt — created by GUI "Personality" tab Set button
-# config/prompts/operating_principles.txt — 206 lines: AI limitations, facts handling, claim grounding,
+# config/prompts/default_personality.txt — tone, interaction style, response approach, examples
+# <data root>/custom_personality.txt — created by the Personality tab / Settings page Set action (path resolved at call time by get_personality_custom_path(), BC-82; NOT under config/prompts/)
+# config/prompts/operating_principles.txt — AI limitations, facts handling, claim grounding,
 #   response modes, knowledge source instructions, agentic tool docs, guardrails.
 #   2026-08-02: the [USER'S PERSONAL NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING]
 #   guidance blocks (~1.2K tok) moved to core/prompt/section_instructions.py — appended to the
@@ -2887,7 +2931,8 @@ class MemoryCoordinator:
 
 # memory/memory_storage.py
 class MemoryStorage:
-    async def store_interaction(query, response, tags=None, session_id=None, provenance=None):
+    async def store_interaction(query, response, tags=None, session_id=None, provenance=None,
+                                user_text=None, ledger_receipt=None) -> Optional[str]:
         """
         Accepts optional provenance dict merged into ChromaDB metadata:
           session_id, response_mode, model_name, thinking_block,
@@ -2912,11 +2957,12 @@ class ResponseParser:
     def parse_thinking_block(response) -> Tuple[str, str]:
         """Extract <thinking>...</thinking> and visible answer. Truncated to PROVENANCE_THINKING_MAX_CHARS."""
 
-# gui/handlers.py — Builds provenance dict for all 5 response modes:
+# gui/handlers.py — Builds the provenance dict per response mode (examples; grep `response_mode` in gui/handlers.py for the full set):
 #   agentic:     response_mode="agentic", agentic_summary, prompt_hash, cited_memory_ids
 #   enhanced:    response_mode="enhanced"
-#   best-of:     response_mode="best_of", model_name from best-of metadata
-#   best-of-duel: response_mode="best_of_duel", model_name = winner model
+#   best-of:     response_mode="best-of" (model_name from best-of metadata)
+#   best-of-duel: response_mode="best-of-duel", model_name = winner model
+#   also: "uncertainty-fallback" (only when that retry is enabled), "insight-assembly", "failed"
 #   fallback:    response_mode="fallback"
 # Thinking block captured for extended-thinking models (DeepSeek-R1, etc.)
 
@@ -2936,7 +2982,7 @@ PROVENANCE_THINKING_MAX_CHARS = 4000     # Truncation limit for thinking block s
 # gatherer_memory.py fix: recent conversations now build content from Q/A
 # when the content field is empty (robustness for older corpus entries).
 
-# Tests: 21 unit tests in tests/unit/test_provenance.py
+# Tests: tests/unit/test_provenance.py
 ```
 
 ---
@@ -2978,14 +3024,14 @@ class SynthesisResult:
 class SynthesisMemory:
     COLLECTION_NAME = "synthesis_results"  # one of the 14 ChromaDB collections
     def __init__(self, chroma_store, similarity_threshold=0.85): ...
-    def find_similar(claim, threshold=None, limit=5) -> List[Tuple[SynthesisResult, float]]: ...
+    def find_similar(connection_claim, threshold=None, limit=5) -> List[Tuple[SynthesisResult, float]]: ...
     def store_result(result) -> str:       # Deduplicates; updates convergence if similar exists
     def get_recurring(min_paths=3, min_sources=2) -> List[SynthesisResult]: ...
     def get_stats() -> dict:               # {total_insights, converging_insights, collection}
     # Audit queue methods [NEW 2026-04-01]:
-    def grade_result(doc_id, grade, notes, changes_thinking, mechanism_real, heard_before) -> bool:  # Two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`
-    def get_ungraded(limit=10) -> List[SynthesisResult]: ...
-    def get_graded(grade=None, limit=50) -> List[SynthesisResult]: ...
+    def grade_result(doc_id, grade, notes="", changes_thinking=None, mechanism_real=None, heard_before=None) -> bool:  # Two-layer grading (3 binary screening + 1-5 slider); see `docs/grading_plan.md`
+    def get_ungraded(status_filter="", limit=50) -> List[Tuple[str, SynthesisResult]]: ...   # (doc_id, result) pairs
+    def get_graded(limit=50) -> List[Tuple[str, SynthesisResult]]: ...
     def get_audit_stats() -> dict:         # {total_graded, valid_count, invalid_count, fp_rate, avg_grade, auto_halt, ungraded_accepted, ungraded_rejected, fp_halt_threshold, min_graded_for_halt}
     def store_rejected_for_audit(result) -> str:  # Stores composite-rejected candidate for FN review
 
@@ -3025,8 +3071,9 @@ class SynthesisFilter:
 #   0.25*claim_novelty(1-claim_sim) + 0.30*cooccurrence_novelty(1-cooccurrence_sim)
 #   + 0.25*specificity(1-template_sim) + 0.20*internal_novelty(synthesis_memory)
 
-# Config (app_config.py):
-SYNTHESIS_ENABLED = True
+# Config (app_config.py). The synthesis FILTER has no master switch (no SYNTHESIS_ENABLED constant) —
+# whether anything runs is decided by the generators, all OFF in the shipped config (paused 2026-07-15;
+# Settings toggle): synthesis_pooled / synthesis_generator / synthesis_retrieval / graph_walk `enabled: false`.
 SYNTHESIS_MIN_TOKEN_LENGTH = 10
 SYNTHESIS_MAX_REPETITION_RATIO = 0.5
 SYNTHESIS_MIN_DOMAINS = 2
@@ -3037,7 +3084,7 @@ SYNTHESIS_NOVELTY_ADJACENT_THRESHOLD = 0.70  # Label threshold
 SYNTHESIS_COOCCURRENCE_KNOWN_THRESHOLD = 0.85  # LEGACY bigram gate — retained but UNUSED (inverted; see SYNTHESIS_VALIDATION)
 SYNTHESIS_CONCEPT_COSINE_KNOWN_THRESHOLD = 0.45  # ACTIVE stage-3 known gate: direct cos(A,B) > 0.45
 SYNTHESIS_MEMORY_SIMILARITY_THRESHOLD = 0.85
-SYNTHESIS_COHERENCE_MODEL = "sonnet-4.5"  # code default; config.yaml overrides to "claude-opus-4.8"
+SYNTHESIS_COHERENCE_MODEL = "claude-opus-4.8"  # shipped config.yaml synthesis.coherence_model (see the constant for the code default)
 SYNTHESIS_COHERENCE_MIN_LEVEL = "MODERATE"
 SYNTHESIS_WEIGHT_COHERENCE = 0.35      # 2026-06-30 recalibration (was 0.30)
 SYNTHESIS_WEIGHT_NOVELTY = 0.60        # novelty-ranked accept (was 0.40)
@@ -3054,13 +3101,12 @@ SYNTHESIS_DEFAULT_BATCH_SIZE = 100
 SYNTHESIS_LOG_ALL_REJECTIONS = True
 
 # Audit queue [NEW 2026-04-01]:
-SYNTHESIS_AUDIT_ENABLED = True
+SYNTHESIS_AUDIT_ENABLED = True             # shipped synthesis_audit.enabled: true; forced False in DAEMON_MODE=user (the shipped mode)
 SYNTHESIS_AUDIT_FP_HALT_THRESHOLD = 0.50   # Auto-halt synthesis if FP rate exceeds this
 SYNTHESIS_AUDIT_MIN_GRADED = 10            # Minimum graded results before auto-halt activates
 
 # YAML (config.yaml):
 # synthesis:
-#   enabled: true
 #   batch_size: 100
 #   distance_min: 0.20
 #   distance_max: 0.90
@@ -3101,7 +3147,7 @@ class SynthesisGenerator:
     def get_sampling_stats() -> dict:                 # {facts_count, wiki_count, graph_nodes, graph_edges}
 
 # Integration:
-# - Shutdown: step 6.8 (run_synthesis_dreaming) — when SYNTHESIS_POOLED_ENABLED,
+# - Shutdown: standalone step run_synthesis_dreaming() (driven by main.py, own SYNTHESIS_DREAM_TIMEOUT_S) — when SYNTHESIS_POOLED_ENABLED,
 #   PooledConceptSynthesisGenerator is the SOLE generator; the retired Tier 0/1/2
 #   personal->wiki path (retrieval, graph walk, cross-store) only runs if pooled is off
 # - Pipeline: generate_candidates() → SynthesisFilter.process_batch() → SynthesisMemory
@@ -3121,9 +3167,8 @@ SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20
 #   llm_concurrency: 5
 #   min_graph_nodes: 20
 
-# Tests: 18 unit tests in tests/unit/test_synthesis_generator.py
-# Calibration: 6 tests in tests/test_synthesis_calibration.py
-# Fixtures: tests/fixtures/calibration_candidates.json (72 labeled candidates, 7 tiers)
+# Tests: tests/unit/test_synthesis_generator.py; calibration: tests/test_synthesis_calibration.py
+# Fixtures: tests/fixtures/calibration_candidates.json
 ```
 
 ---
@@ -3169,16 +3214,19 @@ GRAPH_WALK_MIN_DOMAINS = 2             # Min distinct domain categories per walk
 ## Visual Memory **[NEW 2026-05]**
 
 ```python
-# knowledge/clip_manager.py — OpenCLIP ViT-B/32 singleton, lazy-loaded
+# knowledge/clip_manager.py — OpenCLIP (VISUAL_MEMORY_CLIP_MODEL + _PRETRAINED) singleton via get_clip_manager(), lazy-loaded
 class CLIPManager:
     """Singleton CLIP model for image/text embedding (512-dim vectors).
     Lazy-loaded on first use — no GPU/model overhead until needed."""
 
-    def encode_image(image_path: str) -> np.ndarray:
-        """Load image, preprocess, return 512-dim L2-normalized CLIP embedding."""
+    def encode_image(self, image) -> Optional[np.ndarray]:
+        """Preprocess an already-loaded image object, return 512-dim L2-normalized CLIP embedding (None on failure)."""
 
-    def encode_text(text: str) -> np.ndarray:
-        """Tokenize text, return 512-dim L2-normalized CLIP embedding."""
+    def encode_image_from_path(self, path: str) -> Optional[np.ndarray]:
+        """Load an image file, then encode_image()."""
+
+    def encode_text(self, text: str) -> Optional[np.ndarray]:
+        """Tokenize text, return 512-dim L2-normalized CLIP embedding (None on failure)."""
 
 
 # knowledge/visual_memory_store.py — Dual storage: ChromaDB + FAISS FlatIP
@@ -3186,13 +3234,14 @@ class VisualMemoryStore:
     """Dual-index storage: ChromaDB 'visual_memories' collection (text metadata, captions)
     + FAISS FlatIP index (CLIP 512-dim vectors). SHA-256 content dedup on ingestion."""
 
-    def add(image_path, clip_embedding, caption, metadata) -> str:
-        """Store image: FAISS vector + ChromaDB doc. Returns doc_id. Dedup by SHA-256."""
+    def add_image(self, image_path, clip_embedding, caption, source="upload", entity_ids=None,
+                  media_type="image/png", image_hash="") -> Optional[str]:
+        """Store image: FAISS vector + ChromaDB doc. Returns doc_id. Dedup by SHA-256 (has_hash())."""
 
-    def search_by_clip(query_embedding, k=3) -> List[Dict]:
+    def search_by_clip(self, query_embedding, k=5) -> List[Dict]:
         """FAISS inner-product search on CLIP vectors → top K image results."""
 
-    def search_by_text(query, k=3) -> List[Dict]:
+    def search_by_text(self, query, k=5) -> List[Dict]:
         """ChromaDB semantic search on captions/metadata."""
 
 
@@ -3200,7 +3249,7 @@ class VisualMemoryStore:
 class VisualMemoryPipeline:
     """Ingestion: CLIP embed → vision LLM caption → entity tag → store."""
 
-    async def ingest_image(image_path, user_context=None) -> str:
+    async def ingest_image(self, image_path, source="upload", context_text="", media_type="") -> Optional[str]:
         """Full pipeline: CLIP encode → vision LLM caption → entity extraction → dual store."""
 
 
@@ -3210,7 +3259,7 @@ class VisualRetriever:
     Entity hard-filtering via target_entities parameter.
     Returns results in note_images format for prompt builder."""
 
-    async def retrieve(query, max_images=3, target_entities=None) -> List[Dict]:
+    async def retrieve_visual_memories(self, query, k=5, max_images=3, target_entities=None) -> Dict[str, Any]:
         """Hybrid search: CLIP text embedding vs stored image embeddings + ChromaDB caption search.
         Merges and deduplicates results. When target_entities provided, hard-filters
         to images tagged with at least one target entity (falls back to all on empty).
@@ -3229,22 +3278,22 @@ class VisualRetriever:
 # Integration:
 # - Collection: 'visual_memories' in ChromaDB (14 total collections)
 # - Prompt section: [VISUAL MEMORIES] (after [USER UPLOADED ITEMS])
-# - Agentic tool: recall_image — CLIP-based image recall in ReAct loop
+# - Agentic tool: recall_image exists in DISPATCH_TABLE but is NOT offered in the loop (excluded to save API credits); visual memories arrive via context
 # - Backfill: scripts/backfill_visual_memory.py — re-index existing images
 
 # Config (app_config.py):
 VISUAL_MEMORY_ENABLED = True             # live config.yaml enabled: true (app_config default False)
-VISUAL_MEMORY_CLIP_MODEL = "ViT-B-32"   # OpenCLIP model variant
+VISUAL_MEMORY_CLIP_MODEL = "ViT-B-32-quickgelu"   # OpenCLIP model variant (+ VISUAL_MEMORY_CLIP_PRETRAINED)
 VISUAL_MEMORY_MAX_IMAGES = 3            # Max images per query (max_images_prompt)
 VISUAL_MEMORY_CAPTION_MODEL = "gpt-4o-mini"  # Vision LLM for captions
 VISUAL_MEMORY_INDEX_PATH = "data/clip_index.faiss"   # CLIP FAISS index
 VISUAL_MEMORY_META_PATH = "data/clip_metadata.json"  # FAISS-side metadata
 # SHA-256 content dedup is pipeline-level (no config flag)
 
-# Tests: 60 tests across 3 files
-# tests/unit/test_clip_manager.py — CLIPManager singleton, encode_image, encode_text
-# tests/unit/test_visual_memory_store.py — dual storage, dedup, FAISS/ChromaDB search
-# tests/unit/test_visual_retrieval.py — hybrid retrieval, prompt format, agentic tool
+# Tests (tests/unit/):
+# test_clip_manager.py — CLIPManager singleton, encode_image, encode_text
+# test_visual_memory_store.py — dual storage, dedup, FAISS/ChromaDB search
+# test_visual_memory_pipeline.py, test_visual_memory_gating.py, test_visual_retrieval_off_loop.py — ingestion, entity gate, retrieval
 ```
 
 ---
@@ -3258,22 +3307,24 @@ class GoogleAuthManager:
     Handles installed-app OAuth2 flow, token persistence, automatic refresh,
     and scope-upgrade detection."""
 
-    def __init__(client_id, client_secret, token_path="data/google_token.json", scopes=None): ...
-    def is_authenticated -> bool:
-        """True if valid token exists on disk (auto-refreshes expired tokens)."""
-    def get_credentials() -> Optional[google.oauth2.credentials.Credentials]:
+    def __init__(self, client_id="", client_secret="", token_path="data/google_token.json", scopes=None): ...
+    @property is_configured -> bool:      # client_id and client_secret set
+    @property is_authenticated -> bool:
+        """True if a valid (or refreshable) token exists."""
+    def get_credentials(self):
         """Return valid credentials or None (refreshes if expired)."""
-    def has_scope(scope: str) -> bool:
+    def has_scope(self, scope_url: str) -> bool:
         """Check if current token has a specific OAuth scope."""
-    def authorize() -> Credentials:
-        """Run browser-based OAuth consent flow. Persists token to disk."""
+    def needs_scope_upgrade(self) -> bool: ...
+    async def authenticate(self, port: int = 0) -> bool:
+        """Run browser-based OAuth consent flow (local redirect). Persists token to disk; True on success."""
 
 def get_google_auth() -> GoogleAuthManager | None:
     """Lazy singleton from config. Returns None if client_id/secret unconfigured."""
 
 # Scopes: gmail.send, gmail.readonly, calendar.readonly, calendar.events,
 #         contacts.readonly, contacts.other.readonly
-# One-time auth: python -m core.actions.google_auth
+# One-time auth: scripts/reauth_google.py (re-runs consent + backs up the old token)
 
 
 # core/actions/google_calendar.py — Read-only calendar fetch
@@ -3301,7 +3352,7 @@ async def send_email(proposal: ActionProposal) -> ActionResult:
     """Gmail API first → SMTP fallback only if Gmail unconfigured.
     No SMTP fallback after Gmail API attempt (prevents duplicate sends).
     Resolves recipient names to emails via _resolve_recipient() if no '@'."""
-async def _resolve_recipient(name: str) -> tuple[Optional[str], str]:
+async def _resolve_recipient(name: str) -> tuple:
     """Resolve name → email via google_contacts.resolve_contact(). Single match auto-resolves."""
 async def _try_gmail_send(proposal, recipient, message) -> ActionResult | None:
     """Returns ActionResult on attempt, None if Gmail not configured."""
@@ -3339,16 +3390,15 @@ async def search_gmail_contacts(query, max_results=10) -> List[Dict]:
 # Gatherer (gatherer_knowledge.py):
 # get_google_calendar_events(max_events=10) — async wrapper around fetch_upcoming_events()
 
-# Eval sections (section_registry.py): 31 entries total (was 29)
-# upcoming_schedule (order 29), google_calendar (order 30)
+# Eval sections: eval/section_registry.py carries a row per prompt section (upcoming_schedule, google_calendar, ...)
 
 # Config (app_config.py):
 INTERNET_ACTIONS_GOOGLE_CLIENT_ID      # env: GOOGLE_CLIENT_ID
 INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET   # env: GOOGLE_CLIENT_SECRET
 INTERNET_ACTIONS_GOOGLE_TOKEN_PATH = "data/google_token.json"
-GOOGLE_CALENDAR_ENABLED = False         # env: GOOGLE_CALENDAR_ENABLED
+GOOGLE_CALENDAR_ENABLED = True          # env: GOOGLE_CALENDAR_ENABLED; shipped internet_actions.google_calendar_enabled: true
 GOOGLE_CALENDAR_MAX_EVENTS = 10
-GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7
+GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 14     # code default 7; shipped internet_actions.google_calendar_lookahead_days: 14
 GOOGLE_CONTACTS_ENABLED = True          # env: GOOGLE_CONTACTS_ENABLED
 GOOGLE_OTHER_CONTACTS_ENABLED = True    # env: GOOGLE_OTHER_CONTACTS_ENABLED
 GOOGLE_GMAIL_SEARCH_ENABLED = True      # env: GOOGLE_GMAIL_SEARCH_ENABLED
@@ -3383,7 +3433,7 @@ pytest -m "not benchmark"
 ```
 
 ```python
-# tests/benchmarks/ — Two suites: synth (93 seeds + 96 cases) + real (64 cases from production ChromaDB)
+# tests/benchmarks/ — Two suites: synth (seeded fixtures) + real (cases sampled from production ChromaDB)
 # conftest.py: session-scoped ChromaDB + CorpusManager + MockTimeManager fixtures;
 #   real_benchmark_config, real_seeded_stores, real_retrieval_env for real-data suite
 # retrieval_benchmark.py: BenchmarkResult + RetrievalBenchmark harness (recall@K, MRR)
@@ -3456,29 +3506,29 @@ python -m pytest tests/unit/ -q
 venv/bin/pytest tests/unit/ -q
 
 # Check coverage
-python -m pytest --cov=. --cov-report=term --ignore=tests/memory_test.py --ignore=tests/test_gated_prompt.py
+python -m pytest --cov=. --cov-report=term
 
 # Run single test file
 python -m pytest tests/unit/test_memory_coordinator_methods.py -v
 
 # Check corpus size
-wc -l data/corpus.json
+wc -c data/corpus_v4.json
 
-# View recent conversations
-tail -n 100 data/corpus.json | jq '.conversations[-5:]'
+# View recent conversations (shape of the corpus file: see memory/corpus_manager.py)
+python -c "import json; d=json.load(open('data/corpus_v4.json')); print(type(d), len(d))"
 
 # Check ChromaDB collections
-python -c "import chromadb; client = chromadb.PersistentClient('./chroma_db'); print([c.name for c in client.list_collections()])"
+python -c "import chromadb; client = chromadb.PersistentClient('./data/chroma_db_v4'); print([c.name for c in client.list_collections()])"
 
 # Test prompt builder
-python -c "from core.prompt.builder import UnifiedPromptBuilder; pb = UnifiedPromptBuilder(...); print(pb.build_prompt('test query', []))"
+# (UnifiedPromptBuilder needs wired dependencies — use scripts/profile_memories_task.py or the eval harness instead of a bare constructor)
 ```
 
 ---
 
 **End of Quick Reference**
 
-**Last verified**: 2026-05-28
+**Last updated**: 2026-10-27
 
 This document provides instant lookup for critical functions and patterns.
 
@@ -3496,20 +3546,23 @@ class ActionSpec:
     executor_ref: str          # "module:function" — resolved lazily at call time
     required: Tuple[str, ...]
     optional: Tuple[str, ...] = ()
+    batch_param: Optional[str] = None       # optional list of required-field dicts (e.g. calendar events[])
     intent_patterns: Tuple[str, ...] = ()   # explicit-action (forced) detection
     backfill: Optional[Callable[[str], Dict[str, str]]] = None
     health: str = ""           # tool-health line
     field_hint: str = ""       # required-field directive for forced rounds
     enabled_flag: Optional[str] = None       # extra app_config gate
     summary: Optional[Callable[[dict], str]] = None
+    accepts_check: Optional[Callable[[dict], bool]] = None   # extra shape rule beyond required fields
     def resolve_executor(self) -> Callable: ...   # lazy import of executor_ref
 
 is_action_enabled(spec) -> bool
 enabled_action_types() -> Tuple[ActionType, ...]
 detect_action_intent(query) -> Optional[ActionType]   # explicit write-action intent
 backfill_params(action_type, query) -> Dict[str, str] # deterministic field fill
-# Specs: github_create_issue, github_comment_pr, send_email, send_telegram,
-#        send_discord, calendar_create_event
+# Specs: github_create_issue, github_comment_pr, send_email, send_telegram, send_discord,
+#        calendar_create_event, calendar_update_event, calendar_delete_event
+# build_forced_tool_schema(action_type) -> one-value-enum tool schema for a forced round
 
 # core/actions/github_write.py — GitHub writes via gh CLI (human-gated)
 WRITE_ALLOWLIST = frozenset({("issue", "create"), ("pr", "comment")})
@@ -3519,21 +3572,21 @@ async def comment_github_pr(proposal) -> ActionResult     # gh pr comment <n> --
 
 # core/agentic/tools.py — DISPATCH_TABLE: the ONE decision->handler routing table.
 # Both ToolExecutor.dispatch_single AND controller._dispatch_single_inner iterate it
-# (after reroute_url_search()), so the two routers can never drift. 20 agentic tools
-# (21 DISPATCH_TABLE rows).
+# (after reroute_url_search()), so the two routers can never drift.
+# (23 DISPATCH_TABLE rows; 22 offered in the loop, `recall_image` excluded).
 
 # core/actions/executors.py — ActionExecutorRegistry.execute() routes via ACTION_SPECS:
 spec = ACTION_SPECS.get(proposal.action_type)
 return await spec.resolve_executor()(proposal)
 
 # models/model_manager.py
-async def generate_once(prompt, model_name=None, system_prompt=..., max_tokens=256,
+async def generate_once(self, prompt, model_name=None, system_prompt="You are a concise and helpful assistant.", max_tokens=256,
                         temperature=None, top_p=None, disable_reasoning=False)
 # generate_async(..., disable_reasoning=True) / generate_once(..., disable_reasoning=True):
 #   suppress native reasoning separation to force the answer into visible content
 #   (used internally by reasoning-only recovery; not a normal-call knob). [NEW 2026-06]
 #   native reasoning is also suppressed automatically w/ tools.
-# is_tool_capable() handles aliases + resolved names; adds "deepseek-v4" pattern.
+# Tool capability: MODEL_CAPABILITIES / the supports_* classifiers in models/model_manager.py (see the capability-registry notes above).
 # _classify_api_error [2026-08-21]: [CREDITS EXHAUSTED] classification added for
 #   HTTP 402 / "requires more credits" (OpenRouter payment errors).
 # Streaming API-error fail-fast [2026-08-21]: gui/handlers checks the
@@ -3541,12 +3594,12 @@ async def generate_once(prompt, model_name=None, system_prompt=..., max_tokens=2
 #   an error-sentinel head aborts the stream display and shows the friendly
 #   module-level _API_ERROR_DISPLAY template instead (raw OpenRouter HTTP-402
 #   JSON was streamed verbatim to the user 3x on 08-18); same guard on the
-#   agentic path. Tests: tests/unit/test_api_error_fail_fast.py (11)
+#   agentic path. Tests: tests/unit/test_api_error_fail_fast.py
 
 # memory/memory_consolidator.py — single extractive path (mid-session + shutdown)
 EXTRACTIVE_SUMMARY_PROMPT                  # one copy of the extractive prompt
 class ConsolidatedSummary(BaseModel): ...  # content/timestamp/tags/importance_score
-async def consolidate_memories(memories) -> Optional[ConsolidatedSummary]
+async def consolidate_memories(self, memories) -> Optional[ConsolidatedSummary]
 # <=2 slices pass through extractively (no LLM); empty -> None. shutdown_processor delegates here.
 
 # memory/claim_tracker.py — cascade reads metadata via store.get_by_id() (real method),

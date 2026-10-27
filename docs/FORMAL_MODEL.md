@@ -1,6 +1,6 @@
 # Formal Model: Daemon RAG Agent
 
-**Last verified against codebase**: 2026-05-27
+**Last updated**: 2026-10-27
 
 ## 1. Primitive Sets
 
@@ -109,7 +109,7 @@ Example: "what about my brother" -> "what about my brother Sam Mom Biscuit"
 candidates : X x C -> P(D)
 ```
 
-22 parallel retrieval tasks via `asyncio.gather()` (30s timeout). Codebase changes are fetched separately before the main gather.
+The builder starts its retrieval tasks (the `tasks` dict in `UnifiedPromptBuilder.build_prompt`; roughly two dozen, several conditional on intent, toggles and tone) and awaits them with `asyncio.wait()` (30s timeout): completed results are kept, tasks still pending at the timeout are cancelled and their sections stay empty. Codebase changes are fetched separately before the main retrieval.
 - Conversations (recent by time + semantic by expanded query)
 - Facts (user profile: hybrid 2/3 semantic + 1/3 recent)
 - Summaries (recent + semantic, separate)
@@ -121,7 +121,8 @@ candidates : X x C -> P(D)
 - Open threads (priority-ranked)
 - Proactive cross-domain insights
 - Web search (Tavily API, if triggered and available)
-- Google Calendar events (OAuth2 Calendar API, 5-min cache, read-only)
+- Google Calendar events (OAuth2 Calendar API, 5-min cache, read-only), relevant emails, upcoming schedule, the user's own stated evidence (`user_stated`), and Daemon self-notes
+- Not tasks but gathered into the same context: the user's stated figures (claim ledger) and dated day counts (`day_counts`, added 2026-10-27)
 
 **External data sources**: Google Calendar events are fetched via OAuth2 (`core/actions/google_calendar.py`) using `calendar.readonly` scope, cached for 5 minutes, and injected as the `[GOOGLE CALENDAR]` prompt section. Calendar event creation is a write action routed through `propose_action` (human-in-the-loop confirmation). Email sending uses Gmail API (`gmail.send` scope) as primary transport with SMTP fallback (`core/actions/email.py`); recipient names auto-resolved via Google Contacts (`core/actions/google_contacts.py`) with Gmail header search fallback (`core/actions/gmail_search.py`). OAuth2 token management (persistence, refresh, scope-upgrade detection) handled by `core/actions/google_auth.py` with 6 scopes: `gmail.send`, `gmail.readonly`, `calendar.readonly`, `calendar.events`, `contacts.readonly`, `contacts.other.readonly`.
 
@@ -186,6 +187,7 @@ structure = 0.15 * density_alignment
 | anchor_bonus (non-deictic) | 0.1 * anchor_overlap | Non-deictic with anchor overlap |
 | meta_bonus | 0.15 / 0.12 / 0.10 | is_meta_conversational AND memory type in {EPISODIC / META / SUMMARY} |
 | graph_bonus | min(0.05 * entity_matches, 0.15) | 0.05 per graph-connected entity found in memory content, capped at GRAPH_SCORING_BOOST_CAP |
+| timeline_bonus | +0.15 | Timeline-mode intent (progression queries: "how long", "over time"; `_timeline_mode` from the intent profile) AND source in {summaries, reflections} |
 
 **Penalties** p_k:
 
@@ -195,6 +197,7 @@ structure = 0.15 * density_alignment
 | analogy_penalty | -0.10 | numeric_op_density > 0.08 AND analogy markers AND "analogy" not in query |
 | size_penalty | -0.25 * (size_bytes / 10000), capped at -1.0 | Document > 10KB AND keyword_score < 0.30 |
 | staleness_penalty | -min(staleness_ratio * STALENESS_WEIGHT, 0.4) | staleness_ratio > 0 (summaries/reflections with outdated claims). 2x multiplier at ratio >= 0.8; reflections at 60% weight |
+| health_framing_penalty | -min(0.25 * (1 + (age - ttl)/ttl), 0.4) (config `health_framing_decay.weight`/`max_penalty`) | Free-text illness/recovery narrative older than the health-transient TTL (`relation_classifier.health_transient_text_ttl_hours`), only in `conversations`/`obsidian_notes`/`reflections`/`summaries` |
 | deictic_drift | final_score *= 0.85 | Post-calculation: deictic AND continuity < `DEICTIC_CONTINUITY_MIN` (live config.yaml 0.25; code default 0.12) AND anchor_bonus < 0.04 |
 
 **Temporal-aware recency** (when intent = TEMPORAL_RECALL with anchor window alpha hours):
@@ -203,20 +206,24 @@ Two-regime decay based on anchor size:
 
 ```
 Small anchor (alpha <= 48h, e.g. "today"/"yesterday"):
+  grace = 1.5 * alpha
   recency(d) =
-    { 1.0 - (age/alpha) * 0.15                          if age <= alpha   (flat plateau, ~1.0 to 0.85)
-    { 0.85 / (1 + lambda*(age - alpha))                  if age > alpha    (steep dropoff outside window)
+    { 1.0 - (age/alpha) * 0.15                          if age <= alpha   (flat plateau, 1.0 to 0.85)
+    { 0.85 - 0.15 * (age - alpha)/(grace - alpha)        if alpha < age <= grace   (gentle taper, 0.85 to 0.70)
+    { 0.70 / (1 + lambda*(age - grace))                  if age > grace    (steep dropoff outside the grace zone)
 
 Large anchor (alpha > 48h, e.g. "last week"/"last month"):
   floor = max(0.60, 1.0 - alpha/500)
   recency(d) =
-    { floor + (1.0 - floor) * (age/alpha)                if age <= alpha   (ramp up toward anchor)
+    { floor + (1.0 - floor) * sqrt(age/alpha)            if age <= alpha   (sqrt ramp toward the anchor)
     { 1.0 / (1 + lambda*(age - alpha))                   if age > alpha    (standard decay)
 ```
 
+(`age` in hours, `lambda = RECENCY_DECAY_RATE`, `memory.recency_decay_rate` = 0.05. For a large anchor, corpus-sourced candidates have their relevance capped at 0.5 so the flat corpus relevance cannot drown out semantic hits.)
+
 The small-anchor regime keeps all memories within the window at near-equal recency (~0.85–1.0), letting relevance/truth/importance differentiate. The large-anchor regime peaks near the anchor and penalizes too-recent memories since the user asked about a specific past period.
 
-Default recency (no temporal anchor): `recency(d) = 1.0 / (1.0 + 0.05 * age_hours)`
+Default recency (no temporal anchor): active-day decay, `recency(d) = 1.0 / (1.0 + 0.05 * active_days)` via `time_manager.calculate_active_day_decay`, where `active_days` counts days with at least one message strictly after the memory's creation day (so quiet gaps do not age memories). Only when no time manager is available does the scorer fall back to the hourly form `1.0 / (1.0 + 0.05 * age_hours)`.
 
 `d.timestamp` resolves as: top-level `timestamp` → `metadata['timestamp']` → now (2026-07-08 fix — the hybrid/semantic retrieval path set no top-level timestamp, so every memory it returned got age 0 and `recency = 1.0`, i.e. the recency term was dead for the main retrieval path).
 
@@ -274,14 +281,19 @@ beta : X x D* x iota x E -> P
 
 where P is the **prompt space** (system prompt + context + query, token-budgeted). The **system prompt** is composed from two text files: an editable personality file (`config/prompts/default_personality.txt` or user's `custom_personality.txt`) concatenated with immutable operating principles (`config/prompts/operating_principles.txt`), with placeholder substitution for `{USER_NAME}`, `{USER_PRONOUNS}`, etc. This replaces the former JSON-based `PersonalityManager`. Since 2026-08-02 the per-section guidance blocks ([USER'S PERSONAL NOTES]/[DAEMON DOCUMENTATION]/[TEMPORAL GROUNDING], ~1.2K tokens) live in `core/prompt/section_instructions.py` and are appended to the system-prompt tail (post-cache-breakpoint) only when the corresponding context section is present.
 
-The token budget is **model-aware**: computed as `min(context_window * 0.12, ceiling)` clamped to `[floor=8000, ceiling=16000]` (config.yaml `token_budget`), with separate caps for local vs API models. **2026-07-25:** for API models the fraction can only LOWER the budget below `PROMPT_TOKEN_BUDGET_DEFAULT=10000` (it previously capped only at the 16K ceiling and, with a hardcoded 128K context assumption, silently ran the experiment-rejected ~15K budget); context windows resolve via the `MODEL_CONTEXT_LIMITS` registry in `model_manager`. All ~20 context sections are now governed by the budget via an expanded PRIORITY_ORDER. Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. Post-budget **floor guarantees** ensure critical sections survive trimming: recent conversations (min 5), summaries (min 10), reflections (min 10). The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
+The token budget is **model-aware**: computed as `min(context_window * 0.12, ceiling)` clamped to `[floor=8000, ceiling=16000]` (config.yaml `token_budget`), with separate caps for local vs API models. **2026-07-25:** for API models the fraction can only LOWER the budget below `PROMPT_TOKEN_BUDGET_DEFAULT=10000` (it previously capped only at the 16K ceiling and, with a hardcoded 128K context assumption, silently ran the experiment-rejected ~15K budget); context windows resolve via the `MODEL_CONTEXT_LIMITS` registry in `model_manager`. Every rendered context section is governed by the budget via `PRIORITY_ORDER` in `core/prompt/token_manager.py` (a parity test fails when the formatter renders a section the table does not meter). Intent iota drives token budget allocation and retrieval count overrides. Escalation state E drives system prompt instructions and token budget caps. **Floors** are survival minimums, not targets: recent conversations (min 5), summaries (`prompt_min_summaries_floor` = 2), reflections (`prompt_min_reflections_floor` = 1). The floors run before the budget, so the budget manager reserves their tokens (`FLOOR_PROTECTED_SECTIONS`, bounded by `memory.prompt_floor_reserve_max_share` = 0.25) and its trim pass never cuts below them. The agentic controller enforces its own budget on accumulated search context (`context_budget_tokens` default 8000) and trims low-value sections from the final prompt if total exceeds ceiling.
 
-Assembly produces an ordered sequence of 30 conditional sections:
+Assembly produces an ordered sequence of conditional sections (render order of `PromptFormatter._assemble_prompt`; the section list is authoritative in `core/prompt/formatter.py`):
 
 ```
 prompt = [
     [RECENT CONVERSATION]                    // always (recent turns with timestamps)
+    [EARLIER TODAY]                          // temporal_recall only (recall-timeline lines a truncated window dropped)
+    [THE USER'S OWN STATEMENTS]              // factual-recall questions about the user (user-authored evidence)
+    [YOUR STATED FIGURES]                    // if available (the user's own figures with date + modality)
+    [YOUR DAY COUNTS]                        // if available (dated day counts already projected to today)
     [RELEVANT MEMORIES]                      // always (semantic hits with timestamps)
+    [NOT SHOWN FOR SPACE]                    // one line naming sections the budget emptied
     [RECENT SUMMARIES]                       // if available (compressed recent history)
     [SEMANTIC SUMMARIES]                     // if available (relevant compressed history)
     [RECENT REFLECTIONS]                     // if available (recent meta insights)
@@ -290,7 +302,7 @@ prompt = [
     [WEB SEARCH RESULTS]                     // if triggered (Tavily results with sources)
     [RELEVANT INFORMATION]                   // if available (semantic chunks)
     [DREAMS]                                 // if enabled
-    [USER'S PERSONAL NOTES]                  // if available (Obsidian vault, gated at 0.45)
+    [USER'S PERSONAL NOTES]                  // if available (Obsidian vault, gated at obsidian.gate_threshold = 0.60)
     [USER UPLOADED ITEMS]                    // if available (files/images)
     [VISUAL MEMORIES]                        // if available (CLIP-matched image metadata)
     [DAEMON DOCUMENTATION]                   // if available (reference docs from docs/)
@@ -301,6 +313,7 @@ prompt = [
     [UNRESOLVED THREADS]                     // if available (open commitments/deadlines)
     [UPCOMING SCHEDULE]                      // if available (schedule facts, intent-gated)
     [GOOGLE CALENDAR]                        // if available (real-time Google Calendar events, 5-min cache)
+    [RELEVANT EMAILS]                        // if available (Gmail/Outlook, intent-gated)
     [DAEMON SELF-NOTES]                      // if available (working notes from prior sessions)
     [PROACTIVE INSIGHTS]                     // if available (cross-domain connections)
     [USER PROFILE]                           // if available (categorized facts + source excerpts + anti-confabulation instruction)
@@ -309,13 +322,14 @@ prompt = [
     [TIME CONTEXT]                           // always (current datetime)
     [TEMPORAL GROUNDING]                     // if available (narrative life context)
     [SHORT-TERM CONTEXT SUMMARY]             // if available (STM: topic, intent, tone, threads)
+    (disambiguation notes)                   // if available (cross-session phrase ambiguity)
     [CURRENT USER QUERY]                     // always (last exchange only if same-session + current query)
 ]
 ```
 
 Sections near the end receive higher attention weight in transformer models. The ordering places high-signal, low-token sections (user profile, time, STM, query) in the high-attention zone.
 
-Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 10,000 tokens (API) / 12,000 (local) with two-tier compression: heavily oversized items (≥3x over token limit) get LLM summary via `_llm_compress_oversized()` (async parallel batch, ~0.3-0.5s), while mildly oversized items use middle-out character slicing (preserves start and end, compresses middle).
+Token budget allocation is governed by intent — e.g., CASUAL_SOCIAL reduces max memories, EMOTIONAL_SUPPORT increases continuity weight. Token budget default: 10,000 tokens (API) / 12,000 (local) with middle-out character slicing for oversized items (preserves start and end, compresses middle). An optional LLM-summary tier for heavily oversized items (`_llm_compress_oversized()`) exists but is OFF by default (`llm_compression.enabled: false`). The shipped budget is `PROMPT_TOKEN_BUDGET_DEFAULT` = 10000, with API-model budgets capped at it.
 
 **Code**: `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration)
 
@@ -338,7 +352,9 @@ AGENT(q, s):
     d*   <- rho_iota(x, s.C, s.G)                 // memory retrieval (remember)
                                                   // NOTE: web search runs as a PARALLEL
                                                   // retrieval task here, not post-generation
-    pi_plan <- plan(q, x) if should_plan(x)      // response planning (parallel with d*)
+    // NOTE (2026-09-02): the planner runs AFTER the gather, from a bounded context digest
+    // (ResponsePlanner.build_context_digest) of what the prompt builder actually gathered
+    pi_plan <- plan(q, x, digest(d*)) if should_plan(x)  // response planning (after d*)
                                                   // should_plan() bypasses: CASUAL_SOCIAL intent,
                                                   // crisis/elevated/concern tone (2026-08-05: CONCERN
                                                   // selects LIGHT SUPPORT — a plan contradicts it),
@@ -349,7 +365,8 @@ AGENT(q, s):
                                                   // with key_points, tone, avoid, strategy fields
     a_0  <- LLM(p)                                // first generation (act)
 
-    // UNCERTAINTY FALLBACK (post-generation, optional)
+    // UNCERTAINTY FALLBACK (post-generation, optional; OFF by default since 2026-08-28 —
+    // `uncertainty_fallback.enabled: false`: 0 real-turn fires, 0 accepted retries; code and tests remain)
     // Dual-layer detection: keyword regex then semantic embedding
     //   Layer 0: Length guard — strip hedge prefixes, skip if substantive > 400 chars
     //   Layer 1: ~18 compiled regex patterns (confidence 0.75–0.90), min confidence 0.70
@@ -361,11 +378,10 @@ AGENT(q, s):
         agentic_search_trigger := true               // force agentic retry
 
     // POST-ANSWER REVIEW GATE (optional)
-    // If response planning produced a plan, review the answer against it
+    // LOG-ONLY: the verdict is recorded to turn telemetry; it never retries or alters the answer
+    // (changed 2026-08-28 after telemetry showed no accepted retries)
     if RESPONSE_REVIEW_ENABLED and pi_plan exists:
-        review <- review_answer(a_0, pi_plan)        // lightweight LLM check (~300 tokens)
-        if not review.passes and review.confidence >= 0.90:
-            agentic_search_trigger := true            // force agentic retry with review feedback
+        review <- review_answer(a_0, pi_plan)        // lightweight LLM check, verdict logged only
 
     // AGENTIC SEARCH LOOP (ReAct pattern, optional)
     // Triggered by LLM-first decision OR uncertainty fallback
@@ -376,7 +392,7 @@ AGENT(q, s):
             thought_i <- LLM(p, observations, inventory)
             tool_i    <- extract_tool_call(thought_i)
             if tool_i = empty: break
-            obs_i     <- execute(tool_i)              // Tavily, Wolfram, E2B, memory_search, expand_memory, file_read/grep/list, git_stats, github, propose_action
+            obs_i     <- execute(tool_i)              // any DISPATCH_TABLE tool: web, wolfram, sandbox, memory search/expand, files, git_stats, github, fetch_url, API searches, pattern_scan, email_search, propose_action, ...
             observations <- observations + {obs_i}
         r <- LLM(p, observations)                     // final synthesis
     else:
@@ -387,7 +403,7 @@ AGENT(q, s):
     return (r, s')
 ```
 
-**Key distinction**: Web search runs as one of the 22 parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
+**Key distinction**: Web search runs as one of the parallel retrieval tasks during rho (Section 4.1). The agentic search loop is a separate, heavier mechanism that fires post-generation when the LLM determines it needs additional real-time information. The agentic loop receives a **context inventory** summarizing what RAG already gathered to prevent redundant searches.
 
 ### 6.1 Memory Expansion (expand_memory)
 
@@ -421,7 +437,7 @@ Session-gated: `expand_count <= EXPAND_MAX_PER_SESSION` (default 3). Cached per 
 
 The agentic search controller is decomposed into three classes:
 - `AgenticSearchController` (`core/agentic/controller.py`) — main loop orchestration, prompt building, model interaction
-- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for all 20 tool types (web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, recall image, generate document, propose_action, lookup_contact, calendar create/update/delete, signal done)
+- `ToolExecutor` (`core/agentic/tools.py`) — dispatch routing + execution for every row of `DISPATCH_TABLE` (23 rows; 22 offered in the loop, `recall_image` excluded to save API credits, plus `done_searching`): web, Wolfram, sandbox, memory search/expand, file read/grep/list, git stats, GitHub API, full document, fetch_url, StackExchange/arXiv/PubMed/HackerNews, `pattern_scan`, generate document, create daemon note, propose_action (incl. calendar create/update/delete), lookup_contact, `email_search`
 - `AgenticFormatter` (`core/agentic/formatters.py`) — pure stateless formatting for all result types (conversations, memories, web results, etc.)
 
 Protocol dispatch uses `detect_protocol()` (`core/agentic/protocols.py`) to choose between `NativeToolsHandler` (OpenAI/Anthropic function calling) and `XMLMarkerHandler` (local models using XML tags) based on model name. Both handlers parse responses into `SearchDecision` objects with a shared interface.
@@ -510,8 +526,12 @@ delta_shutdown : S -> S'
 
 ```
 delta_shutdown(s):
-    // Step 1: Block summaries
-    summaries <- consolidate(s.H, block_size=N)              // LLM compression of N-turn blocks
+    // Step 1: Block summaries (ShutdownProcessor.summarize_uncovered_blocks)
+    //   Blocks of N corpus entries NEWER than the content-time watermark of the existing summaries'
+    //   anchors (memory/summary_coverage.py); unreadable coverage -> skip, never blind. At most
+    //   SUMMARY_MAX_BLOCKS_PER_SHUTDOWN (default 1) blocks per shutdown, oldest first, stopping at
+    //   the first block that fails to land; scripts/backfill_summaries.py drains a backlog.
+    summaries <- summarize_uncovered_blocks(s.H, cap=1)      // LLM compression of N-entry blocks
     s'.C <- s.C + summaries
 
     // Step 2: Session facts (regex-based, last 10 turns, ephemeral predicates blocked)
@@ -541,7 +561,7 @@ delta_shutdown(s):
     skills <- extract_skills(s.H[-12:])                       // LLM: trigger -> action patterns
     s'.C <- s'.C + skills
 
-    // Step 5: Code proposals (0-5 proposals)
+    // Step 5: Code proposals (0-5 proposals; OFF by default — `code_proposals.enabled: false`, Settings toggle)
     proposals <- generate_proposals(s.H, s'.C)                // LLM with pipeline-enriched context
     s'.C <- s'.C + proposals
 
@@ -568,9 +588,8 @@ delta_shutdown(s):
     //   junk function-word subjects, already-superseded facts.
     //   Execution semantics: duplicates DELETED; contradiction losers SUPERSEDED
     //   (is_current=False + superseded_by) — reversible, never deleted.
-    // DAEMON_MODE=dev (current config.yaml): dry_run=True — log preview only, never auto-deletes;
-    //   live execution requires explicit GUI action (Preview/Run buttons)
-    // DAEMON_MODE=user: CROSS_DEDUP_AUTO_EXECUTE=True — dedup plan auto-executes at shutdown
+    // Auto-execution is never enabled: `CROSS_DEDUP_AUTO_EXECUTE = False` in every mode (dev and user)
+    //   — shutdown produces a dry-run preview only; live execution requires explicit GUI action
 
     // Step 9: Session-end reflection
     reflection <- reflect(s.H, summaries)                     // LLM meta-reflection
@@ -586,7 +605,7 @@ returns, under its own `SYNTHESIS_DREAM_TIMEOUT_S` (240s) budget (entry:
 coherence judge isn't cancelled by the shared `SHUTDOWN_TASK_TIMEOUT_S` (60s)
 budget.
 
-**Critical invariant**: In dev mode (the current config.yaml setting), no user data is auto-deleted at shutdown — dedup runs dry_run=True; thread cap enforcement (Step 6c) is the only deletion, removing lowest-priority threads when over the cap. In user mode, the dedup plan auto-executes (`CROSS_DEDUP_AUTO_EXECUTE=True`); protected collections (conversations, obsidian_notes, reference_docs, wiki_knowledge) are never scanned in either mode.
+**Critical invariant**: no user data is auto-deleted at shutdown in any mode — dedup runs dry-run only (`CROSS_DEDUP_AUTO_EXECUTE = False`); thread cap enforcement (Step 6c) is the only deletion, removing lowest-priority threads when over the cap. Protected collections (conversations, obsidian_notes, reference_docs, wiki_knowledge) are never scanned.
 
 **Code**: `shutdown_processor.py`
 
@@ -606,7 +625,7 @@ C = C_episodic  U  C_semantic  U  C_procedural  U  C_summary  U  C_reference  U 
 | Semantic | `facts`, `wiki_knowledge` | Triples + external knowledge. Truth-scored. Wiki queries route through FAISS (41M vectors); ChromaDB `wiki_knowledge` is fallback only. Wiki protected from dedup. |
 | Procedural | `procedural`, `procedural_skills` | Git commits + reusable patterns. Skill dedup at 0.85 threshold. |
 | Summary | `summaries` | Block-compressed conversation history. Relevance-biased. |
-| Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at 0.45 threshold. |
+| Reference | `obsidian_notes`, `reference_docs` | User notes + system docs. Protected from dedup. Gated at `obsidian.gate_threshold` = 0.60 (since 2026-09-03). |
 | Meta | `reflections`, `threads`, `proposals`, `daemon_self_notes` | Session insights + open loops + code plans + Daemon's own session notes (`ground_truth: False`). Priority-scored (threads). |
 | Synthesis | `synthesis_results` | Cross-domain insights with convergence tracking. Produced by shutdown dreaming. |
 | Visual | `visual_memories` | CLIP-embedded image metadata for visual recall. Intent-gated (disabled for casual/emotional/meta). Images dropped for non-vision models. |
@@ -704,7 +723,11 @@ else:                                            -> GP      // at/past threshold
 
 // Sustained-distress UPGRADE (applied after base; never downgrades)
 if base == VAS AND tone in {CONCERN,ELEVATED,CRISIS}
-   AND consecutive_distress_count >= distress_threshold:  -> GP
+   AND consecutive_distress_count >= distress_threshold:
+       if distress_ground_streak >= distress_grounding_max (3):   -> GR   // budget spent; distress counter reset,
+                                                                         // a fresh sustained run is needed to re-ground
+       else:                                                      -> GP   // streak += 1
+   // Elevated-path (ELEVATED/CRISIS) grounding is never budgeted.
 ```
 
 **Input-mapping caveat (2026-07-21)**: this FSM only works if it actually
@@ -774,9 +797,12 @@ The synthesis pipeline transforms candidate cross-domain connections into valida
 
 ### 13.1 Candidate Generation
 
-**Current state (2026-06-30):** the SOLE active generator is
+**Current state (2026-10-27):** ALL synthesis generators are OFF (paused 2026-07-15 for
+API cost; `synthesis_pooled`, `synthesis_generator`, `synthesis_retrieval` and `graph_walk` are
+all `enabled: false`; the Settings page toggles synthesis, and the synthesis filter itself has no
+master switch). When enabled, the primary generator is
 `PooledConceptSynthesisGenerator` (`knowledge/synthesis_pooled_generator.py`,
-config `synthesis_pooled.enabled: true`). It pairs prominent curated concepts
+config `synthesis_pooled.enabled`). It pairs prominent curated concepts
 from the 48-concept `CONCEPT_POOL` (`knowledge/synthesis_concept_pool.py`) in
 the non-obvious cosine band `0.2 <= cos(a,b) <= 0.45` and articulates a bridge
 claim per pair. The three original tiers below are **RETIRED** (config
@@ -895,7 +921,7 @@ If F(c).status = ACCEPTED:
 
 Provisional bridges start at weight=0.0 and mature when independently rediscovered via convergence (Section 13.4). This creates a feedback loop: accepted synthesis insights densify the graph, enabling the walk generator (Tier 1) to produce candidates that cross the personal-wikidata boundary.
 
-**Code**: `knowledge/synthesis_models.py`, `knowledge/synthesis_filter.py`, `knowledge/synthesis_pooled_generator.py` (active), `knowledge/synthesis_concept_pool.py`, `knowledge/synthesis_retriever.py` (retired), `knowledge/graph_walk_generator.py` (retired), `knowledge/synthesis_generator.py` (retired), `memory/synthesis_memory.py`
+**Code**: `knowledge/synthesis_models.py`, `knowledge/synthesis_filter.py`, `knowledge/synthesis_pooled_generator.py` (primary when enabled; currently OFF), `knowledge/synthesis_concept_pool.py`, `knowledge/synthesis_retriever.py` (retired), `knowledge/graph_walk_generator.py` (retired), `knowledge/synthesis_generator.py` (retired), `memory/synthesis_memory.py`
 
 ---
 
@@ -908,11 +934,11 @@ Agent(q, s_t) =
     let x       = phi(q, s_t)                       in    // perceive
     let iota    = classify_intent(q, x.tone)         in    // interpret
     let q'      = expand(q, s_t.G)                   in    // expand (graph-augmented query)
-    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (22 parallel retrievals)
-    let pi_plan = plan(q, x) if should_plan(x)      in    // plan response (parallel with remember)
-    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (30-section prompt + plan injection)
+    let d*      = rho_iota(x, q', s_t.C, s_t.G)       in    // remember (parallel retrieval tasks)
+    let pi_plan = plan(q, x, digest(d*)) if should_plan(x) in  // plan response (after remember, from a bounded digest)
+    let p       = beta(x, d*, iota, s_t.E, pi_plan) in    // assemble (conditional sections + plan injection)
     let r       = generate_or_search(p)              in    // act (LLM + optional agentic loop)
-    let r'      = review_or_retry(r, pi_plan)        in    // review (post-answer gate + optional retry)
+    let r'      = review_or_retry(r, pi_plan)        in    // review (post-answer gate, log-only; no retry)
     let Pi      = provenance(r', p, session)          in    // audit (provenance metadata)
     let s_{t+1} = delta(s_t, q, r', Pi)               in    // learn (store + truth + escalation + provenance)
     (r', s_{t+1})
@@ -937,10 +963,10 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | U | User model | `user_profile.py` |
 | E | Escalation FSM state | `escalation_tracker.py` |
 | X | Context space | `ContextResult` dataclass in `context_pipeline.py` |
-| P | Prompt space (30 context sections + system prompt; 31 registry entries) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
+| P | Prompt space (conditional context sections + system prompt; see `eval/section_registry.py` for the canonical section list) | `prompt/formatter.py` -> `_assemble_prompt()` (assembly), `prompt/builder.py` (orchestration) |
 | A = R U T | Action space | Response or tool call |
 | phi | Context function (8 integer stages + 2 half-stages) | `context_pipeline.py` |
-| rho_iota | Retrieval function (22 parallel tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
+| rho_iota | Retrieval function (parallel retrieval tasks, parameterized by intent) | `context_gatherer.py` (compositor) + `gatherer_memory.py` + `gatherer_knowledge.py` + `gatherer_web.py` + `memory_retriever.py` + `memory_scorer.py` |
 | sigma_iota | Scoring function (parameterized by intent + graph) | `memory_scorer.py` -> `rank_memories()` |
 | beta | Prompt construction (X x D* x iota x E -> P) | `prompt/builder.py` |
 | iota | Intent classification | `intent_classifier.py` |
@@ -951,7 +977,7 @@ Ten operations. Perceive, interpret, expand, remember, plan-response, assemble, 
 | Pi | Provenance record (session_id, response_mode, prompt_hash, ...) | `memory_storage.py` + `gui/handlers.py` |
 | Sigma | Synthesis memory (accepted SynthesisResult set) | `synthesis_memory.py` (ChromaDB `synthesis_results`) |
 | F | Synthesis filter (7-stage pipeline g_0 . ... . g_6; g_3 has 3 sub-checks; g_5 has 2-pass structure) | `synthesis_filter.py` |
-| Gen_pool | Pooled concept generator (SOLE active: prominent concept pairs, cos 0.2-0.45) | `knowledge/synthesis_pooled_generator.py` |
+| Gen_pool | Pooled concept generator (primary when synthesis is enabled; currently OFF: prominent concept pairs, cos 0.2-0.45) | `knowledge/synthesis_pooled_generator.py` |
 | Gen_0 | Retrieval synthesis generator (structural query -> FAISS -> adversarial eval) [RETIRED] | `knowledge/synthesis_retriever.py` |
 | Gen_1 | Graph walk generator (biased Markov walk -> narration) [RETIRED] | `knowledge/graph_walk_generator.py` |
 | Gen_2 | Cross-store synthesis generator (random pairing -> bridge articulation) [RETIRED] | `knowledge/synthesis_generator.py` |

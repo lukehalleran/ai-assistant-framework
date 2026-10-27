@@ -1,5 +1,6 @@
 # Pattern Analysis Subsystem
 
+**Last updated:** 2026-10-27
 **Status:** v2 generic deliberation path (2026-08-30), on-demand only
 **Core:** `memory/pattern_engine.py` · **Planner:** `core/insight/deliberation.py` ·
 **Coordinator:** `core/insight/coordinator.py` · **Rolling stage:** `core/insight/temporal.py`
@@ -157,11 +158,16 @@ live 2026-08-28/29 paste shapes now detect.
 
 ## Current and future surfaces
 
+**Shipped since v1:**
+- **`pattern_scan` agentic tool** — a `core/agentic/tools.py` `DISPATCH_TABLE`
+  row (`_dispatch_pattern_scan`; definition `PATTERN_SCAN_TOOL_DEFINITION` in
+  `core/agentic/types.py`, parsed in `core/agentic/protocols.py`, wiring pinned
+  by `tests/unit/test_tool_wiring_parity.py`). Bounded deterministic scans over
+  user-authored corpus turns, gated by `pattern_analysis.enabled`; longitudinal
+  deliberation additionally freezes phases and reports channel coverage. See
+  `AGENTIC_SEARCH.md`. Rich semantic behavioral coding remains future work.
+
 Deliberate non-goals for v1, each pre-designed as an adapter:
-- **`pattern_scan` agentic tool** — available for bounded deterministic scans;
-  longitudinal deliberation additionally freezes phases and reports channel
-  coverage. Rich semantic behavioral coding remains future work.
-  (DISPATCH_TABLE + protocols + parity test wiring).
 - **SPA 📈 Patterns view** — `/api/patterns` route + CurationPage-style view.
 - **Shutdown pattern notes / `[OBSERVED PATTERNS]` prompt section /
   15th-collection proactive store** — **considered and DECLINED by the owner

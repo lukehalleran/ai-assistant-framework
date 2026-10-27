@@ -1,6 +1,6 @@
 # Synthesis Filter Pipeline
 
-*Last verified: 2026-07-08*
+*Last updated: 2026-10-27*
 
 Operational guide for the knowledge synthesis system — candidate generation,
 7-stage filtering, convergence tracking, and calibration.
@@ -54,10 +54,10 @@ auto-halts if the human audit FP rate exceeds `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
 | `memory/synthesis_memory.py` | ChromaDB persistence (synthesis_results collection) + convergence tracking + provisional bridge creation + audit queue (human grading, FP/FN review) |
 | `config/app_config.py` | All `SYNTHESIS_*` constants (filter + pooled + generator + retrieval + audit) |
 | `memory/shutdown_processor.py` | Integration point — runs the pooled generator (or the retired tiers behind flags) then filter at shutdown |
-| `tests/test_synthesis_calibration.py` | Mock calibration suite (6 tests) |
-| `tests/unit/test_synthesis_generator.py` | Generator unit tests (18 tests) |
-| `tests/unit/test_synthesis_audit.py` | Audit queue unit tests (40 tests) |
-| `tests/unit/test_graph_walk_generator.py` | Graph walk generator tests (38 tests) |
+| `tests/test_synthesis_calibration.py` | Mock calibration suite |
+| `tests/unit/test_synthesis_generator.py` | Generator unit tests |
+| `tests/unit/test_synthesis_audit.py` | Audit queue unit tests |
+| `tests/unit/test_graph_walk_generator.py` | Graph walk generator tests |
 | `tests/fixtures/calibration_candidates.json` | 72 labeled candidates in 7 tiers |
 | `scripts/calibrate_coherence_live.py` | Live LLM calibration with multi-model comparison |
 | `scripts/test_end_to_end_synthesis.py` | E2E test: all three generators head-to-head with per-generator acceptance stats |
@@ -139,8 +139,9 @@ below are RETIRED in `config.yaml` (`synthesis_generator.enabled: false`,
 `synthesis_retrieval.enabled: false`, `graph_walk.enabled: false`) — each
 paired thin/low-prominence concepts and yielded ≈0 accepts. Their code is
 intact behind the flags: `_run_synthesis_dreaming()` falls back to them only
-when `SYNTHESIS_POOLED_ENABLED` is off. The filter itself
-(`synthesis.enabled: true`) is live.
+when `SYNTHESIS_POOLED_ENABLED` is off. The filter itself has no
+master on/off switch (there is no `synthesis.enabled` key and no master
+toggle constant); whether anything reaches it is decided by the generator toggles above.
 
 All generators emit `SynthesisCandidate` objects for the same 7-stage filter
 pipeline (plus post-pipeline storage in `process_candidate()`).
@@ -428,7 +429,12 @@ substantively empty.
 "just as X, so too/similarly/likewise..."
 "at its core is really/essentially/fundamentally..."
 "can be seen/viewed/understood as a form/instance of..."
+"can serve as a microcosm/metaphor/mirror/lens/window..."
+"can be viewed/seen/analyzed through the lens of..."
+"pursuit/process of improvement/growth/development..."
+"can influence/affect/shape ... through social/cultural dynamics..."
 ```
+(13 regexes in `_GENERIC_TEMPLATES`; the code is authoritative.)
 
 **Generic tokens** (`_GENERIC_TOKENS`): systems, processes, principles,
 dynamics, mechanisms, fundamental, inherently, essentially, paradigm,
@@ -795,8 +801,8 @@ To add a new calibration candidate:
 
 ### Convergence Too Slow
 
-- Increase `SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION` to generate more candidates per session
-- Lower `SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` to allow generation with sparser graphs
+- Increase `SYNTHESIS_POOLED_CANDIDATES_PER_SESSION` (`synthesis_pooled.candidates_per_session`, shipped 8; also a Settings slider) to generate more candidates per session (only while pooled generation is enabled)
+- Grow `CONCEPT_POOL` in `knowledge/synthesis_concept_pool.py` for more pairing variety
 - Check that the graph has enough nodes across different domains
 
 ---
@@ -902,7 +908,7 @@ YAML section: `synthesis_audit`
 
 ### Tests
 
-40 unit tests in `tests/unit/test_synthesis_audit.py`.
+Unit tests: `tests/unit/test_synthesis_audit.py`.
 
 ---
 
@@ -921,7 +927,6 @@ defaults.
 
 | Constant | Default | Stage | Purpose |
 |----------|---------|-------|---------|
-| `SYNTHESIS_ENABLED` | `True` | — | Master toggle for entire pipeline |
 | `SYNTHESIS_MIN_TOKEN_LENGTH` | `10` | 0 | Minimum tokens in claim |
 | `SYNTHESIS_MAX_REPETITION_RATIO` | `0.5` | 0 | Max allowed token repetition |
 | `SYNTHESIS_MIN_DOMAINS` | `2` | 1 | Minimum domain count |
@@ -952,16 +957,16 @@ defaults.
 > generator (`synthesis_pooled`, `SYNTHESIS_POOLED_ENABLED`) is the *sole*
 > generator dreaming *would* use *when enabled*, but it is currently **OFF**
 > (`synthesis_pooled.enabled: false` — API-cost pause since 2026-07-15). The
-> three tiers below carry `enabled: True` as an app_config code default but are
-> set `enabled: false` in `config.yaml` (retired — each paired thin/low-prominence
-> concepts and yielded ≈0 accepts). The "Default" column is the code default, not
-> the live value.
+> three retired tiers below default to `False` in `app_config.py` and are also
+> `enabled: false` in `config.yaml` (each paired thin/low-prominence concepts and
+> yielded ≈0 accepts). The pipeline has no master switch: the filter simply runs
+> on whatever candidates a generator produces.
 
 ### Pooled Concept Generator (PRIMARY)
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SYNTHESIS_POOLED_ENABLED` | `False` (live: **false** in config.yaml — OFF since 2026-07-15, API-cost pause) | Master toggle — sole generator dreaming uses when enabled |
+| `SYNTHESIS_POOLED_ENABLED` | `False` (live: false in config.yaml — OFF since 2026-07-15, API-cost pause) | Generator toggle (Settings UI) — sole generator dreaming uses when enabled |
 | `SYNTHESIS_POOLED_CANDIDATES_PER_SESSION` | `8` | Target candidates per shutdown |
 | `SYNTHESIS_POOLED_LLM_CONCURRENCY` | `5` | Max parallel articulation calls |
 
@@ -969,7 +974,7 @@ defaults.
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SYNTHESIS_GENERATOR_ENABLED` | `True` (live: **false**) | Master toggle |
+| `SYNTHESIS_GENERATOR_ENABLED` | `False` (live: false) | Generator toggle |
 | `SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION` | `5` | Target candidates per shutdown |
 | `SYNTHESIS_GENERATOR_LLM_CONCURRENCY` | `5` | Max parallel bridge articulation calls |
 | `SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` | `20` | Graph sparsity guard |
@@ -978,7 +983,7 @@ defaults.
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SYNTHESIS_RETRIEVAL_ENABLED` | `True` (live: **false**) | Master toggle for retrieval-based synthesis |
+| `SYNTHESIS_RETRIEVAL_ENABLED` | `False` (live: false) | Toggle for retrieval-based synthesis |
 | `SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS` | `100` | Max tokens for structural query extraction LLM call |
 | `SYNTHESIS_RETRIEVAL_K` | `5` | Number of FAISS results per structural query |
 | `SYNTHESIS_RETRIEVAL_MIN_SIMILARITY` | `0.25` | Minimum cosine similarity for FAISS results |
@@ -989,7 +994,7 @@ defaults.
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `GRAPH_WALK_ENABLED` | `True` (live: **false**) | Master toggle for graph walk synthesis |
+| `GRAPH_WALK_ENABLED` | `False` (live: false) | Toggle for graph walk synthesis |
 | `GRAPH_WALK_MIN_BRIDGE_EDGES` | `40` | Minimum bridge edges to activate walk generator |
 | `GRAPH_WALK_PERSONAL_RETURN_BIAS` | `2.0` | Node2Vec-style bias toward personal nodes |
 | `GRAPH_WALK_HUB_DEGREE_THRESHOLD` | `15` | Degree above which hub dampening applies (log-scale penalty) |
