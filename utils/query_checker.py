@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
 from utils.url_detect import contains_url
+from utils.paste_shape import authored_head
 from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher, prefix_only_hits, normalize_ws
 from memory.fact_source import strip_quoted_correspondence
 import utils.temporal_resolver as temporal_resolver
@@ -234,8 +235,8 @@ _REPORTER_SUBJECTS = frozenset({"i", "we"})
 
 
 def _clause_reports_done_act(clause: str) -> bool:
-    """True when the clause is a first-person declarative reporting a finished
-    act: subject I/we governing a past-tense or perfect verb, and not a
+    """True when the clause is a first-person (or subject-elided) declarative
+    reporting a finished act: subject I/we governing a past-tense or perfect verb, and not a
     question. Grammar (spaCy tense/aux), not phrases: "I did the next one
     already" is a report even though every word besides the navigation phrase
     is a function word (2026-10-21, class: BC-06). No parser -> False (the
@@ -253,6 +254,18 @@ def _clause_reports_done_act(clause: str) -> bool:
         doc = nlp(clause.strip())
     except Exception:  # degrades: parse failure -> clause not recognised as a report
         return False
+    # Elided first-person report ("did the next one already", 2026-10-27, class:
+    # BC-06): a finite PAST root verb with no subject BEFORE it. The parser
+    # often takes the object ("one") for a post-verbal subject; a post-verbal
+    # subject in a non-question declarative is that misparse, not inversion.
+    # An imperative is never past-tense, so no request shape reaches here.
+    for tok in doc:
+        if tok.dep_ == "ROOT" and tok.pos_ in ("VERB", "AUX"):
+            morph = tok.morph.to_dict()
+            if (morph.get("Tense") == "Past" and morph.get("VerbForm", "Fin") == "Fin"
+                    and not any(c.dep_ in ("nsubj", "nsubjpass") and c.i < tok.i
+                                for c in tok.children)):
+                return True
     for tok in doc:
         if tok.dep_ not in ("nsubj", "nsubjpass") or tok.lower_ not in _REPORTER_SUBJECTS:
             continue
@@ -268,6 +281,16 @@ def _clause_reports_done_act(clause: str) -> bool:
     return False
 
 
+def _has_explicit_request_shape(clause: str) -> bool:
+    """Request evidence other than the interrogative opener / info cues: the
+    gate's "can you …" shapes, an address to the assistant, or an imperative."""
+    from core.agentic.gate import _is_request_shaped  # lazy import: cycle
+    text = (clause or "").strip()
+    ql = _normalize(text)
+    return bool(_is_request_shaped(text) or _ADDRESSING_ASSISTANT_RE.search(ql)
+                or _IMPERATIVE_REQUEST_RE.match(ql))
+
+
 def _clause_is_navigation_request(clause: str, ms: int, me: int, *, terse: bool) -> bool:
     """A navigation phrase is a REQUEST when its clause is request-shaped
     ("go to question 3", "what's the next one") or — in a terse message only —
@@ -275,11 +298,15 @@ def _clause_is_navigation_request(clause: str, ms: int, me: int, *, terse: bool)
     ("ok next q please"). "Next one due Friday" is a statement about a due
     date: its remainder carries content words, so it is not a request
     (2026-10-18, class: BC-04)."""
+    # A subject-less past-tense report ("did the next one already") opens with
+    # the auxiliary the interrogative-opener test reads as a question; when the
+    # clause has no explicit request shape (imperative / address / "can you")
+    # and reports a finished act, that opener alone is not a request.
+    if _clause_reports_done_act(clause) and not _has_explicit_request_shape(clause):
+        return False
     if is_request_shaped(clause):
         return True
     if not terse:
-        return False
-    if _clause_reports_done_act(clause):
         return False
     rest = (clause[:ms] + " " + clause[me:]).lower()
     lex = _function_word_lexicon()
@@ -1727,6 +1754,61 @@ def topics_related(thread_topic: str, current_topic: str) -> bool:
     a_words = {w for w in re.split(r"\W+", a) if len(w) > 3}
     b_words = {w for w in re.split(r"\W+", b) if len(w) > 3}
     return bool(a_words & b_words)
+
+
+_CONTENT_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def _content_stems(text: str) -> list:
+    """Distinct content-word stems of ``text``: alphabetic, >=4 chars, not a
+    spaCy function word (the lexicon the navigation detectors already use).
+    Variants of one word ("group"/"groups", "alternative"/"alternatives")
+    collapse by prefix: the shorter is a prefix of the longer and they differ
+    by at most 4 trailing letters."""
+    lex = _function_word_lexicon()
+    stems: list = []
+    for w in sorted(set(_CONTENT_WORD_RE.findall((text or "").lower())), key=len):
+        if w in lex:
+            continue
+        if any(w.startswith(s) and len(w) - len(s) <= 4 for s in stems):
+            continue
+        stems.append(w)
+    return stems
+
+
+def _stem_hits(query_stems: list, other_stems: list) -> list:
+    return [
+        q for q in query_stems
+        if any(q.startswith(o) or o.startswith(q) for o in other_stems
+               if abs(len(q) - len(o)) <= 4)
+    ]
+
+
+def continues_prior_exchange(current_query: str, exchange_text: str, thread_topic: str = "") -> bool:
+    """Whether ``current_query`` carries the previous exchange's own content
+    (2026-10-27, class: BC-08/BC-04).
+
+    Topic LABELS are minted per turn by a classifier at varying granularity
+    ("Bus Reference Baseline" -> "No Covariate Model" is one lesson), so
+    label divergence alone mislabels follow-ups as shifts. Content words are
+    the structural signal: the turn continues the exchange when its authored
+    part shares >=2 distinct content stems with the previous exchange (plus
+    the thread label), or >=1 stem of 5+ letters with the thread label itself.
+    A long paste is judged by its authored head only ("" -> no evidence).
+    """
+    text = (current_query or "").strip()
+    if len(text.split()) > 120:
+        text = authored_head(text)
+    if not text:
+        return False
+    q_stems = _content_stems(text)
+    if not q_stems:
+        return False
+    label_stems = _content_stems(thread_topic)
+    if any(len(q) >= 5 for q in _stem_hits(q_stems, label_stems)):
+        return True
+    pool = _content_stems(f"{exchange_text or ''} {thread_topic or ''}")
+    return len(_stem_hits(q_stems, pool)) >= 2
 
 
 def belongs_to_thread(

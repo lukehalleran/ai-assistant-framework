@@ -303,7 +303,9 @@ class TestVentShapeNarrowing:
                 _decision(search_terms=[]), _intent(), tone_level="light_support", query=VENT
             )
         assert d.should_trigger is False
-        store.record.assert_called_once_with("web_search", "no_search", VENT, "gate_veto")
+        # 2026-10-27: the call now carries the A06 support span (first vent sentence)
+        store.record.assert_called_once_with(
+            "web_search", "no_search", VENT, "gate_veto", support_span=(0, VENT.index(".") + 1))
 
     def test_teacher_skips_when_trigger_proposed_search_terms(self):
         store = MagicMock()

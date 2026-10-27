@@ -745,7 +745,8 @@ JSON:"""
         from memory.fact_extractor import _interrogative_conflict, _polarity_conflict
         # lazy import: startup-cost (memory_storage pulls the model/core stack;
         # needed only to share THE per-turn paste guard's size + anchor tests)
-        from memory.memory_storage import is_paste_sized, subject_is_user_anchored
+        from memory.memory_storage import (
+            is_paste_sized, subject_is_user_anchored, supported_outside_paste)
         msg_texts = {idx: text for idx, text, _tid in iter_user_messages(user_messages)}
         kept: List[Dict[str, str]] = []
         for triple in triples:
@@ -766,6 +767,15 @@ JSON:"""
                     f"{triple.get('subject')}|{triple.get('relation')}|"
                     f"{triple.get('object')} from a "
                     f"{len(msg_texts.get(evidence.turn_index, ''))}-char message"
+                )
+                continue
+            # V3 (2026-10-27): a user-subject triple from a paste-sized message
+            # must also be supported by the typed framing outside the paste.
+            if not supported_outside_paste(msg_texts.get(evidence.turn_index, ""), triple):
+                logger.info(
+                    f"[LLM Facts] Paste guard: dropped paste-only user triple "
+                    f"{triple.get('subject')}|{triple.get('relation')}|"
+                    f"{triple.get('object')}"
                 )
                 continue
             if _polarity_conflict(evidence.text, triple.get("relation", ""), triple.get("object", "")):

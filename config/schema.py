@@ -152,6 +152,7 @@ class ModelsSection(BaseModel):
     default_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     openai_api_key: str = ""
     active: str = ""
+    first_token_timeout_s: float = Field(default=30.0, description="Streaming first-chunk deadline (s); <=0 disables")
 
 
 class GatingSection(BaseModel):
@@ -661,6 +662,11 @@ class TurnTelemetrySection(BaseModel):
     loop_stall_threshold_ms: int = Field(default=250, ge=20, le=60000)
 
 
+class StmSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    timeout_s: float = Field(default=5.0, gt=0.0, description="STM analysis cap inside the context-pipeline gather (s)")
+
+
 class LightPromptSection(BaseModel):
     """Lightweight-context path for terse casual acknowledgments."""
     model_config = ConfigDict(extra="ignore")
@@ -832,8 +838,18 @@ class FigureCheckSection(BaseModel):
     log_classes: list[Literal[
         "elapsed_vague", "elapsed_unconfirmed", "elapsed_precise", "weekday_date", "unsupported",
         "copied_mismatch", "unbound"]] = Field(
-        default_factory=lambda: ["elapsed_vague", "elapsed_unconfirmed", "copied_mismatch"])
+        default_factory=lambda: ["elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported"])
     min_referent_overlap: int = Field(default=1, ge=1)
+
+
+class DayCountsSection(BaseModel):
+    """Dated day counts (2026-10-27, BC-103/BC-100): the user's own "N days into X" counts,
+    projected to today in the reply prompt."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    max_lines: int = Field(default=3, ge=1)
+    max_age_days: int = Field(default=400, ge=1)
+    store_path: str = "data/day_count_anchors.json"
 
 
 class ClaimLedgerSection(BaseModel):
@@ -1244,9 +1260,11 @@ class DaemonConfig(BaseModel):
     personal_claim_check: PersonalClaimCheckSection = Field(default_factory=PersonalClaimCheckSection)
     claim_ledger: ClaimLedgerSection = Field(default_factory=ClaimLedgerSection)
     figure_check: FigureCheckSection = Field(default_factory=FigureCheckSection)
+    day_counts: DayCountsSection = Field(default_factory=DayCountsSection)
     decision_model: DecisionModelSection = Field(default_factory=DecisionModelSection)
     email_integration: EmailIntegrationSection = Field(default_factory=EmailIntegrationSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
+    stm: StmSection = Field(default_factory=StmSection)
     light_prompt: LightPromptSection = Field(default_factory=LightPromptSection)
     backup: BackupSection = Field(default_factory=BackupSection)
     log_maintenance: LogMaintenanceSection = Field(default_factory=LogMaintenanceSection)

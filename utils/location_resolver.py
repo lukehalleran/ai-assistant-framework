@@ -5,13 +5,16 @@ Resolves the user's current location as a short place string ("Springfield,
 IL") for localizing location-dependent web-search queries (weather, local news,
 "near me").
 
-Resolution chain (first hit wins):
+Resolution chain (first hit wins; the session statement is checked right
+after the override, the rest of the order is unchanged):
   1. Config override — `location.override` (set in the gitignored
      config.local.yaml for privacy) or DAEMON_USER_LOCATION env var
   2. IP geolocation — city-level, cached for LOCATION_IP_CACHE_TTL_HOURS and
      refreshed in a background daemon thread so the async hot path NEVER blocks
      on network I/O. Providers: ipinfo.io (HTTPS) then ip-api.com fallback.
      Until the first refresh lands, callers get the profile fallback.
+  2b. (2026-10-27) THIS SESSION'S stated move — see "Session statement" below;
+     sits directly under the config override, above everything else.
   3. User profile — most recent `lives_in` identity fact in
      data/user_profile.json whose value looks like a real "City, Region" place
      (filters junk like "joke state" or "a bad mood"; prefers is_current).
@@ -39,6 +42,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime
 from typing import Optional
 
 from utils.bootstrap import get_user_profile_path
@@ -46,6 +50,10 @@ from utils.logging_utils import get_logger
 from utils.trigger_match import normalize_ws
 
 logger = get_logger("location_resolver")
+
+# A "session" is this process: stored user turns older than this belong to a
+# previous run and are covered by the profile instead.
+_PROCESS_START = time.time()
 
 try:
     import requests
@@ -127,6 +135,92 @@ def _is_place_value(value: str) -> bool:
     return bool(_PLACE_RE.match(v)) or _is_bare_city(v)
 
 
+# Session-statement scan bounds: newest N NEW user turns per call, and a
+# per-turn text cap (a long paste is not a statement about where the user lives).
+_SESSION_MAX_NEW_TURNS = 3
+_SESSION_MAX_TEXT_CHARS = 1500
+
+_session_extractor = None
+_session_turn_provider = None
+
+
+def set_session_turn_provider(provider) -> None:
+    """Register the callable returning this process's corpus entries (oldest
+    first). Called once by the composition root (main.py) with
+    `corpus_manager.visible_entries`."""
+    global _session_turn_provider
+    _session_turn_provider = provider
+
+
+def _run_to_completion(coro):
+    """Drive a coroutine that never actually suspends (FactExtractor.extract_facts
+    has no awaits) without touching the running event loop; anything that
+    would suspend is abandoned."""
+    try:
+        coro.send(None)
+    except StopIteration as stop:
+        return stop.value
+    finally:
+        coro.close()
+    return None
+
+
+def _without_verb_adverbs(text: str, nlp) -> str:
+    """Remove adverbial modifiers of verbs ("I JUST moved to X" -> "I moved to X")
+    by dependency label, so the extractor's `<subject> <verb> to <place>`
+    patterns see the bare clause. Grammar-driven, not a word list."""
+    doc = nlp(text)
+    drop = {t.i for t in doc if t.dep_ == "advmod" and t.head.pos_ in ("VERB", "AUX") and t.pos_ == "ADV"}
+    if not drop:
+        return text
+    return "".join(t.text_with_ws for t in doc if t.i not in drop)
+
+
+def _with_region(text: str, place: str, nlp) -> str:
+    """"Portland" + source "...Portland, Oregon." -> "Portland, Oregon" (adjacent
+    GPE entities joined by a comma); otherwise the place unchanged."""
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ == "GPE" and ent.text.lower() == place.lower():
+            nxt = doc[ent.end:ent.end + 2]
+            if len(nxt) == 2 and nxt[0].text == "," and nxt[1].ent_type_ == "GPE":
+                region = next((e for e in doc.ents if e.start == nxt[1].i), None)
+                if region is not None:
+                    return f"{ent.text}, {region.text}"
+            return ent.text
+    return place.title()   # bare city the NER missed; _is_bare_city validates the title form
+
+
+def _stated_place_from_text(text: str) -> Optional[str]:
+    """The place a user message says they live in/moved to, or None, via the
+    deployed FactExtractor + the resolver's own place-shape gate."""
+    global _session_extractor
+    if len(text) > _SESSION_MAX_TEXT_CHARS:
+        return None
+    try:
+        from memory.fact_extractor import FactExtractor, _get_nlp  # lazy import: layering (utils must not load memory/ at import)
+        from memory.fact_source import _residence_resident_is_user  # lazy import: layering
+        nlp = _get_nlp()
+        if nlp is None:
+            return None
+        if _session_extractor is None:
+            _session_extractor = FactExtractor(use_rebel=False)
+        clean = _without_verb_adverbs(normalize_ws(text), nlp)   # line-wrapped client input
+        for node in _run_to_completion(_session_extractor.extract_facts(clean, "")) or []:
+            md = node.metadata or {}
+            if md.get("relation") != "lives_in" or md.get("claim_kind") == "plan":
+                continue
+            obj = str(md.get("object") or "").strip()
+            if not obj or not _residence_resident_is_user(clean, obj):
+                continue
+            place = _with_region(clean, obj, nlp)
+            if _is_place_value(place) and not is_placeholder_location(place):
+                return place
+    except Exception as e:  # degrades: this turn yields no stated place
+        logger.debug(f"[Location] session statement extraction failed: {type(e).__name__}")
+    return None
+
+
 # Retry failed IP lookups sooner than the success TTL, but not every turn.
 _IP_FAILURE_RETRY_S = 600.0
 
@@ -176,8 +270,21 @@ def strip_placeholder_location(text: str) -> str:
 class LocationResolver:
     """Non-blocking user-location resolution with layered fallbacks."""
 
-    def __init__(self, profile_path: Optional[str] = None):
+    def __init__(
+        self,
+        profile_path: Optional[str] = None,
+        turn_provider=None,
+        session_start: Optional[float] = None,
+    ):
         self.profile_path = profile_path or get_user_profile_path()
+        # Session-statement source (2026-10-27): a callable returning the
+        # in-process corpus entries (chronological). None -> the module-level
+        # provider the composition root registers (`set_session_turn_provider`).
+        self.turn_provider = turn_provider
+        self.session_start = _PROCESS_START if session_start is None else float(session_start)
+        self._watermark: Optional[float] = None
+        self._session_entries_seen: dict = {}
+        self._session_location: Optional[str] = None
         self._ip_location: Optional[str] = None
         self._ip_fetched_at: float = 0.0
         self._ip_failed_at: float = 0.0
@@ -198,6 +305,13 @@ class LocationResolver:
         override = (LOCATION_OVERRIDE or "").strip()
         if override and not is_placeholder_location(override):
             return override
+
+        # A move the user stated in THIS session beats stored/derived places:
+        # the profile is only written at shutdown, so without this the old
+        # place keeps localizing searches for the rest of the session.
+        stated = self._location_from_session_statement()
+        if stated:
+            return stated
 
         if LOCATION_IP_LOOKUP_ENABLED and requests is not None:
             ttl_s = float(LOCATION_IP_CACHE_TTL_HOURS) * 3600.0
@@ -283,6 +397,86 @@ class LocationResolver:
         if city and region:
             return f"{city}, {region}"
         return city or region or None
+
+    # ------------------------------------------------------------------
+    # Session statement (2026-10-27, class: BC-46)
+    # ------------------------------------------------------------------
+
+    def _location_from_session_statement(self) -> Optional[str]:
+        """Newest place the user stated living in during THIS session, or None.
+
+        Evidence = the user's own turns newer than the session start, taken from
+        the IN-PROCESS corpus the Daemon already holds (a provider callable
+        registered by the composition root -- no file is ever read here, so no
+        loop-blocking JSON load; utils/ imports nothing from core/memory at
+        module level). A statement is judged by the DEPLOYED per-turn fact
+        extractor, so no residence regex lives here. A watermark makes each
+        call O(new turns); each turn is extracted once.
+        """
+        provider = self.turn_provider or _session_turn_provider
+        if provider is None:
+            return self._session_location
+        try:
+            entries = provider()
+        except Exception as e:  # degrades: session statement unavailable, the profile/IP chain answers
+            logger.warning(f"[Location] Session turn provider failed: {type(e).__name__}")
+            return self._session_location
+        if not isinstance(entries, list) or not entries:
+            return self._session_location
+        try:
+            self._scan_new_turns(entries)
+        except Exception as e:  # degrades: this call keeps the previously found place
+            logger.warning(f"[Location] Session statement scan failed: {type(e).__name__}")
+        return self._session_location
+
+    @staticmethod
+    def _entry_time(entry) -> Optional[float]:
+        ts = entry.get("timestamp")
+        try:
+            if isinstance(ts, datetime):
+                return ts.timestamp()
+            if isinstance(ts, str):
+                return datetime.fromisoformat(ts).timestamp()
+        except ValueError:
+            return None
+        return None
+
+    def _scan_new_turns(self, entries) -> None:
+        # lazy import: layering (memory/ must not load at utils import time)
+        from memory.fact_source import is_test_turn  # lazy import: layering
+        from memory.utils import is_quarantined  # lazy import: layering
+        newest_t = None
+        examined = 0
+        for e in reversed(entries):
+            if not isinstance(e, dict):
+                continue
+            t = self._entry_time(e)
+            if t is None or t < self.session_start:
+                break   # chronological: everything older is a previous session
+            if newest_t is None:
+                newest_t = t
+            if self._watermark is not None and t < self._watermark:
+                break   # already scanned on an earlier call
+            if is_quarantined(e) or is_test_turn(e):
+                continue
+            text = e.get("user_text") if isinstance(e.get("user_text"), str) else e.get("query")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            examined += 1
+            if examined > _SESSION_MAX_NEW_TURNS:
+                break
+            key = (t, hash(text))
+            if key in self._session_entries_seen:
+                continue   # extracted before (same-timestamp tail of the watermark)
+            place = _stated_place_from_text(text)
+            if len(self._session_entries_seen) > 256:
+                self._session_entries_seen.clear()
+            self._session_entries_seen[key] = place
+            if place:
+                self._session_location = place
+                break
+        if newest_t is not None:
+            self._watermark = newest_t
 
     # ------------------------------------------------------------------
     # Profile fallback

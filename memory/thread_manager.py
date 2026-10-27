@@ -115,7 +115,17 @@ class ThreadManager:
         and break the thread on a label the prompt never saw.
         """
         # Get only the most recent conversation (limit=1 for strict consecutive check)
-        recent = self.corpus_manager.get_recent_memories(count=1)
+        # STORED turns only (2026-10-27, class: BC-58/BC-46): get_recent_memories is
+        # a READ-path view that also yields delivered-but-unstored copies
+        # (memory.pending_turns, flagged ``pending_storage``). While this very
+        # turn is being stored its own copy sits at index 0 with no thread
+        # metadata, so the thread decision compared the query with ITSELF and
+        # computed ``0 + 1`` -- every continuing turn logged "thread None at
+        # depth 1" (88 of 88 in the 10-20..10-26 logs).
+        recent = [
+            e for e in self.corpus_manager.get_recent_memories(count=4)
+            if not (isinstance(e, dict) and e.get("pending_storage"))
+        ][:1]
 
         # Reuse the turn's label when the caller passed one; otherwise detect
         # a topic for this specific query to avoid using a stale topic.

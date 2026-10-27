@@ -1810,7 +1810,7 @@ class WebSearchManager:
             log.debug(f"[WebSearch] Tavily search: topic={topic}, days={days}, query={query[:50]}...")
 
             # Run in executor since tavily-python is synchronous
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
                 lambda: self._tavily_client.search(**search_kwargs)
@@ -2029,7 +2029,7 @@ class WebSearchManager:
             raise RetrievalError(source="tavily_extract", reason="client_unavailable")
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
                 lambda: self._tavily_client.extract(urls=urls)
@@ -2097,7 +2097,7 @@ Consider: primary sources, official documentation, authoritative references.
 
 Return ONLY the URLs (one per line), nothing else. If none are worth following, return "NONE"."""
 
-            response = await asyncio.get_event_loop().run_in_executor(
+            response = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: model_manager.generate_response_sync(
                     prompt=prompt,
@@ -2345,7 +2345,7 @@ SUB_QUERIES:
 
 If not splitting, leave SUB_QUERIES empty."""
 
-            response = await asyncio.get_event_loop().run_in_executor(
+            response = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: model_manager.generate(
                     prompt=prompt,

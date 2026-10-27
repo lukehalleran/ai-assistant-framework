@@ -43,3 +43,25 @@ def authored_head(text: str) -> str:
     if len(words) < AUTHORED_HEAD_MIN_WORDS:
         return ""
     return head
+
+
+def authored_framing(text: str) -> str:
+    """The user's typed words BEFORE an inline paste, or "" when none can be
+    told apart from the paste.
+
+    Same structural boundary as :func:`authored_head` (colon-ended line, blank
+    line, first list item/heading) but a boundary is REQUIRED: a long message
+    with no boundary has no identifiable framing, and one word is enough
+    ("here's my resume"). "" for a message of 120 words or fewer.
+    """
+    if not text or len(text.split()) <= AUTHORED_HEAD_MIN_MESSAGE_WORDS:
+        return ""
+    cut = None
+    for m in (_COLON_BOUNDARY.search(text), _BLANK_LINE.search(text),
+              _LIST_OR_HEADING_LINE.search(text)):
+        if m is not None:
+            pos = m.end() if m.re is _COLON_BOUNDARY else m.start()
+            cut = pos if cut is None else min(cut, pos)
+    if cut is None:
+        return ""
+    return text[:cut].strip()

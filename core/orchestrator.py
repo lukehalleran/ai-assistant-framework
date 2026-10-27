@@ -129,6 +129,7 @@ def _thread_topic_shifted(
     original_query: str,
     stm_reference_type: Optional[str] = None,
     last_assistant_response: Optional[str] = None,
+    prior_exchange_text: Optional[str] = None,
 ) -> bool:
     """Whether the [THREAD CONTEXT] injection should assert a topic shift.
 
@@ -165,7 +166,31 @@ def _thread_topic_shifted(
             max_words=_ANSWER_CONTINUATION_MAX_WORDS,
         ):
             return False
-    return not _topics_related(thread_topic, current_topic)
+    if _topics_related(thread_topic, current_topic):
+        return False
+    # Labels are minted per turn at varying granularity, so two labels for ONE
+    # lesson share no word ("Bus Reference Baseline" -> "No Covariate Model").
+    # A turn that carries the previous exchange's own content words is a
+    # follow-up, not a shift (2026-10-27, class: BC-08/BC-04; 10 of 16 logged
+    # "shift" injections were such follow-ups).
+    if prior_exchange_text and continues_prior_exchange(
+        original_query or "", prior_exchange_text, thread_topic,
+    ):
+        return False
+    return True
+
+
+def _exchange_text(exchange) -> str:
+    """User + assistant text of the previous exchange (``context.last_exchange``)."""
+    if not isinstance(exchange, dict):
+        return ""
+    parts = [
+        exchange.get("query") or exchange.get("user") or "",
+        exchange.get("response") or exchange.get("assistant") or "",
+    ]
+    if exchange.get("role") in ("user", "assistant"):
+        parts.append(exchange.get("content") or "")
+    return " ".join(str(p) for p in parts if p)
 
 
 def _thread_labels_diverge(thread_topic: str, current_topic: str) -> bool:
@@ -223,7 +248,7 @@ from core.truth_event_handler import get_recent_profile_facts as _ext_get_recent
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
 gate_system.wikipedia_api = wiki_api  # This sets it globally
-from utils.query_checker import is_deictic, is_continuation_answer, THREAD_TIME_HARD_CUTOFF
+from utils.query_checker import is_deictic, is_continuation_answer, continues_prior_exchange, THREAD_TIME_HARD_CUTOFF
 
 
 class _SimplePromptBuilder:
@@ -535,12 +560,31 @@ def _hook_thread_dispute(ctx: PostResponseHookContext) -> None:
         logger.debug(f"[ThreadDispute] skipped: {type(exc).__name__}")
 
 
+def _hook_day_count_anchors(ctx: PostResponseHookContext) -> None:
+    """Record the user's own dated day counts ("23 days into X") from this turn's user text.
+
+    Reads ctx.user_input ONLY (never the assistant response); a [test] probe records nothing
+    (the same envelope predicate the other derived-artifact hooks ask). Off the prompt path,
+    so the spaCy pass never delays a turn. class: BC-103, BC-75
+    """
+    if not ctx.user_input:
+        return
+    from memory.fact_source import is_test_turn  # lazy import: layering (fact_source pulls the extractor stack)
+    if is_test_turn({"query": ctx.user_input}):
+        return
+    from memory.day_count_anchors import record_from_user_text  # lazy import: layering
+    added = record_from_user_text(ctx.user_input, datetime.now())
+    if added:
+        logger.debug(f"[DayCounts] recorded {added} day-count anchor(s)")
+
+
 POST_RESPONSE_HOOKS: List[Tuple[str, Callable[[PostResponseHookContext], None]]] = [
     ("turn_telemetry", _hook_turn_telemetry),
     ("search_worthy_teach", _hook_search_worthy_teach),
     ("escalation_record_response", _hook_escalation_record_response),
     ("post_response_detectors", _hook_post_response_detectors),
     ("thread_dispute", _hook_thread_dispute),
+    ("day_count_anchors", _hook_day_count_anchors),
 ]
 
 
@@ -1490,9 +1534,11 @@ class DaemonOrchestrator:
                     or (_last_ex.get("content", "") if _last_ex.get("role") == "assistant" else "")
                     or ""
                 )
+            _prior_text = _exchange_text(_last_ex)
             _shifted = thread_topic and _thread_topic_shifted(
                 thread_topic, topic_str, context.original_query, stm_reference_type=_stm_ref,
                 last_assistant_response=_last_resp,
+                prior_exchange_text=_prior_text,
             )
             # Neutral-divergence branch (2026-09-05): _thread_topic_shifted
             # correctly refuses to assert a shift when STM classified this
@@ -1513,7 +1559,12 @@ class DaemonOrchestrator:
             _diverged_by_stm = (
                 not _shifted
                 and _thread_labels_diverge(thread_topic, topic_str)
-                and _continuity_asserted_by_stm_override(context.original_query, _stm_ref)
+                and (
+                    _continuity_asserted_by_stm_override(context.original_query, _stm_ref)
+                    or bool(_prior_text and continues_prior_exchange(
+                        context.original_query or "", _prior_text, thread_topic,
+                    ))
+                )
             )
             thread_msg = f"\n\n[THREAD CONTEXT]"
             if _session_start:

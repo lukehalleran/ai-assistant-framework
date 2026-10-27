@@ -38,6 +38,7 @@ from utils.time_manager import TimeManager
 from utils.query_checker import keyword_tokens
 from utils.async_results import classify_gather_results
 from core.reasoning_stream_filter import InterleavedReasoningFilter, MARKER
+from core.first_token_deadline import guard_first_chunk, FirstTokenTimeout
 import math
 # No config constants imported here; defaults are managed by ModelManager
 logger = get_logger("response_generator")
@@ -204,7 +205,24 @@ class ResponseGenerator:
 
                 try:
                     # Convert async iterator to support timeout on each chunk
-                    stream_iter = response_generator.__aiter__()
+                    # Lane L1 2026-10-27 (class: BC-69): first-chunk deadline +
+                    # one retry (nothing has reached the user yet). Read live.
+                    from config.app_config import FIRST_TOKEN_TIMEOUT_S  # lazy import: live-config read
+                    _reopen_kwargs = dict(gen_kwargs)
+
+                    async def _reopen_stream():
+                        return await self.model_manager.generate_async(prompt, **_reopen_kwargs)
+
+                    try:
+                        stream_iter = await guard_first_chunk(
+                            response_generator, _reopen_stream,
+                            float(FIRST_TOKEN_TIMEOUT_S), label="response",
+                        )
+                    except FirstTokenTimeout:
+                        elapsed = time.time() - stream_start
+                        self.logger.error(f"[STREAMING] No first chunk after retry ({elapsed:.1f}s)")
+                        yield "[Error: Stream timeout - no response from API]"
+                        return
                     while True:
                         # Timeout for each chunk (including first chunk)
                         try:

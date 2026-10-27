@@ -26,7 +26,16 @@ def memory_coordinator(temp_dirs):
     """Provide MemoryCoordinator."""
     corpus_manager = CorpusManager(corpus_file=temp_dirs["corpus_file"])
     chroma_store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
-    return MemoryCoordinator(corpus_manager=corpus_manager, chroma_store=chroma_store)
+    yield MemoryCoordinator(corpus_manager=corpus_manager, chroma_store=chroma_store)
+    chroma_store.close()  # release the chromadb client (fd leak, BC-81)
+
+
+@pytest.fixture
+def store(temp_dirs):
+    """A bare MultiCollectionChromaStore, closed on teardown (fd leak, BC-81)."""
+    chroma_store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
+    yield chroma_store
+    chroma_store.close()
 
 
 @pytest.fixture
@@ -311,19 +320,17 @@ def test_corpus_manager_multiple_entries(temp_dirs):
 
 
 # ChromaDB Store Edge Cases
-def test_chroma_store_add_empty_text(temp_dirs):
+def test_chroma_store_add_empty_text(store):
     """Empty query/response text is accepted (the document is still the
     non-empty "User: \\nAssistant: " template) and gets a real UUID id back."""
-    store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
     doc_id = store.add_conversation_memory(query="", response="", metadata={})
     assert isinstance(doc_id, str) and doc_id
     fetched = store._get_collection("conversations").get(ids=[doc_id])
     assert fetched["ids"] == [doc_id]
 
 
-def test_chroma_store_add_very_long_text(temp_dirs):
+def test_chroma_store_add_very_long_text(store):
     """A 50K-char turn is stored without truncation or rejection."""
-    store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
     long_text = "A" * 50000
     doc_id = store.add_conversation_memory(query=long_text, response=long_text, metadata={})
     assert isinstance(doc_id, str) and doc_id
@@ -331,10 +338,9 @@ def test_chroma_store_add_very_long_text(temp_dirs):
     assert fetched["documents"][0] == f"User: {long_text}\nAssistant: {long_text}"
 
 
-def test_chroma_store_query_nonexistent_collection(temp_dirs):
+def test_chroma_store_query_nonexistent_collection(store):
     """query_collection raises ValueError for a name that was never registered
     in self.collections — it never returns an empty list silently."""
-    store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
     with pytest.raises(ValueError, match="Unknown collection"):
         store.query_collection(
             collection_name="nonexistent_collection",
@@ -343,9 +349,8 @@ def test_chroma_store_query_nonexistent_collection(temp_dirs):
         )
 
 
-def test_chroma_store_add_with_unicode_metadata(temp_dirs):
+def test_chroma_store_add_with_unicode_metadata(store):
     """Test adding document with unicode in metadata."""
-    store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
     doc_id = store.add_conversation_memory(
         query="Test",
         response="Response",

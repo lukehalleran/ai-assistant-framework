@@ -317,6 +317,8 @@ def build_orchestrator():
     model_manager = _results["model_manager"]
     chroma_store = _results["chroma_store"]
     corpus_manager = _results["corpus_manager"]
+    from utils.location_resolver import set_session_turn_provider  # lazy import: startup-cost (keeps resolver off the Phase-1 critical path)
+    set_session_turn_provider(corpus_manager.visible_entries)  # session-stated moves reach the resolver with no file read
 
     logger.info(f"[startup] Phase 1 (parallel loads): {_time.monotonic()-_t_total:.2f}s")
 

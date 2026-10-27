@@ -1240,7 +1240,11 @@ def record_claim_exemplar(label: str, text: str, source: str) -> bool:
     claims_pending_card/claims_calendar_state's own verdict."""
     try:
         from utils.adaptive_exemplars import get_store  # lazy import: startup-cost
-        return get_store().record("action_claim", label, text, source)
+        # The text IS the matched claim sentence/region (both callers pass one),
+        # so it is its own supporting span (A06): an over-long sentence is
+        # learned as a <=300-char window, never silently declined.
+        return get_store().record(
+            "action_claim", label, text, source, support_span=(0, len(text or "")))
     except Exception:  # degrades: confirmed claim exemplar not persisted, learning skipped
         return False
 

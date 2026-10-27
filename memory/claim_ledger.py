@@ -145,6 +145,12 @@ def make_claim_id(subject_key: str, kind: str, stated_at: str, value: str, quote
     return "clm_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]  # noqa: S324 - identity, not security
 
 
+def _same_subject(a: str, b: str) -> bool:
+    """Supersession's subject test: identical keys, or the same normalised
+    match key (``subject_match_key``)."""
+    return a == b or subject_match_key(a) == subject_match_key(b)
+
+
 def _rank(claim: LedgerClaim) -> int:
     """Within one calendar day an asserted/correction claim outranks an estimate."""
     return 0 if claim.modality == "estimate" else 1
@@ -191,7 +197,7 @@ class ClaimLedger:
         superseded: list[str] = []
         for old in existing:
             if (old.superseded_by or old.modality == "conditional"
-                    or old.subject_key != claim.subject_key
+                    or not _same_subject(old.subject_key, claim.subject_key)
                     or old.unit_norm != claim.unit_norm
                     or old.scope != claim.scope
                     or old.occurrence_date != claim.occurrence_date):
@@ -208,7 +214,7 @@ class ClaimLedger:
             superseded.append(old.id)
         # Out-of-order add: a NEWER non-conditional claim already exists.
         for newer in existing:
-            if (newer.subject_key != claim.subject_key or newer.kind != claim.kind
+            if (not _same_subject(newer.subject_key, claim.subject_key) or newer.kind != claim.kind
                     or newer.unit_norm != claim.unit_norm or newer.modality == "conditional"
                     or newer.scope != claim.scope
                     or newer.occurrence_date != claim.occurrence_date):
@@ -655,6 +661,50 @@ def _spacy(nlp=None):
         return nlp
     from memory.fact_extractor import _get_nlp  # lazy import: startup-cost (spaCy model + extractor module)
     return _get_nlp()
+
+
+_subject_match_cache: dict[str, str] = {}
+
+
+def subject_match_key(subject_key: str, nlp=None) -> str:
+    """The key supersession MATCHES on (2026-10-27, class: BC-55): the content
+    lemmas of the model-invented snake_case key, with numeric RANGES ("4_through_7")
+    and function words dropped, so "weeks_4_through_7_set_with_it" and "weeks_set" are one
+    subject. The stored ``subject_key`` is never rewritten.
+
+    A LONE numeral ("assignment_7") says which subject it is and is kept.
+    Function words come from spaCy's English lexicon and numerals from digit
+    shape (categories, not example phrases). Content words are KEPT, not
+    reduced to a single head noun: the extraction prompt requires
+    "days_behind_reading" and "days_to_catch_up" to stay different subjects,
+    and a head-noun-only key would merge every "days_*" key. No content word
+    left -> the raw key (never an empty match key)."""
+    raw = str(subject_key or "")
+    if raw in _subject_match_cache:
+        return _subject_match_cache[raw]
+    from spacy.lang.en.stop_words import STOP_WORDS  # lazy import: startup-cost (imports the spacy package)
+    toks = [w for w in raw.split("_") if w]
+    isnum = [any(ch.isdigit() for ch in w) for w in toks]
+    drop = [False] * len(toks)
+    for i in range(1, len(toks) - 1):       # a numeric RANGE ("4_through_7") describes a span ...
+        if isnum[i - 1] and isnum[i + 1] and toks[i] in STOP_WORDS:
+            drop[i - 1] = drop[i] = drop[i + 1] = True
+    # ... a lone numeral ("assignment_7", "subject_03") identifies WHICH subject: kept
+    words = [w for i, w in enumerate(toks) if not drop[i] and (isnum[i] or w not in STOP_WORDS)]
+    result = raw
+    if words:
+        result = " ".join(words)
+        model = _spacy(nlp)
+        if model is not None:
+            try:
+                lem = [t.lemma_.lower() for t in model(f"6 {result}") if t.i > 0 and not t.is_space]
+                if len(lem) == len(words):
+                    result = " ".join(lem)
+            except Exception:  # degrades: lemma step skipped, unlemmatised key used for matching
+                pass
+    if nlp is None:
+        _subject_match_cache[raw] = result
+    return result
 
 
 def norm_unit(unit: str, nlp=None) -> str:

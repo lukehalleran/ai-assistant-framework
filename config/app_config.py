@@ -279,6 +279,10 @@ DEFAULT_TOP_K = config.get("models", {}).get("default_top_k", 5)
 DEFAULT_TEMPERATURE = config.get("models", {}).get("default_temperature", 0.7)
 LOCAL_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("local_model_context_limit", 4096)
 API_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("api_model_context_limit", 128000)
+# Streaming first-chunk deadline (lane L1 2026-10-27); consumers read this LIVE at call time.
+FIRST_TOKEN_TIMEOUT_S: float = float(config.get("models", {}).get("first_token_timeout_s", 30.0))
+# STM analysis cap in the context-pipeline gather (lane L1 2026-10-27); read live.
+STM_TIMEOUT_S: float = float((config.get("stm", {}) or {}).get("timeout_s", 5.0))
 GATE_REL_THRESHOLD = config.get("gating", {}).get("gate_rel_threshold", 0.18)
 # Retrieval-space (bge) equivalents used when the gate shares the ChromaDB
 # store's embedder — quantile-matched to the MiniLM-space values (see
@@ -1646,8 +1650,17 @@ def _figure_classes(key: str, default: tuple) -> tuple:
 
 FIGURE_CHECK_CORRECT_CLASSES: tuple = _figure_classes("correct_classes", ("elapsed_precise", "weekday_date"))
 FIGURE_CHECK_LOG_CLASSES: tuple = _figure_classes(
-    "log_classes", ("elapsed_vague", "elapsed_unconfirmed", "copied_mismatch"))
+    "log_classes", ("elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported"))
 FIGURE_CHECK_MIN_REFERENT_OVERLAP: int = max(1, int(FIGURE_CHECK_CFG.get("min_referent_overlap", 1)))
+
+# --------------------------------------------------------------------
+# Dated day counts (2026-10-27, class: BC-103/BC-100). Read at call time (BC-82).
+# --------------------------------------------------------------------
+DAY_COUNTS_CFG = config.get("day_counts", {}) or {}
+DAY_COUNTS_ENABLED: bool = bool(DAY_COUNTS_CFG.get("enabled", True))
+DAY_COUNTS_MAX_LINES: int = max(1, int(DAY_COUNTS_CFG.get("max_lines", 3)))
+DAY_COUNTS_MAX_AGE_DAYS: int = max(1, int(DAY_COUNTS_CFG.get("max_age_days", 400)))
+DAY_COUNTS_STORE_PATH: str = str(DAY_COUNTS_CFG.get("store_path", "data/day_count_anchors.json"))
 
 # --------------------------------------------------------------------
 # User-claim ledger (2026-10-20, class: BC-75/BC-52). Every switch ships OFF; the

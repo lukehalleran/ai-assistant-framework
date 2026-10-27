@@ -29,7 +29,9 @@ def corpus_manager(temp_dirs):
 @pytest.fixture
 def chroma_store(temp_dirs):
     """Provide ChromaStore."""
-    return MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
+    store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
+    yield store
+    store.close()  # release the chromadb client (fd leak, BC-81)
 
 
 @pytest.fixture
