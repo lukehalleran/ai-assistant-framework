@@ -58,6 +58,7 @@ Module Contract
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -525,7 +526,10 @@ class SynthesisFilter:
         try:
             from models.model_manager import ModelManager  # lazy import: startup-cost
             embedder = ModelManager._get_cached_embedder()
-            vecs = embedder.encode([concept_a, concept_b], normalize_embeddings=True)
+            # Lane L1 2026-10-27 (M-7, class: BC-41): CPU/GPU encode off the event loop.
+            vecs = await asyncio.to_thread(
+                embedder.encode, [concept_a, concept_b], normalize_embeddings=True
+            )
             cooccurrence_sim = float(np.dot(vecs[0], vecs[1]))
         except Exception as e:
             logger.debug(f"Concept cosine co-occurrence check failed: {e}. Skipping.")

@@ -125,6 +125,7 @@ from core.agentic import tool_thread
 from utils import read_time_markers
 from utils.attachment_audit import self_reference_note
 from core.reasoning_stream_filter import InterleavedReasoningFilter
+from core.first_token_deadline import guard_first_chunk
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 from utils.ordered_slice import oldest_first as _ordered_oldest_first
 from utils.text_budget import fit_text_to_tokens
@@ -3335,15 +3336,18 @@ class AgenticSearchController:
         # Stream the response
         try:
             # generate_async returns a coroutine that yields a stream
-            stream = await self.model_manager.generate_async(
-                prompt=final_prompt,
-                model_name=model_name,
-                system_prompt=system_prompt,
-                max_tokens=8192,
-                images=_images,
-                # BC-82: live read of the synthesis effort knob (default medium)
-                reasoning_effort=app_config.AGENTIC_SYNTHESIS_REASONING_EFFORT,
-            )
+            async def _open_final_stream():
+                return await self.model_manager.generate_async(
+                    prompt=final_prompt,
+                    model_name=model_name,
+                    system_prompt=system_prompt,
+                    max_tokens=8192,
+                    images=_images,
+                    # BC-82: live read of the synthesis effort knob (default medium)
+                    reasoning_effort=app_config.AGENTIC_SYNTHESIS_REASONING_EFFORT,
+                )
+
+            stream = await _open_final_stream()
 
             # Handle different return types. The InterleavedReasoningFilter
             # suppresses reasoning-only chunks (emitting <thinking>/</thinking>
@@ -3356,7 +3360,14 @@ class AgenticSearchController:
             _stream_usage = None
             _stream_provider = None
             if hasattr(stream, '__aiter__'):
-                # It's an async iterator (OpenAI stream)
+                # It's an async iterator (OpenAI stream). Lane L1 2026-10-27
+                # (class: BC-69): first-chunk deadline + ONE retry (nothing has
+                # been yielded yet); a second stall raises into the existing
+                # except below. Read live (BC-82).
+                stream = await guard_first_chunk(
+                    stream, _open_final_stream,
+                    float(app_config.FIRST_TOKEN_TIMEOUT_S), label="agentic_synthesis",
+                )
                 async for chunk in stream:
                     # Trailing usage chunk (generate_async sets
                     # stream_options.include_usage; same capture as

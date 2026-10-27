@@ -66,6 +66,7 @@ from datetime import datetime, timedelta
 
 from core.wiki_util import get_wiki_snippet, clean_query, looks_like_disambiguation_text
 from knowledge.semantic_search import semantic_search_with_neighbors
+import knowledge.semantic_search as semantic_index
 from utils.trigger_match import is_negated as _trigger_is_negated
 from utils.retrieval_outcome import OutcomeList, outcome_status
 from .formatter import _parse_bool
@@ -1841,6 +1842,7 @@ class KnowledgeRetrievalMixin:
         # --- Try local ChromaDB wiki_knowledge first ---
         chroma = getattr(self.memory_coordinator, 'chroma_store', None)
         chroma_err = None
+        chroma_answered_empty = False
         if chroma:
             # In-flight guard (audit F26 2026-08-31, same zombie-thread class
             # as _WIKI_SEM_INFLIGHT): a timed-out chroma query keeps running
@@ -1912,6 +1914,7 @@ class KnowledgeRetrievalMixin:
                         }
                         for r in results
                     ]
+                chroma_answered_empty = True
             except asyncio.TimeoutError:
                 timings["timed_out"] = True
                 # Audit F26 (2026-08-31): the log has always claimed "skipping
@@ -1926,6 +1929,18 @@ class KnowledgeRetrievalMixin:
             except Exception as e:
                 logger.debug(f"[ContextGatherer] wiki_knowledge query failed, falling back to API: {e}")
                 chroma_err = type(e).__name__
+
+        # Lane L1 2026-10-27 (M-6, class: BC-69/BC-70): the local wiki store
+        # answered with nothing AND the FAISS index is absent (a DISABLED state,
+        # not a hiccup) - the live Wikipedia lookup then cost up to the fallback
+        # deadline per turn (timed out on 37/192 live turns, best score below the
+        # floor 33 times). Skip it. Chroma missing/errored (the live lookup is the
+        # only source) or an index that IS present keeps the fallback unchanged.
+        if chroma_answered_empty and not semantic_index.index_available():
+            logger.debug(
+                "[Wiki] live fallback skipped: wiki_knowledge empty for query and FAISS index absent"
+            )
+            return []
 
         # --- Fallback: live Wikipedia API ---
         started = _t.perf_counter()

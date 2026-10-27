@@ -72,6 +72,8 @@ models:
   default_temperature: 0.75
   openai_api_key: ''
   active: kimi-3
+  # Streaming answer: no chunk within this many seconds -> close + retry ONCE (never after a chunk). <=0 disables.
+  first_token_timeout_s: 30.0
 gating:
   gate_rel_threshold: 0.18
   gate_rel_threshold_retrieval: 0.6
@@ -358,6 +360,9 @@ turn_telemetry:
   # the loop during prompt gathering; stalls land in the turn record as loop_stalls.
   loop_stall_detector: true
   loop_stall_threshold_ms: 250
+stm:
+  # Short-term-memory analysis cap inside the context-pipeline gather; on timeout the turn has no STM summary.
+  timeout_s: 5.0
 light_prompt:
   enabled: true
   max_words: 8

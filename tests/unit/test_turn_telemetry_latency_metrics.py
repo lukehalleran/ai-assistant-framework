@@ -207,6 +207,11 @@ async def test_wiki_times_chroma_and_actual_fallback(wiki, monkeypatch, local_hi
         query_collection=Mock(return_value=[result] if local_hit else []),
     )
     gatherer.memory_coordinator.chroma_store = chroma
+    # 2026-10-27 (lane L1): with the FAISS index ABSENT an empty local store now
+    # skips the live fallback (test_gatherer_knowledge_wiki_fallback_skip.py);
+    # this test times the fallback that DOES run, i.e. the index-present path.
+    import knowledge.semantic_search as _ss
+    monkeypatch.setattr(_ss, "index_available", lambda: True)
     ticks = iter([1.0, 1.125, 2.0, 2.25])
     monkeypatch.setattr(gk, "_t", SimpleNamespace(perf_counter=lambda: next(ticks)))
     output = await gatherer._get_wiki_content("describe stellar quasars")

@@ -280,7 +280,7 @@ class GoogleAuthManager:
                         authorization_prompt_message="{url}\n",
                     )
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             creds = await loop.run_in_executor(None, _run_flow)
 
             self._save_token(creds)

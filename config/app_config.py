@@ -279,6 +279,10 @@ DEFAULT_TOP_K = config.get("models", {}).get("default_top_k", 5)
 DEFAULT_TEMPERATURE = config.get("models", {}).get("default_temperature", 0.7)
 LOCAL_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("local_model_context_limit", 4096)
 API_MODEL_CONTEXT_LIMIT = config.get("models", {}).get("api_model_context_limit", 128000)
+# Streaming first-chunk deadline (lane L1 2026-10-27); consumers read this LIVE at call time.
+FIRST_TOKEN_TIMEOUT_S: float = float(config.get("models", {}).get("first_token_timeout_s", 30.0))
+# STM analysis cap in the context-pipeline gather (lane L1 2026-10-27); read live.
+STM_TIMEOUT_S: float = float((config.get("stm", {}) or {}).get("timeout_s", 5.0))
 GATE_REL_THRESHOLD = config.get("gating", {}).get("gate_rel_threshold", 0.18)
 # Retrieval-space (bge) equivalents used when the gate shares the ChromaDB
 # store's embedder — quantile-matched to the MiniLM-space values (see

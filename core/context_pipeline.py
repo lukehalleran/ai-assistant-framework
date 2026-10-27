@@ -577,11 +577,17 @@ class ContextPipeline:
             return await self._rewrite_query(user_input, _pre_analysis)
 
         async def _do_stm():
+            # Lane L1 2026-10-27 (M-5, class: BC-69): the cap is config
+            # (stm.timeout_s), read LIVE; p50 2 s / p95 3 s measured, so 5 s.
+            from config.app_config import STM_TIMEOUT_S  # lazy import: live-config read
             try:
-                async with asyncio.timeout(10.0):
+                async with asyncio.timeout(float(STM_TIMEOUT_S)):
                     return await self._analyze_stm(user_input, conversation_history)
             except asyncio.TimeoutError:
-                logger.warning("Stage 6 (STM): analysis timed out")
+                logger.warning(
+                    "Stage 6 (STM): analysis timed out after %.1fs - no STM summary this turn",
+                    float(STM_TIMEOUT_S),
+                )
                 return None
 
         _jobs: Dict[str, Any] = {}
