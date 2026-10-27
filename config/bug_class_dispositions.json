@@ -188,14 +188,14 @@
       },
       "ordinal": 1,
       "legacy": null,
-      "source_sha256": "93d6baecb1927091b45ed13dbf4009fd5112f364bc60cad5726751181936a771",
+      "source_sha256": "d8c265bf847931534455a3e710ed1dd6a859af48e7ad6a4e18a8e749c9baa130",
       "status": "accepted_debt",
       "assessment": "reviewed_benign",
-      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Metadata title check for generated daily notes.",
-      "reviewer": "Claude Opus 5, class-guard execution session (owner review pending before commit)",
-      "review_date": "2026-09-13",
+      "rationale": "The membership test runs against machine-generated or structured text (an exception message, a generated label, a metadata title or type, a delimiter, or a URL scheme), not a keyword vocabulary over user language. The detector's lowered-text shape matches, but review found no BC-01 misfire mechanism. Accepted as reviewed debt; this is neither a confirmed defect nor a detector false positive, because the detector cannot tell these apart. Site: Metadata title check for generated daily notes. Re-reviewed 2026-10-27 (owner-approved, CGR-20261027-003): file edited by the oct27 DOCS lane (C1 self-docs manifest); this record's anchored construct is byte-identical and the scan reports no new findings.",
+      "reviewer": "Owner (dialogue re-review 2026-10-27); evidence prepared by Claude Opus 5.5",
+      "review_date": "2026-10-27",
       "evidence": "docs/execution/class_guards/BASELINE_REVIEW_20260913.md",
-      "request": null
+      "request": "CGR-20261027-003"
     },
     {
       "anchor": {
