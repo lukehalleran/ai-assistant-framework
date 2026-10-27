@@ -45,7 +45,7 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         if len(parts) >= 3:
             try:
                 frontmatter = yaml.safe_load(parts[1]) or {}
-            except Exception:
+            except Exception:  # degrades: note frontmatter ignored so its metadata is lost
                 pass
             body = parts[2].strip()
 

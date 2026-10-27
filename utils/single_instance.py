@@ -37,7 +37,7 @@ def _default_lock_dir() -> str:
         parent = os.path.dirname(os.path.abspath(CHROMA_PATH))
         if parent:
             return parent
-    except Exception as e:
+    except Exception as e:  # degrades: lock file is placed in the default data directory
         logger.debug(f"[SingleInstance] CHROMA_PATH unavailable ({e}); using ./data")
     return os.path.abspath("data")
 

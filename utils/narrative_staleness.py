@@ -50,7 +50,7 @@ def _load() -> dict:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except Exception:  # degrades: staleness flag unreadable so narrative is treated as fresh
         return {}
 
 
@@ -78,8 +78,8 @@ def mark_stale(reason: str) -> bool:
         atomic_write_json(path, payload)
         logger.info(f"[NarrativeStaleness] Marked stale: {payload['reason'][:80]!r}")
         return True
-    except Exception as e:
-        logger.debug(f"[NarrativeStaleness] mark_stale failed (non-fatal): {e}")
+    except Exception as e:  # degrades: correction is not flagged against the stale narrative
+        logger.warning(f"[NarrativeStaleness] mark_stale failed: {type(e).__name__}")
         return False
 
 
@@ -90,7 +90,7 @@ def clear() -> None:
         if os.path.exists(path):
             os.remove(path)
             logger.debug("[NarrativeStaleness] Flag cleared")
-    except Exception as e:
+    except Exception as e:  # degrades: stale-narrative flag may linger after a fresh narrative save
         logger.debug(f"[NarrativeStaleness] clear failed (non-fatal): {e}")
 
 
@@ -101,5 +101,5 @@ def is_stale(narrative_mtime: float) -> bool:
         if not isinstance(marked_at, (int, float)):
             return False
         return float(marked_at) > float(narrative_mtime)
-    except Exception:
+    except Exception:  # degrades: narrative is not marked stale after a correction
         return False

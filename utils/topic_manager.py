@@ -57,7 +57,7 @@ def _load_spacy():
         try:
             import spacy  # lazy import: startup-cost
             _spacy_nlp = spacy.load("en_core_web_sm")
-        except Exception as e:
+        except Exception as e:  # degrades: spaCy topic extraction disabled so the LLM fallback is used
             # If spaCy unavailable, silently skip (fallback to LLM)
             _spacy_nlp = False
     return _spacy_nlp if _spacy_nlp is not False else None
@@ -406,7 +406,7 @@ class TopicManager:
         try:
             from core.dependencies import deps  # lazy import: layering (type: ignore)
             return deps.get_model_manager()
-        except Exception:
+        except Exception:  # degrades: topic LLM fallback unavailable without a model manager
             return None
 
     def _spacy_ner_extraction(self, text: str) -> Optional[str]:
@@ -473,7 +473,7 @@ class TopicManager:
 
             return None
 
-        except Exception as e:
+        except Exception as e:  # degrades: spaCy entity topic missing so later fallbacks are used
             self.logger.debug(f"[TopicManager] spaCy NER failed: {e}")
             return None
 
@@ -587,7 +587,7 @@ class TopicManager:
                 temperature=0.0,
                 top_p=0.0,
             )
-        except Exception as e:
+        except Exception as e:  # degrades: LLM topic fallback skipped so the topic stays unresolved
             # Fail open on any model errors
             self.logger.debug(f"[TopicManager] LLM fallback skipped: {e}")
             return None

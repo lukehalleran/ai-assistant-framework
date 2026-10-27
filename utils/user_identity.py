@@ -93,8 +93,8 @@ class UserIdentityResolver:
                 with open(self.profile_path, "r", encoding="utf-8") as f:
                     profile = json.load(f)
                 value = self._extract(profile)
-            except Exception as e:
-                logger.debug(f"[UserIdentity] profile read failed: {e}")
+            except Exception as e:  # degrades: user display name and anchors unavailable for personalization
+                logger.warning(f"[UserIdentity] profile read failed: {type(e).__name__}")
             self._cached = value
             self._mtime = mtime
             return value

@@ -73,7 +73,7 @@ def _is_valid_iana_zone(zone: str) -> bool:
     try:
         ZoneInfo(zone)
         return True
-    except Exception:
+    except Exception:  # degrades: invalid timezone names are treated as unknown zones
         return False
 
 
@@ -101,7 +101,7 @@ def _resolve_windows_registry_timezone() -> Optional[str]:
             key_name, _ = winreg.QueryValueEx(key, "TimeZoneKeyName")
         finally:
             winreg.CloseKey(key)
-    except Exception as e:
+    except Exception as e:  # degrades: Windows system timezone unavailable so the user zone is unknown
         logger.debug(f"[Timezone] Windows registry read failed: {e}")
         return None
     zone = WINDOWS_TO_IANA.get(key_name)
@@ -132,7 +132,7 @@ def _resolve_system_timezone() -> Optional[str]:
             zone = path_str.split("zoneinfo/", 1)[-1]
             if _is_valid_iana_zone(zone):
                 return zone
-    except Exception as e:
+    except Exception as e:  # degrades: system timezone unavailable so the user zone is unknown
         logger.debug(f"[Timezone] Failed to read system timezone: {e}")
     return None
 
@@ -189,8 +189,8 @@ class TimezoneResolver:
                 with open(self.profile_path, "r", encoding="utf-8") as f:
                     profile = json.load(f)
                 value = self._extract(profile)
-            except Exception as e:
-                logger.debug(f"[Timezone] profile read failed: {e}")
+            except Exception as e:  # degrades: user timezone from profile is unavailable for date conversion
+                logger.warning(f"[Timezone] profile read failed: {type(e).__name__}")
             self._cached = value
             self._mtime = mtime
             return value

@@ -67,16 +67,29 @@ class TestHangupBecomesCleanShutdown:
         assert marker.read_text() == "clean shutdown ran"
 
     def test_without_handler_sighup_kills(self, tmp_path):
-        """Control: the default SIGHUP action terminates the interpreter."""
-        script = "import time\nopen(%r,'w').write('x')\nwhile True: time.sleep(0.05)" % str(tmp_path / "r")
+        """Control: the default SIGHUP action terminates the interpreter.
+
+        The child sets SIG_DFL itself: an ignored SIGHUP is inherited across exec,
+        so under a parent that ignores SIGHUP (a background shell, nohup) the child
+        survived, the wait timed out and the child was orphaned spinning forever
+        (2026-10-27, seen in agent background runs; class: BC-101). The finally
+        kills the child whatever the outcome.
+        """
+        script = ("import signal, time\nsignal.signal(signal.SIGHUP, signal.SIG_DFL)\n"
+                  "open(%r,'w').write('x')\nwhile True: time.sleep(0.05)" % str(tmp_path / "r"))
         proc = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            if (tmp_path / "r").exists():
-                break
-            time.sleep(0.05)
-        os.kill(proc.pid, signal.SIGHUP)
-        rc = proc.wait(timeout=10)
-        assert rc != 0
+        try:
+            for _ in range(100):
+                if (tmp_path / "r").exists():
+                    break
+                time.sleep(0.05)
+            os.kill(proc.pid, signal.SIGHUP)
+            rc = proc.wait(timeout=10)
+            assert rc != 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
 
     def test_second_hangup_is_ignored(self):
         from utils import process_signals as ps
