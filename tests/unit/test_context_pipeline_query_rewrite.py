@@ -244,3 +244,35 @@ class TestDeployedRewriteQueryWithMisbehavingModels:
         assert len(calls) == 1
         assert r.retrieval_query == "expanded retrieval phrasing"
         assert r.processed_query == QUERY
+
+
+class TestRewriteUnwrapsTestEnvelope:
+    """R1 (2026-10-26, class: BC-05, BC-06): the LLM rewrite and its
+    should-rewrite decision judge the probe's inner text, not the tags."""
+
+    INNER = "how does the quillfern gate score candidate documents\nbefore the reranker runs today?"
+
+    def _run(self, text):
+        prompts: list = []
+
+        async def generate_once(**kw):
+            prompts.append(kw["prompt"])
+            return "REWRITTEN"
+
+        cp = _pipeline(model_manager=NS(generate_once=generate_once))
+        return asyncio.run(cp._rewrite_query(text, None)), prompts
+
+    def test_wrapped_and_indented_reach_prompt_without_tags(self):
+        wrapped = f"[test]\n  {self.INNER}\n[/test]"
+        indented = "   [test]" + self.INNER.replace("\n", "\n      ") + "[/test]\n"
+        for text in (self.INNER, wrapped, indented):
+            result, prompts = self._run(text)
+            assert result == "REWRITTEN" and len(prompts) == 1
+            assert "[test]" not in prompts[0] and "[/test]" not in prompts[0]
+            assert "quillfern gate" in prompts[0]
+
+    def test_decision_matches_unwrapped_text(self):
+        # fallback heuristic: starts with "how" and >=5 words -> rewrite
+        _, clean = self._run(self.INNER)
+        _, wrapped = self._run(f"[test]{self.INNER}[/test]")
+        assert len(clean) == len(wrapped) == 1
