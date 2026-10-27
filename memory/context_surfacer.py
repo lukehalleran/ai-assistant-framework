@@ -78,7 +78,7 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
 def _merge_personal_domain_keywords() -> None:
     try:
         from config.app_config import PROFILE_PERSONAL_CATEGORY_TOKENS
-    except Exception:
+    except Exception:  # degrades: personal-domain keywords skipped, so insight surfacing uses built-in keywords only
         return
     for domain, tokens in (PROFILE_PERSONAL_CATEGORY_TOKENS or {}).items():
         key = str(domain).lower()

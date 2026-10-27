@@ -1269,7 +1269,7 @@ class ModelManager:
         # If prefix alone is too long, truncate from the end of entire prompt
         allowed_rest_tokens = max_input_tokens - len(prefix_tokens)
         if allowed_rest_tokens <= 0:
-            print("[WARN] Prefix alone exceeds max input size.")
+            logger.warning("[WARN] Prefix alone exceeds max input size.")
             return tokenizer.decode((prefix_tokens + rest_tokens)[-max_input_tokens:])
 
         # Truncate rest of prompt and return combined prompt

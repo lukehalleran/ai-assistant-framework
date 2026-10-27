@@ -108,5 +108,7 @@ async def test_world_fact_and_derived_figures_log_nothing(seen):
 def test_config_defaults_match_the_yaml_section():
     assert app_config.FIGURE_CHECK_ENABLED is True
     assert set(app_config.FIGURE_CHECK_CORRECT_CLASSES) == {"elapsed_precise", "weekday_date"}
-    assert set(app_config.FIGURE_CHECK_LOG_CLASSES) == {"elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported"}
+    assert set(app_config.FIGURE_CHECK_LOG_CLASSES) == {
+        "elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported",
+        "cross_owner_date", "unsupported_detail", "stale_day_count"}   # last three: log-only siblings, 2026-10-27
     assert app_config.FIGURE_CHECK_MIN_REFERENT_OVERLAP == 1

@@ -113,7 +113,7 @@ def _thread_context_is_stale(thread_ctx: dict, now: Optional[datetime] = None) -
         ref = now or datetime.now()
         ref = ref.replace(tzinfo=None)
         return (ref - ts).total_seconds() > THREAD_TIME_HARD_CUTOFF
-    except Exception:
+    except Exception:  # degrades: thread age check skipped so a stale thread may still be offered
         return False
 
 
@@ -453,7 +453,7 @@ def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
             rec.update({k: v for k, v in ctx.telemetry.items()
                         if k.startswith(DEFERRED_RECEIPT_PREFIXES)})
             record_turn(rec)
-        except Exception as exc:
+        except Exception as exc:  # degrades: deferred telemetry fields missing from this turn's record
             logger.debug(f"[TurnTelemetry] deferred write skipped: {exc}")
 
     ctx.telemetry_task.add_done_callback(write_completed)
@@ -469,7 +469,7 @@ def _hook_search_worthy_teach(ctx: PostResponseHookContext) -> None:
     rec_tone = None
     try:
         rec_tone = (getattr(ctx.orchestrator, "_last_turn_signals", {}) or {}).get("tone_level")
-    except Exception:
+    except Exception:  # degrades: tone unknown so web-citation check may run on a distressed turn
         pass
     if _tone_is_elevated(rec_tone):
         return
@@ -612,7 +612,7 @@ def run_post_response_hooks(ctx: PostResponseHookContext) -> None:
     for name, fn in POST_RESPONSE_HOOKS:
         try:
             fn(ctx)
-        except Exception as exc:  # noqa: BLE001 - hooks must never break a turn
+        except Exception as exc:  # noqa: BLE001 - hooks must never break a turn # degrades: one post-response hook skipped for this turn
             logger.debug(f"[PostResponseHooks] {name} skipped: {exc}")
 
 
@@ -886,7 +886,7 @@ class DaemonOrchestrator:
                 age_str = f"{age.seconds // 3600}h {(age.seconds % 3600) // 60}m"
                 self.logger.debug(f"[Orchestrator] Narrative context is fresh ({age_str} old)")
 
-        except Exception as e:
+        except Exception as e:  # degrades: narrative staleness warning missing from startup log
             self.logger.debug(f"[Orchestrator] Narrative freshness check skipped: {e}")
 
     # ---------- Truth Score Helper Methods ----------
@@ -953,7 +953,7 @@ class DaemonOrchestrator:
                 # Compute cosine similarity
                 sim = cosine_similarity(emb1, emb2)[0][0]
                 return float(sim)
-        except Exception as e:
+        except Exception as e:  # degrades: embedding similarity unavailable so word-overlap fallback scores topics
             self.logger.debug(f"[STM] Embedding similarity failed, using fallback: {e}")
 
         # Fallback: simple word overlap (Jaccard-like)
@@ -1394,7 +1394,7 @@ class DaemonOrchestrator:
         try:
             gap = tm.time_since_previous_message()
             return isinstance(gap, str) and "N/A" in gap
-        except Exception:
+        except Exception:  # degrades: first-message-of-session detection falls back to not-first
             return False
 
     def _build_system_prompt(self, context: ContextResult, use_raw_mode: bool = False) -> str:
@@ -1646,7 +1646,7 @@ class DaemonOrchestrator:
                         getattr(context, "crisis_level_str", None),
                         query=getattr(context, "original_query", None),
                     )
-            except Exception as e:
+            except Exception as e:  # degrades: per-intent style block missing from this turn's system prompt
                 logger.debug(f"[Orchestrator] Intent style resolution failed (non-fatal): {e}")
                 _intent_style = ""
 
@@ -1680,7 +1680,7 @@ class DaemonOrchestrator:
                             escalation_instructions = escalation_instructions.replace(
                                 "\n" + GROUNDING_ACCURACY_CLAUSE, ""
                             ).replace(GROUNDING_ACCURACY_CLAUSE, "")
-                    except Exception:
+                    except Exception:  # degrades: duplicate accuracy clause may appear twice in the prompt
                         pass
                     system_prompt = system_prompt.rstrip() + escalation_instructions
 
@@ -1704,7 +1704,7 @@ class DaemonOrchestrator:
                             "- If no threads are present or relevant, just greet normally\n"
                             "- Never fabricate threads — only reference what appears in [UNRESOLVED THREADS]\n"
                         )
-            except (ImportError, Exception):
+            except (ImportError, Exception):  # degrades: thread-greeting guidance missing from first-message prompt
                 pass
 
             # --- Codebase change awareness (first message only) ---
@@ -1727,7 +1727,7 @@ class DaemonOrchestrator:
                             "appear in the changes — if so, acknowledge the implementation.\n"
                             "- Do NOT list every change. Only mention changes relevant to conversation.\n"
                         )
-            except (ImportError, Exception):
+            except (ImportError, Exception):  # degrades: codebase-change guidance missing from first-message prompt
                 pass
 
         # --- Thinking block instruction ---
@@ -1780,7 +1780,7 @@ class DaemonOrchestrator:
                     need_type=need_type_str,
                     tone_trigger=tone_trigger_str,
                 )
-            except Exception as _esc_exc:
+            except Exception as _esc_exc:  # degrades: escalation tracker misses this turn's tone update
                 self.logger.debug(f"[EscalationTracker] update skipped: {_esc_exc}")
 
         # Runtime safety canary (log only): flags a sustained negative-affect
@@ -1791,7 +1791,7 @@ class DaemonOrchestrator:
         if getattr(self, "safety_canary", None):
             try:
                 self.safety_canary.observe(context.original_query or "", context.tone_level)
-            except Exception as _canary_exc:
+            except Exception as _canary_exc:  # degrades: safety canary misses this turn's tone observation
                 self.logger.debug(f"[SafetyCanary] skipped: {_canary_exc}")
 
     async def build_full_prompt(
@@ -1859,7 +1859,7 @@ class DaemonOrchestrator:
                     context_digest=_planner_digest,
                     context_sections=_planner_sections,
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: pre-answer response plan missing from this turn's prompt
                 logger.debug(f"[BUILD_FULL_PROMPT] Response planner failed (non-fatal): {e}")
                 _plan_result = None
 
@@ -1892,7 +1892,7 @@ class DaemonOrchestrator:
                 try:
                     from knowledge.web_search_manager import live_remaining_credits
                     _web_budget = live_remaining_credits()
-                except Exception:
+                except Exception:  # degrades: web budget unknown in this turn's receipt
                     _web_budget = None
             # Compact receipt of the sections this turn could not check
             # (CGR-007, F6b): read from prompt_ctx BEFORE any pop (the
@@ -1950,7 +1950,7 @@ class DaemonOrchestrator:
                 ),
                 "sections_not_checked": _sections_not_checked,
             }
-        except Exception as e:
+        except Exception as e:  # degrades: turn-signal record for debug and review left empty
             logger.debug(f"[BUILD_FULL_PROMPT] Turn-signal capture failed (non-fatal): {e}")
             self._last_turn_signals = {}
 
@@ -1982,7 +1982,7 @@ class DaemonOrchestrator:
             _cond_tail = conditional_instruction_tail(prompt_ctx)
             if _cond_tail:
                 system_prompt = system_prompt.rstrip() + _cond_tail
-        except Exception as e:
+        except Exception as e:  # degrades: conditional section instructions missing from this turn's prompt tail
             logger.debug(f"[BUILD_FULL_PROMPT] conditional instructions skipped: {e}")
 
         # --- 3) Assemble final prompt ---
@@ -2353,7 +2353,7 @@ class DaemonOrchestrator:
             try:
                 from knowledge.document_generator import detect_document_intent
                 _doc_intent = detect_document_intent(user_input)
-            except Exception:
+            except Exception:  # degrades: document-request detection skipped so request answers in chat
                 pass
 
         if _doc_intent and self.agentic_controller:
@@ -2806,7 +2806,7 @@ class DaemonOrchestrator:
                                         f"[Staleness] Cascade from correction on '{event.relation}': "
                                         f"{len(affected)} document(s) updated"
                                     )
-                    except Exception as se:
+                    except Exception as se:  # degrades: staleness cascade skipped so dependent documents stay unmarked
                         self.logger.debug(f"[Staleness] Cascade failed (non-fatal): {se}")
 
             except Exception as e:
@@ -2825,7 +2825,7 @@ class DaemonOrchestrator:
                 if signal >= 0.6:
                     from utils.narrative_staleness import mark_stale
                     mark_stale(f"user correction (conf {signal:.2f}): {user_input[:120]}")
-            except Exception as e:
+            except Exception as e:  # degrades: narrative not flagged stale after a user correction
                 self.logger.debug(f"[Orchestrator] Narrative staleness flag failed (non-fatal): {e}")
 
         # --- Entity correction detection (non-profile entities) ---
@@ -2834,7 +2834,7 @@ class DaemonOrchestrator:
                 entity_corrections = self.correction_detector.detect_entity_corrections(user_input)
                 if entity_corrections:
                     self._cascade_entity_resolution(entity_corrections)
-            except Exception as e:
+            except Exception as e:  # degrades: entity correction not applied to the knowledge graph
                 self.logger.debug(f"[Orchestrator] Entity correction detection failed (non-fatal): {e}")
 
         # --- Retroactive content attribution ---
@@ -2843,7 +2843,7 @@ class DaemonOrchestrator:
                 attributions = self.correction_detector.detect_attributions(user_input)
                 if attributions:
                     self._apply_content_attributions(attributions)
-            except Exception as e:
+            except Exception as e:  # degrades: retroactive content attribution not applied this turn
                 self.logger.debug(f"[Orchestrator] Attribution detection failed (non-fatal): {e}")
 
     def _finalize_debug(self, flow):

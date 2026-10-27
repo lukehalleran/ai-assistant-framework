@@ -68,7 +68,7 @@ def _timestamp(value: Any) -> str | None:
     if hasattr(value, "isoformat"):
         try:
             return str(value.isoformat())
-        except Exception:
+        except Exception:  # degrades: an unformattable timestamp falls back to its plain text form
             pass
     return _as_text(value)
 

@@ -255,7 +255,7 @@ class ShutdownProcessor:
             try:
                 from memory.user_profile_schema import save_category_cache
                 save_category_cache()
-            except Exception as e:
+            except Exception as e:  # degrades: category cache not saved, relations re-categorized next session
                 logger.debug(f"[Shutdown] Category cache save failed (non-fatal): {e}")
 
             # Dedup runs last after all writes complete.
@@ -499,7 +499,7 @@ class ShutdownProcessor:
                 if block_times:
                     md['temporal_anchor_start'] = min(block_times).isoformat()
                     md['temporal_anchor_end'] = max(block_times).isoformat()
-            except Exception:
+            except Exception:  # degrades: summary lacks temporal anchor metadata, so it sorts without coverage dates
                 pass
 
             # Capture source conversation doc IDs for expand_memory drill-down
@@ -513,7 +513,7 @@ class ShutdownProcessor:
                     if source_ids:
                         md['source_doc_ids'] = ','.join(source_ids)
                         logger.debug(f"[Shutdown] Summary linked to {len(source_ids)} source conversations")
-            except Exception as se:
+            except Exception as se:  # degrades: summary stored without source conversation ids, so drill-down is unavailable
                 logger.debug(f"[Shutdown] Could not capture source doc IDs: {se}")
 
             doc_id = None
@@ -539,7 +539,7 @@ class ShutdownProcessor:
                                 'embedded_claims': claim_hashes,
                             })
                             logger.debug(f"[Staleness] Registered {len(claims)} claims for summary {doc_id}")
-                except Exception as ce:
+                except Exception as ce:  # degrades: summary stored without embedded claim hashes, so staleness tracking skips it
                     logger.debug(f"[Staleness] Claim extraction for summary failed: {ce}")
             return bool(doc_id)
 
@@ -622,9 +622,9 @@ class ShutdownProcessor:
                                             supersede_md = {"superseded_by": fact_content[:200]}
                                             supersede_md.update(vr.metadata_updates)
                                             self.chroma_store.update_metadata("facts", cand.doc_id, supersede_md)
-                                        except Exception:
+                                        except Exception:  # degrades: superseded fact not flagged in the facts collection, old value may resurface
                                             pass
-                        except Exception as ve:
+                        except Exception as ve:  # degrades: superseded fact not flagged in the facts collection, old value may resurface
                             logger.debug(f"[Shutdown] Verification failed, proceeding: {ve}")
 
                     # Forward source_excerpt if available in metadata
@@ -773,7 +773,7 @@ class ShutdownProcessor:
                     key=lambda x: x.get("timestamp", ""),
                     reverse=True
                 )[:60]
-            except Exception as pf_err:
+            except Exception as pf_err:  # degrades: LLM extractor sees no existing profile facts, risking duplicate triples
                 logger.debug(f"[Shutdown] Failed to gather profile facts for LLM context: {pf_err}")
 
         triples = await llm_ex.extract_triples(conv_tail, existing_facts=existing_facts)
@@ -800,7 +800,7 @@ class ShutdownProcessor:
                 vr_list = await verifier.verify_batch(batch)
                 for b, vr in zip(batch, vr_list):
                     verification_results[b["fact_text"]] = vr
-            except Exception as ve:
+            except Exception as ve:  # degrades: LLM facts stored without batch verification this shutdown
                 logger.debug(f"[Shutdown] Batch verification failed, proceeding: {ve}")
 
         kept = 0
@@ -826,7 +826,7 @@ class ShutdownProcessor:
                                 supersede_md = {"superseded_by": fact_text[:200]}
                                 supersede_md.update(vr.metadata_updates)
                                 self.chroma_store.update_metadata("facts", cand.doc_id, supersede_md)
-                            except Exception:
+                            except Exception:  # degrades: superseded fact not flagged in the facts collection, old value may resurface
                                 pass
 
             try:
@@ -885,7 +885,7 @@ class ShutdownProcessor:
                                 stance=t.get("stance", ""),
                                 capture_tone=src_dict.get("capture_tone", ""),
                             )
-                    except Exception as graph_err:
+                    except Exception as graph_err:  # degrades: extracted fact stored but its knowledge-graph edge is missing
                         logger.debug(f"[Shutdown] Graph ingestion failed: {graph_err}")
                 else:
                     logger.debug(f"[Shutdown] LLM fact skipped as duplicate: {fact_text}")
@@ -930,7 +930,7 @@ class ShutdownProcessor:
                     if heavy is None:
                         return "unknown"
                     return "elevated" if heavy else "non_elevated"
-        except Exception:
+        except Exception:  # degrades: capture tone recorded as unknown, so settledness does not count it
             pass
         return "unknown"
 
@@ -1235,7 +1235,7 @@ class ShutdownProcessor:
         summaries = []
         try:
             summaries = mc.get_summaries_hybrid(synthetic_query, limit=3)
-        except Exception as e:
+        except Exception as e:  # degrades: session reflection prompt lacks related summaries
             logger.debug(f"[Shutdown] Summary retrieval failed: {e}")
 
         git_commits = []
@@ -1243,7 +1243,7 @@ class ShutdownProcessor:
             git_commits = self.chroma_store.query_collection(
                 "procedural", synthetic_query, n_results=5
             )
-        except Exception as e:
+        except Exception as e:  # degrades: session reflection prompt lacks related git commits
             logger.debug(f"[Shutdown] Git commit retrieval failed: {e}")
 
         profile_text = ""
@@ -1252,7 +1252,7 @@ class ShutdownProcessor:
                 profile_text = self.user_profile.get_context_injection(
                     max_tokens=300, query=synthetic_query
                 )
-        except Exception as e:
+        except Exception as e:  # degrades: session reflection prompt lacks user profile context
             logger.debug(f"[Shutdown] User profile retrieval failed: {e}")
 
         # Await async tasks
@@ -1260,7 +1260,7 @@ class ShutdownProcessor:
         for key, task in tasks.items():
             try:
                 results[key] = await task
-            except Exception as e:
+            except Exception as e:  # degrades: session reflection prompt lacks one retrieval source
                 logger.debug(f"[Shutdown] {key} retrieval failed: {e}")
                 results[key] = []
 
@@ -1579,7 +1579,7 @@ class ShutdownProcessor:
         # Phase 3: Enforce cap
         try:
             self.thread_store.enforce_cap()
-        except Exception as e:
+        except Exception as e:  # degrades: thread cap not enforced this shutdown, store may exceed its limit
             logger.debug(f"[Shutdown] Thread cap enforcement failed: {e}")
 
     # ------------------------------------------------------------------

@@ -4329,7 +4329,23 @@ def _figure_check_run(body, raw_context, history, source_material, user_text, no
     """Pure-CPU part of the figure check (runs in a worker thread)."""
     pool = figure_check.build_source_pool(
         raw_context, history, source_material, now, user_text=user_text)
-    return figure_check.check_reply(body, pool, now, min_overlap=min_overlap)
+    return figure_check.check_reply(
+        body, pool, now, min_overlap=min_overlap, day_anchors=_figure_check_day_anchors())
+
+
+def _figure_check_day_anchors():
+    """Read-only episode anchors for the stale_day_count sibling check (2026-10-27, lane CHK).
+    Never writes the day-count store; an unreadable store means the check is skipped, not that
+    state is replaced (this path has no save)."""
+    if not app_config.DAY_COUNTS_ENABLED:
+        return ()
+    try:
+        import memory.day_count_anchors as day_count_anchors  # lazy import: layering (memory store behind a toggle)
+        from utils.streak_claims import episode_anchors  # lazy import: patch-point
+        return episode_anchors(list(day_count_anchors._load()))
+    except Exception as exc:  # degrades: stale_day_count not checked this turn
+        logger.debug(f"[FigureCheck] day-count anchors unavailable: {exc}")
+        return ()
 
 
 async def _apply_figure_check(ctx, body, *, source_material=""):

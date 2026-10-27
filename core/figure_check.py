@@ -19,7 +19,8 @@ Pure: no model call, no I/O, no network. spaCy (the codebase's loaded
 Public surface:
     extract_figures(reply)                      -> list[Figure]
     build_source_pool(raw_context, history, source_material, now) -> list[SourceItem]
-    check_reply(reply, pool, now, ...)          -> FigureReport
+    check_reply(reply, pool, now, ..., day_anchors=None) -> FigureReport
+        (also log-only siblings cross_owner_date / unsupported_detail / stale_day_count, 2026-10-27)
     apply_corrections(reply, report, correct_classes) -> (revised, n_corrected)
 
 DERIVED operators (the complete, fixed set): elapsed(now - item.ts);
@@ -64,6 +65,7 @@ from core.grounding_check import weekday_date_mismatches
 from memory.claim_ledger import normalize_value, norm_unit, numbers_in_text
 from utils.date_coerce import to_naive_local
 from utils.logging_utils import get_logger
+from utils.streak_claims import stale_day_count_claims
 
 logger = get_logger("figure_check")
 
@@ -750,17 +752,265 @@ def _derive_number(fig: Figure, key: str, base: float, pool: Sequence[SourceItem
     return None
 
 
+# --------------------------------------------------------------------------- #
+# Log-only sibling checks (2026-10-27, lane CHK, BC-51/BC-46/BC-103): cross_owner_date,
+# unsupported_detail, stale_day_count. They only ever produce findings (no replacement text);
+# ``apply_corrections`` edits nothing but elapsed_precise / weekday_date.
+# --------------------------------------------------------------------------- #
+
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")           # structured sources: a line is a record
+_REPLY_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n\s*\n")      # reply prose: a single newline is a soft wrap
+_MONTH_WORDS = frozenset(w.lower() for w in _MONTH_ALT.split("|"))
+_MONTH_NUM = {m.lower()[:3]: i for i, m in enumerate(calendar.month_name) if m}
+_DATE_RE = re.compile(
+    r"(?<![\w/:-])(?:"
+    r"(?P<iso>\d{4})-(?P<iso_m>\d{2})-(?P<iso_d>\d{2})"
+    r"|(?P<mon>" + _MONTH_ALT + r")\.?\s+(?P<md>\d{1,2})(?:st|nd|rd|th)?"
+    r"|(?P<dd>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<mon2>" + _MONTH_ALT + r")"
+    r"|(?P<slm>\d{1,2})/(?P<sld>\d{1,2})"
+    r"|(?P<ord>\d{1,2})(?:st|nd|rd|th))(?![\w/:])", re.IGNORECASE)
+# an assignment-shaped head: a word bound to a numeral ("HW4", "Milestone 1"); a spaced head needs a capital.
+_ASSIGN_RE = re.compile(
+    r"\b(?P<h>[A-Za-z]{2,12})(?P<sep>[\s-]?)(?P<n>\d{1,2})\b(?!\s?(?:st|nd|rd|th)\b|[/:]\d|\d)")
+_COURSE_CODE_RE = re.compile(r"\b([A-Z]{2,5})[\s-]?(\d{3,4})\b")
+_QUESTION_END_RE = re.compile(r"\?\s*[\"')\]*_]*\s*$")
+_DATE_TOKEN_GAP = 90
+
+
+def _date_key(m: "re.Match") -> Optional[tuple]:
+    """(month|None, day) of one _DATE_RE match; None when it is not a real calendar day."""
+    if m.group("iso"):
+        month, day = int(m.group("iso_m")), int(m.group("iso_d"))
+    elif m.group("mon"):
+        month, day = _MONTH_NUM.get(m.group("mon").lower()[:3]), int(m.group("md"))
+    elif m.group("mon2"):
+        month, day = _MONTH_NUM.get(m.group("mon2").lower()[:3]), int(m.group("dd"))
+    elif m.group("slm"):
+        month, day = int(m.group("slm")), int(m.group("sld"))
+    else:
+        month, day = None, int(m.group("ord"))
+    if not 1 <= day <= 31 or (month is not None and not 1 <= month <= 12):
+        return None
+    return (month, day)
+
+
+def _dates_equal(a: tuple, b: tuple) -> bool:
+    return a[1] == b[1] and (a[0] is None or b[0] is None or a[0] == b[0])
+
+
+def _sentence_pairs(sentence: str, *, bare: bool = False) -> list[tuple[str, tuple, Optional[str], tuple[int, int]]]:
+    """(assignment token, date, course code in the sentence, date span) for each date bound to the
+    nearest preceding assignment-shaped head in the same sentence. ``bare=True`` also returns dates with
+    no head (token ``""``): a source's dated event is a row that can OWN a date."""
+    heads = []
+    for m in _ASSIGN_RE.finditer(sentence):
+        head = m.group("h")
+        if head.lower() in _MONTH_WORDS or (m.group("sep") == " " and not head[0].isupper()):
+            continue
+        heads.append((m.end(), (head.lower() + m.group("n"))))
+    if not heads and not bare:
+        return []
+    code_m = _COURSE_CODE_RE.search(sentence)
+    code = (code_m.group(1) + code_m.group(2)) if code_m else None
+    out = []
+    for dm in _DATE_RE.finditer(sentence):
+        key = _date_key(dm)
+        if key is None:
+            continue
+        prior = [(e, t) for e, t in heads if e <= dm.start() and dm.start() - e <= _DATE_TOKEN_GAP]
+        if not prior:
+            if bare:
+                out.append(("", key, code, dm.span()))
+            continue
+        out.append((prior[-1][1], key, code, dm.span()))
+    return out
+
+
+def _item_fallback_owner(item: SourceItem) -> str:
+    if item.section != "conversation":
+        return "section:" + item.section
+    return "attachment" if str(item.id).startswith("src_attachment") else "role:" + item.role
+
+
+def _deadline_table(pool: Sequence[SourceItem]) -> list[tuple[str, tuple, str]]:
+    """(assignment token, date, owner label) rows from every non-assistant pool source."""
+    rows: list[tuple[str, tuple, str]] = []
+    for item in pool:
+        if item.role in ("assistant", "meta", "clock") or not item.text:
+            continue
+        head_m = _COURSE_CODE_RE.search(item.text[:300])
+        item_owner = (head_m.group(1) + head_m.group(2)) if head_m else _item_fallback_owner(item)
+        for sentence in _SENT_SPLIT_RE.split(item.text):
+            if not sentence.strip():
+                continue
+            for token, key, code, _span in _sentence_pairs(sentence, bare=True):
+                rows.append((token, key, code or item_owner))
+    return rows
+
+
+def _reply_sentences(reply: str):
+    pos = 0
+    for part in _REPLY_SPLIT_RE.split(reply):
+        start = reply.find(part, pos) if part else pos
+        if start < 0:
+            start = pos
+        pos = start + len(part)
+        if part.strip():
+            yield start, part
+
+
+def _check_cross_owner_dates(reply: str, pool: Sequence[SourceItem]) -> list[FigureFinding]:
+    """Reply asserts a date next to an assignment-shaped head. ``date_from_other_owner`` (the only
+    finding): the head's rows hold one owner, none has this date, and the date is attached to a
+    different owner elsewhere. matches_owner and unknown (two owners share the head, no row, an
+    unseen date) are silent (BC-46: fail-honest)."""
+    import core.personal_claim_check as personal_claim_check  # lazy import: layering (see build_source_pool)
+
+    table = None
+    findings: list[FigureFinding] = []
+    for start, sentence in _reply_sentences(reply):
+        if _QUESTION_END_RE.search(sentence) or personal_claim_check._is_assistant_proposal(sentence):
+            continue
+        pairs = _sentence_pairs(sentence)
+        if not pairs:
+            continue
+        if table is None:
+            table = _deadline_table(pool)
+        for token, key, code, (ds, de) in pairs:
+            rows = [r for r in table if r[0] == token]
+            if code:
+                rows = [r for r in rows if r[2] == code]
+            if not rows:
+                continue
+            owners = {r[2] for r in rows}
+            if len(owners) != 1 or any(_dates_equal(r[1], key) for r in rows):
+                continue
+            elsewhere = [r for r in table if r[2] not in owners and _dates_equal(r[1], key)]
+            if not elsewhere:
+                continue
+            text = sentence[ds:de]
+            fig = Figure(span=(start + ds, start + de), text=text, kind="cross_owner_date",
+                         clause=" ".join(sentence.split()), in_scope=True)
+            findings.append(FigureFinding(
+                fig, "cross_owner_date",
+                reason=f"date_from_other_owner token:{token} owners:{len(owners)} other:{elsewhere[0][2]}"[:200]))
+    return findings
+
+
+_DETAIL_PREPS = frozenset({"on", "at", "from", "via", "through", "by", "in", "using"})
+
+
+def _user_owned_subject(verb) -> bool:
+    for child in verb.children:
+        if child.dep_ in ("nsubj", "nsubjpass"):
+            if child.lower_ == "you" or any(c.dep_ == "poss" and c.lower_ == "your" for c in child.children):
+                return True
+    return False
+
+
+def _detail_phrases(doc):
+    """(sentence span, prep text, head lemma, compound lemmas) for every circumstance adjunct of an
+    assertion about what the user did/has/uses."""
+    for sent in doc.sents:
+        text = sent.text.strip()
+        if not text or _QUESTION_END_RE.search(text) or text[:1] in ">`\"“":
+            continue
+        if any(t.lower_ in ("if", "unless", "whether") and t.dep_ == "mark" for t in sent):
+            continue
+        for verb in sent:
+            if verb.pos_ not in ("VERB", "AUX") or verb.tag_ == "VB" or not _user_owned_subject(verb):
+                continue
+            if any(c.dep_ == "aux" and c.tag_ == "MD" for c in verb.children):
+                continue
+            preps = [c for c in verb.children if c.dep_ == "prep"]
+            for obj in verb.children:
+                if obj.dep_ in ("dobj", "attr"):
+                    preps += [c for c in obj.children if c.dep_ == "prep"]
+            for prep in preps:
+                if prep.lower_ not in _DETAIL_PREPS:
+                    continue
+                for pobj in (c for c in prep.children if c.dep_ == "pobj"):
+                    if pobj.pos_ not in ("NOUN", "PROPN") or pobj.ent_type_ in ("DATE", "TIME"):
+                        continue
+                    mods = [c for c in pobj.lefts
+                            if c.dep_ in ("compound", "nmod", "amod") and not c.is_stop
+                            and c.pos_ in ("NOUN", "PROPN", "ADJ")]
+                    owned = any(c.dep_ == "poss" and c.lower_ == "your" for c in pobj.children)
+                    if not (owned or mods or pobj.pos_ == "PROPN"):
+                        continue   # a bare "at the end" / "in passing" is not a concrete circumstance
+                    lemmas = {_crude_lemma(pobj.lemma_.lower())} | {_crude_lemma(c.lemma_.lower()) for c in mods}
+                    last = max([pobj.i] + [c.i for c in pobj.lefts])
+                    yield sent, doc[prep.i: last + 1], frozenset(lemmas)
+
+
+def _check_unsupported_detail(reply: str, pool: Sequence[SourceItem], doc) -> list[FigureFinding]:
+    import core.personal_claim_check as personal_claim_check  # lazy import: layering (see build_source_pool)
+
+    if doc is None:
+        return []
+    item_lemmas = None
+    findings: list[FigureFinding] = []
+    for sent, phrase, lemmas in _detail_phrases(doc):
+        if personal_claim_check._is_assistant_proposal(sent.text):
+            continue
+        if item_lemmas is None:
+            item_lemmas = [_content_lemmas_crude(i.text) for i in pool
+                           if i.text and i.role not in ("meta", "clock")]
+        if any(lemmas <= got for got in item_lemmas):
+            continue
+        fig = Figure(span=(phrase.start_char, phrase.end_char), text=" ".join(phrase.text.split()), kind="detail",
+                     clause=" ".join(sent.text.split()), in_scope=True)
+        findings.append(FigureFinding(fig, "unsupported_detail", reason="detail_not_in_any_source"))
+    return findings
+
+
+DAY_COUNT_TOLERANCE = 1
+
+
+def _check_day_counts(reply: str, anchors, now: datetime, nlp) -> list[FigureFinding]:
+    """"N days into X" is DERIVED when within +-1 of the anchor's projected count (the deployed
+    ``stale_day_count_claims`` flags any difference; the tolerance is applied here)."""
+    if not anchors:
+        return []
+    findings = []
+    for s in stale_day_count_claims(reply, list(anchors), now.date(), nlp=nlp):
+        if abs(s.stated_count - s.current_count) <= DAY_COUNT_TOLERANCE:
+            continue
+        fig = Figure(span=(s.start, s.end), text=reply[s.start:s.end].strip()[:160], kind="day_count",
+                     value=float(s.stated_count), clause=s.claim_text, in_scope=True)
+        findings.append(FigureFinding(
+            fig, "stale_day_count", reason=f"stated:{s.stated_count} projected:{s.current_count}"))
+    return findings
+
+
+def _extra_findings(reply, pool, now, nlp_model, doc, day_anchors) -> list[FigureFinding]:
+    out: list[FigureFinding] = []
+    for label, fn in (
+        ("cross_owner_date", lambda: _check_cross_owner_dates(reply, pool)),
+        ("unsupported_detail", lambda: _check_unsupported_detail(
+            reply, pool, doc if doc is not None else (nlp_model(reply) if nlp_model is not None else None))),
+        ("stale_day_count", lambda: _check_day_counts(reply, day_anchors, now, nlp_model)),
+    ):
+        try:
+            out.extend(fn())
+        except Exception as exc:  # degrades: this sibling check is skipped for the turn; the rest still run
+            logger.debug(f"[FigureCheck] {label} skipped: {exc}")
+    return out
+
+
 def check_reply(reply: str, pool: Sequence[SourceItem], now: datetime, *, min_overlap: int = 1,
-                deadline_s: float = DEFAULT_DEADLINE_S, nlp: Any = "auto") -> FigureReport:
+                deadline_s: float = DEFAULT_DEADLINE_S, nlp: Any = "auto",
+                day_anchors: Any = None) -> FigureReport:
     """Classify every figure of ``reply`` (read-only; never edits)."""
     nlp_model = _get_nlp() if nlp == "auto" else nlp
     report = FigureReport(nlp=nlp_model is not None)
     figures = extract_figures(reply)
     report.figures_total = len(figures)
+    doc = nlp_model(reply) if nlp_model is not None else None
     if not figures:
+        report.findings.extend(_extra_findings(reply, pool, now, nlp_model, doc, day_anchors))
         return report
     started = time.monotonic()
-    doc = nlp_model(reply) if nlp_model is not None else None
     binder = _Binder(pool, nlp_model)
     conv_ts = _ranked_ts_items(pool)[:_BIND_ITEMS]
     user_items = [i for i in pool if i.role in ("user", "profile", "assistant") and i.text]
@@ -808,6 +1058,7 @@ def check_reply(reply: str, pool: Sequence[SourceItem], now: datetime, *, min_ov
         except Exception as exc:  # degrades: this figure is unchecked; the rest of the reply still is
             logger.debug(f"[FigureCheck] figure skipped: {exc}")
             report.findings.append(FigureFinding(fig, "unbound", reason="check_error"))
+    report.findings.extend(_extra_findings(reply, pool, now, nlp_model, doc, day_anchors))
     return report
 
 

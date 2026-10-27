@@ -344,7 +344,7 @@ class GraphWalkGenerator:
                     cat = categorize_relation(rel)
                     if cat.value != "other":
                         return cat.value
-                except Exception:
+                except Exception:  # degrades: edge relation category unknown so domain falls back to node metadata
                     pass
 
         # Check the node's own domain_category metadata
@@ -393,7 +393,7 @@ class GraphWalkGenerator:
                     max_tokens=320,
                     temperature=0.5,
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: bridge candidate not generated for this walk
                 logger.debug(f"[GraphWalk] Bridge LLM call failed: {e}")
                 return None
 

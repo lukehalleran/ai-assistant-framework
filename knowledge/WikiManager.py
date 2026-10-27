@@ -399,7 +399,7 @@ class WikiManager:
                 thumbnail=None,
                 is_disambiguation=False,
             )
-        except Exception as e:
+        except Exception as e:  # degrades: Action API extract unavailable so next fetch path is tried
             log.debug("[Wiki] Action API extract failed for %s: %s", title, e)
             return None
 
@@ -467,7 +467,7 @@ class WikiManager:
                         thumbnail=js.get("thumbnail", {}).get("url"),
                         is_disambiguation=(js.get("type") == "disambiguation"),
                     )
-        except Exception as e:
+        except Exception as e:  # degrades: preferred summary path failed so REST fallback is tried
             log.debug("[Wiki] Preferred summary path failed for %s: %s", title, e)
 
         # 2) Fallback REST path
@@ -487,7 +487,7 @@ class WikiManager:
                         thumbnail=js.get("thumbnail", {}).get("url"),
                         is_disambiguation=(js.get("type") == "disambiguation"),
                     )
-        except Exception as e:
+        except Exception as e:  # degrades: REST summary fallback failed so Action API path is tried
             log.debug("[Wiki] Fallback REST summary path failed for %s: %s", title, e)
 
         # 3) MediaWiki Action API (plain extract)
@@ -530,7 +530,7 @@ class WikiManager:
                             thumbnail=None,
                             is_disambiguation=False,
                         )
-        except Exception as e:
+        except Exception as e:  # degrades: Action API path failed so no wiki page is returned for this title
             log.debug("[Wiki] Action API path failed for %s: %s", title, e)
 
         return None
@@ -584,7 +584,7 @@ class WikiManager:
                         p = self._fetch_summary_v1(t)
                     if p and _is_main_namespace(p.title):
                         candidates.append(p)
-                except Exception as e:
+                except Exception as e:  # degrades: one candidate wiki title dropped from this lookup
                     log.debug("[Wiki] direct summary fetch failed for %s: %s", t, e)
 
             # 2) REST search for titles, then fetch summaries
@@ -627,7 +627,7 @@ class WikiManager:
                         p = self._fetch_summary_v1(t)
                     if p and _is_main_namespace(p.title):
                         candidates.append(p)
-                except Exception as e:
+                except Exception as e:  # degrades: one searched wiki title dropped from this lookup
                     log.debug("[Wiki] summary fetch failed for %s: %s", t, e)
 
             # If we got no page objects but we do have titles, fetch a seed
@@ -673,7 +673,7 @@ class WikiManager:
             for p in candidates:
                 try:
                     p.score = self._score(query, p)
-                except Exception as e:
+                except Exception as e:  # degrades: candidate scored zero so it ranks last among wiki results
                     log.debug("[Wiki] scoring failed for %s: %s", p.title, e)
                     p.score = 0.0
 
@@ -688,7 +688,7 @@ class WikiManager:
 
             return best
 
-        except Exception as e:
+        except Exception as e:  # degrades: wiki article missing from this turn's prompt
             log.debug("[Wiki] resolve_and_fetch error: %s", e)
             return None
 

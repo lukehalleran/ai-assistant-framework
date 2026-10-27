@@ -22,6 +22,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from tests.unit.helpers_fakes import make_concept_embedder
+
 import memory.user_profile as up
 from core.prompt.gatherer_knowledge import KnowledgeRetrievalMixin
 from core.prompt.gatherer_memory import MemoryRetrievalMixin
@@ -42,14 +44,7 @@ _CONCEPTS = [
 ]
 
 
-class FakeEmbedder:
-    def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, **kw):
-        out = []
-        for t in texts:
-            words = {w.strip(".,:;'\"?!").lower() for w in t.replace("_", " ").split()}
-            v = np.array([float(len(words & c)) for c in _CONCEPTS] + [0.01])
-            out.append(v / np.linalg.norm(v))
-        return np.array(out)
+FakeEmbedder = make_concept_embedder(_CONCEPTS)
 
 
 @pytest.fixture(autouse=True)

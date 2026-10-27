@@ -398,7 +398,7 @@ class MemoryScorer:
                             f"[Ranker] Graph boost: {len(graph_related_names)} related names "
                             f"from entities {query_entities}"
                         )
-        except Exception as e:
+        except Exception as e:  # degrades: graph-neighbour score boost skipped for this ranking
             logger.debug(f"[Ranker] Graph boost setup failed: {e}")
 
         for m in memories:
