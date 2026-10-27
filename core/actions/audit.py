@@ -26,7 +26,7 @@ class ActionAuditLog:
 
     Each line is a JSON object with:
         ts: ISO timestamp
-        event: "proposed" | "approved" | "rejected" | "executed" | "failed"
+        event: "proposed" | "approved" | "rejected" | "executed" | "failed" | "interrupted"
         action_id: UUID of the action
         + event-specific fields
     """
@@ -57,7 +57,9 @@ class ActionAuditLog:
     def log_execution(self, action_id: str, result: ActionResult) -> None:
         """Log the outcome of action execution."""
         self._append({
-            "event": "executed" if result.success else "failed",
+            "event": ("executed" if result.success
+                      else "interrupted" if getattr(result, "interrupted", False)
+                      else "failed"),
             "action_id": action_id,
             "success": result.success,
             "message": result.message,

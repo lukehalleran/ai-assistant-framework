@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MantineProvider } from '@mantine/core'
 import KeyField from './KeyField'
 
-function mount(save: () => Promise<{ ok: boolean; error: string | null; restart_required?: boolean }>) {
+function mount(save: () => Promise<{ ok: boolean; error: string | null; restart_required?: boolean; disabled_in_config?: boolean; notice?: string }>) {
   // `found` flips to true after the save, as the real status refresh does.
   const Wrapper = () => {
     const [found, setFound] = useState(false)
@@ -31,6 +31,17 @@ describe('KeyField restart notice', () => {
     fireEvent.change(screen.getByLabelText('Wolfram'), { target: { value: 'WOLF-SYNTH1' } })
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Restart Daemon/))
+  })
+
+  it('says the tool is disabled in config, not that a restart will enable it', async () => {
+    mount(vi.fn().mockResolvedValue({
+      ok: true, error: null, disabled_in_config: true,
+      notice: 'Saved, but this tool is disabled in your config. Restarting alone will not enable it.',
+    }))
+    fireEvent.change(screen.getByLabelText('Wolfram'), { target: { value: 'WOLF-SYNTH1' } })
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/disabled in your config/))
+    expect(screen.getByRole('status').textContent).not.toMatch(/Restart Daemon/)
   })
 
   it('shows no notice on a live save', async () => {

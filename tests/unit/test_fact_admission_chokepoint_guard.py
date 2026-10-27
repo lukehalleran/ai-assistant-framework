@@ -39,11 +39,17 @@ ALLOWLIST = (
      "shares THE deployed is_paste_sized/subject_is_user_anchored tests."),
     (("gui/wizard.py", "_finalize_wizard",
       "chroma_store.add_fact(fact=fact_text, source=source_dict)"),
-     "onboarding facts are typed by the user into the wizard form: no "
-     "extractor, no pasted document text."),
+     "onboarding facts come from the user's own background text, extracted "
+     "by LLMFactExtractor.extract_triples fed a user-role message dict, so "
+     "every triple already passed THE fact_source user-span join "
+     "(gui/wizard.py ~783); no pasted document text and no Daemon response "
+     "can reach this write."),
     (("gui/wizard.py", "_finalize_wizard", "chroma_store.add_fact("),
-     "onboarding facts are typed by the user into the wizard form: no "
-     "extractor, no pasted document text."),
+     "onboarding facts come from the user's own background text, extracted "
+     "by LLMFactExtractor.extract_triples fed a user-role message dict, so "
+     "every triple already passed THE fact_source user-span join "
+     "(gui/wizard.py ~783); no pasted document text and no Daemon response "
+     "can reach this write."),
 )
 
 _ALLOWED = Counter(key for key, _r in ALLOWLIST)

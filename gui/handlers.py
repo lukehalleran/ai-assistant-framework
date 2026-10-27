@@ -7063,7 +7063,7 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
         store.mark_interrupted(action_id)
         try:
             audit.log_execution(action_id, types.ActionResult(
-                action_id=action_id, success=False,
+                action_id=action_id, success=False, interrupted=True,
                 message=f"[INTERRUPTED] {types.INTERRUPTED_REASON}"))
         except Exception:  # degrades: audit line lost; the status is already set
             logger.warning(f"[Actions] Could not audit interruption of {action_id}")

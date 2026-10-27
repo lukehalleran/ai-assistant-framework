@@ -68,12 +68,40 @@ def test_sandbox_save_refreshes_singleton_and_fills_slots(monkeypatch):
     assert ctrl.sandbox_manager is singleton and ctrl._tool_executor.sandbox_manager is singleton
 
 
-def test_unrefreshable_consumer_reports_restart_required(monkeypatch):
+def test_tool_disabled_in_config_says_so_not_restart(monkeypatch):
+    # 2026-10-26 (#101 follow-up, BC-58): a restart does not enable a tool that
+    # config switches off, so the result must not promise one.
     _prep(monkeypatch)
     monkeypatch.setattr(cfg, "WOLFRAM_ENABLED", False, raising=False)
     ctrl = _Ctrl()
     res = setup_core.save_optional_key(_orch(ctrl), "wolfram", WOLF)
+    assert res["ok"] is True and "restart_required" not in res
+    assert res["disabled_in_config"] is True
+    assert "disabled in your config" in res["notice"]
+    assert "will not enable" in res["notice"]
+
+
+def test_sandbox_disabled_in_config_says_so_not_restart(monkeypatch):
+    _prep(monkeypatch)
+    singleton = SandboxManager()
+    singleton._config_enabled = False
+    monkeypatch.setattr(sandbox_mod, "_manager", singleton)
+    res = setup_core.save_optional_key(_orch(_Ctrl()), "e2b", E2B)
+    assert res["ok"] is True and "restart_required" not in res
+    assert res["disabled_in_config"] is True
+
+
+def test_unrefreshable_consumer_still_reports_restart_required(monkeypatch):
+    # The genuine restart case (tool enabled, consumer cannot be refreshed).
+    _prep(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(setup_core, "_refresh_wolfram", boom)
+    res = setup_core.save_optional_key(_orch(_Ctrl()), "wolfram", WOLF)
     assert res["ok"] is True and res["restart_required"] is True
+    assert "disabled_in_config" not in res
 
 
 def test_refresh_exception_reports_restart_required(monkeypatch):
