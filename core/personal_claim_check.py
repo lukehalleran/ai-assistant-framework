@@ -690,12 +690,30 @@ def _is_personal_subject(token: Any, user_name: str) -> bool:
     return _propn_is_person(token)
 
 
+_CODE_CAMEL_RE = re.compile(r"[a-z0-9][A-Z]")
+_CODE_SEPARATED_RE = re.compile(r"[A-Za-z0-9]_[A-Za-z0-9]|[A-Za-z]\.[A-Za-z]")
+
+
+def _is_code_shaped(text: str) -> bool:
+    """Token SHAPE of a code identifier: CamelCase with an inner capital
+    ("TaskQueue"), snake_case, a dotted path ("utils.safe_json"), or a call
+    form ("run()"). Single-hump words ("Arena", "Rowan", "HW4") are not code
+    shaped. 2026-10-26, class: BC-84 — capitalized module names kept flagging
+    as personal subjects."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_CODE_CAMEL_RE.search(t) or _CODE_SEPARATED_RE.search(t) or t.endswith("()"))
+
+
 def _propn_is_person(token: Any) -> bool:
     """A proper noun is a person only when NER types it PERSON or the name is a
     KNOWN person (graph person entity / cached contact). An unknown TitleCase
     word is a module/product/place name ("Arena has finished the run").
     2026-10-21, class: BC-84."""
     if token.pos_ != "PROPN":
+        return False
+    if _is_code_shaped(token.text):
         return False
     if token.ent_type_ == "PERSON":
         return True
@@ -753,7 +771,7 @@ def _is_personal_completion(span: str) -> bool:
                     # elided-agent report shape; fail closed (stay personal).
                     # A module description carries an object or an auxiliary
                     # ("Arena has finished the run.").
-                    if (any(c.pos_ == "PROPN" for c in subj)
+                    if (any(c.pos_ == "PROPN" and not _is_code_shaped(c.text) for c in subj)
                             and not any(c.dep_ in ("dobj", "obj", "attr", "aux", "auxpass", "dative", "prep")
                                         for c in tok.children)):
                         return True
