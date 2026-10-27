@@ -73,7 +73,7 @@ class VisualRetriever:
         """
         try:
             max_images = min(max_images, self._get_max_images())
-        except Exception:
+        except Exception:  # degrades: image-count cap override is ignored and the requested count is used
             pass
 
         # CLIP vector search (primary)
@@ -269,7 +269,7 @@ class VisualRetriever:
                     return buf.getvalue()
 
             return None
-        except Exception:
+        except Exception:  # degrades: image is not attached because compression failed
             return None
 
     @staticmethod

@@ -215,7 +215,7 @@ class RetrievalSynthesisGenerator:
                     max_tokens=SYNTHESIS_STRUCTURAL_QUERY_MAX_TOKENS,
                     temperature=0.4,
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: no structural query is produced so this candidate is dropped
                 logger.debug(f"[RetrievalSynth] Structural query LLM failed: {e}")
                 return None
 
@@ -241,7 +241,7 @@ class RetrievalSynthesisGenerator:
             results = semantic_search_with_neighbors(
                 structural_query, k=SYNTHESIS_RETRIEVAL_K,
             )
-        except Exception as e:
+        except Exception as e:  # degrades: no structurally similar wiki results are retrieved for this candidate
             logger.debug(f"[RetrievalSynth] FAISS search failed: {e}")
             return []
 
@@ -320,7 +320,7 @@ class RetrievalSynthesisGenerator:
                     max_tokens=150,
                     temperature=0.3,
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: this retrieved pair is not evaluated and yields no candidate
                 logger.debug(f"[RetrievalSynth] Eval LLM failed: {e}")
                 return None
 
