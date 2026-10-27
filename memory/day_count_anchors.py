@@ -34,8 +34,12 @@ logger = get_logger("day_count_anchors")
 
 SCHEMA_VERSION = 1
 _LABEL = "day-count anchor store"
-# Cheap gate before any parsing: a day number or an "N days" count.
-_PREFILTER_RE = re.compile(r"\bday\s+(?:\d{1,3}|[a-z]{3,9})\b|\b(?:\d{1,3}|[a-z]{3,9})(?:\s*-\s*|\s+)days?\b", re.I)
+# Cheap gate before any parsing: a day number, an "N days"/"N weeks"/"week N" count, or a month-day /
+# ordinal date (explicit start/stop anchors).
+_PREFILTER_RE = re.compile(
+    r"\bday\s+(?:\d{1,3}|[a-z]{3,9})\b|\b(?:\d{1,3}|[a-z]{3,9})(?:\s*-\s*|\s+)(?:days?|weeks?)\b|"
+    r"\bweek\s+(?:\d{1,2}|[a-z]{3,9})\b|\b[a-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{1,2}(?:st|nd|rd|th)\b",
+    re.I)
 # A paste is not the user's own count (mirrors the 08-29 paste guard).
 MESSAGE_MAX_CHARS = 1500
 _lock = threading.RLock()
@@ -88,7 +92,7 @@ def _save(claims: List[DayCountClaim]) -> None:
 
 
 def _identity(c: DayCountClaim) -> tuple:
-    return (c.count, c.stated_on, tuple(sorted(c.lemmas)), c.source)
+    return (c.count, c.stated_on, tuple(sorted(c.lemmas)), c.source, c.kind, c.unit, c.anchor_date)
 
 
 def record_from_user_text(text: str, stated_on: Any = None, *, source: str = "message") -> int:

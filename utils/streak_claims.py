@@ -37,6 +37,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from utils.date_coerce import coerce_date as _coerce_date
+from utils.temporal_resolver import resolve_date_expression
 
 _NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -457,9 +458,15 @@ class DayCountClaim:
     lemmas: frozenset       # content lemmas of ``subject``
     snippet: str
     source: str = "message"  # "message" (turn) | "note" (user's own dated note)
+    kind: str = "count"      # "count" (N days/weeks in) | "start" (explicit start date) | "end" (episode ended)
+    unit: str = "day"        # "day" | "week" (how the user phrased a count; drives rendering)
+    anchor_date: Optional[date] = None  # kind start: day 1; kind end: the last day
 
     @property
     def start(self) -> date:
+        """Day 1 of the episode this claim describes (kind "end": the end date -- not a start)."""
+        if self.anchor_date is not None and self.kind in ("start", "end"):
+            return self.anchor_date
         return self.stated_on - timedelta(days=self.count - 1)
 
     def projected(self, as_of: Any) -> int:
@@ -467,8 +474,15 @@ class DayCountClaim:
         return self.count + max(0, (day - self.stated_on).days)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"count": self.count, "stated_on": self.stated_on.isoformat(), "subject": self.subject,
-                "lemmas": sorted(self.lemmas), "snippet": self.snippet, "source": self.source}
+        d = {"count": self.count, "stated_on": self.stated_on.isoformat(), "subject": self.subject,
+             "lemmas": sorted(self.lemmas), "snippet": self.snippet, "source": self.source}
+        if self.kind != "count":
+            d["kind"] = self.kind
+        if self.unit != "day":
+            d["unit"] = self.unit
+        if self.anchor_date is not None:
+            d["anchor_date"] = self.anchor_date.isoformat()
+        return d
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> Optional["DayCountClaim"]:
@@ -477,9 +491,17 @@ class DayCountClaim:
             n = int(d["count"])
             if stated is None or not 0 < n <= 400:
                 return None
+            kind = str(d.get("kind") or "count")
+            unit = str(d.get("unit") or "day")
+            anchor = _coerce_date(d.get("anchor_date")) if d.get("anchor_date") else None
+            if kind not in ("count", "start", "end") or unit not in ("day", "week"):
+                return None
+            if kind != "count" and anchor is None:
+                return None
             return cls(count=n, stated_on=stated, subject=str(d.get("subject") or ""),
                        lemmas=frozenset(str(x) for x in d.get("lemmas") or []),
-                       snippet=str(d.get("snippet") or ""), source=str(d.get("source") or "message"))
+                       snippet=str(d.get("snippet") or ""), source=str(d.get("source") or "message"),
+                       kind=kind, unit=unit, anchor_date=anchor)
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -492,6 +514,158 @@ def _sentence_prefix_words(text: str, pos: int) -> List[str]:
 def _sentence_lead(text: str, pos: int) -> List[str]:
     left = max(text.rfind(m, 0, pos) for m in ("\n", ".", "?", "!")) + 1
     return re.findall(r"[a-z']+", text[left:pos].lower())[:1]
+
+
+# --- explicit start / end dates and week counts (2026-10-27, lane DAY; class BC-103, BC-100) -------------
+# Verb LEMMA CLASSES (not topic words): beginning-of-episode vs end-of-episode verbs. Only past/participle
+# inflections count -- "I start on July 6" is a plan, not an anchor. Forms are derived mechanically.
+_START_LEMMAS = frozenset({"start", "begin", "commence", "resume"})
+_STOP_LEMMAS = frozenset({"stop", "quit", "end", "finish", "cease"})
+_IRREGULAR_PAST = {"began": "begin", "begun": "begin", "quit": "quit"}
+
+
+def _build_past_forms() -> Dict[str, str]:
+    forms: Dict[str, str] = dict(_IRREGULAR_PAST)
+    for lemma in _START_LEMMAS | _STOP_LEMMAS:
+        forms[lemma + "ed"] = lemma
+        if lemma.endswith("e"):
+            forms[lemma + "d"] = lemma
+        forms[lemma + lemma[-1] + "ed"] = lemma  # stop -> stopped
+    return forms
+
+
+_PAST_TO_LEMMA = _build_past_forms()
+# Closed classes: modals/negators/infinitive marker before the verb make it a plan, a denial or a wish.
+_VERB_PREFIX_BLOCK = frozenset(
+    {"not", "never", "no", "to", "will", "would", "wo", "gonna", "going", "should", "could", "might", "may",
+     "can", "cannot", "must", "wanna", "want", "plan", "planning", "hope", "hoping", "if", "whether"}
+)
+# Words that end the object phrase between verb and date (clause boundary words).
+_MID_BLOCK = frozenset({"and", "but", "so", "because", "which", "that", "where", "while", "though", "although",
+                        "then", "or", "when", "if", "after", "before"})
+_DATE_PREPS = frozenset({"on", "from", "in", "at", "around"})
+# After a date-less stop verb these mark an idiom/location ("stopped by the shop"), not an activity.
+_PARTICLES = frozenset({"by", "at", "in", "on", "to", "for", "up", "off", "over", "into", "from", "with",
+                        "and", "but", "as", "out", "back", "around", "here", "there", "it", "that", "this"})
+# Auxiliary / light verbs and pronouns that open the clause after "since <date>".
+_CLAUSE_LEAD = frozenset(
+    {"i", "i've", "i’ve", "ive", "we", "we've", "we’ve", "been", "be", "being", "have", "has", "had", "not", "haven't",
+     "haven’t", "havent", "am", "i'm", "i’m", "im", "was", "were", "just", "only", "then", "also", "finally", "now",
+     "do", "doing", "did", "done", "don't", "don’t", "doin", "having", "taking", "getting", "trying", "been", "also",
+     "really", "actually", "still", "always", "never", "kept", "keep"}
+)
+_MONTH_RE = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+             r"sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_DATE_PHRASE_RE = re.compile(
+    rf"\b(?:(?P<m1>{_MONTH_RE})\.?\s+(?P<d1>\d{{1,2}})(?:st|nd|rd|th)?\b"
+    rf"|(?:the\s+)?(?P<d2>\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<m2>{_MONTH_RE})\b"
+    rf"|the\s+(?P<d3>\d{{1,2}})(?:st|nd|rd|th)\b)",
+    re.IGNORECASE,
+)
+_WEEK_A_RE = re.compile(r"\b" + _NUM + r"(?:\s*-\s*|\s+)weeks?\s+(?P<rel>into)\s+" + _NP, re.IGNORECASE)
+_WEEK_B_RE = re.compile(r"\bweek\s+" + _NUM + r"\s+(?P<rel>into|of)\s+" + _NP, re.IGNORECASE)
+_WORD_RE = re.compile(r"[\w'’\-]+")
+
+
+def _resolve_past_date(m: "re.Match", stated_on: date) -> Optional[date]:
+    """A start/stop date is in the past: resolve month+day via temporal_resolver (future-biased, so
+    anchored at Jan 1 of the statement year) and roll back a year when it lands after the statement."""
+    if m.group("d3"):
+        day = int(m.group("d3"))
+        year, month = stated_on.year, stated_on.month
+        if day > stated_on.day:
+            month -= 1
+            if month == 0:
+                year, month = year - 1, 12
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+    month_tok = m.group("m1") or m.group("m2")
+    day_tok = m.group("d1") or m.group("d2")
+    iso, _basis, _conf = resolve_date_expression(f"{month_tok} {day_tok}", datetime(stated_on.year, 1, 1))
+    if not iso:
+        return None
+    try:
+        found = date.fromisoformat(iso)
+        if found > stated_on:
+            found = found.replace(year=found.year - 1)
+    except ValueError:
+        return None
+    return found if 0 <= (stated_on - found).days <= 400 else None
+
+
+def _is_negated_or_planned(words: List[str], verb_idx: int) -> bool:
+    window = words[max(0, verb_idx - 3):verb_idx]
+    return any(w in _VERB_PREFIX_BLOCK or w.endswith(("n't", "n’t")) for w in window)
+
+
+def _extract_explicit_dates(text, day, source, nlp, out, seen, ctx_ok) -> None:
+    """Explicit start / end anchors. See the module block above for the structural rules."""
+
+    def _emit(kind: str, anchor: date, np_raw: str, m_start: int, m_end: int) -> None:
+        subject = _clean_np(np_raw)
+        lem = subject_lemmas(subject, nlp)
+        count = (day - anchor).days + 1 if kind == "start" else 1
+        if kind == "start" and not 1 <= count <= 400:
+            return
+        key = (kind, anchor, tuple(sorted(lem)))
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(DayCountClaim(count=count, stated_on=day, subject=subject, lemmas=lem,
+                                 snippet=_sentence_window(text, m_start, m_end), source=source,
+                                 kind=kind, anchor_date=anchor))
+
+    dated_sentences = set()
+    for dm in _DATE_PHRASE_RE.finditer(text):
+        left = max(text.rfind(mk, 0, dm.start()) for mk in ("\n", ".", "?", "!")) + 1
+        rights = [p for mk in ("\n", ".", "?", "!") if (p := text.find(mk, dm.end())) >= 0]
+        right = min(rights) + 1 if rights else len(text)
+        before = [w.lower() for w in _WORD_RE.findall(text[left:dm.start()])]
+        anchor = _resolve_past_date(dm, day)
+        if anchor is None or not ctx_ok(dm.start(), dm.end()):
+            continue
+        dated_sentences.add(left)
+        if before and before[-1] == "since":
+            rest = [w for w in text[dm.end():right].replace(",", " ").split()]
+            while rest and rest[0].lower().strip(",;:") in _CLAUSE_LEAD:
+                rest.pop(0)
+            _emit("start", anchor, " ".join(rest[:6]).rstrip(".?!"), dm.start(), dm.end())
+            continue
+        # verb-bound date: <past verb> [object] [prep] <date>
+        end_i = len(before) - 1 if before and before[-1] in _DATE_PREPS else len(before)
+        verb_i = next((i for i in range(end_i - 1, max(-1, end_i - 8), -1) if before[i] in _PAST_TO_LEMMA), None)
+        if verb_i is None:
+            continue
+        mid = before[verb_i + 1:end_i]
+        if len(mid) > 5 or any(w in _MID_BLOCK for w in mid) or _is_negated_or_planned(before, verb_i):
+            continue
+        lemma = _PAST_TO_LEMMA[before[verb_i]]
+        _emit("start" if lemma in _START_LEMMAS else "end", anchor, " ".join(mid), dm.start(), dm.end())
+    # date-less stop: "I stopped <activity>" ends the episode on the day it was said
+    for sm in _SENTENCE_RE.finditer(text):
+        if sm.start() in dated_sentences or _DATE_PHRASE_RE.search(sm.group(0)):
+            continue
+        if text[sm.end():sm.end() + 1] == "?":
+            continue
+        words = [w.lower() for w in _WORD_RE.findall(sm.group(0))]
+        for i, w in enumerate(words):
+            if _PAST_TO_LEMMA.get(w) in _STOP_LEMMAS and i + 1 < len(words):
+                if words[i + 1] in _PARTICLES or _is_negated_or_planned(words, i):
+                    break
+                if any(x in _IRREALIS_LEAD for x in words[:i]) or not ctx_ok(sm.start(), sm.end()):
+                    break
+                obj = text[sm.start():sm.end()].split()
+                idx = next((j for j, tok in enumerate(obj) if tok.lower().strip(".,;:!?") == w), None)
+                if idx is None:
+                    break
+                end_day = day - timedelta(days=1) if "yesterday" in words else day
+                _emit("end", end_day, " ".join(obj[idx + 1:idx + 6]), sm.start(), sm.end())
+                break
+
+
+_SENTENCE_RE = re.compile(r"[^\n.?!]+")
 
 
 def extract_day_count_claims(
@@ -513,37 +687,51 @@ def extract_day_count_claims(
     seen = set()
     attributed_spans: List[Tuple[int, int]] = []
 
-    def _ok_context(m: re.Match) -> bool:
-        snippet = _sentence_window(text, m.start(), m.end())
+    def _ctx_ok(m_start: int, m_end: int) -> bool:
+        snippet = _sentence_window(text, m_start, m_end)
         if _QUOTED_OR_DRAFT_RE.search(snippet):
             return False
-        if any(w in _IRREALIS_LEAD for w in _sentence_prefix_words(text, m.start())):
+        if any(w in _IRREALIS_LEAD for w in _sentence_prefix_words(text, m_start)):
             return False
-        lead = _sentence_lead(text, m.start())
+        lead = _sentence_lead(text, m_start)
         if snippet.rstrip().endswith("?") and lead and lead[0] in _INTERROGATIVE_LEAD:
             return False
         return True
 
-    def _add(n_tok: str, m: re.Match, np_raw: str) -> None:
+    def _ok_context(m: re.Match) -> bool:
+        return _ctx_ok(m.start(), m.end())
+
+    def _add(n_tok: str, m: re.Match, np_raw: str, unit: str = "day") -> None:
         n = _to_int(n_tok)
         if n is None:
             return
+        if unit == "week":
+            n = 7 * (n - 1) + 1  # "week N" -> day 1 is stated_on - 7(N-1)
+            if n > 400:
+                return
         snippet = _sentence_window(text, m.start(), m.end())
         subject = _clean_np(np_raw)
         lem = subject_lemmas(subject, nlp)
         if not lem:
             return
-        key = (n, tuple(sorted(lem)))
+        key = (n, tuple(sorted(lem)), unit)
         if key in seen:
             return
         seen.add(key)
-        out.append(DayCountClaim(count=n, stated_on=day, subject=subject, lemmas=lem, snippet=snippet, source=source))
+        out.append(DayCountClaim(count=n, stated_on=day, subject=subject, lemmas=lem, snippet=snippet,
+                                 source=source, unit=unit))
 
     for rx in (_DAY_COUNT_A_RE, _DAY_COUNT_B_RE):
         for m in rx.finditer(text):
             if _ok_context(m):
                 attributed_spans.append((m.start(), m.end()))
                 _add(m.group("n"), m, m.group("np"))
+    for rx in (_WEEK_A_RE, _WEEK_B_RE):
+        for m in rx.finditer(text):
+            if _ok_context(m):
+                attributed_spans.append((m.start(), m.end()))
+                _add(m.group("n"), m, m.group("np"), unit="week")
+    _extract_explicit_dates(text, day, source, nlp, out, seen, _ctx_ok)
     if allow_bare:
         for m in _BARE_DAY_RE.finditer(text):
             if any(s <= m.start() < e for s, e in attributed_spans):
@@ -565,8 +753,11 @@ class EpisodeAnchor:
     lemmas: frozenset
     subject: str
     start: date
-    newest: DayCountClaim
-    claims: List[DayCountClaim]
+    newest: DayCountClaim         # newest start-bearing (non-end) statement
+    claims: List[DayCountClaim]   # start-bearing statements, oldest first
+    source_claim: Optional[DayCountClaim] = None  # the statement that fixed ``start`` (explicit date outranks counts)
+    ended: Optional[date] = None
+    end_claim: Optional[DayCountClaim] = None
 
     @property
     def spread_days(self) -> int:
@@ -574,7 +765,11 @@ class EpisodeAnchor:
         return (max(starts) - min(starts)).days
 
     def projected(self, as_of: Any) -> int:
-        return self.newest.projected(as_of)
+        """Day number at ``as_of`` (frozen at the end date for an ended episode)."""
+        day = _coerce_date(as_of) or self.newest.stated_on
+        if self.ended is not None and day > self.ended:
+            day = self.ended
+        return max(1, (day - self.start).days + 1)
 
 
 START_AGREEMENT_DAYS = 3
@@ -585,10 +780,24 @@ def _claim_rank(c: DayCountClaim) -> Tuple[date, int]:
     return (c.stated_on, 1 if c.source == "message" else 0)
 
 
+def _group_start(g: List[DayCountClaim]) -> Tuple[date, DayCountClaim]:
+    """An explicit start date beats any count for the same episode (newest explicit wins)."""
+    explicit = [c for c in g if c.kind == "start"]
+    if explicit:
+        c = max(explicit, key=_claim_rank)
+        return c.start, c
+    c = max((x for x in g if x.kind != "end"), key=_claim_rank)
+    return c.start, c
+
+
 def episode_anchors(claims: Iterable[DayCountClaim]) -> List[EpisodeAnchor]:
     """Merge claims into episodes. Attributed claims group by shared activity lemma; an
     unattributed claim joins the episode whose start date it agrees with (within
-    START_AGREEMENT_DAYS) and is otherwise dropped (never guessed onto a subject)."""
+    START_AGREEMENT_DAYS) and is otherwise dropped (never guessed onto a subject). An explicit
+    start date outranks counts; an "ended" statement closes an episode unless the user stated a
+    count after it (resumed). An end with nothing to end -- and an unattributed end when more
+    than one episode is open -- is dropped."""
+    claims = list(claims)
     groups: List[List[DayCountClaim]] = []
     attributed = [c for c in claims if c.lemmas]
     for c in sorted(attributed, key=_claim_rank):
@@ -610,20 +819,43 @@ def episode_anchors(claims: Iterable[DayCountClaim]) -> List[EpisodeAnchor]:
                     break
             if merged:
                 break
-    for c in sorted((c for c in claims if not c.lemmas), key=_claim_rank):
+    groups = [g for g in groups if any(c.kind != "end" for c in g)]  # nothing to end otherwise
+    for c in sorted((c for c in claims if not c.lemmas and c.kind != "end"), key=_claim_rank):
         best, gap = None, None
         for g in groups:
-            d = abs((c.start - max(g, key=_claim_rank).start).days)
+            d = abs((c.start - _group_start(g)[0]).days)
             if d <= START_AGREEMENT_DAYS and (gap is None or d < gap):
                 best, gap = g, d
         if best is not None:
             best.append(c)
+
+    def _end_of(g: List[DayCountClaim]) -> Optional[DayCountClaim]:
+        ends = [c for c in g if c.kind == "end"]
+        if not ends:
+            return None
+        e = max(ends, key=lambda c: (c.anchor_date, _claim_rank(c)))
+        for c in g:
+            if c.kind == "start" and c.anchor_date > e.anchor_date:
+                return None
+            if c.kind == "count" and c.stated_on > e.stated_on:
+                return None
+        return e
+
+    open_groups = [g for g in groups if _end_of(g) is None]
+    for c in sorted((c for c in claims if not c.lemmas and c.kind == "end"), key=_claim_rank):
+        if len(open_groups) == 1:
+            open_groups[0].append(c)
     out: List[EpisodeAnchor] = []
     for g in groups:
-        newest = max(g, key=_claim_rank)
+        body = [c for c in g if c.kind != "end"]
+        newest = max(body, key=_claim_rank)
+        start, src = _group_start(g)
+        end = _end_of(g)
         lem = frozenset().union(*(m.lemmas for m in g))
-        out.append(EpisodeAnchor(lemmas=lem, subject=newest.subject or next((m.subject for m in g if m.subject), ""),
-                                 start=newest.start, newest=newest, claims=sorted(g, key=_claim_rank)))
+        out.append(EpisodeAnchor(
+            lemmas=lem, subject=newest.subject or next((m.subject for m in g if m.subject), ""), start=start,
+            newest=newest, claims=sorted(body, key=_claim_rank), source_claim=src,
+            ended=end.anchor_date if end else None, end_claim=end))
     out.sort(key=lambda a: a.newest.stated_on, reverse=True)
     return out
 
@@ -644,19 +876,28 @@ def day_count_lines(
     rel = _tokens_lemma_set(relevant_text, nlp) | frozenset(_lemma_token(w) for w in re.findall(r"[\w'\-]+", relevant_text))
     lines: List[str] = []
     for a in anchors:
-        if (today - a.newest.stated_on).days > max_age_days or a.newest.stated_on > today:
+        last_heard = a.ended or a.newest.stated_on
+        if (today - last_heard).days > max_age_days or a.newest.stated_on > today:
             continue
         if not (a.lemmas & rel):
             continue
         n = a.projected(today)
-        c = a.newest
+        c = a.source_claim or a.newest
         what = "your note" if c.source == "note" else "your message"
-        line = (f'- {a.subject or "the episode"}: day {n} today ({today.isoformat()}) — from {what} dated '
-                f'{c.stated_on.isoformat()} ("{c.snippet[:110]}"; day 1 ≈ {a.start.isoformat()})')
-        if a.spread_days > START_AGREEMENT_DAYS - 1:
+        src = (f'from {what} dated {c.stated_on.isoformat()} ("{c.snippet[:110]}"; day 1 ≈ {a.start.isoformat()})')
+        if a.ended is not None:
+            line = (f'- {a.subject or "the episode"}: ended {a.ended.isoformat()} (it ran about {n} days) — '
+                    f'no running count; {src}')
+        elif c.unit == "week" and a.newest.unit == "week":
+            weeks, days = divmod(n - 1, 7)
+            line = (f'- {a.subject or "the episode"}: week {weeks + 1} today ({today.isoformat()}; '
+                    f'{weeks} week{"" if weeks == 1 else "s"} {days} day{"" if days == 1 else "s"} in) — {src}')
+        else:
+            line = f'- {a.subject or "the episode"}: day {n} today ({today.isoformat()}) — {src}'
+        if a.ended is None and a.spread_days > START_AGREEMENT_DAYS - 1:
             first = a.claims[0]
             line += (f" (your statements differ by {a.spread_days} days: {first.stated_on.isoformat()} "
-                     f"day {first.count} vs {c.stated_on.isoformat()} day {c.count})")
+                     f"day {first.count} vs {a.newest.stated_on.isoformat()} day {a.newest.count})")
         lines.append(line)
         if len(lines) >= max_lines:
             break
