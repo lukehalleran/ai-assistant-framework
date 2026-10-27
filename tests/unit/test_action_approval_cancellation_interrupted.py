@@ -99,3 +99,55 @@ def test_persisted_approved_reconciled_on_load(tmp_path):
     assert any(d["status"] == "interrupted" for d in on_disk)
     s3 = PendingActionsStore(max_pending=2, path=path)
     assert s3._store[p.action_id].status == "interrupted"  # kept across loads
+
+
+# --- 2026-10-26 (lane H1, #101 follow-up, class: BC-58) ---------------------
+def test_cancel_audit_event_is_named_interrupted_not_failed(env):
+    store, log, _, install = env
+    install(False)
+    p = _proposal()
+    store.propose(p)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(handlers.execute_pending_action_core(p.action_id))
+    lines = [json.loads(x) for x in log.read_text().splitlines()]
+    assert lines[-1]["event"] == "interrupted"
+    assert lines[-1]["success"] is False
+
+
+def test_genuine_failure_still_audits_as_failed(tmp_path):
+    from core.actions.audit import ActionAuditLog
+    path = tmp_path / "a.jsonl"
+    audit = ActionAuditLog(str(path))
+    audit.log_execution("x", atypes.ActionResult(action_id="x", success=False, message="boom"))
+    assert json.loads(path.read_text().splitlines()[-1])["event"] == "failed"
+
+
+def test_interrupted_record_ages_out_but_survives_before_the_bound(tmp_path):
+    path = str(tmp_path / "pending.json")
+    s1 = PendingActionsStore(max_pending=2, path=path)
+    p = _proposal()
+    s1.propose(p)
+    s1.approve(p.action_id)
+    s1.mark_interrupted(p.action_id)
+    assert s1._store[p.action_id].interrupted_at is not None
+    # inside the window: kept across a reload (existing visibility contract)
+    assert PendingActionsStore(max_pending=2, path=path)._store[p.action_id].status == "interrupted"
+    # past the window: pruned from the store AND the file on the next prune
+    s1._store[p.action_id].interrupted_at = datetime.now(timezone.utc) - timedelta(
+        seconds=atypes.INTERRUPTED_RETENTION_SECONDS + 5)
+    s1._prune_expired()
+    assert p.action_id not in s1._store
+    assert p.action_id not in {d["action_id"] for d in json.load(open(path))["proposals"]}
+    assert p.action_id not in PendingActionsStore(max_pending=2, path=path)._store
+
+
+def test_legacy_interrupted_record_without_timestamp_ages_from_proposed_at(tmp_path):
+    path = str(tmp_path / "pending.json")
+    s1 = PendingActionsStore(max_pending=2, path=path)
+    p = _proposal()
+    p.proposed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=atypes.INTERRUPTED_RETENTION_SECONDS + 60)
+    p.status = "interrupted"
+    s1._store[p.action_id] = p
+    s1._save()
+    assert p.action_id not in PendingActionsStore(max_pending=2, path=path)._store

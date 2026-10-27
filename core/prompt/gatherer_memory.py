@@ -75,6 +75,19 @@ def is_profile_history_ask(query: str) -> bool:
     return has_non_negated_hit(query.lower(), _profile_history_matcher)
 
 
+def sensitive_turn_open(query: str, *, distress: bool = False, crisis_level=None) -> bool:
+    """True when this turn opens sensitive profile context: an elevated-tone turn
+    (``distress``, or any distress-adjacent ``crisis_level`` encoding) or an
+    explicit ask about what Daemon knows of the user. THE one definition of the
+    "open turn" expression (2026-10-26, class: BC-58): the profile render, the
+    graph edge gate, the heavy-topic fresh facts and the agentic search_memory
+    tool all call it instead of re-deriving it."""
+    if not distress and crisis_level:
+        from core.prompt.builder import _distress_from_crisis_level  # lazy import: cycle (builder imports this module)
+        distress = _distress_from_crisis_level(str(crisis_level))
+    return bool(distress) or is_profile_history_ask(query)
+
+
 def _summary_ts_key(item):
     return item.get('timestamp') if isinstance(item, dict) else None
 
@@ -1184,7 +1197,7 @@ class MemoryRetrievalMixin:
             # held out of the prompt unless the turn is elevated-tone (the
             # builder's _distress_active), an explicit history ask, or the
             # query is topically related (decided inside the profile).
-            sensitive_open = bool(getattr(self, "_distress_active", False)) or is_profile_history_ask(query)
+            sensitive_open = sensitive_turn_open(query, distress=getattr(self, "_distress_active", False))
             _token = SENSITIVE_OPEN.set(sensitive_open)
             try:
                 # BC-41 (2026-10-21): the bge encode of profile facts held the

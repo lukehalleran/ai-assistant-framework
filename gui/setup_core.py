@@ -356,6 +356,22 @@ def save_openrouter_key(orchestrator, key: str, *, http_get: Callable = None,
     return {"ok": True, "error": None, "hint": key_hint(OPENROUTER_ENV), "unreachable": False}
 
 
+def _tool_disabled_in_config(env_var: str) -> bool:
+    """True when the tool behind this key is switched off by CONFIG (not by a
+    missing key): the same two checks `_refresh_wolfram` / `_refresh_sandbox`
+    refuse on."""
+    try:
+        if env_var == "WOLFRAM_APP_ID":
+            import config.app_config as app_cfg  # lazy import: live-config
+            return not getattr(app_cfg, "WOLFRAM_ENABLED", False)
+        if env_var == "E2B_API_KEY":
+            from knowledge.sandbox_manager import get_sandbox_manager  # lazy import: startup-cost
+            return not bool(getattr(get_sandbox_manager(), "_config_enabled", True))
+    except Exception:  # degrades: unknown cause falls back to the restart notice
+        return False
+    return False
+
+
 def save_optional_key(orchestrator, name: str, key: str) -> dict:
     """Format-validate (no paid call), save, refresh live managers."""
     err = validate_optional_key_format(name, key or "")
@@ -368,8 +384,18 @@ def save_optional_key(orchestrator, name: str, key: str) -> dict:
     live = _refresh_live_managers(orchestrator, env_var, key)
     result = {"ok": True, "error": None, "hint": key_hint(env_var)}
     if not live:
-        # Saved to .env, but a running consumer could not be refreshed: say so.
-        result["restart_required"] = True
+        if _tool_disabled_in_config(env_var):
+            # The key is saved, but the tool itself is switched off in config:
+            # a restart will NOT enable it (2026-10-26, #101 follow-up, BC-58).
+            result["disabled_in_config"] = True
+            result["notice"] = (
+                "Saved, but this tool is disabled in your config, so the key "
+                "will not be used until it is enabled there. Restarting alone "
+                "will not enable it."
+            )
+        else:
+            # Saved to .env, but a running consumer could not be refreshed: say so.
+            result["restart_required"] = True
     return result
 
 

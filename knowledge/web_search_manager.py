@@ -66,7 +66,8 @@ import time
 import urllib.parse
 import weakref
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 import re as _re
@@ -171,6 +172,105 @@ NEWS_PHRASES = [
     'current events', 'latest news', 'breaking news',
     'today in', 'yesterday in', 'this week in'
 ]
+
+
+
+# ---------------------------------------------------------------------------
+# News freshness / page-shape filter (2026-10-26, lane R2, class: BC-25)
+#
+# Incident 2026-10-12: the broad-news pre-gather ran five facet queries as
+# topic="general" with no recency window (a facet like "Reuters AP world
+# affairs" carries no news keyword, so _is_news_query() was False) and returned
+# Jan-2026 Reuters items, evergreen explainers and homepage navigation pages.
+#   (a) provider recency: facet queries are searched with Tavily's own
+#       topic="news" + days=NEWS_FACET_FRESHNESS_DAYS (the same `days` kwarg
+#       _tavily_search already sends for news-intent queries).
+#   (b) bounded age: a news-intent result whose published_date, or whose URL's
+#       embedded /YYYY/MM/DD/ date, is older than NEWS_MAX_AGE_DAYS is dropped.
+#       Slack over the provider window absorbs time zones and re-indexing; a page
+#       with NO date evidence is kept (unknown is not stale).
+#   (c) shape: homepage / section-index results are dropped by URL SHAPE, never
+#       by a site list.
+# ---------------------------------------------------------------------------
+NEWS_FACET_FRESHNESS_DAYS = 3   # Tavily's own news default window
+NEWS_MAX_AGE_DAYS = 7           # post-filter bound (provider window + slack)
+
+_URL_DATE_RE = re.compile(r"(?<!\d)(20\d{2})[/-](0[1-9]|1[0-2])[/-](0[1-9]|[12]\d|3[01])(?!\d)")
+_INDEX_SEGMENT_RE = re.compile(r"^index(\.\w+)?$", re.IGNORECASE)
+_ARTICLE_SLUG_MIN_WORDS = 4     # a lone hyphenated slug this long is an article, not a section
+_ARTICLE_ID_MIN_DIGITS = 6      # a lone segment carrying a numeric story id is an article
+
+
+def _parse_published_date(value) -> Optional[datetime]:
+    """Aware-UTC datetime from a provider ``published_date`` (RFC 2822 or ISO), else None."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    parsed = None
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed is None:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _url_embedded_date(url: str) -> Optional[datetime]:
+    """Aware-UTC date from a /YYYY/MM/DD/ (or YYYY-MM-DD) path component, else None."""
+    try:
+        path = urllib.parse.urlsplit(url or "").path
+    except ValueError:
+        return None
+    m = _URL_DATE_RE.search(path)
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _is_index_page_url(url: str) -> bool:
+    """True for a homepage / section-index URL by SHAPE: no path, or a path of depth
+    <= 1 (after dropping a trailing index.*) that is not a lone article slug or story id."""
+    try:
+        path = urllib.parse.urlsplit(url or "").path
+    except ValueError:
+        return False
+    segments = [seg for seg in path.split("/") if seg]
+    if segments and _INDEX_SEGMENT_RE.match(segments[-1]):
+        segments = segments[:-1]
+    if len(segments) == 0:
+        return True
+    if len(segments) > 1:
+        return False
+    stem = segments[0].rsplit(".", 1)[0]
+    if len(re.findall(r"[A-Za-z0-9]+", stem)) >= _ARTICLE_SLUG_MIN_WORDS:
+        return False
+    if stem.isdigit() or re.search(r"\d{%d,}" % _ARTICLE_ID_MIN_DIGITS, stem):
+        return False  # a bare numeric segment (or one carrying a long id) is a story id, never a section name
+    return True
+
+
+def filter_news_pages(pages: List["WebPage"], now: Optional[datetime] = None) -> List["WebPage"]:
+    """Apply the news freshness (b) and page-shape (c) rules; returns the kept pages."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=NEWS_MAX_AGE_DAYS)
+    kept: List["WebPage"] = []
+    for page in pages:
+        if _is_index_page_url(page.url):
+            continue
+        stamp = _parse_published_date(page.published_date) or _url_embedded_date(page.url)
+        if stamp is not None and stamp < cutoff:
+            continue
+        kept.append(page)
+    if len(kept) != len(pages):
+        log.info(f"[WebSearch] News filter dropped {len(pages) - len(kept)}/{len(pages)} stale or index page(s)")
+    return kept
 
 
 def _is_news_query(query: str) -> bool:
@@ -1390,6 +1490,7 @@ class WebSearchManager:
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
         localize: bool = True,
+        news: bool = False,
     ) -> WebSearchResult:
         """
         Perform a web search with the specified depth.
@@ -1403,6 +1504,9 @@ class WebSearchManager:
             max_results: Maximum number of results to return
             localize: Apply the _localize_query backstop (disable for
                 non-conversational callers whose queries must go verbatim)
+            news: Treat the query as news-intent regardless of wording (used for
+                broad-briefing facet queries): provider topic="news" with a
+                recency window, plus the freshness/page-shape filter.
 
         Returns:
             WebSearchResult with pages or error
@@ -1488,7 +1592,8 @@ class WebSearchManager:
                 self._execute_search(query, depth, max_results,
                                      include_domains=include_domains,
                                      exclude_domains=exclude_domains,
-                                     reservation=reservation),
+                                     reservation=reservation,
+                                     news=news),
                 timeout=timeout
             )
 
@@ -1528,6 +1633,7 @@ class WebSearchManager:
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
         reservation: Optional[SearchReservation] = None,
+        news: bool = False,
     ) -> WebSearchResult:
         """Execute the actual search based on depth.
 
@@ -1541,9 +1647,11 @@ class WebSearchManager:
         session = WebSearchSession(initial_query=query, depth=depth)
 
         # Detect if this is a news query - use news topic for better results
-        is_news = _is_news_query(query)
+        is_news = news or _is_news_query(query)
         topic = "news" if is_news else "general"
-        days = 1 if is_news else None  # Limit to today for news queries
+        # Limit to today for keyword-detected news queries; a forced (facet) news
+        # query gets the wider documented window (see NEWS_FACET_FRESHNESS_DAYS).
+        days = (NEWS_FACET_FRESHNESS_DAYS if news else 1) if is_news else None
 
         if is_news:
             log.info(f"[WebSearch] News query detected, using topic='news', days=1")
@@ -1578,6 +1686,8 @@ class WebSearchManager:
                 search_depth=depth,
                 error=f"Web search provider failed ({e.reason})",
             )
+        if is_news:
+            search_pages = filter_news_pages(search_pages)
         session.search_results = search_pages
         session.credits_used += 1.0  # Base search cost
 
@@ -2574,6 +2684,8 @@ If not splitting, leave SUB_QUERIES empty."""
                 error=f"Search suppressed during {crisis_level} crisis level"
             )
 
+        news_briefing = False  # facet queries of a broad-news request: news-intent search
+
         # Pre-computed sub-queries: skip all decomposition analysis
         if sub_queries and len(sub_queries) > 1:
             log.info(f"[WebSearch] Using {len(sub_queries)} pre-computed sub-queries")
@@ -2590,6 +2702,7 @@ If not splitting, leave SUB_QUERIES empty."""
         elif self._is_broad_news_query(query):
             news_queries = await self._decompose_news_query(query)
             if news_queries:
+                news_briefing = True
                 log.info(f"[WebSearch] Broad news detected, using {len(news_queries)} facet queries")
                 decomposition = QueryDecomposition(
                     original_query=query,
@@ -2647,7 +2760,8 @@ If not splitting, leave SUB_QUERIES empty."""
                 crisis_level=crisis_level,
                 timeout=timeout,
                 use_cache=use_cache,
-                max_results=max_results_per_query
+                max_results=max_results_per_query,
+                **({"news": True} if news_briefing else {}),
             )
             for sub_q in sub_queries
         ]

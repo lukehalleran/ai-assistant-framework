@@ -1980,6 +1980,27 @@ def _attachment_topic(ctx, *, exclude_name=None) -> str:
     return _topic_from_filename(getattr(newest, "display_name", ""))
 
 
+_DOC_PASTED_REQUEST_EDGE_CHARS = 700
+
+
+def _pasted_material(ctx) -> bool:
+    """True when the user's own message is paste-sized (THE paste-size test) -
+    it carries the material for a derivative request, attached or not."""
+    from memory.memory_storage import is_paste_sized  # lazy import: patch-point (cycle: storage imports gatherer-side modules)
+
+    return is_paste_sized(str(getattr(ctx, "user_text", "") or ""))
+
+
+def _pasted_request(ctx) -> str:
+    """The request part of a paste-sized message: both ends (head + tail),
+    since the instruction can sit on either side of the pasted body."""
+    text = str(getattr(ctx, "user_text", "") or "")
+    edge = _DOC_PASTED_REQUEST_EDGE_CHARS
+    if len(text) <= 2 * edge:
+        return text
+    return f"{text[:edge]}\n[... pasted material ...]\n{text[-edge:]}"
+
+
 async def _run_doc_generation(ctx):
     """Direct document-generation bypass (agentic gate doc_gen_intent).
 
@@ -2049,6 +2070,7 @@ async def _run_doc_generation(ctx):
         _doc_source = _resolve_doc_source(_doc_gen_intent, getattr(ctx, "user_text", None))
         _doc_topic = _doc_gen_intent["topic"]
         _template_text = None
+        _pasted = False
         if _doc_source == "conversation":
             _source_material = _build_conversation_source_material(
                 getattr(ctx, "history", None), getattr(ctx, "user_text", None)
@@ -2084,6 +2106,14 @@ async def _run_doc_generation(ctx):
                     }
                 else:
                     yield {"role": "assistant", "content": "📝 Writing from your attachment...", "is_progress": True}
+            elif _pasted_material(ctx):
+                # Pasted material (2026-10-26): the user's own text IS the
+                # material, same as an attachment - eligible for the
+                # derivative path below.
+                _source_material = getattr(ctx, "user_text", None)
+                _pasted = True
+                _template_name = _template_attachment = None
+                yield {"role": "assistant", "content": "📝 Writing from your pasted text...", "is_progress": True}
             else:
                 _source_material = getattr(ctx, "user_text", None)
                 _template_name = _template_attachment = None  # no attachment material used → no template either
@@ -2095,14 +2125,18 @@ async def _run_doc_generation(ctx):
         # fails safe to the report path. A template turn is always derivative
         # (recasting existing content into a layout) — skip the classifier.
         _doc_result = None
-        if _doc_source == "attachment":
+        if _doc_source == "attachment" or _pasted:
+            # Pasted material: the instruction may sit before OR after the
+            # paste, so the classifier/composer see both ends of the message;
+            # the full text rides as MATERIAL.
+            _request = _pasted_request(ctx) if _pasted else getattr(ctx, "user_text", "")
             _is_derivative = _template_attachment is not None or (
-                await _dg.classify_deliverable(getattr(ctx, "user_text", "")) == "derivative"
+                await _dg.classify_deliverable(_request) == "derivative"
             )
             if _is_derivative:
                 _doc_source = "attachment-derivative"
                 _compose_kwargs = {
-                    "request": getattr(ctx, "user_text", ""),
+                    "request": _request,
                     "material": _source_material, "topic": _doc_topic,
                 }
                 if _template_text:
@@ -2120,37 +2154,15 @@ async def _run_doc_generation(ctx):
         # record; a sibling .docx/.pdf/… is converted from it. Conversion is
         # blocking (pandoc / LibreOffice subprocess) → worker thread. Failure is
         # reported, never hidden — the markdown is still on disk.
-        _export_line = ""
-        _export_fmt = document_export.detect_requested_format(getattr(ctx, "user_text", "") or "")
-        if _export_fmt:
-            try:
-                # The template's OWN file (not just its text) wins as the
-                # export's styling reference when its format matches — see
-                # document_export.export_document's reference_doc handling.
-                _reference_doc = (
-                    _template_attachment.get("path") if _template_attachment else None
-                )
-                _export_path = await asyncio.to_thread(
-                    document_export.export_document, _doc_result.path, _export_fmt,
-                    reference_doc=_reference_doc,
-                )
-                logger.info(f"[Handle Submit] Document exported: {_export_path}")
-                # The user asked for ONE file in that format: the markdown was
-                # only the intermediate. Removed after a verified export (the
-                # index row follows the file); any failure keeps both.
-                try:
-                    _dg.repoint_index(_doc_result.path, _export_path)
-                    _os.remove(_doc_result.path)
-                    _doc_result.path = str(_export_path)
-                except Exception as _rm_err:  # degrades: a leftover .md beside the export
-                    logger.warning(f"[Handle Submit] Intermediate markdown kept: {_rm_err}")
-                    _export_line = f"- **{_export_fmt.upper()}**: `{_export_path}`\n"
-            except Exception as _exp_err:
-                logger.warning(f"[Handle Submit] Document export to {_export_fmt} failed: {_exp_err}")
-                _export_line = (
-                    f"- **{_export_fmt.upper()}**: not written — {_exp_err} "
-                    f"(the markdown above is the full document)\n"
-                )
+        # (THE shared export step: document_export.export_requested_format.)
+        _export_line = await asyncio.to_thread(
+            document_export.export_requested_format, _doc_result,
+            getattr(ctx, "user_text", "") or "",
+            generator=_dg,
+            # The template's OWN file (not just its text) wins as the export's
+            # styling reference when its format matches.
+            reference_doc=_template_attachment.get("path") if _template_attachment else None,
+        )
 
         _template_line = f"- **Template**: {_template_name}\n" if _template_name else ""
         _doc_response = (
@@ -2872,7 +2884,14 @@ async def _run_insight_mode(ctx):
                     doc_type="summary",
                     source_types=sorted(_stores),
                 )
+                _doc_export_line = await asyncio.to_thread(
+                    document_export.export_requested_format, _doc,
+                    getattr(intent, "raw_query", "") or getattr(ctx, "user_text", "") or "",
+                    generator=_dg,
+                )
                 doc_line = f"\n\n📄 Saved as **{_doc.title}** → `{_doc.path}`"
+                if _doc_export_line:
+                    doc_line += "\n" + _doc_export_line.rstrip("\n")
             except Exception as _doc_err:
                 logger.warning(f"[Insight Mode] Document save failed: {_doc_err}")
                 doc_line = "\n\n(I couldn't save the document to disk — the text above is the full content.)"
@@ -7063,7 +7082,7 @@ async def execute_pending_action_core(action_id: str, orchestrator=None):
         store.mark_interrupted(action_id)
         try:
             audit.log_execution(action_id, types.ActionResult(
-                action_id=action_id, success=False,
+                action_id=action_id, success=False, interrupted=True,
                 message=f"[INTERRUPTED] {types.INTERRUPTED_REASON}"))
         except Exception:  # degrades: audit line lost; the status is already set
             logger.warning(f"[Actions] Could not audit interruption of {action_id}")

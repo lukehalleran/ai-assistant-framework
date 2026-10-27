@@ -25,7 +25,39 @@ from memory.curation.types import (
     ItemChange,
     SentinelResult,
 )
-from memory.fact_extractor import _is_junk_object
+from memory.fact_extractor import _TEMPORAL_OK_RELATIONS, _get_nlp, _is_junk_object
+from memory.graph_utils import is_temporal_deictic
+
+
+def _trailing_when_adverb_fragment(value: str, relation: str) -> bool:
+    """A short noun phrase whose LAST token is a temporal adverb ("meds
+    recently", "ibuprofen earlier"): the extractor glued a when-word onto the
+    object. ``_is_junk_object`` only rejects a when-word as the WHOLE object.
+    Structural (2026-10-26, class: BC-04): spaCy tags the tail ADV AND it is a
+    bare when-word per ``graph_utils.is_temporal_deictic``; head is 1-2 tokens
+    without digits (a dose such as "5 mg recently" keeps its content and is
+    left to the owner). Schedule relations are exempt, as in the extractor.
+    No parser -> False."""
+    if (relation or "").strip().lower() in _TEMPORAL_OK_RELATIONS:
+        return False
+    toks = (value or "").split()
+    if not (2 <= len(toks) <= 3) or any(any(c.isdigit() for c in t) for t in toks):
+        return False
+    if not is_temporal_deictic(toks[-1]):
+        return False
+    nlp = _get_nlp()
+    if nlp is None:
+        return False
+    try:
+        doc = [t for t in nlp(" ".join(toks)) if not t.is_space]
+    except Exception:  # degrades: parse failure -> fragment not recognised, fact left alone
+        return False
+    return bool(doc) and doc[-1].pos_ == "ADV" and all(
+        not is_temporal_deictic(t.text) for t in doc[:-1])
+
+
+def _is_junk_profile_value(value: str, relation: str) -> bool:
+    return _is_junk_object(value, relation) or _trailing_when_adverb_fragment(value, relation)
 
 
 class ProfileJunkFactCurator:
@@ -50,6 +82,10 @@ class ProfileJunkFactCurator:
             SentinelResult(name="negation_exempt_relation_passes",
                            passed=not _is_junk_object("no patient portal",
                                                       "doctor_communication")),
+            SentinelResult(name="trailing_when_adverb_flags",
+                           passed=_is_junk_profile_value("meds recently", "took")),
+            SentinelResult(name="dose_with_when_adverb_left_alone",
+                           passed=not _is_junk_profile_value("5 mg recently", "took")),
             SentinelResult(name="bare_dwelling_residence_flags",
                            passed=_is_junk_object("home", "home_location")),
         ]
@@ -74,7 +110,7 @@ class ProfileJunkFactCurator:
                     continue  # unaddressable → leave alone
                 rel = str(fact.get("relation") or "")
                 val = str(fact.get("value") or "")
-                if not rel or not _is_junk_object(val, rel):
+                if not rel or not _is_junk_profile_value(val, rel):
                     continue
                 items.append(ItemChange(
                     store="profile", doc_id=str(fid),

@@ -63,6 +63,7 @@ from utils.turn_progress import emit as _progress_emit
 from utils.tone_detector import OBSERVATIONAL_NEGATED_CRISIS_TRIGGER
 import utils.safe_json as safe_json
 from utils.date_coerce import to_naive_local
+from utils.test_envelope import inner_text
 from core.prompt.token_manager import drop_prior_session_test_turns
 
 if TYPE_CHECKING:
@@ -561,7 +562,16 @@ class ContextPipeline:
         _pre_analysis = None if skip_heavy else self._quick_query_analysis(user_input)
 
         async def _do_heavy():
-            return await self._check_heavy_topics(user_input, topics)
+            # Sensitive-fact gate for the fresh facts this stage retrieves
+            # (2026-10-26, class: BC-46/BC-58): same open-turn definition as the
+            # profile; SENSITIVE_OPEN is read by MemoryRetriever.get_facts.
+            from core.prompt.gatherer_memory import sensitive_turn_open  # lazy import: cycle (prompt ring)
+            from memory.user_profile import SENSITIVE_OPEN  # lazy import: layering
+            _tok = SENSITIVE_OPEN.set(sensitive_turn_open(user_input, crisis_level=tone_level.value))
+            try:
+                return await self._check_heavy_topics(user_input, topics)
+            finally:
+                SENSITIVE_OPEN.reset(_tok)
 
         async def _do_rewrite():
             return await self._rewrite_query(user_input, _pre_analysis)
@@ -1106,6 +1116,15 @@ class ContextPipeline:
         """
         if not self.model_manager or self._rewrite_timeout == 0:
             return None
+
+        # A [test]-wrapped probe is judged and rewritten by what it said
+        # (2026-10-26, class: BC-05/BC-06): the should-rewrite heuristic and
+        # the LLM prompt see the inner text, never the tags. An analysis
+        # computed on the wrapped text is stale, so recompute on the inner.
+        _inner = inner_text(query)
+        if _inner != query:
+            query = _inner
+            query_analysis = self._quick_query_analysis(query)
 
         # Check if query should be rewritten
         should_rewrite = False

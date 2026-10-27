@@ -22,6 +22,8 @@ import re
 from typing import List, NamedTuple, Optional, Set
 from utils.logging_utils import get_logger
 import utils.topic_manager as topic_manager
+from utils.repository_context import _SOFTWARE_ARTIFACT_MATCHER  # the one software-vocabulary matcher
+from utils.test_envelope import inner_text
 
 logger = get_logger(__name__)
 
@@ -74,6 +76,22 @@ def _ordered_keywords(text: str) -> List[str]:
     words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
     return [w for w in dict.fromkeys(words) if w not in NOISE_WORDS]
 
+# Sense gate (2026-10-25, class: BC-05): SYNONYM_GROUPS is keyed on surface words,
+# but "work"/"job"/"shift"/"training"/"fit"/"shape"/"weight" are homonyms of
+# software vocabulary ("...daemon codebase last couple days work" gained
+# "job shift employment"). When the query carries a software-domain anchor only
+# the 'code' group expands; the user's own words always stay.
+_CODE_GROUP = 'code'
+_CODE_ANCHORS = frozenset(SYNONYM_GROUPS[_CODE_GROUP]) - {'project'}  # bare "project" is ambiguous
+
+
+def has_software_anchor(text: str, keywords: Optional[List[str]] = None) -> bool:
+    """True when ``text`` (and its keyword list) is about software work."""
+    if _SOFTWARE_ARTIFACT_MATCHER(text.lower()):
+        return True
+    return bool(_CODE_ANCHORS.intersection(keywords if keywords is not None else _ordered_keywords(text)))
+
+
 def rewrite_query(query: str, use_topic_extraction: bool = True,
                   topics: Optional[List[str]] = None) -> str:
     """
@@ -95,6 +113,10 @@ def rewrite_query(query: str, use_topic_extraction: bool = True,
     if not query or len(query.strip()) < 3:
         return query
 
+    # A [test]-wrapped probe is judged by what it said: unwrap (the one
+    # unwrap, utils.test_envelope.inner_text) so the whole multi-line text is
+    # keyworded and the envelope tag never becomes a retrieval term.
+    query = inner_text(query)
     logger.debug(f"[QueryRewriter] Original query: '{query}'")
 
     # 1. Base keywords in the user's own word order
@@ -125,9 +147,14 @@ def rewrite_query(query: str, use_topic_extraction: bool = True,
     #    order, synonyms in group-list order.
     seen = set(ordered)
     additional_keywords = []
+    # anchor text = the query itself + any topic words appended after its keywords
+    topic_words = ordered[len(_ordered_keywords(query)):]
+    software_query = has_software_anchor(' '.join([query] + topic_words), ordered)
     for keyword in ordered:
         for group_key, synonyms in SYNONYM_GROUPS.items():
             if keyword == group_key or keyword in synonyms:
+                if software_query and group_key != _CODE_GROUP:
+                    break  # homonym of the query's software sense: no foreign-domain terms
                 for syn in synonyms:
                     if syn not in seen:
                         additional_keywords.append(syn)

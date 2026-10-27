@@ -123,6 +123,7 @@ from core.agentic.formatters import AgenticFormatter
 from core.agentic.tools import LazySandboxSession, ToolExecutor
 from core.agentic import tool_thread
 from utils import read_time_markers
+from utils.attachment_audit import self_reference_note
 from core.reasoning_stream_filter import InterleavedReasoningFilter
 from utils.python_fs_guard import agent_mode as _fs_agent_mode
 from utils.ordered_slice import oldest_first as _ordered_oldest_first
@@ -725,6 +726,22 @@ class AgenticSearchController:
         # Fallback: ~4 chars per token
         return len(text or "") // 4
 
+    @staticmethod
+    def _fetched_page_note(page_text) -> str:
+        """Prompt-only line placed beside a fetch_url result (2026-10-26, class: BC-46).
+
+        A fetched third-party page that names the assistant ("Daemon") would be read
+        as the assistant's own claims or instructions. The DEPLOYED
+        ``self_reference_note`` (the function attachments/pastes already use) says
+        the name is shared and conditions what it means; "" for an ordinary page,
+        an error string, or a non-text result. Appended to ``accumulated_context``
+        only — ``SearchRound.summary``/stored tool content stay the raw page.
+        """
+        if not isinstance(page_text, str) or not page_text:
+            return ""
+        note = self_reference_note([page_text])
+        return f"\n{note}" if note else ""
+
     def _append_accumulated(self, session: "AgenticSearchSession", new_context: str) -> None:
         """Append to accumulated_context with budget enforcement.
 
@@ -1059,6 +1076,7 @@ class AgenticSearchController:
                         content = result
                     fetch_context_parts.append(
                         self._formatter.format_fetch_url_context(1, url, content)
+                        + (self._fetched_page_note(content) if err is None else "")
                     )
 
                 first_round = SearchRound(
@@ -2076,7 +2094,10 @@ class AgenticSearchController:
                     if tr.round_data is not None:
                         session.rounds.append(tr.round_data)
                     if tr.formatted_context:
-                        self._append_accumulated(session, tr.formatted_context)
+                        _fetch_note = ""
+                        if getattr(getattr(tr, "decision", None), "wants_fetch_url", False) and tr.round_data is not None:
+                            _fetch_note = self._fetched_page_note(tr.round_data.summary)
+                        self._append_accumulated(session, tr.formatted_context + _fetch_note)
                     if tr.memory_collection:
                         session.memory_search_counts[tr.memory_collection] = (
                             session.memory_search_counts.get(tr.memory_collection, 0) + 1

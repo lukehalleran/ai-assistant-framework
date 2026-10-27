@@ -536,14 +536,36 @@ COMPLETION_RELATIONS = frozenset({
 })
 
 
-def completion_claim_prospective(relation: str, clause: str) -> bool:
+def _subordinate_clause_conflict(source: str, object_val: str) -> bool:
+    """True when the sentence carrying ``object_val`` is a subordinate
+    temporal/conditional clause (or its consequent): "Once I have finished
+    the lab, I'll submit it" asserts nothing finished (2026-10-26, class:
+    BC-58). THE deployed dependency-parse guard of the per-turn extractor —
+    never a re-derivation; parse unavailable -> False (earlier behaviour)."""
+    if not source or not object_val:
+        return False
+    try:
+        from memory.fact_extractor import _irrealis_conflict  # lazy import: cycle (fact_extractor imports this module)
+        return bool(_irrealis_conflict(source, object_val))
+    except Exception:  # degrades: subordinate-clause guard skipped, earlier behaviour
+        return False
+
+
+def completion_claim_prospective(
+    relation: str, clause: str, *, source: str | None = None, object_val: str | None = None,
+) -> bool:
     """True when ``relation`` asserts a completed act but ``clause`` only
-    frames it prospectively — a prospective cue with NO past-tense cue.
+    frames it prospectively — a prospective cue with NO past-tense cue — or
+    (``source``/``object_val`` given) the object sits in a subordinate
+    once/when/after/if clause, which is not an assertion even when its verb
+    is a perfect ("Once I have finished X").
     Never fires for relations outside COMPLETION_RELATIONS."""
     rel = (relation or "").strip().lower()
     if rel not in COMPLETION_RELATIONS:
         return False
     text = clause or ""
+    if source and object_val and _subordinate_clause_conflict(source, object_val):
+        return True
     if has_past_tense_cue(text):
         return False
     return bool(_PROSPECTIVE_RE.search(text))
@@ -1497,7 +1519,9 @@ def find_supporting_user_span(
                 continue
             # A completion relation cannot ride on a prospective clause
             # (2026-09-08: took=melatonin from "So ready to take melatonin").
-            if completion_claim_prospective(relation, object_clause):
+            if completion_claim_prospective(
+                relation, object_clause, source=span, object_val=object_val,
+            ):
                 continue
 
             if is_user:

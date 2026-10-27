@@ -33,6 +33,7 @@ export default function KeyField({
   const [error, setError] = useState<string | null>(null)
   const [unreachable, setUnreachable] = useState(false)
   const [restartNeeded, setRestartNeeded] = useState(false)
+  const [configNotice, setConfigNotice] = useState<string | null>(null)
 
   const run = async (unverified: boolean) => {
     setBusy(true)
@@ -44,6 +45,7 @@ export default function KeyField({
         setReplacing(false)
         setUnreachable(false)
         setRestartNeeded(res.restart_required === true)
+        setConfigNotice(res.disabled_in_config === true ? (res.notice ?? 'Saved, but this tool is disabled in your config.') : null)
         await onSaved()
       } else {
         setError(res.error ?? 'Could not save this key.')
@@ -66,6 +68,11 @@ export default function KeyField({
           <Badge color="green" variant="light">
             found{hint ? ` ${hint}` : ''}
           </Badge>
+          {configNotice && (
+            <Text size="xs" c="orange" role="status">
+              {configNotice}
+            </Text>
+          )}
           {restartNeeded && (
             <Text size="xs" c="orange" role="status">
               Saved. Restart Daemon for this feature to start using it.

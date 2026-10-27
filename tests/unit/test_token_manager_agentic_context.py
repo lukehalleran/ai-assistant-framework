@@ -177,10 +177,8 @@ class TestReuseBlockedOnBudgetEmptiedEvidence:
             {"google_calendar": [{"content": "x " * 300}]})
         assert out["_budget_emptied"] == ["google_calendar"]
 
-    def test_builder_forwards_the_key(self):
-        import inspect
-        from core.prompt import builder
-        assert '"_budget_emptied"' in inspect.getsource(builder.UnifiedPromptBuilder)
+    # Builder forwarding is covered behaviourally by
+    # tests/unit/test_builder_budget_emptied_forwarding.py (2026-10-26).
 
 
 # ---------------------------------------------------------------------------

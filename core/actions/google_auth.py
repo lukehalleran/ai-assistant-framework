@@ -216,8 +216,12 @@ class GoogleAuthManager:
         self._credentials = creds
         return creds
 
-    async def authenticate(self) -> bool:
+    async def authenticate(self, port: int = 0) -> bool:
         """Run the OAuth2 installed-app flow (opens browser).
+
+        ``port`` is the local callback port; 0 (default) lets the OS pick a
+        random free one. A fixed port lets a headless host be reached with
+        ``ssh -L <port>:localhost:<port> <host>``.
 
         Returns True on success, False on failure.
         """
@@ -248,16 +252,30 @@ class GoogleAuthManager:
             # URL for the user to open by hand.
             def _run_flow():
                 try:
-                    return flow.run_local_server(port=0)
+                    return flow.run_local_server(port=port)
                 except Exception as browser_err:
                     if "browser" not in str(browser_err).lower():
                         raise
                     print(
-                        "\n• No runnable browser found — open this URL "
-                        "yourself (same machine, any browser):\n"
+                        "\n• No runnable browser found — open the URL below "
+                        "in any browser."
                     )
+                    if port:
+                        print(
+                            "  On a remote/headless host, forward the callback "
+                            "port from your own machine first:\n"
+                            f"      ssh -L {port}:localhost:{port} <host>\n"
+                            f"  then open the URL (the redirect lands on "
+                            f"http://localhost:{port}).\n"
+                        )
+                    else:
+                        print(
+                            "  On a remote/headless host, re-run with a fixed "
+                            "port (e.g. --port 8765) and forward it with "
+                            "`ssh -L 8765:localhost:8765 <host>`.\n"
+                        )
                     return flow.run_local_server(
-                        port=0,
+                        port=port,
                         open_browser=False,
                         authorization_prompt_message="{url}\n",
                     )

@@ -85,6 +85,9 @@ class ActionProposal(BaseModel):
     # When approval happened (UTC); lets a proposal stuck in "approved" with no
     # live execution be recovered to "interrupted" (2026-10-23, audit A07).
     approved_at: Optional[datetime] = None
+    # When the record became "interrupted" (UTC); drives its aging. Legacy
+    # records without it age from approved_at / proposed_at.
+    interrupted_at: Optional[datetime] = None
 
 
 class ActionResult(BaseModel):
@@ -93,6 +96,9 @@ class ActionResult(BaseModel):
     success: bool
     message: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # True when execution was cancelled mid-flight and the outcome is UNKNOWN:
+    # the audit log names the event "interrupted", not "failed" (2026-10-26).
+    interrupted: bool = False
 
 
 class ActionOutcome(BaseModel):
@@ -122,6 +128,11 @@ class ActionOutcome(BaseModel):
 # (a single executor call is one API round-trip, seconds; 15 min is generous)
 # and is reconciled to "interrupted" rather than holding a capacity slot forever.
 APPROVED_STUCK_SECONDS = 900
+
+# An interrupted record stays visible (re-approval answers "interrupted", it
+# survives restarts) for this long, then ages out like any other terminal
+# record instead of living in the store and the JSON file forever.
+INTERRUPTED_RETENTION_SECONDS = 24 * 3600
 
 INTERRUPTED_REASON = (
     "execution was interrupted before an outcome was recorded; "
@@ -176,6 +187,7 @@ class PendingActionsStore:
                     # unknown. Keep the record (visibility/audit), never retry.
                     proposal.status = "interrupted"
                     proposal.error = INTERRUPTED_REASON
+                    proposal.interrupted_at = datetime.now(timezone.utc)
                     reconciled += 1
                     self._store[proposal.action_id] = proposal
                 elif proposal.status in ("pending", "interrupted"):
@@ -261,6 +273,7 @@ class PendingActionsStore:
         if proposal and proposal.status in ("approved", "pending"):
             proposal.status = "interrupted"
             proposal.error = reason
+            proposal.interrupted_at = datetime.now(timezone.utc)
             self._save()
 
     def peek_status(self, action_id: str) -> Optional[str]:
@@ -349,6 +362,16 @@ class PendingActionsStore:
         for aid in stuck:
             self._store[aid].status = "interrupted"
             self._store[aid].error = INTERRUPTED_REASON
+            self._store[aid].interrupted_at = now
             logger.warning(f"[Actions] Proposal {aid} stuck in approved; marked interrupted")
-        if expired or stuck:
+        aged = [
+            aid for aid, p in self._store.items()
+            if p.status == "interrupted"
+            and (now - (p.interrupted_at or p.approved_at or p.proposed_at)).total_seconds()
+            > INTERRUPTED_RETENTION_SECONDS
+        ]
+        for aid in aged:
+            del self._store[aid]
+            logger.info(f"[Actions] Interrupted proposal {aid} aged out")
+        if expired or stuck or aged:
             self._save()

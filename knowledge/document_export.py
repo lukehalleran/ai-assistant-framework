@@ -715,22 +715,56 @@ def _set_run_text_preserve(run, text: str, qn) -> None:
     t.set(qn("xml:space"), "preserve")
 
 
-def _apply_right_tab_split(new_p, exemplar_paragraph, segments, qn, wd_tab_alignment) -> None:
-    """If the block's exemplar has a RIGHT tab stop — no literal tab
+# 2026-10-26 (D1 item 3): right-tab split guards. The split is for ENTRY
+# lines only (bold lead + " | " + a short date-like right part); a heading,
+# bullet or prose line that merely contains " | " must stay inline, and a left
+# part wider than the room before the right stop is shrunk (floor) or left
+# inline instead of pushing the right part past the margin.
+_TAB_SPLIT_RIGHT_MAX_CHARS = 40
+_TAB_SPLIT_RIGHT_MAX_WORDS = 6
+_TAB_WIDTH_PER_PT = 0.5          # average glyph width / font size (proportional serif/sans)
+_TAB_BOLD_WIDTH_FACTOR = 1.1
+_TAB_GAP_PT = 12.0               # minimum gutter between left text and right text
+_TAB_MIN_SHRINK = 0.8
+_TAB_DEFAULT_SIZE_PT = 11.0
+
+
+def _right_part_is_date_like(text: str) -> bool:
+    """Structural test, no date vocabulary: a short fragment carrying a digit
+    (a year, a day, a range) - 'City | Jan 2020 - Present' qualifies on the
+    year, 'Led the team | and shipped' does not."""
+    text = (text or "").strip()
+    return (
+        bool(text)
+        and len(text) <= _TAB_SPLIT_RIGHT_MAX_CHARS
+        and len(text.split()) <= _TAB_SPLIT_RIGHT_MAX_WORDS
+        and any(ch.isdigit() for ch in text)
+    )
+
+
+def _apply_right_tab_split(new_p, exemplar_paragraph, segments, qn, wd_tab_alignment, *, role="entry") -> None:
+    """If the block's exemplar has a RIGHT tab stop - no literal tab
     character is required in the exemplar's own text, the owner's template
-    lost its tab glyph on export — and the rendered line's plain text
-    contains " | ", move everything after the LAST " | " into its own run
-    preceded by a <w:tab/>, formatted with the exemplar's non-bold run
-    properties. No date detection: purely "last separator segment goes to
-    the right stop"."""
+    lost its tab glyph on export - and the block is an ENTRY line (bold lead)
+    whose text after the LAST " | " is a short date-like fragment, move that
+    fragment into its own run preceded by a <w:tab/>, formatted with the
+    exemplar's non-bold run properties. The left part is shrunk (down to
+    _TAB_MIN_SHRINK) when it would run past the right stop; if even that
+    overflows, the line is left inline so it wraps instead of overrunning."""
+    from docx.shared import Pt  # lazy import: startup-cost
     from docx.text.paragraph import Paragraph  # lazy import: startup-cost
 
+    if role != "entry":
+        return
     tab_stops = exemplar_paragraph.paragraph_format.tab_stops
-    if not any(ts.alignment == wd_tab_alignment.RIGHT for ts in tab_stops):
+    right_stops = [ts for ts in tab_stops if ts.alignment == wd_tab_alignment.RIGHT]
+    if not right_stops:
         return
     plain_text = "".join(t for t, _, _ in segments)
     sep = " | "
     if sep not in plain_text:
+        return
+    if not _right_part_is_date_like(plain_text[plain_text.rfind(sep) + len(sep):]):
         return
     paragraph = Paragraph(new_p, None)
     target = None
@@ -743,9 +777,39 @@ def _apply_right_tab_split(new_p, exemplar_paragraph, segments, qn, wd_tab_align
     text = target.text
     pos = text.rfind(sep)
     before, after = text[:pos], text[pos + len(sep):]
+
+    # Width check (estimate): left runs = every run up to and including `before`.
+    stop_pt = float(min(right_stops, key=lambda ts: ts.position).position.pt)
+    left_runs = []
+    for run in paragraph.runs:
+        left_runs.append(run)
+        if run._r is target._r:
+            break
+
+    def _size_pt(run) -> float:
+        size = run.font.size.pt if run.font.size is not None else None
+        return float(size or _TAB_DEFAULT_SIZE_PT)
+
+    def _text_of(run) -> str:
+        return before if run._r is target._r else (run.text or "")
+
+    left_w = sum(
+        len(_text_of(r)) * _size_pt(r) * _TAB_WIDTH_PER_PT * (_TAB_BOLD_WIDTH_FACTOR if r.font.bold else 1.0)
+        for r in left_runs
+    )
+    right_w = len(after) * _size_pt(target) * _TAB_WIDTH_PER_PT
+    room = stop_pt - right_w - _TAB_GAP_PT
+    scale = 1.0
+    if left_w > room:
+        scale = room / left_w if room > 0 else 0.0
+        if scale < _TAB_MIN_SHRINK:
+            return  # cannot fit even shrunk: stay inline, the line wraps
     nb_source = _exemplar_run_for(exemplar_paragraph, bold=False)
     tab_run = _make_run_element(after, nb_source, bold=None, italic=None, qn=qn, leading_tab=True)
     target._r.addnext(tab_run)
+    if scale < 1.0:
+        for r in left_runs:
+            r.font.size = Pt(round(_size_pt(r) * scale * 2) / 2)  # half-point steps, Word's grain
     if before:
         _set_run_text_preserve(target, before, qn)
     else:
@@ -763,7 +827,9 @@ def _append_block_runs(new_p, block: dict, exemplar_paragraph, qn, wd_tab_alignm
             italic=None if keep_exemplar_emphasis else italic,
         )
         new_p.append(r)
-    _apply_right_tab_split(new_p, exemplar_paragraph, block["segments"], qn, wd_tab_alignment)
+    _apply_right_tab_split(
+        new_p, exemplar_paragraph, block["segments"], qn, wd_tab_alignment, role=role,
+    )
 
 
 def _build_from_template(markdown_body: str, template_docx: Path, out: Path) -> None:
@@ -1047,3 +1113,40 @@ def export_document(md_path: str | Path, fmt: str, *, reference_doc: str | Path 
             errors.append(str(e))
             logger.warning(f"[DocExport] {fmt} converter failed, trying next: {e}")
     raise DocumentExportError(f"could not write .{fmt}: " + "; ".join(errors))
+
+
+def export_requested_format(doc, request_text: str, *, generator=None, reference_doc=None) -> str:
+    """THE post-save export step for every document-saving path (2026-10-26,
+    BC-89 family: wired at one call site, the agentic tool and insight saves
+    wrote markdown only).
+
+    Blocking (converter subprocesses) - call via asyncio.to_thread. `doc` is a
+    GeneratedDocument-like object with a mutable `.path`. When `request_text`
+    names a format (detect_requested_format), the markdown is converted; on a
+    verified export the intermediate .md is removed, `generator.repoint_index`
+    follows the file and `doc.path` becomes the exported file. Returns a
+    receipt line for the reply ('' when no format was requested or the
+    markdown was swapped for the export cleanly); a failure returns an honest
+    "not written" line and keeps the markdown. Never raises.
+    """
+    fmt = detect_requested_format(request_text or "")
+    if not fmt:
+        return ""
+    try:
+        exported = export_document(doc.path, fmt, reference_doc=reference_doc)
+    except Exception as exc:  # degrades: markdown stays, the reply says the export failed
+        logger.warning(f"[DocExport] Export to {fmt} failed: {exc}")
+        return (
+            f"- **{fmt.upper()}**: not written — {exc} "
+            f"(the markdown is the full document)\n"
+        )
+    logger.info(f"[DocExport] Document exported: {exported}")
+    try:
+        if generator is not None:
+            generator.repoint_index(doc.path, exported)
+        Path(doc.path).unlink()
+        doc.path = str(exported)
+    except Exception as exc:  # degrades: a leftover .md beside the export
+        logger.warning(f"[DocExport] Intermediate markdown kept: {exc}")
+        return f"- **{fmt.upper()}**: `{exported}`\n"
+    return ""

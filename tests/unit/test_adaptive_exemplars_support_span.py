@@ -151,3 +151,21 @@ class TestMalformedEntriesOnLoad:
         assert s.get_learned("need", "presence") == [good["text"]]
         # the loaded store still accepts new exemplars
         assert s.record("tone", "medium", "a brand new confirmed phrasing here", "t")
+
+
+def test_spanless_long_decline_is_logged_at_info_with_reason(tmp_path, caplog):
+    # 2026-10-26 (lane H1, #101 follow-up 2c; class: BC-58): the decline used
+    # to be DEBUG-only, invisible in prod. Same instance: span given -> learned
+    # (no decline line); span absent -> declined AND a visible reason.
+    import logging
+    s = AdaptiveExemplarStore(str(tmp_path / "ex.json"))
+    long = "x " * 400
+    with caplog.at_level(logging.INFO):
+        assert s.record("tone", "medium", long, "gate_veto", support_span=(10, 15))
+        assert "not learned" not in caplog.text
+        assert not s.record("tone", "medium", long, "gate_veto")
+    assert "not learned" in caplog.text
+    assert "no usable supporting span" in caplog.text and "source=gate_veto" in caplog.text
+    # indented / wrapped form of the same long text declines identically
+    wrapped = "\n    ".join(long.split(" ")[:400])
+    assert not s.record("tone", "medium", wrapped, "gate_veto")

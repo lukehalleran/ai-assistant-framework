@@ -42,6 +42,7 @@ import asyncio
 import urllib.parse
 import re
 from urllib.parse import quote as _q
+import knowledge.document_export as document_export
 import knowledge.sandbox_manager as sandbox_manager
 import knowledge.research_search as research_search
 import knowledge.pubmed_search as pubmed_search
@@ -1266,8 +1267,17 @@ class ToolExecutor:
                 doc_type=doc_type if doc_type in ("report", "summary") else "report",
                 focus=focus,
             )
+            # Requested output format (2026-10-26, BC-89 family): the same
+            # shared export step as the direct doc-gen path. The request text
+            # is the turn's user message (installed by the controller).
+            export_line = await asyncio.to_thread(
+                document_export.export_requested_format, result,
+                (self._fetch_prov or {}).get("current") or "",
+                generator=generator,
+            )
             return (
                 f"Document saved: {result.path}\n"
+                f"{export_line}"
                 f"Title: {result.title}\n"
                 f"Type: {result.doc_type}\n"
                 f"Sources: {len(result.sources)}\n"
@@ -1976,6 +1986,23 @@ Provide a focused summary with the most important information."""
                 query_text=query,
                 n_results=app_config.AGENTIC_MEMORY_SEARCH_LIMIT,
             )
+
+            # Sensitive-fact gate (2026-10-26, class: BC-46/BC-58): the facts
+            # collection holds the relations the profile withholds on a closed
+            # turn. Same predicate + open-turn definition as the profile path,
+            # keyed on the USER's turn text (never the model-authored query,
+            # which could launder a sensitive relation word) and (when
+            # reachable) the turn's tone level — NOT reachable here (the controller's memory-search
+            # wrapper does not pass it), so a closed turn is decided by the
+            # history-ask + topical parts only.
+            if collection == "facts" and results:
+                from core.prompt.gatherer_memory import sensitive_turn_open  # lazy import: cycle (prompt ring)
+                from memory.memory_retriever import gate_fact_rows  # lazy import: layering (retriever pulls the model stack)
+                _user_text = (getattr(self, "_fetch_prov", None) or {}).get("current", "")
+                results = gate_fact_rows(
+                    _user_text, results,
+                    sensitive_open=sensitive_turn_open(_user_text),
+                )
 
             # For wiki_knowledge: always prefer FAISS semantic search (41M vectors)
             # over ChromaDB which has sparse/irrelevant legacy data.

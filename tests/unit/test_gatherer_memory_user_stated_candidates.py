@@ -118,3 +118,16 @@ def test_b_envelope_inner_text_compared_and_k_applied():
 
 def test_b_pool_wider_than_k():
     assert USER_STATED_CANDIDATE_POOL > USER_STATED_MAX_ITEMS
+
+
+@pytest.mark.asyncio
+async def test_c_much_more_similar_older_same_session_line_beats_newer_weak_one():
+    """Pins EXISTING behaviour (passes on base): the bounded recency term must
+    not let a newer weak line outrank a clearly more relevant older one.
+    class: BC-46 (R1 item 2C)"""
+    strong_old = "I work at Brightwater Logistics as a data analyst."
+    weak_new = "Rowan said the weather was nice at the lake."
+    entries = [(weak_new, _ts(timedelta(minutes=1))), (strong_old, _ts(timedelta(minutes=100)))]
+    got = await _gatherer(entries, {strong_old: 0.80, weak_new: 0.55}).get_user_stated_evidence(
+        QUERY, "factual_recall")
+    assert [r["query"] for r in got][0] == strong_old

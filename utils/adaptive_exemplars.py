@@ -173,11 +173,16 @@ class AdaptiveExemplarStore:
         if len(t) < _MIN_CHARS:
             return False
         if len(t) > _CLIP_CHARS:
+            _full_len = len(t)
             t = _support_window(text or "", support_span)
             if t is None:
-                logger.debug(
-                    f"[AdaptiveExemplars] {domain}/{label} not learned: over-long "
-                    "text with no supporting span"
+                # Logged at INFO (was DEBUG, 2026-10-26): a teacher that keeps
+                # passing long spanless text is a wiring gap the owner should be
+                # able to see, not a silent decline.
+                logger.info(
+                    f"[AdaptiveExemplars] {domain}/{label} not learned: "
+                    f"{_full_len}-char text exceeds {_CLIP_CHARS} with no usable "
+                    f"supporting span (source={source})"
                 )
                 return False
             if len(t) < _MIN_CHARS:

@@ -216,6 +216,10 @@ export interface SetupResult {
   unreachable?: boolean
   /** True when the key was saved but a running feature needs an app restart to use it. */
   restart_required?: boolean
+  /** True when the key was saved but the tool is switched off in config (a restart will not enable it). */
+  disabled_in_config?: boolean
+  /** Server-worded explanation for the disabled-in-config case. */
+  notice?: string | null
 }
 export type SetupKeyName = 'tavily' | 'wolfram' | 'e2b'
 
@@ -236,6 +240,8 @@ async function setupResult(resp: Response): Promise<SetupResult> {
       hint: body.hint ?? null,
       unreachable: body.unreachable === true,
       restart_required: body.restart_required === true,
+      disabled_in_config: body.disabled_in_config === true,
+      notice: body.notice ?? null,
     }
   }
   if (!resp.ok) throw new Error(body.detail || `${resp.status} ${resp.statusText}`)

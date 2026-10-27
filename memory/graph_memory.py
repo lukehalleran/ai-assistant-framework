@@ -50,6 +50,7 @@ explicit appraisal/inferred edges instead of asserting them.
 
 import os
 from collections import deque
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional
 
@@ -88,6 +89,12 @@ logger = get_logger("graph_memory")
 # alongside <name>" is not a fact about either entity.  Storage/expansion
 # scoring untouched — read-time render/traversal filter only.
 _NO_RENDER_RELATIONS = frozenset({"mentioned_alongside"})
+
+# Per-turn edge selection for get_context_sentences (2026-10-26, class: BC-46):
+# a ``list[GraphEdge] -> list[GraphEdge]`` callable or None (unfiltered). A
+# ContextVar rather than an argument so existing callers/stubs keep their call
+# signature; concurrent turns cannot cross.
+EDGE_FILTER: ContextVar = ContextVar("graph_edge_filter", default=None)
 
 # On-disk schema version for knowledge_graph.json. Files without the field
 # are v1 (pre-versioning). Bump when the payload shape changes and add a
@@ -673,6 +680,11 @@ class GraphMemory:
             depth: Graph traversal depth
             max_sentences: Maximum sentences to return
             with_attribution: If True, append derivation markers to sentences
+
+        The per-turn ``EDGE_FILTER`` ContextVar (set by the prompt gatherer around
+        its call; asyncio.to_thread copies the context) selects among the
+        surviving edges BEFORE ranking and truncation — the shared sensitive-fact
+        gate (2026-10-26, class: BC-46). Unset = unfiltered (unchanged).
         """
         seed = entity_id.lower().strip()
         # A when-word is never an entity (2026-09-05): even if a caller hands
@@ -691,6 +703,9 @@ class GraphMemory:
             and not self._edge_is_stale_transient(e, now)
             and not self.edge_is_suppressed(e)
         ]
+        _edge_filter = EDGE_FILTER.get()
+        if _edge_filter is not None:
+            edges = _edge_filter(edges)
         # Ordering (2026-09-03): edges incident to the seed first, by weight
         # (depth-1 behaviour unchanged); then reached-through edges, by weight,
         # with a FAR node mentioned fewer than GRAPH_EXPANSION_MIN_MENTIONS times

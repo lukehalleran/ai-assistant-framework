@@ -15,8 +15,14 @@ What it does:
   4. Prints the granted scopes for confirmation.
 
 Usage (run in your own terminal so the browser can open):
-    python scripts/reauth_google.py
+    python scripts/reauth_google.py [--port N]
+
+--port N fixes the local OAuth callback port (default: a random free port). On
+a host with no browser, use it with an SSH port-forward from your own machine:
+    ssh -L N:localhost:N <host>
+and open the printed consent URL in your local browser.
 """
+import argparse
 import asyncio
 import sys
 from pathlib import Path
@@ -25,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-async def main() -> int:
+async def main(port: int = 0) -> int:
     from core.actions.google_auth import get_google_auth
 
     auth = get_google_auth()
@@ -47,7 +53,7 @@ async def main() -> int:
     for scope in auth._scopes:
         print(f"    - {scope}")
 
-    ok = await auth.authenticate()
+    ok = await auth.authenticate(port=port)
     if not ok:
         print("❌ Authentication failed — the token backup (if any) is intact.")
         return 1
@@ -63,5 +69,17 @@ async def main() -> int:
     return 0
 
 
+def _parse_args(argv=None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Re-authenticate Google OAuth.")
+    ap.add_argument(
+        "--port", type=int, default=0, metavar="N",
+        help="local OAuth callback port (default: random free port)",
+    )
+    args = ap.parse_args(argv)
+    if not 0 <= args.port <= 65535:
+        ap.error("--port must be between 0 and 65535")
+    return args
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main(_parse_args().port)))

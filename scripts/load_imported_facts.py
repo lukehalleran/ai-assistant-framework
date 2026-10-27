@@ -2,10 +2,19 @@
 """
 load_imported_facts.py
 
-Load previously imported ChatGPT facts into Daemon's user profile system.
+Load previously imported ChatGPT facts into a SANDBOX user profile.
 
 Usage:
-    python load_imported_facts.py --input data/imported_chatgpt_facts.json
+    python scripts/load_imported_facts.py --input FILE --dry-run
+    python scripts/load_imported_facts.py --input FILE --profile /tmp/sandbox/user_profile.json
+
+SANDBOX ONLY (2026-10-26, class: BC-46): the input is ChatGPT's own memory
+entries about the user -- statements by a third-party system, with NO
+user-authored span in this repo to join them to (the memory.fact_source
+provenance boundary: another system's words are never evidence of what the
+user said).  They therefore never enter the live profile through this script:
+a real load REQUIRES --profile and refuses a path that resolves to the live
+profile.  Dry runs touch nothing.
 """
 
 import json
@@ -17,6 +26,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from memory.user_profile import UserProfile
+
+
+class LiveProfileRefused(RuntimeError):
+    """A real load was requested without a sandbox profile, or onto the live one."""
+
+
+def resolve_sandbox_profile(profile_path):
+    """The sandbox profile path, or raise: imported facts never reach the live profile."""
+    if not profile_path:
+        raise LiveProfileRefused(
+            "--profile is required: imported ChatGPT facts have no user-authored "
+            "provenance and never go into the live profile"
+        )
+    from utils.bootstrap import get_user_profile_path  # lazy import: live-config (resolved at call time)
+    resolved = Path(profile_path).expanduser().resolve()
+    live = Path(get_user_profile_path()).expanduser().resolve()
+    if resolved == live or resolved == (Path(__file__).resolve().parent.parent / "data" / "user_profile.json"):
+        raise LiveProfileRefused(f"refusing: {resolved} is the live user profile")
+    return str(resolved)
 
 
 def load_facts(input_path: str, profile_path: str = None, dry_run: bool = False) -> dict:
@@ -31,6 +59,9 @@ def load_facts(input_path: str, profile_path: str = None, dry_run: bool = False)
     Returns:
         Dictionary with import statistics
     """
+
+    if not dry_run:
+        profile_path = resolve_sandbox_profile(profile_path)  # refuse BEFORE reading anything
 
     # Load imported facts
     print(f"Loading facts from {input_path}...")
@@ -65,8 +96,8 @@ def load_facts(input_path: str, profile_path: str = None, dry_run: bool = False)
             "would_add": len(facts)
         }
 
-    # Initialize user profile
-    print(f"\nLoading user profile...")
+    # Initialize the SANDBOX user profile (refuses the live one)
+    print(f"\nLoading sandbox user profile {profile_path}...")
     profile = UserProfile(profile_path=profile_path)
 
     # Get current fact count before import
@@ -110,7 +141,7 @@ def main():
     parser.add_argument(
         "--profile", "-p",
         default=None,
-        help="Custom path for user profile (default: data/user_profile.json)"
+        help="SANDBOX user profile path (required unless --dry-run; the live profile is refused)"
     )
     parser.add_argument(
         "--dry-run", "-d",
@@ -127,6 +158,9 @@ def main():
             print(f"\n✓ Import complete!")
             print(f"  Added {stats['facts_added']} facts to user profile")
 
+    except LiveProfileRefused as e:
+        print(f"Error: {e}")
+        sys.exit(2)
     except FileNotFoundError as e:
         print(f"Error: File not found - {e}")
         sys.exit(1)
