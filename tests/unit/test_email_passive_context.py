@@ -1,82 +1,170 @@
-"""Tests for passive [RELEVANT EMAILS] prompt section (Step 2).
+"""Tests for the passive [RELEVANT EMAILS] prompt section.
 
-Step 2: passive email retrieval in prompt builder, cue-gated + distress-suppressed.
+Passive email retrieval in the prompt gatherer: cue-gated, distress-suppressed,
+relevance-filtered and capped; rendered by the formatter. 2026-10-27 (lane SRC,
+BC-62): the fire-condition / suppression / relevance / cap / formatting classes
+were ``pass`` stubs ("deferred to integration") that always passed; they now
+drive the DEPLOYED ``KnowledgeRetrievalMixin.get_relevant_emails`` and
+``PromptFormatter._assemble_prompt`` with fake email/embedder collaborators.
+The three builder-integration stubs were removed: the builder creates the
+``relevant_emails`` task inline in ``UnifiedPromptBuilder.build_prompt``'s
+~1000-line gather block (no seam to drive without the full builder); the
+per-intent ``max_relevant_emails`` override that feeds it is covered by
+tests/unit/test_gatherer_knowledge_casual_gating.py, and the section outcome
+by tests/unit/test_section_outcomes.py.
 """
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import numpy as np
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+
 from core.email.provider import EmailMessage
+
+QUERY = "did Morgan ever reply about registration?"
+EMAIL_QUERY = "any new email about registration?"
+WRAPPED_EMAIL_QUERY = "    any new email\n    about registration?\n   "
+
+
+def _msg(i, subject="Fall registration", snippet="registration reply advisor",
+         sender="Advisor <advisor@wrenfield.example>"):
+    return EmailMessage(provider="gmail", message_id=f"m{i}", sender=sender,
+                        subject=subject, snippet=snippet,
+                        date="2026-08-28T10:00:00")
+
+
+class _Embedder:
+    """registration/advisor/reply text sits ON the query axis; anything else is orthogonal."""
+
+    def encode(self, text, **k):
+        low = text.lower()
+        if "registration" in low or "advisor" in low or "reply" in low:
+            return np.array([1.0, 0.0])
+        return np.array([0.0, 1.0])
+
+
+def _gather(monkeypatch, messages, query, *, distress=False, limit=3):
+    import core.email.service as svc
+    import core.prompt.gatherer_knowledge as gk
+    from models.model_manager import ModelManager
+
+    searches = []
+
+    class _Service:
+        async def search(self, terms, **k):
+            searches.append(terms)
+            return messages
+
+    monkeypatch.setattr(svc, "get_email_service", lambda: _Service())
+    monkeypatch.setattr(ModelManager, "_get_cached_embedder",
+                        staticmethod(lambda: _Embedder()))
+    g = gk.KnowledgeRetrievalMixin.__new__(gk.KnowledgeRetrievalMixin)
+    g._distress_active = distress
+    g.memory_coordinator = SimpleNamespace(graph_memory=None)
+    out = asyncio.run(gk.KnowledgeRetrievalMixin.get_relevant_emails(g, query, limit))
+    return out, searches
 
 
 class TestEmailPassiveContextFireConditions:
-    """Fire conditions for passive email retrieval."""
+    @pytest.mark.parametrize("query", [EMAIL_QUERY, WRAPPED_EMAIL_QUERY])
+    def test_fire_on_email_cue(self, monkeypatch, query):
+        out, searches = _gather(monkeypatch, [_msg(1)], query)
+        assert searches, "an email cue must run the search"
+        assert len(out) == 1 and out[0]["subject"] == "Fall registration"
 
-    @pytest.mark.asyncio
-    async def test_fire_on_email_cue(self):
-        """Fire condition: query contains email cue."""
-        # This would be tested via the builder, but at this level we just verify
-        # the detection logic exists. Deferred to integration test.
-        pass
+    def test_no_fire_without_cue_or_contact(self, monkeypatch):
+        out, searches = _gather(monkeypatch, [_msg(1)], "how was the weather today")
+        assert searches == []
+        assert out == []
 
-    @pytest.mark.asyncio
-    async def test_fire_on_proper_noun_contact(self):
-        """Fire condition: query has rare proper nouns (contact names)."""
-        # Same: deferred to integration.
-        pass
-
-    @pytest.mark.asyncio
-    async def test_no_fire_without_cue_or_contact(self):
-        """No fire: query has neither email cue nor contact."""
-        # Same: deferred to integration.
-        pass
+    def test_disabled_flag_never_searches(self, monkeypatch):
+        import config.app_config as cfg
+        monkeypatch.setattr(cfg, "EMAIL_PASSIVE_CONTEXT_ENABLED", False)
+        out, searches = _gather(monkeypatch, [_msg(1)], EMAIL_QUERY)
+        assert searches == [] and out == []
 
 
 class TestEmailPassiveContextDistressSuppression:
-    """Distress suppression for email context."""
+    @pytest.mark.parametrize("query", [EMAIL_QUERY, WRAPPED_EMAIL_QUERY])
+    def test_suppressed_on_elevated_tone(self, monkeypatch, query):
+        out, searches = _gather(monkeypatch, [_msg(1)], query, distress=True)
+        assert out == []
+        assert searches == [], "suppression must precede the provider call"
 
-    @pytest.mark.asyncio
-    async def test_suppressed_on_elevated_tone(self):
-        """Email context is suppressed when _distress_active is True."""
-        # Deferred to integration test with mock context.
-        pass
+    def test_same_instance_toggle_restores_results(self, monkeypatch):
+        calm, _ = _gather(monkeypatch, [_msg(1)], EMAIL_QUERY, distress=False)
+        sad, _ = _gather(monkeypatch, [_msg(1)], EMAIL_QUERY, distress=True)
+        assert len(calm) == 1 and sad == []
 
 
 class TestEmailPassiveContextRelevanceFiltering:
-    """Relevance filtering of email results."""
+    def test_relevance_bar_filters_results(self, monkeypatch):
+        near = _msg(1)
+        far = _msg(2, subject="Weekend sale", snippet="discount shoes", sender="Shop <s@shop.example>")
+        out, _ = _gather(monkeypatch, [far, near], EMAIL_QUERY)
+        assert [m["subject"] for m in out] == ["Fall registration"]
+        assert out[0]["relevance"] >= 0.35
 
-    @pytest.mark.asyncio
-    async def test_relevance_bar_filters_results(self):
-        """Results below EMAIL_PASSIVE_MIN_RELEVANCE are filtered."""
-        # Deferred to integration with mock embedder.
-        pass
+    def test_bar_follows_the_live_setting(self, monkeypatch):
+        import config.app_config as cfg
+        far = _msg(2, subject="Weekend sale", snippet="discount shoes", sender="Shop <s@shop.example>")
+        strict, _ = _gather(monkeypatch, [far], EMAIL_QUERY)
+        assert strict == []
+        monkeypatch.setattr(cfg, "EMAIL_PASSIVE_MIN_RELEVANCE", -1.0)
+        lax, _ = _gather(monkeypatch, [far], EMAIL_QUERY)
+        assert [m["subject"] for m in lax] == ["Weekend sale"]
 
-    @pytest.mark.asyncio
-    async def test_cap_limits_results(self):
-        """Results are capped at EMAIL_PASSIVE_MAX (default 3)."""
-        # Deferred to integration.
-        pass
+    def test_cap_limits_results(self, monkeypatch):
+        msgs = [_msg(i, subject=f"Fall registration {i}") for i in range(6)]
+        out, _ = _gather(monkeypatch, msgs, EMAIL_QUERY, limit=2)
+        assert len(out) == 2
+
+
+def _formatter():
+    from core.prompt.formatter import PromptFormatter
+    tm = MagicMock()
+    tm.count_tokens = MagicMock(return_value=10)
+    f = PromptFormatter(token_manager=tm, time_manager=None)
+    f._feature_inventory_cache = None
+    return f
+
+
+def _ctx(**over):
+    base = {
+        "recent_conversations": [], "memories": [], "facts": [], "summaries": [],
+        "reflections": [], "semantic_chunks": [], "wiki": "", "semantic_wiki": "",
+        "unresolved_threads": [], "upcoming_schedule": [], "google_calendar": [],
+        "proactive_insights": [], "web_search_results": None,
+    }
+    base.update(over)
+    return base
 
 
 class TestEmailPassiveContextFormatting:
-    """Email result formatting in the [RELEVANT EMAILS] section."""
-
     def test_email_section_header_and_results(self):
-        """Section renders as [RELEVANT EMAILS] with numbered entries."""
-        # This is tested in the formatter — deferred to test_email_formatter.
-        pass
+        emails = [
+            {"date": "2026-08-28T10:00:00", "sender": "Advisor <advisor@wrenfield.example>",
+             "subject": "Fall registration", "snippet": "You are all set.", "provider": "gmail"},
+            {"date": "2026-08-29T09:00:00", "sender": "Registrar <reg@wrenfield.example>",
+             "subject": "Hold lifted", "snippet": "Your hold is cleared.", "provider": "outlook"},
+        ]
+        out = _formatter()._assemble_prompt(_ctx(relevant_emails=emails), "hello")
+        assert "[RELEVANT EMAILS] n=2" in out
+        assert "1) 2026-08-28 [G] Advisor" in out
+        assert "2) 2026-08-29 [O] Registrar" in out
+        assert "Fall registration" in out and "Your hold is cleared." in out
 
+    def test_no_emails_no_section(self):
+        assert "[RELEVANT EMAILS]" not in _formatter()._assemble_prompt(_ctx(), "hello")
 
-class TestEmailFormatterSection:
-    """Formatter [RELEVANT EMAILS] section rendering."""
-
-    def test_formatter_section_code_exists(self):
-        """Verify formatter has code to render [RELEVANT EMAILS] section."""
-        import inspect
-        from core.prompt.formatter import PromptFormatter
-        source = inspect.getsource(PromptFormatter)
-        # Check that the formatter has email-related rendering code
-        assert "relevant_emails" in source
-        assert "[RELEVANT EMAILS]" in source
+    def test_failed_search_is_not_rendered_as_an_empty_inbox(self):
+        ctx = _ctx(relevant_emails=[], _section_outcomes={
+            "relevant_emails": {"status": "failed", "reason": "relevance_unavailable"}})
+        out = _formatter()._assemble_prompt(ctx, "hello")
+        assert "[RELEVANT EMAILS] n=0" in out
+        assert "FAILED" in out and "relevance_unavailable" in out
 
 
 class TestEmailTokenBudgetIntegration:
@@ -96,25 +184,6 @@ class TestEmailTokenBudgetIntegration:
         # Same tier as google_calendar and web_search_results
         assert priority_dict.get("google_calendar") == 7
         assert priority_dict.get("upcoming_schedule") == 7
-
-
-class TestEmailBuilderIntegration:
-    """Builder integration for email task creation and context assembly."""
-
-    def test_email_task_created_when_enabled(self):
-        """Builder creates email task when EMAIL_PASSIVE_CONTEXT_ENABLED."""
-        # Deferred to full integration test with builder.
-        pass
-
-    def test_email_context_added_to_prompt_ctx(self):
-        """Email results added to prompt_ctx['relevant_emails']."""
-        # Deferred to full integration.
-        pass
-
-    def test_email_task_fails_gracefully(self):
-        """Email task failure doesn't block builder (returns [])."""
-        # Deferred to integration.
-        pass
 
 
 class TestCoverageAndContactIdentity:
