@@ -185,7 +185,7 @@ _PROFILES: Dict[IntentType, dict] = {
         "retrieval": {
             "max_recent": 5, "max_mems": 3,
             "max_facts": 3,  # INERT — see EMOTIONAL_SUPPORT.retrieval comment above.
-            "max_summaries": 1,         # eval: tightened from 2 (26%/38% BL)
+            "max_summaries": 0,         # 2026-10-27: zero on small talk (owner intent, FOLLOWUPS 09-21); was 1 (eval: tightened from 2, 26%/38% BL)
             "max_reflections": 0,       # eval: confirms DROP (21%/37%)
             "max_dreams": 0, "max_wiki": 0, "max_skills": 0,
             "max_proposals": 0, "max_git_commits": 0,

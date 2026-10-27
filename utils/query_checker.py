@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 from utils.logging_utils import get_logger
 from utils.url_detect import contains_url
+from utils.paste_shape import authored_head
 from utils.trigger_match import is_negated as _trigger_is_negated, compile_keyword_matcher, prefix_only_hits, normalize_ws
 from memory.fact_source import strip_quoted_correspondence
 import utils.temporal_resolver as temporal_resolver
@@ -1727,6 +1728,61 @@ def topics_related(thread_topic: str, current_topic: str) -> bool:
     a_words = {w for w in re.split(r"\W+", a) if len(w) > 3}
     b_words = {w for w in re.split(r"\W+", b) if len(w) > 3}
     return bool(a_words & b_words)
+
+
+_CONTENT_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def _content_stems(text: str) -> list:
+    """Distinct content-word stems of ``text``: alphabetic, >=4 chars, not a
+    spaCy function word (the lexicon the navigation detectors already use).
+    Variants of one word ("group"/"groups", "alternative"/"alternatives")
+    collapse by prefix: the shorter is a prefix of the longer and they differ
+    by at most 4 trailing letters."""
+    lex = _function_word_lexicon()
+    stems: list = []
+    for w in sorted(set(_CONTENT_WORD_RE.findall((text or "").lower())), key=len):
+        if w in lex:
+            continue
+        if any(w.startswith(s) and len(w) - len(s) <= 4 for s in stems):
+            continue
+        stems.append(w)
+    return stems
+
+
+def _stem_hits(query_stems: list, other_stems: list) -> list:
+    return [
+        q for q in query_stems
+        if any(q.startswith(o) or o.startswith(q) for o in other_stems
+               if abs(len(q) - len(o)) <= 4)
+    ]
+
+
+def continues_prior_exchange(current_query: str, exchange_text: str, thread_topic: str = "") -> bool:
+    """Whether ``current_query`` carries the previous exchange's own content
+    (2026-10-27, class: BC-08/BC-04).
+
+    Topic LABELS are minted per turn by a classifier at varying granularity
+    ("Bus Reference Baseline" -> "No Covariate Model" is one lesson), so
+    label divergence alone mislabels follow-ups as shifts. Content words are
+    the structural signal: the turn continues the exchange when its authored
+    part shares >=2 distinct content stems with the previous exchange (plus
+    the thread label), or >=1 stem of 5+ letters with the thread label itself.
+    A long paste is judged by its authored head only ("" -> no evidence).
+    """
+    text = (current_query or "").strip()
+    if len(text.split()) > 120:
+        text = authored_head(text)
+    if not text:
+        return False
+    q_stems = _content_stems(text)
+    if not q_stems:
+        return False
+    label_stems = _content_stems(thread_topic)
+    if any(len(q) >= 5 for q in _stem_hits(q_stems, label_stems)):
+        return True
+    pool = _content_stems(f"{exchange_text or ''} {thread_topic or ''}")
+    return len(_stem_hits(q_stems, pool)) >= 2
 
 
 def belongs_to_thread(

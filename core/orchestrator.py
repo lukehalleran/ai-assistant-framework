@@ -129,6 +129,7 @@ def _thread_topic_shifted(
     original_query: str,
     stm_reference_type: Optional[str] = None,
     last_assistant_response: Optional[str] = None,
+    prior_exchange_text: Optional[str] = None,
 ) -> bool:
     """Whether the [THREAD CONTEXT] injection should assert a topic shift.
 
@@ -165,7 +166,31 @@ def _thread_topic_shifted(
             max_words=_ANSWER_CONTINUATION_MAX_WORDS,
         ):
             return False
-    return not _topics_related(thread_topic, current_topic)
+    if _topics_related(thread_topic, current_topic):
+        return False
+    # Labels are minted per turn at varying granularity, so two labels for ONE
+    # lesson share no word ("Bus Reference Baseline" -> "No Covariate Model").
+    # A turn that carries the previous exchange's own content words is a
+    # follow-up, not a shift (2026-10-27, class: BC-08/BC-04; 10 of 16 logged
+    # "shift" injections were such follow-ups).
+    if prior_exchange_text and continues_prior_exchange(
+        original_query or "", prior_exchange_text, thread_topic,
+    ):
+        return False
+    return True
+
+
+def _exchange_text(exchange) -> str:
+    """User + assistant text of the previous exchange (``context.last_exchange``)."""
+    if not isinstance(exchange, dict):
+        return ""
+    parts = [
+        exchange.get("query") or exchange.get("user") or "",
+        exchange.get("response") or exchange.get("assistant") or "",
+    ]
+    if exchange.get("role") in ("user", "assistant"):
+        parts.append(exchange.get("content") or "")
+    return " ".join(str(p) for p in parts if p)
 
 
 def _thread_labels_diverge(thread_topic: str, current_topic: str) -> bool:
@@ -223,7 +248,7 @@ from core.truth_event_handler import get_recent_profile_facts as _ext_get_recent
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
 gate_system.wikipedia_api = wiki_api  # This sets it globally
-from utils.query_checker import is_deictic, is_continuation_answer, THREAD_TIME_HARD_CUTOFF
+from utils.query_checker import is_deictic, is_continuation_answer, continues_prior_exchange, THREAD_TIME_HARD_CUTOFF
 
 
 class _SimplePromptBuilder:
@@ -1490,9 +1515,11 @@ class DaemonOrchestrator:
                     or (_last_ex.get("content", "") if _last_ex.get("role") == "assistant" else "")
                     or ""
                 )
+            _prior_text = _exchange_text(_last_ex)
             _shifted = thread_topic and _thread_topic_shifted(
                 thread_topic, topic_str, context.original_query, stm_reference_type=_stm_ref,
                 last_assistant_response=_last_resp,
+                prior_exchange_text=_prior_text,
             )
             # Neutral-divergence branch (2026-09-05): _thread_topic_shifted
             # correctly refuses to assert a shift when STM classified this
@@ -1513,7 +1540,12 @@ class DaemonOrchestrator:
             _diverged_by_stm = (
                 not _shifted
                 and _thread_labels_diverge(thread_topic, topic_str)
-                and _continuity_asserted_by_stm_override(context.original_query, _stm_ref)
+                and (
+                    _continuity_asserted_by_stm_override(context.original_query, _stm_ref)
+                    or bool(_prior_text and continues_prior_exchange(
+                        context.original_query or "", _prior_text, thread_topic,
+                    ))
+                )
             )
             thread_msg = f"\n\n[THREAD CONTEXT]"
             if _session_start:
