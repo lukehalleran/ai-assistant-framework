@@ -332,7 +332,7 @@ def _entry_is_shared_content(entry: str) -> bool:
             ct.content_type in SHARED_CONTENT_TYPES
             and float(ct.confidence or 0.0) >= SHARED_CONTENT_MIN_CONF
         )
-    except Exception:
+    except Exception:  # degrades: shared-content turn not detected so pasted text may be mined for facts
         return False
 
 
@@ -618,7 +618,7 @@ JSON:"""
                     "\n- ALSO treat these LEARNED relations (recurring for this "
                     "user) as core: " + ", ".join(promoted) + "."
                 )
-        except Exception as e:
+        except Exception as e:  # degrades: learned relations missing from the fact extraction prompt
             logger.debug(f"[LLM Facts] learned relations unavailable: {e}")
         prompt = prompt_template.format(
             messages=joined,
@@ -719,7 +719,7 @@ JSON:"""
                 try:
                     from memory.learned_relations import get_learned_relation_store
                     get_learned_relation_store().record(rel, t.get("object", ""), when=when)
-                except Exception as e:
+                except Exception as e:  # degrades: learned relation occurrence not counted toward promotion
                     logger.debug(f"[LLM Facts] learned-relation record failed: {e}")
             logger.info(f"[LLM Facts] SUCCESS: extracted={len(triples)} facts using model={self.model_alias}")
             for t in triples:

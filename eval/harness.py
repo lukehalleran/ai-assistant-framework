@@ -274,7 +274,7 @@ class GenerationHarness:
                 for p in old_manifest.pairs:
                     if p.get("status") == "completed":
                         existing_results.add(p["result_filename"])
-            except Exception:
+            except Exception:  # degrades: unreadable old manifest so a resumed run redoes completed pairs
                 pass
 
         # Persistence guard snapshot (before)
@@ -442,7 +442,7 @@ def load_run_results(
         try:
             data = json.loads(path.read_text())
             results[path.name] = data
-        except Exception:
+        except Exception:  # degrades: unreadable eval result file skipped when loading results
             continue
 
     return results

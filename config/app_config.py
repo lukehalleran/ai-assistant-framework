@@ -2251,7 +2251,7 @@ CHROMA_PATH = os.getenv("CHROMA_PATH", CHROMA_PATH)
 OpenAPIKey = os.getenv("OPENAI_API_KEY", OpenAPIKey)
 try:
     CORPUS_MAX_ENTRIES = int(os.getenv("CORPUS_MAX_ENTRIES", str(CORPUS_MAX_ENTRIES)))
-except Exception:
+except Exception:  # degrades: CORPUS_MAX_ENTRIES env override ignored, default limit kept
     pass
 
 # --------------------------------------------------------------------

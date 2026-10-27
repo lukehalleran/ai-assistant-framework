@@ -110,7 +110,7 @@ def provider_coverage() -> Dict[str, object]:
                     searched.append(provider_name)
             else:
                 unconnected[provider_name] = "not connected"
-        except Exception:
+        except Exception:  # degrades: provider shows as unavailable in the multi-provider email search report
             unconnected[provider_name] = "unavailable"
     result: Dict[str, object] = {"searched": searched, "unconnected": unconnected}
     if failed:

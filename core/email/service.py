@@ -46,7 +46,7 @@ class EmailService:
             try:
                 from config.app_config import EMAIL_CACHE_TTL_SECONDS  # lazy import: live-config
                 cache_ttl_seconds = float(EMAIL_CACHE_TTL_SECONDS)
-            except Exception:
+            except Exception:  # degrades: email cache TTL falls back to the 300 second default
                 cache_ttl_seconds = 300.0
         self._cache_ttl = cache_ttl_seconds
         self._cache: Dict[tuple, tuple] = {}  # key -> (ts, results)

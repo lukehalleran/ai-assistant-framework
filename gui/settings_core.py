@@ -299,7 +299,7 @@ def _live_web_search_managers(orchestrator) -> list:
         cmgr = getattr(ctrl, "web_search_manager", None)
         if cmgr is not None and all(cmgr is not m for m in seen):
             seen.append(cmgr)
-    except Exception:  # defensive: a settings write must never raise here
+    except Exception:  # defensive: a settings write must never raise here  # degrades: web search setting not applied to the agentic controller's manager
         pass
     return seen
 

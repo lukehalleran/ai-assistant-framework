@@ -306,8 +306,8 @@ class FactVerifier:
                     metadata_updates={"superseded_reason": "schedule_update"},
                 )
 
-        except Exception as e:
-            logger.debug(f"[FactVerifier] Schedule supersession check failed: {e}")
+        except Exception as e:  # degrades: outdated schedule facts are not superseded for this fact
+            logger.warning(f"[FactVerifier] Schedule supersession check failed: {type(e).__name__}")
 
         return None
 

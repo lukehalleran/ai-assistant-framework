@@ -354,7 +354,7 @@ class BatchJudge:
                 if snap_id not in grouped:
                     grouped[snap_id] = {}
                 grouped[snap_id][vid] = data
-            except Exception:
+            except Exception:  # degrades: unreadable eval result file skipped when grouping for judging
                 continue
 
         return grouped
@@ -435,7 +435,7 @@ class BatchJudge:
                 old = JudgeRunManifest.load(manifest_path)
                 for f in results_dir.glob("*.json"):
                     existing.add(f.stem)
-            except Exception:
+            except Exception:  # degrades: unreadable old manifest so a resumed judge run redoes completed pairs
                 pass
 
         delay = 60.0 / self._rpm if self._rpm > 0 else 0
@@ -502,7 +502,7 @@ def load_verdicts(judge_dir: str) -> List[JudgeVerdict]:
         try:
             data = json.loads(path.read_text())
             verdicts.append(JudgeVerdict.from_dict(data))
-        except Exception:
+        except Exception:  # degrades: unreadable judge verdict file skipped when loading verdicts
             continue
     return verdicts
 

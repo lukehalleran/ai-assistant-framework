@@ -47,7 +47,7 @@ def _accuracy_clause() -> str:
     try:
         from core.grounding_check import GROUNDING_ACCURACY_CLAUSE  # lazy import: cycle
         return GROUNDING_ACCURACY_CLAUSE
-    except Exception:
+    except Exception:  # degrades: crisis prompt omits the grounding accuracy clause
         return ""
 
 
