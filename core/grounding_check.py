@@ -778,6 +778,114 @@ def claim_date_in_source(claim: str, source: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# User's own words / unverifiable absence (2026-10-27, wave 2 C1; class: BC-50,
+# BC-84). Labelled sheet (oct26b M2): 0/7 judgeable flags were correct. Shape 1:
+# the "claim" was the USER's sentence quoted in the reply. Shape 2: "X isn't in
+# this document" judged false by a verifier that never received the document.
+# ---------------------------------------------------------------------------
+
+_NEGATOR_WORDS = frozenset({"not", "no", "never", "nothing", "none", "neither", "nor", "nowhere", "cannot"})
+_MIN_USER_STATED_TOKENS = 3
+
+
+def _neg_tokens(text: str) -> list:
+    norm = _normalize_for_match(text).replace("n't", " not ")
+    return _CONTENT_TOKEN_RE.findall(norm)
+
+
+def _negation_corroborated(claim: str, query: str) -> bool:
+    """Every negation in the claim is also in the user's message with a claim
+    token inside its scope (the three words after it). "...up to three days,
+    not sure" does not corroborate a claim's "you do NOT lose ten percent"."""
+    claim_tokens = _overlap_content_tokens(claim)
+    q_tokens = _neg_tokens(query)
+    q_neg_scopes = [set(q_tokens[i + 1:i + 4]) for i, t in enumerate(q_tokens) if t in _NEGATOR_WORDS]
+    for tok in _neg_tokens(claim):
+        if tok in _NEGATOR_WORDS and not any(scope & claim_tokens for scope in q_neg_scopes):
+            return False
+    return True
+
+
+def claim_text_user_stated(claim: str, query: str) -> bool:
+    """True when the flagged claim is the user's own sentence: every content
+    token (digits included) of the claim occurs in the user's message and the
+    claim adds no negation the message lacks. The reply quoting or restating
+    what the user said is the user's statement, not an assistant claim --
+    flagging it contradicts the user by construction. Full containment (not a
+    ratio): one swapped number or word is a different claim and still flags."""
+    claim_tokens = _overlap_content_tokens(claim)
+    if len(claim_tokens) < _MIN_USER_STATED_TOKENS or not query:
+        return False
+    if not claim_tokens <= _overlap_content_tokens(query):
+        return False
+    return _negation_corroborated(claim, query)
+
+
+_LOCATIVE_PREPS = frozenset({"in", "within", "on", "inside", "across", "throughout", "from"})
+_DEICTIC_DETS = frozenset({"this", "that", "these", "those", "your", "my", "our", "his", "her", "their"})
+_PERSON_PRONOUNS = frozenset({"i", "me", "my", "we", "us", "our", "you", "your"})
+_RUNTIME_CLOCK_BLOCK_RE = re.compile(r"\[AUTHORITATIVE RUNTIME CLOCK\]\s*(?:Current time:[^\n]*)?")
+_DOC_EVIDENCE_MIN_SOURCE_CHARS = 200
+_DOC_EVIDENCE_MIN_QUERY_CHARS = 1500
+
+
+def _document_text_provided(query: str, source_material: str) -> bool:
+    """True when the verifier could have seen a document: real source material
+    beyond the runtime-clock block, or a long paste in the user's message."""
+    src = _RUNTIME_CLOCK_BLOCK_RE.sub("", source_material or "").strip()
+    return len(src) >= _DOC_EVIDENCE_MIN_SOURCE_CHARS or len(query or "") >= _DOC_EVIDENCE_MIN_QUERY_CHARS
+
+
+def _span_is_negated(head) -> bool:
+    """A predicate (or an ancestor clause, or the head noun's own determiner)
+    carries negation: ``neg`` dependents, a ``no`` determiner, or a negative
+    pronoun head ("nothing in the syllabus")."""
+    chain = [head, *head.ancestors]
+    for tok in chain:
+        if tok.lower_ in _NEGATOR_WORDS:
+            return True
+        if any(c.dep_ == "neg" or c.lower_ in _NEGATOR_WORDS for c in tok.children
+               if c.dep_ in ("neg", "det", "advmod")):
+            return True
+    return False
+
+
+def claim_is_unverifiable_absence(claim: str, query: str, source_material: str) -> bool:
+    """True for a negated containment claim ("X isn't in this document / the
+    syllabus you sent me") about a document the verifier did not receive: it
+    cannot be judged false, so the verifier must abstain. Structural (spaCy
+    dependencies): a negated predicate with a locative preposition whose object
+    is a DEICTIC container (this/your/..., or a clause naming the speaker or
+    addressee, or a noun the user's message names). A world-fact container
+    ("the pancreas") is not deictic and stays verifiable. No parser -> False."""
+    if not claim or _document_text_provided(query, source_material):
+        return False
+    try:
+        from memory.fact_extractor import _get_nlp  # lazy import: startup-cost (spaCy model load)
+        nlp = _get_nlp()
+        if nlp is None:
+            return False
+        doc = nlp(claim)
+    except Exception:  # degrades: no parser -> the verdict is judged as before
+        return False
+    query_tokens = _overlap_content_tokens(query)
+    for tok in doc:
+        if tok.dep_ != "prep" or tok.lower_ not in _LOCATIVE_PREPS:
+            continue
+        if not _span_is_negated(tok.head):
+            continue
+        for obj in (c for c in tok.children if c.dep_ == "pobj"):
+            deictic = any(c.dep_ == "det" and c.lower_ in _DEICTIC_DETS for c in obj.children)
+            addressed = any(
+                c.dep_ in ("relcl", "acl") and any(t.lower_ in _PERSON_PRONOUNS for t in c.subtree)
+                for c in obj.children)
+            named_by_user = obj.pos_ == "NOUN" and obj.lemma_.lower() in query_tokens
+            if deictic or addressed or named_by_user:
+                return True
+    return False
+
+
 def _record_grounding_finding(verdict, query, response, source_material, outcome):
     """Persist the flagged verdict (claim + the source it was judged against)."""
     checker_findings.record_finding(
@@ -878,6 +986,20 @@ async def verify_grounding(
                 f"user stated — demoted: {verdict.claim[:100]!r}"
             )
             _record_grounding_finding(verdict, query, response, source_material, "demoted:claim_figure_user_stated")
+            return None
+        if claim_text_user_stated(verdict.claim, query):
+            logger.warning(
+                "[GroundingCheck] Flagged claim is the user's own statement "
+                f"— demoted: {verdict.claim[:100]!r}"
+            )
+            _record_grounding_finding(verdict, query, response, source_material, "demoted:claim_user_stated")
+            return None
+        if claim_is_unverifiable_absence(verdict.claim, query, source_material):
+            logger.warning(
+                "[GroundingCheck] Absence claim about a document the verifier "
+                f"did not receive — abstain: {verdict.claim[:100]!r}"
+            )
+            _record_grounding_finding(verdict, query, response, source_material, "demoted:absence_unverifiable")
             return None
         if claim_date_in_source(verdict.claim, source_material):
             logger.warning(

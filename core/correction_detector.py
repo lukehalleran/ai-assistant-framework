@@ -159,6 +159,75 @@ _ATTRIBUTION_PATTERNS = [
 # Minimum confidence to emit an event
 _MIN_CONFIDENCE = 0.6
 
+# ------------------------------------------------------------------
+# Disagreement with the PRIOR assistant claim (2026-10-27, wave 2 C1; class:
+# BC-51). "I don't believe that is correct" / "Don't think it is standing"
+# matched no regex, so the thread-dispute hook (gate 0.6) never fired -- only
+# "Actually, ..." did. Structural spaCy rules, no phrase list:
+#  (i)  a NEGATED, first-person-or-elided, present-tense predicate that takes a
+#       clause whose subject is an anaphor of the previous turn (that/this/
+#       these/those; ``it`` only for a plain present clause, not a future);
+#  (ii) a NEGATED copula whose subject is that/this/it and whose predicate is
+#       in the closed correctness-adjective class.
+# A complement with its own first-person subject ("I don't think I'll go") is a
+# belief about the speaker's plans and never fires.
+# ------------------------------------------------------------------
+_DISAGREEMENT_CONF = 0.65
+_ANAPHOR_STRONG = frozenset({"that", "this", "these", "those"})
+_ANAPHOR_WEAK = frozenset({"it"})
+_FIRST_PERSON = frozenset({"i", "we"})
+_CORRECTNESS_ADJ = frozenset({"correct", "right", "true", "accurate", "valid"})
+
+
+def _negated(tok) -> bool:
+    return any(c.dep_ == "neg" for c in tok.children)
+
+
+def _future_clause(tok) -> bool:
+    return any(c.dep_ in ("aux", "xcomp") and (c.lower_ in ("will", "'ll", "wo", "going", "gonna") or c.lemma_ == "will")
+               for c in tok.children) or any(c.dep_ == "xcomp" for c in tok.children)
+
+
+def _negated_prior_claim_signal(user_message: str) -> float:
+    """_DISAGREEMENT_CONF when the message disagrees with the previous
+    assistant claim by the structural rules above, else 0.0 (also 0.0 when no
+    parser is available -- the regex path alone then decides, as before)."""
+    if not user_message or len(user_message) > 300:
+        return 0.0
+    try:
+        from memory.fact_extractor import _get_nlp  # lazy import: startup-cost (spaCy model load)
+        nlp = _get_nlp()
+        if nlp is None:
+            return 0.0
+        doc = nlp(user_message)
+    except Exception:  # degrades: no parser -> disagreement phrasing is not detected
+        return 0.0
+    for tok in doc:
+        # (ii) negated copula + correctness predicate on an anaphoric subject
+        if tok.lemma_ == "be" and _negated(tok):
+            subj = [c for c in tok.children if c.dep_ == "nsubj"]
+            pred = [c for c in tok.children if c.dep_ in ("acomp", "attr") and c.lemma_.lower() in _CORRECTNESS_ADJ]
+            if pred and any(c.lower_ in _ANAPHOR_STRONG | _ANAPHOR_WEAK for c in subj):
+                return _DISAGREEMENT_CONF
+        # (i) negated first-person / elided predicate over an anaphoric clause
+        if tok.pos_ != "VERB" or not _negated(tok):
+            continue
+        morph = tok.morph.to_dict()
+        if morph.get("Tense") == "Past":
+            continue
+        subj = [c for c in tok.children if c.dep_ == "nsubj"]
+        if subj and not all(c.lower_ in _FIRST_PERSON for c in subj):
+            continue
+        for comp in (c for c in tok.children if c.dep_ == "ccomp"):
+            comp_subj = [c for c in comp.children if c.dep_ == "nsubj"]
+            if any(c.lower_ in _FIRST_PERSON for c in comp_subj):
+                continue
+            if any(c.lower_ in _ANAPHOR_STRONG for c in comp_subj):
+                return _DISAGREEMENT_CONF
+            if any(c.lower_ in _ANAPHOR_WEAK for c in comp_subj) and not _future_clause(comp):
+                return _DISAGREEMENT_CONF
+    return 0.0
+
 
 class CorrectionDetector:
     """Detects user corrections and confirmations of stored facts."""
@@ -177,6 +246,8 @@ class CorrectionDetector:
         for pattern, conf in _CORRECTION_PATTERNS:
             if pattern.search(user_message):
                 best = max(best, conf)
+        if best < _MIN_CONFIDENCE:
+            best = max(best, _negated_prior_claim_signal(user_message))
         return best
 
     def detect_corrections(

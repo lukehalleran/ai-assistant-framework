@@ -1650,7 +1650,7 @@ def _figure_classes(key: str, default: tuple) -> tuple:
 
 FIGURE_CHECK_CORRECT_CLASSES: tuple = _figure_classes("correct_classes", ("elapsed_precise", "weekday_date"))
 FIGURE_CHECK_LOG_CLASSES: tuple = _figure_classes(
-    "log_classes", ("elapsed_vague", "elapsed_unconfirmed", "copied_mismatch"))
+    "log_classes", ("elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported"))
 FIGURE_CHECK_MIN_REFERENT_OVERLAP: int = max(1, int(FIGURE_CHECK_CFG.get("min_referent_overlap", 1)))
 
 # --------------------------------------------------------------------

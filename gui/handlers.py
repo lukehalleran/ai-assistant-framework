@@ -4332,6 +4332,7 @@ async def _apply_figure_check(ctx, body, *, source_material=""):
                 "figure_check", mode="correct" if was_corrected else "log_only",
                 session_id=_get_session_id(getattr(ctx, "orchestrator", None)),
                 verdict=f.cls, reason=f.reason, claim_span=f.figure.text,
+                clause=f.figure.clause,
                 evidence_excerpt=f.evidence_excerpt,
                 reply_excerpt=checker_findings.reply_excerpt_around(body, f.figure.text),
                 query_excerpt=user_text, overlap=f.overlap,

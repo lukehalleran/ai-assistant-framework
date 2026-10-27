@@ -218,6 +218,32 @@ def _iter_context(context: Any, history: Iterable[Any]) -> list[Any]:
 
 
 ATTACHMENT_EVIDENCE_SHARE = 0.4
+# This turn's pre-gathered web pages (2026-10-27, wave 2 C1; class: BC-46):
+# role "source" rows. They can support a claim about a THIRD PARTY, never about
+# what the user did. At most this share of max_chars, per-page cap below.
+SOURCE_EVIDENCE_SHARE = 0.25
+SOURCE_PAGE_MAX_CHARS = 1500
+SOURCE_MAX_PAGES = 5
+
+
+def _web_source_texts(context: Any) -> list[tuple[str, str]]:
+    """(title, text) of this turn's gathered web pages from the context mapping."""
+    if not isinstance(context, Mapping):
+        return []
+    result = context.get("web_search_results")
+    pages = getattr(result, "pages", None)
+    if pages is None and isinstance(result, Mapping):
+        pages = result.get("pages")
+    out: list[tuple[str, str]] = []
+    for page in list(pages or [])[:SOURCE_MAX_PAGES]:
+        if isinstance(page, Mapping):
+            title, body = page.get("title"), page.get("content")
+        else:
+            title, body = getattr(page, "title", ""), getattr(page, "content", "")
+        body_text = _as_text(body).strip()
+        if body_text:
+            out.append((_as_text(title).strip(), body_text))
+    return out
 
 
 # ONE definition: the builder writes it and audit_personal_claims detects it
@@ -262,6 +288,8 @@ def build_personal_evidence(
             return
         if identity == "__current_query__":
             source_id = "src_current_query"
+        elif isinstance(identity, str) and identity.startswith("__source_"):
+            source_id = "src_web_" + identity[len("__source_"):].rstrip("_")
         elif isinstance(identity, str) and identity.startswith("__attachment_"):
             source_id = "src_attachment_" + identity[len("__attachment_"):].rstrip("_")
         else:
@@ -288,6 +316,18 @@ def build_personal_evidence(
             if name and len(entries) > before:
                 entries[-1]["name"] = name
 
+    source_pages = _web_source_texts(context)
+    if source_pages:
+        src_share = min(max(int(int(max_chars) * SOURCE_EVIDENCE_SHARE), 1), budget)
+        per_page = max(min(src_share // len(source_pages), SOURCE_PAGE_MAX_CHARS), 1)
+        for number, (title, page_text) in enumerate(source_pages, 1):
+            before = len(entries)
+            if len(page_text) > per_page:
+                marker = TRUNCATION_MARKER
+                page_text = page_text[: max(1, per_page - len(marker))] + marker
+            add("source", None, page_text, f"__source_{number}__", 100 + number)
+            if title and len(entries) > before:
+                entries[-1]["name"] = title
     candidates: list[tuple[int, int, str, str | None, str, Any]] = []
     rows = _iter_context(context, history)
     correction_indexes: list[int] = []
@@ -338,7 +378,7 @@ _SYSTEM_PROMPT = """You audit personal claims in an assistant draft against supp
 Return one strict JSON object with exactly this shape: {\"claims\":[{\"text\":string,\"status\":\"supported\"|\"contradicted\"|\"insufficient\",\"kind\":string,\"evidence\":[{\"source_id\":string,\"quote\":string}]}]}.
 Find every material claim IN THE DRAFT about what the user or a person in the user's own life did, including novel actions; do not use a closed action-verb list. Also classify plans, conditional/partial/negated/cancelled claims, quoted claims, discussion claims, and claims about another episode or object. The "text" field MUST be a character-exact copy of a contiguous span of the DRAFT: never paraphrase, never prefix it with "User", never restate the user's own message as a claim (the user's message is evidence, not a claim). If you cannot copy the span exactly, omit the claim.
 The "kind" field is one of: "completion" (the user or a person in the user's own life did something), "plan" (a plan the USER or a person in the user's own life holds or stated), "suggestion" (something the ASSISTANT proposes, offers or recommends doing next, including "we can...", "let's...", "you could...", "when you're back we..."), "discussion" (what was said or covered in the conversation), "quote", "causal", "subject" (a statement about a subject, a document, software, course material or the world that says nothing about what the user or another person did, holds, plans or is), "other". A "person in the user's own life" is someone the user or the conversation refers to as known to them; organisations, companies, projects, software and its releases, authors of cited sources, public figures, and public or historical events are subject matter, so claims about what they did are kind "subject".
-Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Evidence rows with role "attachment" are the text of files the user attached this turn: they support claims about that document's content, never claims about what the user did. A question or an offer in the draft is not a claim; do not return it. Subject-matter statements are not personal claims and should not be returned; if one is returned it must have kind "subject". An assistant-proposed next step may be returned only with kind "suggestion".
+Evidence is source-backed context, not a substitute for semantic entailment. A user report can support a user's completion. An assistant suggestion, assistant summary, quote, generated narrative, profile/fact, or tool text cannot establish that the user completed an external task. Assistant-origin evidence may support only a claim about the discussion itself. Prefer a newer direct user correction over an earlier report. Evidence rows with role "attachment" are the text of files the user attached this turn: they support claims about that document's content, never claims about what the user did. Evidence rows with role "source" are web pages gathered for this turn: they may support a claim about a THIRD PARTY (a person other than the user), never a claim about what the user did. A question or an offer in the draft is not a claim; do not return it. Subject-matter statements are not personal claims and should not be returned; if one is returned it must have kind "subject". An assistant-proposed next step may be returned only with kind "suggestion".
 Return at most 8 claims (the most material), and keep each evidence quote to at most 25 words.
 Ambiguous, missing, or incomplete evidence is insufficient, never a negative fact. Cite exact contiguous source quotes and their source IDs; cite no source for an insufficient claim when no exact span supports it.
 """
@@ -668,7 +708,9 @@ def _has_time_reference(span: str) -> bool:
 # Second-person pronouns are generic in tutoring prose ("you can find ...");
 # for completion-kind spans they only matter when a PAST verb takes them as its
 # subject (_is_personal_completion), so they leave the blanket person check.
-_GENERIC_YOU_RE = re.compile(r"\b(?:you|your|yours|yourself|yourselves)\b", re.IGNORECASE)
+_GENERIC_YOU_RE = re.compile(
+    r"\b(?:you|your|yours|yourself|yourselves|he|him|his|himself|she|her|hers|herself|"
+    r"they|them|their|theirs|themselves)\b", re.IGNORECASE)
 _NON_PERSON_ENTS = frozenset({"ORG", "PRODUCT", "WORK_OF_ART", "LAW", "EVENT", "LANGUAGE"})
 _PERSONAL_SUBJECT_WORDS = frozenset({"i", "we", "you", "he", "she", "they"})
 
@@ -782,6 +824,44 @@ def _is_personal_completion(span: str) -> bool:
         return True
 
 
+def _span_subject_is_third_party(span: str) -> bool:
+    """True when EVERY finite past/perfect clause subject in ``span`` is a third
+    party (anyone other than the user or what the user owns): a fact about
+    someone else may rest on this turn's web/tool source, the user is not the
+    only authority for it. First/second-person subjects, the user's own name,
+    an elided subject or an unparseable span answer False (user evidence still
+    required). Dependency labels only; fails closed."""
+    nlp = _get_span_nlp()
+    if nlp is None:
+        return False
+    try:
+        doc = nlp(span)
+        user_name = (get_user_display_name() or "").strip().lower()
+        seen = False
+        for tok in doc:
+            if tok.pos_ not in ("VERB", "AUX"):
+                continue
+            morph = tok.morph.to_dict()
+            finite_past = morph.get("Tense") == "Past" and morph.get("VerbForm") == "Fin"
+            perfect = morph.get("VerbForm") == "Part" and any(
+                c.dep_ in ("aux", "auxpass") and c.lemma_ == "have" for c in tok.children)
+            if not (finite_past or perfect):
+                continue
+            subj = [c for c in tok.children if c.dep_ in ("nsubj", "nsubjpass")]
+            if not subj:
+                return False
+            for c in subj:
+                # the user (pronoun or name) or someone the user owns ("my sister")
+                # is user-sourced knowledge, never a web fact
+                if any(t.lower_ in ("i", "we", "you", "me", "us", "my", "our", "your", "user")
+                       or (user_name and t.lower_ == user_name) for t in c.subtree):
+                    return False
+            seen = True
+        return seen
+    except Exception:  # degrades: parse failure -> user evidence stays required
+        return False
+
+
 def _is_subject_matter_span(span: str, kind: str) -> bool:
     """True when a claim is about a subject, not a person's act.
 
@@ -811,6 +891,18 @@ def _kind_status_summary(claims: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         key = f"{_as_text(claim.get('kind')).strip().lower()}:{claim.get('status')}"
         tally[key] = tally.get(key, 0) + 1
     return tally
+
+
+def _is_user_message_text_only(response: str, text: str, evidence: Sequence[Mapping[str, Any]]) -> bool:
+    """The claim text is a contiguous span of a user-role evidence row and is
+    NOT an exact span of the draft (whitespace/case-folded both sides)."""
+    needle = normalize_ws(text).casefold()
+    if not needle or needle in normalize_ws(response).casefold():
+        return False
+    return any(
+        row.get("role") == "user" and needle in normalize_ws(_as_text(row.get("text"))).casefold()
+        for row in evidence
+    )
 
 
 def _validate_claims(
@@ -847,6 +939,11 @@ def _validate_claims(
                 raise _MalformedClaim("invalid claim enum")
             if not isinstance(text, str) or not text.strip():
                 raise _MalformedClaim("empty claim text")
+            if _is_user_message_text_only(response, text, evidence):
+                # The auditor audited the USER's words, not the draft (live
+                # 2026-10-17/18 terse turns): a draft sentence that merely echoes
+                # them is not the claim. Validator failure -> drop and log.
+                raise _DropClaim("claim span is user-message text, not a draft span")
             located, how = _locate_span(
                 response, text, overlap_threshold=overlap_threshold,
                 min_claim_tokens=min_claim_tokens,
@@ -909,7 +1006,13 @@ def _validate_claims(
                 for ref in checked_refs
                 if any(row.get("role") == "user" for row in sources.get(ref["source_id"], ()))
             }
-            if not user_sources:
+            source_backed = (
+                not user_sources
+                and any(row.get("role") == "source"
+                        for ref in checked_refs for row in sources.get(ref["source_id"], ()))
+                and _span_subject_is_third_party(text)
+            )
+            if not user_sources and not source_backed:
                 # Assistant discussion/advice cannot corroborate a user event.
                 status = "insufficient"
                 counts["demoted"] += 1

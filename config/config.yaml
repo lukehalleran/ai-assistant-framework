@@ -753,5 +753,6 @@ figure_check:            # 2026-10-25 (BC-103): every number/time the reply asse
   log_classes:           # findings recorded to checker_findings.jsonl (never edited)
   - elapsed_vague
   - elapsed_unconfirmed   # precise phrase that is ambiguous / weakly bound (never edited)
-  - copied_mismatch      # (unsupported is counted in the receipt but not logged: mostly counted-noun noise)
+  - copied_mismatch
+  - unsupported          # 2026-10-27: logged WITH its figure + clause so the findings can be labelled (still never edited)
   min_referent_overlap: 1   # content lemmas a source item must share with the figure's clause to be its referent
