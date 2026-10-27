@@ -213,6 +213,34 @@ class MultiCollectionChromaStore:
         # Log the persist directory for debugging
         logger.info(f"[Chroma] Using persistent dir: {self.persist_directory}")
 
+    def close(self) -> None:
+        """Release this store's chromadb client (idempotent).
+
+        chromadb keeps ONE System per persist path in
+        ``SharedSystemClient._identifier_to_system`` and never stops it, so a
+        store that is merely dropped keeps ~10 file descriptors for the life
+        of the process (measured 2026-10-27: 4 -> 66 fds over 6 stores; ~238
+        function-scoped test stores overran the 1024 soft limit). close()
+        removes and stops ONLY this path's System -- not
+        ``clear_system_cache()``, which would drop every other store's System
+        in the process. Other stores sharing the same path lose their System
+        too, so a long-lived production store is not closed mid-run; this is
+        for tests and short-lived tools. The store is unusable afterwards.
+        """
+        client = getattr(self, "client", None)
+        if client is None:
+            return
+        self.client = None
+        self.collections = {name: None for name in self.collections}
+        try:
+            # lazy import: startup-cost (chromadb internals, close path only)
+            from chromadb.api.shared_system_client import SharedSystemClient
+            system = SharedSystemClient._identifier_to_system.pop(client._identifier, None)
+            if system is not None:
+                system.stop()
+        except Exception as exc:  # degrades: chromadb System left running (fd leak only)
+            logger.warning(f"[Chroma] close() could not stop the client system: {exc}")
+
     def get_st_model(self):
         """
         The underlying SentenceTransformer this store embeds/retrieves with

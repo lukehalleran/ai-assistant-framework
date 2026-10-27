@@ -2685,6 +2685,20 @@ def _is_vent_shaped(query: str) -> bool:
     return bool(_FIRST_PERSON_RE.search(strip_epistemic_markers(q)))
 
 
+def _vent_support_span(query: str):
+    """(start, end) offsets in ``query`` of the first sentence that makes it
+    vent-shaped (first-person after epistemic-marker stripping) -- the text the
+    no_search label rests on (A06 support span). Mirrors ``_is_vent_shaped`` at
+    sentence granularity; None when no sentence qualifies, so the exemplar
+    store declines an over-long query rather than head-clipping it."""
+    text = query or ""
+    for m in re.finditer(r"[^.!?]+[.!?]*", text):
+        sent = m.group().lower()
+        if sent.strip() and _FIRST_PERSON_RE.search(strip_epistemic_markers(sent)):
+            return (m.start(), m.end())
+    return None
+
+
 # Confident retrieval-flavored intents are respected even on elevated-tone
 # statements — the user is asking the system to go get something.
 _RETRIEVAL_INTENTS = {
@@ -2843,7 +2857,8 @@ def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
             try:
                 from utils.adaptive_exemplars import get_store
                 get_store().record(
-                    "web_search", "no_search", query, "gate_veto"
+                    "web_search", "no_search", query, "gate_veto",
+                    support_span=_vent_support_span(query),
                 )
             except Exception as e:  # degrades: no_search teaching exemplar not recorded
                 logger.debug(f"[Agentic Gate] no_search learning skipped: {e}")

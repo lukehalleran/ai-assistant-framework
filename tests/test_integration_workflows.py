@@ -64,10 +64,11 @@ def memory_coordinator(corpus_manager, temp_chroma_dir):
     """Provide MemoryCoordinator with temp storage."""
     from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
     chroma_store = MultiCollectionChromaStore(persist_directory=temp_chroma_dir)
-    return MemoryCoordinator(
+    yield MemoryCoordinator(
         corpus_manager=corpus_manager,
         chroma_store=chroma_store
     )
+    chroma_store.close()  # release the chromadb client (fd leak, BC-81)
 
 
 @pytest.fixture

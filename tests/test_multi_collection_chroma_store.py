@@ -87,12 +87,14 @@ def temp_chroma_dir():
 @pytest.fixture
 def chroma_store(temp_chroma_dir):
     """Provide MultiCollectionChromaStore."""
-    return MultiCollectionChromaStore(persist_directory=temp_chroma_dir)
-
-
-def test_chroma_store_init(temp_chroma_dir):
-    """Test MultiCollectionChromaStore initialization."""
     store = MultiCollectionChromaStore(persist_directory=temp_chroma_dir)
+    yield store
+    store.close()  # release the chromadb client (fd leak, BC-81)
+
+
+def test_chroma_store_init(temp_chroma_dir, chroma_store):
+    """Test MultiCollectionChromaStore initialization."""
+    store = chroma_store
 
     assert store.persist_directory == temp_chroma_dir
     assert store.client is not None

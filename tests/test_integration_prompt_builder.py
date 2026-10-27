@@ -44,10 +44,11 @@ def memory_coordinator(temp_dirs):
     corpus_manager = CorpusManager(corpus_file=temp_dirs["corpus_file"])
     chroma_store = MultiCollectionChromaStore(persist_directory=temp_dirs["chroma_path"])
 
-    return MemoryCoordinator(
+    yield MemoryCoordinator(
         corpus_manager=corpus_manager,
         chroma_store=chroma_store
     )
+    chroma_store.close()  # release the chromadb client (fd leak, BC-81)
 
 
 @pytest.fixture

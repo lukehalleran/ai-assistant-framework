@@ -105,7 +105,7 @@ def test_dry_run_makes_no_network_call(monkeypatch, capsys):
     assert h.main([]) == 0
     out = capsys.readouterr().out
     assert "DRY RUN" in out and "calls per backend" in out and "price estimate" in out
-    assert "cases: 102" in out and "state_too_large" in out
+    assert f"cases: {len(h.cases_mod.CASES)}" in out and "state_too_large" in out
 
 
 def test_run_without_budget_refuses(monkeypatch, capsys):

@@ -200,8 +200,19 @@ def summarize(rows, policy, params):
 
 
 # ---------------------------------------------------------------- selection (E1)
+def _neutrality(policy, params):
+    """Tie-break key (2026-10-27): at equal cost prefer argmax (no parameters to overfit), then the parameters nearest
+    the deployed neutral defaults (tone._VERDICT_POLICY_PARAMS). Grid order alone put the most extreme thresholds
+    (e.g. taus [0.65,0.1,0.1]) first among many cost-0 ties."""
+    if policy == "argmax":
+        return (0, 0.0)
+    key, neutral = tone._VERDICT_POLICY_PARAMS[policy]
+    return (1, sum(abs(v - n) for v, n in zip(params[key], neutral)))
+
+
 def select_policy(rows):
-    """Grid argmax/weighted/cumulative; minimise expected cost subject to ZERO severe misses. Returns the winner or None."""
+    """Grid argmax/weighted/cumulative; minimise expected cost subject to ZERO severe misses, ties to argmax then the
+    parameters nearest neutral. Returns the winner or None. Never freezes anything itself (the owner does)."""
     pool = [(LEVELS.index(r["expected"]), r["jev"]["probs"]) for r in rows
             if (r.get("jev") or {}).get("status") == "ok" and r["jev"].get("probs")]
     steps = [round(x, 2) for x in (0.05 * i for i in range(1, 20))]
@@ -219,9 +230,10 @@ def select_policy(rows):
             cost += case_cost(e, v)
             severe += e >= 2 and v == 0
         else:
-            if severe == 0 and (best is None or (cost, order) < (best[0], best[1])):
-                best = (cost, order, policy, params, len(pool))
-    return None if best is None else {"cost": best[0], "policy": best[2], "params": best[3], "cases": best[4]}
+            key = (cost, *_neutrality(policy, params), order)
+            if severe == 0 and (best is None or key < best[0]):
+                best = (key, policy, params, len(pool), cost)
+    return None if best is None else {"cost": best[4], "policy": best[1], "params": best[2], "cases": best[3]}
 
 
 def yaml_lines(choice):
