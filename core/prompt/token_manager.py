@@ -90,6 +90,9 @@ PRIORITY_ORDER = [
     # figures with date + modality, <=12 short lines, capped at claim_ledger.max_block_tokens
     # upstream. Same tier as the user's own recalled statements: outranks assistant history.
     ("stated_figures",        8),
+    # 2026-10-27 (BC-103/BC-100): [YOUR DAY COUNTS] -- <=day_counts.max_lines (3) short lines,
+    # the user's own day counts already projected to today. Same tier as the user's figures.
+    ("day_counts",            8),
     ("recent_conversations",  7),
     # 2026-09-27 (BC-46, BC-30, BC-51): [EARLIER TODAY] recall-timeline lines
     # a truncated [RECENT CONVERSATION] window dropped (temporal_recall-only,
@@ -232,6 +235,7 @@ _OMITTED_LABELS = {
     "unresolved_threads": "open threads",
     "web_search_results": "web results",
     "stated_figures": "your stated figures",
+    "day_counts": "your day counts",
     "recent_conversations": "recent conversation",
 }
 OMITTED_NOTE_MAX_SECTIONS = 4

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from utils.date_coerce import coerce_date as _coerce_date
@@ -362,3 +362,353 @@ def remove_stale_streak_claims(
     ]
     revised = (revised.rstrip() + "\n\n" if revised else "") + "\n".join(caution)
     return revised, stale
+
+
+# ======================================================================
+# Dated day counts (2026-10-27, class: BC-103 supply / BC-100 / BC-75 / BC-52)
+# ----------------------------------------------------------------------
+# "23 days into <activity>", "day 23 of <activity>", a "(Day 23)" note title:
+# a count that was true on the day it was written. 2026-09-11..20: a note's
+# "Day 23" was read as TODAY's count and echoed forward for nine days because
+# no input ever carried the start date. Every count becomes a START DATE
+# (stated_on - (N - 1)); the elapsed arithmetic is done here, once, and the
+# result is handed to the model (see memory/day_count_anchors.py for the store
+# and the prompt supply). Extraction is structural: a number, a day unit, a
+# relation word from the closed class of time-span prepositions, and the noun
+# phrase it governs. No activity vocabulary is listed anywhere.
+# Sources are the USER's own text only; the caller never passes assistant text.
+# ======================================================================
+
+# Closed-class relation words that link a day count to the activity it counts
+# (function words, not topic words).
+_DAY_COUNT_RELATIONS = ("into", "of", "since", "on", "off", "without", "after")
+_REL_ALT = "|".join(_DAY_COUNT_RELATIONS)
+# Noun phrase after the relation: up to 5 words, stops at clause punctuation.
+_NP = r"(?P<np>[^\W\d_][\w'’\-]*(?:\s+[\w'’\-]+){0,4})"
+_DAY_COUNT_A_RE = re.compile(
+    r"\b" + _NUM + r"(?:\s*-\s*|\s+)days?\s+(?P<rel>" + _REL_ALT + r")\s+" + _NP,
+    re.IGNORECASE,
+)
+_DAY_COUNT_B_RE = re.compile(
+    r"\bday\s+" + _NUM + r"\s+(?P<rel>" + _REL_ALT + r")\s+" + _NP,
+    re.IGNORECASE,
+)
+_BARE_DAY_RE = re.compile(r"\bday\s+" + _NUM + r"\b(?!\s*(?:/|of\s+\d))", re.IGNORECASE)
+# Function words that make "day N" a plan/hypothetical/other-time reference.
+_IRREALIS_LEAD = frozenset(
+    {"if", "when", "by", "until", "till", "before", "once", "unless", "around", "maybe", "perhaps", "hopefully"}
+)
+_INTERROGATIVE_LEAD = frozenset(
+    {"is", "are", "was", "were", "do", "does", "did", "what", "which", "when", "how", "why", "who", "can", "should"}
+)
+# Words that end a noun phrase (function words: determiners, conjunctions, auxiliaries, pronouns).
+_NP_STOP = frozenset(
+    {"and", "but", "so", "because", "which", "that", "where", "while", "though", "although", "i", "i'm", "im",
+     "we", "he", "she", "it", "they", "is", "are", "was", "were", "has", "have", "had", "now", "today",
+     "yesterday", "then", "or", "with", "to", "for", "in", "at", "by", "from"}
+)
+_NP_LEAD_SKIP = frozenset({"the", "a", "an", "my", "our", "this", "that", "these", "those", "your", "his", "her", "their"})
+
+
+def _lemma_token(word: str) -> str:
+    """Crude singular/gerund stem used only when no spaCy pipeline is supplied."""
+    w = re.sub(r"[^\w\-]", "", word.lower())
+    for suffix in ("ing", "es", "s", "e"):
+        if len(w) > len(suffix) + 3 and w.endswith(suffix):
+            return w[: -len(suffix)]
+    return w
+
+
+def subject_lemmas(np_text: str, nlp: Any = None) -> frozenset:
+    """Content lemmas of an activity noun phrase (determiners/function words dropped).
+    With a spaCy pipeline: lemmas of NOUN/PROPN/VERB/ADJ tokens; without: stemmed words."""
+    text = (np_text or "").strip()
+    if not text:
+        return frozenset()
+    if nlp is not None:
+        try:
+            doc = nlp(text)
+            lem = {_lemma_token(t.lemma_) for t in doc if t.pos_ in ("NOUN", "PROPN", "VERB", "ADJ") and not t.is_stop}
+            if lem:
+                return frozenset(lem)
+        except Exception:  # degrades: falls back to the stem heuristic
+            pass
+    words = [w for w in re.split(r"[\s\-]+", text) if w]
+    out = {_lemma_token(w) for w in words if w.lower() not in _NP_LEAD_SKIP and w.lower() not in _NP_STOP}
+    return frozenset(x for x in out if len(x) > 1)
+
+
+def _clean_np(raw: str) -> str:
+    words: List[str] = []
+    for w in raw.split():
+        if w.lower().strip(",;:") in _NP_STOP and words:
+            break
+        words.append(w.strip(",;:"))
+    while words and words[0].lower() in _NP_LEAD_SKIP:
+        words.pop(0)
+    return " ".join(words)
+
+
+@dataclass
+class DayCountClaim:
+    count: int
+    stated_on: date
+    subject: str            # activity noun phrase as written ("" = unattributed)
+    lemmas: frozenset       # content lemmas of ``subject``
+    snippet: str
+    source: str = "message"  # "message" (turn) | "note" (user's own dated note)
+
+    @property
+    def start(self) -> date:
+        return self.stated_on - timedelta(days=self.count - 1)
+
+    def projected(self, as_of: Any) -> int:
+        day = _coerce_date(as_of) or self.stated_on
+        return self.count + max(0, (day - self.stated_on).days)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"count": self.count, "stated_on": self.stated_on.isoformat(), "subject": self.subject,
+                "lemmas": sorted(self.lemmas), "snippet": self.snippet, "source": self.source}
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> Optional["DayCountClaim"]:
+        try:
+            stated = _coerce_date(d.get("stated_on"))
+            n = int(d["count"])
+            if stated is None or not 0 < n <= 400:
+                return None
+            return cls(count=n, stated_on=stated, subject=str(d.get("subject") or ""),
+                       lemmas=frozenset(str(x) for x in d.get("lemmas") or []),
+                       snippet=str(d.get("snippet") or ""), source=str(d.get("source") or "message"))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+
+def _sentence_prefix_words(text: str, pos: int) -> List[str]:
+    left = max(text.rfind(m, 0, pos) for m in ("\n", ".", "?", "!")) + 1
+    return re.findall(r"[a-z']+", text[left:pos].lower())
+
+
+def _sentence_lead(text: str, pos: int) -> List[str]:
+    left = max(text.rfind(m, 0, pos) for m in ("\n", ".", "?", "!")) + 1
+    return re.findall(r"[a-z']+", text[left:pos].lower())[:1]
+
+
+def extract_day_count_claims(
+    text: str, stated_on: Any, *, source: str = "message", allow_bare: bool = True, nlp: Any = None,
+) -> List[DayCountClaim]:
+    """Day-count claims in ONE user-authored text, dated to the day it was written.
+
+    Attributed: "<N> days <rel> <activity>" / "day <N> <rel> <activity>". Unattributed:
+    a bare "day <N>" (message: any user sentence that is not a plan/hypothetical/
+    question; note: ``allow_bare=True`` for titles/headings only). Rejected: quoted or
+    drafted text, irrealis lead words (if/when/by/until…), a question that opens with an
+    interrogative/auxiliary, N outside 1..400. Never raises."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    day = _coerce_date(stated_on)
+    if day is None:
+        return []
+    out: List[DayCountClaim] = []
+    seen = set()
+    attributed_spans: List[Tuple[int, int]] = []
+
+    def _ok_context(m: re.Match) -> bool:
+        snippet = _sentence_window(text, m.start(), m.end())
+        if _QUOTED_OR_DRAFT_RE.search(snippet):
+            return False
+        if any(w in _IRREALIS_LEAD for w in _sentence_prefix_words(text, m.start())):
+            return False
+        lead = _sentence_lead(text, m.start())
+        if snippet.rstrip().endswith("?") and lead and lead[0] in _INTERROGATIVE_LEAD:
+            return False
+        return True
+
+    def _add(n_tok: str, m: re.Match, np_raw: str) -> None:
+        n = _to_int(n_tok)
+        if n is None:
+            return
+        snippet = _sentence_window(text, m.start(), m.end())
+        subject = _clean_np(np_raw)
+        lem = subject_lemmas(subject, nlp)
+        if not lem:
+            return
+        key = (n, tuple(sorted(lem)))
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(DayCountClaim(count=n, stated_on=day, subject=subject, lemmas=lem, snippet=snippet, source=source))
+
+    for rx in (_DAY_COUNT_A_RE, _DAY_COUNT_B_RE):
+        for m in rx.finditer(text):
+            if _ok_context(m):
+                attributed_spans.append((m.start(), m.end()))
+                _add(m.group("n"), m, m.group("np"))
+    if allow_bare:
+        for m in _BARE_DAY_RE.finditer(text):
+            if any(s <= m.start() < e for s, e in attributed_spans):
+                continue
+            n = _to_int(m.group("n"))
+            if n is None or not _ok_context(m):
+                continue
+            key = (n, ())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(DayCountClaim(count=n, stated_on=day, subject="", lemmas=frozenset(),
+                                     snippet=_sentence_window(text, m.start(), m.end()), source=source))
+    return out
+
+
+@dataclass
+class EpisodeAnchor:
+    lemmas: frozenset
+    subject: str
+    start: date
+    newest: DayCountClaim
+    claims: List[DayCountClaim]
+
+    @property
+    def spread_days(self) -> int:
+        starts = [c.start for c in self.claims]
+        return (max(starts) - min(starts)).days
+
+    def projected(self, as_of: Any) -> int:
+        return self.newest.projected(as_of)
+
+
+START_AGREEMENT_DAYS = 3
+
+
+def _claim_rank(c: DayCountClaim) -> Tuple[date, int]:
+    # Newest statement wins; on the same day the user's message outranks a (retrospective) note.
+    return (c.stated_on, 1 if c.source == "message" else 0)
+
+
+def episode_anchors(claims: Iterable[DayCountClaim]) -> List[EpisodeAnchor]:
+    """Merge claims into episodes. Attributed claims group by shared activity lemma; an
+    unattributed claim joins the episode whose start date it agrees with (within
+    START_AGREEMENT_DAYS) and is otherwise dropped (never guessed onto a subject)."""
+    groups: List[List[DayCountClaim]] = []
+    attributed = [c for c in claims if c.lemmas]
+    for c in sorted(attributed, key=_claim_rank):
+        for g in groups:
+            if any(c.lemmas & m.lemmas for m in g):
+                g.append(c)
+                break
+        else:
+            groups.append([c])
+    # merge groups that became linked through a later claim
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                if any(a.lemmas & b.lemmas for a in groups[i] for b in groups[j]):
+                    groups[i] += groups.pop(j)
+                    merged = True
+                    break
+            if merged:
+                break
+    for c in sorted((c for c in claims if not c.lemmas), key=_claim_rank):
+        best, gap = None, None
+        for g in groups:
+            d = abs((c.start - max(g, key=_claim_rank).start).days)
+            if d <= START_AGREEMENT_DAYS and (gap is None or d < gap):
+                best, gap = g, d
+        if best is not None:
+            best.append(c)
+    out: List[EpisodeAnchor] = []
+    for g in groups:
+        newest = max(g, key=_claim_rank)
+        lem = frozenset().union(*(m.lemmas for m in g))
+        out.append(EpisodeAnchor(lemmas=lem, subject=newest.subject or next((m.subject for m in g if m.subject), ""),
+                                 start=newest.start, newest=newest, claims=sorted(g, key=_claim_rank)))
+    out.sort(key=lambda a: a.newest.stated_on, reverse=True)
+    return out
+
+
+def _tokens_lemma_set(text: str, nlp: Any = None) -> frozenset:
+    return subject_lemmas(text, nlp) if text else frozenset()
+
+
+def day_count_lines(
+    anchors: Iterable[EpisodeAnchor], as_of: Any, relevant_text: str = "", *,
+    max_lines: int = 3, max_age_days: int = 400, nlp: Any = None,
+) -> List[str]:
+    """Prompt lines "<activity>: day N today (<date>) — from …". An anchor is supplied only when
+    one of its activity lemmas occurs in ``relevant_text`` (no always-on block)."""
+    today = _coerce_date(as_of) or date.today()
+    if not relevant_text or max_lines <= 0:
+        return []
+    rel = _tokens_lemma_set(relevant_text, nlp) | frozenset(_lemma_token(w) for w in re.findall(r"[\w'\-]+", relevant_text))
+    lines: List[str] = []
+    for a in anchors:
+        if (today - a.newest.stated_on).days > max_age_days or a.newest.stated_on > today:
+            continue
+        if not (a.lemmas & rel):
+            continue
+        n = a.projected(today)
+        c = a.newest
+        what = "your note" if c.source == "note" else "your message"
+        line = (f'- {a.subject or "the episode"}: day {n} today ({today.isoformat()}) — from {what} dated '
+                f'{c.stated_on.isoformat()} ("{c.snippet[:110]}"; day 1 ≈ {a.start.isoformat()})')
+        if a.spread_days > START_AGREEMENT_DAYS - 1:
+            first = a.claims[0]
+            line += (f" (your statements differ by {a.spread_days} days: {first.stated_on.isoformat()} "
+                     f"day {first.count} vs {c.stated_on.isoformat()} day {c.count})")
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return lines
+
+
+@dataclass
+class StaleDayCount:
+    claim_text: str
+    stated_count: int
+    current_count: int
+    start: int
+    end: int
+
+
+def stale_day_count_claims(
+    text: str, anchors: Iterable[EpisodeAnchor], as_of: Any, *, nlp: Any = None,
+) -> List[StaleDayCount]:
+    """Sentences of GENERATED text asserting "N days into <activity>" / "day N of <activity>" whose N
+    differs from the anchor's count projected to ``as_of``, unless the sentence dates the count to the
+    day it was stated. Pure; wired by nobody yet (verify-side hand-off for figure_check / handlers)."""
+    if not text:
+        return []
+    today = _coerce_date(as_of) or date.today()
+    anchors = list(anchors)
+    found: List[StaleDayCount] = []
+    seen = set()
+    for rx in (_DAY_COUNT_A_RE, _DAY_COUNT_B_RE):
+        for m in rx.finditer(text):
+            n = _to_int(m.group("n"))
+            lem = subject_lemmas(_clean_np(m.group("np")), nlp)
+            if n is None or not lem:
+                continue
+            for a in anchors:
+                if not (a.lemmas & lem):
+                    continue
+                current = a.projected(today)
+                if n == current:
+                    continue
+                left = max(text.rfind(mk, 0, m.start()) for mk in ("\n", ".", "?", "!")) + 1
+                rights = [p for mk in ("\n", ".", "?", "!") if (p := text.find(mk, m.end())) >= 0]
+                right = min(rights) + 1 if rights else len(text)
+                sentence = text[left:right]
+                said = a.newest.stated_on
+                if re.search(
+                    rf"\b(?:{said.strftime('%B')}|{said.strftime('%b')}\.?)\s+{said.day}\b|\b{said.isoformat()}\b|"
+                    rf"\b{said.month}/{said.day}\b", sentence, re.IGNORECASE):
+                    continue
+                if (left, right) in seen:
+                    continue
+                seen.add((left, right))
+                found.append(StaleDayCount(" ".join(sentence.split()), n, current, left, right))
+                break
+    found.sort(key=lambda s: s.start)
+    return found

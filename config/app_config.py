@@ -1654,6 +1654,15 @@ FIGURE_CHECK_LOG_CLASSES: tuple = _figure_classes(
 FIGURE_CHECK_MIN_REFERENT_OVERLAP: int = max(1, int(FIGURE_CHECK_CFG.get("min_referent_overlap", 1)))
 
 # --------------------------------------------------------------------
+# Dated day counts (2026-10-27, class: BC-103/BC-100). Read at call time (BC-82).
+# --------------------------------------------------------------------
+DAY_COUNTS_CFG = config.get("day_counts", {}) or {}
+DAY_COUNTS_ENABLED: bool = bool(DAY_COUNTS_CFG.get("enabled", True))
+DAY_COUNTS_MAX_LINES: int = max(1, int(DAY_COUNTS_CFG.get("max_lines", 3)))
+DAY_COUNTS_MAX_AGE_DAYS: int = max(1, int(DAY_COUNTS_CFG.get("max_age_days", 400)))
+DAY_COUNTS_STORE_PATH: str = str(DAY_COUNTS_CFG.get("store_path", "data/day_count_anchors.json"))
+
+# --------------------------------------------------------------------
 # User-claim ledger (2026-10-20, class: BC-75/BC-52). Every switch ships OFF; the
 # live consumers read these at call time (`app_config.CLAIM_LEDGER_*`), never a
 # frozen from-import (BC-82). No env overrides: the owner enables it in

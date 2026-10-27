@@ -842,6 +842,16 @@ class FigureCheckSection(BaseModel):
     min_referent_overlap: int = Field(default=1, ge=1)
 
 
+class DayCountsSection(BaseModel):
+    """Dated day counts (2026-10-27, BC-103/BC-100): the user's own "N days into X" counts,
+    projected to today in the reply prompt."""
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = True
+    max_lines: int = Field(default=3, ge=1)
+    max_age_days: int = Field(default=400, ge=1)
+    store_path: str = "data/day_count_anchors.json"
+
+
 class ClaimLedgerSection(BaseModel):
     """User-claim ledger (2026-10-20, class: BC-75/BC-52): the figures the user stated
     about themselves, kept with a date and a modality. Every switch ships OFF."""
@@ -1250,6 +1260,7 @@ class DaemonConfig(BaseModel):
     personal_claim_check: PersonalClaimCheckSection = Field(default_factory=PersonalClaimCheckSection)
     claim_ledger: ClaimLedgerSection = Field(default_factory=ClaimLedgerSection)
     figure_check: FigureCheckSection = Field(default_factory=FigureCheckSection)
+    day_counts: DayCountsSection = Field(default_factory=DayCountsSection)
     decision_model: DecisionModelSection = Field(default_factory=DecisionModelSection)
     email_integration: EmailIntegrationSection = Field(default_factory=EmailIntegrationSection)
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)

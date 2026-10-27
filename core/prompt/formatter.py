@@ -503,6 +503,25 @@ def _truncate_at_spurious_turns(text: str) -> str:
         return text
 
 
+def _note_content_date(metadata) -> str:
+    """A note's CONTENT date (``YYYY-MM-DD``) or "" -- an index-time stamp is never a note's date."""
+    if not isinstance(metadata, dict) or metadata.get("date_basis") != "content":
+        return ""
+    day = str(metadata.get("note_date") or "").strip()[:10]
+    try:
+        datetime.fromisoformat(day)
+    except ValueError:
+        return ""
+    return day
+
+
+def _note_date_label(metadata) -> str:
+    """``[note dated 2026-07-28 (91 days ago)]`` so a note's "Day 23" reads as of ITS date. class: BC-100, BC-103"""
+    from utils.time_manager import render_timestamp_label  # lazy import: patch point
+    day = _note_content_date(metadata)
+    return f"[note dated {render_timestamp_label(day)}]" if day else ""
+
+
 def _sanitize_embedded_headers(text: str) -> str:
     """
     Sanitize embedded section headers in memory content to prevent prompt pollution.
@@ -1258,6 +1277,18 @@ class PromptFormatter:
         if stated_figures:
             sections.append(f"[YOUR STATED FIGURES] n={len(stated_figures)}\n" + "\n".join(stated_figures))
 
+        # The user's own dated day counts (2026-10-27, BC-103/BC-100): already projected to today by
+        # code (builder-gated: shown only when the counted activity is in play this turn).
+        day_counts = [str(l) for l in (context.get("day_counts") or []) if str(l).strip()]
+        if day_counts:
+            sections.append(
+                f"[YOUR DAY COUNTS — dated, already projected to today] n={len(day_counts)}\n"
+                "The day number below is computed for TODAY from the user's own statement. A day count in "
+                "recalled text (a reply, a summary, a note) was true on ITS date only: never reuse it or add "
+                "to it; use this number, and give the date when you cite a count.\n"
+                + "\n".join(day_counts)
+            )
+
         # Relevant memories
         memories = context.get("memories", []) or []
         logger.debug(f"PROMPT BUILD: FINAL COUNT - Got {len(memories)} memories from context BEFORE ASSEMBLY")
@@ -1438,6 +1469,11 @@ class PromptFormatter:
                             "media_type": img.get("media_type", ""),
                             "data": img.get("data", ""),
                         })
+
+                note_dated = _note_date_label(metadata)
+                if note_dated:
+                    header_parts.append(note_dated)
+                    content = anchor_temporal_references(content, _note_content_date(metadata))
 
                 header = " ".join(header_parts) if header_parts else ""
                 pn_lines.append(f"{i}) {header}\n{content}" if header else f"{i}) {content}")

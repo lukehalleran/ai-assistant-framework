@@ -560,12 +560,31 @@ def _hook_thread_dispute(ctx: PostResponseHookContext) -> None:
         logger.debug(f"[ThreadDispute] skipped: {type(exc).__name__}")
 
 
+def _hook_day_count_anchors(ctx: PostResponseHookContext) -> None:
+    """Record the user's own dated day counts ("23 days into X") from this turn's user text.
+
+    Reads ctx.user_input ONLY (never the assistant response); a [test] probe records nothing
+    (the same envelope predicate the other derived-artifact hooks ask). Off the prompt path,
+    so the spaCy pass never delays a turn. class: BC-103, BC-75
+    """
+    if not ctx.user_input:
+        return
+    from memory.fact_source import is_test_turn  # lazy import: layering (fact_source pulls the extractor stack)
+    if is_test_turn({"query": ctx.user_input}):
+        return
+    from memory.day_count_anchors import record_from_user_text  # lazy import: layering
+    added = record_from_user_text(ctx.user_input, datetime.now())
+    if added:
+        logger.debug(f"[DayCounts] recorded {added} day-count anchor(s)")
+
+
 POST_RESPONSE_HOOKS: List[Tuple[str, Callable[[PostResponseHookContext], None]]] = [
     ("turn_telemetry", _hook_turn_telemetry),
     ("search_worthy_teach", _hook_search_worthy_teach),
     ("escalation_record_response", _hook_escalation_record_response),
     ("post_response_detectors", _hook_post_response_detectors),
     ("thread_dispute", _hook_thread_dispute),
+    ("day_count_anchors", _hook_day_count_anchors),
 ]
 
 

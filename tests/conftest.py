@@ -221,6 +221,17 @@ def _sandbox_claim_ledger(tmp_path, monkeypatch):
     _cls.reset_for_tests()
 
 
+# Day-count anchor store sandbox (2026-10-27): the post-response hook writes data/day_count_anchors.json;
+# every test gets a tmp path + a fresh process-wide singleton.
+@_pytest_ae.fixture(autouse=True)
+def _sandbox_day_count_anchors(tmp_path, monkeypatch):
+    import memory.day_count_anchors as _dca
+    monkeypatch.setattr(_dca, "_PATH_OVERRIDE", str(tmp_path / "day_count_anchors.json"))
+    _dca.reset_for_tests(str(tmp_path / "day_count_anchors.json"))
+    yield
+    _dca.reset_for_tests()
+
+
 # Generated-documents sandbox (2026-09-20): test_insight_mode_handler's
 # assessment test reached the REAL DocumentGenerator.save_prewritten (agree +
 # INSIGHT_DOC_ON_AGREEMENT) and wrote documents/summaries/my-problem-is-x-*.md

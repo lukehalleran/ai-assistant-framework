@@ -756,3 +756,10 @@ figure_check:            # 2026-10-25 (BC-103): every number/time the reply asse
   - copied_mismatch
   - unsupported          # 2026-10-27: logged WITH its figure + clause so the findings can be labelled (still never edited)
   min_referent_overlap: 1   # content lemmas a source item must share with the figure's clause to be its referent
+day_counts:              # 2026-10-27 (BC-103/BC-100): the user's own day counts ("23 days into X", "day 23 of X",
+                         # a dated "Day 23" note), kept with the date they were said and handed to the reply
+                         # prompt already projected to today (a count is only true on the day it was said).
+  enabled: true
+  max_lines: 3           # [YOUR DAY COUNTS] lines per prompt (shown only when the activity is in play)
+  max_age_days: 400      # anchors older than this are dropped
+  store_path: data/day_count_anchors.json

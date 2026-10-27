@@ -121,6 +121,7 @@ import utils.turn_progress as turn_progress
 import utils.loop_stall as loop_stall
 import memory.valence as valence
 import memory.claim_ledger_store as claim_ledger_store
+import memory.day_count_anchors as day_count_anchors
 import knowledge.semantic_search as semantic_index
 import config.app_config as _app_config
 
@@ -369,6 +370,22 @@ PROMPT_MIN_REFLECTIONS_FLOOR = _cfg_int("prompt_min_reflections_floor", 1)
 # its filler is ungated recent conversations relabeled as [RELEVANT MEMORIES];
 # refilling to the intent cap (30) defeated the gate's honest-few doctrine.
 MEMORY_TOPUP_FLOOR = _cfg_int("prompt_memory_topup_floor", 3)
+
+
+def _day_count_relevance_text(user_input: str, context: dict, recent_turns: int = 3) -> str:
+    """Text deciding whether a stored day count is IN PLAY this turn: the query, the last few
+    recent-conversation turns, and the summaries/memories/notes already gated into the prompt."""
+    parts = [str(user_input or "")]
+    recent = [m for m in (context.get("recent_conversations") or []) if isinstance(m, dict)]
+    for m in _ordered_newest_first(recent, lambda m: m.get("timestamp"))[:recent_turns]:
+        if isinstance(m, dict):
+            parts += [str(m.get("query") or ""), str(m.get("response") or "")]
+    for key in ("memories", "recent_summaries", "semantic_summaries", "personal_notes"):
+        for item in (context.get(key) or [])[:8]:
+            if isinstance(item, dict):
+                parts.append(str(item.get("content") or item.get("response") or "")[:1500])
+                parts.append(str((item.get("metadata") or {}).get("title") or ""))
+    return "\n".join(p for p in parts if p)
 
 
 def _drop_visible_user_stated(user_stated, recent_convos, limit: int):
@@ -2348,6 +2365,13 @@ class UnifiedPromptBuilder:
             except (TypeError, AttributeError, KeyError) as e:
                 logger.debug(f"Recency floor top-up failed: {e}")
 
+            # [YOUR DAY COUNTS] (2026-10-27, BC-103/BC-100): the user's own dated day counts, projected
+            # to today by code. READ-ONLY here (the store is written by the post-response hook); shown
+            # only when the counted activity appears in the query, the recent turns or the gated
+            # notes/summaries/memories actually in this prompt. Never on a local repo audit.
+            context["day_counts"] = [] if _local_repo_audit else day_count_anchors.supply_lines(
+                _day_count_relevance_text(user_input, context), context.get("personal_notes") or [])
+
             # Last content mutation before assembly: every top-up must pass
             # the same field caps and priority budget as retrieved candidates.
             _budget_start = time.perf_counter()
@@ -2362,6 +2386,7 @@ class UnifiedPromptBuilder:
                 "recent_conversations": context.get("recent_conversations", []),
                 "user_stated_evidence": context.get("user_stated_evidence", []),
                 "stated_figures": context.get("stated_figures", []),
+                "day_counts": context.get("day_counts", []),
                 "memories": context.get("memories", []),
                 "user_profile": context.get("user_profile", ""),  # Replaces semantic_facts + fresh_facts
                 "narrative_state": context.get("narrative_state", ""),  # Temporal grounding (synthesized life context)
