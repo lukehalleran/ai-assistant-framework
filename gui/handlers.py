@@ -932,6 +932,24 @@ def _strip_prompt_only_suffix(merged_input: str, prompt_only_suffix: str) -> str
     return merged_input
 
 
+def split_delivery_notices(text):
+    """``(body, notices)``: the reply without its trailing delivery-notice
+    block, and the notice lines that were removed (in order).
+
+    Delivery notices are machinery the user sees at the foot of the bubble
+    (BC-91); they are stored as turn METADATA, not as assistant text. Uses THE
+    registered-notice stripper, so unknown warning text stays in the body.
+    Never raises; a text with no trailing notice returns ``(text, [])``."""
+    if not isinstance(text, str) or not text:
+        return text, []
+    body = read_time_markers.strip_delivery_notices(text)
+    tail = text.rstrip()[len(body):] if text.rstrip().startswith(body) else ""
+    notices = [ln.strip() for ln in tail.split("\n") if ln.strip()]
+    if not notices:
+        return text, []
+    return body, notices
+
+
 def _dispatch_storage(
     orchestrator, merged_input, response_to_store, user_text,
     final_output, personality, file_names, conversation_logger,
@@ -946,6 +964,16 @@ def _dispatch_storage(
     stored query — and everything keyed on it — holds only the user's text and
     attachments (2026-10-18, class: BC-91)."""
     merged_input = _strip_prompt_only_suffix(merged_input, prompt_only_suffix)
+    # Delivery notices ride as turn metadata, never as stored assistant text
+    # (2026-10-27, class: BC-91). The provenance dict is mutated in place: the
+    # background personal-claim check writes into the SAME object.
+    response_to_store, _notices = split_delivery_notices(response_to_store)
+    if _notices:
+        final_output = split_delivery_notices(final_output)[0]
+        if isinstance(provenance, dict):
+            provenance["delivery_notices"] = _notices
+        else:
+            provenance = {"delivery_notices": _notices}
     tags = [
         f"topic:{getattr(orchestrator, 'current_topic', 'general') or 'general'}",
         "topic:general",
@@ -3060,12 +3088,15 @@ async def _save_daemon_note(ctx, *, title, body="", category="implementation", s
         )
     logger.info(f"[ActionGuard] Note saved: {note.path} (fully_persisted={note.fully_persisted})")
 
-    _register_completed_turn(orchestrator, ctx.user_text, _resp, getattr(ctx, "file_names", None))
+    # the partial-persist notice is shown, stored as metadata (BC-91)
+    _resp_stored, _note_notices = split_delivery_notices(_resp)
+    _register_completed_turn(orchestrator, ctx.user_text, _resp_stored, getattr(ctx, "file_names", None))
     label = None
     if orchestrator.memory_system:
         try:
             await orchestrator.memory_system.store_interaction(
-                query=ctx.user_text, response=_resp, tags=["daemon_self_note"],
+                query=ctx.user_text, response=_resp_stored, tags=["daemon_self_note"],
+                **({"provenance": {"delivery_notices": _note_notices}} if _note_notices else {}),
             )
         except Exception as e:
             from core.orchestrator import _storage_failure_label  # lazy import: startup-cost
@@ -3224,7 +3255,8 @@ def _strip_display_only_decorations(display_text: str) -> str:
     bare-marker text that storage persists."""
     text = _CITATION_LINK_DECORATION_RE.sub(r'[\1]', display_text or '')
     text = _SOURCES_FOOTER_TRAILER_RE.sub('', text)
-    return text
+    # the delivery-notice block is metadata in storage, shown at the foot only
+    return read_time_markers.strip_delivery_notices(text)
 
 
 def _answer_bodies_agree(display: str, stored: str) -> bool:

@@ -83,6 +83,7 @@ from memory.memory_interface import MemoryNode, MemoryType
 import memory.stance_classifier as stance_classifier
 from memory.graph_utils import (  # is_valueless_slot_label: moved to graph_utils 2026-10-23 (cycle); re-exported here
     is_interjection,
+    is_temporal_deictic,
     is_valueless_slot_label,
     strip_edge_interjections,
 )
@@ -320,6 +321,31 @@ def is_self_reference(subj: str, obj: str) -> bool:
     return bool(s) and s == o
 
 
+def _trailing_when_adverb_fragment(value: str) -> bool:
+    """A short noun phrase whose LAST token is a bare when-word tagged ADV
+    ("meds recently", "ibuprofen earlier"): the extractor glued a when-word
+    onto the object, and the whole-object patterns miss it. Structural (spaCy
+    tag + ``is_temporal_deictic``, no word list); head is 1-2 tokens without
+    digits (a dose such as "5 mg recently" keeps its content). The curator
+    (memory/curation/curators/profile_junk_facts.py) applies the same test to
+    stored facts (2026-10-26); this is the intake half (2026-10-27, class:
+    BC-04). No parser -> False."""
+    toks = (value or "").split()
+    if not (2 <= len(toks) <= 3) or any(any(c.isdigit() for c in t) for t in toks):
+        return False
+    if not is_temporal_deictic(toks[-1]):
+        return False
+    nlp = _get_nlp()
+    if nlp is None:
+        return False
+    try:
+        doc = [t for t in nlp(" ".join(toks)) if not t.is_space]
+    except Exception:  # degrades: parse failure -> fragment not recognised, triple kept
+        return False
+    return bool(doc) and doc[-1].pos_ == "ADV" and all(
+        not is_temporal_deictic(t.text) for t in doc[:-1])
+
+
 def _is_junk_object(obj: str, rel: str, subj: str = "") -> bool:
     """True when the object is an adverbial/temporal/negation fragment that
     carries no durable factual content (extraction noise from casual or
@@ -344,6 +370,8 @@ def _is_junk_object(obj: str, rel: str, subj: str = "") -> bool:
         return True
     if r in _TEMPORAL_OK_RELATIONS:
         return False
+    if _trailing_when_adverb_fragment(o):
+        return True
     if o in _FEELING_ADJ_OBJECTS:
         return True
     # 2026-09-03: `has_<family member>` names a RELATIONSHIP; an object that is
@@ -404,7 +432,7 @@ _COND_MARKS = frozenset({"if", "unless", "provided", "providing", "assuming"})
 # once / whenever / when...then are TEMPORAL subordinators: they introduce a
 # conditional only when the clause verb is not past tense ("Once I finished
 # the move I was living in Tampa" reports facts).
-_TEMPORAL_MARKS = frozenset({"once", "whenever"})
+_TEMPORAL_MARKS = frozenset({"once", "whenever", "until", "till"})
 _IRREALIS_MODALS = frozenset({"would", "could", "might"})
 # "I would like/love X" is a polite present preference, not a hypothetical.
 _VOLITION_LEMMAS = frozenset({"like", "love", "prefer", "enjoy", "want", "need"})

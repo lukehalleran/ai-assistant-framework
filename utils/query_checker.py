@@ -235,8 +235,8 @@ _REPORTER_SUBJECTS = frozenset({"i", "we"})
 
 
 def _clause_reports_done_act(clause: str) -> bool:
-    """True when the clause is a first-person declarative reporting a finished
-    act: subject I/we governing a past-tense or perfect verb, and not a
+    """True when the clause is a first-person (or subject-elided) declarative
+    reporting a finished act: subject I/we governing a past-tense or perfect verb, and not a
     question. Grammar (spaCy tense/aux), not phrases: "I did the next one
     already" is a report even though every word besides the navigation phrase
     is a function word (2026-10-21, class: BC-06). No parser -> False (the
@@ -254,6 +254,18 @@ def _clause_reports_done_act(clause: str) -> bool:
         doc = nlp(clause.strip())
     except Exception:  # degrades: parse failure -> clause not recognised as a report
         return False
+    # Elided first-person report ("did the next one already", 2026-10-27, class:
+    # BC-06): a finite PAST root verb with no subject BEFORE it. The parser
+    # often takes the object ("one") for a post-verbal subject; a post-verbal
+    # subject in a non-question declarative is that misparse, not inversion.
+    # An imperative is never past-tense, so no request shape reaches here.
+    for tok in doc:
+        if tok.dep_ == "ROOT" and tok.pos_ in ("VERB", "AUX"):
+            morph = tok.morph.to_dict()
+            if (morph.get("Tense") == "Past" and morph.get("VerbForm", "Fin") == "Fin"
+                    and not any(c.dep_ in ("nsubj", "nsubjpass") and c.i < tok.i
+                                for c in tok.children)):
+                return True
     for tok in doc:
         if tok.dep_ not in ("nsubj", "nsubjpass") or tok.lower_ not in _REPORTER_SUBJECTS:
             continue
@@ -269,6 +281,16 @@ def _clause_reports_done_act(clause: str) -> bool:
     return False
 
 
+def _has_explicit_request_shape(clause: str) -> bool:
+    """Request evidence other than the interrogative opener / info cues: the
+    gate's "can you …" shapes, an address to the assistant, or an imperative."""
+    from core.agentic.gate import _is_request_shaped  # lazy import: cycle
+    text = (clause or "").strip()
+    ql = _normalize(text)
+    return bool(_is_request_shaped(text) or _ADDRESSING_ASSISTANT_RE.search(ql)
+                or _IMPERATIVE_REQUEST_RE.match(ql))
+
+
 def _clause_is_navigation_request(clause: str, ms: int, me: int, *, terse: bool) -> bool:
     """A navigation phrase is a REQUEST when its clause is request-shaped
     ("go to question 3", "what's the next one") or — in a terse message only —
@@ -276,11 +298,15 @@ def _clause_is_navigation_request(clause: str, ms: int, me: int, *, terse: bool)
     ("ok next q please"). "Next one due Friday" is a statement about a due
     date: its remainder carries content words, so it is not a request
     (2026-10-18, class: BC-04)."""
+    # A subject-less past-tense report ("did the next one already") opens with
+    # the auxiliary the interrogative-opener test reads as a question; when the
+    # clause has no explicit request shape (imperative / address / "can you")
+    # and reports a finished act, that opener alone is not a request.
+    if _clause_reports_done_act(clause) and not _has_explicit_request_shape(clause):
+        return False
     if is_request_shaped(clause):
         return True
     if not terse:
-        return False
-    if _clause_reports_done_act(clause):
         return False
     rest = (clause[:ms] + " " + clause[me:]).lower()
     lex = _function_word_lexicon()

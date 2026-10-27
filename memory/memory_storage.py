@@ -66,6 +66,7 @@ from collections import deque
 from utils.logging_utils import get_logger
 from utils.retrieval_outcome import RetrievalError, StoreWriteError
 from utils.personal_claim_provenance import clean_personal_claim_receipt
+import utils.paste_shape as paste_shape
 import utils.query_checker as query_checker
 import utils.time_manager as time_manager
 from models.model_manager import API_ERROR_PREFIXES
@@ -105,6 +106,25 @@ def subject_is_user_anchored(subject) -> bool:
     return s == "user" or s.startswith("user's ")
 
 
+def supported_outside_paste(query: str, triple: dict) -> bool:
+    """Paste boundary for USER-anchored triples (2026-10-27, V3, BC-75).
+
+    A user-subject triple mined from a paste-sized message (a resume typed
+    into the box: `graduated`, `goals`, `studies_at`) is the DOCUMENT's claim,
+    not the user's. When the message has an identifiable typed framing before
+    the paste (`utils.paste_shape.authored_framing`), the triple must be
+    supported by THAT text via THE provenance join
+    (`fact_source.find_supporting_user_span`). No identifiable framing ->
+    True (the pre-existing under-fire). Not paste-sized -> True."""
+    if not is_paste_sized(query):
+        return True
+    framing = paste_shape.authored_framing(query)
+    if not framing:
+        return True
+    return fact_source.find_supporting_user_span(
+        triple, [{"user_text": framing}]) is not None
+
+
 def _paste_guard_filter(query: str, facts: list) -> list:
     """Paste guard (2026-08-29): a paste-sized message is mostly DOCUMENT
     text, and the regex extractor happily mines it — a pasted syllabus stored
@@ -121,7 +141,25 @@ def _paste_guard_filter(query: str, facts: list) -> list:
             else (getattr(item, "metadata", None) or {})
         return subject_is_user_anchored(md.get("subject") or md.get("subj"))
 
-    kept = [f for f in facts if _user_anchored(f)]
+    def _triple(item) -> dict:
+        md = item.get("metadata", {}) if isinstance(item, dict) \
+            else (getattr(item, "metadata", None) or {})
+        return {"subject": md.get("subject") or md.get("subj"),
+                "relation": md.get("relation") or md.get("rel"),
+                "object": md.get("object") or md.get("obj")}
+
+    # user-anchored AND (when the typed framing is identifiable) supported by
+    # the user's own words outside the paste. A triple with no relation/object
+    # metadata cannot be joined to a span and is left to the anchor test.
+    def _keep(item) -> bool:
+        if not _user_anchored(item):
+            return False
+        t = _triple(item)
+        if not (t["relation"] and t["object"]):
+            return True
+        return supported_outside_paste(query, t)
+
+    kept = [f for f in facts if _keep(f)]
     if len(kept) != len(facts):
         logger.info(
             f"[MemoryStorage] Paste guard: dropped "
@@ -1049,6 +1087,12 @@ class MemoryStorage:
                             for r in provenance["agentic_rounds"]
                         ]
                         raw_metadata["agentic_summary"] = _json.dumps(compact)
+
+            # Delivery notices (2026-10-27, BC-91): shown to the user at the
+            # foot of the reply but stored as turn metadata, not response text.
+            if provenance and isinstance(provenance, dict) and provenance.get("delivery_notices"):
+                raw_metadata["delivery_notices"] = _json.dumps(
+                    [str(n) for n in provenance["delivery_notices"]])
 
             # Filter out None values and ensure correct types
             clean_metadata = {}
