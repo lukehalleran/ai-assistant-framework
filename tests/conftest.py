@@ -338,3 +338,34 @@ def _sandbox_timezone_resolver(monkeypatch):
     monkeypatch.setattr(_tz, "get_user_timezone",
                         lambda: "America/Chicago", raising=False)
     yield
+
+
+# Default-store redirect (2026-10-27, class: BC-81): five non-unit tests built
+# `MultiCollectionChromaStore()` at the cwd-relative default `data/chroma_multi`
+# and never closed it -- from the repo root that is the owner's REAL store
+# (and one leaked ~10 fds per construction). A construction with the default
+# relative path is now REDIRECTED to a per-test tmp dir (a monkeypatch of the
+# constructor argument; raising would break every test that merely builds the
+# default with chromadb stubbed) and every store built this way is closed at
+# teardown. A test that passes its own path is untouched.
+@_pytest_ae.fixture(autouse=True)
+def _redirect_default_chroma_store(tmp_path, monkeypatch):
+    import memory.storage.multi_collection_chroma_store as _mcs
+    cls = _mcs.MultiCollectionChromaStore
+    real_init = cls.__init__
+    default = real_init.__defaults__[0] if real_init.__defaults__ else "data/chroma_multi"
+    built = []
+
+    def _init(self, persist_directory=default, *a, **kw):
+        if persist_directory == default:
+            persist_directory = str(tmp_path / "default_chroma_multi")
+            built.append(self)
+        return real_init(self, persist_directory, *a, **kw)
+
+    monkeypatch.setattr(cls, "__init__", _init)
+    yield
+    for store in built:
+        try:
+            store.close()
+        except Exception:  # degrades: a store already closed by its test needs no second close
+            pass

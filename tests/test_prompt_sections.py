@@ -11,17 +11,37 @@ import os
 import pytest
 sys.path.append(os.path.abspath('.'))
 
+from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+
+
+@pytest.fixture
+def chroma(tmp_path):
+    """Store on a tmp dir, closed afterwards (never the cwd-relative data/chroma_multi)."""
+    store = MultiCollectionChromaStore(str(tmp_path / "chroma"))
+    yield store
+    store.close()
+
+
+def _run_standalone(coro_fn):
+    """`python tests/<file>.py` entry: same tmp-dir store, closed afterwards."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        store = MultiCollectionChromaStore(d)
+        try:
+            return asyncio.run(coro_fn(store))
+        finally:
+            store.close()
+
 # Skip when run via pytest - this is a manual integration script
 pytestmark = pytest.mark.skip(reason="Manual integration test - run directly with python")
 
-async def test_prompt():
+async def test_prompt(chroma):
     """Test prompt building with sections and timestamps."""
     # Import here to avoid import errors during pytest collection
     from config.app_config import config
     from models.model_manager import ModelManager
     from memory.memory_coordinator import MemoryCoordinator
     from memory.corpus_manager import CorpusManager
-    from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
     from core.prompt.builder import UnifiedPromptBuilder
     from core.prompt.context_gatherer import ContextGatherer
     from core.prompt.formatter import PromptFormatter
@@ -31,7 +51,7 @@ async def test_prompt():
     # Initialize components
     model_manager = ModelManager()
     corpus_manager = CorpusManager()
-    chroma_store = MultiCollectionChromaStore()
+    chroma_store = chroma
     memory_coordinator = MemoryCoordinator(
         corpus_manager=corpus_manager,
         chroma_store=chroma_store
@@ -97,4 +117,4 @@ async def test_prompt():
             print(f"✗ {section} missing")
 
 if __name__ == "__main__":
-    asyncio.run(test_prompt())
+    _run_standalone(test_prompt)

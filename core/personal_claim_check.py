@@ -259,8 +259,13 @@ def build_personal_evidence(
     *,
     max_chars: int = 12000,
     attachments: Sequence[tuple[str, str]] = (),
+    extra_sources: Sequence[tuple[str, str]] = (),
 ) -> list[dict]:
     """Build bounded, role-preserved evidence for one draft.
+
+    ``extra_sources`` are further (title, text) tool-result pages of THIS turn
+    (the agentic loop's fetched web pages) -- they join the gathered web pages
+    as role ``"source"`` rows under the same page count, per-page and share caps.
 
     ``attachments`` are this turn's (display name, text) documents; each
     becomes a role ``"attachment"`` row (``src_attachment_<n>``) capped to a
@@ -317,6 +322,10 @@ def build_personal_evidence(
                 entries[-1]["name"] = name
 
     source_pages = _web_source_texts(context)
+    for title, body in extra_sources or ():
+        body_text = _as_text(body).strip()
+        if body_text and len(source_pages) < SOURCE_MAX_PAGES:
+            source_pages.append((_as_text(title).strip(), body_text))
     if source_pages:
         src_share = min(max(int(int(max_chars) * SOURCE_EVIDENCE_SHARE), 1), budget)
         per_page = max(min(src_share // len(source_pages), SOURCE_PAGE_MAX_CHARS), 1)

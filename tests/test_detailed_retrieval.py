@@ -11,8 +11,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+import pytest
 
-async def test():
+@pytest.fixture
+def chroma(tmp_path):
+    """Store on a tmp dir, closed afterwards (never the cwd-relative data/chroma_multi)."""
+    store = MultiCollectionChromaStore(str(tmp_path / "chroma"))
+    yield store
+    store.close()
+
+
+def _run_standalone(coro_fn):
+    """`python tests/<file>.py` entry: same tmp-dir store, closed afterwards."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        store = MultiCollectionChromaStore(d)
+        try:
+            return asyncio.run(coro_fn(store))
+        finally:
+            store.close()
+
+
+async def test(chroma):
     query = "Do you recall what time I woke up on Nov 1st"
 
     print(f"\n{'='*70}")
@@ -20,7 +40,6 @@ async def test():
     print(f"{'='*70}\n")
 
     corpus = CorpusManager()
-    chroma = MultiCollectionChromaStore()
     coordinator = MemoryCoordinator(corpus_manager=corpus, chroma_store=chroma)
 
     print(f"Query: {query}\n")
@@ -48,4 +67,4 @@ async def test():
     print(f"\n{'='*70}\n")
 
 if __name__ == "__main__":
-    asyncio.run(test())
+    _run_standalone(test)

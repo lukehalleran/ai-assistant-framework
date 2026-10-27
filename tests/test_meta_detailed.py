@@ -16,9 +16,29 @@ logging.basicConfig(level=logging.DEBUG, format='%(name)s - %(levelname)s - %(me
 from memory.memory_coordinator import MemoryCoordinator
 from memory.corpus_manager import CorpusManager
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+import pytest
 from utils.query_checker import is_meta_conversational
 
-async def test():
+@pytest.fixture
+def chroma(tmp_path):
+    """Store on a tmp dir, closed afterwards (never the cwd-relative data/chroma_multi)."""
+    store = MultiCollectionChromaStore(str(tmp_path / "chroma"))
+    yield store
+    store.close()
+
+
+def _run_standalone(coro_fn):
+    """`python tests/<file>.py` entry: same tmp-dir store, closed afterwards."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        store = MultiCollectionChromaStore(d)
+        try:
+            return asyncio.run(coro_fn(store))
+        finally:
+            store.close()
+
+
+async def test(chroma):
     query = "Do you recall what time I said I woke up yesterday"
 
     print(f"\n{'='*70}")
@@ -39,7 +59,6 @@ async def test():
     # Step 2: Initialize coordinator
     print("STEP 2: Initialize memory coordinator")
     corpus = CorpusManager()
-    chroma = MultiCollectionChromaStore()
     coordinator = MemoryCoordinator(corpus_manager=corpus, chroma_store=chroma)
     print(f"  Corpus size: {len(corpus.corpus)} entries")
     print(f"  ✅ PASSED\n")
@@ -97,4 +116,4 @@ async def test():
     return memories
 
 if __name__ == "__main__":
-    asyncio.run(test())
+    _run_standalone(test)

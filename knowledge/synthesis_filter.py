@@ -494,7 +494,8 @@ class SynthesisFilter:
 
         # --- Sub-check 1: Claim similarity via FAISS ---
         try:
-            claim_results = semantic_search_with_neighbors(claim, k=3)
+            # FAISS IVFPQ search is sync CPU/IO: off the loop (2026-10-27, class: BC-41)
+            claim_results = await asyncio.to_thread(semantic_search_with_neighbors, claim, k=3)
         except Exception as e:
             logger.warning(f"FAISS wiki novelty check failed: {e}. Passing by default.")
             return StageResult(

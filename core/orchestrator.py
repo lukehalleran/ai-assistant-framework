@@ -578,6 +578,16 @@ def _hook_day_count_anchors(ctx: PostResponseHookContext) -> None:
         logger.debug(f"[DayCounts] recorded {added} day-count anchor(s)")
 
 
+def _hook_session_location(ctx: PostResponseHookContext) -> None:
+    """Extract a place the user just stated living in, off the next turn's prompt path.
+
+    The resolver reads the in-process corpus the turn was just stored into; moving the spaCy
+    parse here means the next turn's ``get_user_location()`` only reads. class: BC-41
+    """
+    from utils.location_resolver import refresh_session_location  # lazy import: startup-cost (keeps resolver off the Phase-1 critical path)
+    refresh_session_location()
+
+
 POST_RESPONSE_HOOKS: List[Tuple[str, Callable[[PostResponseHookContext], None]]] = [
     ("turn_telemetry", _hook_turn_telemetry),
     ("search_worthy_teach", _hook_search_worthy_teach),
@@ -585,6 +595,7 @@ POST_RESPONSE_HOOKS: List[Tuple[str, Callable[[PostResponseHookContext], None]]]
     ("post_response_detectors", _hook_post_response_detectors),
     ("thread_dispute", _hook_thread_dispute),
     ("day_count_anchors", _hook_day_count_anchors),
+    ("session_location", _hook_session_location),
 ]
 
 
