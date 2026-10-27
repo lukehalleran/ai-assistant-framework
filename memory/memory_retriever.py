@@ -76,6 +76,7 @@ from config.app_config import (
     NORMAL_THRESHOLD,
 )
 from memory.fact_source import is_test_turn
+import memory.user_profile as user_profile
 from memory.utils import format_recent_conversations
 from memory.summary_coverage import corpus_anchor_md, corpus_content_time_raw, covers_label
 import re as _re
@@ -310,6 +311,52 @@ def _compute_reflection_overlap(
 # ---------------------------------------------------------------------------
 # Ephemeral fact detection
 # ---------------------------------------------------------------------------
+
+def gate_sensitive_records(query: str, records: list, *, relation_of, value_of,
+                           sensitive_open: bool | None = None) -> list:
+    """ONE sensitive-fact gate for every read path that re-renders a stored fact
+    (2026-10-26, class: BC-46, BC-58).
+
+    The policy lives in ``user_profile.hold_back_sensitive_facts`` (relation is
+    sensitive -> admitted only on an open turn, a relation-word hit, or a topical
+    cosine). This function adds NO policy of its own: it adapts a record to the
+    {"relation","value"} shape that function reads and maps the survivors back, so
+    the [USER PROFILE], the ``facts`` collection and the graph edge renderer
+    admit/refuse the same fact identically.
+
+    ``sensitive_open``: True = the turn opened sensitive context (distress or an
+    explicit history ask) -> everything passes; False = gate; None = resolve from
+    the per-turn ``user_profile.SENSITIVE_OPEN`` ContextVar, and if that is unset
+    too the caller is ungated (shutdown reflection, CLI) and everything passes —
+    exactly the profile's own contract. Selection only; nothing is mutated.
+    """
+    if sensitive_open is None:
+        sensitive_open = user_profile.SENSITIVE_OPEN.get()
+    if sensitive_open is not False or not records:
+        return records
+    shims = [{"relation": relation_of(r), "value": value_of(r), "_rec": r} for r in records]
+    kept = user_profile.hold_back_sensitive_facts(query or "", shims)
+    return [shim["_rec"] for shim in kept]
+
+
+def _triple_parts(content: str) -> tuple[str, str]:
+    """(relation, object text) of a 'subject | relation | object' fact content."""
+    parts = [p.strip() for p in (content or "").split("|")]
+    if len(parts) < 2:
+        return "", content or ""
+    return parts[1], " ".join(parts[2:])
+
+
+def gate_fact_rows(query: str, rows: list, sensitive_open: bool | None = None) -> list:
+    """gate_sensitive_records over retriever fact rows ({"content": "s | r | o", metadata})."""
+    return gate_sensitive_records(
+        query, rows,
+        relation_of=lambda r: _triple_parts(r.get("content", ""))[0]
+        or str((r.get("metadata") or {}).get("relation", "")),
+        value_of=lambda r: _triple_parts(r.get("content", ""))[1],
+        sensitive_open=sensitive_open,
+    )
+
 
 def _fact_predicate(content: str) -> str | None:
     """Extract the predicate from a 'subject | predicate | object' fact triple."""
@@ -708,16 +755,20 @@ class MemoryRetriever:
         )
         return mems
 
-    async def get_recent_facts(self, limit: int = 5) -> List[Dict]:
-        """Fetch the most recent facts by timestamp."""
+    async def get_recent_facts(self, limit: int = 5, sensitive_open: bool | None = None) -> List[Dict]:
+        """Fetch the most recent facts by timestamp.
+
+        Sensitive-relation facts pass the shared gate (``gate_sensitive_records``):
+        recency alone never admits one on a gated turn (there is no query, so only
+        an open turn does)."""
         try:
             recent = self.chroma_store.get_recent("facts", limit=limit)
-            return recent or []
+            return gate_fact_rows("", recent or [], sensitive_open)
         except Exception as e:
             logger.debug(f"[MemoryRetriever][RecentFacts] retrieval failed: {e}")
             raise RetrievalError(source="recent_facts", reason=type(e).__name__) from e
 
-    async def get_facts(self, query: str, limit: int = 8) -> List[Dict]:
+    async def get_facts(self, query: str, limit: int = 8, sensitive_open: bool | None = None) -> List[Dict]:
         """Retrieve semantic facts relevant to query.
 
         Scoring: semantic relevance (from ChromaDB) is the primary signal.
@@ -857,6 +908,8 @@ class MemoryRetriever:
                 except (ValueError, TypeError, AttributeError):
                     pass
             filtered.append(r)
+        # Sensitive-fact gate (2026-10-26): same predicate as the profile render.
+        filtered = gate_fact_rows(query, filtered, sensitive_open)
         return filtered[:limit]
 
     async def get_reflections(self, limit: int = 2) -> List[Dict]:

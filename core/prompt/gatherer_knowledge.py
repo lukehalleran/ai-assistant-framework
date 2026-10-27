@@ -1327,15 +1327,38 @@ class KnowledgeRetrievalMixin:
                 graph_utils.extract_graph_entities, query, resolver, graph_memory=graph
             )
 
+            # Sensitive-fact gate (2026-10-26, class: BC-46, BC-58): the profile
+            # holds a sensitive-relation fact back unless the turn is
+            # elevated-tone, an explicit history ask, or topically related; a
+            # graph edge carrying the same fact obeys the SAME predicate (the
+            # shared gate), with the same open-turn expression the profile uses.
+            from core.prompt.gatherer_memory import sensitive_turn_open  # lazy import: cycle (mixin siblings)
+            from memory.memory_retriever import gate_sensitive_records  # lazy import: layering (retriever pulls the model stack)
+            from memory.graph_memory import EDGE_FILTER  # lazy import: layering (graph store module)
+            _sens_open = sensitive_turn_open(query, distress=getattr(self, "_distress_active", False))
+
+            def _sensitive_edge_gate(edges):
+                return gate_sensitive_records(
+                    query, edges,
+                    relation_of=lambda e: e.relation,
+                    value_of=lambda e: e.target_id,
+                    sensitive_open=_sens_open,
+                )
+
             sentences: list[str] = []
             for eid in seen_entities:
                 # BC-41: a hub subgraph walk blocked the loop for 0.7-4.7 s live.
-                ctx = await asyncio.to_thread(
-                    graph.get_context_sentences,
-                    eid, depth=KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH,
-                    max_sentences=max_sentences - len(sentences),
-                    with_attribution=ENABLE_GRAPH_ATTRIBUTION,
-                )
+                # EDGE_FILTER is set around the call; to_thread copies the context.
+                _ef_token = EDGE_FILTER.set(_sensitive_edge_gate)
+                try:
+                    ctx = await asyncio.to_thread(
+                        graph.get_context_sentences,
+                        eid, depth=KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH,
+                        max_sentences=max_sentences - len(sentences),
+                        with_attribution=ENABLE_GRAPH_ATTRIBUTION,
+                    )
+                finally:
+                    EDGE_FILTER.reset(_ef_token)
 
                 # Track graph sentences in memory_id_map for citation
                 for i, sentence in enumerate(ctx):

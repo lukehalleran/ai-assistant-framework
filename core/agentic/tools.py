@@ -1987,6 +1987,23 @@ Provide a focused summary with the most important information."""
                 n_results=app_config.AGENTIC_MEMORY_SEARCH_LIMIT,
             )
 
+            # Sensitive-fact gate (2026-10-26, class: BC-46/BC-58): the facts
+            # collection holds the relations the profile withholds on a closed
+            # turn. Same predicate + open-turn definition as the profile path,
+            # keyed on the USER's turn text (never the model-authored query,
+            # which could launder a sensitive relation word) and (when
+            # reachable) the turn's tone level — NOT reachable here (the controller's memory-search
+            # wrapper does not pass it), so a closed turn is decided by the
+            # history-ask + topical parts only.
+            if collection == "facts" and results:
+                from core.prompt.gatherer_memory import sensitive_turn_open  # lazy import: cycle (prompt ring)
+                from memory.memory_retriever import gate_fact_rows  # lazy import: layering (retriever pulls the model stack)
+                _user_text = (getattr(self, "_fetch_prov", None) or {}).get("current", "")
+                results = gate_fact_rows(
+                    _user_text, results,
+                    sensitive_open=sensitive_turn_open(_user_text),
+                )
+
             # For wiki_knowledge: always prefer FAISS semantic search (41M vectors)
             # over ChromaDB which has sparse/irrelevant legacy data.
             if collection == "wiki_knowledge":

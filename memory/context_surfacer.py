@@ -253,10 +253,23 @@ class ContextSurfacer:
         # Enrich clusters with fact sentences
         for domain, cluster in clusters.items():
             sentences = []
+            # Proactive insights are never an open turn (they are suppressed under
+            # distress and are not a history ask), and this cache is
+            # query-independent: render with the sensitive-fact gate CLOSED so a
+            # sensitive edge never surfaces here (2026-10-26, class: BC-46/BC-58).
+            from memory.graph_memory import EDGE_FILTER  # lazy import: cycle (graph_memory <-> graph_utils ring)
+            from memory.memory_retriever import gate_sensitive_records  # lazy import: layering (retriever pulls the model stack)
+            _closed_gate = lambda edges: gate_sensitive_records(  # noqa: E731
+                "", edges, relation_of=lambda e: e.relation,
+                value_of=lambda e: e.target_id, sensitive_open=False)
             for ent in cluster.entities[:5]:  # Cap per-entity sentences to keep prompt small
-                ent_sentences = self._graph_memory.get_context_sentences(
-                    ent.entity_id, depth=1, max_sentences=3
-                )
+                _tok = EDGE_FILTER.set(_closed_gate)
+                try:
+                    ent_sentences = self._graph_memory.get_context_sentences(
+                        ent.entity_id, depth=1, max_sentences=3
+                    )
+                finally:
+                    EDGE_FILTER.reset(_tok)
                 sentences.extend(ent_sentences)
             cluster.fact_sentences = sentences[:10]  # Cap total per cluster
 
