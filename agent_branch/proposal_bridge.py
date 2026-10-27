@@ -80,7 +80,7 @@ def _existing_signatures(store: "ProposalStore") -> Set[str]:
             for tag in json.loads(md.get("tags_json", "[]") or "[]"):
                 if isinstance(tag, str) and tag.startswith("sig:"):
                     sigs.add(tag)
-    except Exception:  # noqa: BLE001 — dedup is best-effort, never block ingest
+    except Exception:  # noqa: BLE001  # degrades: proposal dedup signatures unavailable so duplicates may be ingested
         pass
     return sigs
 

@@ -36,7 +36,7 @@ def detach_stdio() -> None:
     for name in ("stdout", "stderr"):
         try:
             getattr(sys, name).flush()
-        except Exception:
+        except Exception:  # degrades: stdio flush skipped before detaching from a dead terminal
             pass
         setattr(sys, name, devnull)
 

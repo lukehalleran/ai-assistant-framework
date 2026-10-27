@@ -211,7 +211,7 @@ def configure_logging(
                     # Avoid overwriting if rotated name already exists
                     if not os.path.exists(rotated):
                         os.rename(file_path, rotated)
-        except Exception:
+        except Exception:  # degrades: old log file is not rotated and gets appended to
             pass
         try:
             fh = logging.FileHandler(file_path, mode="a", encoding="utf-8")
@@ -219,7 +219,7 @@ def configure_logging(
             fh.setFormatter(fmt)
             fh.addFilter(transport_filter)
             sinks.append(fh)
-        except Exception:
+        except Exception:  # degrades: file logging is disabled and logs go to console only
             # If file can't be opened, continue with console-only
             pass
 

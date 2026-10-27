@@ -257,7 +257,7 @@ def _get_need_exemplar_embeddings(model_manager=None) -> Dict[str, np.ndarray]:
             merged = list(examples)
             try:
                 merged += adaptive_exemplars.get_store().get_learned("need", need_type)
-            except Exception:
+            except Exception:  # degrades: learned need exemplars missing from this prototype build
                 pass
             embeddings = adaptive_exemplars.encode_texts_cached(
                 embedder, merged, _need_text_emb_cache
@@ -560,7 +560,7 @@ def detect_need_type(message: str, model_manager=None) -> NeedAnalysis:
                     embedder=_get_embedder(model_manager),
                     seed_texts=NEED_EXEMPLARS.get(keyword_result.need_type.value, []),
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: this keyword-detected need is not learned as an exemplar
                 logger.debug(f"[NeedDetector] exemplar learning skipped: {e}")
         return keyword_result
 

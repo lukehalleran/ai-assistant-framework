@@ -45,7 +45,7 @@ def daemon_running(repo_root=None) -> bool:
         out = subprocess.run(
             ["pgrep", "-f", "main.py"], capture_output=True, text=True
         ).stdout
-    except Exception:
+    except Exception:  # degrades: live-Daemon check reports not running when pgrep is unavailable
         return False
     for pid in out.split():
         if not pid.isdigit() or int(pid) == os.getpid():
@@ -53,7 +53,7 @@ def daemon_running(repo_root=None) -> bool:
         try:
             cwd = Path(os.readlink(f"/proc/{pid}/cwd"))
             raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-        except Exception:
+        except Exception:  # degrades: exited or unreadable process is not counted as a live Daemon
             continue  # process exited or unreadable
         if cwd != root:
             continue

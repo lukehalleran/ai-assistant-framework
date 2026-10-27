@@ -807,7 +807,7 @@ class DocumentGenerator:
                 refined = self._clip_topic(result.strip().strip('"').strip("'"))
                 logger.info(f"[DocGen] Topic refined: {topic!r} → {refined!r}")
                 return refined
-        except Exception as e:
+        except Exception as e:  # degrades: document topic is not LLM-refined and the clipped original is used
             logger.debug(f"[DocGen] Topic refinement failed, using original: {e}")
 
         # Fallback: clip the original so a long paste never becomes the topic.

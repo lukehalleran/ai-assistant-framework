@@ -1686,7 +1686,7 @@ def build_demo(orchestrator, dev_tabs=None):
                 def _load_current_personality():
                     try:
                         return app_config.load_personality_text()
-                    except Exception:
+                    except Exception:  # degrades: personality editor opens with an empty text box
                         return ""
 
                 personality_textbox = gr.Textbox(

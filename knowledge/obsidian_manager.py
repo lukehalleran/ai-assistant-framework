@@ -344,7 +344,7 @@ class ObsidianManager:
             matches = list(vault.rglob(image_name))
             if matches:
                 return matches[0]  # Return first match
-        except Exception as e:
+        except Exception as e:  # degrades: note image is not found by whole-vault search so it is not attached
             logger.debug(f"[Obsidian] Vault search for {image_name} failed: {e}")
 
         return None
@@ -844,7 +844,7 @@ class ObsidianManager:
                     _re.compile(r"\b" + _re.escape(t) + r"\b", _re.IGNORECASE)
                     for t in extract_rare_proper_nouns(query)
                 ]
-            except Exception:
+            except Exception:  # degrades: rare proper-noun boost is dropped from note keyword scoring
                 proper_noun_pats = []
 
             # Score each document
@@ -971,7 +971,7 @@ class ObsidianManager:
                 collection = self.chroma_store._get_collection('obsidian_notes')
                 if collection:
                     count = collection.count()
-            except Exception:
+            except Exception:  # degrades: vault stats report a zero note count
                 count = 0
 
             vault = Path(self.vault_path).expanduser()

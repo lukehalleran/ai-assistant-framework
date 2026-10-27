@@ -4224,6 +4224,7 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
                 for a in (getattr(ctx, "turn_attachments", None) or [])
                 if isinstance(a, dict)
             ],
+            extra_sources=_agentic_tool_sources(getattr(ctx, "citation_sources_text", "")),
         )
         result = await personal_claim_check.audit_personal_claims(
             response_text, evidence, mm,
@@ -4265,6 +4266,20 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
             "delivery": "failed_open",
         }
         return _record_personal_claim_outcome(ctx, receipt), None
+
+
+def _agentic_tool_sources(accumulated_text):
+    """(title, text) pages from the agentic loop's accumulated tool results, for the
+    personal-claim evidence (2026-10-27, class: BC-84): one source per rendered
+    ``[WEB_n]`` block; text with no web blocks (memory/file/wolfram results) is one
+    source. Caps are applied by ``build_personal_evidence``."""
+    text = (accumulated_text or "").strip()
+    if not text:
+        return []
+    blocks = citation_drift.parse_web_blocks(text)
+    if blocks:
+        return [(f"WEB_{n}", body) for n, body in blocks.items()]
+    return [("agentic tool results", text)]
 
 
 async def _apply_personal_claim_check_for_delivery(ctx, response_text):

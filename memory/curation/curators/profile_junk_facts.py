@@ -25,35 +25,19 @@ from memory.curation.types import (
     ItemChange,
     SentinelResult,
 )
-from memory.fact_extractor import _TEMPORAL_OK_RELATIONS, _get_nlp, _is_junk_object
-from memory.graph_utils import is_temporal_deictic
+from memory.fact_extractor import _TEMPORAL_OK_RELATIONS, _is_junk_object
+from memory.fact_extractor import _trailing_when_adverb_fragment as _extractor_when_adverb_fragment
 
 
 def _trailing_when_adverb_fragment(value: str, relation: str) -> bool:
     """A short noun phrase whose LAST token is a temporal adverb ("meds
-    recently", "ibuprofen earlier"): the extractor glued a when-word onto the
-    object. ``_is_junk_object`` only rejects a when-word as the WHOLE object.
-    Structural (2026-10-26, class: BC-04): spaCy tags the tail ADV AND it is a
-    bare when-word per ``graph_utils.is_temporal_deictic``; head is 1-2 tokens
-    without digits (a dose such as "5 mg recently" keeps its content and is
-    left to the owner). Schedule relations are exempt, as in the extractor.
-    No parser -> False."""
+    recently"): the extractor glued a when-word onto the object. The structural
+    test is ONE definition, ``memory.fact_extractor._trailing_when_adverb_fragment``
+    (2026-10-27, class: BC-58); this wrapper keeps only the stored-fact rule
+    that schedule relations are exempt, as in the extractor's ``_is_junk_object``."""
     if (relation or "").strip().lower() in _TEMPORAL_OK_RELATIONS:
         return False
-    toks = (value or "").split()
-    if not (2 <= len(toks) <= 3) or any(any(c.isdigit() for c in t) for t in toks):
-        return False
-    if not is_temporal_deictic(toks[-1]):
-        return False
-    nlp = _get_nlp()
-    if nlp is None:
-        return False
-    try:
-        doc = [t for t in nlp(" ".join(toks)) if not t.is_space]
-    except Exception:  # degrades: parse failure -> fragment not recognised, fact left alone
-        return False
-    return bool(doc) and doc[-1].pos_ == "ADV" and all(
-        not is_temporal_deictic(t.text) for t in doc[:-1])
+    return _extractor_when_adverb_fragment(value)
 
 
 def _is_junk_profile_value(value: str, relation: str) -> bool:

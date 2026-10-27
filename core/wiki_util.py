@@ -31,7 +31,7 @@ def get_wiki_snippet(query: str) -> str:
         return ""
     try:
         page = _get_manager().resolve_and_fetch(query)
-    except Exception:
+    except Exception:  # degrades: wiki snippet missing from this turn's prompt
         return ""
     # Drop disambiguation pages entirely (e.g., "Luke may refer to:")
     if not page or page.is_disambiguation:

@@ -190,7 +190,7 @@ class GraphEdge(BaseModel):
             try:
                 if self.last_seen:
                     _date = self.last_seen.strftime("%Y-%m-%d")
-            except Exception:
+            except Exception:  # degrades: graph edge sentence omits the last-seen date
                 _date = ""
             _when = f", {_date}" if _date else ""
             if _stance == "appraisal":

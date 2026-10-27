@@ -80,7 +80,7 @@ def round_robin_merge(queues: Sequence[Sequence[T]], n: Optional[int] = None) ->
 def _safe_call(ts_key: TsKey, item: T) -> Any:
     try:
         return ts_key(item)
-    except Exception:
+    except Exception:  # degrades: item with unreadable timestamp sorts as undated
         return None
 
 

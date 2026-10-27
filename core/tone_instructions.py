@@ -106,7 +106,7 @@ def get_tone_instructions(tone_level: CrisisLevel, user_profile=None,
             try:
                 from utils.query_checker import is_request_shaped  # lazy import: cycle
                 _request_shaped = is_request_shaped(query)
-            except Exception:
+            except Exception:  # degrades: request-shaped check skipped so distress turns get the default support block
                 _request_shaped = False
         if _request_shaped:
             # 2026-09-10 (probe T2): a direct question mid-distress ("What
@@ -354,7 +354,7 @@ def get_intent_style_instructions(
             from utils.query_checker import is_task_directive  # lazy import: cycle (also a patch point: utils.query_checker call-time-imports core.actions.registry and core.agentic.gate; tone_instructions is itself imported early by core.orchestrator, so this stays call-time like the other query-shape checks in this module)
             if is_task_directive(query):
                 return ""
-        except Exception:
+        except Exception:  # degrades: task-directive turns keep the intent style block they should skip
             pass
     return _INTENT_STYLE_BLOCKS.get(str(key).lower(), "")
 

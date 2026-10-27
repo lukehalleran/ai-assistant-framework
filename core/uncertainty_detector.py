@@ -259,7 +259,7 @@ class UncertaintyDetector:
                             trigger_type="semantic",
                             matched_pattern=_UNCERTAINTY_ANCHORS[max_idx],
                         )
-            except Exception as e:
+            except Exception as e:  # degrades: semantic uncertainty layer skipped so only pattern matches count
                 logger.debug(f"[UncertaintyDetector] Semantic layer failed (non-fatal): {e}")
 
         # --- Neither layer triggered ---
