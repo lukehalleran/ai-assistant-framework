@@ -17,6 +17,8 @@ Tests cover:
 """
 
 import pytest
+
+from tests.unit.helpers_fakes import RangeQueryFakeChromaStore
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
 
@@ -25,40 +27,7 @@ from datetime import datetime, timedelta
 # Fake ChromaDB store
 # ---------------------------------------------------------------------------
 
-class FakeChromaStore:
-    """Minimal stand-in for MultiCollectionChromaStore."""
-
-    def __init__(self, data: dict[str, list[dict]] | None = None):
-        # data: {collection_name: [doc_dicts]}
-        self._data = data or {}
-
-    def get_by_id(self, collection_name: str, doc_id: str):
-        for doc in self._data.get(collection_name, []):
-            if doc["id"] == doc_id:
-                return dict(doc)
-        return None
-
-    def list_all(self, collection_name: str):
-        return [dict(d) for d in self._data.get(collection_name, [])]
-
-    def get_ids_by_timestamp_range(self, collection_name: str, start_iso: str, end_iso: str):
-        """Minimal stand-in for the real store's indexed range query (F05) —
-        _fetch_conversations_in_range no longer calls list_all()."""
-        try:
-            start = datetime.fromisoformat(start_iso)
-            end = datetime.fromisoformat(end_iso)
-        except (ValueError, TypeError):
-            return []
-        ids = []
-        for doc in self._data.get(collection_name, []):
-            ts_str = (doc.get("metadata") or {}).get("timestamp", "")
-            try:
-                ts = datetime.fromisoformat(ts_str)
-            except (ValueError, TypeError):
-                continue
-            if start <= ts <= end:
-                ids.append(doc["id"])
-        return ids
+FakeChromaStore = RangeQueryFakeChromaStore
 
 
 # ---------------------------------------------------------------------------

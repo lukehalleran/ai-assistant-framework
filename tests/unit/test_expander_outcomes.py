@@ -55,6 +55,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from tests.unit.helpers_fakes import RangeQueryFakeChromaStore
+
 from memory.memory_expander import MemoryExpander
 from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
 from utils.retrieval_outcome import RetrievalError
@@ -184,49 +186,7 @@ class TestTimestampRangeProducerOutcomes:
 # ---------------------------------------------------------------------------
 
 
-class FakeChromaStore:
-    """Like tests/unit/test_memory_expander.py's FakeChromaStore, extended
-    to raise on demand from get_by_id() / get_ids_by_timestamp_range(),
-    with call counters to prove cache-hit vs. re-fetch."""
-
-    def __init__(self, data: dict | None = None):
-        self._data = data or {}
-        self._get_by_id_raises: dict = {}  # doc_id -> exception instance
-        self._range_raises = None  # exception instance or None
-        self.get_by_id_calls = 0
-        self.range_calls = 0
-
-    def get_by_id(self, collection_name: str, doc_id: str):
-        self.get_by_id_calls += 1
-        if doc_id in self._get_by_id_raises:
-            raise self._get_by_id_raises[doc_id]
-        for doc in self._data.get(collection_name, []):
-            if doc["id"] == doc_id:
-                return dict(doc)
-        return None
-
-    def list_all(self, collection_name: str):
-        return [dict(d) for d in self._data.get(collection_name, [])]
-
-    def get_ids_by_timestamp_range(self, collection_name: str, start_iso: str, end_iso: str):
-        self.range_calls += 1
-        if self._range_raises is not None:
-            raise self._range_raises
-        try:
-            start = datetime.fromisoformat(start_iso)
-            end = datetime.fromisoformat(end_iso)
-        except (ValueError, TypeError):
-            return []
-        ids = []
-        for doc in self._data.get(collection_name, []):
-            ts_str = (doc.get("metadata") or {}).get("timestamp", "")
-            try:
-                ts = datetime.fromisoformat(ts_str)
-            except (ValueError, TypeError):
-                continue
-            if start <= ts <= end:
-                ids.append(doc["id"])
-        return ids
+FakeChromaStore = RangeQueryFakeChromaStore
 
 
 def _make_doc(doc_id: str, ts: str, content: str = "", **extra_meta) -> dict:

@@ -16,6 +16,8 @@ import logging
 from memory.thread_models import OpenThread, ThreadType, ThreadStatus
 from memory.thread_store import ThreadStore, COLLECTION_NAME
 
+from tests.unit.helpers_fakes import make_staged_replacement_fakes
+
 MARKER = "SYNTHETIC_test_thread_staged_replacement_marker"
 
 
@@ -23,57 +25,7 @@ MARKER = "SYNTHETIC_test_thread_staged_replacement_marker"
 # Fake ChromaDB infrastructure (records adds/deletes; raises on demand)
 # ---------------------------------------------------------------------------
 
-class FakeCollection:
-    """Fake ChromaDB collection: count()/delete(), with injectable delete failures."""
-
-    def __init__(self, items):
-        self._items = items  # shared list reference with FakeChromaStore
-        self._fail_delete_ids = set()
-        self.delete_calls = []
-
-    def count(self):
-        return len(self._items)
-
-    def fail_delete(self, doc_id):
-        """The next delete() call naming doc_id raises instead of deleting."""
-        self._fail_delete_ids.add(doc_id)
-
-    def delete(self, ids=None):
-        ids = list(ids or [])
-        self.delete_calls.append(ids)
-        if any(i in self._fail_delete_ids for i in ids):
-            raise RuntimeError(f"{MARKER}_delete")
-        matched = set(ids)
-        self._items[:] = [item for item in self._items if item.get("id") not in matched]
-
-
-class FakeChromaStore:
-    """Fake of MultiCollectionChromaStore's subset used by ThreadStore."""
-
-    def __init__(self, items=None):
-        self._items = items if items is not None else []
-        self._id_counter = 0
-        self.collection = FakeCollection(self._items)
-        self.collections = {COLLECTION_NAME: self.collection}
-        self._add_outcomes = []  # queue of bools; True = next add() raises
-
-    def queue_add_failure(self):
-        self._add_outcomes.append(True)
-
-    def add_to_collection(self, name, text, metadata):
-        fail = self._add_outcomes.pop(0) if self._add_outcomes else False
-        if fail:
-            raise RuntimeError(f"{MARKER}_add")
-        self._id_counter += 1
-        doc_id = f"doc_{self._id_counter}"
-        self._items.append({"id": doc_id, "content": text, "metadata": dict(metadata)})
-        return doc_id
-
-    def list_all(self, name, where=None):
-        return list(self._items)
-
-    def create_collection(self, name):
-        return self.collection
+FakeCollection, FakeChromaStore = make_staged_replacement_fakes(MARKER, COLLECTION_NAME)
 
 
 def _make_thread(topic="Test topic", thread_id=None, status=ThreadStatus.OPEN, urgency=0.5):
