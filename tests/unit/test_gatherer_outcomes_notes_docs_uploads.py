@@ -88,10 +88,12 @@ def _note_item(title="Note A"):
     }
 
 
-def _refdoc_item(title="Doc A"):
+def _refdoc_item(title="QUICK_REFERENCE"):
+    # A manifest-listed doc in this checkout's docs/ (the self-docs gate checks provenance).
+    from utils.self_docs_manifest import self_docs_dir
     return {
         "content": f"Reference content about {title}.",
-        "metadata": {"title": title, "section": "", "file_path": ""},
+        "metadata": {"title": title, "section": "", "file_path": str(self_docs_dir() / f"{title}.md")},
         "relevance_score": 0.8,
     }
 

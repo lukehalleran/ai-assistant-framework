@@ -72,6 +72,7 @@ FIXED_SCRIPTS = [
     "purge_error_memories.py",
     "purge_junk_facts.py",
     "purge_profile_facts.py",
+    "purge_unlisted_self_docs.py",
     "quarantine_facts.py",
     "quarantine_graph_edges.py",
     "remove_graph_node_attrs.py",

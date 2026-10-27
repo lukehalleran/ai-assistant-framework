@@ -21,20 +21,12 @@ import sys
 from pathlib import PurePosixPath
 from typing import Iterable, List, Set, Tuple
 
-MANIFEST_RELPATH = "config/reference_docs_manifest.txt"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.self_docs_manifest import MANIFEST_RELPATH, entry_shape_problem, parse_manifest  # noqa: E402,F401
 
 
 class ManifestError(SystemExit):
     """Raised (as a loud build failure) for an unreviewable manifest."""
-
-
-def parse_manifest(text: str) -> List[str]:
-    paths: List[str] = []
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line and line not in paths:
-            paths.append(line)
-    return paths
 
 
 def git_tracked_files(root: str) -> Set[str]:
@@ -51,8 +43,9 @@ def docs_data_entries(root: str, manifest_text: str,
     problems: List[str] = []
     for rel in parse_manifest(manifest_text):
         pp = PurePosixPath(rel)
-        if pp.is_absolute() or ".." in pp.parts or pp.parts[:1] != ("docs",):
-            problems.append(f"{rel}: must be a repo-relative path under docs/")
+        shape = entry_shape_problem(rel)  # the same rule the runtime seed/read gate applies
+        if shape:
+            problems.append(shape)
             continue
         if not os.path.isfile(os.path.join(root, *pp.parts)):
             problems.append(f"{rel}: file does not exist")

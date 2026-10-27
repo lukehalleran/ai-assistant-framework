@@ -114,6 +114,7 @@ import utils.daily_notes_generator as daily_notes_generator
 import utils.health_check as health_check
 import utils.monthly_notes_generator as monthly_notes_generator
 import utils.privacy_redaction as privacy_redaction
+import utils.self_docs_manifest as self_docs_manifest
 import utils.weekly_notes_generator as weekly_notes_generator
 import utils.web_search_trigger as web_search_trigger
 
@@ -278,6 +279,48 @@ def _run_monthly_notes_catchup():
     print("[MonthlyNotes] Started background catch-up check...")
 
 
+def _seed_reference_docs(manager, seed_paths):
+    """Sync configured seed paths into reference_docs; returns (uploaded, skipped, failed).
+
+    Any seed path inside the self-docs dir (the dir itself, a file in it, or a subdir)
+    seeds ONLY the valid ``config/reference_docs_manifest.txt`` files under that path
+    (BC-59, 2026-10-27: the dir used to glob every top-level ``*.md``, incl. gitignored
+    handoffs; an explicit ``docs/<unlisted>.md`` seed path would re-introduce one). Seed
+    paths resolve through ``resolve_bundled_path`` so they never depend on the launch cwd.
+    A listed file that is missing is reported by the manifest's own warning.
+    """
+    uploaded = skipped = failed = 0
+
+    def _count(status):
+        nonlocal uploaded, skipped, failed
+        if status == 'uploaded':
+            uploaded += 1
+        elif status == 'skipped':
+            skipped += 1
+        else:
+            failed += 1
+
+    for seed_path in seed_paths:
+        p = Path(self_docs_manifest.resolve_bundled_path(
+            os.path.expanduser(str(seed_path)))).resolve()
+        if p.exists() and self_docs_manifest.is_inside_self_docs_dir(str(p)):
+            listed = self_docs_manifest.manifest_files_under(str(p))
+            if not listed:
+                print(f"[RefDocs] Seed path inside docs/ has no manifest entry, skipped: {seed_path}")
+            for f in listed:
+                _count(manager.sync_file(f))
+        elif p.is_dir():
+            result = manager.sync_directory(str(p))
+            uploaded += result['uploaded']
+            skipped += result['skipped']
+            failed += result['failed']
+        elif p.is_file():
+            _count(manager.sync_file(str(p)))
+        else:
+            print(f"[RefDocs] Seed path not found: {seed_path}")
+    return uploaded, skipped, failed
+
+
 def _run_reference_docs_seed(chroma_store=None):
     """
     Auto-seed docs/ directory into reference_docs ChromaDB collection on startup.
@@ -296,27 +339,8 @@ def _run_reference_docs_seed(chroma_store=None):
                 return
 
             manager = reference_docs_manager.ReferenceDocsManager(chroma_store=chroma_store)
-            total_uploaded = 0
-            total_skipped = 0
-            total_failed = 0
-
-            for seed_path in app_config.REFERENCE_DOCS_SEED_PATHS:
-                p = Path(seed_path).expanduser().resolve()
-                if p.is_dir():
-                    result = manager.sync_directory(str(p))
-                    total_uploaded += result['uploaded']
-                    total_skipped += result['skipped']
-                    total_failed += result['failed']
-                elif p.is_file():
-                    status = manager.sync_file(str(p))
-                    if status == 'uploaded':
-                        total_uploaded += 1
-                    elif status == 'skipped':
-                        total_skipped += 1
-                    else:
-                        total_failed += 1
-                else:
-                    print(f"[RefDocs] Seed path not found: {seed_path}")
+            total_uploaded, total_skipped, total_failed = _seed_reference_docs(
+                manager, app_config.REFERENCE_DOCS_SEED_PATHS)
 
             print(
                 f"[RefDocs] Auto-seed complete: "

@@ -59,6 +59,7 @@ datas = [
     # Core application files
     ('core/system_prompt.txt', 'core'),
     ('config/config.yaml', 'config'),
+    ('config/reference_docs_manifest.txt', 'config'),
 
     # Personality & prompt templates (file-based personality system)
     ('config/prompts/default_personality.txt', 'config/prompts'),

@@ -87,7 +87,10 @@ class TestSelfDocsOriginGate:
         docs = await g.get_reference_docs("how does your memory work")
         titles = [d["metadata"]["title"] for d in docs]
         assert "ARCHITECTURE_GUIDE" in titles
-        assert "QUICK_REFERENCE" in titles          # no-path legacy kept (fail-open)
+        # 2026-10-27 (BC-59): no recorded path = no provenance, so a title alone is not
+        # enough (it would admit any doc named like a manifest entry). The seed re-uploads
+        # a listed doc whose stored path is missing, so real legacy self-docs get re-recorded.
+        assert "QUICK_REFERENCE" not in titles
         assert "MXS_Ktr5520_M16L7" not in titles  # foreign-origin dropped
         assert "upload:syllabus.docx" not in titles # user_upload filter still works
 
