@@ -180,7 +180,7 @@ def _staleness_prefix(item) -> str:
             return ""
         if ratio >= STALENESS_HISTORICAL_THRESHOLD:
             return "[HISTORICAL — PARTIALLY OUTDATED] "
-    except Exception:
+    except Exception:  # degrades: historical-outdated prefix missing from this memory item
         pass
     return ""
 
@@ -1056,7 +1056,7 @@ class PromptFormatter:
 
             return "\n".join(lines)
 
-        except Exception as e:
+        except Exception as e:  # degrades: feature inventory block missing from this turn's prompt
             logger.debug(f"[PromptFormatter] Feature inventory failed: {e}")
             return ""
 
@@ -1197,7 +1197,7 @@ class PromptFormatter:
         prev_ts: Optional[datetime] = None
         try:
             _spans = _session_spans(recent)
-        except Exception:
+        except Exception:  # degrades: session-span annotations missing from recent conversation render
             _spans = {}
         # Session-truth (2026-09-27, BC-46/BC-51): the render window above is
         # a DISPLAY cap, not a session boundary — when builder.py's probe
@@ -1785,7 +1785,7 @@ class PromptFormatter:
                         tag_list = json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
                         if tag_list:
                             parts.append(" ".join(f"#{t}" for t in tag_list))
-                    except Exception:
+                    except Exception:  # degrades: skill tag hashtags missing from rendered skill entry
                         pass
                 header = " ".join(parts) if parts else ""
                 entry = f"{i}) {header}\nWHEN: {trigger}\nTHEN: {action}" if header else f"{i}) WHEN: {trigger}\nTHEN: {action}"
@@ -1808,7 +1808,7 @@ class PromptFormatter:
 
             try:
                 tag_list = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
-            except Exception:
+            except Exception:  # degrades: skill tags dropped from rendered procedural entry
                 tag_list = []
 
             tag_str = " ".join(f"#{t}" for t in tag_list) if tag_list else ""
@@ -1988,7 +1988,7 @@ class PromptFormatter:
             try:
                 from core.email.registry import coverage_note  # lazy import: live-config read
                 _email_coverage = coverage_note()
-            except Exception:
+            except Exception:  # degrades: email provider coverage note missing from emails section
                 _email_coverage = ""
             sections.append(
                 f"[RELEVANT EMAILS] n={len(email_lines)}\n"

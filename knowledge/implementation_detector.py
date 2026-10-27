@@ -405,7 +405,7 @@ class ImplementationDetector:
 
             return adjustments
 
-        except Exception as e:
+        except Exception as e:  # degrades: LLM judgment skipped so proposals keep their unadjusted scores
             logger.debug(f"[ImplementationDetector] LLM judgment failed: {e}")
             return {}
 

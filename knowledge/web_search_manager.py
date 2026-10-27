@@ -576,7 +576,7 @@ def assign_web_ids(
         try:
             from urllib.parse import urlparse
             domain = urlparse(page.url).netloc.replace("www.", "")
-        except Exception:
+        except Exception:  # degrades: source domain label blank in web citations
             pass
         content = page.content or page.snippet or ""
         numbered.append(NumberedWebSource(
@@ -774,7 +774,7 @@ def live_remaining_credits() -> Optional[float]:
     for limiter in list(_LIVE_RATE_LIMITERS):
         try:
             values.append(float(limiter.get_remaining_credits()))
-        except Exception:
+        except Exception:  # degrades: limiter skipped so remaining credit budget may read too high
             continue
     return min(values) if values else None
 
@@ -889,7 +889,7 @@ class WebSearchRateLimiter:
                     state = json.load(f)
                     self._credits_today = state.get("credits_today", 0.0)
                     self._current_date = state.get("date", "")
-        except Exception as e:
+        except Exception as e:  # degrades: saved daily credit count lost so usage restarts from zero
             log.debug(f"[WebSearch] Failed to load rate limit state: {e}")
 
     def _save_state(self) -> None:
@@ -900,7 +900,7 @@ class WebSearchRateLimiter:
                 "credits_today": self._credits_today,
                 "date": self._current_date
             })
-        except Exception as e:
+        except Exception as e:  # degrades: daily credit usage not persisted so a restart may overspend budget
             log.debug(f"[WebSearch] Failed to save rate limit state: {e}")
 
     def _check_date_reset_locked(self) -> None:
@@ -1167,7 +1167,7 @@ class WebSearchCache:
                         from_cache=True,
                         timestamp=cached_time
                     )
-            except Exception as e:
+            except Exception as e:  # degrades: web cache lookup failed so a fresh paid search runs
                 log.debug(f"[WebSearchCache] Cache lookup failed: {e}")
 
         # Exact (query, depth) miss (or store unavailable) — fall back to the
@@ -1226,7 +1226,7 @@ class WebSearchCache:
             )
 
             log.debug(f"[WebSearchCache] Cached result for: {result.query[:50]}...")
-        except Exception as e:
+        except Exception as e:  # degrades: search result not cached so repeat queries cost credits
             log.debug(f"[WebSearchCache] Failed to cache result: {e}")
 
     def clear_expired(self) -> int:
@@ -1255,7 +1255,7 @@ class WebSearchCache:
                 log.info(f"[WebSearchCache] Cleared {len(expired_ids)} expired entries")
 
             return len(expired_ids)
-        except Exception as e:
+        except Exception as e:  # degrades: expired web cache entries remain until next cleanup
             log.debug(f"[WebSearchCache] Failed to clear expired entries: {e}")
             return 0
 
@@ -1467,7 +1467,7 @@ class WebSearchManager:
             return False
         try:
             return float(limiter.get_remaining_credits()) < MIN_SEARCH_CREDITS
-        except Exception:
+        except Exception:  # degrades: credit shortfall unknown so search is not reported unavailable
             return False
 
     @staticmethod
@@ -2017,7 +2017,7 @@ class WebSearchManager:
             )]
         except UnsafeFetchURLError:
             raise
-        except Exception as e:
+        except Exception as e:  # degrades: direct page fetch failed so other fetch layers are used
             log.debug(f"[WebSearch] Direct fetch failed for {url}: {e}")
             return []
 
@@ -2125,7 +2125,7 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
             log.debug(f"[WebSearch] LLM selected {len(selected_urls)} links to follow")
             return selected_urls
 
-        except Exception as e:
+        except Exception as e:  # degrades: link following skipped so only initial results are used
             log.debug(f"[WebSearch] Link selection failed: {e}")
             return []
 
@@ -2173,7 +2173,7 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
         try:
             from utils.location_resolver import get_user_location
             return get_user_location()
-        except Exception as e:
+        except Exception as e:  # degrades: user location unavailable so queries are not localized
             log.debug(f"[WebSearch] Location resolution failed: {e}")
             return None
 
@@ -2181,7 +2181,7 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
         try:
             from utils.institution_resolver import get_user_institution
             return get_user_institution()
-        except Exception as e:
+        except Exception as e:  # degrades: user institution unavailable so queries are not localized
             log.debug(f"[WebSearch] Institution resolution failed: {e}")
             return None
 
@@ -2559,7 +2559,7 @@ If not splitting, leave SUB_QUERIES empty."""
                     f"margin={margin:.3f}"
                 )
                 return True
-        except Exception:
+        except Exception:  # degrades: semantic news check failed so query is treated as non-news
             pass
         return False
 

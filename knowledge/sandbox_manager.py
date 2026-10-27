@@ -568,9 +568,9 @@ class PersistentSession:
             # Older SDK without the request_timeout kwarg.
             try:
                 return bool(probe())
-            except Exception:
+            except Exception:  # degrades: sandbox liveness unknown so session reported not alive
                 return False
-        except Exception:
+        except Exception:  # degrades: sandbox liveness unknown so session reported not alive
             return False
 
     @property
@@ -627,7 +627,7 @@ class PersistentSession:
                 if not self.is_alive():
                     self._closed = True
                     logger.info("[Sandbox] Session sandbox no longer running — marked closed")
-            except Exception:
+            except Exception:  # degrades: dead sandbox session not marked closed until next call
                 pass
             return SandboxResult(
                 code=code,
