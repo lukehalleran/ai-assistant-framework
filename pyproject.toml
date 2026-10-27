@@ -76,20 +76,29 @@ select = [
 "eval/run_phase6.py" = ["T201"]
 "eval/harness.py" = ["T201"]
 
-# Pre-existing debt inside real app modules — not fixed by this batch (FOLLOWUPS
-# #180 is lint-gate-only, class BC-69/BC-71); grandfathered so `ruff check .`
-# stays green today while the rule still catches new prints elsewhere.
+# Remaining prints, classified by lane PRINT (2026-10-27, BC-70; inventory in
+# the lane handoff). 170 AST sites in the app dirs at the start: the diagnostic
+# one (models/model_manager.py) was converted to logger.warning and its
+# exemption removed.
+#
+# (i) console output by design: `if __name__ == "__main__"` self-tests / CLIs
+# that never run inside the app.
+"models/tokenizer_manager.py" = ["T201"]   # __main__ token-count demo
+"utils/fs_snapshot.py" = ["T201"]          # argparse CLI (create/diff manifests)
+"utils/keyword_matcher.py" = ["T201"]      # __main__ demo
+"utils/query_rewriter.py" = ["T201"]       # __main__ demo
+"utils/web_search_trigger.py" = ["T201"]   # __main__ demo
+# (i) interactive console contract: the user must SEE the device-code URL /
+# consent steps; preflight renders actionable startup-abort text before the
+# GUI/log handlers are guaranteed (it also logs each finding).
+"core/email/outlook_auth.py" = ["T201"]    # device-code consent prompt
+"utils/preflight.py" = ["T201"]            # print_preflight() console render (+ logger)
+# debt (accepted-debt files) — remove after re-pin batch. Their prints are
+# interactive-consent / __main__ demo output; converting them needs the debt
+# file edit + re-pin owned by another lane.
 "core/actions/google_auth.py" = ["T201"]
-"core/email/outlook_auth.py" = ["T201"]
 "knowledge/WikiManager.py" = ["T201"]
 "knowledge/web_search_manager.py" = ["T201"]
-"models/model_manager.py" = ["T201"]
-"models/tokenizer_manager.py" = ["T201"]
-"utils/fs_snapshot.py" = ["T201"]
-"utils/keyword_matcher.py" = ["T201"]
-"utils/preflight.py" = ["T201"]
-"utils/query_rewriter.py" = ["T201"]
-"utils/web_search_trigger.py" = ["T201"]
 
 [tool.pyright]
 # Static lane (docs/PLAN_20260916_typecheck_lane.md). Default ("standard") checking
