@@ -64,7 +64,7 @@ def test_stalled_stm_falls_back_within_the_configured_cap(monkeypatch, text):
     t0 = time.perf_counter()
     result = asyncio.run(cp.build(text))
     elapsed = time.perf_counter() - t0
-    assert elapsed < 3.0, elapsed          # base: waits the hard-coded 10 s
+    assert elapsed < 3.0, elapsed  # timing-safe: genuine timeout — cap 0.2 s vs a 30 s stall (15x headroom); base waits the hard-coded 10 s
     assert result.stm_summary is None      # deterministic fallback: no STM this turn
 
 
