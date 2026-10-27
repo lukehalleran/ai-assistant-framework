@@ -42,6 +42,7 @@ import asyncio
 import urllib.parse
 import re
 from urllib.parse import quote as _q
+import knowledge.document_export as document_export
 import knowledge.sandbox_manager as sandbox_manager
 import knowledge.research_search as research_search
 import knowledge.pubmed_search as pubmed_search
@@ -1266,8 +1267,17 @@ class ToolExecutor:
                 doc_type=doc_type if doc_type in ("report", "summary") else "report",
                 focus=focus,
             )
+            # Requested output format (2026-10-26, BC-89 family): the same
+            # shared export step as the direct doc-gen path. The request text
+            # is the turn's user message (installed by the controller).
+            export_line = await asyncio.to_thread(
+                document_export.export_requested_format, result,
+                (self._fetch_prov or {}).get("current") or "",
+                generator=generator,
+            )
             return (
                 f"Document saved: {result.path}\n"
+                f"{export_line}"
                 f"Title: {result.title}\n"
                 f"Type: {result.doc_type}\n"
                 f"Sources: {len(result.sources)}\n"
