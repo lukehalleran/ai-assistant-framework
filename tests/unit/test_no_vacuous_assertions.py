@@ -32,7 +32,7 @@ EXCLUDE_PARTS = {"integration.bak", "node_modules", "__pycache__"}
 # T01 backlog (2026-09-09) closed the same day: all 31 pre-existing vacuous
 # bodies found on this guard's first run were repaired, rewritten as explicit
 # contracts, or deleted as fossils. See CLAUDE_CHANGELOG.md / the T01 entry in
-# docs/PLAN_20260909_audit_repairs.md for the per-function disposition table.
+# docs/archive/PLAN_20260909_audit_repairs.md for the per-function disposition table.
 ALLOWLIST: dict[tuple[str, str], str] = {}
 
 _SWALLOW_STMTS = (ast.Pass, ast.Continue)

@@ -62,11 +62,11 @@ unnecessary personal values.
 
 **Verdict: `DIRECT-SOURCE`, `DIRECT-RUNTIME` — supported.**
 
-- [`api/routes/debug.py`](../api/routes/debug.py#L52) returns the stored query and
+- [`api/routes/debug.py`](../../api/routes/debug.py#L52) returns the stored query and
   full context prompt verbatim in a downloadable text response.
-- [`web/src/components/debug/DebugPage.tsx`](../web/src/components/debug/DebugPage.tsx#L88)
+- [`web/src/components/debug/DebugPage.tsx`](../../web/src/components/debug/DebugPage.tsx#L88)
   likewise copies the raw query, prompt, system prompt, and response.
-- The legacy path in [`gui/launch.py`](../gui/launch.py#L1462) writes the same
+- The legacy path in [`gui/launch.py`](../../gui/launch.py#L1462) writes the same
   material to `/tmp/daemon_prompts` without redaction.
 - The recent-conversation source contains both identifiers. Their values are not
   reproduced here.
@@ -94,17 +94,17 @@ communication.
 
 The planner and answering model did not see the same inputs:
 
-- [`core/response_planner.py`](../core/response_planner.py#L135) builds its input
+- [`core/response_planner.py`](../../core/response_planner.py#L135) builds its input
   from the literal query, classified intent/tone/topics, thread depth, and at
   most 400 characters from each side of the preceding exchange.
-- [`core/orchestrator.py`](../core/orchestrator.py#L1350) starts that planner in
+- [`core/orchestrator.py`](../../core/orchestrator.py#L1350) starts that planner in
   parallel with full prompt gathering. The planner therefore cannot inspect the
   retrieved conversations, profile, graph, notes, emails, or temporal narrative
   being assembled for the answer.
 - Runtime evidence shows the planner model was `openai/gpt-4o-mini`. Kimi-3 was
   the main answering model. Kimi-3 received the erroneous plan plus the full
   assembled prompt and nevertheless addressed Fable directly.
-- [`core/orchestrator.py`](../core/orchestrator.py#L1405) retains only plan count
+- [`core/orchestrator.py`](../../core/orchestrator.py#L1405) retains only plan count
   and tone in ordinary turn telemetry; it does not preserve the plan's actual
   points. The exact bad plan was recoverable only because raw debug logging
   captured a later provider request containing the injected system prompt.
@@ -122,23 +122,23 @@ and weak audit persistence.
 |---|---|---|
 | `lived_in=Marrowby` | Fact supported; displayed evidence misleading | The same long user turn ends by saying the user moved to Marrowby. The stored excerpt shows unrelated opening lyrics because the pipeline truncates the selected whole message from character zero. |
 | `relationship=Sarah` | Partially supported; relation is broader than the exact wording | The same turn says the move was “with Sarah” and that “she left.” The displayed lyric excerpt still does not show that support. |
-| `laundry_done` under career | Misclassification confirmed | [`data/category_cache.json`](../data/category_cache.json) persistently maps `laundry_done`, `laundry_status`, and `laundry_time_left` to `career`; [`data/user_profile.json`](../data/user_profile.json#L4780) follows that cached mapping. |
+| `laundry_done` under career | Misclassification confirmed | [`data/category_cache.json`](../../data/category_cache.json) persistently maps `laundry_done`, `laundry_status`, and `laundry_time_left` to `career`; [`data/user_profile.json`](../../data/user_profile.json#L4780) follows that cached mapping. |
 | Mochi/Waffles as dogs | Unsupported relation confirmed; stale contamination | The source turn only says the user played with them. The shutdown LLM invented `has_dog`; older graph metadata identifies them as cats. Current source and graph guards were added later, but the stale facts/edges remain injectable. |
 | WHOOP | Quoted-model contamination, not established user testimony | Its source is an earlier user message quoting another model's profile comparison (“you use WHOOP”). The extractor treated text contained in a user turn as an assertion by the user. No source excerpt was retained with the fact. A prior junk-candidate scan flagged both the boolean and canonical versions, but the canonical fact remains in live Chroma and its graph edge still surfaces. |
-| D&D and running | Synthetic test contamination confirmed | Both facts have Chroma source `test_calibration`. [`scripts/generate_test_facts.py`](../scripts/generate_test_facts.py#L3) intentionally creates synthetic personal facts and, at lines 137-147, imports the active `CHROMA_PATH` and graph paths. The live facts collection currently contains 48 records carrying that source. |
+| D&D and running | Synthetic test contamination confirmed | Both facts have Chroma source `test_calibration`. [`scripts/generate_test_facts.py`](../../scripts/generate_test_facts.py#L3) intentionally creates synthetic personal facts and, at lines 137-147, imports the active `CHROMA_PATH` and graph paths. The live facts collection currently contains 48 records carrying that source. |
 
 The Marrowby/Sarah evidence mismatch follows directly from
-[`memory/llm_fact_extractor.py`](../memory/llm_fact_extractor.py#L606): it picks a
+[`memory/llm_fact_extractor.py`](../../memory/llm_fact_extractor.py#L606): it picks a
 whole conversation pair by keyword overlap, combines user and Daemon text, then
-stores `best_msg[:200]`. [`memory/user_profile.py`](../memory/user_profile.py#L245)
+stores `best_msg[:200]`. [`memory/user_profile.py`](../../memory/user_profile.py#L245)
 truncates the excerpt to 200 characters again. It stores neither a source turn
 ID nor a span surrounding the supporting words.
 
 `fact_verification=ON` does not mean evidence verification. The verifier's fast
 path stores a fact when no existing candidate exists
-([`memory/fact_verification.py`](../memory/fact_verification.py#L123)), and its
+([`memory/fact_verification.py`](../../memory/fact_verification.py#L123)), and its
 candidate filter only compares identical subject and predicate
-([`memory/fact_verification.py`](../memory/fact_verification.py#L342)). It does
+([`memory/fact_verification.py`](../../memory/fact_verification.py#L342)). It does
 not test whether the source entails the triple, distinguish quoted third-party
 text from user assertion, or recognize cross-predicate contradictions such as
 `has_cat` versus `has_dog`. The truth scorer is likewise a source/confirmation/
@@ -159,9 +159,9 @@ decay score, not an independent entailment check.
   functional for two weeks.
 - The September 2 daily note generated at 18:02 retained only “six consecutive
   stable days” / “Day 6 stable.”
-- [`data/narrative_context.txt`](../data/narrative_context.txt#L5), generated one
+- [`data/narrative_context.txt`](../../data/narrative_context.txt#L5), generated one
   minute later, synthesized that daily note into “six days stable.”
-- [`memory/memory_consolidator.py`](../memory/memory_consolidator.py#L522) builds
+- [`memory/memory_consolidator.py`](../../memory/memory_consolidator.py#L522) builds
   temporal grounding from monthly, weekly, and daily notes, not from the raw
   current-session transcript. Once the daily note omitted the two-week statement,
   the downstream narrative had no opportunity to reconcile it.
@@ -252,13 +252,13 @@ $ git rev-list --count HEAD
 
 Representative implemented surfaces include:
 
-- [`main.py`](../main.py): application construction and entry points;
-- [`api/`](../api/): FastAPI application and routes;
-- [`web/src/`](../web/src/): React/TypeScript frontend;
-- [`core/agentic/`](../core/agentic/): tool-selection and execution loop;
-- [`core/prompt/`](../core/prompt/): parallel context retrieval and prompt assembly;
-- [`memory/`](../memory/): storage, scoring, truth, graph, curation, and retrieval;
-- [`eval/`](../eval/): prompt snapshot, variant, judging, and objective-check harnesses.
+- [`main.py`](../../main.py): application construction and entry points;
+- [`api/`](../../api/): FastAPI application and routes;
+- [`web/src/`](../../web/src/): React/TypeScript frontend;
+- [`core/agentic/`](../../core/agentic/): tool-selection and execution loop;
+- [`core/prompt/`](../../core/prompt/): parallel context retrieval and prompt assembly;
+- [`memory/`](../../memory/): storage, scoring, truth, graph, curation, and retrieval;
+- [`eval/`](../../eval/): prompt snapshot, variant, judging, and objective-check harnesses.
 
 **Boundary**
 
@@ -275,9 +275,9 @@ size/scope judgment; it is not a quality metric.
 **Support**
 
 - `pyproject.toml` describes a single-user desktop application.
-- [`main.py`](../main.py) contains CLI, wizard, legacy GUI, and FastAPI launch paths.
-- [`api/routes/chat.py`](../api/routes/chat.py) exposes chat/session operations.
-- [`web/src/api/useChatStream.ts`](../web/src/api/useChatStream.ts) implements the
+- [`main.py`](../../main.py) contains CLI, wizard, legacy GUI, and FastAPI launch paths.
+- [`api/routes/chat.py`](../../api/routes/chat.py) exposes chat/session operations.
+- [`web/src/api/useChatStream.ts`](../../web/src/api/useChatStream.ts) implements the
   browser streaming path.
 - The persistent stores counted under C03 are populated.
 - Focused tests and frontend type-checking passed under C04.
@@ -367,7 +367,7 @@ until the external 90-second process timeout; the final test was not reached.
 ```
 
 The CI configuration itself states that its fast job omits 17 heavyweight files; see
-[`tests.yml`](../.github/workflows/tests.yml). No `.coverage`, `htmlcov/`, or
+[`tests.yml`](../../.github/workflows/tests.yml). No `.coverage`, `htmlcov/`, or
 `coverage.json` artifact was present.
 
 **Boundary**
@@ -376,7 +376,7 @@ The CI configuration itself states that its fast job omits 17 heavyweight files;
 - Focused successes do not imply full-suite success.
 - A timeout is not automatically an assertion failure, but an unmarked unit test that
   cannot complete within 90 seconds is a developer-harness problem.
-- Ruff uses the intentionally narrow rule set in [`pyproject.toml`](../pyproject.toml),
+- Ruff uses the intentionally narrow rule set in [`pyproject.toml`](../../pyproject.toml),
   so “lint passes” must not be generalized to “the code passes comprehensive static
   analysis.”
 
@@ -388,7 +388,7 @@ The CI configuration itself states that its fast job omits 17 heavyweight files;
 
 **Direct support**
 
-[`Dockerfile`](../Dockerfile) contains:
+[`Dockerfile`](../../Dockerfile) contains:
 
 ```dockerfile
 COPY --chown=daemon:daemon personality/ /app/personality/
@@ -404,7 +404,7 @@ $ test -e personality; echo $?
 The Dockerfile copies `config`, `core`, `memory`, `models`, `utils`, `gui`,
 `processing`, `knowledge`, and `integrations`, but not the current `api/` directory or
 the built `web/dist/` frontend. It exposes and probes port 7860. By contrast,
-[`main.py`](../main.py) routes the default non-legacy GUI through FastAPI/uvicorn, whose
+[`main.py`](../../main.py) routes the default non-legacy GUI through FastAPI/uvicorn, whose
 documented/default port is 8000.
 
 **Derivation**
@@ -436,8 +436,8 @@ v1.0.1
 v1.0.0
 ```
 
-[`docs/GOALS.md`](GOALS.md) records the Windows executable as previously shipped and
-says its spec needs updates and a clean end-to-end rebuild. [`installer/README_INSTALLER.md`](../installer/README_INSTALLER.md)
+[`docs/GOALS.md`](../GOALS.md) records the Windows executable as previously shipped and
+says its spec needs updates and a clean end-to-end rebuild. [`installer/README_INSTALLER.md`](../../installer/README_INSTALLER.md)
 documents a build procedure but is not a built artifact.
 
 **Boundary**
@@ -454,9 +454,9 @@ or a recipient's machine.
 
 **Direct support**
 
-- [`requirements.txt`](../requirements.txt) declares the OpenAI-compatible client,
+- [`requirements.txt`](../../requirements.txt) declares the OpenAI-compatible client,
   Tavily, E2B, and Google authentication dependencies.
-- [`config/config.yaml`](../config/config.yaml) selects an API-served active model
+- [`config/config.yaml`](../../config/config.yaml) selects an API-served active model
   (`kimi-3`) and enables web/agentic functionality.
 - `.env` contained non-empty keys for multiple model/tool providers. Only key names and
   `SET`/`EMPTY` status were inspected; values were not printed.
@@ -489,7 +489,7 @@ supported; “every response leaves the machine” would be too broad.
 
 The prompt test fixture uses temporary corpus and Chroma paths, but its builder also
 initialized the default profile path (`data/user_profile.json`) and a broad production-like
-context pipeline. See [`tests/test_prompt_internal_methods.py`](../tests/test_prompt_internal_methods.py).
+context pipeline. See [`tests/test_prompt_internal_methods.py`](../../tests/test_prompt_internal_methods.py).
 
 **Boundary**
 
@@ -600,7 +600,7 @@ or hosting-service query was performed.
 
 **Direct support**
 
-[`knowledge/semantic_search.py`](../knowledge/semantic_search.py) defaults to:
+[`knowledge/semantic_search.py`](../../knowledge/semantic_search.py) defaults to:
 
 ```text
 /run/media/lukeh/T9/wiki_data/vector_index_ivf.faiss
@@ -632,8 +632,8 @@ or web search is absent.
 
 **Direct support**
 
-- [`pyproject.toml`](../pyproject.toml) declares `license = { text = "Proprietary" }`.
-- [`installer/LICENSE.txt`](../installer/LICENSE.txt) contains the MIT License.
+- [`pyproject.toml`](../../pyproject.toml) declares `license = { text = "Proprietary" }`.
+- [`installer/LICENSE.txt`](../../installer/LICENSE.txt) contains the MIT License.
 - No root `LICENSE` or `LICENSE.md` was present.
 
 **Boundary**

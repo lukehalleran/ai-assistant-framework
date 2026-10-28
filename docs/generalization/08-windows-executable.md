@@ -25,7 +25,7 @@ documentation also assumes
 hosted API keys. The current React/FastAPI application and future local-model
 sidecar need a validated packaging baseline; the spec's presence is not
 clean-machine release evidence. See the
-[2026-09-13 review](../GENERALIZATION_CI_REVIEW_20260913.md).
+[2026-09-13 review](../archive/GENERALIZATION_CI_REVIEW_20260913.md).
 
 ## Proposed process architecture
 

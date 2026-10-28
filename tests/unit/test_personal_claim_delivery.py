@@ -1,6 +1,6 @@
 """Personal-claim support check — delivery wiring (gui.handlers, 2026-09-15).
 
-The 2026-09-15 audit turn (docs/AUDIT_20260915_personal_event_grounding.md)
+The 2026-09-15 audit turn (docs/archive/AUDIT_20260915_personal_event_grounding.md)
 shipped "you reworked the resume enough to call it done, uploaded it" from a
 contemplated upload and the assistant's own advice. The checker itself is
 covered by test_personal_claim_check.py; this file drives THE deployed
@@ -474,7 +474,7 @@ async def test_cancelled_checker_is_a_failed_open_receipt_and_storage_proceeds()
 
 
 def test_default_config_is_enabled_log_only():
-    """Evaluation rollout default (docs/PLAN_20260915_personal_claim_support.md):
+    """Evaluation rollout default (docs/archive/PLAN_20260915_personal_claim_support.md):
     on, log-only. Pinned so a config change is deliberate."""
     assert config.PERSONAL_CLAIM_CHECK_ENABLED is True
     assert config.PERSONAL_CLAIM_MODE == "log_only"

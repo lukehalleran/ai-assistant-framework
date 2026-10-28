@@ -479,6 +479,12 @@ read directly from disk via `utils.daily_notes_generator.read_daily_note()`
 — this gives STM cross-day recall disambiguation without waiting for the
 narrative-context refresh chain. Read-only: never triggers note generation.
 
+The analysis runs inside the context pipeline's concurrent gather (with the
+heavy-topic check and the one query rewrite) under a cap of `stm.timeout_s`
+(`STM_TIMEOUT_S`, shipped 5.0 s, read live; measured p50 2 s / p95 3 s). On
+timeout the turn simply has no [SHORT-TERM CONTEXT SUMMARY]
+(`core/context_pipeline.py`, `_do_stm`).
+
 The structured output includes: topic, user_question, intent, tone,
 **reference_type**, **temporal_facts**, open_threads, constraints.
 `reference_type` ∈ {new_event, recall, clarification, correction, unclear}
@@ -1221,6 +1227,16 @@ output via three streaming-time gates:
 
 The thinking content is captured separately for provenance storage.
 
+**First-token deadline** (2026-10-27, `core/first_token_deadline.py`): before any
+chunk has reached the user, `guard_first_chunk()` waits for the stream's first
+chunk under `models.first_token_timeout_s` (`FIRST_TOKEN_TIMEOUT_S`, shipped
+30 s; `<= 0` disables, read live). On a stall it closes the stream and re-opens
+it ONCE; a second stall raises `FirstTokenTimeout` and the turn fails exactly
+as any other stream error does. Nothing is retried after the first chunk
+(the per-chunk `STREAM_TIMEOUT` still applies). Wired at the standard streaming
+path (`core/response_generator.py`) and the agentic synthesis stream
+(`core/agentic/controller.py`).
+
 ### Best-of-N / Duel / Ensemble
 
 `BestOfHandler` provides three multi-model generation modes:
@@ -1282,6 +1298,38 @@ self-reinforcing pollution that motivated the guard. The function deliberately
 omits the untagged-thinking heuristics (false positives at the storage boundary
 would silently drop real conversation; the display layer still filters those).
 See `docs/THINKING_BLOCKS_IMPLEMENTATION.md` for the full multi-layer defense.
+
+### Delivery Revisions and the Figure Check (2026-10-25)
+
+Before the final reply is shown and stored, `gui/handlers._apply_delivery_revisions()`
+runs its checks in a fixed order on the clean body: raw tool-marker guard, then
+the **figure check**, a log-only citation-drift receipt, the grounding check, and
+the personal-claim check. The figure check runs first so the later two audit the
+corrected text. Display equals storage.
+
+`core/figure_check.py` is pure code (no model call). It extracts every number or
+time the reply states about the user, the conversation, the user's data or
+Daemon, and classifies each as **copied** (present in a source in context),
+**derived** (equal to one fixed operation: clock or timestamp gaps, weekday,
+sum/difference, list count, unit conversion) or **unsupported**. World facts are
+left to the grounding check. Config section `figure_check`: `correct_classes`
+(shipped `elapsed_precise`, `weekday_date`) are the only findings that rewrite
+the reply — a moment "ago" phrase that every unambiguous referent contradicts, or
+an impossible weekday/date pair; `log_classes` (`elapsed_vague`,
+`elapsed_unconfirmed`, `copied_mismatch`, `unsupported`, and since 2026-10-27
+`cross_owner_date`, `unsupported_detail`, `stale_day_count`) are only recorded.
+Setting `correct_classes: []` or `enabled: false` stops edits. A figure-check
+error fails open (reply unchanged). Findings go to `logs/checker_findings.jsonl`
+through `utils/checker_findings.record_finding` (local-only, rotated, probe turns
+excluded, gated by `turn_telemetry.checker_findings_enabled`); receipt fields
+`figure_check_status/_findings/_corrected/_nlp` appear in the turn record.
+
+The prompt side of the same class (BC-103): `utils/time_manager.format_relative_timestamp`
+and `render_timestamp_label` give sub-day ages beside a stored timestamp
+("today, 1 min ago", "yesterday, 16 h ago", "today, in 30 min"), the pacing
+line names the message it measures, and the user's own day counts are kept
+with the date they were said (`memory/day_count_anchors.py`, config
+`day_counts`) and supplied as `[YOUR DAY COUNTS]`, already projected to today.
 
 ---
 
@@ -1759,6 +1807,18 @@ next narrative regeneration clears it, so corrected claims stop
 re-entering prompts via a stale [TEMPORAL GROUNDING]). Tests:
 `tests/unit/test_correction_gui_wiring.py`,
 `tests/unit/test_narrative_staleness.py`.
+
+### Post-Response Hook Registry
+
+`core/orchestrator.POST_RESPONSE_HOOKS` is the one ordered registry of per-turn
+work after a reply, run by `run_post_response_hooks()` from both the GUI path and
+`process_user_query`. Current rows, in order: `turn_telemetry`,
+`search_worthy_teach`, `escalation_record_response`, `post_response_detectors`,
+`thread_dispute`, `day_count_anchors` (records the user's own dated day counts
+into `data/day_count_anchors.json`; `[test]` turns and pastes are skipped) and
+`session_location` (refreshes the in-session location so a move stated this
+session reaches the location resolver; the prompt-path `get_location` only
+reads).
 
 ---
 

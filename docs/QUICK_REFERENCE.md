@@ -736,6 +736,10 @@ class ResponseGenerator:
         """Stream LLM response chunks.
         Detects reasoning/thinking content in streaming chunks and emits synthetic
         <thinking>/<\/thinking> wrapper tags for downstream handling."""  # [ENHANCED 2026-03-26]
+        # First-token deadline [2026-10-27]: core/first_token_deadline.guard_first_chunk() waits for the
+        # stream's first chunk under models.first_token_timeout_s (FIRST_TOKEN_TIMEOUT_S, shipped 30 s, <=0 off,
+        # read live); on a stall it closes + re-opens the stream ONCE, a second stall raises FirstTokenTimeout
+        # (turn fails like any stream error). Never retries after a chunk. Same guard on the agentic synthesis stream.
 
     async def _recover_reasoning_only(self, prompt, system_prompt, max_tokens, model_name=None):  # [NEW 2026-06]
         """Recovery retry when streaming returned reasoning but empty visible content
@@ -1150,6 +1154,10 @@ class TopicManager:
 
 
 # utils/time_manager.py
+def format_relative_timestamp(ts: datetime, now: datetime = None) -> str: ...
+    # [2026-10-25, BC-103] sub-day ages beside the stamp: "(today, 1 min ago)", "(today, 1 h 20 min ago)",
+    # "(yesterday, 16 h ago)", "(tomorrow, in 9 h)", "(today, in 30 min)"; older = day labels. Aware datetimes -> to_naive_local.
+def render_timestamp_label(ts, now: datetime = None) -> str: ...  # any stored shape (datetime / ISO str); never raises
 class TimeManager:
     def calculate_active_day_decay(timestamp, decay_rate: float = 0.05) -> float:
         """Decay over ACTIVE days (days the user actually talked), not wall-clock."""
@@ -1291,6 +1299,9 @@ def run_backup(reason, include_chroma=None) -> BackupResult:
     # newest chroma backup is older than backup.min_interval_hours; sqlite files
     # copied via the sqlite3 backup API). Retention: newest N + newest chroma
     # backup; prune only touches dirs containing our manifest.json.
+    # JSON stores come from utils/backup_manager.py's candidate list (graph + aliases, user profile, corpus, claim index,
+    # surfacing history, adaptive exemplars, learned relations, tone_state, pending_actions, curation_queue, claim ledger,
+    # data/day_count_anchors.json [2026-10-27], narrative_stale flag); absent files are skipped (existing_only).
 # Restore: scripts/restore_backup.py --restore <name> [--apply]  (dry-run default,
 #   refuses while Daemon runs, moves current data to *.pre-restore-<ts>, never deletes)
 # Export: scripts/export_user_data.py [--no-chroma]  → portable tar.gz + import README
@@ -1600,6 +1611,42 @@ UNCERTAINTY_MAX_LENGTH = 400
 ```
 
 ---
+
+## Delivery Revisions, Figure Check, Post-Response Hooks **[NEW 2026-10-25]**
+
+```python
+# gui/handlers.py
+async def _apply_delivery_revisions(ctx, response_text, *, source_material="", regenerate_fn=None) -> str:
+    # order: raw tool-marker guard -> _apply_figure_check -> _record_citation_drift (log-only)
+    #        -> grounding check -> personal-claim check; each fails open; display == storage.
+
+# core/figure_check.py (pure code, no model call) — every number/time the reply states about the user, the
+# conversation, the user's data or Daemon is COPIED (in a context source) / DERIVED (clock or timestamp gap, weekday,
+# sum/difference, list count, unit conversion) / UNSUPPORTED.
+def extract_figures(reply) -> list[Figure]
+def build_source_pool(raw_context, history, source_material, now, user_text=...) -> list[SourceItem]
+def check_reply(reply, pool, now, ..., day_anchors=None) -> FigureReport
+def apply_corrections(reply, report, correct_classes) -> (revised, n_corrected)
+# config.yaml `figure_check:` — enabled; correct_classes (shipped elapsed_precise, weekday_date: the only edits);
+#   log_classes (elapsed_vague, elapsed_unconfirmed, copied_mismatch, unsupported, cross_owner_date,
+#   unsupported_detail, stale_day_count: recorded, never edited); min_referent_overlap.
+# Findings -> logs/checker_findings.jsonl via utils/checker_findings.record_finding (local-only, rotated, probes excluded,
+#   turn_telemetry.checker_findings_enabled). Turn-record receipts: figure_check_status/_findings/_corrected/_nlp.
+
+# core/orchestrator.py — one ordered registry shared by the GUI dispatcher and process_user_query:
+POST_RESPONSE_HOOKS = [("turn_telemetry", ...), ("search_worthy_teach", ...), ("escalation_record_response", ...),
+                       ("post_response_detectors", ...), ("thread_dispute", ...),
+                       ("day_count_anchors", ...),   # [2026-10-27] user text only -> data/day_count_anchors.json
+                       ("session_location", ...)]    # [2026-10-27] per-turn move extraction off the prompt path
+def run_post_response_hooks(ctx: PostResponseHookContext) -> None
+
+# memory/day_count_anchors.py — dated day counts (config.yaml `day_counts:` enabled / max_lines 3 / max_age_days 400 /
+#   store_path data/day_count_anchors.json; schema_version, safe_json). record_from_user_text(text, now) is the writer;
+#   supply_lines(...) feeds the builder's [YOUR DAY COUNTS] (<= 3 lines, relevance-gated, already projected to today).
+
+# core/context_pipeline.py — STM analysis cap: stm.timeout_s (STM_TIMEOUT_S, shipped 5.0, read live); on timeout the
+#   turn has no [SHORT-TERM CONTEXT SUMMARY].
+```
 
 ## Response Planner **[NEW 2026-04]**
 

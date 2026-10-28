@@ -52,7 +52,7 @@ rather than half-present.
    stub model, clean shutdown with backup phase, second start reads the
    stores back. Fails on any traceback in the log. This is the executable's
    acceptance test too.
-2. **Bug-class ledger**: `docs/BUG_RETROSPECTIVE_20260715_20260904.md` lists
+2. **Bug-class ledger**: `docs/archive/BUG_RETROSPECTIVE_20260715_20260904.md` lists
    the recurring classes (substring matches, newest-first slicing, dead
    wiring, write-back bugs, proxy validation). For each class, name the guard
    test that closes it structurally (several exist: ordered-slice guard,
@@ -136,7 +136,7 @@ the default report must contain metadata only, with any opted-in text
 previewed and redacted. The UI and consent text must explain provider egress
 and developer report sharing separately. Local storage is not private
 inference. See `generalization/03-private-data-and-egress.md` and the
-[2026-09-13 review](GENERALIZATION_CI_REVIEW_20260913.md).
+[2026-09-13 review](archive/GENERALIZATION_CI_REVIEW_20260913.md).
 
 **Tester gate (2026-10-08).** Before the first invitation, all of: (a) A06
 consent/disclosure of hosted inference and tool egress, (b) A07 content-free
@@ -144,7 +144,7 @@ telemetry (item 2 below), (c) F08 neutral default personality, (d) data-wipe
 instructions (item 5), and (e) the **cost budget** below. C03/C04 (memory
 storage policy, deletion cascade) and the independent privacy review move to
 "pre-public release" (see the 2026-10-08 note in
-`PLAN_20260913_generalization_execution.md`, "Follow-on scheduling").
+`archive/PLAN_20260913_generalization_execution.md`, "Follow-on scheduling").
 
 **Cost budget (gate, before inviting testers).** Measure $/tester/day on the
 chosen default model including the shutdown LLM jobs (reflections, summaries,
@@ -222,7 +222,7 @@ Order: Phase 0 → smoke → feature audit → executable → telemetry profile 
 bug bundle + README → invite testers. Before invitations, also close the
 hosted-inference disclosure gap (A06) identified in the 2026-09-13 review; the
 loopback API authorization (F01) and packaged profile/timezone (F02) gaps are
-closed as of 2026-10-08 (`GENERALIZATION_CI_REVIEW_20260913.md` "Status
+closed as of 2026-10-08 (`archive/GENERALIZATION_CI_REVIEW_20260913.md` "Status
 updates"). The executable alone does not establish those properties. The
 telemetry allowlist remains the gate for accepting any data back.
 Nothing here needs a new subsystem; every piece reuses existing modules

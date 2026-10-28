@@ -1,5 +1,5 @@
 """F12 (2026-09-09, docs/HANDOFF_20260909_independent_bug_audit.md /
-docs/PLAN_20260909_audit_repairs.md): a forced decision round proposes the
+docs/archive/PLAN_20260909_audit_repairs.md): a forced decision round proposes the
 WRONG action_type, gets rejected, retries blind, and the final reply narrates
 a card that was never created.
 

@@ -1,14 +1,14 @@
 # Test lanes — selection ledger (2026-09-09, B5/T14)
 
 Written as part of the 2026-09-09 independent-bug-audit repair plan
-(`docs/PLAN_20260909_audit_repairs.md`, batch B5), which asked for "a
+(`docs/archive/PLAN_20260909_audit_repairs.md`, batch B5), which asked for "a
 selection ledger: every `--ignore`/`-m` exclusion in
 `.github/workflows/tests.yml` and `pytest.ini`, with reason, owning
 subsystem, fast replacement coverage, and the exact bounded command that
 runs it." This is documentation only — **`.github/workflows/tests.yml`
 itself was NOT edited here** (batch B4 owns that file concurrently); a
 proposed hunk is recorded at the end of this doc's companion entry in
-`PLAN_20260909_audit_repairs.md` for Fable to merge.
+`archive/PLAN_20260909_audit_repairs.md` for Fable to merge.
 
 All commands below assume the repo root (so `python` resolves to the
 project's pyenv 3.11.8) and use the env this batch's verification runs
@@ -172,7 +172,7 @@ the details:
 - No GitHub run exists yet for contract v2, and `master` protection is not yet
   applied (see `DEVELOPMENT_WORKFLOW.md` §3a.8).
 - No assembled-turn probe lane is wired yet. The
-  [consolidated review](GENERALIZATION_CI_REVIEW_20260913.md) records the
+  [consolidated review](archive/GENERALIZATION_CI_REVIEW_20260913.md) records the
   pre-v2 CI run and the proposed probe lane.
 
 **The five repo-wide guards** (must be green before every push per
@@ -285,7 +285,11 @@ Never run the entire suite in a single process, and never traverse `data/`
 
 New test files are named by module and behaviour:
 `tests/unit/test_<module>_<behaviour>.py`. The incident date and the bug
-class (`BC-nn`) go in the module docstring, not the file name. Dated files (`test_sep*.py`, `test_oct*.py`, ...) were renamed by module and behaviour on 2026-10-16; `tests/RENAMES.tsv` maps every old path to its new one (and records the one exempt class-guard ledger anchor), `git log --follow <new path>` keeps the history, and `tests/unit/test_test_file_naming_guard.py` rejects new dated names.
+class (`BC-nn`) go in the module docstring, not the file name. Dated files (`test_sep*.py`, `test_oct*.py`, ...) were renamed by module and behaviour on 2026-10-16; `tests/RENAMES.tsv` maps every old path to its new one (and records the one exempt class-guard ledger anchor), `git log --follow <new path>` keeps the history, and `tests/unit/test_test_file_naming_guard.py` rejects new dated names. The same rule now covers every source, script and web
+file (and every directory on its path), commit subjects, branch names and PR titles: `scripts/naming_policy.py` is the one definition,
+`tests/unit/test_dated_names_guard.py` enforces it on the working tree, and CI/pre-push run its `paths --tracked` and `range` modes.
+A date is metadata (docstring, commit body, record id `CGR-YYYYMMDD-NNN`, archive folders `docs/archive/`, `docs/audits/`,
+`docs/execution/`), never a name. Archived point-in-time docs live in `docs/archive/`.
 
 ## 7. Invocation pitfalls
 
@@ -298,3 +302,34 @@ class (`BC-nn`) go in the module docstring, not the file name. Dated files (`tes
   preloads the LIVE checkout's `utils`.
 - SSH shells default to a soft `nofile` of 1024 — `ulimit -n "$(ulimit -Hn)"`
   before the non-unit remainder in §4.
+
+## 8. Shared test helpers and combined runs
+
+Three flat helper modules in `tests/unit/` hold the fakes that used to be
+copied between test files. Import from them; do not copy a fake into a new
+test file. Each fake is a stand-in at one seam — the code on the other side of
+that seam stays the deployed code.
+
+| Module | What it provides | Use it when |
+|---|---|---|
+| `tests/unit/helpers_fakes.py` | `ConceptBagEmbedder` / `make_concept_embedder(concepts)` (deterministic bag-of-concepts embedder, one dimension per concept word-set, own `calls` counter); `ToneAxisEmbedder` (4-axis tone-space vectors: `FEELBAD` on axis 2, `MATH` on axis 3); `RangeQueryFakeChromaStore` (data-backed stand-in for `MultiCollectionChromaStore` as `MemoryExpander` reads it: `get_by_id`, `list_all`, `get_ids_by_timestamp_range`, call counters, injectable raises); `make_staged_replacement_fakes(marker, collection_name)` (`FakeCollection` + `FakeChromaStore` for the staged-replacement store tests, with queued add failures and per-id delete failures) | a test needs an embedder or Chroma store that behaves like the real one for ranking or range queries without loading bge or opening Chroma. A test that needs real Chroma semantics (`where=`, ids, persistence) uses `chromadb.EphemeralClient`, not these fakes (BC-64) |
+| `tests/unit/helpers_agentic_loop.py` | `run_scripted_loop(monkeypatch, query=…, rounds=[…], protocol="native"\|"xml", …)` returns a `LoopRun` (`rounds`, `dispatched`, `final_calls`, `events`, `text`, `session`); `make_controller`; `RoundRecord` / `DispatchRecord`. It replaces only `_get_model_decision`, `_dispatch_single` and `_generate_final_response` on the controller instance (`real_dispatch=True` keeps `_dispatch_single` and the `DISPATCH_TABLE` routing deployed); force arming, retries, fallbacks, grounding, backfill and accumulation between those seams are the deployed code | a test asserts what a decision ROUND received (prompt, system prompt, forced tool choice, narrowed tool list, forced action type) or what the loop dispatched — the behavioural sibling of a source-text test of `run_agentic_search` (BC-63) |
+| `tests/unit/helpers_orchestrator.py` | re-exports `_make_orchestrator`, `_base_patches`, `_collect`, `_async_gen_factory`, `_debug_record`, `_final_content`, `_make_file_processor_mock`, `_FakeProcessedFilesResult` from `tests/unit/test_handle_submit.py` (the definitions stay there so its golden-path tests are unchanged) | a handler or API test needs a fully wired orchestrator mock around `gui.handlers.handle_submit` (the `tests/unit/test_api_*.py` files do) |
+
+A fake in these modules is a contract with the producer it imitates. If the
+producer changes shape (a new key, a new argument), change the fake in the
+helper once; a hand-typed copy in a test file is the BC-64 drift this section
+exists to stop.
+
+**Combined runs include every guard.** A batch's targeted run must add every
+`tests/unit/test_*guard*.py` (49 files at base 08ff702) to the files it
+touches — not a hand-picked set. A guard outside the picked set is exactly
+what refused pushes in waves 1–3: the BC-101 elapsed-bound guard flagged an
+unmarked bound in a new test (fixup `f0c8b6f` on PR #110) and the import-hygiene
+ratchet blocked wave 1. List them with `ls tests/unit/test_*guard*.py`.
+
+**`test_pre_push_contract` runs from a clone under `~`, never from a `/tmp`
+copy.** It drives `hooks/pre-push` through `PREPUSH_CHECK=1`, and the hook's
+probe resolves the interpreter through pyenv's `.python-version`; under `/tmp`
+pyenv finds none, so 20 cases fail for that reason alone (they pass 27/27 in a
+clone under the home directory and on base — PR #98's rehearsal).

@@ -2,7 +2,7 @@
 
 *2026-09-12. Owner's idea, captured for later — not scheduled, not started.*
 
-**2026-09-13:** the [independent generalization and CI review](GENERALIZATION_CI_REVIEW_20260913.md)
+**2026-09-13:** the [independent generalization and CI review](archive/GENERALIZATION_CI_REVIEW_20260913.md)
 connects this design to the existing gates and supplies a 15-case starter
 backlog, isolation requirements, and implementation order. The runner and
 machine-readable registry remain unimplemented.
@@ -84,7 +84,7 @@ Two properties that make the registry worth more than its tests:
 
 1. **Every probe names a `class:`**, so coverage is measurable — "which of the
    78 bug classes have a live probe" becomes a table, like the learning-loop
-   coverage map in `docs/GENERALIZATION_AUDIT_20260901.md`.
+   coverage map in `docs/archive/GENERALIZATION_AUDIT_20260901.md`.
 2. **Every probe names its `source:` incident**, so a probe that starts failing
    can be traced to the behaviour it was written to protect, rather than being
    "fixed" by loosening the assertion.
@@ -92,7 +92,7 @@ Two properties that make the registry worth more than its tests:
 Seed the registry from the last month of handoffs — each already contains the
 verbatim live text and the expected routing, written up at the time:
 `HANDOFF_20260908_homework_session_audit`, `HANDOFF_20260910_probe_dump`,
-`PLAN_20260912_session_defects`, and the 09-11/09-12 audits. ~15 probes to
+`archive/PLAN_20260912_session_defects`, and the 09-11/09-12 audits. ~15 probes to
 start, drawn from real incidents, is more valuable than 100 invented ones.
 
 ## 4. The test instance
