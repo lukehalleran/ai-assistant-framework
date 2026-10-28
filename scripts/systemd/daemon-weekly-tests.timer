@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Daemon weekly test groups on Monday at 03:30
+
+[Timer]
+OnCalendar=Mon *-*-* 03:30:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

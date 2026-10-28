@@ -1,0 +1,15 @@
+# Weekly run of the slow/semantic/benchmark test groups (+ a full run) — systemd USER unit template.
+# Install steps: README.md. Exit 1 (a pass failed) triggers the OnFailure alert.
+[Unit]
+Description=Daemon weekly run of the test groups pushes skip
+After=network-online.target
+OnFailure=daemon-weekly-tests-failed.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Daemon_v1
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=8h
+ExecStart=%h/.pyenv/versions/3.11.8/bin/python %h/Daemon_v1/scripts/weekly_test_run.py
+StandardOutput=append:%h/Daemon_v1/logs/weekly_tests.log
+StandardError=append:%h/Daemon_v1/logs/weekly_tests.log
