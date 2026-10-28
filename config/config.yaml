@@ -363,6 +363,11 @@ turn_telemetry:
 stm:
   # Short-term-memory analysis cap inside the context-pipeline gather; on timeout the turn has no STM summary.
   timeout_s: 5.0
+latency_diagnostics:
+  # One-shot: if the FIRST full context gather of a process runs longer than this many
+  # seconds, every thread's stack (file/line/function only) is appended to logs/first_turn_stacks.log.
+  # 0 disables.
+  first_turn_stack_dump_s: 6.0
 light_prompt:
   enabled: true
   max_words: 8

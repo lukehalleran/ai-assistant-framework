@@ -15,6 +15,7 @@ Module Contract
 
 import asyncio
 import json
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 from typing import Optional
@@ -64,6 +65,7 @@ def get_google_auth() -> "GoogleAuthManager | None":
         return _instance
 
     try:
+        # lazy import: live-config
         from config.app_config import (
             INTERNET_ACTIONS_GOOGLE_CLIENT_ID,
             INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET,
@@ -190,6 +192,7 @@ class GoogleAuthManager:
 
         if creds.expired and creds.refresh_token:
             try:
+                # lazy import: startup-cost
                 from google.auth.transport.requests import Request
                 creds.refresh(Request())
                 self._save_token(creds)
@@ -230,6 +233,7 @@ class GoogleAuthManager:
             return False
 
         try:
+            # lazy import: startup-cost
             from google_auth_oauthlib.flow import InstalledAppFlow
 
             client_config = {
@@ -350,6 +354,7 @@ class GoogleAuthManager:
             pass
 
         try:
+            # lazy import: startup-cost
             from google.oauth2.credentials import Credentials
 
             token_data = json.loads(self._token_path.read_text())
@@ -365,7 +370,6 @@ class GoogleAuthManager:
             # Restore expiry if present
             expiry_str = token_data.get("expiry")
             if expiry_str:
-                from datetime import datetime, timezone
                 try:
                     creds.expiry = datetime.fromisoformat(expiry_str).replace(tzinfo=None)
                 except (ValueError, TypeError):

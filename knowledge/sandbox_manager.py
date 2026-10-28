@@ -233,7 +233,7 @@ class SandboxManager:
         """
         # Load config values with fallbacks
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 SANDBOX_ENABLED,
                 SANDBOX_API_KEY,
                 SANDBOX_TIMEOUT_SECONDS,
@@ -317,7 +317,7 @@ class SandboxManager:
 
         try:
             # Import here to avoid startup cost if not used
-            from e2b_code_interpreter import Sandbox
+            from e2b_code_interpreter import Sandbox  # lazy import: startup-cost
 
             # Execute in ephemeral sandbox (use create() for newer SDK versions)
             sandbox = Sandbox.create(api_key=self.api_key)
@@ -370,7 +370,7 @@ class SandboxManager:
             raise RuntimeError("Sandbox execution not available (E2B_API_KEY not configured)")
 
         try:
-            from e2b_code_interpreter import Sandbox
+            from e2b_code_interpreter import Sandbox  # lazy import: startup-cost
 
             # Create sandbox - will be kept alive until close() is called
             # Use create() for newer SDK versions

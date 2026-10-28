@@ -49,6 +49,7 @@ def init_engine(*, chroma_store=None, user_profile=None,
             curators.TemporalStalenessCurator(grace_hours=app_config.CURATION_STALENESS_GRACE_HOURS),
             curators.ProfileJunkFactCurator(),
             curators.GraphTemporalNodeCurator(),
+            curators.ResidenceConflictCurator(),
         ):
             try:
                 engine.register(curator)

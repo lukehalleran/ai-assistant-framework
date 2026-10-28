@@ -5482,6 +5482,9 @@ async def _run_enhanced(ctx):
     # `finally:`.
     review_delivered = False
     _base_exc_active = False
+    # Set when the degenerate-stream watchdog discards the output: the finally block
+    # must then store nothing (2026-10-27, found by the handler-turn driver; BC-58).
+    _watchdog_aborted = False
     try:
         logger.debug(
             "[🔍 FINAL MESSAGE PAYLOAD TO OPENAI]:\n" +
@@ -5528,6 +5531,7 @@ async def _run_enhanced(ctx):
                         "[Enhanced] Stream aborted by watchdog (degenerate); "
                         f"{len(final_output)} chars discarded, nothing stored"
                     )
+                    _watchdog_aborted = True
                     yield {"role": "assistant", "content":
                            "⚠️ The model's output became repetitive and incoherent. "
                            "I stopped the generation — nothing was stored. "
@@ -6106,6 +6110,7 @@ async def _run_enhanced(ctx):
                 logger.error(f"[HANDLE_SUBMIT] Failed to write cancel receipt: {e}")
         elif (
             final_output and len(user_text.strip()) > 0 and not is_error_response
+            and not _watchdog_aborted
             # A05b-3: in correct mode, the reviewed final chunk must actually
             # have been delivered before anything is stored -- an early
             # return/exception that never reached that yield leaves an

@@ -77,7 +77,7 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
 # domain are merged. See config/app_config.py PROFILE_PERSONAL_CATEGORY_TOKENS.
 def _merge_personal_domain_keywords() -> None:
     try:
-        from config.app_config import PROFILE_PERSONAL_CATEGORY_TOKENS
+        from config.app_config import PROFILE_PERSONAL_CATEGORY_TOKENS  # lazy import: live-config
     except Exception:  # degrades: personal-domain keywords skipped, so insight surfacing uses built-in keywords only
         return
     for domain, tokens in (PROFILE_PERSONAL_CATEGORY_TOKENS or {}).items():
@@ -109,7 +109,7 @@ class ContextSurfacer:
     def _get_history(self):
         """Lazy-load surfacing history."""
         if self._history is None:
-            from config.app_config import PROACTIVE_SURFACING_HISTORY_PATH
+            from config.app_config import PROACTIVE_SURFACING_HISTORY_PATH  # lazy import: live-config
             from memory.surfacing_history import SurfacingHistory
             self._history = SurfacingHistory(persist_path=PROACTIVE_SURFACING_HISTORY_PATH)
         return self._history
@@ -129,7 +129,7 @@ class ContextSurfacer:
             return [i.insight_text for i in self._session_insights]
 
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 PROACTIVE_SURFACING_ENABLED,
                 PROACTIVE_SURFACING_MIN_GRAPH_NODES,
                 PROACTIVE_SURFACING_MIN_GRAPH_EDGES,
@@ -326,7 +326,7 @@ class ContextSurfacer:
         Scoring: entity_count(0.3) + avg_weight(0.3) + lateral_edges(0.4)
         Filters out recently shown insights via SurfacingHistory.
         """
-        from config.app_config import PROACTIVE_SURFACING_COOLDOWN_HOURS
+        from config.app_config import PROACTIVE_SURFACING_COOLDOWN_HOURS  # lazy import: live-config
         from memory.surfacing_models import CrossDomainCandidate
 
         history = self._get_history()
@@ -440,7 +440,7 @@ class ContextSurfacer:
         )
 
         try:
-            from config.app_config import PROACTIVE_SURFACING_MODEL
+            from config.app_config import PROACTIVE_SURFACING_MODEL  # lazy import: live-config
             model_name = PROACTIVE_SURFACING_MODEL or None
 
             response = await self._model_manager.generate_once(

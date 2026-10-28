@@ -372,7 +372,7 @@ class MemoryScorer:
         graph_boost_enabled = False
         graph_boost_cap = 0.15
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 KNOWLEDGE_GRAPH_ENABLED,
                 GRAPH_SCORING_BOOST_ENABLED,
                 GRAPH_SCORING_BOOST_CAP,
@@ -381,7 +381,7 @@ class MemoryScorer:
             er = self._entity_resolver
             if (KNOWLEDGE_GRAPH_ENABLED and GRAPH_SCORING_BOOST_ENABLED
                     and gm and er and gm.node_count() > 0):
-                from memory.graph_utils import extract_graph_entities, get_related_display_names
+                from memory.graph_utils import extract_graph_entities, get_related_display_names  # lazy import: patch-point
                 query_entities = extract_graph_entities(current_query, er)
                 if query_entities:
                     # depth=1 intentional: depth=2 in star topology connects

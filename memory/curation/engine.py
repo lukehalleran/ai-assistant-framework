@@ -19,6 +19,7 @@ An unfinished apply or undo is exposed as interrupted for explicit recovery.
 Legacy activity-only journal entries still require a surviving queue.
 """
 
+import json
 import os
 import threading
 import uuid
@@ -142,7 +143,6 @@ class CurationEngine:
     def _load_queue(self) -> None:
         """Lenient load — the queue is derived state; corrupt = cold start."""
         try:
-            import json
             if not os.path.exists(self.queue_path):
                 return
             with open(self.queue_path, "r", encoding="utf-8") as f:

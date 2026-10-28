@@ -1,24 +1,34 @@
 # Eval System — Phase 1: Instrumentation & Snapshot Replay
 
+Usage guide for the eval package. The original 8-phase plan and the per-phase completion
+record are in [`PLAN.md`](PLAN.md) (historical).
+
 ## What Phase 1 Does
 
 Phase 1 provides the measurement foundation for prompt section ablation testing:
 
 1. **Section Registry** — canonical definition of all 31 registered sections (30
-   context sections + the system prompt) with ablation eligibility, structural
-   requirements, and assembly order.
+   context sections + the system prompt): internal key, header text, source field,
+   category, whether ablatable, structurally required, assembly order — validated
+   against actual builder output.
 
-2. **Snapshot Capture** — captures the full assembled prompt (post-hygiene) with both
-   structured content and formatted text per section, plus provenance metadata.
+2. **Snapshot Capture** — two layers: `raw_retrieval` (structured context dict from
+   `build_prompt()`, before assembly) and `post_hygiene` (formatted section text plus
+   the assembled prompt string). The builder hook captures `post_hygiene` only; a
+   `raw_retrieval` capture would need a second hook before `ContentHygiene` runs.
+   Provenance: git hash, model, system prompt hash, config hash, timestamps.
 
-3. **Snapshot Replay** — reconstructs the prompt from saved formatted text, ordered by
-   assembly_order. Verifies exact and normalized hash match. Does NOT call retrieval.
+3. **Snapshot Replay** — reconstructs the prompt from saved formatted text (never
+   re-running the formatter), ordered by assembly_order. Verifies exact and normalized
+   hash match. Does NOT call retrieval, web search, tools or memory.
 
 4. **No-Store Generation** — calls `ModelManager.generate_once()` directly. Bypasses
-   the orchestrator entirely. Cannot enable any persistence side effect.
+   the orchestrator entirely. `EvalGenerationConfig` rejects any persistence flag set
+   to True; returns response text + metadata only.
 
-5. **Persistence Guard** — fingerprints ChromaDB collections and JSON data files
-   before/after eval generation. Raises if anything changed.
+5. **Persistence Guard** — fingerprints ChromaDB collection counts and JSON data files
+   (graph, aliases, claims, surfacing history, category cache) before/after eval
+   generation. `before.assert_same_as(after)` raises if anything changed.
 
 ## What Phase 1 Does NOT Do
 
@@ -26,7 +36,7 @@ Phase 1 provides the measurement foundation for prompt section ablation testing:
 - Build a query corpus (Phase 3)
 - Run batch eval generation (Phase 4)
 - Judge response quality (Phase 5)
-- Check for hallucination/accuracy (Phase 6)
+- Check for hallucination/citation accuracy (Phase 6)
 - Aggregate results into scorecards (Phase 7)
 - Modify production prompt behavior (Phase 8)
 

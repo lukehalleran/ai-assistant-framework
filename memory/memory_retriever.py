@@ -80,6 +80,7 @@ import memory.user_profile as user_profile
 from memory.utils import format_recent_conversations
 from memory.summary_coverage import corpus_anchor_md, corpus_content_time_raw, covers_label
 import re as _re
+import time as _time
 
 logger = get_logger("memory_retriever")
 
@@ -1242,7 +1243,7 @@ class MemoryRetriever:
         """
         collection_name = "procedural_skills"
         try:
-            from config.app_config import PROCEDURAL_SKILLS_ENABLED
+            from config.app_config import PROCEDURAL_SKILLS_ENABLED  # lazy import: live-config
             if not PROCEDURAL_SKILLS_ENABLED:
                 return []
 
@@ -1288,7 +1289,6 @@ class MemoryRetriever:
                     meta = item.get("metadata", {})
                     doc_id = item.get("id")
                     if doc_id and meta:
-                        import time as _time
                         new_count = int(meta.get("times_retrieved", 0)) + 1
                         # ChromaDB update is sync — fire-and-forget via metadata
                         meta["times_retrieved"] = new_count
@@ -1767,7 +1767,7 @@ class MemoryRetriever:
         # Lazy-load cross-encoder (once per process)
         if MemoryRetriever._cross_encoder is None:
             try:
-                from sentence_transformers import CrossEncoder
+                from sentence_transformers import CrossEncoder  # lazy import: startup-cost
                 MemoryRetriever._cross_encoder = CrossEncoder(
                     "cross-encoder/ms-marco-MiniLM-L-6-v2"
                 )
@@ -2092,7 +2092,7 @@ class MemoryRetriever:
 
         # ENTITY-AWARE RETRIEVAL: If query mentions specific entities (names like "Graham"),
         # also do semantic search to find older memories about those entities
-        from processing.gate_system import (
+        from processing.gate_system import (  # lazy import: startup-cost
             _extract_query_entities, _entity_match_boost, entity_boost_applicable,
         )
         query_entities = _extract_query_entities(query)

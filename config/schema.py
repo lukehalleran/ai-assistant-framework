@@ -674,6 +674,12 @@ class LightPromptSection(BaseModel):
     max_words: int = Field(default=8, ge=1, le=20)
 
 
+class LatencyDiagnosticsSection(BaseModel):
+    """First-turn latency instrumentation (core/prompt/builder.py)."""
+    model_config = ConfigDict(extra="ignore")
+    first_turn_stack_dump_s: float = Field(default=6.0, ge=0.0, le=120.0)
+
+
 class BackupSection(BaseModel):
     """Automated local backups of the memory stores (utils/backup_manager.py)."""
     model_config = ConfigDict(extra="ignore")
@@ -1267,6 +1273,7 @@ class DaemonConfig(BaseModel):
     turn_telemetry: TurnTelemetrySection = Field(default_factory=TurnTelemetrySection)
     stm: StmSection = Field(default_factory=StmSection)
     light_prompt: LightPromptSection = Field(default_factory=LightPromptSection)
+    latency_diagnostics: LatencyDiagnosticsSection = Field(default_factory=LatencyDiagnosticsSection)
     backup: BackupSection = Field(default_factory=BackupSection)
     log_maintenance: LogMaintenanceSection = Field(default_factory=LogMaintenanceSection)
     curation: CurationSection = Field(default_factory=CurationSection)

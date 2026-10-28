@@ -404,7 +404,7 @@ def canonicalize_profile_relation(rel: str, value: str | None = None) -> str:
     Special case: 'job' is value-aware — 'job=quit' → 'job_status',
     'job=bartender' → 'occupation'.
     """
-    from memory.entity_resolver import normalize_relation
+    from memory.entity_resolver import normalize_relation  # lazy import: startup-cost
     rel = normalize_relation(rel)
 
     # Value-aware disambiguation for 'job'
@@ -604,7 +604,7 @@ _CATEGORY_TOKENS: Dict[ProfileCategory, Set[str]] = {
 # (e.g. "health"); unknown categories are skipped. See config/app_config.py.
 def _merge_personal_vocabulary() -> None:
     try:
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             PROFILE_PERSONAL_CATEGORY_TOKENS,
             PROFILE_PERSONAL_RELATION_CATEGORIES,
         )
@@ -772,7 +772,7 @@ def _get_exemplar_embeddings():
     if _exemplar_embeddings is not None:
         return _exemplar_embeddings
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: startup-cost
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return None
@@ -785,7 +785,7 @@ def _get_exemplar_embeddings():
                 cat_indices.append(cat)
         embs = embedder.encode(all_phrases, convert_to_numpy=True, normalize_embeddings=True)
         # Group by category
-        import numpy as np
+        import numpy as np  # lazy import: startup-cost
         result: Dict[ProfileCategory, list] = {cat: [] for cat in _CATEGORY_EXEMPLARS}
         for emb, cat in zip(embs, cat_indices):
             result[cat].append(emb)
@@ -801,13 +801,13 @@ def _categorize_by_embedding(relation: str, threshold: float = 0.30) -> Optional
     if exemplars is None:
         return None
     try:
-        from models.model_manager import ModelManager
+        from models.model_manager import ModelManager  # lazy import: startup-cost
         embedder = ModelManager._get_cached_embedder()
         if embedder is None:
             return None
         # Convert snake_case to natural language
         natural = relation.replace("_", " ").strip()
-        import numpy as np
+        import numpy as np  # lazy import: startup-cost
         rel_emb = embedder.encode([natural], convert_to_numpy=True, normalize_embeddings=True)[0]
         best_cat = None
         best_sim = 0.0

@@ -117,7 +117,7 @@ def _snake(s: str) -> str:
 def _is_ephemeral_relation(rel: str) -> bool:
     """Check if a relation is ephemeral and should not be stored as a durable fact."""
     try:
-        from config.app_config import PROFILE_EPHEMERAL_RELATIONS
+        from config.app_config import PROFILE_EPHEMERAL_RELATIONS  # lazy import: live-config
         ephemeral = frozenset(r.lower().strip() for r in PROFILE_EPHEMERAL_RELATIONS)
     except ImportError:
         ephemeral = frozenset()

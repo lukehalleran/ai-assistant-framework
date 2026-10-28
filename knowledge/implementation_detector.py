@@ -17,6 +17,7 @@ Module Contract
 - Dependencies: config.app_config, memory.code_proposal, models.model_manager (optional)
 """
 
+import json
 import re
 import subprocess
 import time
@@ -384,7 +385,6 @@ class ImplementationDetector:
                 temperature=0.0,
             )
 
-            import json
             # Try to extract JSON from response
             text = response.strip()
             # Handle possible markdown code blocks
