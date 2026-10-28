@@ -38,11 +38,18 @@ def _isolate_warmup_models(monkeypatch):
 class _InlineThread:
     """Run the warmup body synchronously so the test observes any exception."""
 
-    def __init__(self, target=None, daemon=None):
+    def __init__(self, target=None, daemon=None, name=None):
         self._target = target
 
     def start(self):
         self._target()
+
+    # the Chroma touch runs each collection in a worker thread (join/is_alive)
+    def join(self, timeout=None):
+        return None
+
+    def is_alive(self):
+        return False
 
 
 class TestWarmupGuards:
@@ -102,6 +109,14 @@ class TestWarmupSpacy:
         assert self._run(monkeypatch, None, False, caplog) == []
 
 
+class _ReadOnlyColl:
+    def query(self, **kwargs):
+        return {}
+
+    def get(self, **kwargs):
+        return {}
+
+
 class _RecordingStore:
     def __init__(self, fail_on=None):
         self.opened = []
@@ -111,6 +126,7 @@ class _RecordingStore:
         if name == self._fail_on:
             raise RuntimeError("boom")
         self.opened.append(name)
+        return _ReadOnlyColl()  # the keep-warm touch then reads a row (2026-10-28)
 
 
 class TestWarmupTurn1ColdPaths:

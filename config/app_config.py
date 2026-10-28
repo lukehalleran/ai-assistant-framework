@@ -1299,6 +1299,15 @@ APP_LIFECYCLE_EXIT_WHEN_CLIENTS_GONE: bool = (
 )
 
 # --------------------------------------------------------------------
+# Chroma keep-warm (BC-41): read LIVE by memory/storage/chroma_keepwarm.py
+# --------------------------------------------------------------------
+CHROMA_KEEPWARM_CFG = config.get("chroma_keepwarm", {}) or {}
+CHROMA_KEEPWARM_INTERVAL_S: float = float(CHROMA_KEEPWARM_CFG.get("interval_s", 600))
+CHROMA_KEEPWARM_COLLECTION_TIMEOUT_S: float = float(CHROMA_KEEPWARM_CFG.get("per_collection_timeout_s", 8.0))
+CHROMA_KEEPWARM_TOTAL_BUDGET_S: float = float(CHROMA_KEEPWARM_CFG.get("total_budget_s", 30.0))
+CHROMA_KEEPWARM_COLLECTIONS: list = list(CHROMA_KEEPWARM_CFG.get("collections", []) or [])
+
+# --------------------------------------------------------------------
 # Entity Facts Configuration
 # --------------------------------------------------------------------
 # Allow non-user-centric triples (entity-to-entity) through to ChromaDB.
