@@ -151,7 +151,6 @@ def _thread_topic_shifted(
     Medication Concerns → Medication Withdrawal, asserting a fresh "shift"
     (plus "Follow the current query") on every reply of a five-turn thread.
     """
-    from utils.query_checker import is_anaphoric_continuation, is_fragment_continuation
     if is_anaphoric_continuation(original_query or ""):
         return False
     if is_fragment_continuation(original_query or ""):
@@ -212,7 +211,6 @@ def _continuity_asserted_by_stm_override(
     continuations keep the old continuity wording — their label divergence
     is a known classifier miss, 2026-07-28), not the STM override.
     """
-    from utils.query_checker import is_anaphoric_continuation, is_fragment_continuation
     if is_anaphoric_continuation(original_query or ""):
         return False
     if is_fragment_continuation(original_query or ""):
@@ -242,10 +240,37 @@ from core.best_of_handler import BestOfHandler
 from core.escalation_tracker import EscalationTracker
 from core.correction_detector import CorrectionDetector, CorrectionEvent, _MIN_CONFIDENCE as _CORRECTION_MIN_CONFIDENCE
 from memory.thread_models import DisputedResolution
+from memory.recent_turns import recent_turns_visible_to
 from memory.thread_store import _norm_keywords as _thread_norm_keywords
 from core.citation_extractor import extract_citations as _ext_extract_citations, expand_citation_range as _ext_expand_citation_range
 from core.tone_instructions import get_tone_instructions as _ext_get_tone_instructions, get_response_instructions as _ext_get_response_instructions, get_session_headers_instructions as _ext_get_session_headers_instructions
 from core.truth_event_handler import get_recent_profile_facts as _ext_get_recent_profile_facts, apply_truth_event as _ext_apply_truth_event, cascade_entity_resolution as _ext_cascade_entity_resolution, apply_content_attributions as _ext_apply_content_attributions
+from utils.query_checker import is_anaphoric_continuation, is_fragment_continuation
+from core.agentic.gate import _tone_is_elevated
+from utils.adaptive_exemplars import get_store
+from memory.user_profile import UserProfile
+from core.stm_analyzer import STMAnalyzer
+from core.safety_canary import SafetyCanary
+from core.response_planner import ResponsePlanner
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from utils.query_checker import is_meta_conversational
+from core.agentic import AgenticSearchController
+from knowledge.wolfram_manager import WolframManager
+from knowledge.sandbox_manager import get_sandbox_manager
+from core.file_access_manager import FileAccessManager
+from core.git_stats_manager import GitStatsManager
+from core.github_manager import GitHubManager
+from config.app_config import load_system_prompt
+from core.response_guidance import UNIVERSAL_GROUNDING
+from core.tone_instructions import get_intent_style_instructions
+from core.grounding_check import GROUNDING_ACCURACY_CLAUSE
+from knowledge.web_search_manager import live_remaining_credits
+from core.prompt.section_instructions import conditional_instruction_tail
+from core.agentic import ProgressEvent
+from knowledge.web_search_manager import WebSearchManager
+from memory.claim_tracker import canonicalize_claim
+from utils.narrative_staleness import mark_stale
 
 SYSTEM_PROMPT = "..."  # safe fallback (replace with your real default)
 wiki_api = WikipediaAPI()
@@ -469,7 +494,6 @@ def _hook_search_worthy_teach(ctx: PostResponseHookContext) -> None:
     Elevated-tone turns never teach (self-reinforcement guard)."""
     if not (ctx.response_text and "[WEB_" in ctx.response_text and ctx.user_input):
         return
-    from core.agentic.gate import _tone_is_elevated
     rec_tone = None
     try:
         rec_tone = (getattr(ctx.orchestrator, "_last_turn_signals", {}) or {}).get("tone_level")
@@ -477,7 +501,6 @@ def _hook_search_worthy_teach(ctx: PostResponseHookContext) -> None:
         pass
     if _tone_is_elevated(rec_tone):
         return
-    from utils.adaptive_exemplars import get_store
     get_store().record("web_search", "search_worthy", ctx.user_input, "citation")
 
 
@@ -540,7 +563,7 @@ def _hook_thread_dispute(ctx: PostResponseHookContext) -> None:
         corrected = ""
         if corpus is not None:
             norm = " ".join(text.lower().split())
-            for entry in corpus.get_recent_memories(3):
+            for entry in recent_turns_visible_to(corpus, 3, current_query=text):
                 # skip this turn's own entry (stored or still pending)
                 if " ".join(str(entry.get("query") or "").lower().split()) != norm:
                     corrected = str(entry.get("response") or "")
@@ -707,7 +730,6 @@ class DaemonOrchestrator:
             self.user_profile = user_profile
         else:
             try:
-                from memory.user_profile import UserProfile
                 self.user_profile = UserProfile()
             except Exception as e:
                 if self.logger:
@@ -729,7 +751,6 @@ class DaemonOrchestrator:
             # lazy import: live-config
             from config.app_config import USE_STM_PASS, STM_MODEL_NAME, STM_MIN_CONVERSATION_DEPTH
             if USE_STM_PASS and model_manager:
-                from core.stm_analyzer import STMAnalyzer
                 self.stm_analyzer = STMAnalyzer(
                     model_manager=model_manager,
                     model_name=STM_MODEL_NAME
@@ -802,7 +823,6 @@ class DaemonOrchestrator:
             # lazy import: live-config
             from config.app_config import CANARY_ENABLED, CANARY_CONSECUTIVE_THRESHOLD
             if CANARY_ENABLED:
-                from core.safety_canary import SafetyCanary
                 self.safety_canary = SafetyCanary(
                     threshold=CANARY_CONSECUTIVE_THRESHOLD,
                     session_id=str(getattr(self.memory_system, 'session_id', None) or "session"),
@@ -833,7 +853,6 @@ class DaemonOrchestrator:
             # lazy import: live-config
             from config.app_config import RESPONSE_PLANNING_ENABLED
             if RESPONSE_PLANNING_ENABLED:
-                from core.response_planner import ResponsePlanner
                 self.response_planner = ResponsePlanner(model_manager=model_manager)
                 self.logger.info("[Orchestrator] ResponsePlanner enabled")
             else:
@@ -951,8 +970,6 @@ class DaemonOrchestrator:
                     embed_model = getattr(gate_sys, 'embed_model', None)
 
             if embed_model is not None:
-                import numpy as np
-                from sklearn.metrics.pairwise import cosine_similarity
 
                 # Encode both topics
                 emb1 = embed_model.encode([t1], convert_to_numpy=True, normalize_embeddings=True)
@@ -1004,7 +1021,6 @@ class DaemonOrchestrator:
 
         # Skip for meta-conversational queries (asking about the conversation itself)
         try:
-            from utils.query_checker import is_meta_conversational
             if is_meta_conversational(user_input):
                 self.logger.debug("[STM] Skipping STM for meta-conversational query")
                 return False
@@ -1087,7 +1103,6 @@ class DaemonOrchestrator:
             return None
 
         try:
-            from core.agentic import AgenticSearchController
 
             # Get web search manager from prompt builder
             web_search_manager = None
@@ -1114,7 +1129,6 @@ class DaemonOrchestrator:
                 # lazy import: live-config
                 from config.app_config import WOLFRAM_ENABLED, WOLFRAM_APP_ID
                 if WOLFRAM_ENABLED and WOLFRAM_APP_ID:
-                    from knowledge.wolfram_manager import WolframManager
                     wolfram_manager = WolframManager()
                     if self.logger:
                         self.logger.info("[Orchestrator] Wolfram Alpha manager initialized")
@@ -1125,7 +1139,6 @@ class DaemonOrchestrator:
             # Initialize sandbox manager for code execution
             sandbox_manager = None
             try:
-                from knowledge.sandbox_manager import get_sandbox_manager
                 sandbox_manager = get_sandbox_manager()
                 if sandbox_manager.is_available():
                     if self.logger:
@@ -1156,7 +1169,6 @@ class DaemonOrchestrator:
                     FILE_ACCESS_ALLOWED_EXTENSIONS,
                 )
                 if FILE_ACCESS_ENABLED and FILE_ACCESS_APPROVED_FOLDERS:
-                    from core.file_access_manager import FileAccessManager
                     _project_root = str(Path(__file__).resolve().parent.parent)
                     file_access_manager = FileAccessManager(
                         approved_folders=FILE_ACCESS_APPROVED_FOLDERS,
@@ -1185,7 +1197,6 @@ class DaemonOrchestrator:
                     GIT_STATS_MAX_OUTPUT_LINES,
                 )
                 if GIT_STATS_ENABLED:
-                    from core.git_stats_manager import GitStatsManager
                     git_stats_manager = GitStatsManager(
                         repo_path=str(Path(__file__).resolve().parent.parent),
                         timeout=GIT_STATS_TIMEOUT,
@@ -1213,7 +1224,6 @@ class DaemonOrchestrator:
                     GITHUB_API_REPO,
                 )
                 if GITHUB_API_ENABLED:
-                    from core.github_manager import GitHubManager
                     github_manager = GitHubManager(
                         repo=GITHUB_API_REPO if GITHUB_API_REPO else None,
                         timeout=GITHUB_API_TIMEOUT,
@@ -1371,7 +1381,8 @@ class DaemonOrchestrator:
         conversation_history = None
         if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
             try:
-                conversation_history = self.memory_system.corpus_manager.get_recent_memories(5)
+                conversation_history = recent_turns_visible_to(
+                    self.memory_system.corpus_manager, 5, current_query=user_input)
             except Exception as e:
                 logger.warning(f"[Orchestrator] Could not retrieve conversation history: {e}, proceeding without context")
 
@@ -1448,7 +1459,6 @@ class DaemonOrchestrator:
             logger.warning(f"[Orchestrator] Personality/principles load failed: {e}")
             # Fallback to monolithic system_prompt.txt
             try:
-                from config.app_config import load_system_prompt
                 loaded = load_system_prompt({})
                 if isinstance(loaded, str) and loaded.strip():
                     system_prompt = loaded
@@ -1506,7 +1516,6 @@ class DaemonOrchestrator:
         # cached prefix; the DECISION_SUPPORT block is per-turn conditional and
         # is appended below the breakpoint by conditional_instruction_tail
         # (2026-09-06 — the first version put ~440 incident-specific tokens here).
-        from core.response_guidance import UNIVERSAL_GROUNDING
         system_prompt = system_prompt.rstrip() + "\n" + UNIVERSAL_GROUNDING + PROMPT_CACHE_BREAKPOINT
 
         # --- Citation instructions ---
@@ -1654,7 +1663,6 @@ class DaemonOrchestrator:
                 # lazy import: live-config
                 from config.app_config import INTENT_STYLE_INSTRUCTIONS_ENABLED
                 if INTENT_STYLE_INSTRUCTIONS_ENABLED and context.intent is not None:
-                    from core.tone_instructions import get_intent_style_instructions
                     _intent_style = get_intent_style_instructions(
                         getattr(context.intent, "intent", None),
                         getattr(context.intent, "confidence", None),
@@ -1689,7 +1697,6 @@ class DaemonOrchestrator:
                     # repeated instruction, live turn same day it shipped).
                     # Keep the first occurrence, strip it from the later block.
                     try:
-                        from core.grounding_check import GROUNDING_ACCURACY_CLAUSE
                         if (GROUNDING_ACCURACY_CLAUSE in system_prompt
                                 and GROUNDING_ACCURACY_CLAUSE in escalation_instructions):
                             escalation_instructions = escalation_instructions.replace(
@@ -1866,7 +1873,6 @@ class DaemonOrchestrator:
 
         if self.response_planner and self.response_planner.should_plan(context):
             try:
-                from core.response_planner import ResponsePlanner
                 _planner_digest, _planner_sections = ResponsePlanner.build_context_digest(
                     prompt_ctx
                 )
@@ -1907,7 +1913,6 @@ class DaemonOrchestrator:
             _web_budget = _web_decision.get("budget_remaining")
             if not isinstance(_web_budget, (int, float)) or isinstance(_web_budget, bool):
                 try:
-                    from knowledge.web_search_manager import live_remaining_credits
                     _web_budget = live_remaining_credits()
                 except Exception:  # degrades: web budget unknown in this turn's receipt
                     _web_budget = None
@@ -1998,7 +2003,6 @@ class DaemonOrchestrator:
         # section exists in this turn's context. This lands after the
         # PROMPT_CACHE_BREAKPOINT, so the cached stable prefix is unaffected.
         try:
-            from core.prompt.section_instructions import conditional_instruction_tail
             _cond_tail = conditional_instruction_tail(prompt_ctx)
             if _cond_tail:
                 system_prompt = system_prompt.rstrip() + _cond_tail
@@ -2374,7 +2378,7 @@ class DaemonOrchestrator:
         _doc_intent = None
         if use_agentic_search and not use_raw_mode and self.agentic_controller:
             try:
-                from knowledge.document_generator import detect_document_intent
+                from knowledge.document_generator import detect_document_intent  # lazy import: startup-cost (+190 ms over orchestrator; knowledge.document_generator is not loaded by main / api.app / gui.launch)
                 _doc_intent = detect_document_intent(user_input)
             except Exception:  # degrades: document-request detection skipped so request answers in chat
                 pass
@@ -2387,7 +2391,6 @@ class DaemonOrchestrator:
                         f"topic={_doc_intent['topic']}, type={_doc_intent['doc_type']}"
                     )
 
-                from core.agentic import ProgressEvent
 
                 # Augment user query with explicit generate_document instruction
                 doc_query = (
@@ -2480,7 +2483,6 @@ class DaemonOrchestrator:
                 # count, so it classified as if the daily budget were full.
                 # The toggle now comes from the predicate that owns it.
                 # (Credits resolve inside the trigger when not passed.)
-                from knowledge.web_search_manager import WebSearchManager
                 web_decision = await analyze_for_web_search_llm(
                     query=user_input,
                     model_manager=self.model_manager,
@@ -2495,7 +2497,6 @@ class DaemonOrchestrator:
                         )
 
                     # Run agentic search loop
-                    from core.agentic import ProgressEvent
 
                     full_response = ""
                     async for event_or_chunk in self.agentic_controller.run_agentic_search(
@@ -2817,7 +2818,6 @@ class DaemonOrchestrator:
                         from config.app_config import STALENESS_ENABLED
                         claim_index = getattr(self.memory_system, 'claim_index', None) if self.memory_system else None
                         if STALENESS_ENABLED and claim_index:
-                            from memory.claim_tracker import canonicalize_claim
                             entity_resolver = getattr(self.memory_system, 'entity_resolver', None)
                             for event in correction_events:
                                 ck = canonicalize_claim(
@@ -2850,7 +2850,6 @@ class DaemonOrchestrator:
             try:
                 signal = self.correction_detector.detect_correction_signal(user_input)
                 if signal >= 0.6:
-                    from utils.narrative_staleness import mark_stale
                     mark_stale(f"user correction (conf {signal:.2f}): {user_input[:120]}")
             except Exception as e:  # degrades: narrative not flagged stale after a user correction
                 self.logger.debug(f"[Orchestrator] Narrative staleness flag failed (non-fatal): {e}")

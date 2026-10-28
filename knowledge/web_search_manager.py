@@ -75,6 +75,9 @@ import re as _re
 
 from utils.retrieval_outcome import OutcomeList, RetrievalError
 from utils.safe_json import CorruptStoreError, atomic_write_json, corrupt_store, load_critical_json
+from utils.page_extract import extract_page_text
+from utils.institution_resolver import query_justifies_institution
+from utils.institution_resolver import scope_identity_terms
 
 log = logging.getLogger(__name__)
 
@@ -2029,7 +2032,6 @@ class WebSearchManager:
             if "json" in ctype:
                 text = body_text
             else:
-                from utils.page_extract import extract_page_text
                 title_extracted, text, method = extract_page_text(
                     body_text, current_url
                 )
@@ -2212,7 +2214,7 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
 
     def _get_user_institution(self) -> Optional[str]:
         try:
-            from utils.institution_resolver import get_user_institution
+            from utils.institution_resolver import get_user_institution  # lazy import: patch-point
             return get_user_institution()
         except Exception as e:  # degrades: user institution unavailable so queries are not localized
             log.debug(f"[WebSearch] Institution resolution failed: {e}")
@@ -2341,7 +2343,6 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
                 # gives a reason to name it — mirrors the same gate in
                 # utils.web_search_trigger._build_llm_trigger_prompt. The
                 # post-parse backstop below still scrubs any slip-through.
-                from utils.institution_resolver import query_justifies_institution
                 if query_justifies_institution(query, user_institution):
                     institution_block = (
                         f"\nUser's school: {user_institution}\n"
@@ -2437,7 +2438,6 @@ If not splitting, leave SUB_QUERIES empty."""
             # trigger classifier uses (BC-58) — one scoping fix reaches both
             # producers instead of two independently-drifting blocks.
             if sub_queries:
-                from utils.institution_resolver import scope_identity_terms
                 sub_queries = scope_identity_terms(
                     sub_queries, query, user_location, user_institution
                 )

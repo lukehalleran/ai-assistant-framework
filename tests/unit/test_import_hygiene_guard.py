@@ -49,7 +49,7 @@ MARKER_RE = re.compile(r"#\s*lazy import:\s*(?P<reasons>[^\n]*)")
 LOOKBACK_LINES = 2
 
 # Lowered by every import-hygiene batch; raised by nobody. See module docstring.
-MAX_UNMARKED = 124  # 2026-10-27: 262 on 69a4d09; SWX/IMPC/IMPM gave every provable function-body import its reason (marked or stdlib-hoisted); the rest are OPEN rows in the lanes' imports.tsv
+MAX_UNMARKED = 0  # 2026-10-28: 124 on b74d4d8; IMR1/IMR2 hoisted every import whose proofs passed and marked the rest with the reason a failed proof showed
 MAX_INVALID = 0  # 0 since the 2026-09-16 MARK batches; a marker outside the vocabulary now fails
 CEILING_SLACK = 25
 

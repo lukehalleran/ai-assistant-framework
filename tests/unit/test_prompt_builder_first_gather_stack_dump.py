@@ -35,7 +35,7 @@ def stack_env(monkeypatch, tmp_path):
 async def _gather(monkeypatch, slow):
     b = full_builder(monkeypatch, RECENT, budget=10000)
 
-    async def recent(*args):
+    async def recent(*args, **_kw):
         if slow:
             synthetic_blocking_worker()
         return RECENT

@@ -99,6 +99,7 @@ logger = get_logger("document_generator")
 # They are not content — they must never be written to disk as a document body,
 # nor used as a topic or outline. See _looks_like_llm_error().
 from models.model_manager import API_ERROR_PREFIXES as _LLM_ERROR_SENTINELS
+from core.response_parser import ResponseParser
 
 
 def _looks_like_llm_error(text: str | None) -> bool:
@@ -397,7 +398,6 @@ class DocumentGenerator:
 
         # Strip trailing stream artifacts (kimi-3 lone 'e', edge <|sep|> tokens)
         # before validation and assembly, so the final document is clean.
-        from core.response_parser import ResponseParser
         markdown = ResponseParser.strip_trailing_stream_artifact(markdown or "")
 
         if not markdown or not markdown.strip():

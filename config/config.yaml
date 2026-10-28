@@ -426,6 +426,14 @@ api:
 app_lifecycle:
   client_grace_s: 120
   exit_when_clients_gone: null
+# Keep Chroma's files warm (BC-41): startup touch + idle touch every interval_s
+# (0 disables the idle loop; read live). One read-only row per collection, no embedding.
+# collections: [] = the turn-path default list (memory/storage/chroma_keepwarm.py).
+chroma_keepwarm:
+  interval_s: 600
+  per_collection_timeout_s: 8.0
+  total_budget_s: 30.0
+  collections: []
 entity_facts:
   enabled: true
   per_turn_cap: 4

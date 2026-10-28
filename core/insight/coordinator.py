@@ -34,6 +34,7 @@ from memory.pattern_engine import (
     TemporalAnchor,
     run_longitudinal_scan,
 )
+from knowledge.pubmed_search import build_pubmed_query_ladder
 
 CHANNEL_STATES = frozenset({
     "succeeded", "no_results", "no_relevant_results", "partial", "unavailable", "failed", "skipped", "insufficient",
@@ -938,7 +939,6 @@ class LongitudinalDeliberationCoordinator:
                     continue
                 fallback_queries = recovery_queries(query, channel)
                 if channel == "pubmed":
-                    from knowledge.pubmed_search import build_pubmed_query_ladder
                     # Recovery has no frozen facets, but it can still use the
                     # same structured ladder rather than sending prose to
                     # E-utilities.
@@ -1013,7 +1013,6 @@ class LongitudinalDeliberationCoordinator:
                 # PubMed needs source syntax and concept broadening, not the
                 # conversational recovery prose. The ladder is generic and
                 # driven entirely by the frozen spec/query.
-                from knowledge.pubmed_search import build_pubmed_query_ladder
                 # The frozen spec's own named subjects are a better anchor
                 # signal than positional word order — a crude term extractor
                 # can lose the actual subject noun to stopwording (2026-09-06:

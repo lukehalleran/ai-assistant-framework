@@ -517,17 +517,18 @@ def _run_model_warmup(orchestrator):
                 )
         except Exception as e:  # degrades: spaCy loads (or fails loudly) on first extraction instead
             print(f"[Warmup] spacy skip: {e}")
-        # 12) Collections the turn-1 gather still opened lazily (2026-10-24 first
-        #     turn: obsidian_notes/proposals/threads/daemon_self_notes opened
-        #     DURING the turn, contending with the other gather tasks). Open them
-        #     through THE store's own accessor — read-only, idempotent.
-        for _coll in _TURN1_COLD_COLLECTIONS:
-            try:
-                _store = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
-                if _store is not None:
-                    _store._get_collection(_coll)
-            except Exception as e:  # degrades: that collection opens lazily on turn 1 instead
-                print(f"[Warmup] collection {_coll} skip: {e}")
+        # 12) Chroma files. The turn-1 gather opened obsidian_notes/proposals/
+        #     threads/daemon_self_notes lazily (2026-10-24), and merely OPENING a
+        #     collection reads nothing (CHR: 0.5 ms) -- the first query/where-get
+        #     pays the cold page-cache cost inside the turn. Touch one row of each
+        #     hot collection through THE store (read-only, no embedding, bounded).
+        try:
+            _store = getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None)
+            if _store is not None:
+                from memory.storage.chroma_keepwarm import touch_from_config  # lazy import: layering (startup-only)
+                touch_from_config(_store, extra=_TURN1_COLD_COLLECTIONS)
+        except Exception as e:  # degrades: the collections warm on turn 1 instead
+            print(f"[Warmup] chroma touch skip: {e}")
         # 13) Google auth: the first is_authenticated paid the google-auth import +
         #     token parse (5 s LoopStall on turn 1, 2026-10-24). Touch it here, off
         #     the loop, only when Google is configured; never refreshes or networks.
@@ -788,6 +789,14 @@ def start_background_tasks(orchestrator):
     # Model warmup: pre-load/first-infer the models that otherwise cold-load
     # on the first message.
     _run_model_warmup(orchestrator)
+
+    # Idle keep-warm: re-touch Chroma's files while nothing is running so a quiet
+    # stretch does not evict them (stopped by api/lifecycle.stop_chroma_keepwarm).
+    try:
+        from memory.storage.chroma_keepwarm import start_keepwarm  # lazy import: layering (startup-only)
+        start_keepwarm(lambda: getattr(getattr(orchestrator, "memory_system", None), "chroma_store", None))
+    except Exception as e:  # degrades: no idle keep-warm this run
+        print(f"[KeepWarm] not started: {e}")
 
 
 def build_demo(orchestrator, dev_tabs=None):

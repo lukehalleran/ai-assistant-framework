@@ -184,6 +184,7 @@ import knowledge.reference_docs_manager as reference_docs_manager
 import knowledge.research_search as research_search
 import knowledge.visual_memory_pipeline as visual_memory_pipeline
 import memory.memory_expander as memory_expander
+from memory.recent_turns import recent_turns_visible_to
 import memory.pending_turns as pending_turns
 import utils as utils
 import utils.ordered_slice as ordered_slice
@@ -2338,7 +2339,8 @@ async def _run_insight_mode(ctx):
         _ms = getattr(orchestrator, "memory_system", None)
         _chroma = getattr(_ms, "chroma_store", None)
         _corpus = getattr(_ms, "corpus_manager", None)
-        _conversation_context = synthesizer.recent_conversation_context(ctx.history, _corpus)
+        _conversation_context = synthesizer.recent_conversation_context(
+            ctx.history, _corpus, current_query=getattr(ctx, "user_text", None))
         _graph = getattr(_ms, "graph_memory", None)
         _resolver = getattr(_ms, "entity_resolver", None)
         if _chroma is None:
@@ -3029,13 +3031,13 @@ def _summary_from_body(body: str) -> str:
     return snippet if len(snippet) >= 10 else ""
 
 
-def _recent_conversation_text(orchestrator) -> str:
+def _recent_conversation_text(orchestrator, current_query=None) -> str:
     """The last couple of assistant responses (e.g. a plan from a prior turn)."""
     try:
         cm = getattr(getattr(orchestrator, "memory_system", None), "corpus_manager", None)
         if cm and hasattr(cm, "get_recent_memories"):
             parts = []
-            for r in cm.get_recent_memories(2) or []:
+            for r in recent_turns_visible_to(cm, 2, current_query=current_query):
                 resp = (r.get("response") or "").strip()
                 if resp:
                     parts.append(resp)
@@ -3165,7 +3167,7 @@ async def _self_repair_note(ctx, detected):
             body, title, category = p.body, p.title, p.category
             store.clear()
     if not body:
-        body = _recent_conversation_text(orchestrator)
+        body = _recent_conversation_text(orchestrator, current_query=getattr(ctx, "user_text", None))
     if not title:
         first = next((ln.strip() for ln in body.splitlines() if len(ln.strip()) >= 3), "")
         title = first[:80] or "Conversation note"

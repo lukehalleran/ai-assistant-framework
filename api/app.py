@@ -31,7 +31,7 @@ from api.launch_auth import (
     generate_launch_secret,
     normalize_trusted_hostnames,
 )
-from api.lifecycle import LifecycleState, watchdog_loop
+from api.lifecycle import LifecycleState, stop_chroma_keepwarm, watchdog_loop
 from api.routes import actions, chat, curation, debug, files, lifecycle, models, report, settings, setup, system
 from api.state import AppState
 from config import app_config
@@ -93,6 +93,7 @@ def create_app(orchestrator, start_background: bool = True, launch_secret: str |
         yield
 
         watchdog.cancel()
+        stop_chroma_keepwarm()
         if start_background:
             try:
                 import main as main_mod  # lazy import: cycle (main alias — see main.py:802)

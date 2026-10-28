@@ -30,6 +30,7 @@ from typing import Optional
 import numpy as np
 
 from utils.logging_utils import get_logger
+from PIL import Image
 
 logger = get_logger("knowledge.clip_manager")
 
@@ -179,7 +180,6 @@ class CLIPManager:
     def encode_image_from_path(self, path: str) -> Optional[np.ndarray]:
         """Load an image from disk and encode it."""
         try:
-            from PIL import Image
 
             image = Image.open(path).convert("RGB")
             return self.encode_image(image)
