@@ -1,5 +1,10 @@
 # Daemon Prompt Section Ablation & Eval System — Full Plan
 
+> **Historical plan.** This is the original 8-phase plan plus its per-phase completion
+> record (last updated 2026-05-09); it is not kept in step with the code. Current usage
+> (enabling capture, replay, no-store generation, test commands, file layout) lives in
+> [`README.md`](README.md); the registered sections live in `section_registry.py`.
+
 > **Guiding Principle:** The measurement infrastructure is the product first. The eval
 > system produces reports and recommendations. It must not auto-patch production prompt
 > behavior. Production policy changes come later, after human review and shadow-mode
@@ -22,42 +27,13 @@
 
 ### Phase 1 Deliverables (Implemented)
 
-```
-eval/
-  __init__.py              # Package init
-  PLAN.md                  # This file
-  README.md                # Phase 1 usage guide
-  schema.py                # Pure data models (PromptSnapshot, SectionSnapshot, etc.)
-  section_registry.py      # 31-entry canonical section registry
-  snapshots.py             # SnapshotCapture, SnapshotReplay, save/load
-  no_store_generation.py   # EvalGenerator + EvalGenerationConfig
-  persistence_guard.py     # PersistenceGuard + file/collection fingerprinting
-  snapshots/               # Saved snapshot JSON files (.gitignored)
-    .gitignore
-
-tests/test_eval/
-  __init__.py
-  test_section_registry.py   # 29 tests
-  test_snapshots.py          # 13 tests
-  test_replay_hash.py        # 14 tests
-  test_no_store_generation.py # 17 tests
-  test_persistence_guard.py  # 16 tests
-```
+File list: see [Phase 1 → Files](#phase-1-instrumentation--snapshot-replay-complete) below and the
+file/test layout in [`README.md`](README.md#file-structure) (with per-file test counts).
+Phase 1 also ships `eval/snapshots/.gitignore` (saved snapshots are not tracked).
 
 ### Phase 2 Deliverables (Implemented)
 
-```
-eval/
-  variants.py              # VariantGenerator: LOO, AOI, bundle, reorder strategies
-  corpus.py                # CorpusManager + 27-query seed corpus (3 per IntentType)
-  utilization.py           # UtilizationAnalyzer: section presence/token stats
-  run_phase2.py            # CLI runner: snapshot dir -> variant manifest + utilization report
-
-tests/test_eval/
-  test_variants.py           # 36 tests
-  test_corpus.py             # 24 tests
-  test_utilization.py        # 15 tests
-```
+File list: see [Phase 2 → Files](#phase-2-variant-generation--query-corpus--utilization-complete) below.
 
 **No production code modified.** All Phase 2 code reads from Phase 1 snapshots.
 
@@ -81,7 +57,7 @@ tests/test_eval/
 
 - [Overview](#overview)
 - [Daemon Prompt Architecture (Reference)](#daemon-prompt-architecture-reference)
-- [Phase 1: Instrumentation & Snapshot Replay](#phase-1-instrumentation--snapshot-replay)
+- [Phase 1: Instrumentation & Snapshot Replay](#phase-1-instrumentation--snapshot-replay-complete)
 - [Phase 2: Variant Generation](#phase-2-variant-generation)
 - [Phase 3: Query Corpus](#phase-3-query-corpus)
 - [Phase 4: Generation Harness](#phase-4-generation-harness)
@@ -290,6 +266,7 @@ eval/
   snapshots.py               # Capture, save/load, replay, hash verification
   no_store_generation.py     # Side-effect-free LLM generation
   persistence_guard.py       # State fingerprinting and diff
+  snapshots/.gitignore       # Saved snapshots are not tracked
 
 tests/test_eval/
   __init__.py
@@ -303,43 +280,11 @@ tests/test_eval/
 Production code changes (minimal, gated):
 - `core/prompt/builder.py` — read-only eval snapshot hook, disabled by default
 
-### What Phase 1 Does
+### What Phase 1 Does / Does NOT Do
 
-1. **Section Registry** — canonical definition of all 31 registered sections
-   (30 context sections + the system prompt) with:
-   - internal key, header text, source field, category
-   - whether ablatable, structurally required, assembly order
-   - validation that registry matches actual builder output
-
-2. **Snapshot Capture** — two-layer capture:
-   - `raw_retrieval`: structured context dict from `build_prompt()` (before assembly)
-   - `post_hygiene`: formatted section text + assembled prompt string (after assembly)
-   - Provenance: git hash, model, system prompt hash, config hash, timestamps
-
-3. **Snapshot Replay** — reconstruct the prompt from saved formatted text:
-   - Orders sections by `assembly_order`
-   - Uses stored `formatted_text` (not re-running formatter)
-   - Verifies exact hash and normalized hash match
-
-4. **No-Store Generation** — call `ModelManager.generate_once()` directly:
-   - Bypasses orchestrator entirely
-   - `EvalGenerationConfig` rejects any persistence flag set to True
-   - Returns response text + metadata only
-
-5. **Persistence Guard** — fingerprint all mutable state before/after eval:
-   - ChromaDB collection counts
-   - JSON file hashes (graph, aliases, claims, surfacing history, category cache)
-   - `before.assert_same_as(after)` fails if anything changed
-
-### What Phase 1 Does NOT Do
-
-- Generate ablation variants (Phase 2)
-- Build a query corpus (Phase 3)
-- Run batch eval generation (Phase 4)
-- Judge response quality (Phase 5)
-- Check for hallucination/citation accuracy (Phase 6)
-- Aggregate results or produce scorecards (Phase 7)
-- Modify production prompt behavior (Phase 8)
+See [`README.md`](README.md#what-phase-1-does) (the section registry, two-layer snapshot
+capture with provenance, replay by stored `formatted_text`, no-store generation, persistence guard,
+and the list of what is deferred to Phases 2-8).
 
 ### Exit Criteria
 

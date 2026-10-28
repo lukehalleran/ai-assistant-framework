@@ -24,7 +24,7 @@ It is a stateful agent architecture, not a chatbot wrapper: every query passes t
 - **Literature-backed synthesis** — narrows a large conceptual space into evidence-backed *candidate* connections and validates them against independent corpora (candidates, not discoveries)
 - **Human-gated self-improvement** — structured code proposals + isolated agent-branch experiments; the machine may propose and evaluate, **only a human may merge**
 - **Prompt-section ablation eval system** — snapshot, replay, variant generation, blind pairwise judging, objective checks
-- **Desktop packaging** (PyInstaller spec + Inno Setup installer script) — the executable build has not yet been redone since the FastAPI migration; a Dockerfile + compose file for the FastAPI server are included (see [Docker](#docker))
+- **Desktop packaging** (PyInstaller spec + Inno Setup installer script) — the Linux PyInstaller build is rebuilt on the FastAPI app (first beta session 2026-10-11) and the Windows installer is not yet rebuilt; a Dockerfile + compose file for the FastAPI server are included (see [Docker](#docker))
 
 ---
 
@@ -497,7 +497,7 @@ This turns today's shutdown-only processing into a first-class **background cogn
 
 ## Status
 
-Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, and benchmarks — are implemented and tested. The PyInstaller desktop build predates the 2026-07-14 FastAPI migration and is being rebuilt against it; the Docker files were rebuilt on 2026-09-27 and await an end-to-end container check. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
+Daemon is an **active solo research/engineering project**, not a polished SaaS product. The core paths — memory, retrieval, GUI, agentic tools, and benchmarks — are implemented and tested. The Linux PyInstaller build is rebuilt on the FastAPI app (first beta session 2026-10-11), and the Windows installer has not been rebuilt since the 2026-07-14 FastAPI migration; the Docker files were rebuilt on 2026-09-27 and await an end-to-end container check. Synthesis validation, cross-corpus knownness, and sleep-mode background cognition are **active research tracks**.
 
 A few subsystems are research/developer features rather than always-on defaults, and degrade gracefully when their data is absent:
 
