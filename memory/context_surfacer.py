@@ -23,6 +23,12 @@ if TYPE_CHECKING:
     )
 
 from utils.logging_utils import get_logger
+from memory.surfacing_history import SurfacingHistory
+from memory.surfacing_models import DomainCluster, DomainEntity
+from memory.user_profile_schema import categorize_relation
+from memory.graph_utils import extract_graph_entities
+from memory.surfacing_models import CrossDomainCandidate
+from memory.surfacing_models import ProactiveInsight
 
 logger = get_logger("context_surfacer")
 
@@ -110,7 +116,6 @@ class ContextSurfacer:
         """Lazy-load surfacing history."""
         if self._history is None:
             from config.app_config import PROACTIVE_SURFACING_HISTORY_PATH  # lazy import: live-config
-            from memory.surfacing_history import SurfacingHistory
             self._history = SurfacingHistory(persist_path=PROACTIVE_SURFACING_HISTORY_PATH)
         return self._history
 
@@ -215,8 +220,6 @@ class ContextSurfacer:
         if self._domain_cache is not None and self._domain_cache_edge_count == current_edge_count:
             return self._domain_cache
 
-        from memory.surfacing_models import DomainCluster, DomainEntity
-        from memory.user_profile_schema import categorize_relation
 
         edges = self._live_edges(self._graph_memory.get_relations("user", direction="out"))
         clusters: Dict[str, DomainCluster] = {}
@@ -296,7 +299,6 @@ class ContextSurfacer:
 
         # Strategy 1: entity resolution
         if self._entity_resolver:
-            from memory.graph_utils import extract_graph_entities
             entity_ids = extract_graph_entities(query, self._entity_resolver)
             # Map entity IDs to their domain
             for domain, cluster in clusters.items():
@@ -327,7 +329,6 @@ class ContextSurfacer:
         Filters out recently shown insights via SurfacingHistory.
         """
         from config.app_config import PROACTIVE_SURFACING_COOLDOWN_HOURS  # lazy import: live-config
-        from memory.surfacing_models import CrossDomainCandidate
 
         history = self._get_history()
         candidates = []
@@ -397,7 +398,6 @@ class ContextSurfacer:
         Returns parsed ProactiveInsight objects. Gracefully handles malformed
         JSON or null entries in the response.
         """
-        from memory.surfacing_models import ProactiveInsight
 
         if not candidates or not self._model_manager:
             return []
@@ -468,7 +468,6 @@ class ContextSurfacer:
         max_insights: int,
     ) -> List["ProactiveInsight"]:
         """Parse LLM JSON array response into ProactiveInsight objects."""
-        from memory.surfacing_models import ProactiveInsight
 
         # Extract JSON array from response (handle potential text wrapping)
         text = response.strip()

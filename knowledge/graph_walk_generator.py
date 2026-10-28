@@ -22,6 +22,8 @@ from typing import Optional
 
 from utils.logging_utils import get_logger
 import math
+from memory.user_profile_schema import categorize_relation
+from knowledge.synthesis_models import SynthesisCandidate
 
 logger = get_logger("graph_walk_generator")
 
@@ -340,7 +342,6 @@ class GraphWalkGenerator:
             if src == "user":
                 rel = edata.get("relation", "")
                 try:
-                    from memory.user_profile_schema import categorize_relation
                     cat = categorize_relation(rel)
                     if cat.value != "other":
                         return cat.value
@@ -358,7 +359,6 @@ class GraphWalkGenerator:
     async def _articulate_and_package(self, walk: list[str], semaphore) -> Optional[object]:
         """Articulate the walk path via LLM and package as SynthesisCandidate."""
         from config.app_config import SYNTHESIS_COHERENCE_MODEL  # lazy import: live-config
-        from knowledge.synthesis_models import SynthesisCandidate
 
         concept_a = self._get_display_name(walk[0])
         concept_b = self._get_display_name(walk[-1])

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     import numpy
 from dataclasses import dataclass, field
 from datetime import datetime
+from utils.safe_json import atomic_write_json
 
 # Schema version for migrations
 SCHEMA_VERSION = "2.0"
@@ -684,7 +685,6 @@ class _CategoryCache:
     def save(self):
         if not self._dirty or not self._path:
             return
-        from utils.safe_json import atomic_write_json
         try:
             atomic_write_json(self._path, {
                 "version": "1.0", "relation_categories": self._cache,

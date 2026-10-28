@@ -93,6 +93,21 @@ from collections import defaultdict
 from utils.ordered_slice import newest_first as _ordered_newest_first
 from utils.date_coerce import to_naive_local
 import utils.temporal_resolver as temporal_resolver
+from memory.fact_extractor import (
+    _is_junk_object,
+    _is_repo_audit_junk,
+    _fact_object_max_chars,
+    _salvage_long_object,
+)
+from memory.stance_classifier import (
+    VALID_STANCES,
+    classify_triple_stance,
+    scope_unresolved_referent,
+)
+from core.content_type_detector import detect_content_type
+from memory.learned_relations import get_learned_relation_store
+from memory.fact_source import find_supporting_user_span, iter_user_messages
+from memory.fact_extractor import _interrogative_conflict, _polarity_conflict
 
 logger = get_logger("llm_facts")
 
@@ -194,12 +209,6 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     # _clean_triple. Until 2026-08-03 the LLM path had no junk-object check,
     # so junk like `dad_show_up=for a bit` entered the profile through here
     # and later showed up only as "skipped as duplicate" of itself.
-    from memory.fact_extractor import (
-        _is_junk_object,
-        _is_repo_audit_junk,
-        _fact_object_max_chars,
-        _salvage_long_object,
-    )
     if _is_junk_object(obj, rel, subj):
         logger.debug(f"[LLM Facts] Blocked junk object: {subj}|{rel}|{obj}")
         return None
@@ -236,11 +245,6 @@ def _normalize_triple(t: Dict[str, Any]) -> Dict[str, str] | None:
     # stance only fills the gaps the lexicon can't see. Unresolved evaluative
     # referents ("she is abusive") are re-scoped to a user-owned subject and
     # NEVER fuzzy-bound to a named entity.
-    from memory.stance_classifier import (
-        VALID_STANCES,
-        classify_triple_stance,
-        scope_unresolved_referent,
-    )
     scoped_subj = scope_unresolved_referent(subj, obj)
     if scoped_subj:
         logger.info(f"[LLM Facts] Scoped unresolved referent: {subj} -> {scoped_subj}")
@@ -325,7 +329,6 @@ def _entry_is_shared_content(entry: str) -> bool:
     """True when a user turn is a lyrics/poem/quote paste per THE deployed
     content_type_detector (confidence >= SHARED_CONTENT_MIN_CONF)."""
     try:
-        from core.content_type_detector import detect_content_type
         text = re.sub(r"^user\s*:\s*", "", entry or "", flags=re.I)
         ct = detect_content_type(text)
         return bool(
@@ -350,7 +353,7 @@ class LLMFactExtractor:
     def _build_alias_hints(existing_facts: List[Dict[str, Any]]) -> str:
         """Build compact alias hints from SAFE_RELATION_ALIASES for relations the user has."""
         try:
-            from memory.user_profile_schema import SAFE_RELATION_ALIASES
+            from memory.user_profile_schema import SAFE_RELATION_ALIASES  # lazy import: optional-dependency
         except ImportError:
             return ""
         # Invert: canonical → [variants]
@@ -611,7 +614,6 @@ JSON:"""
         # an owner edit after each observed coverage gap (2026-08-05).
         learned_line = ""
         try:
-            from memory.learned_relations import get_learned_relation_store
             promoted = get_learned_relation_store().promoted()
             if promoted:
                 learned_line = (
@@ -717,7 +719,6 @@ JSON:"""
                     )
                     continue
                 try:
-                    from memory.learned_relations import get_learned_relation_store
                     get_learned_relation_store().record(rel, t.get("object", ""), when=when)
                 except Exception as e:  # degrades: learned relation occurrence not counted toward promotion
                     logger.debug(f"[LLM Facts] learned-relation record failed: {e}")
@@ -741,8 +742,6 @@ JSON:"""
         if not user_messages:
             triples[:] = []
             return
-        from memory.fact_source import find_supporting_user_span, iter_user_messages
-        from memory.fact_extractor import _interrogative_conflict, _polarity_conflict
         # lazy import: startup-cost (memory_storage pulls the model/core stack;
         # needed only to share THE per-turn paste guard's size + anchor tests)
         from memory.memory_storage import (
