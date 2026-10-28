@@ -287,7 +287,7 @@ def audit_attachments(user_text: str, files: Optional[Iterable[Any]],
             )
         segments.append("Ask before estimating scope.")
         return ATTACHMENT_NOTE_PREFIX + " " + " ".join(segments)
-    except Exception as e:
+    except Exception as e:  # degrades: attachment note omitted from this turn's prompt
         logger.debug(f"[AttachmentAudit] audit_attachments failed: {e}")
         return ""
 
@@ -428,7 +428,7 @@ def deadline_timezone_note(text: str, user_tz: Optional[str] = None,
                     tzinfo=ZoneInfo(source_iana),
                 )
                 target_dt = source_dt.astimezone(ZoneInfo(user_tz))
-            except Exception as e:
+            except Exception as e:  # degrades: this deadline's zone conversion is skipped
                 logger.debug(f"[AttachmentAudit] zone conversion failed: {e}")
                 continue
             converted = (source_dt, source_display, target_dt)
@@ -456,7 +456,7 @@ def deadline_timezone_note(text: str, user_tz: Optional[str] = None,
                     )
                 break
         return note
-    except Exception as e:
+    except Exception as e:  # degrades: deadline timezone note omitted from this turn's prompt
         logger.debug(f"[AttachmentAudit] deadline_timezone_note failed: {e}")
         return ""
 

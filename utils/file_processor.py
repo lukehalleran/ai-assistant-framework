@@ -704,7 +704,7 @@ class FileProcessor:
         if hasattr(file, 'seek'):
             try:
                 file.seek(0)
-            except Exception:
+            except Exception:  # degrades: file pointer not rewound for unseekable upload objects
                 pass  # Not all file objects support seek
 
         # SECURITY: Process file in temporary directory

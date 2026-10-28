@@ -837,8 +837,9 @@ class FigureCheckSection(BaseModel):
         default_factory=lambda: ["elapsed_precise", "weekday_date"])
     log_classes: list[Literal[
         "elapsed_vague", "elapsed_unconfirmed", "elapsed_precise", "weekday_date", "unsupported",
-        "copied_mismatch", "unbound"]] = Field(
-        default_factory=lambda: ["elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported"])
+        "copied_mismatch", "unbound", "cross_owner_date", "unsupported_detail", "stale_day_count"]] = Field(
+        default_factory=lambda: ["elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported",
+                                 "cross_owner_date", "unsupported_detail", "stale_day_count"])
     min_referent_overlap: int = Field(default=1, ge=1)
 
 

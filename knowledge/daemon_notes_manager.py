@@ -322,7 +322,7 @@ class DaemonNotesManager:
                             f"[DaemonNotes] user-requested note written despite near-duplicate "
                             f"'{existing_title}' (score={top_score:.3f})"
                         )
-            except Exception as e:
+            except Exception as e:  # degrades: near-duplicate check is skipped so a duplicate self-note may be written
                 logger.debug(f"[DaemonNotes] Dedup check failed (proceeding): {e}")
 
         # 3. Validate status
@@ -378,7 +378,7 @@ class DaemonNotesManager:
                 from core.response_parser import ResponseParser  # lazy import: cycle
                 result = ResponseParser.strip_trailing_stream_artifact(result.strip())
                 return result
-        except Exception as e:
+        except Exception as e:  # degrades: working-notes summary falls back to a generic 'Working notes on' title line
             logger.debug(f"[DaemonNotes] Summary generation failed: {e}")
 
         return f"Working notes on: {topic}"

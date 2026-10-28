@@ -302,7 +302,7 @@ class SynthesisFilter:
         for ar in audit_rejects:
             try:
                 self.memory.store_rejected_for_audit(ar)
-            except Exception as e:
+            except Exception as e:  # degrades: a rejected candidate is missing from the human audit queue
                 logger.debug(f"Failed to store reject for audit: {e}")
 
         # Known-connection rediscoveries: candidates rejected at novelty_external
@@ -316,7 +316,7 @@ class SynthesisFilter:
         for kr in known_rejects:
             try:
                 self.memory.store_known_connection(kr)
-            except Exception as e:
+            except Exception as e:  # degrades: a known-connection rediscovery is not kept as evidence
                 logger.debug(f"Failed to store known connection: {e}")
         if known_rejects:
             logger.info(
@@ -494,7 +494,8 @@ class SynthesisFilter:
 
         # --- Sub-check 1: Claim similarity via FAISS ---
         try:
-            claim_results = semantic_search_with_neighbors(claim, k=3)
+            # FAISS IVFPQ search is sync CPU/IO: off the loop (2026-10-27, class: BC-41)
+            claim_results = await asyncio.to_thread(semantic_search_with_neighbors, claim, k=3)
         except Exception as e:
             logger.warning(f"FAISS wiki novelty check failed: {e}. Passing by default.")
             return StageResult(
@@ -531,7 +532,7 @@ class SynthesisFilter:
                 embedder.encode, [concept_a, concept_b], normalize_embeddings=True
             )
             cooccurrence_sim = float(np.dot(vecs[0], vecs[1]))
-        except Exception as e:
+        except Exception as e:  # degrades: concept similarity reads as zero, so a known pair can pass as novel
             logger.debug(f"Concept cosine co-occurrence check failed: {e}. Skipping.")
             cooccurrence_sim = 0.0
 
@@ -787,7 +788,7 @@ class SynthesisFilter:
                 # Same swallow risk as Pass 1 — keep the verdict in visible content.
                 disable_reasoning=True,
             )
-        except Exception as e:
+        except Exception as e:  # degrades: the factual skeptic pass is skipped and the verdict stays MODERATE
             logger.debug(f"Factual skeptic pass failed: {e}. Keeping MODERATE.")
             return False
 

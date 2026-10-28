@@ -608,7 +608,7 @@ def _merge_personal_vocabulary() -> None:
             PROFILE_PERSONAL_CATEGORY_TOKENS,
             PROFILE_PERSONAL_RELATION_CATEGORIES,
         )
-    except Exception:
+    except Exception:  # degrades: personal category tokens not merged, owner vocabulary ignored
         return
 
     for cat_name, tokens in (PROFILE_PERSONAL_CATEGORY_TOKENS or {}).items():
@@ -690,7 +690,7 @@ class _CategoryCache:
                 "version": "1.0", "relation_categories": self._cache,
             }, ensure_ascii=True)
             self._dirty = False
-        except Exception:
+        except Exception:  # degrades: category cache not persisted, retried on next save
             pass  # derived cache remains dirty and can be retried
 
 
@@ -791,7 +791,7 @@ def _get_exemplar_embeddings():
             result[cat].append(emb)
         _exemplar_embeddings = {cat: np.array(vecs) for cat, vecs in result.items()}
         return _exemplar_embeddings
-    except Exception:
+    except Exception:  # degrades: exemplar embeddings unavailable, so embedding categorization is skipped
         return None
 
 
@@ -820,7 +820,7 @@ def _categorize_by_embedding(relation: str, threshold: float = 0.30) -> Optional
                 best_cat = cat
         if best_cat and best_sim >= threshold:
             return best_cat
-    except Exception:
+    except Exception:  # degrades: embedding categorization failed, so this relation falls through to later tiers
         pass
     return None
 
@@ -946,7 +946,7 @@ async def categorize_relation_deep(
             return llm_cat
         except ValueError:
             pass
-    except Exception:
+    except Exception:  # degrades: LLM categorization failed, relation defaults to PREFERENCES
         pass
 
     # LLM failed — cache as PREFERENCES so we don't retry

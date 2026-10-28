@@ -373,7 +373,7 @@ class ThreadStore:
                 if meta.get("status") == ThreadStatus.OPEN.value:
                     try:
                         threads.append(OpenThread.from_metadata(meta))
-                    except Exception:
+                    except Exception:  # degrades: unreadable stored thread omitted from the open thread list
                         continue
             return threads
         except Exception as e:
@@ -468,7 +468,7 @@ class ThreadStore:
                     continue
                 try:
                     threads.append(OpenThread.from_metadata(meta))
-                except Exception:
+                except Exception:  # degrades: unreadable stored thread omitted from search results
                     continue
 
             return threads[:n_results]

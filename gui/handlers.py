@@ -4224,6 +4224,7 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
                 for a in (getattr(ctx, "turn_attachments", None) or [])
                 if isinstance(a, dict)
             ],
+            extra_sources=_agentic_tool_sources(getattr(ctx, "citation_sources_text", "")),
         )
         result = await personal_claim_check.audit_personal_claims(
             response_text, evidence, mm,
@@ -4265,6 +4266,20 @@ async def _apply_personal_claim_check(ctx, response_text, *, mode="log_only"):
             "delivery": "failed_open",
         }
         return _record_personal_claim_outcome(ctx, receipt), None
+
+
+def _agentic_tool_sources(accumulated_text):
+    """(title, text) pages from the agentic loop's accumulated tool results, for the
+    personal-claim evidence (2026-10-27, class: BC-84): one source per rendered
+    ``[WEB_n]`` block; text with no web blocks (memory/file/wolfram results) is one
+    source. Caps are applied by ``build_personal_evidence``."""
+    text = (accumulated_text or "").strip()
+    if not text:
+        return []
+    blocks = citation_drift.parse_web_blocks(text)
+    if blocks:
+        return [(f"WEB_{n}", body) for n, body in blocks.items()]
+    return [("agentic tool results", text)]
 
 
 async def _apply_personal_claim_check_for_delivery(ctx, response_text):
@@ -4314,7 +4329,23 @@ def _figure_check_run(body, raw_context, history, source_material, user_text, no
     """Pure-CPU part of the figure check (runs in a worker thread)."""
     pool = figure_check.build_source_pool(
         raw_context, history, source_material, now, user_text=user_text)
-    return figure_check.check_reply(body, pool, now, min_overlap=min_overlap)
+    return figure_check.check_reply(
+        body, pool, now, min_overlap=min_overlap, day_anchors=_figure_check_day_anchors())
+
+
+def _figure_check_day_anchors():
+    """Read-only episode anchors for the stale_day_count sibling check (2026-10-27, lane CHK).
+    Never writes the day-count store; an unreadable store means the check is skipped, not that
+    state is replaced (this path has no save)."""
+    if not app_config.DAY_COUNTS_ENABLED:
+        return ()
+    try:
+        import memory.day_count_anchors as day_count_anchors  # lazy import: layering (memory store behind a toggle)
+        from utils.streak_claims import episode_anchors  # lazy import: patch-point
+        return episode_anchors(list(day_count_anchors._load()))
+    except Exception as exc:  # degrades: stale_day_count not checked this turn
+        logger.debug(f"[FigureCheck] day-count anchors unavailable: {exc}")
+        return ()
 
 
 async def _apply_figure_check(ctx, body, *, source_material=""):

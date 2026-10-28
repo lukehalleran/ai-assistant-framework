@@ -755,6 +755,9 @@ figure_check:            # 2026-10-25 (BC-103): every number/time the reply asse
   - elapsed_unconfirmed   # precise phrase that is ambiguous / weakly bound (never edited)
   - copied_mismatch
   - unsupported          # 2026-10-27: logged WITH its figure + clause so the findings can be labelled (still never edited)
+  - cross_owner_date     # 2026-10-27: a date from another course/event attached to this assignment head (log-only)
+  - unsupported_detail   # 2026-10-27: invented circumstance (location/medium) on an action the user took (log-only)
+  - stale_day_count      # 2026-10-27: "N days into X" off the anchor's projected count by more than 1 (log-only)
   min_referent_overlap: 1   # content lemmas a source item must share with the figure's clause to be its referent
 day_counts:              # 2026-10-27 (BC-103/BC-100): the user's own day counts ("23 days into X", "day 23 of X",
                          # a dated "Day 23" note), kept with the date they were said and handed to the reply

@@ -90,7 +90,7 @@ class SafetyCanary:
                 )
                 return event
             return None
-        except Exception as e:  # pragma: no cover - a canary must never break a turn
+        except Exception as e:  # pragma: no cover - a canary must never break a turn # degrades: canary observation lost so a miswire may go unflagged
             logger.debug(f"[SafetyCanary] observe failed (ignored): {e}")
             return None
 

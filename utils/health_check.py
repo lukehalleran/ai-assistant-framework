@@ -137,7 +137,7 @@ def get_health_status(orchestrator=None) -> Dict[str, Any]:
     try:
         from config.app_config import VERSION  # lazy import: live-config
         version = VERSION
-    except Exception:
+    except Exception:  # degrades: health report shows version as unknown
         version = "unknown"
 
     return {

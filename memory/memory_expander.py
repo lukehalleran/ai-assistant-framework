@@ -90,8 +90,8 @@ def notify_chroma_mutation(doc_id: str) -> None:
     for expander in expanders:
         try:
             expander.clear_cache()
-        except Exception:
-            logger.debug(
+        except Exception:  # degrades: expansion may serve stale cached neighbours after a store mutation
+            logger.warning(
                 "[MemoryExpander] notify_chroma_mutation: clear_cache failed", exc_info=True
             )
 
@@ -187,7 +187,7 @@ class MemoryExpander:
             return None
         try:
             doc = self._store.get_by_id(collection, memory_id)
-        except Exception:
+        except Exception:  # degrades: expansion cache fingerprint forces a recompute
             doc = None
         if not doc:
             return None
@@ -195,7 +195,7 @@ class MemoryExpander:
         metadata = doc.get("metadata") or {}
         try:
             meta_items = sorted((str(k), str(v)) for k, v in metadata.items())
-        except Exception:
+        except Exception:  # degrades: expansion cache fingerprint ignores metadata changes
             meta_items = []
         payload = f"{content}|{meta_items!r}"
         return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()

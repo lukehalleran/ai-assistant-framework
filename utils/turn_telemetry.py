@@ -183,7 +183,7 @@ def record_turn(record: Dict[str, Any]) -> bool:
     """Append one turn record as a JSON line. Never raises.
 
     Returns True if the line was written, False if telemetry is disabled
-    or the write failed (failure is logged at DEBUG — non-fatal by design).
+    or the write failed (failure is logged at WARNING — non-fatal by design).
     """
     try:
         try:
@@ -241,6 +241,6 @@ def record_turn(record: Dict[str, Any]) -> bool:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return True
-    except Exception as e:  # noqa: BLE001 — telemetry must never break a turn
-        logger.debug(f"[TurnTelemetry] write skipped: {e}")
+    except Exception as e:  # noqa: BLE001 — telemetry must never break a turn  # degrades: this turn's telemetry record is not written
+        logger.warning(f"[TurnTelemetry] write failed: {type(e).__name__}")
         return False

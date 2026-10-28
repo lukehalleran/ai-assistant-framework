@@ -34,7 +34,7 @@ import numpy as np
 # FAISS is optional; search will no-op if it's unavailable or files are missing
 try:
     import faiss  # type: ignore
-except Exception:
+except Exception:  # degrades: wiki FAISS semantic search is disabled when faiss is unavailable
     faiss = None
 
 from utils.logging_utils import get_logger
@@ -70,7 +70,7 @@ def _cuda_available() -> bool:
     try:
         import torch  # lazy import: patch-point (tests/unit/test_visual_memory_pipeline_image_latency.py:119)
         return torch.cuda.is_available()
-    except Exception:
+    except Exception:  # degrades: embedder device falls back to CPU when CUDA cannot be probed
         return False
 
 

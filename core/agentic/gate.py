@@ -1980,7 +1980,10 @@ _LOOKUP_CUE_RE = re.compile(
 # Sentence splitter for the per-sentence interrogative-opener check below
 # (2026-09-10) — deliberately simple, matching the email-clause splitter's
 # approach elsewhere in this module.
-_INFO_SEEKING_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+# A newline is NOT a sentence break (2026-10-27, class: BC-06): a soft-wrapped line
+# that happens to start "how"/"who" ("...with my dad and\nhow it all fell apart")
+# made a vent statement info-seeking. A break needs sentence punctuation.
+_INFO_SEEKING_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def _is_info_seeking(query: str) -> bool:

@@ -224,7 +224,7 @@ class VisualMemoryPipeline:
             combined = f"{caption} {context_text}".strip()
             entities = graph_utils.extract_graph_entities(combined, self._entity_resolver)
             return list(entities)
-        except Exception as e:
+        except Exception as e:  # degrades: image memory is stored without linked graph entities
             logger.debug(f"[VisualPipeline] Entity extraction failed: {e}")
             return []
 

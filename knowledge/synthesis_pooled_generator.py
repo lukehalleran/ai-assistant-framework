@@ -127,7 +127,7 @@ class PooledConceptSynthesisGenerator:
                     max_tokens=340,
                     temperature=0.6,
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: this concept pair yields no synthesis candidate
                 logger.debug(f"[PooledGen] articulation failed for {a}<->{b}: {e}")
                 return None
         claim = (raw or "").strip()

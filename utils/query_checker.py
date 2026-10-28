@@ -394,7 +394,7 @@ def is_casual_acknowledgment(q: str, max_words: int = 8) -> bool:
         from core.agentic.gate import _is_request_shaped  # lazy import: cycle
         if _is_request_shaped(q):
             return False
-    except Exception:
+    except Exception:  # degrades: request-shape veto skipped so short queries may inherit topic
         pass
     return True
 
@@ -560,7 +560,7 @@ def is_fragment_continuation(q: str, max_words: int = 4) -> bool:
         from core.agentic.gate import _is_request_shaped  # lazy import: cycle
         if _is_request_shaped(q):
             return False  # imperatives route to tools, not topic inheritance
-    except Exception:
+    except Exception:  # degrades: request-shape veto skipped so imperatives may inherit topic
         pass
     # at least one substantive word (not all ack-type fillers)
     return not all(w.strip(".,!…:;'\"") in ACK_STARTERS for w in words)
@@ -1203,7 +1203,7 @@ def analyze_query(q: str, model_manager=None) -> QueryAnalysis:
     # for heavy/crisis topics, which need the full context apparatus.
     try:
         from config.app_config import LIGHT_PROMPT_MAX_WORDS as _lp_max  # lazy import: patch-point (tests/test_thread_surfacing.py:200)
-    except Exception:
+    except Exception:  # degrades: light-prompt word limit falls back to the default of eight
         _lp_max = 8
     q_is_small_talk = (not q_is_heavy) and is_casual_acknowledgment(q, max_words=_lp_max)
 
@@ -1259,7 +1259,7 @@ async def analyze_query_async(q: str, model_manager=None) -> QueryAnalysis:
                 is_heavy_topic=is_heavy,
                 is_meta_conversational=analysis.is_meta_conversational,
             )
-        except Exception as e:
+        except Exception as e:  # degrades: query analysis falls back to the default result for this turn
             # 2026-09-27 (BC-70): a bare `{e}` renders EMPTY for exceptions
             # whose str() is blank (e.g. some timeout/cancellation types),
             # leaving no clue in the log which failure mode this was.
@@ -1836,7 +1836,7 @@ def belongs_to_thread(
         try:
             last_time = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
             time_diff = (datetime.now() - to_naive_local(last_time)).total_seconds()
-        except Exception:
+        except Exception:  # degrades: unparseable last-conversation time assumed to be one hour ago
             # Can't parse timestamp, use conservative time bonus
             time_diff = 3600.0  # Assume 1 hour
     elif isinstance(last_time, datetime):

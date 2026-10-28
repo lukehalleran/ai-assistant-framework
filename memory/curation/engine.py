@@ -151,7 +151,7 @@ class CurationEngine:
                 try:
                     p = CurationProposal(**raw)
                     self._proposals[p.proposal_id] = p
-                except Exception:
+                except Exception:  # degrades: one malformed queued proposal is dropped from the curation queue
                     continue
         except Exception as e:
             logger.warning(f"[Curation] queue load failed — cold start: {e}")
@@ -346,7 +346,7 @@ class CurationEngine:
             if store_ref == "profile" and self.stores.user_profile is not None:
                 cats = (getattr(self.stores.user_profile, "profile", None) or {}).get("categories", {})
                 return sum(len(v) for v in cats.values() if isinstance(v, list)) or None
-        except Exception:
+        except Exception:  # degrades: store size unknown, so the oversized-batch anomaly check is skipped
             return None
         return None
 

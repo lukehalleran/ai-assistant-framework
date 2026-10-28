@@ -253,7 +253,8 @@ def check_budget(rate_limiter: Any) -> float:
     """Remaining Tavily credits; drivers stop BEFORE a candidate if below worst case."""
     try:
         return float(rate_limiter.get_remaining_credits())
-    except Exception:
+    except Exception as e:  # degrades: oracle run halts because remaining Tavily credits read as zero
+        log.warning(f"[LiteratureOracle] credit check failed, treating budget as 0: {type(e).__name__}")
         return 0.0
 
 

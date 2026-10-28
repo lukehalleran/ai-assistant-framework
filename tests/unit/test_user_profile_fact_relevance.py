@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 import numpy as np
 import pytest
 
+from tests.unit.helpers_fakes import make_concept_embedder
+
 import memory.user_profile as up
 from memory.user_profile import RELEVANCE_COSINE_FLOOR, UserProfile
 from memory.user_profile_schema import ProfileCategory, categorize_relation
@@ -31,17 +33,7 @@ _CONCEPTS = [
 ]
 
 
-class FakeEmbedder:
-    calls = 0
-
-    def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, **kw):
-        FakeEmbedder.calls += len(texts)
-        out = []
-        for t in texts:
-            words = {w.strip(".,:;'\"?!").lower() for w in t.replace("_", " ").split()}
-            v = np.array([float(len(words & c)) for c in _CONCEPTS] + [0.01])
-            out.append(v / np.linalg.norm(v))
-        return np.array(out)
+FakeEmbedder = make_concept_embedder(_CONCEPTS)
 
 
 @pytest.fixture

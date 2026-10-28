@@ -166,8 +166,8 @@ class ProposalStore:
 
                 try:
                     proposal = CodeProposal.from_metadata(meta)
-                except Exception as e:
-                    logger.debug(f"[ProposalStore] Failed to deserialize proposal: {e}")
+                except Exception as e:  # degrades: unreadable stored proposal omitted from search results
+                    logger.warning(f"[ProposalStore] Failed to deserialize proposal: {type(e).__name__}")
                     continue
 
                 if status_filter and proposal.status.value not in status_filter:
@@ -235,7 +235,7 @@ class ProposalStore:
                 if meta.get("status") == ProposalStatus.PENDING.value:
                     try:
                         proposals.append(CodeProposal.from_metadata(meta))
-                    except Exception:
+                    except Exception:  # degrades: unreadable stored proposal omitted from the pending list
                         continue
             return proposals
         except Exception as e:
@@ -517,7 +517,7 @@ class ProposalStore:
                 if meta.get("status") in target_statuses:
                     try:
                         proposals.append(CodeProposal.from_metadata(meta))
-                    except Exception:
+                    except Exception:  # degrades: unreadable stored proposal omitted from the active list
                         continue
             return proposals
         except Exception as e:

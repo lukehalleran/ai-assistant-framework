@@ -178,7 +178,7 @@ def build_temporal_claim_audit(convos: List[Dict[str, Any]]) -> str:
                 streak_lines.append(
                     f'- [{time_str}] [streak-count] "{sc.snippet}" → the user\'s own count on this date: day {sc.count}'
                 )
-        except Exception:
+        except Exception:  # degrades: streak-count audit lines missing from the daily-note audit
             pass
 
     if not claims and not streak_lines:
@@ -584,7 +584,7 @@ class DailyNotesGenerator:
             try:
                 from memory.user_profile import UserProfile  # lazy import: startup-cost
                 self._user_profile = UserProfile()
-            except Exception as e:
+            except Exception as e:  # degrades: status-claim guard disabled for this daily-note run
                 logger.debug(f"[DailyNotes] UserProfile unavailable for status-claim guard: {e}")
                 return None
         return self._user_profile
@@ -679,7 +679,7 @@ class DailyNotesGenerator:
                 line = line.strip()
                 if line.startswith("conversations:"):
                     return int(line.split(":", 1)[1].strip())
-        except Exception as e:
+        except Exception as e:  # degrades: existing conversation count unreadable so the note reports zero
             logger.debug(f"[DailyNotes] Could not read frontmatter for {target_date}: {e}")
 
         return 0
@@ -1149,7 +1149,7 @@ generated: {datetime.now().isoformat()}
             user_statements = []
             try:
                 user_statements = self.corpus_manager.get_recent_derivable(60)
-            except Exception as e:
+            except Exception as e:  # degrades: streak ledger gets no recent user statements
                 logger.debug(f"[DailyNotes] No user statements for the streak ledger: {e}")
 
             # Generate narrative from Obsidian notes (no corpus fallback needed for fresh trigger)

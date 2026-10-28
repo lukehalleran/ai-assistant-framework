@@ -210,8 +210,8 @@ def _invalidate_read_cache(op: str) -> None:
     pre-update schedule right after a truthful execution receipt."""
     try:
         google_calendar.clear_cache()
-    except Exception as exc:  # cache is best-effort; never fail the action
-        logger.debug(f"[CalendarModify] Could not clear calendar cache after {op}: {exc}")
+    except Exception as exc:  # degrades: next prompt may show the pre-update schedule for up to 5 minutes
+        logger.warning(f"[CalendarModify] Could not clear calendar cache after {op}: {type(exc).__name__}")
 
 
 async def delete_calendar_event(proposal: ActionProposal) -> ActionResult:

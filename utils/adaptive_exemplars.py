@@ -202,7 +202,7 @@ class AdaptiveExemplarStore:
                 others = others / (np.linalg.norm(others, axis=1, keepdims=True) + 1e-9)
                 if float(np.max(others @ q)) >= _NEAR_DUP_COSINE:
                     return False
-            except Exception as e:
+            except Exception as e:  # degrades: a near-duplicate exemplar may be learned twice
                 logger.debug(f"[AdaptiveExemplars] near-dup check skipped: {e}")
 
         entries = self._data.setdefault(domain, {}).setdefault(label, [])

@@ -895,11 +895,33 @@ _resolver: Optional[LocationResolver] = None
 _resolver_lock = threading.Lock()
 
 
-def get_user_location() -> Optional[str]:
-    """Module-level accessor used by the web-search path. Non-blocking."""
+def _get_resolver() -> LocationResolver:
     global _resolver
     if _resolver is None:
         with _resolver_lock:
             if _resolver is None:
                 _resolver = LocationResolver()
-    return _resolver.get_location()
+    return _resolver
+
+
+def get_user_location() -> Optional[str]:
+    """Module-level accessor used by the web-search path. Non-blocking."""
+    return _get_resolver().get_location()
+
+
+def refresh_session_location() -> Optional[str]:
+    """Run the per-turn session-statement extraction NOW (post-response hook).
+
+    The spaCy parse of a newly stored user turn (~12 ms, ~130 ms when it states
+    a move) used to run inside the first ``get_user_location()`` of the next
+    turn, i.e. on the event loop in the prompt path (2026-10-27, class: BC-41).
+    The hook calls this right after the turn is stored; the resolver's
+    watermark/seen-set keeps ONE extraction per turn, so the following
+    ``get_location()`` finds nothing new and only reads. Never raises."""
+    if not LOCATION_ENABLED:
+        return None
+    try:
+        return _get_resolver()._location_from_session_statement()
+    except Exception as e:  # degrades: extraction deferred to the next get_location() call
+        logger.debug(f"[Location] post-response refresh skipped: {type(e).__name__}")
+        return None

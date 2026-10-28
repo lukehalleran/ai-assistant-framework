@@ -80,7 +80,7 @@ def recent_conversation_context(history, corpus_manager=None) -> str:
                     reply = entry.get("response", "")
                     messages.extend((role, text) for role, text in (("user", user), ("assistant", reply))
                                     if isinstance(text, str))
-        except Exception as exc:
+        except Exception as exc:  # degrades: insight synthesis runs without recent conversation context
             logger.debug("[Insight] Recent conversation unavailable: %s", exc)
     return "\n".join(f"{role.title()}: {text[:500]}" for role, text in messages[-8:] if text)
 

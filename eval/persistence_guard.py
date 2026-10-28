@@ -105,7 +105,7 @@ class PersistenceGuard:
                     kind="chromadb_collection",
                     count=count,
                 )
-            except Exception:
+            except Exception:  # degrades: unreadable chroma collection left out of the persistence fingerprint
                 continue
 
         return fps

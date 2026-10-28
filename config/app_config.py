@@ -1650,7 +1650,8 @@ def _figure_classes(key: str, default: tuple) -> tuple:
 
 FIGURE_CHECK_CORRECT_CLASSES: tuple = _figure_classes("correct_classes", ("elapsed_precise", "weekday_date"))
 FIGURE_CHECK_LOG_CLASSES: tuple = _figure_classes(
-    "log_classes", ("elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported"))
+    "log_classes", ("elapsed_vague", "elapsed_unconfirmed", "copied_mismatch", "unsupported",
+                    "cross_owner_date", "unsupported_detail", "stale_day_count"))
 FIGURE_CHECK_MIN_REFERENT_OVERLAP: int = max(1, int(FIGURE_CHECK_CFG.get("min_referent_overlap", 1)))
 
 # --------------------------------------------------------------------
@@ -2251,7 +2252,7 @@ CHROMA_PATH = os.getenv("CHROMA_PATH", CHROMA_PATH)
 OpenAPIKey = os.getenv("OPENAI_API_KEY", OpenAPIKey)
 try:
     CORPUS_MAX_ENTRIES = int(os.getenv("CORPUS_MAX_ENTRIES", str(CORPUS_MAX_ENTRIES)))
-except Exception:
+except Exception:  # degrades: CORPUS_MAX_ENTRIES env override ignored, default limit kept
     pass
 
 # --------------------------------------------------------------------

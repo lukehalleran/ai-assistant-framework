@@ -23,7 +23,7 @@ async def list_models(request: Request):
     active = None
     try:
         active = mm.get_active_model_name()
-    except Exception:
+    except Exception:  # degrades: model list response shows no active model
         pass
     choices = sorted(set(api_aliases + local_models)) or ([active] if active else [])
     return ModelListResponse(models=choices, active=active)

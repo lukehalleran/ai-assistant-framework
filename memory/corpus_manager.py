@@ -111,7 +111,7 @@ class CorpusManager:
             if isinstance(entry.get("timestamp"), str):
                 try:
                     entry["timestamp"] = datetime.fromisoformat(entry["timestamp"])
-                except Exception:
+                except Exception:  # degrades: entry keeps a string timestamp, so it sorts and ages as undated
                     pass
 
         # Enforce max_entries limit on load (trim oldest, keep newest)
@@ -709,7 +709,7 @@ class CorpusManager:
             try:
                 from utils.narrative_staleness import clear as clear_stale_flag
                 clear_stale_flag()
-            except Exception:
+            except Exception:  # degrades: stale-narrative flag is not cleared, so a caution banner may linger
                 pass
 
             logger.debug(f"[CorpusManager] Saved narrative context ({len(text)} chars) to {narrative_path}")
@@ -768,7 +768,7 @@ class CorpusManager:
                         "prefer the user's most recent statements in the "
                         "conversation over this narrative where they conflict.]"
                     )
-            except Exception:
+            except Exception:  # degrades: correction-staleness caution omitted from the loaded narrative
                 pass
 
             logger.debug(f"[CorpusManager] Loaded narrative context ({len(content)} chars)")

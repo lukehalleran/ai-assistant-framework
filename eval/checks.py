@@ -388,7 +388,7 @@ def run_checks_on_generation_run(gen_run_dir: str) -> List[ResponseCheckResults]
                 sections_removed=pair.get("sections_removed", []),
                 checks=checks,
             ))
-        except Exception:
+        except Exception:  # degrades: unreadable eval result file skipped in the check run
             continue
 
     return all_results

@@ -259,7 +259,7 @@ class SynthesisGenerator:
                     seen_concepts.add(name_key)
 
                     entities.append(item)
-            except Exception as e:
+            except Exception as e:  # degrades: no fact concepts are sampled for this seed
                 logger.debug(f"[SynthesisGenerator] Facts query failed for '{seed}': {e}")
 
         random.shuffle(entities)
@@ -294,7 +294,7 @@ class SynthesisGenerator:
                             "collection": "wiki_knowledge",
                             "relevance_score": item.get("similarity", 0.0),
                         })
-            except Exception as e:
+            except Exception as e:  # degrades: no wiki articles are sampled for this seed
                 logger.debug(f"[SynthesisGenerator] FAISS wiki query failed for '{seed}': {e}")
 
         random.shuffle(articles)
@@ -463,7 +463,7 @@ class SynthesisGenerator:
                 category = user_profile_schema.categorize_relation(relation)
                 if category.value != "other":
                     return category.value
-            except Exception:
+            except Exception:  # degrades: relation domain falls back to metadata hints or a default domain
                 pass
 
         # Check domain_hint in metadata (from test facts)
@@ -612,7 +612,7 @@ class SynthesisGenerator:
                 max_tokens=220,
                 temperature=0.7,
             )
-        except Exception as e:
+        except Exception as e:  # degrades: this concept pair yields no bridge candidate
             logger.debug(f"[SynthesisGenerator] Bridge LLM call failed: {e}")
             return None
 
@@ -687,7 +687,7 @@ class SynthesisGenerator:
                         return max(normalized, 0.15)
                     # Both in graph but no path = structurally distant
                     return 0.85
-            except Exception:
+            except Exception:  # degrades: graph-distance signal falls back to the mid-range default distance
                 pass
 
         # Default: mid-range distance that passes Stage 2
@@ -703,7 +703,7 @@ class SynthesisGenerator:
         try:
             coll_stats = self.store.get_collection_stats()
             stats["facts_count"] = coll_stats.get("facts", {}).get("count", 0)
-        except Exception:
+        except Exception:  # degrades: sampling stats report zero facts available
             stats["facts_count"] = 0
 
         # Wiki stats from FAISS index

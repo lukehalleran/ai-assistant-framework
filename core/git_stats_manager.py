@@ -198,7 +198,7 @@ class GitStatsManager:
                 self._available = True
             else:
                 self._available = False
-        except Exception:
+        except Exception:  # degrades: git stats tools report the repository as unavailable
             self._available = False
         return self._available
 

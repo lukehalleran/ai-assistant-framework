@@ -374,7 +374,7 @@ def _git_sha() -> Optional[str]:
                 base = (git / common.read_text().strip()).resolve() if common.is_file() else git
                 head = (base / ref).read_text().strip()
         return head[:10] if re.fullmatch(r"[0-9a-f]{7,40}", head) else None
-    except Exception:  # degrades: git_sha omitted
+    except Exception:  # degrades: git sha omitted from the problem report
         return None
 
 

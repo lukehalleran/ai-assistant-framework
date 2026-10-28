@@ -707,7 +707,7 @@ class MemoryRetriever:
         try:
             from utils.query_checker import extract_rare_proper_nouns
             terms = extract_rare_proper_nouns(query)
-        except Exception:
+        except Exception:  # degrades: keyword-anchor memories skipped for this turn
             return []
         if not terms or not hasattr(self.corpus_manager, "search_keyword"):
             return []
@@ -729,7 +729,7 @@ class MemoryRetriever:
                 hits = self.corpus_manager.search_keyword(
                     t, max_results=max_hits * 2, include_entry=True
                 )
-            except Exception as e:
+            except Exception as e:  # degrades: keyword-anchor hits missing for one rare term this turn
                 logger.debug(f"[KeywordAnchor] corpus scan failed for {t!r}: {e}")
                 continue
             for h in hits:
@@ -825,7 +825,7 @@ class MemoryRetriever:
                         "metadata": meta,
                     })
 
-        except Exception as e:
+        except Exception as e:  # degrades: stored facts missing from this turn's retrieved context
             logger.debug(f"[Facts] retrieval error: {e}", exc_info=True)
 
         # Rank with semantic relevance as primary signal.
@@ -1023,7 +1023,7 @@ class MemoryRetriever:
                         'source': 'semantic',
                         'relevance_score': r.get('relevance_score', 0.5),
                     })
-            except Exception:
+            except Exception:  # degrades: semantic reflections missing from this turn's prompt
                 pass
 
         # Metadata fallback: search by primary_topic/entities/themes when semantic
@@ -1130,7 +1130,7 @@ class MemoryRetriever:
                 and not is_quarantined(r.get('metadata'))]
             if chroma_summaries:
                 return chroma_summaries[:limit]
-        except Exception:
+        except Exception:  # degrades: semantic summary lookup skipped, falls back to corpus summaries
             pass
 
         # Fallback to corpus manager
@@ -1139,7 +1139,7 @@ class MemoryRetriever:
                 corpus_summaries = self.corpus_manager.get_summaries(limit)
                 if corpus_summaries:
                     return [_corpus_summary_item(x) for x in corpus_summaries]
-        except Exception:
+        except Exception:  # degrades: corpus summary fallback unavailable, so no summaries this turn
             pass
 
         return []
@@ -1158,7 +1158,7 @@ class MemoryRetriever:
             if hasattr(self.corpus_manager, 'get_summaries'):
                 recent = [_corpus_summary_item(x)
                           for x in self.corpus_manager.get_summaries(recent_budget * 2)]
-        except Exception:
+        except Exception:  # degrades: recent summaries missing from this turn's hybrid summary set
             pass
 
         # Fetch semantic
@@ -1169,7 +1169,7 @@ class MemoryRetriever:
                     'summaries', query, n_results=semantic_budget * 2
                 )
                 semantic = [dict(_summary_item(r), source='semantic') for r in results]
-            except Exception:
+            except Exception:  # degrades: semantic summaries missing from this turn's hybrid summary set
                 pass
 
         # Deduplicate
@@ -1293,7 +1293,7 @@ class MemoryRetriever:
                         # ChromaDB update is sync — fire-and-forget via metadata
                         meta["times_retrieved"] = new_count
                         meta["last_retrieved"] = _time.time()
-                except Exception:
+                except Exception:  # degrades: skill retrieval counter not bumped, usage stats undercount
                     pass
 
             logger.debug(

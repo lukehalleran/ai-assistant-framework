@@ -374,7 +374,7 @@ def now_from(time_manager) -> datetime:
     try:
         if time_manager is not None and hasattr(time_manager, "current"):
             return time_manager.current()
-    except Exception:
+    except Exception:  # degrades: injected clock ignored so the system clock is used
         pass
     return datetime.now()
 
@@ -384,7 +384,7 @@ def now_iso_from(time_manager) -> str:
     try:
         if time_manager is not None and hasattr(time_manager, "current_iso"):
             return time_manager.current_iso()
-    except Exception:
+    except Exception:  # degrades: injected clock ignored so the system clock is used
         pass
     return now_from(time_manager).isoformat()
 

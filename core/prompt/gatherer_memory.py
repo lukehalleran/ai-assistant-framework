@@ -535,7 +535,7 @@ class MemoryRetrievalMixin:
                         if synth:
                             needed = limit - total_count
                             result["recent"].extend(synth[:needed])
-                    except Exception as e:
+                    except Exception as e:  # degrades: synthesized summary top-up missing so fewer summaries are shown
                         logger.debug(f"Summary top-up failed: {e}")
 
             return result

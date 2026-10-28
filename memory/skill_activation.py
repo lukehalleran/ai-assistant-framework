@@ -236,7 +236,7 @@ class SkillActivationPolicy:
             try:
                 parsed = json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
                 tags = [t.lower() for t in parsed] if isinstance(parsed, list) else []
-            except Exception:
+            except Exception:  # degrades: skill tags unparsed, so tag-based topic matching skips this skill
                 pass
 
         # Check for any topic match in trigger, tags, or content

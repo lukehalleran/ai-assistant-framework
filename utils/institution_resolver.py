@@ -186,7 +186,7 @@ class InstitutionResolver:
             org = self._extract_from_relations(profile, _ORG_RELATIONS)
             if org:
                 anchors.append(org)
-        except Exception as e:
+        except Exception as e:  # degrades: employer and organization anchors missing from personal anchors
             logger.debug(f"[PersonalAnchors] extraction failed: {e}")
         return anchors
 
@@ -235,8 +235,8 @@ class InstitutionResolver:
                 with open(self.profile_path, "r", encoding="utf-8") as f:
                     profile = json.load(f)
                 value = self._extract(profile)
-            except Exception as e:
-                logger.debug(f"[Institution] profile read failed: {e}")
+            except Exception as e:  # degrades: school institution is not injected into web queries
+                logger.warning(f"[Institution] profile read failed: {type(e).__name__}")
             self._cached = value
             self._mtime = mtime
             return value

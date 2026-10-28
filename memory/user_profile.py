@@ -418,7 +418,7 @@ class UserProfile:
         if not stance:
             try:
                 stance = stance_classifier.classify_triple_stance("user", relation, value).stance
-            except Exception:
+            except Exception:  # degrades: fact is stored without an epistemic stance tag
                 stance = ""
 
         fact = ProfileFact(
@@ -1117,7 +1117,7 @@ class UserProfile:
         corpus_count = 0
         try:
             corpus_count = len(corpus_manager.corpus) if hasattr(corpus_manager, 'corpus') else 0
-        except Exception as e:
+        except Exception as e:  # degrades: wizard check treats the corpus as empty and may offer first-run setup
             logger.debug(f"[UserProfile] Failed to get corpus count: {e}")
             corpus_count = 0
 

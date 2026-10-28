@@ -10,6 +10,8 @@ import inspect
 import numpy as np
 import pytest
 
+from tests.unit.helpers_fakes import ToneAxisEmbedder
+
 import utils.tone_detector as td
 import utils.turn_telemetry as tt
 from types import SimpleNamespace
@@ -22,12 +24,7 @@ INCIDENT = VENT + ":\n\n" + PASTE
 AXES = {"high": 0, "medium": 1, "concern": 2, "conversational": 3}
 
 
-class FakeEmbedder:
-    def encode(self, text, convert_to_numpy=True):
-        v = np.zeros(4)
-        v[2] = text.count("FEELBAD")
-        v[3] = text.count("MATH") + 0.01
-        return v
+FakeEmbedder = ToneAxisEmbedder
 
 
 @pytest.fixture(autouse=True)

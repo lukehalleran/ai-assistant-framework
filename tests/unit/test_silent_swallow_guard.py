@@ -51,7 +51,7 @@ SKIP_PARTS = {"__pycache__", "node_modules", "integration.bak"}
 MIN_MARKER_WORDS = 3
 
 # Lowered by every swallow-marking batch; raised by nobody. See module docstring.
-MAX_UNMARKED_SWALLOWS = 207  # 2026-10-12: 276 on 1a99355; batch 5 (LLM/turn + network/store/process), 17 files / 67 records: 67 markers, 8 warning conversions
+MAX_UNMARKED_SWALLOWS = 0  # 2026-10-27: 100 on a8f942a; wave 3b SWD1/SWD2 named the 95 accepted-debt swallows (comment-only, re-pinned) and PRINT the last 5 free ones
 CEILING_SLACK = 10  # an unrelated change that removes a swallow must not fail this test; a batch lowers the ceiling to the measured count
 
 

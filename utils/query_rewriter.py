@@ -139,7 +139,7 @@ def rewrite_query(query: str, use_topic_extraction: bool = True,
                         if word not in ordered:
                             ordered.append(word)
                 logger.debug(f"[QueryRewriter] Extracted topics: {found[:5]}")
-        except Exception as e:
+        except Exception as e:  # degrades: topic keywords missing from the rewritten retrieval query
             logger.debug(f"[QueryRewriter] Topic extraction failed: {e}")
 
     # 3. Synonym expansions, appended in deterministic order: keywords in
