@@ -1169,6 +1169,8 @@ LOOP_STALL_THRESHOLD_MS: int = int(TURN_TELEMETRY_CFG.get("loop_stall_threshold_
 # Detection: utils/query_checker.is_casual_acknowledgment (conservative:
 # any question/command/request shape or heavy topic disqualifies; builder
 # additionally requires a non-crisis tone level).
+LATENCY_DIAGNOSTICS_CFG = config.get("latency_diagnostics", {}) or {}
+LATENCY_DIAGNOSTICS_FIRST_TURN_STACK_DUMP_S: float = float(os.getenv("LATENCY_FIRST_TURN_STACK_DUMP_S", LATENCY_DIAGNOSTICS_CFG.get("first_turn_stack_dump_s", 6.0)))
 LIGHT_PROMPT_CFG = config.get("light_prompt", {}) or {}
 LIGHT_PROMPT_ENABLED: bool = bool(LIGHT_PROMPT_CFG.get("enabled", True))
 LIGHT_PROMPT_ENABLED = bool(int(os.getenv("LIGHT_PROMPT_ENABLED", "1" if LIGHT_PROMPT_ENABLED else "0")))

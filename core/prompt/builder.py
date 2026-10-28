@@ -70,6 +70,7 @@ Module Contract
   - Comprehensive logging and performance metrics
 """
 
+import faulthandler
 import os
 import re
 import subprocess
@@ -89,6 +90,7 @@ from utils.query_checker import (
     is_retry_continuation,
 )
 from memory.memory_consolidator import MemoryConsolidator
+from utils.bootstrap import store_path
 from utils.logging_utils import get_logger
 
 # Import the modular components
@@ -134,6 +136,66 @@ try:
 except (ImportError, AttributeError) as e:
     logger.warning(f"[PromptBuilder] Could not load memory config: {e}, using defaults")
     _MEM_CFG = {}
+
+# --- First-gather stack dump (latency_diagnostics, round-2 instrumentation) ---
+# The first full gather of a process has been observed to stall 3-10 s with no
+# log line and no loop-stall report. faulthandler writes every thread's stack
+# (file/line/function only -- no locals, no user text) if that gather outlives
+# the configured threshold. Process-global: faulthandler has one timer.
+_FIRST_GATHER_CLAIMED = False
+# Tests drive real gathers in a process that must never create the owner's log
+# (class: tests writing Daemon-owned logs); only the diagnostics' own tests flip this.
+_STACK_DUMP_IN_TEST_MODE = False
+
+
+def _first_turn_stack_log_path() -> str:
+    return store_path(os.path.join("logs", "first_turn_stacks.log"))
+
+
+def _arm_first_gather_stack_dump():
+    """Arm the one-shot dump for the process's first full gather; None otherwise."""
+    global _FIRST_GATHER_CLAIMED
+    try:
+        if os.environ.get("DAEMON_TEST_MODE") and not _STACK_DUMP_IN_TEST_MODE:
+            return None
+        n = float(_app_config.LATENCY_DIAGNOSTICS_FIRST_TURN_STACK_DUMP_S)  # live read (BC-82)
+        if n <= 0 or _FIRST_GATHER_CLAIMED:
+            return None
+        _FIRST_GATHER_CLAIMED = True
+        path = _first_turn_stack_log_path()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fh = open(path, "a+", encoding="utf-8")
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        fh.write(
+            f"=== {datetime.now().astimezone().isoformat(timespec='seconds')} "
+            f"pid={os.getpid()} first gather > {n:g} s ===\n"
+        )
+        fh.flush()
+        faulthandler.dump_traceback_later(n, repeat=False, file=fh)
+        return (fh, pos, n, time.perf_counter())
+    except Exception as e:  # degrades: no stack dump for this process's first gather (diagnostics only)
+        logger.debug(f"[LatencyDiagnostics] stack-dump arm skipped: {type(e).__name__}")
+        return None
+
+
+def _disarm_first_gather_stack_dump(armed) -> None:
+    """Cancel the timer; drop the header when the gather finished before it fired."""
+    if not armed:
+        return
+    fh, pos, n, t0 = armed
+    try:
+        faulthandler.cancel_dump_traceback_later()
+        if time.perf_counter() - t0 < n:
+            fh.truncate(pos)
+    except Exception as e:  # degrades: a stale header line may stay in the diagnostics log
+        logger.debug(f"[LatencyDiagnostics] stack-dump disarm skipped: {type(e).__name__}")
+    finally:
+        try:
+            fh.close()
+        except Exception:  # degrades: file handle closed by GC instead
+            pass
+
 
 def _cfg_int(key: str, default_val: int) -> int:
     try:
@@ -1461,6 +1523,10 @@ class UnifiedPromptBuilder:
 
             tasks = {}
             task_timings = {}
+            # Per-task [start, end] offsets (s) from the gather start (round-2
+            # latency diagnostics: separates "started late" from "ran long").
+            task_spans = {}
+            _span_origin = [time.perf_counter()]
 
             # Live per-task progress for the streaming UI (no-op outside a turn)
             _TASK_LABELS = {
@@ -1490,9 +1556,11 @@ class UnifiedPromptBuilder:
             async def _timed_task(name: str, coro):
                 """Wrapper to time individual tasks"""
                 _start = time.perf_counter()
+                _span_start = _start - _span_origin[0]
                 try:
                     result = await coro
                     task_timings[name] = time.perf_counter() - _start
+                    task_spans[name] = [round(_span_start, 3), round(time.perf_counter() - _span_origin[0], 3)]
                     # Surface slow/fruitful tasks live; skip sub-perceptual ones
                     _dur = task_timings[name]
                     if _dur >= 0.2:
@@ -1502,6 +1570,7 @@ class UnifiedPromptBuilder:
                     return result
                 except Exception as e:
                     task_timings[name] = time.perf_counter() - _start
+                    task_spans[name] = [round(_span_start, 3), round(time.perf_counter() - _span_origin[0], 3)]
                     raise e
 
             # Recent conversations
@@ -1789,16 +1858,21 @@ class UnifiedPromptBuilder:
             turn_progress.emit(f"🔎 Retrieving context from {len(tasks)} sources in parallel…")
             _gather_start = time.perf_counter()
             phase_timings["before_retrieval"] = _gather_start - start_time
+            _span_origin[0] = _gather_start
             # Event-loop stall detector (BC-41/BC-69): a gather task that
             # blocks the loop inline defeats every wait_for around it.
             _stall_det = loop_stall.LoopStallDetector()
             try:
-                async with _stall_det:
-                    done, pending = await asyncio.wait(
-                        list(tasks.values()),
-                        timeout=30.0,
-                        return_when=asyncio.ALL_COMPLETED,
-                    )
+                _stack_dump = _arm_first_gather_stack_dump()
+                try:
+                    async with _stall_det:
+                        done, pending = await asyncio.wait(
+                            list(tasks.values()),
+                            timeout=30.0,
+                            return_when=asyncio.ALL_COMPLETED,
+                        )
+                finally:
+                    _disarm_first_gather_stack_dump(_stack_dump)
                 _gather_elapsed = time.perf_counter() - _gather_start
                 phase_timings["retrieval"] = _gather_elapsed
 
@@ -2415,6 +2489,7 @@ class UnifiedPromptBuilder:
 
             # Attach timing metadata for interpretability (underscore-prefixed to avoid collision)
             prompt_ctx["_task_timings"] = dict(task_timings)
+            prompt_ctx["_task_spans"] = {k: list(v) for k, v in task_spans.items()}
             prompt_ctx["_section_outcomes"] = dict(section_outcomes)
             prompt_ctx["_gather_elapsed"] = locals().get('_gather_elapsed', 0.0)
             prompt_ctx["_build_time"] = build_time

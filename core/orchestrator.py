@@ -345,6 +345,7 @@ class _QueryFlow:
     is_heavy_topic: bool = False
     tone_level: Any = None
     task_timings: Dict[str, Any] = field(default_factory=dict)
+    task_spans: Dict[str, Any] = field(default_factory=dict)
     section_outcomes: Dict[str, Any] = field(default_factory=dict)
     gather_elapsed: float = 0.0
     t_ctx_elapsed: float = 0.0
@@ -1965,6 +1966,9 @@ class DaemonOrchestrator:
                     _plan_result.audit_record() if _plan_result else None
                 ),
                 "sections_not_checked": _sections_not_checked,
+                # Per-task [start, end] offsets from the gather start (round-2 latency
+                # diagnostics); numbers only.
+                "task_spans": dict(prompt_ctx.get("_task_spans") or {}),
             }
         except Exception as e:  # degrades: turn-signal record for debug and review left empty
             logger.debug(f"[BUILD_FULL_PROMPT] Turn-signal capture failed (non-fatal): {e}")
@@ -2107,6 +2111,7 @@ class DaemonOrchestrator:
             _pctx = result[2] or {}
             self._last_task_timings = _pctx.pop("_task_timings", {})
             self._last_section_outcomes = _pctx.pop("_section_outcomes", {})
+            _pctx.pop("_task_spans", None)  # telemetry-only; already copied into _last_turn_signals
             # Memories items that survived the token budget (turn-record key
             # `memories_rendered`; 2026-10-20, BC-99): the budget empties the
             # section silently, so the count is the only post-hoc signal.
@@ -2307,6 +2312,7 @@ class DaemonOrchestrator:
         # Extract per-task timings stashed by builder
         _task_timings = prompt_ctx.pop("_task_timings", {}) if prompt_ctx else {}
         _section_outcomes = prompt_ctx.pop("_section_outcomes", {}) if prompt_ctx else {}
+        _task_spans = prompt_ctx.pop("_task_spans", {}) if prompt_ctx else {}
         _gather_elapsed = prompt_ctx.pop("_gather_elapsed", 0.0) if prompt_ctx else 0.0
         _builder_time = prompt_ctx.pop("_build_time", 0.0) if prompt_ctx else 0.0
 
@@ -2350,6 +2356,7 @@ class DaemonOrchestrator:
         flow.t_ctx_elapsed = _t_ctx_elapsed
         flow.t_build_elapsed = _t_build_elapsed
         flow.task_timings = _task_timings
+        flow.task_spans = _task_spans
         flow.section_outcomes = _section_outcomes
         flow.gather_elapsed = _gather_elapsed
         flow.t_gen_start = _t_gen_start
@@ -2580,6 +2587,7 @@ class DaemonOrchestrator:
                         "llm_generation": round(debug_info["duration"] - _t_ctx_elapsed - _t_build_elapsed, 3),
                     }
                     debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+                    debug_info["task_spans"] = dict(flow.task_spans)
                     debug_info["section_outcomes"] = dict(_section_outcomes)
                     debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
 
@@ -2897,5 +2905,6 @@ class DaemonOrchestrator:
             "memory_store": round(_t_store_elapsed, 3),
         }
         debug_info["task_timings"] = {k: round(v, 3) for k, v in _task_timings.items()}
+        debug_info["task_spans"] = dict(flow.task_spans)
         debug_info["section_outcomes"] = dict(_section_outcomes)
         debug_info["gather_elapsed"] = round(_gather_elapsed, 3)
