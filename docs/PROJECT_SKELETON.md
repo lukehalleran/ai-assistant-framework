@@ -2,7 +2,7 @@
 
 **Purpose**: Compressed architectural overview for LLM context windows. This skeleton captures the essential structure, data flow, and patterns without full implementation details.
 
-**Last Updated**: 2026-08-29 (curation engine, grounding floor, de-escalation batch, gate/trigger paste hardening; see CLAUDE.md dated entries for the 08-26 → 08-29 batches)
+**Last Updated**: 2026-10-27 (BC-71 drift pass: tool count, shipped constants, graph API, shutdown summaries, module coverage; see CLAUDE.md dated entries for later batches)
 
 ---
 
@@ -58,7 +58,7 @@ USER QUERY
 RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 ```
 
-**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator (~639 lines, down from 1,694) delegating to:
+**Note**: Memory system fully refactored (Jan 2026). `memory/memory_coordinator.py` is now a thin orchestrator delegating to:
 - `memory/memory_retriever.py` - Retrieval operations (incl. `get_semantic_top_memories`)
 - `memory/memory_storage.py` - Storage operations
 - `memory/memory_scorer.py` - Scoring and ranking
@@ -108,7 +108,7 @@ RESPONSE (thinking stripped) + MEMORY PERSISTENCE
 - `scripts/backfill_stance.py` - Stance backfill for existing facts + graph edges (dry-run default, daemon-guard, pre-image backups, hard classification sentinel) **[NEW 2026-08-23]**
 - `utils/narrative_staleness.py` - Correction-staleness flag for the cached narrative context: correction signal ≥0.6 marks it stale, narrative reads append a CAUTION line until a fresh save clears it (lenient derived state, never raises) **[NEW 2026-08-23]**
 - `scripts/repair_zelphex_duration_claims.py` - Owner-run "day 8" duration data repair: annotates affected conversations + supersedes the junk fact via the deployed add_fact path (pre-image backup; APPLIED 08-24) **[NEW 2026-08-24]**
-- `memory/curation/` - Autonomous curation engine (docs/AUTONOMOUS_CURATION_DESIGN.md): `types.py` (proposals/dispositions), `engine.py` (scan orchestration, sentinel batch-abort, anomaly halt, rate cap), `curators/` (error_sentinels, junk_facts, stream_artifacts, temporal_staleness — all deployed-predicate), `adapters.py`, `journal.py` (append-only audit + undo pre-images), `service.py`; quarantine-not-delete; ceiling `curation.max_mode="queue"` **[NEW 2026-08-28]**
+- `memory/curation/` - Autonomous curation engine (docs/AUTONOMOUS_CURATION_DESIGN.md): `types.py` (proposals/dispositions), `engine.py` (scan orchestration, sentinel batch-abort, anomaly halt, rate cap), `curators/` (error_sentinels, junk_facts, stream_artifacts, temporal_staleness, graph_temporal_nodes, profile_junk_facts, residence_conflicts + shared `_scan.py` — all deployed-predicate), `adapters.py`, `journal.py` (append-only audit + undo pre-images), `service.py`; quarantine-not-delete; ceiling `curation.max_mode="queue"` **[NEW 2026-08-28]**
 - `api/routes/curation.py` - Curation Center API (queue/scan/apply/dismiss/undo/activity) backing the SPA 🧹 view **[NEW 2026-08-28]**
 - `core/grounding_check.py` - Factual-grounding floor: GROUNDING_ACCURACY_CLAUSE (5 emotional instruction blocks), deterministic claim-shape prefilter, verifier (fail-open; head+tail query slices for pastes; advice-shaped-verdict demotion), visible ⚠️ correction builder **[NEW 2026-08-28]**
 - `memory/pattern_engine.py` - Deterministic pattern aggregation (counts/streaks/gaps/trend by dimension × time bucket) over corpus/telemetry/profile; 5 dimensions; denominator doctrine; on-demand only — see docs/PATTERN_ANALYSIS.md; also hosts LongitudinalEvidenceSpec + run_longitudinal_scan (phased + co_occurrence bucket counting for the deliberation stack) **[NEW 2026-08-29]**
@@ -401,13 +401,13 @@ PromptBuilder.build_prompt(context, memories)  →  final prompt
 ---
 
 ### 2.3 memory/memory_coordinator.py (Thin Orchestrator)
-**Purpose**: Unified interface for all memory operations — thin delegation layer (~639 lines)
+**Purpose**: Unified interface for all memory operations — thin delegation layer
 
 **Status**: Fully refactored (Jan 2026). All inline logic extracted to modular components. Acts as state-syncing orchestrator with ~24 delegation methods.
 
 **Architecture**:
 ```python
-MemoryCoordinator (memory_coordinator.py, ~639 lines)
+MemoryCoordinator (memory_coordinator.py)
     ↓
 ├── MemoryRetriever (memory_retriever.py) - Retrieval + semantic top memories
 ├── MemoryScorer (memory_scorer.py) - Scoring and ranking
@@ -503,22 +503,22 @@ if collection == 'reflections':
 staleness_penalty = -min(base_penalty, STALENESS_MAX_PENALTY)  # capped at -0.4
 ```
 
-**Temporal-Aware Recency Decay** **[NEW 2026-02-17]**:
-When `_temporal_anchor_hours` is present in weight_overrides (set by IntentClassifier for TEMPORAL_RECALL), the standard exponential decay curve is replaced with a temporal-aware curve:
-```python
-# Standard decay (all other intents):
-recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * age_hours)
+**Recency** (`rank_memories`, read `memory/memory_scorer.py`): production uses ACTIVE-DAY decay — `time_manager.calculate_active_day_decay(ts, RECENCY_DECAY_RATE)` (`memory.recency_decay_rate` = 0.05) — so idle days do not age a memory. Plain hourly decay `1 / (1 + RECENCY_DECAY_RATE * age_hours)` is only the fallback when no time manager is available.
 
-# Temporal-aware decay (TEMPORAL_RECALL with anchor window):
-if age_hours <= temporal_anchor:
-    # Gentle decay within referenced window (1.0 → 0.7)
-    recency = 1.0 - (age_hours / temporal_anchor) * 0.3
-else:
-    # Standard decay from 0.7 baseline for memories outside window
-    hours_past = age_hours - temporal_anchor
-    recency = 0.7 / (1.0 + RECENCY_DECAY_RATE * hours_past)
+**Temporal-Aware Recency Decay** **[NEW 2026-02-17, two-regime since 2026-03]**:
+When `_temporal_anchor_hours` is present in weight_overrides (set by IntentClassifier for TEMPORAL_RECALL), recency is replaced by a two-regime curve that depends on the anchor size:
+```python
+if temporal_anchor <= 48:        # "today" / "yesterday"
+    grace_limit = temporal_anchor * 1.5
+    if age_hours <= temporal_anchor:  recency = 1.0 - (age_hours / temporal_anchor) * 0.15   # plateau 1.0 -> 0.85
+    elif age_hours <= grace_limit:    recency = 0.85 - grace_frac * 0.15                      # gentle taper to 0.70
+    else:                             recency = 0.70 / (1.0 + RECENCY_DECAY_RATE * (age_hours - grace_limit))
+else:                            # "last week" / "last month"
+    floor = max(0.60, 1.0 - temporal_anchor / 500.0)
+    if age_hours <= temporal_anchor:  recency = floor + (1.0 - floor) * sqrt(age_hours / temporal_anchor)  # sqrt ramp to 1.0
+    else:                             recency = 1.0 / (1.0 + RECENCY_DECAY_RATE * (age_hours - temporal_anchor))
 ```
-This ensures memories from the referenced time period (e.g., "last week" → 168h window) score 0.70–1.00 instead of being buried at 0.10 by standard decay. The `_temporal_anchor_hours` key is popped from weights before scoring (not a real scoring weight). Temporal anchor takes priority over both `time_manager.calculate_active_day_decay()` and the standard fallback.
+For anchors over 48h, corpus-sourced relevance is also capped at 0.5 (the flat 0.9 corpus relevance would otherwise drown semantic results). The `_temporal_anchor_hours` key is popped from weights before scoring (not a real scoring weight). A temporal anchor takes priority over active-day decay and the hourly fallback.
 
 **Configuration Constants**:
 ```python
@@ -552,11 +552,15 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 **Key Methods**:
 - `async process_shutdown_memory(session_conversations=None)` → Main shutdown pipeline:
   ```python
-  1. Gather unsummarized conversations (from session or corpus)
-  2. Create block summaries (consolidator) for every N turns
-     2a. After each summary stored, extract claims via extract_claims_from_text()
-         and register in ClaimIndex (if STALENESS_ENABLED) [NEW 2026-03-25]
-  3. Store summaries in ChromaDB (summaries collection)
+  1. summarize_uncovered_blocks(cap) — ONE method shared with scripts/backfill_summaries.py.
+     Picks blocks of N turns newer than the CONTENT-TIME watermark of the stored
+     summaries' anchors (memory/summary_coverage.py; unreadable coverage → skip, never
+     blind); at most SUMMARY_MAX_BLOCKS_PER_SHUTDOWN (default 1) blocks per shutdown,
+     stopping at the first failed block. [CHANGED 2026-10-14/15 — was "a summary every
+     N turns" keyed by corpus position]
+  2. Each summary is stored in ChromaDB (summaries collection) with temporal anchors
+     (covers A – B); after each, claims are extracted via extract_claims_from_text()
+     and registered in ClaimIndex (if STALENESS_ENABLED) [NEW 2026-03-25]
   Phase A (parallel via asyncio.gather):
     4a. Extract facts via LLM (LLMFactExtractor) + regex (FactExtractor) [ENHANCED 2026-04-05]
     4b. Behavioral pattern extraction (cross-turn habit detection)
@@ -566,9 +570,10 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
     5b. Lightweight implementation tracking — file existence only [NEW 2026-03-25]
     5c. Extract open threads via LLM + resolve completed threads [NEW 2026-03-20]
     5d. Wiki enrichment — tracked wiki articles → graph nodes [NEW 2026-03-28]
-  (Synthesis dreaming is NO LONGER in Phase B — it runs as its own standalone shutdown
+  (Synthesis dreaming is NOT in Phase B — it runs as its own standalone shutdown
    step, driven by main.py via run_synthesis_dreaming() under SYNTHESIS_DREAM_TIMEOUT_S,
-   using the pooled generator; Tiers 0/1/2 retired) [CHANGED 2026-06/07]
+   and only when a synthesis generator is enabled; all generators are OFF by default,
+   paused 2026-07-15, Settings-controlled) [CHANGED 2026-06/07]
   Phase C (sequential — follows Phase B):
     6. Save knowledge graph + entity aliases + category cache to disk [ENHANCED 2026-03-25]
     7. Cross-collection dedup preview (dry_run=True only, NEVER auto-deletes) [NEW 2026-02-13]
@@ -588,10 +593,10 @@ LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 
 **Configuration** (env vars):
 - `REFLECTIONS_ENABLED` — Enable/disable reflections (default: True)
-- `REFLECTION_MAX_TOKENS` — Max tokens for reflection (default: 500)
-- `REFLECTION_MODEL` — Model alias (default: gpt-4o-mini)
-- `SHUTDOWN_SUMMARY_BLOCK_SIZE` — Conversations per summary block (default: 10)
-- `SHUTDOWN_FACT_EXTRACTION` — Enable fact extraction (default: True)
+- `REFLECTION_MAX_TOKENS` — Max tokens for reflection (default: 300)
+- `LLM_REFLECTION_ALIAS` — Reflection model alias (`REFLECTION_MODEL_ALIAS`; falls back to `LLM_SUMMARY_ALIAS`, then gpt-4o-mini)
+- `SUMMARY_MAX_BLOCKS_PER_SHUTDOWN` — Summary blocks created per shutdown (default: 1)
+- Block size is the consolidator's `consolidation_threshold`; there is no fact-extraction env switch.
 
 **Additional Methods**:
 - `async _extract_procedural_skills(session_conversations)` → LLM-based pattern extraction:
@@ -870,7 +875,7 @@ INTENT_STYLE_INSTRUCTIONS_ENABLED = True     # Per-intent style block in system-
 ---
 
 ### 2.3.2 memory/memory_retriever.py **[REFACTORED, ENHANCED 2026-05-27]**
-**Purpose**: Memory retrieval operations (~1800 lines). Config-driven ephemeral predicate filtering and per-relation TTL-based expiry for transient facts, plus reflection v2 subsystem, semantic-primary fact ranking, and facts-collection supersession (is_current=False).
+**Purpose**: Memory retrieval operations. Config-driven ephemeral predicate filtering and per-relation TTL-based expiry for transient facts, plus reflection v2 subsystem, semantic-primary fact ranking, and facts-collection supersession (is_current=False).
 
 **Key Methods** (implements MemoryRetrieverProtocol):
 - `async get_memories(query, limit, topic_filter)` → Main retrieval pipeline
@@ -1214,7 +1219,7 @@ Stage 3: Cross-encoder reranking
 - `GatedPromptBuilder.build_gated_prompt()` — gating + prompt building wrapper
 - Constructed with `retrieval_embedder=` (the store's bge SentenceTransformer) so memory gating scores in the same space as retrieval **[2026-07-02]**
 
-**Configuration**: `GATE_COSINE_THRESHOLD` controls Stage 2 aggressiveness
+**Configuration**: memory gating uses `gating.gate_rel_threshold_retrieval` = 0.60 (deictic floor 0.61); Obsidian notes `obsidian.gate_threshold` = 0.60; wiki semantic chunks `gating.semantic_chunks_gate_threshold` = 0.35 (code default; not set in config.yaml). `GATE_COSINE_THRESHOLD` (env, default 0.50, `DEFAULT_THRESHOLD` in gate_system.py) is only the fallback for gate calls with no specific threshold.
 
 ---
 
@@ -1227,7 +1232,7 @@ UnifiedPromptBuilder (core/prompt/builder.py) — Thin orchestrator
     ↓
 ├── ContextGatherer (context_gatherer.py) - Mixin compositor
 │   ├── WebSearchMixin (gatherer_web.py) - Web search retrieval
-│   ├── MemoryRetrievalMixin (gatherer_memory.py) - 17 memory retrieval methods
+│   ├── MemoryRetrievalMixin (gatherer_memory.py) - memory/summary/reflection/facts retrieval methods
 │   └── KnowledgeRetrievalMixin (gatherer_knowledge.py) - Knowledge retrieval methods incl. Google Calendar
 ├── PromptFormatter (formatter.py) - Section assembly + feature inventory + [GOOGLE CALENDAR]
 ├── ContentHygiene (hygiene.py) - Dedup, caps, backfill
@@ -1238,50 +1243,45 @@ UnifiedPromptBuilder (core/prompt/builder.py) — Thin orchestrator
 
 **Token Budget Strategy**:
 ```python
-Total budget: 10000 tokens (default, configurable)
+Total budget: PROMPT_TOKEN_BUDGET_DEFAULT = 10000 tokens (floor 8000, ceiling 16000;
+API-model budgets are capped at it — the model-aware fraction `token_budget.context_fraction`
+= 0.12 of the context window can only lower it; local models 12000)
 
-Allocation with separated sections:
-1. System prompt (fixed ~500-800)
-2. Current query (variable)
-3. Recent conversation (last 15 turns)
-4. Relevant memories (15 semantic search results)
-5. Semantic facts (30) + Recent facts (30)
-6. Recent summaries (5) + Semantic summaries (5)
-7. Recent reflections (5) + Semantic reflections (5)
-8. Wikipedia context (3 max)
-9. Dreams (3 max)
+Live retrieval limits (config.yaml `memory:`; code defaults in builder.py differ):
+  prompt_max_recent 10 (code default 15), prompt_max_mems 30 (15), prompt_max_semantic 15 (8);
+  intent classifier retrieval_overrides adjust these per turn.
 
-Priority order (with weights):
-- stm_summary: 10               # HIGHEST - metadata only, no token cost
-- narrative_state: 8            # Temporal grounding - synthesized life context [NEW 2026-01-17]
-- recent_conversations: 7
-- semantic_chunks: 6
-- personal_notes: 6             # Obsidian notes
-- user_uploads: 6               # Persisted user file/image uploads [NEW 2026-02-10]
-- reference_docs: 5             # Daemon self-knowledge docs
-- git_commits: 5               # Git commit history (procedural)
-- procedural_skills: 5         # Reusable problem-solving patterns
-- memories: 5
-- semantic_facts/fresh_facts: 4
-- summaries: 3
-- proposed_features: 3         # Code proposals (project-related queries only) [NEW 2026-02-09]
-- graph_context: 3             # Knowledge graph traversal [NEW 2026-03]
-- open_threads: 3              # Unresolved threads surfacing [NEW 2026-03-20]
-- proactive_insights: 3        # Cross-domain insights from knowledge graph [NEW 2026-03-25]
-- feature_inventory: 3         # Active features summary [NEW 2026-03-25]
-- google_calendar: 3           # Real-time Google Calendar events [NEW 2026-05-27]
-- reflections/dreams: 2
+Priority order — authoritative: `PRIORITY_ORDER` in core/prompt/token_manager.py
+(higher admitted first; equal priorities admit in list order). Highlights:
+- stm_summary: 10               # metadata only, no token cost
+- budget_omitted_note: 10       # one-line "[NOT SHOWN FOR SPACE]" naming emptied sections
+- user_profile: 9
+- narrative_state: 8            # Temporal grounding - synthesized life context
+- web_search_results: 8, user_stated_evidence: 8, stated_figures: 8, day_counts: 8
+- google_calendar / unresolved_threads / relevant_emails / upcoming_schedule: 7 (small, time-sensitive)
+- recent_conversations: 7, session_timeline: 7, graph_context: 7
+- semantic_chunks / personal_notes / user_uploads / disambiguation_notes: 6
+- reference_docs / memories: 5
+- procedural_skills / facts: 4
+- recent_summaries / semantic_summaries / proposed_features / git_commits / proactive_insights: 3
+- recent_reflections / semantic_reflections / daemon_self_notes / dreams / codebase_changes: 2
 - wiki: 1
+The budget meters the RENDERED keys (recent_/semantic_ summaries and reflections), never the
+combined `summaries`/`reflections` keys (UNRENDERED_CONTEXT_KEYS); a parity test fails when a
+rendered key has no row.
 
 Compression strategy (two-tier):
 - Items >= 3x over max_tokens: LLM summary via _llm_compress_oversized() (async, parallel batch)
 - Items 1x-3x over max_tokens: middle-out character slicing in token_manager
-- Config: LLM_COMPRESSION_ENABLED, LLM_COMPRESSION_MODEL, LLM_COMPRESSION_RATIO_THRESHOLD
+- Config: LLM_COMPRESSION_ENABLED (shipped `llm_compression.enabled: false` — the LLM tier is OFF; only middle-out runs), LLM_COMPRESSION_MODEL, LLM_COMPRESSION_RATIO_THRESHOLD
 
-Post-budget floors (Step 7.1) [ENHANCED 2026-03-28]:
+Floors (Step 7.1) are survival MINIMUMS, not restore-to-max [CORRECTED 2026-10-27]:
 - recent_conversations: PROMPT_MIN_RECENT_FLOOR (5) — guarantees session context survives
-- summaries: PROMPT_MAX_SUMMARIES (10) — restored from storage if budget-trimmed
-- reflections: PROMPT_MAX_REFLECTIONS (10) — restored from storage if budget-trimmed
+- summaries: `prompt_min_summaries_floor` (2); reflections: `prompt_min_reflections_floor` (1);
+  memories: `prompt_memories_reserve_floor` (2)
+- The budget RESERVES their tokens before priority admission (`FLOOR_PROTECTED_SECTIONS`,
+  bounded by `memory.prompt_floor_reserve_max_share` = 0.25) and the second trim pass never
+  cuts below them
 ```
 
 **Context Dict Structure**:
@@ -1315,7 +1315,7 @@ Post-budget floors (Step 7.1) [ENHANCED 2026-03-28]:
 
 **Key Methods**:
 - `builder.py::build_prompt(user_input, config, ..., retrieval_overrides=None, weight_overrides=None)` → Complete context dict. Intent-driven overrides applied to all max_* retrieval counts and scorer weights. **[UPDATED 2026-02-15]**
-- `formatter.py::_assemble_prompt(context, user_input)` → Format to string with headers (768 LOC, moved from builder.py) **[REFACTORED 2026-05-22]**
+- `formatter.py::_assemble_prompt(context, user_input)` → Format to string with headers (moved from builder.py) **[REFACTORED 2026-05-22]**
   - `_format_summary_section()` extracts shared format logic for summaries/reflections (4 sections)
 - `hygiene.py::ContentHygiene._hygiene_and_caps(context)` → Dedupe with semantic similarity (0.90 threshold) **[MOVED 2026-05]**
 - `hygiene.py::ContentHygiene._backfill_recent_conversations()` → Top-up after deduplication **[MOVED 2026-05]**
@@ -1525,7 +1525,7 @@ else:
 **Key Components**:
 
 **core/agentic/types.py** - Data structures
-- `AgentState` (Enum): `THINKING`, `SEARCHING`, `OBSERVING`, `SYNTHESIZING`, `DONE`, `ERROR`
+- `AgentState` (Enum): `IDLE`, `THINKING`, `SEARCHING`, `OBSERVING`, `GENERATING`, `DONE`, `ERROR`
 - `SearchProtocol` (Enum): `NATIVE_TOOLS` (API models), `XML_MARKERS` (local models)
 - `SearchRequest`: Query + depth + max results
 - `SearchRound`: Results from a single search iteration
@@ -1566,11 +1566,11 @@ else:
 
 **core/agentic/tools.py** - Tool execution **[UPDATED 2026-06]**
 - `DISPATCH_TABLE`: the single decision→handler routing table (predicate, handler_name, arg_builder rows). Both `ToolExecutor.dispatch_single()` AND `controller._dispatch_single_inner()` iterate it — no drift between routers (enforced by `tests/unit/test_tool_wiring_parity.py`)
-- `ToolExecutor`: dispatch routing + ~20 tool types' execute/dispatch methods
+- `ToolExecutor`: dispatch routing + one `_dispatch_*` handler per DISPATCH_TABLE row (23 rows; 22 offered in the loop — `recall_image` is excluded to save API credits — plus `done_searching`), most delegating to an `_execute_*` method
   - `get_tool_health()` → Returns diagnostic string of tool availability (web search, FAISS, sandbox, calendar_create_event, etc.)
   - `dispatch(decision, session)` → Routes to appropriate `_execute_*` / `_dispatch_*` method
-  - Core: `_execute_search` (web, with optional `include_domains`), `_execute_fetch_url`, `_execute_wolfram`, `_execute_sandbox`
-  - Memory: `_execute_memory_search`, `_execute_memory_expand`, `_execute_full_document`, `_execute_recall_image`
+  - Core: `_execute_search` (web, with optional `include_domains`), `_execute_fetch_url`, `_execute_wolfram`, `_dispatch_sandbox` (E2B `execute_python`; lazy session)
+  - Memory: `_execute_memory_search`, `_execute_memory_expand`, `_execute_full_document_retrieval`, `_execute_recall_image`
   - Files: `_execute_file_read`, `_execute_file_grep`, `_execute_file_list`, `_execute_git_stats`
   - Dedicated APIs (free, no auth): `_execute_stackexchange` (api.stackexchange.com), `_execute_arxiv` (export.arxiv.org),
     `_execute_pubmed` (eutils.ncbi.nlm.nih.gov), `_execute_hackernews` (hn.algolia.com)
@@ -1578,8 +1578,8 @@ else:
   - Actions: `_dispatch_action_proposal` — creates `ActionProposal` for user confirmation, does not execute **[NEW 2026-05-25]**
 
 **core/agentic/formatters.py** - Formatting **[NEW 2026-05]**
-- `AgenticFormatter`: 18 pure formatting methods (no I/O, no state mutation)
-  - Context formatting: `_format_search_context`, `_format_fetch_url_context`, `_format_wolfram_context`, `_format_memory_context`, `_format_expand_context`, `_format_file_context`, `_format_git_context`, etc.
+- `AgenticFormatter`: pure `format_*` methods (no I/O, no state mutation)
+  - Context formatting: `format_search_context`, `format_fetch_url_context`, `format_wolfram_context`, `format_memory_context`, `format_expand_context`, `format_file_context`, `format_git_stats_context`, `format_github_context`, etc.
   - Prompt building helpers: iteration prompt sections, final prompt sections
 
 **ReAct Loop Flow**:
@@ -1599,7 +1599,7 @@ agentic_search:
   enabled: true
   max_rounds: 5
   context_budget_tokens: 8000
-  compression_model: gpt-4o-mini
+  compression_model: sonnet-4.5
   prefer_native_tools: true
 ```
 
@@ -1615,7 +1615,7 @@ agentic_search:
 
 **GitHub API Integration** [NEW 2026-05-19]:
 - `GitHubManager` in `core/github_manager.py` — read-only GitHub API access via `gh` CLI
-- `GITHUB_API_TOOL_DEFINITION` in types.py — tool schema for native protocol
+- `GITHUB_TOOL_DEFINITION` in types.py — tool schema for native protocol
 - `<github>query</github>` XML marker for local models
 - `SearchDecision` extended with `wants_github`, `github_query`, `github_reason`
 - Read-only safety: only read-only gh subcommands (issue list, pr list, run list, release list, etc.)
@@ -1653,19 +1653,23 @@ agentic_search:
 - `git_stats` tool [NEW 2026-03-29]: Read-only git repo stats (commit counts, files changed, contributors, branch activity) via keyword intent parsing + temporal windows, no LLM calls
 - `get_full_document` tool [NEW 2026-03-30]: Retrieve complete uploaded document by title with fuzzy matching. Reassembles all chunks in order, 60k char cap.
 - `recall_image` tool [NEW 2026-05]: CLIP text-to-image retrieval from visual memory. Returns matching image captions + base64 data for multimodal context injection.
-- `fetch_url` tool [NEW 2026-05]: Fetch web page content by URL via Tavily extract API. Auto-triggered for URLs in user messages (Round 1). URL reroute: web_search queries containing URLs auto-reroute here. Results registered in `web_source_map` for `[WEB_N]` citation tracking. Gated on `web_search_manager.is_available()`.
+- `fetch_url` tool [NEW 2026-05]: Fetch web page content by URL — layered: local fetch (httpx) + `page_extract.extract_page_text` first, embedded-JSON salvage for JS-rendered pages, Tavily extract only as a fallback (<400 chars locally; billed, budget-checked). Auto-triggered for URLs in user messages (Round 1). URL reroute: web_search queries containing URLs auto-reroute here. Results registered in `web_source_map` for `[WEB_N]` citation tracking. Gated on `web_search_manager.is_available()`.
 - `wiki_knowledge` added to `search_memory` valid collections [NEW 2026-03-30]: enables agentic search of pre-embedded Wikipedia corpus
 - FAISS Wikipedia fallback [NEW 2026-03-31]: `_search_wiki_faiss()` + `_format_wiki_faiss_results()` — when searching `wiki_knowledge`, always prefers FAISS semantic search (41M vectors, IVFPQ index) over sparse ChromaDB data
 - `generate_document` tool [NEW 2026-05]: Research & save markdown documents (report/summary). `SearchDecision` extended with `wants_generate_document`, `generate_document_topic`, `generate_document_type`, `generate_document_focus`, `generate_document_reason`. **[2026-06-08]** Bounded trigger (`DOCUMENT_TRIGGER_PATTERN` `_VERB_NOUN_GAP`): doc-noun must be the near-object of the save-verb, so incidental co-occurrence in a long message ("Create a new dataframe … Print the model summary") no longer false-fires the `_run_doc_generation` bypass. LLM API-error sentinels ("[API Error] … 402", "[CREDITS EXHAUSTED]") detected on topic-refine/outline/draft → `RuntimeError`, never a corrupt frontmatter-only file. **[2026-06-09]** Incidental-position guard (`_doc_trigger_is_incidental`): in a long message (>60 words) the trigger must touch the head/tail (220-char) window — a doc-phrase buried mid-body of an analytical request answers in chat. Content-aware generation: `generate(source_material=…)` makes substantial pasted material (≥400 chars) the PRIMARY source `[INPUT_1]` (ranked first, full-rendered, emphasized in draft prompts) and suppresses web/wiki search, grounding "evaluate THIS proposal" requests in the actual content instead of a bare topic web search.
 - `create_daemon_note` tool [NEW 2026-05]: Save working context as self-note for future sessions. `SearchDecision` extended with `wants_create_daemon_note`, `daemon_note_title`, `daemon_note_category`, `daemon_note_summary`, `daemon_note_reason`.
 - `propose_action` tool [NEW 2026-05-25, ENHANCED 2026-05-27]: Propose internet write action requiring user confirmation (human-in-the-loop). `SearchDecision` extended with `wants_action`, `action_type` (ActionType value: send_telegram, send_email, calendar_create_event, etc.), `action_params` (message, recipient, subject; calendar: summary, start_time, end_time, time_zone, calendar_id, location, description), `action_summary` (human-readable summary), `action_reason` (why the action was proposed). Does NOT execute — creates `ActionProposal` for GUI approval/rejection.
+- `lookup_contact` tool: resolve a person's email address from saved/other Google contacts (+ Gmail header fallback) for email proposals (`_dispatch_lookup_contact`)
+- `email_search` tool [NEW 2026-09-01]: read-only search of connected Gmail/Outlook accounts by query or time window — headers and snippets only (`_dispatch_email_search`; `core/email/`)
+- `pattern_scan` tool: bounded multi-phase longitudinal evidence scan over the user's record from a frozen `LongitudinalEvidenceSpec` (`_dispatch_pattern_scan` → `memory.pattern_engine.run_longitudinal_scan`; gated by `PATTERN_ANALYSIS_ENABLED`)
+- `core/agentic/tool_thread.py` — single-slot record of this turn's READ tool calls so the gate can route a next-turn same-thread follow-up ("search that", terse affirmation) back to the tool loop with the prior arguments
 
 **Provenance** **[NEW 2026-03-26]**:
 - `AgenticSearchSession.final_prompt_hash` — SHA-256[:16] of final assembled prompt
 - `AgenticSearchSession.get_provenance_summary()` → dict with total_rounds, protocol, per-round action classification, memory search counts, expand count, prompt hash
 - `_classify_round_action(query)` — classifies round by query prefix: memory_search, sandbox, file_read, file_grep, file_list, expand_memory, web_search
 - Citation markers: `[MEM_RECENT_N]` and `[MEM_SEMANTIC_N]` prefixed to recent/semantic memories in agentic prompts
-- `self._last_session` saved after `execute_search()` for provenance extraction by handlers.py
+- `self._last_session` saved after `run_agentic_search()` for provenance extraction by handlers.py
 
 **Dependencies**: WebSearchManager, WolframManager (optional), SandboxManager (optional), MemoryExpander (optional), ModelManager, TokenizerManager
 
@@ -1677,14 +1681,13 @@ agentic_search:
 **Key Components**:
 
 **gui/handlers.py** - Event handlers, streaming relay, agentic routing, and Fast Mode **[REFACTORED 2026-05-30]**
-- `handle_submit()` → thin (~150 LOC) async-generator dispatcher (down from ~1450). Builds a `SubmitContext` dataclass (threaded state) and routes to per-mode handler generators; each yields response chunks and signals completion via `ctx.handled` (dispatcher returns when set, else falls through):
+- `handle_submit()` → thin async-generator dispatcher. Builds a `SubmitContext` dataclass (threaded state) and routes to per-mode handler generators; each yields response chunks and signals completion via `ctx.handled` (dispatcher returns when set, else falls through):
   - `_prepare_submit_context()` — shared prelude (Fast Mode limits, `prepare_prompt` keepalive, image inject) for all non-raw paths
   - `_run_raw()` / `_run_duel()` / `_run_agentic_search()` / `_run_enhanced()` — the 4 mutually-exclusive parent modes (`_run_duel` and `_run_agentic_search` leave `ctx.handled` False on bail to fall through)
   - `_run_doc_generation()` / `_run_self_note()` — agentic-gate bypasses (own `store_interaction`)
   - `_run_enhanced()` owns the post-answer passes (uncertainty fallback, review gate) + the `finally` cleanup (Fast Mode restore + storage dispatch); its `finally` is enhanced-path-only by design — do NOT hoist it
 - **Extracted helpers**: `_safe_count_tokens()`, `_safe_extract_citations()`, `_build_debug_record()`, `_build_provenance()`, `_attach_agentic_provenance()`, `_sanitize_response_text()`, `_strip_echoed_headers()`, `_dispatch_storage()`, `_silent_agentic_retry()`, `_get_session_id()`, `_find_email_draft()`, plus `_strip_inline_tool_xml()`, `_make_text_action_proposal()`, `_resolve_contact_and_propose_email()` (shared by the agentic + enhanced action/contact paths)
-- **Known latent bug** (pinned, not fixed): under Fast Mode the duel/doc-gen/self-note/agentic-success paths return before the enhanced `finally`, so Fast Mode flags + `_original_limits` are never restored on those paths
-  - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides restored in `finally` block.
+  - **Fast Mode** [NEW 2026-03-10]: When `fast_mode=True`, temporarily reduces retrieval limits (PROMPT_MAX_MEMS→10, PROMPT_MAX_RECENT→5, PROMPT_MAX_SEMANTIC→8), sets `context_gatherer._fast_mode` and `hybrid_retriever._fast_mode`. Yields progress keepalive messages ("Thinking...", "Analyzing context...", etc.) every 2s during `prepare_prompt()` to prevent mobile timeouts. All overrides are entered via `_enter_fast_mode_limits()` and restored by `_exit_fast_mode_limits()` in `handle_submit`'s `finally`, so every path (duel, doc-gen, self-note, agentic, enhanced) restores them.
   - **Agentic Search Path** [REFACTORED 2026-05-24]:
     - Gate logic extracted to `core/agentic/gate.py:evaluate_agentic_gate()` — returns `AgenticDecision` dataclass
     - 4-tier gate (keyword → entity → doc/note intent → LLM fallback):
@@ -1985,10 +1988,9 @@ from config.app_config import config
 **Purpose**: Unified interface for multiple LLM providers
 
 **Supported APIs**:
-- OpenAI (GPT-3.5, GPT-4, GPT-4o)
-- Anthropic (Claude Sonnet, Opus, Haiku)
-- OpenRouter (aggregator)
+- OpenRouter is the routing path for every hosted model (OpenAI, Anthropic, DeepSeek, Moonshot, GLM, ... slugs) — one key, one base URL
 - Local models via OpenAI-compatible endpoints
+- The roster and per-model capabilities (reasoning / vision / tools / caching) live in `models/model_manager.py` (`API_MODEL_ALIASES`, `MODEL_CAPABILITIES`); the active model is `models.active` in config.yaml (owner-switchable)
 
 **Key Methods**:
 - `generate(prompt, model_alias, stream)` → async response
@@ -2005,7 +2007,7 @@ from config.app_config import config
 - All routing goes through OpenRouter base URL
 
 **Environment Variables**:
-- `OPENAI_API_KEY` (used for OpenRouter — single key for all providers)
+- `OPENROUTER_API_KEY`, falling back to `OPENAI_API_KEY` (either key is sent to OpenRouter — single key for all providers)
 
 ---
 
@@ -2417,11 +2419,11 @@ Query → _keyword_search() → 1/3 results
 **Configuration** (`config/app_config.py`):
 ```python
 OBSIDIAN_ENABLED = True
-OBSIDIAN_VAULT_PATH = "~/Documents/Luke Notes"
+OBSIDIAN_VAULT_PATH = ""   # obsidian.vault_path (generic default; owner path lives in config.local.yaml)
 OBSIDIAN_CHUNK_THRESHOLD = 1500
 OBSIDIAN_MAX_NOTES_PROMPT = 5
 # Stricter relevance gate for personal notes (vs 0.18 general gate) [NEW 2026-03-20]
-PERSONAL_NOTES_GATE_THRESHOLD = 0.30  # Post-gate filter: notes below this relevance_score are dropped
+PERSONAL_NOTES_GATE_THRESHOLD = 0.60  # obsidian.gate_threshold — post-gate bar on the BLENDED score (0.85*cosine + 0.15*truth); notes below it are dropped
 # Image support [NEW 2026-01-30]
 OBSIDIAN_INCLUDE_IMAGES = True        # Enable image loading for multimodal models
 OBSIDIAN_MAX_IMAGES_PER_NOTE = 3      # Max images per note chunk
@@ -2444,7 +2446,7 @@ MULTIMODAL_MODELS = ["opus-4", "claude-3", "sonnet-4", "gpt-4o", "gpt-4-vision",
 - Builder adds `[USER'S PERSONAL NOTES]` section after dreams, before time context
 - Builder collects `note_images` list and adds to context for multimodal API calls **[NEW 2026-01-30]**
 - TokenManager includes `personal_notes` at priority 6 (high)
-- Notes filtered through 3-stage gate system (Cosine → Blended → CrossEncoder), then post-filtered by `PERSONAL_NOTES_GATE_THRESHOLD` (0.30) on `relevance_score` **[NEW 2026-03-20]**
+- Notes filtered through 3-stage gate system (Cosine → Blended → CrossEncoder), then post-filtered by `PERSONAL_NOTES_GATE_THRESHOLD` (`obsidian.gate_threshold` = 0.60) on `relevance_score` **[NEW 2026-03-20]**
 - Each note's prompt header includes `[relevance: X.XX]` tag so the LLM can gauge match strength **[NEW 2026-03-20]**
 - GUI handler (`handlers.py`) extracts `note_images` from context and passes to `generate_streaming_response(images=...)` **[NEW 2026-01-30]**
 
@@ -2634,7 +2636,7 @@ GIT_MEMORY_DEFAULT_LIMIT = 200
 
 **Configuration** (`config/app_config.py`):
 ```python
-CODE_PROPOSALS_ENABLED = True
+CODE_PROPOSALS_ENABLED = False   # code_proposals.enabled — shipped OFF (Settings toggle)
 CODE_PROPOSALS_MAX_PER_SESSION = 5
 CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
 # Context: CLAUDE.md + QUICK_REFERENCE.md (full), PROJECT_SKELETON.md (filtered), GOALS.md, git log
@@ -2939,7 +2941,7 @@ WEEKLY_NOTES_MAX_TOKENS = 1200
 
 **Key Methods**:
 - `generate_for_month(year, month, force)` → Generate monthly summary from daily notes in that month
-- `migrate_weekly_folders()` → Move legacy root-level `Week N` folders into `<Month YYYY>/` parents
+- `migrate_weekly_folders_to_monthly()` → Move legacy root-level `Week N` folders into `<Month YYYY>/` parents
 - `_find_daily_notes_for_month(year, month)` → Find all daily notes within month range
 
 **Monthly Summary Structure**:
@@ -3234,22 +3236,27 @@ class GraphEdge(BaseModel):
 ```python
 class GraphMemory:
     # CRUD
-    add_entity(node: GraphNode) → None          # Upsert node (merges metadata)
-    add_edge(edge: GraphEdge) → None            # Add/strengthen edge (weight += 1 for dupes)
+    add_entity(node: GraphNode) → str            # Upsert node (merges metadata); returns entity_id
+    add_relation(edge: GraphEdge, fact_id="") → None  # Add/strengthen edge (weight += 1 for duplicate src/rel/tgt)
     get_entity(entity_id) → Optional[GraphNode]
-    remove_entity(entity_id) → None
-    remove_edge(source_id, target_id, relation) → None
+    remove_entity(entity_id) → bool              # Node + incident edges; keeps alias/edge indexes consistent
+                                                 # (there is no public remove_edge)
 
     # Traversal
-    neighbors(entity_id, depth=1) → Dict[str, List[GraphEdge]]  # BFS neighborhood
-    get_edges_for(entity_id) → List[GraphEdge]                   # All edges touching entity
+    neighbors(entity_id, depth=1, *, hub_barrier=False, hub_degree=None, skip_relations=frozenset()) → Dict[str, List[GraphEdge]]  # BFS
+    get_relations(entity_id, direction="both") → List[GraphEdge]  # edges touching entity ('out' | 'in' | 'both')
+    subgraph_around(entity_id, depth=2) → List[GraphEdge];  shortest_path(source, target) → List[str]
+    get_context_sentences(entity_id, depth=2, max_sentences=15) → List[str]  # prompt-ready sentences
+    edge_is_suppressed(edge) → bool              # read-time suppression (curation-quarantined, species-conflict, bare when-word endpoint)
 
-    # Persistence (JSON at data/knowledge_graph.json)
+    # Persistence (JSON at data/knowledge_graph.json; atomic write + strict load, schema_version checked)
     save() → None     # Only writes if dirty flag set
     load() → None     # Reads from disk on init
 
     # Alias index
-    rebuild_alias_index() → None    # Syncs with EntityResolver
+    resolve_entity(mention) → Optional[str]
+    register_alias(alias, entity_id) → None
+    rebuild_edge_indexes() → None   # re-syncs the adjacency maps from _edge_index (maintenance scripts)
 ```
 - **Graph type**: DiGraph (not MultiDiGraph) — duplicate edges strengthen weight, not create parallel edges
 - **Persistence**: JSON at `data/knowledge_graph.json`, dirty-flag saves (only writes on change)
@@ -3257,16 +3264,15 @@ class GraphMemory:
 **`memory/entity_resolver.py`** — Entity alias resolution
 ```python
 class EntityResolver:
-    resolve(text: str) → Optional[str]           # Resolve alias → canonical entity_id
-    resolve_or_create(text, display_name, ...) → str  # Resolve or create new entity
-    add_alias(alias, entity_id) → None
-    get_aliases(entity_id) → List[str]
-    save() / load()                               # JSON at data/entity_aliases.json
+    resolve(mention: str) → Optional[str]        # Resolve alias → canonical entity_id (via GraphMemory.resolve_entity)
+    resolve_or_create(mention, entity_type="other", display_name="") → str  # Resolve or create new entity
+    learn_alias(alias, entity_id, context="") → None  # register_alias + auto-learn possessive aliases from context
+    save_external_aliases()                       # JSON at data/entity_aliases.json (loaded on init by _load_external_aliases)
                                                   # (atomic write + strict load via utils/safe_json;
                                                   #  corrupt file → quarantine + CorruptStoreError, 2026-07-14)
 ```
 - Possessive alias extraction: "my brother Drew" → alias "brother" → entity "drew"
-- `normalize_relation(text)` → snake_case, strips common prefixes
+- Module-level `normalize_relation(raw)` → canonical snake_case relation (synonym table + family-collapse patterns)
 
 **`memory/graph_utils.py`** — Shared helpers for graph-boosted scoring and query expansion
 ```python
@@ -3334,15 +3340,16 @@ rank_expansion_candidates(entity_ids, graph_memory, depth=2, skip_ids=None, max_
 **Configuration** (`config/app_config.py`, YAML section `knowledge_graph`):
 ```python
 KNOWLEDGE_GRAPH_ENABLED = True
-KNOWLEDGE_GRAPH_MAX_DEPTH = 2
-KNOWLEDGE_GRAPH_MAX_EDGES = 50
+KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH = 2
+PROMPT_MAX_GRAPH_SENTENCES = 12
 GRAPH_SCORING_BOOST_ENABLED = True
 GRAPH_SCORING_BOOST_CAP = 0.15
 GRAPH_QUERY_EXPANSION_ENABLED = True
 GRAPH_QUERY_EXPANSION_MAX_TERMS = 8
+GRAPH_EXPANSION_HUB_DEGREE = 30
 ```
 
-**Tests**: `tests/unit/test_knowledge_graph.py` (89 tests), `tests/unit/test_graph_integration.py` (57 tests)
+**Tests**: `tests/unit/test_knowledge_graph.py`, `tests/unit/test_graph_integration.py`
 
 ---
 
@@ -3420,7 +3427,7 @@ check_quick_resolutions(user_message, open_threads) → List[str]
 **`memory/thread_extractor.py`** — LLM-based extraction **[ENHANCED 2026-05-20]**
 ```python
 class ThreadExtractor:
-    extract_threads(conversations, model_manager) → List[OpenThread]
+    extract_new_threads(conversations, model_manager) → List[OpenThread]
         # LLM prompt with few-shot examples per ThreadType
         # Today's date injected into prompt for relative date resolution ("tomorrow" → absolute date) [NEW 2026-05-20]
         # Robust JSON parsing with find("[") / rfind("]")
@@ -3434,7 +3441,7 @@ class ThreadExtractor:
 ```
 
 **Integration Points**:
-1. **Shutdown**: `ShutdownProcessor` step 6.5 — calls `ThreadExtractor.extract_threads()` then `ThreadExtractor.detect_resolutions()`, stores new threads and resolves completed ones
+1. **Shutdown**: `ShutdownProcessor` step 6.5 — calls `ThreadExtractor.extract_new_threads()` then `ThreadExtractor.detect_resolutions()`, stores new threads and resolves completed ones
 2. **Context Gathering**: `gatherer_knowledge.py:get_unresolved_threads()` — retrieves surfaceable threads via `MemoryCoordinator.get_unresolved_threads()`
 3. **Builder**: Parallel task `open_threads` in `build_prompt()` alongside other retrieval tasks
 4. **Prompt Section**: `[UNRESOLVED THREADS]` after `[KNOWLEDGE GRAPH]`, before `[USER PROFILE]`
@@ -3891,7 +3898,7 @@ class SynthesisResult:
   - `_GENERIC_TEMPLATES` — compiled regex patterns for vacuous bridge claims
   - `_GENERIC_TOKENS` — frozenset of generic buzzwords
 
-**8-Stage Pipeline** (cheap → expensive):
+**7-Stage Pipeline** (stages 0-6, cheap → expensive; stage 7 below is the storage step, not a filter):
 
 | Stage | Name | Cost | Gate Type | What It Checks |
 |-------|------|------|-----------|----------------|
@@ -3926,7 +3933,7 @@ structural_score = min(domain_count / 4, 1.0)
 
 **Configuration** (`config/app_config.py`, YAML section `synthesis`):
 ```python
-SYNTHESIS_ENABLED = True
+# (no SYNTHESIS_ENABLED switch exists — enablement is per generator, all OFF by default; see Section 14)
 SYNTHESIS_MIN_TOKEN_LENGTH = 10          # Stage 0: min word count
 SYNTHESIS_MAX_REPETITION_RATIO = 0.5     # Stage 0: reject if >50% repeated tokens
 SYNTHESIS_MIN_DOMAINS = 2                # Stage 1: min domain boundaries crossed
@@ -3958,7 +3965,7 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 - `knowledge/synthesis_models.py` — Data models (SynthesisCandidate, StageResult, SynthesisResult, enums)
 - `memory/synthesis_memory.py` — ChromaDB persistence + convergence tracking + provisional bridge creation
 - `knowledge/synthesis_filter.py` — 7-stage async filter pipeline (accepts graph_memory + entity_resolver)
-- `knowledge/synthesis_pooled_generator.py` — **PRIMARY generator [NEW 2026-06-30]**: PooledConceptSynthesisGenerator pairs prominent curated concepts (cos 0.2-0.45)
+- `knowledge/synthesis_pooled_generator.py` — **PRIMARY generator when synthesis is enabled [NEW 2026-06-30]**: PooledConceptSynthesisGenerator pairs prominent curated concepts (cos 0.2-0.45). OFF by default (`synthesis_pooled.enabled: false`, paused 2026-07-15; Settings toggle)
 - `knowledge/synthesis_concept_pool.py` — CONCEPT_POOL: 48 curated prominent cross-domain concepts **[NEW 2026-06-30]**
 - `knowledge/synthesis_retriever.py` — RetrievalSynthesisGenerator: structural query → FAISS → adversarial eval (Tier 0, RETIRED — enabled:false)
 - `knowledge/graph_walk_generator.py` — GraphWalkGenerator: hub-dampened Markov walks (Tier 1, RETIRED — enabled:false)
@@ -4003,7 +4010,7 @@ SYNTHESIS_LOG_ALL_REJECTIONS = True
 ```
 
 **Integration Points**:
-1. **Shutdown**: Step 6.8 in `shutdown_processor.py:_run_synthesis_dreaming()` — after thread extraction, before graph save
+1. **Shutdown**: `ShutdownProcessor.run_synthesis_dreaming()` → `_run_synthesis_dreaming()` runs as its OWN standalone shutdown step driven by `main.py` under `SYNTHESIS_DREAM_TIMEOUT_S` (not inside `process_shutdown_memory`'s phases); it only does work when a generator is enabled (all OFF by default)
 2. **Filter Pipeline**: Generated candidates fed to `SynthesisFilter.process_batch()` then stored via `SynthesisMemory`
 3. **Graph Sparsity Guard**: Skips if graph has fewer than `SYNTHESIS_GENERATOR_MIN_GRAPH_NODES` nodes
 
@@ -4013,7 +4020,7 @@ SYNTHESIS_GENERATOR_ENABLED = False               # Tier 2 RETIRED 2026-06-30 (w
                                                   # PRIMARY generator is now knowledge/synthesis_pooled_generator.py
                                                   # (PooledConceptSynthesisGenerator: pairs prominent curated concepts from
                                                   # knowledge/synthesis_concept_pool.py CONCEPT_POOL in the non-obvious
-                                                  # cos band 0.2-0.45; SYNTHESIS_POOLED_ENABLED=True, YAML `synthesis_pooled`)
+                                                  # cos band 0.2-0.45; SYNTHESIS_POOLED_ENABLED=False shipped — paused 2026-07-15, YAML `synthesis_pooled`)
 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION = 5    # Target candidates per session
 SYNTHESIS_GENERATOR_LLM_CONCURRENCY = 5           # Max parallel LLM bridge calls
 SYNTHESIS_GENERATOR_MIN_GRAPH_NODES = 20          # Graph sparsity guard
@@ -4530,12 +4537,12 @@ Biscuit is your black cat [MEM_SEMANTIC_4]...
 
 ## 3. Configuration (config/app_config.py)
 
-**Key Settings**:
+**Key Settings** (shipped `config/config.yaml` values; "code default" = the fallback in app_config.py / the owning module when the YAML key is absent):
 ```python
 # Paths
 CORPUS_FILE = "./data/corpus_v4.json"
 CHROMA_PATH = "./data/chroma_db_v4"    # from config.yaml memory.chroma_path
-SYSTEM_PROMPT_PATH = "./core/system_prompt.txt"
+SYSTEM_PROMPT = load_system_prompt(config)   # personality + operating principles (see Personality section below); core/system_prompt.txt is only the fallback
 
 # Memory Limits (in prompt/builder.py — model-aware)
 # Token budget auto-computed from context window, clamped to [floor, ceiling]
@@ -4545,62 +4552,68 @@ PROMPT_TOKEN_BUDGET_LOCAL = 12000     # Local model cap
 PROMPT_TOKEN_BUDGET_FLOOR = 8000      # Minimum budget
 PROMPT_TOKEN_BUDGET_CEILING = 16000   # Maximum budget
 PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION = 0.12
-PROMPT_MAX_RECENT = 15
-PROMPT_MAX_MEMS = 15  # Semantic search results only
-PROMPT_MAX_FACTS = 30
+# Per-section prompt caps live in core/prompt/builder.py (module-level, `_cfg_int`
+# reading config.yaml `memory:`), not in app_config. Shipped YAML -> code default:
+PROMPT_MAX_RECENT = 10    # memory.prompt_max_recent (code default 15)
+PROMPT_MAX_MEMS = 30      # memory.prompt_max_mems (code default 15)
+PROMPT_MAX_SEMANTIC = 15  # memory.prompt_max_semantic (code default 8)
+PROMPT_MAX_FACTS = 30     # code defaults, not set in YAML
 PROMPT_MAX_RECENT_FACTS = 30
-PROMPT_MAX_SUMMARIES = 10  # Hybrid: 5 recent + 5 semantic
-PROMPT_MAX_REFLECTIONS = 10  # Hybrid: 5 recent + 5 semantic
+PROMPT_MAX_SUMMARIES = 10
+PROMPT_MAX_REFLECTIONS = 10
 PROMPT_MAX_DREAMS = 3
-PROMPT_MAX_SEMANTIC = 8
 PROMPT_MAX_WIKI = 3
+# Survival floors are MINIMUMS (the budget reserves their tokens): prompt_min_recent_floor 5,
+# prompt_min_summaries_floor 2, prompt_min_reflections_floor 1, prompt_memories_reserve_floor 2,
+# prompt_floor_reserve_max_share 0.25
 
 # Decay & Scoring
-RECENCY_DECAY_RATE = 0.05
-TRUTH_SCORE_UPDATE_RATE = 0.02
-TRUTH_SCORE_MAX = 0.95
+RECENCY_DECAY_RATE = 0.05              # memory.recency_decay_rate (active-day decay in production)
+TRUTH_SCORER_ENABLED = True            # evidence-based truth: TRUTH_SCORER_* (initial 0.7, confirmed +0.08,
+                                       # correction -0.25, contradiction -0.15, decay 0.02/week, floor 0.3)
 
-# Gating
+# Gating (config.yaml `gating:`)
 GATE_REL_THRESHOLD = 0.18              # MiniLM-space gate (wiki/semantic-chunk paths)
-GATE_REL_THRESHOLD_RETRIEVAL = 0.60    # bge-space memory/summary gate (quantile-matched; deictic floor 0.61) [2026-07-02]
-DEICTIC_THRESHOLD = 0.60
-NORMAL_THRESHOLD = 0.35
-SUMMARY_COSINE_THRESHOLD = 0.30
-REFLECTION_COSINE_THRESHOLD = 0.25
-PERSONAL_NOTES_GATE_THRESHOLD = 0.30  # Stricter post-gate filter for Obsidian notes [NEW 2026-03-20]
+GATE_REL_THRESHOLD_RETRIEVAL = 0.60    # bge-space memory/summary gate (quantile-matched; deictic floor gate_deictic_min_retrieval 0.61) [2026-07-02]
+DEICTIC_THRESHOLD = 0.25               # gating.deictic_threshold
+NORMAL_THRESHOLD = 0.15                # gating.normal_threshold
+SEMANTIC_CHUNKS_GATE_THRESHOLD = 0.35  # gating.semantic_chunks_gate_threshold (code default; wiki semantic chunks)
+PERSONAL_NOTES_GATE_THRESHOLD = 0.60   # obsidian.gate_threshold — post-gate bar for Obsidian notes (blended score)
+# (There are no SUMMARY_COSINE_THRESHOLD / REFLECTION_COSINE_THRESHOLD constants and
+#  COSINE_SIMILARITY_THRESHOLD was removed 2026-10-25: summaries/memories gate on gate_rel_threshold_retrieval.)
 
-# Graceful Threshold Fallback (NEW)
+# Graceful Threshold Fallback (memory/memory_retriever.py module constants)
 GATING_MIN_RESULTS = 5              # Minimum results before relaxing threshold
 GATING_RELAXED_MULTIPLIER = 0.7     # Relaxation multiplier (70% of original)
 
-# Size Penalty Configuration (NEW)
+# Size Penalty Configuration (memory/memory_scorer.py module constants)
 LARGE_DOC_SIZE_THRESHOLD = 10000      # 10KB threshold
 LARGE_DOC_KEYWORD_THRESHOLD = 0.3     # Min keyword_score to avoid penalty
 LARGE_DOC_BASE_PENALTY = -0.25        # Base penalty, scaled by size multiplier
 
 # Collection Boosts
+# (memory.collection_boosts in config.yaml)
 COLLECTION_BOOSTS = {
-    "facts": 0.15,
+    "facts": 0.10,
     "summaries": 0.10,
-    "conversations": 0.0,
+    "conversations": 0.30,
     "semantic": 0.05,
-    "wiki": 0.05
+    "wiki": 0.05,
+    "daemon_self_notes": -0.05
 }
 
-# Score Weights
+# Score Weights (gating.score_weights)
 SCORE_WEIGHTS = {
-    "relevance": 0.30,      # Reduced from 0.60 (old config value)
-    "recency": 0.22,        # Increased from 0.15 (old config value)
-    "truth": 0.18,          # Reduced from 0.20 (old config value)
-    "importance": 0.05,     # Increased from 0.02 (old config value)
-    "continuity": 0.10,     # Increased from 0.02 (old config value)
-    "topic_match": 0.10,    # NEW - topic alignment scoring
-    "structure": 0.05
+    "relevance": 0.30,
+    "recency": 0.22,
+    "truth": 0.18,
+    "importance": 0.05,
+    "continuity": 0.10,
+    "topic_match": 0.10,
+    "structure": 0.05       # UNUSED dict entry — structure is added directly as 0.15 * density_alignment
 }
 
-# Hybrid Retrieval
-HYBRID_SUMMARIES_ENABLED = True
-HYBRID_REFLECTIONS_ENABLED = True
+# Hybrid Retrieval (memory/hybrid_retriever.py): semantic_weight 0.7 / keyword_weight 0.3 (instance attributes, set_weights() to change)
 
 # Short-Term Memory (STM) [NEW]
 USE_STM_PASS = True                    # Enable STM analysis
@@ -4611,11 +4624,11 @@ STM_INJECT_DAILY_NOTES_DAYS = 2        # Daily notes injected for cross-day reca
 STM_MIN_CONVERSATION_DEPTH = 3         # Minimum depth to trigger
 
 # Best-of-N Generation
-ENABLE_BEST_OF = True
+ENABLE_BEST_OF = False                 # features.enable_best_of (shipped OFF)
 BEST_OF_N = 2
-BEST_OF_TEMPS = [0.2, 0.7]
-BEST_OF_MAX_TOKENS = 256
-BEST_OF_LATENCY_BUDGET_S = 2.0
+BEST_OF_TEMPS = (0.2, 0.7)
+BEST_OF_MAX_TOKENS = 8816              # features.best_of_max_tokens
+BEST_OF_LATENCY_BUDGET_S = 0.0         # features.best_of_latency_budget_s
 BEST_OF_DUEL_MODE = False  # Optional 2-model duel
 
 # Query Rewrite
@@ -4634,8 +4647,8 @@ ENTITY_FACT_MIN_CONFIDENCE = 0.55        # Higher floor for noisier entity tripl
 
 # Knowledge Graph [NEW 2026-03]
 KNOWLEDGE_GRAPH_ENABLED = True           # Toggle knowledge graph system
-KNOWLEDGE_GRAPH_MAX_DEPTH = 2            # BFS traversal depth for context retrieval
-KNOWLEDGE_GRAPH_MAX_EDGES = 50           # Max edges to include in prompt
+KNOWLEDGE_GRAPH_RETRIEVAL_DEPTH = 2      # BFS traversal depth for context retrieval
+PROMPT_MAX_GRAPH_SENTENCES = 12          # Max graph sentences in prompt (knowledge_graph.max_prompt_sentences)
 GRAPH_SCORING_BOOST_ENABLED = True       # Graph-boosted memory scoring
 GRAPH_SCORING_BOOST_CAP = 0.15          # Max graph bonus per memory (0.05 per entity)
 GRAPH_QUERY_EXPANSION_ENABLED = True     # Append graph neighbor names to search query
@@ -4672,7 +4685,7 @@ PROACTIVE_SURFACING_MIN_GRAPH_NODES = 20 # Min graph nodes before surfacing acti
 PROACTIVE_SURFACING_MIN_GRAPH_EDGES = 15 # Min graph edges before surfacing activates
 PROACTIVE_SURFACING_MAX_INSIGHTS = 2     # Max insights per session
 PROACTIVE_SURFACING_COOLDOWN_HOURS = 72  # Hours before same insight can resurface
-PROACTIVE_SURFACING_MODEL = ""           # LLM model (empty = system default)
+PROACTIVE_SURFACING_MODEL = "gpt-4o-mini"  # LLM model (proactive_surfacing.model)
 PROACTIVE_SURFACING_HISTORY_PATH = "data/surfacing_history.json"
 
 # Implementation Tracking [NEW 2026-03-25]
@@ -4682,10 +4695,9 @@ IMPL_TRACKING_CONFIDENCE_CONFIRMED = 0.85  # Confidence threshold for "confirmed
 IMPL_TRACKING_CONFIDENCE_LIKELY = 0.60   # Confidence threshold for "likely"
 IMPL_TRACKING_GIT_DEPTH = 50            # Git log depth for Stage 3
 IMPL_TRACKING_AT_SHUTDOWN = True         # Run lightweight check at shutdown
-IMPL_TRACKING_AUTO_COMPLETE = False      # Auto-complete confirmed proposals (disabled by default)
 
 # Session-Start Codebase Diff [NEW 2026-03-25]
-SESSION_DIFF_ENABLED = True              # Toggle codebase change detection
+SESSION_DIFF_ENABLED = True              # Toggle codebase change detection (session_diff.enabled)
 SESSION_DIFF_MAX_COMMITTED = 20          # Max committed files to show
 SESSION_DIFF_MAX_UNCOMMITTED = 20        # Max uncommitted files to show
 
@@ -4693,8 +4705,6 @@ SESSION_DIFF_MAX_UNCOMMITTED = 20        # Max uncommitted files to show
 EXPAND_MEMORY_ENABLED = True             # Toggle expand_memory tool
 EXPAND_MAX_PER_SESSION = 3              # Max expansions per agentic session
 EXPAND_MAX_WINDOW = 5                   # Max temporal window (±N turns)
-EXPAND_DEFAULT_WINDOW = 3               # Default temporal window
-EXPAND_MAX_TOTAL_TOKENS = 2000          # Token budget for expanded context
 EXPAND_ANCHOR_CHAR_LIMIT = 600          # Char limit for anchor document
 EXPAND_CONTEXT_CHAR_LIMIT = 300         # Char limit for context documents
 
@@ -4703,13 +4713,13 @@ PROVENANCE_ENABLED = True            # Toggle provenance metadata on stored inte
 PROVENANCE_THINKING_MAX_CHARS = 4000 # Max chars for thinking block storage in metadata
 
 # Personality / Operating Principles (file-based) [NEW 2026-03-26]
-PERSONALITY_DEFAULT_PATH = "config/prompts/default_personality.txt"
-PERSONALITY_CUSTOM_PATH = "config/prompts/custom_personality.txt"
+PERSONALITY_DEFAULT_PATH = "config/prompts/default_personality.txt"   # bundled read-only
+PERSONALITY_CUSTOM_PATH  # resolved at CALL time: <user data root>/custom_personality.txt (module __getattr__; get_personality_custom_path())
 OPERATING_PRINCIPLES_PATH = "config/prompts/operating_principles.txt"
 PERSONALITY_MAX_CHARS = 15000        # Hard cap on personality text to prevent prompt budget blowout
 
 # Memory Citation System [NEW 2025-12-04]
-ENABLE_MEMORY_CITATIONS = False      # Feature flag for citation mode
+ENABLE_MEMORY_CITATIONS = True       # features.enable_memory_citations (code default True; not set in config.yaml)
 MAX_CITATIONS_DISPLAY = 10           # Max citations to show in UI
 CITATION_CONTENT_LENGTH = 200        # Content snippet length in citations
 
@@ -4723,9 +4733,9 @@ WEB_SEARCH_CACHE_TTL_HOURS = 72      # Cache expiry (3 days)
 WEB_SEARCH_CONFIDENCE_THRESHOLD = 0.5 # Min confidence to trigger search
 
 # Models
-DEFAULT_MAX_TOKENS = 2048
-HEAVY_TOPIC_MAX_TOKENS = 8192
-DEFAULT_TEMPERATURE = 0.7
+DEFAULT_MAX_TOKENS = 9984             # models.default_max_tokens (code default 2048)
+HEAVY_TOPIC_MAX_TOKENS = 4096         # models.heavy_topic_max_tokens (code default 8192)
+DEFAULT_TEMPERATURE = 0.75            # models.default_temperature (code default 0.7)
 
 # Wikipedia
 WIKI_FETCH_FULL_DEFAULT = True
@@ -4736,16 +4746,16 @@ WIKI_TIMEOUT_DEFAULT = 1.2
 CORPUS_MAX_ENTRIES = 2000
 
 # Code Proposals [ENHANCED 2026-02-10]
-CODE_PROPOSALS_ENABLED = True
+CODE_PROPOSALS_ENABLED = False   # code_proposals.enabled — shipped OFF (Settings toggle)
 CODE_PROPOSALS_MAX_PER_SESSION = 5
 CODE_PROPOSALS_DEDUP_THRESHOLD = 0.70
 
 # Internet Actions (human-in-the-loop) [NEW 2026-05-25]
-INTERNET_ACTIONS_ENABLED = False             # Disabled by default; requires explicit opt-in
+INTERNET_ACTIONS_ENABLED = True              # internet_actions.enabled (shipped True; code default False). Each action still needs a human approval click
 INTERNET_ACTIONS_TELEGRAM_BOT_TOKEN = ""     # Via TELEGRAM_BOT_TOKEN env or config.yaml
 INTERNET_ACTIONS_TELEGRAM_CHAT_ID = ""       # Via TELEGRAM_CHAT_ID env
 INTERNET_ACTIONS_DISCORD_WEBHOOK_URL = ""    # Via DISCORD_WEBHOOK_URL env
-INTERNET_ACTIONS_SMTP_HOST = ""              # SMTP server for email
+INTERNET_ACTIONS_SMTP_HOST = "smtp.gmail.com"  # SMTP fallback server (internet_actions.smtp_host)
 INTERNET_ACTIONS_SMTP_PORT = 587
 INTERNET_ACTIONS_SMTP_USER = ""
 INTERNET_ACTIONS_SMTP_PASSWORD = ""          # Via SMTP_PASSWORD env
@@ -4758,15 +4768,15 @@ INTERNET_ACTIONS_AUDIT_LOG = "logs/actions_audit.jsonl"
 INTERNET_ACTIONS_GOOGLE_CLIENT_ID = ""   # Via GOOGLE_CLIENT_ID env or config.yaml
 INTERNET_ACTIONS_GOOGLE_CLIENT_SECRET = ""  # Via GOOGLE_CLIENT_SECRET env
 INTERNET_ACTIONS_GOOGLE_TOKEN_PATH = "data/google_token.json"
-GOOGLE_CALENDAR_ENABLED = False             # Via GOOGLE_CALENDAR_ENABLED env or config.yaml
+GOOGLE_CALENDAR_ENABLED = True              # internet_actions.google_calendar_enabled (shipped True; code default False); env GOOGLE_CALENDAR_ENABLED overrides
 GOOGLE_CALENDAR_MAX_EVENTS = 10
-GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 7
+GOOGLE_CALENDAR_LOOKAHEAD_DAYS = 14        # internet_actions.google_calendar_lookahead_days (code default 7)
 
 # Config: INTERNET_ACTIONS_* + GOOGLE_CALENDAR_* constants; YAML section `internet_actions`
 # Schema: InternetActionsSection in config/schema.py
 
 # File Upload [ENHANCED 2026-02-10]
-FILE_UPLOAD_ALLOWED_EXTENSIONS = ['.txt', '.docx', '.csv', '.py', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp']  # .pdf added [2026-03-10]
+FILE_UPLOAD_ALLOWED_EXTENSIONS = [...]  # security.file_upload_allowed_extensions; code default also covers .md .json .yaml .log .html .xml .xlsx .xls .srt .vtt .zip .r .rmd .odt — read app_config.py
 FILE_UPLOAD_IMAGE_DIR = "data/uploads"
 PROMPT_MAX_USER_UPLOADS = 5
 ```
@@ -4983,13 +4993,14 @@ daemon/
 ├── config/
 │   ├── app_config.py          # Central configuration loader (~300 module-level constants)
 │   ├── schema.py              # Pydantic v2 config validation (section models + DaemonConfig)
-│   ├── config.yaml            # YAML config (63 sections)
+│   ├── config_errors.py        # Startup-abort error for an unreadable config.yaml/config.local.yaml (a syntax error used to load {} and silently drop every override; BC-58/BC-82)
+│   ├── config.yaml            # YAML config (section count: docs/METRICS_SNAPSHOT.md)
 │   ├── config.local.example.yaml # Template for gitignored config.local.yaml (personal vocab + overrides)
 │   ├── feature_registry.py    # Typed loader for shipped-feature catalog (deps, conflicts)
 │   ├── feature_registry.yaml  # Retrospective shipped-feature catalog
 │   ├── prompts/               # System prompt files (file-based personality) [NEW 2026-03-26]
 │   │   ├── default_personality.txt   # Default personality (warm, grounded, human)
-│   │   ├── custom_personality.txt    # User-editable personality override (created via GUI; absent until created)
+│   │   ├── custom_personality.txt    # (legacy location; the custom personality now lives at <user data root>/custom_personality.txt, created via GUI)
 │   │   ├── operating_principles.txt  # Immutable behavioral rules + operating principles
 │   │   ├── directives.txt            # Additional prompt directives
 │   │   └── system_prompts.txt        # Legacy system prompt text
@@ -5020,6 +5031,13 @@ daemon/
 │   ├── tone_instructions.py   # Tone→system-prompt instruction builder + per-intent style blocks
 │   ├── truth_event_handler.py # Applies truth events: profile-fact updates + attribution cascades
 │   ├── competitive_scorer.py  # Judge-based response selection
+│   ├── active_document.py     # Per-session in-memory registry of attached documents + deterministic navigation between their numbered items ("next q") — leaf module, not persisted across restart
+│   ├── citation_drift.py      # Deterministic LOG-ONLY check that a sentence citing [WEB_n] draws its key numbers from the cited source(s)
+│   ├── figure_check.py        # Every number/time the reply asserts about the user/conversation/data must be COPIED from a context source, DERIVED deterministically, or flagged UNSUPPORTED
+│   ├── first_token_deadline.py # First-token deadline for streamed LLM answers (a provider stalling before the first chunk no longer waits out the 120 s per-chunk timeout)
+│   ├── personal_claim_check.py # Evidence boundary for claims about what a person did: speaker-preserving evidence + strict-JSON auditor (a supported completion needs USER-role evidence)
+│   ├── response_guidance.py   # Shared domain-neutral grounding rules (CONTEXTUAL_GROUNDING) for conversation and evidence-backed synthesis
+│   ├── safety_canary.py       # LOG-ONLY session monitor: N consecutive negative-valence user messages while tone stays CONVERSATIONAL emits a SAFETY warning (defends against the next unknown miswire in the tone/safety path)
 │   ├── dependencies.py        # Dependency injection setup
 │   ├── wiki_util.py          # Wikipedia utility functions
 │   ├── prompt_builder.py      # Legacy prompt builder (deprecated)
@@ -5029,7 +5047,7 @@ daemon/
 │       ├── builder.py        # Thin orchestrator: parallel dispatch, intent overrides, budget
 │       ├── context_gatherer.py # Mixin compositor: init + properties (composes 3 gatherer mixins)
 │       ├── gatherer_web.py   # WebSearchMixin: web search retrieval + trigger logic [NEW 2026-05]
-│       ├── gatherer_memory.py # MemoryRetrievalMixin: 17 memory/summary/reflection/facts methods [NEW 2026-05]
+│       ├── gatherer_memory.py # MemoryRetrievalMixin: memory/summary/reflection/facts retrieval methods [NEW 2026-05]
 │       ├── gatherer_knowledge.py # KnowledgeRetrievalMixin: knowledge retrieval methods incl. get_google_calendar_events() [ENHANCED 2026-05-27]
 │       ├── formatter.py      # Section assembly + feature inventory + staleness prefix + [GOOGLE CALENDAR] section [ENHANCED 2026-05-27]
 │       ├── hygiene.py        # ContentHygiene: dedup, caps, backfill [NEW 2026-05]
@@ -5040,13 +5058,23 @@ daemon/
 │       └── base.py          # Utilities and fallbacks
 │
 ├── memory/
-│   ├── memory_coordinator.py      # Thin orchestrator (~639 lines, delegates to components)
+│   ├── memory_coordinator.py      # Thin orchestrator (delegates to components)
 │   ├── shutdown_processor.py      # Session-end summaries, facts, reflections [NEW - EXTRACTED]
 │   ├── memory_scorer.py           # Scoring and ranking operations [NEW - REFACTORED]
 │   ├── memory_retriever.py        # Retrieval operations + config-driven ephemeral predicates + TTL filter [ENHANCED 2026-05-27]
 │   ├── memory_storage.py          # Storage/persistence operations [NEW - REFACTORED]
 │   ├── thread_manager.py          # Thread tracking [NEW - REFACTORED]
 │   ├── memory_interface.py        # Protocol contracts [NEW - REFACTORED]
+│   ├── claim_ledger.py            # User-claim ledger core: extractor prompt + deterministic validator (a claim is admitted only if its quote is an exact span of the user's text) + reply check (pure)
+│   ├── claim_ledger_store.py      # Process-wide store for the ledger (data/claim_ledger.json): who loads it and who may write
+│   ├── claim_ledger_writer.py     # Live write: one bounded background call per turn after the turn is persisted; never raises into storage
+│   ├── claim_ledger_reply_check.py # Log-only reply check against the ledger after a reply is delivered
+│   ├── day_count_anchors.py       # Dated day-count anchors: store + prompt supply ([YOUR DAY COUNTS], projected to today)
+│   ├── fact_source.py             # Provenance boundary for extracted facts: a proposed triple must join back to a USER-authored span; model output is never evidence
+│   ├── pending_turns.py           # In-process registry of turns delivered but not yet in the corpus
+│   ├── quarantine_sync.py         # Corpus-copy matcher for quarantine flips (every conversation/summary/reflection lives in Chroma AND the corpus JSON)
+│   ├── summary_coverage.py        # Summary coverage by CONTENT time (temporal anchors), the chokepoint behind shutdown summary selection
+│   ├── valence.py                 # Deterministic negative-affect scoring of memory text + rank-preserving selector that caps mood-congruent recall during distress
 │   ├── procedural_skill.py        # ProceduralSkill dataclass + SkillCategory enum [NEW 2026-01-27]
 │   ├── corpus_manager.py          # JSON persistence
 │   ├── memory_consolidator.py     # Summarization
@@ -5079,6 +5107,13 @@ daemon/
 │   ├── proposal_risk.py           # ProposalRiskClassifier — proposal supervision/risk level
 │   ├── utils.py                   # Memory utility functions
 │   ├── hybrid_retriever.py        # Query rewrite + semantic + keyword
+│   ├── curation/curators/         # Curation-engine curators (all deployed-predicate; quarantine, never delete)
+│   │   ├── error_sentinels.py     # Quarantine API-error-sentinel / junk conversation docs and summaries (flag, never delete)
+│   ├── temporal_staleness.py  # Supersede profile facts whose own explicit absolute date has passed (grace period; supersession, never deletion)
+│   ├── _scan.py               # Shared paginated read-only chroma scan for curators
+│   │   ├── graph_temporal_nodes.py # Quarantine knowledge-graph nodes that are bare when-words (today/tomorrow)
+│   │   ├── profile_junk_facts.py  # Supersede junk facts in the quick profile (data/user_profile.json)
+│   │   └── residence_conflicts.py # Supersede stale living-situation facts that conflict with a newer one
 │   └── storage/
 │       └── multi_collection_chroma_store.py  # Vector DB
 │
@@ -5087,9 +5122,19 @@ daemon/
 │   ├── types.py               # Data structures (AgentState, SearchProtocol, etc.)
 │   ├── protocols.py           # Protocol detection and parsing
 │   ├── controller.py          # AgenticSearchController (orchestration, prompts, quality heuristics)
-│   ├── tools.py               # ToolExecutor (dispatch routing + 20 execute methods incl. StackExchange/arXiv/PubMed/HN/GitHub/actions/calendar/contacts) [UPDATED 2026-05-28]
+│   ├── tools.py               # ToolExecutor (dispatch routing: one handler per DISPATCH_TABLE row — 23 rows, 22 offered in the loop — incl. pattern_scan, email_search, StackExchange/arXiv/PubMed/HN/GitHub/actions/calendar/contacts) [UPDATED 2026-10-27]
 │   ├── gate.py                # evaluate_agentic_gate() — 4-tier gate logic + email-by-name patterns, returns AgenticDecision [ENHANCED 2026-05-28]
-│   └── formatters.py          # AgenticFormatter (18 pure formatting methods) [NEW 2026-05]
+│   ├── tool_thread.py         # Single-slot in-process record of this turn's READ tool calls so the gate can route a next-turn same-thread follow-up back to the tool loop (leaf module, never persisted)
+│   └── formatters.py          # AgenticFormatter (pure `format_*` methods) [NEW 2026-05]
+│
+├── core/insight/              # Insight / evidence-assembly mode (see the module list in Section 1)
+│   ├── streaming.py           # Bounds insight synthesis even when the provider stops sending chunks (deadline on a silent stream)
+│   └── evidence_layout.py     # Fair evidence-block layout for insight synthesis prompts (replaces the hard character-cap renderer's stop-at-cap behavior)
+│
+├── core/email/                # Read-only email integration (metadata only; docs/EMAIL_INTEGRATION_DESIGN.md)
+│   ├── gmail_provider.py      # Gmail provider adapter implementing EmailProvider (headers + snippet)
+│   ├── outlook_auth.py        # Outlook/Microsoft 365 device-code OAuth2 flow + token persistence
+│   └── outlook_provider.py    # Outlook provider adapter via Microsoft Graph (headers + snippet)
 │
 ├── core/actions/              # Internet actions (human-in-the-loop) [NEW 2026-05-25]
 │   ├── types.py               # ActionType enum, ActionProposal, ActionResult, PendingActionsStore
@@ -5112,6 +5157,7 @@ daemon/
 │
 ├── models/
 │   ├── model_manager.py       # Multi-provider LLM client
+│   ├── decision_model.py      # Decision-model client: the ONE place that builds a typed-question request (noul/choice/score) or parses its reply
 │   └── tokenizer_manager.py   # Token counting
 │
 ├── utils/
@@ -5146,6 +5192,43 @@ daemon/
 │   ├── preflight.py           # Startup preflight: data-dir writable (fatal), API keys / spaCy model (warn) [NEW 2026-07-14]
 │   ├── backup_manager.py      # Shutdown-phase backups of the memory stores (JSON always, chroma interval-throttled, retention+prune) [NEW 2026-07-14]
 │   ├── log_rotation.py        # Startup log bounding: rotate turn_records/daily_notes, archive audit log, gzip+prune daemon_debug archives [NEW 2026-07-14]
+│   ├── anchored_sense.py      # Shared "ambiguous word counts only near an anchor" regex composition for word-sense rules
+│   ├── async_results.py       # Classifies asyncio.gather(return_exceptions=True) results: any BaseException (incl. CancelledError) is an ERROR for that position
+│   ├── attachment_audit.py    # Deterministic per-turn attachment checks ([ATTACHMENT NOTE] / [DEADLINE NOTE]), no LLM
+│   ├── checker_findings.py    # ONE writer for log-only checker findings (review gate, grounding, personal-claim) -> checker_findings.jsonl, local-only
+│   ├── completed_plan_claims.py # Detects a narrative sentence still framing a plan as forward-looking after the user reported it done
+│   ├── date_coerce.py         # Shared coerce_date helper (value -> date) used by completed_plan_claims and streak_claims
+│   ├── executor_prespawn.py   # Pre-spawn the serving loop's default-executor workers (thread start otherwise blocks the event loop)
+│   ├── fetch_provenance.py    # Provenance check for model-originated URL fetches (blocks injected exfiltration URLs)
+│   ├── institution_resolver.py # User-institution resolution for web search query construction (mirror of location_resolver)
+│   ├── known_person.py        # Known-person test shared by prompt gathering and the personal-claim check
+│   ├── loop_stall.py          # Event-loop stall detector: names the synchronous code that blocks the asyncio loop
+│   ├── notes_common.py        # Shared roster/parser for the daily/weekly/monthly note generators
+│   ├── odt_text.py            # Stdlib-only text extraction for .odt files
+│   ├── ordered_slice.py       # Single source of truth for "sort by timestamp before slicing" (newest-first-then-truncate bug class)
+│   ├── paste_shape.py         # Structural helpers for messages carrying an inline paste (leaf module, no vocabulary)
+│   ├── personal_claim_provenance.py # Bounded personal-claim receipts at storage and conversation read boundaries
+│   ├── privacy_redaction.py   # Deterministic PII/credential redaction for share surfaces (debug/provenance/export)
+│   ├── problem_report.py      # Local, consented, redacted "Report a problem" diagnostic bundle
+│   ├── process_signals.py     # Process-signal hygiene: SIGHUP -> detach stdio -> clean shutdown
+│   ├── read_time_markers.py   # Single source of truth for read-time machinery text appended to stored assistant responses (claim-check marker, action-claim marker, delivery notices)
+│   ├── repository_context.py  # Repository status context cues, independent of a turn's conversational tone
+│   ├── request_span.py        # Structural separation of a user's own REQUEST from a pasted document block (leaf module)
+│   ├── retrieval_outcome.py   # Shared retrieval-outcome vocabulary: unavailable is not zero (leaf module)
+│   ├── single_instance.py     # OS-level advisory file lock preventing two Daemon instances on one data directory
+│   ├── self_docs_manifest.py  # The one reader/validator of config/reference_docs_manifest.txt: which docs are Daemon's self-knowledge (seed, [DAEMON DOCUMENTATION] gate, insight files channel, purge) [NEW 2026-10-27]
+│   ├── status_claims.py       # Deterministic detection of narrative status claims (enrollment/employment/residence) that contradict a CURRENT profile fact
+│   ├── streak_claims.py       # User-authored streak/day-count statements -> dated ledger projected to today + stale-count post-check
+│   ├── subtitle_text.py       # .srt/.vtt subtitle files -> running prose with coarse [mm:ss] anchors
+│   ├── test_envelope.py       # Single structural parser for the [test]...[/test] operator-marker convention
+│   ├── text_budget.py         # Measured deterministic head/tail text clipping (fit_text_to_tokens) shared by prompt and tool contexts
+│   ├── timezone_resolver.py   # User timezone resolution for calendar/scheduling (mirror of location_resolver)
+│   ├── trigger_match.py       # Single chokepoint for deterministic keyword-trigger matching (word-bounded, negation-aware)
+│   ├── turn_progress.py       # Per-turn progress bus so deep pipeline stages can surface live status lines to the streaming UI
+│   ├── url_detect.py          # Shared URL-presence check (scheme + token boundary) replacing bare substring tests
+│   ├── user_identity.py       # User display-name resolution for prompt templates and output
+│   ├── web_evidence_receipt.py # Per-turn web-evidence receipt + the spent-budget notice
+│   ├── windows_timezones.py   # Generated Windows timezone key -> IANA zone mapping (from CLDR windowsZones)
 │   ├── daemon_guard.py        # Live-Daemon detection for store-writing scripts: daemon_running() resolves each main.py candidate's /proc/<pid>/cwd against the repo root (replaces the pgrep-cmdline "Daemon_v1" grep a relative-path launch defeated); all 8 store-writing scripts delegate, old heuristic kept as import-failure fallback [NEW 2026-08-21]
 │   ├── narrative_staleness.py # Correction-staleness flag for the cached narrative context (mark_stale/is_stale/clear over data/narrative_stale.json; CAUTION line appended by corpus_manager.get_narrative_context until a fresh save) [NEW 2026-08-23]
 │   └── python_fs_guard.py     # Python filesystem guard: 10 monkey-patches (os/shutil delete/move/copy-overwrite), ContextVar agent mode [NEW 2026-05]
@@ -5182,6 +5265,7 @@ daemon/
 │   ├── visual_memory_pipeline.py # Image ingestion: CLIP embed → caption → entity tag → store [NEW 2026-05]
 │   ├── visual_retrieval.py    # CLIP text→image retrieval + base64 loading [NEW 2026-05]
 │   ├── document_generator.py  # Research & save markdown docs (report/summary) agentic tool [NEW 2026-06]
+│   ├── document_export.py     # Generated-document export: markdown -> docx/pdf/odt/rtf/html/txt (honest failure keeps the .md)
 │   └── daemon_notes_manager.py # Daemon self-notes for future sessions (non-ground-truth) [NEW 2026-06]
 │
 ├── gui/
@@ -5190,6 +5274,7 @@ daemon/
 │   ├── wizard.py              # First-run onboarding wizard [NEW 2025-12-11]
 │   ├── theme.py               # Dark theme definition
 │   ├── settings_core.py       # THE settings apply logic (extracted from tab closures) — shared by the Gradio tab AND api/routes/settings.py [NEW 2026-07-14]
+│   ├── setup_core.py          # First-run setup core (pure functions): one .env authority + key validators shared by api/routes/setup.py and the legacy wizard
 │   └── tabs/                  # GUI tab modules [NEW 2026-04]
 │       ├── proposals.py       # Proposals tab (browse, filter, manage, generate code proposals)
 │       ├── settings.py        # Settings tab — thin Gradio widget layer over gui/settings_core.py [REFACTORED 2026-07-14]
@@ -5201,9 +5286,13 @@ daemon/
 │   ├── chat_service.py        # SSE adapter wrapping THE deployed gui.handlers.handle_submit
 │   ├── schemas.py             # Pydantic request/response models (mirrored in web/src/api/types.ts)
 │   ├── sse.py                 # SSE event formatting
-│   └── routes/                # chat, actions, files, models, system,
-│                              #   debug (per-turn records + prompt TXT export + provenance),
-│                              #   settings (thin layer over gui/settings_core.py) [2026-07-14]
+│   ├── lifecycle.py           # App-owned shutdown: Quit and heartbeat triggers run the same clean shutdown as Ctrl+C (SIGINT to ourselves)
+│   ├── launch_auth.py         # Loopback Host / same-origin / launch-token authorization: one pure-ASGI middleware wrapping the whole app
+│   └── routes/                # one module per area (all under /api, behind api/launch_auth.py):
+│                              #   chat.py (POST /api/chat SSE stream, GET/DELETE /api/session), actions.py, files.py, models.py, system.py,
+│                              #   debug.py (per-turn records + prompt TXT export + provenance), settings.py (thin layer over gui/settings_core.py),
+│                              #   curation.py (Curation Center), lifecycle.py (POST /api/shutdown, /api/heartbeat),
+│                              #   report.py (local consented "Report a problem" bundle over utils/problem_report), setup.py (first-run Setup over gui/setup_core.py) [2026-07-14; extended 2026-10]
 │
 ├── integrations/
 │   └── wikipedia_api.py       # Wikipedia API client
@@ -5219,8 +5308,8 @@ daemon/
 │   ├── wiki/                  # Wikipedia source data (102GB)
 │   └── pipeline/              # Wikipedia processing scripts (43GB)
 │
-├── tests/                     # All test files (152 files)
-│   ├── unit/                  # Unit tests (60+ files)
+├── tests/                     # All test files (counts: docs/METRICS_SNAPSHOT.md)
+│   ├── unit/                  # Unit tests
 │   │   ├── test_tone_detector.py
 │   │   ├── test_need_detection.py  # [NEW]
 │   │   ├── test_query_checker.py
@@ -5239,7 +5328,7 @@ daemon/
 │   │   ├── test_calendar_prompt.py      # [NEW 2026-05-27] Tests for calendar prompt injection
 │   │   ├── test_gmail_send.py           # [ENHANCED 2026-05-28] Tests for Gmail API send + recipient resolution (5 tests)
 │   │   ├── test_google_contacts.py      # [NEW 2026-05-28] 27 tests for Google Contacts + Gmail search resolution
-│   │   └── ... (60+ unit test files total)
+│   │   └── ... (see tests/unit/)
 │   ├── test_eval/             # Eval system tests (246 tests) [NEW 2026-04]
 │   │   ├── test_section_registry.py     # Registry validation
 │   │   ├── test_snapshots.py            # Snapshot capture/replay
@@ -5299,6 +5388,7 @@ daemon/
 │   ├── harness.py             # GenerationHarness: batch (snapshot, variant) pair execution
 │   ├── judge.py               # PairwiseJudge: blind A/B judging with 5-criterion rubric
 │   ├── checks.py              # 5 automated objective checks (length, leak, grounding, citation, filler)
+│   ├── decision_model_cases.py # Synthetic labelled tone cases for the decision-model evaluation (SELECT split)
 │   ├── run_phase2.py          # CLI: variant generation + utilization report
 │   ├── run_phase4.py          # CLI: generation harness (dry-run, resume, cost estimate)
 │   ├── run_phase5.py          # CLI: pairwise judge (dry-run, resume, report-only)
@@ -5320,6 +5410,29 @@ daemon/
 ├── daemon.spec                # PyInstaller spec file [NEW 2025-12-12]
 │
 └── agent_branch/              # Agent-branch supervisor + portfolio harness (rootless-podman isolation, two-layer eval)
+    ├── supervisor.py          # The trusted orchestrator (N=1): issues a manifest, provisions a sandbox, runs the gates
+    ├── manifest.py            # BranchManifest — the immutable supervisor-authored contract issued to one worker
+    ├── provisioning.py        # WorkerSandbox — rootless-podman provisioning, the real isolation boundary
+    ├── llm_proxy.py           # LLMProxy — the single supervisor-mediated (Unix-socket) egress channel out of an LLM worker
+    ├── eval_static.py         # Layer 1a — static gate on the diff (no worker code is ever run); runs first
+    ├── eval_sandboxed.py      # Layer 1b — dynamic evaluation of the diff against supervisor-owned tests in a disposable sandbox
+    ├── eval_layer2.py         # Layer 2 — LLM-judge intent check (STUB)
+    ├── portfolio.py           # Portfolio runner — N isolated workers against one objective, ranked
+    ├── scoring.py             # Mechanical, transparent ranking of portfolio branches
+    ├── report.py              # Trial Report — the single human-scannable artifact
+    ├── run.py                 # Runner — drives a real coding-worker portfolio against a real repo
+    ├── goal_runner.py         # Goal-driven proposal mode: each lens derives its own bounded objective from its goals file
+    ├── proposal_bridge.py     # Bridge: Trial Report survivors -> CodeProposal objects in the live proposal store
+    ├── queue.py               # Objective queue for shutdown-triggered runs
+    ├── run_queue.py           # Drains the objective queue — the detached process spawned at shutdown
+    └── workers/               # Entrypoints that run INSIDE the isolated container
+        ├── coding_worker.py   # General LLM coding worker: arbitrary manifest objective + per-agent lens
+        ├── strategy_worker.py # Scripted strategy worker — deterministic driver of the reaper proof
+        ├── llm_strategy_worker.py # Real-LLM strategy worker (manual demo driver, not used in CI)
+        ├── benign_llm.py      # Minimal LLM-driven happy-path worker (one bounded edit)
+        ├── failure_worker.py  # Scripted sincere-failure workers (honest wrongness the gate must catch)
+        ├── saboteur.py        # Scripted known-bad worker that tries subtle cheating attacks
+        └── attacker.py        # Scripted adversarial worker attempting every escape in the red-team list
 ```
 
 ---
@@ -5402,14 +5515,14 @@ except Exception as e:
 
 ### 8.1 Unit Tests
 - **Location**: `tests/unit/`
-- **Count**: 60+ test files
+- **Count**: see `docs/METRICS_SNAPSHOT.md`
 - **Pattern**: Mock dependencies, test methods in isolation
 
 **Key Unit Test Files**:
 - `test_tone_detector.py` - Crisis detection levels and thresholds
 - `test_query_checker.py` - Heavy topic and thread detection
 - `test_corpus_manager.py` - JSON persistence operations
-- `test_memory_coordinator_helpers.py` - Ranking and scoring
+- `test_memory_coordinator_methods.py` - Memory coordinator methods
 - `test_prompt_builder_methods.py` - Context assembly
 - `test_orchestrator_helpers.py` - Thinking block parsing
 - `test_intent_classifier.py` - Intent classification, tone bias, STM refinement, profiles (89 tests) **[NEW 2026-02-15]**
@@ -5459,14 +5572,14 @@ except Exception as e:
 
 ### 8.3 Mutation Testing
 - **Tool**: Custom mutation testing framework
-- **Location**: `scripts/mutation_confidence.py` (+ `tests/test_real_mutations.py`, `tests/test_simple_mutation.py`)
+- **Location**: `scripts/mutation_confidence.py` (+ `tests/test_simple_mutation.py`)
 - **Purpose**: Verify tests catch code mutations
 
 ### 8.4 Test Suite Status (Current)
-**Last Full Run**: 2026-08-03 — 6,152 passed, 20 skipped, 0 failures (slow+benchmark excluded; 282 files in memory-capped batches)
+**Last Full Run**: see `docs/METRICS_SNAPSHOT.md` and CLAUDE.md (slow+benchmark excluded; memory-capped batches)
 
 **Test Collection**:
-- 303 test files, 6,725 collected test cases (live count: `docs/METRICS_SNAPSHOT.md`)
+- File and test-case counts: `docs/METRICS_SNAPSHOT.md`
 - Unit tests in `tests/unit/`, integration/other tests in `tests/`
 - Benchmark suite (296 cases) in `tests/benchmarks/` — not re-run every pass
 
@@ -5574,7 +5687,7 @@ python main.py inspect-summaries
 | response_parser.py | Parse: extract thinking blocks, strip reflections/XML/prompt artifacts [NEW 2026-01-23] |
 | stm_analyzer.py | Analyze: lightweight LLM pass for recent context summary (topic/intent/tone/threads) [NEW] |
 | intent_classifier.py | Classify: regex-first query intent (9 types), produces weight/retrieval/gate overrides [NEW 2026-02-15] |
-| memory_coordinator.py | Hub: thin orchestrator (~639 lines) delegating to modular components [REFACTORED] |
+| memory_coordinator.py | Hub: thin orchestrator delegating to modular components [REFACTORED] |
 | shutdown_processor.py | Shutdown: block summaries + fact extraction + procedural skills + reflections + user profile [NEW - EXTRACTED] |
 | memory_scorer.py | Scoring: calculate truth/importance, rank by composite score with temporal decay [NEW - REFACTORED] |
 | memory_retriever.py | Retrieval: get_memories pipeline with gating and ranking [NEW - REFACTORED] |
@@ -5635,63 +5748,67 @@ python main.py inspect-summaries
 
 ## 14. Critical Constants (Quick Reference)
 
+Shipped `config/config.yaml` values (read config/app_config.py and the owning module for the code defaults; the YAML wins).
+
 ```python
 # Scoring
-RECENCY_DECAY_RATE = 0.05
-TRUTH_SCORE_UPDATE_RATE = 0.02
-DEICTIC_ANCHOR_PENALTY = 0.1
-DEICTIC_CONTINUITY_MIN = 0.12
+RECENCY_DECAY_RATE = 0.05          # active-day decay in production; hourly decay is the fallback
+DEICTIC_ANCHOR_PENALTY = 0.25      # gating.deictic_anchor_penalty
+DEICTIC_CONTINUITY_MIN = 0.25      # gating.deictic_continuity_min
 
 # Weights
-SCORE_WEIGHTS = {
-    'relevance': 0.30,      # Reduced from 0.60 (old config value)
-    'recency': 0.22,        # Increased from 0.15 (old config value)
-    'truth': 0.18,          # Reduced from 0.20 (old config value)
-    'importance': 0.05,     # Increased from 0.02 (old config value)
-    'continuity': 0.10,     # Increased from 0.02 (old config value)
-    'topic_match': 0.10,    # NEW - topic alignment scoring
-    'structure': 0.05
+SCORE_WEIGHTS = {            # gating.score_weights
+    'relevance': 0.30,
+    'recency': 0.22,
+    'truth': 0.18,
+    'importance': 0.05,
+    'continuity': 0.10,
+    'topic_match': 0.10,
+    'structure': 0.05       # UNUSED dict entry (structure is added directly as 0.15 * density_alignment)
 }
 
 # Collection Boosts
-COLLECTION_BOOSTS = {
-    'facts': 0.15,
+COLLECTION_BOOSTS = {        # memory.collection_boosts
+    'facts': 0.10,
     'summaries': 0.10,
-    'conversations': 0.0,
+    'conversations': 0.30,
     'semantic': 0.05,
-    'wiki': 0.05
+    'wiki': 0.05,
+    'daemon_self_notes': -0.05
 }
 
 # Thresholds
-GATE_REL_THRESHOLD = 0.18
-DEICTIC_THRESHOLD = 0.60
-NORMAL_THRESHOLD = 0.35
-SUMMARY_COSINE_THRESHOLD = 0.30
-REFLECTION_COSINE_THRESHOLD = 0.25
-THREAD_CONTINUITY_THRESHOLD = 0.5
+GATE_REL_THRESHOLD = 0.18                # MiniLM-space gate (wiki / semantic-chunk paths)
+GATE_REL_THRESHOLD_RETRIEVAL = 0.60      # bge-space memory/summary gate (deictic floor 0.61)
+DEICTIC_THRESHOLD = 0.25                 # gating.deictic_threshold
+NORMAL_THRESHOLD = 0.15                  # gating.normal_threshold
+PERSONAL_NOTES_GATE_THRESHOLD = 0.60     # obsidian.gate_threshold
+SEMANTIC_CHUNKS_GATE_THRESHOLD = 0.35    # gating.semantic_chunks_gate_threshold (code default)
+THREAD_CONTINUITY_THRESHOLD = 0.5        # utils/query_checker.py (env-overridable)
 
-# Tone Detection Thresholds
+# Tone Detection Thresholds (utils/tone_detector.py config dict; env TONE_THRESHOLD_*)
 TONE_THRESHOLD_HIGH = 0.58
 TONE_THRESHOLD_MEDIUM = 0.50
 TONE_THRESHOLD_CONCERN = 0.43
 
-# Hybrid Retrieval Weights
-HYBRID_SEMANTIC_WEIGHT = 0.7
-HYBRID_KEYWORD_WEIGHT = 0.3
+# Hybrid Retrieval Weights (memory/hybrid_retriever.py instance attributes)
+semantic_weight = 0.7
+keyword_weight = 0.3
 
 # Prompt Limits (model-aware — auto-computed from context window)
-PROMPT_TOKEN_BUDGET_DEFAULT = 10000  # floor 8000, ceiling 16000; override: PROMPT_TOKEN_BUDGET env var
-PROMPT_MAX_RECENT = 15
-PROMPT_MAX_MEMS = 15
+PROMPT_TOKEN_BUDGET_DEFAULT = 10000  # floor 8000, ceiling 16000; local 12000; API budgets capped at the default
+# core/prompt/builder.py (shipped YAML -> code default): recent 10 (15), mems 30 (15), semantic 15 (8)
 PROMPT_MAX_FACTS = 30
-PROMPT_MAX_SUMMARIES = 10  # 5 recent + 5 semantic
+PROMPT_MAX_SUMMARIES = 10  # recent + semantic
 PROMPT_MAX_REFLECTIONS = 10
 PROMPT_MAX_WIKI = 3
+# Floors are minimums: recent 5, summaries 2, reflections 1 (+ memories reserve 2),
+# reserved up front, share capped at memory.prompt_floor_reserve_max_share = 0.25
 
 # Heavy Topic Detection
-HEAVY_TOPIC_CHAR_THRESHOLD = 2500  # RETIRED 2026-09-12: unread; length
-                                   # alone no longer implies a heavy topic
-HEAVY_TOPIC_TIMEOUT = 2.0  # seconds
+HEAVY_TOPIC_CHAR_THRESHOLD = 2500  # utils/query_checker.py — RETIRED 2026-09-12: nothing reads it;
+                                   # length alone no longer implies a heavy topic
+HEAVY_TOPIC_TIMEOUT = 2.0  # seconds (utils/query_checker.py)
 
 # Short-Term Memory (STM) [NEW]
 USE_STM_PASS = True
@@ -5702,7 +5819,8 @@ STM_INJECT_DAILY_NOTES_DAYS = 2  # cross-day recall disambiguation
 STM_MIN_CONVERSATION_DEPTH = 3
 
 # Feature Toggles
-REFLECTIONS_ON_DEMAND = True  # Generate reflections if below threshold
+# core/prompt/builder.py module constants (env-overridable)
+REFLECTIONS_ON_DEMAND = False  # OFF by default: it blocks the prompt build with an LLM call
 REFLECTIONS_SESSION_FILTER = False  # Filter to session-level only
 REFLECTIONS_TOPUP = True  # Top up reflections from storage
 
@@ -5734,10 +5852,11 @@ IMPL_TRACKING_COOLDOWN = 86400
 IMPL_TRACKING_CONFIDENCE_CONFIRMED = 0.85
 
 # Deduplication
-SIMILARITY_THRESHOLD = 0.90  # Semantic similarity for duplicates
+# core/prompt/hygiene.py cross-section dedup uses similarity_threshold=0.90 (a call argument, not an app_config constant)
 
 # Synthesis Pipeline [NEW 2026-03-28, thresholds IVFPQ-calibrated 2026-03-31]
-SYNTHESIS_ENABLED = True
+# There is no SYNTHESIS_ENABLED master switch: all generators are OFF by default (paused 2026-07-15;
+# synthesis_pooled / synthesis_generator / synthesis_retrieval / graph_walk `enabled: false`, Settings toggle)
 SYNTHESIS_DISTANCE_MIN = 0.20
 SYNTHESIS_DISTANCE_MAX = 0.90
 SYNTHESIS_NOVELTY_KNOWN_THRESHOLD = 0.88   # Near-verbatim rehashes only
@@ -5749,7 +5868,7 @@ SYNTHESIS_NOVELTY_W_CLAIM = 0.25
 SYNTHESIS_NOVELTY_W_COOCCURRENCE = 0.30
 SYNTHESIS_NOVELTY_W_SPECIFICITY = 0.25
 SYNTHESIS_NOVELTY_W_INTERNAL = 0.20
-SYNTHESIS_COMPOSITE_MIN_SCORE = 0.65       # raised from 0.40
+SYNTHESIS_COMPOSITE_MIN_SCORE = 0.7        # synthesis.composite_min_score (raised from 0.40)
 ```
 
 ---
@@ -5790,7 +5909,7 @@ FROM python:3.11-slim
 - Create non-root daemon user
 - Copy application code
 - Set HF_HUB_OFFLINE=1 (use baked models)
-- EXPOSE 7860 (Gradio)
+- EXPOSE 8000 (FastAPI + React SPA, primary; health check) and 7860 (legacy standalone Gradio)
 - HEALTHCHECK /health endpoint
 ```
 
@@ -5854,7 +5973,7 @@ orchestrator.shutdown()
     ↓
 memory_coordinator.process_shutdown_memory()
     ├─> Fact extraction from recent conversations
-    ├─> Summary generation (every N conversations)
+    ├─> Summary generation (uncovered blocks by content-time watermark; cap SUMMARY_MAX_BLOCKS_PER_SHUTDOWN = 1)
     ├─> Reflection generation (session-end)
     ├─> Corpus persistence to JSON
     └─> ChromaDB embeddings written to disk
@@ -6103,7 +6222,7 @@ See `docs/AGENT_SAFETY.md` for full workflow documentation.
 
 **End of Skeleton**
 
-This document compresses a ~143K LOC codebase by focusing on architecture, data flow, and patterns rather than implementation details.
+This document compresses the Daemon codebase (size: `docs/METRICS_SNAPSHOT.md`) by focusing on architecture, data flow, and patterns rather than implementation details.
 
 **Last Updated**: 2026-05-28
 
@@ -6136,14 +6255,14 @@ This document compresses a ~143K LOC codebase by focusing on architecture, data 
 
 **Previous Changes** (2026-04-01):
 - **Retrieval-Based Synthesis Generator** — `knowledge/synthesis_retriever.py`: RetrievalSynthesisGenerator (Tier 0) with structural query extraction (few-shot LLM), FAISS semantic search (41M vectors), adversarial evaluation. Drop-in replacement interface. Config: `SYNTHESIS_RETRIEVAL_*` constants; YAML section `synthesis_retrieval`.
-- **Three-Tier Parallel Synthesis** — Shutdown step 6.8 now runs RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) with independent quotas. Provisional bridge creation on filter acceptance (weight=0.0, status="provisional").
+- **Three-Tier Parallel Synthesis** (superseded: Tiers 0/1/2 retired 2026-06-30; dreaming is a standalone shutdown step, generators OFF) — Shutdown step 6.8 then ran RetrievalSynthesisGenerator (Tier 0), GraphWalkGenerator (Tier 1), SynthesisGenerator (Tier 2) with independent quotas. Provisional bridge creation on filter acceptance (weight=0.0, status="provisional").
 - **Bridge Quality Cleanup** — `GraphMemory.prune_garbage_bridges()` removes 5 categories of noise edges. `WikidataEntityMapper` embedding threshold raised 0.60→0.80 with exact-match blocklist.
 - **GraphWalkGenerator Improvements** — Hub dampening (log-scale penalty for degree > 15). Cross-domain walk constraint (min 2 domain categories). Config: `GRAPH_WALK_HUB_DEGREE_THRESHOLD`, `GRAPH_WALK_MIN_DOMAINS`.
 - **Coherence Judge Recalibration** — Prompt distinguishes WEAK (no mechanism named) from MODERATE (names real mechanism concretely). max_tokens raised 250→400.
 - **Retrieval-Aware Filter Stages** — Stage 2 (distance) inverted scoring for retrieval candidates. Stage 3 (novelty) skips claim-similarity gate for retrieval candidates.
 
 **Previous Changes** (2026-03-28):
-- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — 8-stage async filter for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 41M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
+- **Knowledge Synthesis Filter Pipeline** (Section 2.15h) — async filter (now documented as 7-stage) for graph walk candidates: text sanity, domain crossing, semantic distance, external novelty (3 sub-checks via FAISS wiki search, 41M vectors: claim similarity, co-occurrence gate, template specificity), internal novelty (synthesis memory with convergence tracking), two-pass LLM coherence judge (Pass 1: structural coherence with 4-tier rating; Pass 2: factual skeptic on MODERATE results, binary PASS/FAIL), 4-signal composite scoring, storage. New ChromaDB collection `synthesis_results` (12th). Config: `SYNTHESIS_*` constants; YAML section `synthesis`.
 - **Synthesis Generator** (Section 2.15i) — Cross-store candidate generation: samples from facts (ChromaDB) + wiki (FAISS `semantic_search_with_neighbors()`, 41M vectors), LLM bridge articulation with concurrency control, graph shortest-path distance. Runs at shutdown step 6.8 (after threads, before graph save). Config: `SYNTHESIS_GENERATOR_*` constants; YAML section `synthesis_generator`. Calibration fixtures: 72 labeled candidates in 7 tiers.
 - **Context Management Fixes** (Sections 2.7, 2.8b) — Post-budget floor for recent conversations (`PROMPT_MIN_RECENT_FLOOR=5`), budget-enforced accumulated context in agentic controller (`_append_accumulated()` trims oldest rounds), budget-aware final prompt assembly (trims low-value sections to preserve conversation history + agentic results).
 
@@ -6234,7 +6353,7 @@ This document compresses a ~143K LOC codebase by focusing on architecture, data 
   schema gains `pr_number` + per-action required-field guidance.
 
 **Reliability fixes**
-- `models/model_manager.py` — `is_tool_capable()` handles aliases + resolved
+- `models/model_manager.py` — `is_tool_capable()` (superseded: now `supports_tools` via `MODEL_CAPABILITIES`) handles aliases + resolved
   provider names, adds `deepseek-v4`; native reasoning suppressed when tools are
   passed (reasoning models emit real tool_calls instead of narrating).
 - `memory/memory_consolidator.py` — unified `consolidate_memories()` +

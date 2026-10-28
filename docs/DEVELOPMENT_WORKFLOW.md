@@ -70,8 +70,9 @@ re-explaining. The rules of the road are in §3–§5; this section is the index
 
 Three of these are **runtime inputs**, not just prose: `PROJECT_SKELETON.md`, `QUICK_REFERENCE.md`
 and the root `CLAUDE.md` are read in full by the proposal generator, `GOALS.md` is sliced for
-ranking queries, and every top-level `docs/*.md` is chunked into the `reference_docs` collection at
-startup. Reformatting them changes model behaviour (`docs/execution/compaction_20260915/PLAN.md`).
+ranking queries, and the docs listed in `config/reference_docs_manifest.txt` are chunked into the `reference_docs`
+collection at startup (live and frozen both seed only that manifest; [DAEMON DOCUMENTATION] renders
+only those). Reformatting them changes model behaviour (`docs/execution/compaction_20260915/PLAN.md`).
 
 ### 0.4 How work is organised (the credit pattern)
 

@@ -64,6 +64,7 @@ class TestLazyCollectionAccess:
         real_hash = mgr._compute_file_hash(str(doc))
         for c in CHUNKS:
             c["metadata"]["content_hash"] = real_hash
+            c["metadata"]["file_path"] = str(doc.resolve())  # same path too (2026-10-27: a moved file re-syncs)
         assert mgr.sync_file(str(doc), title="AGENTIC_SEARCH") == "skipped"
 
     def test_no_raw_collections_dict_access_remains(self):

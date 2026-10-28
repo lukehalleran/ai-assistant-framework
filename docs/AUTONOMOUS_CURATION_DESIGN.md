@@ -1,15 +1,19 @@
 # Autonomous Curation — Design
 
-**Status (2026-08-28): Phases 1–3 core BUILT** — `memory/curation/` engine
-(types/journal/adapters/engine/service), Wave-1 curators (error-sentinel
-quarantine, stream-artifact repair, junk-fact quarantine, temporal
-staleness), quarantine respected at the three retrieval filter sites,
-shutdown phase 5/6, `api/routes/curation.py`, SPA Curation Center page
-(🧹 navbar view), config section (`curation`, max_mode=queue), conftest
-sandbox. Tests: `tests/unit/test_curation_engine.py` (27) +
-`test_api_curation.py` (5). **Remaining:** contradiction-supersession wiring
+**Last updated: 2026-10-27. Status: Phases 1–3 core BUILT** — `memory/curation/`
+engine (types/journal/adapters/engine/service), the curators listed in "The
+curators" below, quarantine respected at the retrieval filter sites (and the
+corpus readers, `CorpusManager.visible_entries()`), shutdown phase 5/6,
+`api/routes/curation.py`, SPA Curation Center page (🧹 navbar view, dev-mode
+only), config section (`curation`, shipped `max_mode: queue`), conftest
+sandbox. Tests (by file): `tests/unit/test_curation_engine.py`,
+`test_curation_engine_integrity.py`, `test_curation_corpus_quarantine.py`,
+`test_curation_junk_fact_and_temporal_node.py`,
+`test_curation_residence_conflicts_curator.py`, `test_api_curation.py`.
+**Remaining:** contradiction-supersession wiring
 (cross_deduplicator → queued curator), ops buttons (re-auth / backups /
-restart / export), Wave-3 judgment curators (dual-LLM, queue-forever).
+restart / export — not built), Wave-3 judgment curators (dual-LLM,
+queue-forever — not built).
 Owner decisions recorded: quarantine-not-delete YES; ceiling=queue for now,
 auto later per-curator after graduation; judgment curators never auto.
 
@@ -140,19 +144,22 @@ exemplars) applied to the curator itself. The FP-halt pattern
 
 ### 3. The curators (initial set)
 
-**Wave 1 — deterministic ports of existing scripts (auto-eligible):**
+**Wave 1 — deterministic ports of existing scripts (auto-eligible in design;
+shipped ceiling is `queue`):**
 
-| Curator | Replaces | Instrument |
-|---|---|---|
-| stream-artifact repair | `strip_special_token_artifacts`, trailing-`e`, `<\|sep\|>` | metadata (content repair w/ pre-image) |
-| thinking-leak repair | `repair_thinking_leaks` | metadata |
-| error-sentinel quarantine | `purge_error_memories` | **metadata, not delete**: add `quarantined=True`, retrieval already filters via `is_junk_*`; the stored pile stops mattering. Human may bulk-delete quarantined docs from the UI whenever. |
-| junk-fact quarantine | `purge_junk_facts` | metadata (same quarantine flip) |
-| stance backfill | `backfill_stance` | metadata (additive tags) |
-| proposal risk reclassify | `reclassify_proposals` | metadata |
-| relation re-canonicalization | `graph_relation_normalize` | metadata (rename, journaled) |
-| profile junk-fact retirement (2026-09-05) | `purge_profile_facts` + curated id file | metadata (`supersede_profile_fact`, reason `junk_object`; the quick profile — what [USER PROFILE] renders — was uncovered by the chroma-side junk-fact curator) |
-| when-word graph-node quarantine (2026-09-05) | `graph_junk_cleanup` T1 temporal class (`today`, `tomorrow`, `on_thursday`, weekdays) | metadata (node-level `curation_quarantined` through the graph adapter; `GraphMemory.edge_is_suppressed` hides every edge touching a flagged node; the T2/T3 judgment classes stay with `GraphNodeReviewer` below) |
+| Curator (`name`) | Replaces | Instrument | Status |
+|---|---|---|---|
+| `error_sentinels` (`ErrorSentinelCurator`) | `purge_error_memories` | **metadata, not delete**: `curation_quarantined`; retrieval already filters via `is_junk_*`; the stored pile stops mattering | built, registered |
+| `stream_artifacts` (`StreamArtifactCurator`) | `strip_special_token_artifacts`, trailing-`e`, `<\|sep\|>` | metadata (content repair w/ pre-image) | built, registered |
+| `junk_facts` (`JunkFactCurator`) | `purge_junk_facts` | metadata (same quarantine flip, chroma `facts`) | built, registered |
+| `profile_junk_facts` (`ProfileJunkFactCurator`, 2026-09-05) | `purge_profile_facts` + curated id file | metadata (profile supersession, reason `junk_object`; the quick profile — what [USER PROFILE] renders — was uncovered by the chroma-side junk-fact curator) | built, registered |
+| `graph_temporal_nodes` (`GraphTemporalNodeCurator`, 2026-09-05) | `graph_junk_cleanup` T1 temporal class (`today`, `tomorrow`, `on_thursday`, weekdays) | metadata (node-level `curation_quarantined` through the graph adapter; `GraphMemory.edge_is_suppressed` hides every edge touching a flagged node; the T2/T3 judgment classes stay with `GraphNodeReviewer` below) | built, registered |
+| `temporal_staleness` (`TemporalStalenessCurator`, Wave 2) | — (see Wave 2) | profile supersession, reason `date_passed` | built, registered |
+| `residence_conflicts` (`ResidenceConflictCurator`, 2026-10-02) | — (stale living-situation facts conflicting with a newer one) | reversible profile supersession | built and in `ALL_CURATORS`; NOT registered by `memory.curation.service.init_engine` (only tests register it) |
+| thinking-leak repair | `repair_thinking_leaks` | — | **not built — still a script** |
+| stance backfill | `backfill_stance` | — | **not built — still a script** |
+| proposal risk reclassify | `reclassify_proposals` | — | **not built — still a script** |
+| relation re-canonicalization | `graph_relation_normalize` | — | **not built — still a script** |
 
 Note the quarantine move: today's purge scripts delete; the curator instead
 flips a flag the retrieval filters already respect. Deletion stops being
@@ -164,7 +171,7 @@ Owner-side by-id counterpart (2026-09-02): `scripts/quarantine_facts.py` flips t
 pre-image backup, `--undo` reverses; Daemon must be down). First use: the WHOOP and two
 invented `has_dog` facts from the 2026-09-02 claim-support trace.
 
-**Wave 2 — deterministic staleness (the drop-deadline class):**
+**Wave 2 — deterministic staleness (the drop-deadline class; built — see `temporal_staleness` above):**
 
 `TemporalStalenessCurator`: any fact/thread/note-flag whose *own content*
 carries a resolvable date that has passed (deadline=, appointment=, due=,
@@ -214,12 +221,22 @@ New SPA page (+ thin `api/routes/curation.py`), replacing candidate files and
 - **Activity**: journal view of auto-applied actions with per-action **Undo**.
   This is the transparency that makes auto mode acceptable: nothing is
   silent, everything is reversible, the user can watch it work.
-- **Quarantine**: count + size, "review" list, optional bulk delete
-  (the ONLY deletion surface, explicit and human).
-- **Settings integration**: per-curator mode (shadow/queue/auto) with the
-  graduation state visible; global kill switch.
+- **Quarantine** (*not built*): count + size, "review" list, optional bulk
+  delete (the ONLY deletion surface, explicit and human). No quarantine tab
+  or delete route exists today.
+- **Settings integration** (*not built*): per-curator mode (shadow/queue/auto)
+  with the graduation state visible; global kill switch. Today per-curator
+  modes are only the `curation.curator_modes` config key (shipped `{}`).
+
+**As built today.** The SPA page (`web/src/components/curation/CurationPage.tsx`,
+shown only in dev mode) has Queue + Activity (Refresh, Scan now, Apply, Dismiss,
+Undo). Routes (`api/routes/curation.py`, prefix `/api/curation`): `GET /queue`,
+`POST /scan`, `POST /{proposal_id}/apply`, `POST /{proposal_id}/dismiss`,
+`POST /{proposal_id}/undo`, `GET /activity`. Nothing else.
 
 ### 5. Terminal-elimination checklist (ops gaps beyond curation)
+
+*Status 2026-10-27: none of these ops buttons are built (no API route for re-auth, backups, restart or export; those remain scripts).*
 
 From the UI-coverage sweep, a non-technical user still needs the terminal
 for: Google re-auth on token revocation (`reauth_google`), backup restore
@@ -264,8 +281,8 @@ inflow guards.
    the terminal is no longer needed for any recurring curation.
 3. **TemporalStalenessCurator** (the drop-deadline class) + contradiction
    supersession wiring.
-4. **Ops buttons** (re-auth, backups, restart, export).
-5. **Wave 3 judgment curators** (dual-LLM, queue-first).
+4. **Ops buttons** (re-auth, backups, restart, export). *(not built)*
+5. **Wave 3 judgment curators** (dual-LLM, queue-first). *(not built)*
 
 ---
 

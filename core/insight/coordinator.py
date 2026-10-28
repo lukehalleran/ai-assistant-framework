@@ -16,6 +16,7 @@ import inspect
 import json
 from typing import Any, Awaitable, Callable, Optional
 
+from utils.self_docs_manifest import is_unreviewed_doc
 from core.insight.deliberation import (
     DEFAULT_CHANNELS,
     SpecFreezeResult,
@@ -155,6 +156,8 @@ def normalize_chroma_rows(rows: Any, *, channel: str) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        if channel == "files" and is_unreviewed_doc(metadata):
+            continue  # unreviewed repo docs (handoffs/drafts, also from older installs) are not "files" evidence
         text = _row_text(raw)
         if not text:
             continue

@@ -23,7 +23,7 @@ Methods:
   - _get_semantic_chunks(query, k, max_results) -> List[Dict]
   - _get_dreams(limit) -> List[Dict]
   - _note_text_substance(content) -> int  [2026-07-25: real prose length after stripping image
-    embeds/links; get_user_uploads drops stale uploads (>USER_UPLOADS_MAX_AGE_DAYS=7 old AND
+    embeds/links; get_user_uploads drops stale uploads (>USER_UPLOADS_MAX_AGE_DAYS=3 old AND
     relevance < USER_UPLOADS_MIN_RELEVANCE=0.62 — months-old homework docs were injected every
     turn, 2026-08-05; bar recalibrated 0.5→0.62 on 2026-08-14: rel=1/(1+2(1−cos)) in bge space,
     0.5 ≈ cos 0.5 = any-text, 0.62 ≈ cos 0.69); get_personal_notes drops chunks under PERSONAL_NOTES_MIN_CHARS (60) — image-only
@@ -69,6 +69,7 @@ from knowledge.semantic_search import semantic_search_with_neighbors
 import knowledge.semantic_search as semantic_index
 from utils.trigger_match import is_negated as _trigger_is_negated
 from utils.retrieval_outcome import OutcomeList, outcome_status
+from utils.self_docs_manifest import is_listed_self_doc
 from .formatter import _parse_bool
 import time as _t
 import memory.valence as valence
@@ -837,13 +838,14 @@ class KnowledgeRetrievalMixin:
             # 206 chunks) — survival-models lecture transcripts rendered as
             # self-knowledge on a health-research turn. Self-docs are
             # auto-seeded exclusively from the repo docs/ tree, so require
-            # that origin; chunks with NO file_path are kept (fail-open for
-            # legacy seeds of real docs).
-            def _is_self_doc(d):
-                fp = str((d.get('metadata', {}) or {}).get('file_path') or '')
-                return (not fp) or fp.startswith(_SELF_DOCS_DIR)
+            # that origin.
+            # 2026-10-27: allow-list is the reviewed manifest, not "anything
+            # under docs/" (handoffs/private drafts were seeded there too);
+            # a chunk with NO file_path passes only if its title is a manifest
+            # doc's stem (utils.self_docs_manifest.is_listed_self_doc).
             pre_origin = len(docs)
-            docs = [d for d in docs if _is_self_doc(d)]
+            docs = [d for d in docs
+                    if is_listed_self_doc((d.get('metadata', {}) or {}))]
             if pre_origin != len(docs):
                 logger.debug(
                     f"[ContextGatherer] Dropped {pre_origin - len(docs)} "

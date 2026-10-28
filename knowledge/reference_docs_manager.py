@@ -627,15 +627,19 @@ class ReferenceDocsManager:
     def sync_file(self, file_path: str, title: str = None) -> str:
         """
         Sync a single file. Returns 'uploaded', 'skipped', or 'failed'.
-        Uses content hash comparison to skip unchanged files.
+        Skips only when both the content hash AND the stored file_path match: the
+        [DAEMON DOCUMENTATION] gate checks a chunk's recorded path (provenance), so a
+        moved install must re-record it (2026-10-27, class: BC-59).
         """
         path = Path(file_path).expanduser().resolve()
         if not path.exists() or not path.is_file():
             return 'failed'
         title = title or path.stem
         current_hash = self._compute_file_hash(str(path))
-        stored_hash = self._get_stored_content_hash(title)
-        if stored_hash and current_hash == stored_hash:
+        chunks = self._get_document_chunks(title)
+        stored = chunks[0].get('metadata', {}) if chunks else {}
+        if (stored.get('content_hash') and current_hash == stored.get('content_hash')
+                and stored.get('file_path') == str(path)):
             return 'skipped'
         result = self.upload_document(str(path), title)
         return 'uploaded' if result.success else 'failed'

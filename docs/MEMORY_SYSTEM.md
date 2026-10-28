@@ -1,6 +1,6 @@
 # Memory System Operations Guide
 
-*Last verified: 2026-05-27*
+*Last updated: 2026-10-27*
 
 Operational guide for Daemon's 5-tier hierarchical memory system. Covers the
 full lifecycle from query to retrieval to storage, the scoring algorithm with
@@ -31,7 +31,7 @@ resolved, and stale information is penalized in ranking.
 ### Core Pipeline
 | File | Purpose |
 |------|---------|
-| `memory/memory_coordinator.py` | Thin orchestrator (~639 lines), creates all components, delegates to retriever/storage/shutdown |
+| `memory/memory_coordinator.py` | Thin orchestrator, creates all components, delegates to retriever/storage/shutdown |
 | `memory/memory_retriever.py` | Retrieval: collection selection, gating, threshold fallbacks, supersession + per-relation TTL filter |
 | `memory/relation_classifier.py` | Single source of truth for relation→TTL: health-transient vs standard-ephemeral vs durable (+ permanent-condition overrides). Used by user_profile + memory_retriever. 2026-08-03: also hosts `MULTI_VALUED_RELATIONS` + `GENERIC_PREDICATES` + `is_multi_valued_relation()` — the cross-dedup contradiction arm's cluster exclusions (plural values are not conflicts; generic `is`/`has` relation names carry no claim identity) |
 | `memory/memory_scorer.py` | Scoring algorithm (6 weighted factors + 8 additive bonuses/penalties incl. health-framing decay + timeline bonus) with intent overrides, graph boost, size penalty |
@@ -40,8 +40,8 @@ resolved, and stale information is penalized in ranking.
 | `core/prompt/builder.py` | UnifiedPromptBuilder: thin orchestrator for parallel task dispatch, intent overrides, budget |
 | `core/prompt/context_gatherer.py` | Mixin compositor (composes gatherer_web, gatherer_memory, gatherer_knowledge) |
 | `core/prompt/gatherer_web.py` | WebSearchMixin: web search retrieval + trigger logic |
-| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin: 17 memory/summary/reflection/facts/profile retrieval methods |
-| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin: 16 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, codebase) |
+| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin: memory/summary/reflection/facts/profile retrieval methods |
+| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin: knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, codebase) |
 | `core/prompt/formatter.py` | PromptFormatter: `_assemble_prompt()` section assembly + `_build_feature_inventory()` + `_staleness_prefix` |
 | `core/prompt/hygiene.py` | ContentHygiene: `_hygiene_and_caps()` dedup + caps + `_backfill_recent_conversations()` |
 | `core/prompt/token_manager.py` | Budget enforcement, middle-out compression, priority ordering |
@@ -170,9 +170,10 @@ UnifiedPromptBuilder.build_prompt()
   │     graph neighbors: ["powerlifting", "deadlift", "bench press"]
   │     expanded query: "How's my squat progress looking? powerlifting deadlift bench press"
   │
-  ├─ 3. Parallel Retrieval (22 async tasks, 30s timeout)
-  │     ├── recent_conversations (15)     ← corpus_manager
-  │     ├── semantic_memories (20)        ← ChromaDB [conversations, summaries, reflections]
+  ├─ 3. Parallel Retrieval (the builder's `tasks` dict, 30s timeout; several tasks are
+  │     conditional, and this diagram shows the main ones — see PROMPT_BUILDING_PIPELINE.md)
+  │     ├── recent_conversations (10)     ← corpus_manager
+  │     ├── semantic_memories (30)        ← ChromaDB [conversations, summaries, reflections]
   │     ├── user_profile (3000 tokens)    ← UserProfile (categorized facts)
   │     ├── facts (30)                    ← ChromaDB facts collection
   │     ├── summaries (recent+semantic)   ← ChromaDB summaries (recent side =
@@ -188,14 +189,17 @@ UnifiedPromptBuilder.build_prompt()
   │     ├── personal_notes (5)            ← Obsidian vault
   │     ├── git_commits (10)              ← local git for repository status; otherwise ChromaDB procedural
   │     ├── web_search (if triggered)     ← Tavily API
+  │     ├── relevant_emails / daemon_self_notes / google_calendar / upcoming_schedule
+  │     ├── user_stated (factual_recall only) ← the user's own statements
   │     └── codebase_changes (first msg)  ← git diff
+  │     (stated_figures and day_counts are supplied into the same context after the gather)
   │
   ├─ 3.5. Skill Activation (procedural_skills)
   │     SkillActivationPolicy: intent suppression → score threshold →
   │     STM topic bonus → cooldown filter → cap to 3
   │
   ├─ 4. Multi-Stage Gating (semantic memories)
-  │     Top 2 recent → bypass gating
+  │     Episodic (metadata type "episodic") and pinned items → bypass gating
   │     Remaining → cosine similarity → cross-encoder reranking
   │     Forced minimum: 8 memories even if below threshold
   │     (Gate scoring uses the store's bge embedder — device is GPU
@@ -207,9 +211,9 @@ UnifiedPromptBuilder.build_prompt()
   │     Sorted descending, top K selected
   │
   ├─ 6. Token Budget Enforcement
-  │     Priority-based trimming (profile > conversations > memories > wiki)
+  │     Priority-based trimming (PRIORITY_ORDER in token_manager.py: profile > conversations > memories > wiki)
   │     Middle-out compression for oversized items
-  │     LLM pre-compression for items >=3x over limit
+  │     (optional LLM pre-compression for items >=3x over limit — OFF by default, `llm_compression.enabled: false`)
   │
   └─ 7. Prompt Assembly
         [SYSTEM PROMPT] + [USER PROFILE] + [RECENT CONVERSATIONS] +
@@ -270,7 +274,14 @@ MemoryStorage.store_interaction(query, response)
 ```
 ShutdownProcessor.process_shutdown_memory()
   │
-  ├─ Block summaries (N=10 conversations per block)
+  ├─ Block summaries (`ShutdownProcessor.summarize_uncovered_blocks`)
+  │     Blocks of N corpus entries NEWER than the content-time watermark of the
+  │     existing summaries' anchors (`memory/summary_coverage.py` — a summary's
+  │     identity is the span it covers, not a positional block index or its
+  │     creation time); coverage unreadable → skip, never blind. At most
+  │     `SUMMARY_MAX_BLOCKS_PER_SHUTDOWN` (default 1) blocks per shutdown, oldest
+  │     first, stopping at the first block that fails to land; a backlog drains
+  │     via `scripts/backfill_summaries.py` (dry-run default).
   │     LLM consolidation → micro-summary fallback
   │     Claim extraction → ClaimIndex registration
   │     Source doc IDs via get_ids_by_timestamp_range() (not list_all scan)
@@ -291,7 +302,7 @@ ShutdownProcessor.process_shutdown_memory()
   │  └─ Procedural skill extraction
   │
   ├─ Phase B (parallel via asyncio.gather) ────────────────────────
-  │  ├─ Code proposal generation
+  │  ├─ Code proposal generation (OFF by default: `code_proposals.enabled: false`; Settings toggle)
   │  ├─ Implementation tracking (lightweight file check)
   │  ├─ Open thread processing
   │  │     Detect resolutions (cascade to duplicate siblings via topics_equivalent)
@@ -305,10 +316,8 @@ ShutdownProcessor.process_shutdown_memory()
   ├─ Phase C (sequential — must follow Phase B) ──────────────────
   │  ├─ Knowledge graph + alias + category cache save (JSON flush)
   │  └─ Cross-collection dedup
-  │        Mode depends on DAEMON_MODE (config.yaml currently sets mode: dev;
-  │        the code-level default when unset is "user"):
-  │          Dev mode: dry_run=True — preview/log only, never auto-executes
-  │          User mode: auto-executes (CROSS_DEDUP_AUTO_EXECUTE=True)
+  │        Never auto-executes in ANY mode (`CROSS_DEDUP_AUTO_EXECUTE = False`):
+  │        shutdown produces a dry-run preview only
   │        Execution [2026-08-03]: duplicates DELETED; contradiction losers
   │        SUPERSEDED (is_current=False + superseded_by — reversible, never deleted);
   │        clusters exclude multi-valued/generic/junk-subject/superseded facts
@@ -324,7 +333,8 @@ Synthesis dreaming — SEPARATE standalone step [CHANGED 2026-06-19] ──
   SHUTDOWN_TASK_TIMEOUT_S (60s) reflection/fact budget, so no candidate
   ever persisted. Entry: MemoryCoordinator.run_synthesis_dreaming().
     ├─ Auto-halt check: skips if audit FP rate > SYNTHESIS_AUDIT_FP_HALT_THRESHOLD
-    ├─ PooledConceptSynthesisGenerator — the SOLE active generator (2026-06-30):
+    ├─ PooledConceptSynthesisGenerator — the primary generator when enabled (2026-06-30);
+    │     ALL generators are currently OFF (see below):
     │     pairs prominent curated concepts (48-concept CONCEPT_POOL) in the
     │     non-obvious cosine band 0.2-0.45 (config: synthesis_pooled — enabled: false
     │     since 2026-07-15, API-cost pause; toggle + count slider in Settings)
@@ -358,7 +368,7 @@ structure:  0.05    # In SCORE_WEIGHTS dict but UNUSED — actual structure is a
 ### Step-by-Step
 
 1. **Base relevance** — Embedding similarity from ChromaDB query + collection boost
-2. **Recency decay** — Uses `time_manager.current()` for consistent reference time. Active-day aware: `1/(1 + decay_rate * age_hours)`. Temporal anchor override for TEMPORAL_RECALL queries uses a two-regime decay: small anchors (<=48h, e.g. "today"/"yesterday") get a flat plateau inside the window so relevance/truth differentiate; large anchors (>48h, e.g. "last week") peak near the anchor and penalize too-recent memories. **Timestamp fallback (2026-07-08):** a missing/empty top-level `timestamp` falls back to `metadata['timestamp']` before defaulting to now (tz-aware stragglers normalized to naive local). Before this, the hybrid/semantic retrieval path — which set no top-level timestamp — scored every memory recency=1.0, silently disabling the recency term for the main retrieval path (months-old memories ranked as fresh); the retriever now also surfaces the metadata timestamp at top level. Tests: `tests/unit/test_recency_metadata_fallback.py`
+2. **Recency decay** — Uses `time_manager.current()` for consistent reference time. Default (no temporal anchor): active-day decay, `1/(1 + decay_rate * active_days)` via `time_manager.calculate_active_day_decay`, where `active_days` counts days with at least one message after the memory's creation day (`decay_rate` = `memory.recency_decay_rate` = 0.05); the hourly form `1/(1 + decay_rate * age_hours)` is only the fallback when no time manager is available. Temporal anchor override for TEMPORAL_RECALL queries uses a two-regime decay (alpha = anchor hours, age in hours): small anchors (alpha <= 48h, e.g. "today"/"yesterday") are a flat plateau `1.0 - 0.15*age/alpha` inside the window (1.0 to 0.85), a gentle taper to 0.70 across a grace zone out to 1.5*alpha, then `0.70/(1 + decay_rate*(age - 1.5*alpha))`; large anchors (alpha > 48h, e.g. "last week") ramp `floor + (1 - floor)*sqrt(age/alpha)` with `floor = max(0.60, 1 - alpha/500)` up to the anchor, then `1/(1 + decay_rate*(age - alpha))` (corpus-sourced relevance is capped at 0.5 for large anchors). **Timestamp fallback (2026-07-08):** a missing/empty top-level `timestamp` falls back to `metadata['timestamp']` before defaulting to now (tz-aware stragglers normalized to naive local). Before this, the hybrid/semantic retrieval path — which set no top-level timestamp — scored every memory recency=1.0, silently disabling the recency term for the main retrieval path (months-old memories ranked as fresh); the retriever now also surfaces the metadata timestamp at top level. Tests: `tests/unit/test_recency_metadata_fallback.py`
 3. **Truth score** — `TruthScorer.compute_effective_truth(metadata)`: stored score + time decay from last confirmation
 4. **Importance** — Stored importance score (default 0.5)
 5. **Continuity** — Token overlap with last exchange (+0.3 * overlap) + recency bonus (+0.1 if within 10 minutes). Tokens are stemmed via `_stem()` (minimal suffix stripping for common mismatches like anxious/anxiety, deployed/deployment). Tag-keyword bonus: if query stems match memory tags, adds up to +0.15 to continuity (scales with number of tag hits, capped at 3)
@@ -1044,19 +1054,23 @@ YAML section: `skill_activation:` in `config/config.yaml`.
 
 The prompt has a finite token budget (default 10,000 tokens, floor 8K,
 ceiling 16K, context fraction 0.12 — config.yaml `token_budget`). Sections
-are prioritized:
+are prioritized (`PRIORITY_ORDER` in `core/prompt/token_manager.py` is
+authoritative; equal-priority sections are admitted in list order):
 
 ```
-Priority 10: STM summary (metadata, never trimmed)
-Priority  9: User profile (identity, naturally bounded)
-Priority  8: Narrative state (temporal grounding, hard cap 500 tokens), web search results
-Priority  7: Recent conversations, graph context, unresolved threads
-Priority  6: Semantic chunks, personal notes, user uploads
-Priority  5: Reference docs, memories
-Priority  4: Procedural skills, facts
-Priority  3: Summaries, proposed_features, git commits, proactive insights
-Priority  2: Reflections, dreams, codebase changes
-Priority  1: Wiki
+Priority 10: stm_summary (metadata, never trimmed), budget_omitted_note
+Priority  9: user_profile (identity, naturally bounded)
+Priority  8: narrative_state (temporal grounding, hard cap 500 tokens), user_stated_evidence,
+             stated_figures, day_counts, web_search_results
+Priority  7: google_calendar, unresolved_threads, recent_conversations, session_timeline,
+             recent_window_truncated, session_turns_total, session_started_at, graph_context,
+             relevant_emails, upcoming_schedule
+Priority  6: semantic_chunks, personal_notes, user_uploads, disambiguation_notes
+Priority  5: reference_docs, memories
+Priority  4: procedural_skills, facts
+Priority  3: recent_summaries, semantic_summaries, proposed_features, git_commits, proactive_insights
+Priority  2: recent_reflections, semantic_reflections, daemon_self_notes, dreams, codebase_changes
+Priority  1: wiki
 ```
 
 **Repository status exception (2026-09-13):** compact records read from local
@@ -1068,8 +1082,14 @@ The procedural index is manually synchronized and remains the source for
 historical questions. Local commit dates and authors do not establish push
 dates, push success, or the process that pushed.
 
+**Floors:** summaries and reflections have survival MINIMUMS (`prompt_min_summaries_floor`
+= 2, `prompt_min_reflections_floor` = 1; recent conversations 5). Their top-ups run before the
+budget, so the budget manager RESERVES their tokens (`FLOOR_PROTECTED_SECTIONS`, bounded by
+`memory.prompt_floor_reserve_max_share` = 0.25) and its trim pass never cuts below them.
+
 **Compression hierarchy:**
-1. LLM compression — items >=3x over limit get intelligent reduction
+1. LLM compression — items >=3x over limit get intelligent reduction (OFF by default:
+   `llm_compression.enabled: false`)
 2. Middle-out — keeps 60% head + 40% tail, trims middle
 3. Removal — lowest priority sections dropped first
 
@@ -1081,7 +1101,12 @@ The final prompt is assembled with these sections (in attention-optimized order)
 
 ```
 [RECENT CONVERSATION]                  ← last N turns (session continuity)
+[EARLIER TODAY]                        ← temporal_recall only (lines a truncated window dropped)
+[THE USER'S OWN STATEMENTS]            ← factual_recall only (the user's own words on the question)
+[YOUR STATED FIGURES]                  ← the user's own figures with date + modality
+[YOUR DAY COUNTS]                      ← dated day counts already projected to today (2026-10-27)
 [RELEVANT MEMORIES]                    ← scored semantic memories
+[NOT SHOWN FOR SPACE]                  ← one line naming sections the budget emptied
 [RECENT SUMMARIES]                     ← compressed recent history
 [SEMANTIC SUMMARIES]                   ← query-relevant compressed history
 [RECENT REFLECTIONS]                   ← meta insights, recent
@@ -1101,6 +1126,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 [UNRESOLVED THREADS]                   ← open commitments/deadlines
 [UPCOMING SCHEDULE]                    ← schedule facts for next N days (intent-gated)
 [GOOGLE CALENDAR]                      ← upcoming calendar events (if enabled)
+[RELEVANT EMAILS]                      ← Gmail/Outlook, cue-gated
 [DAEMON SELF-NOTES]                    ← Daemon's own session notes (caveat-labeled)
 [PROACTIVE INSIGHTS]                   ← cross-domain connections
 [USER PROFILE]                         ← categorized facts (high-attention zone)
@@ -1109,8 +1135,11 @@ The final prompt is assembled with these sections (in attention-optimized order)
 [TIME CONTEXT]                         ← current datetime (high-attention zone)
 [TEMPORAL GROUNDING]                   ← narrative context
 [SHORT-TERM CONTEXT SUMMARY]           ← STM analysis (24h window + daily notes injection + reference_type / temporal_facts disambiguation)
+(disambiguation notes)                 ← cross-session phrase ambiguity, just before the query
 [CURRENT USER QUERY]                   ← always last, protected from compression
 ```
+
+The render order in `core/prompt/formatter.py` (`_assemble_prompt`) is authoritative.
 
 ---
 
@@ -1132,7 +1161,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 |---------|-------------|-----|
 | Facts stated recently not found | Fact extraction disabled | Enable `FACTS_EXTRACT_EACH_TURN` |
 | Semantic search missing vocabulary | Graph expansion disabled | Enable `GRAPH_QUERY_EXPANSION_ENABLED` |
-| Gating too aggressive | Threshold too high | Lower `GATE_REL_THRESHOLD_RETRIEVAL` (default 0.60) or increase `MIN_GATED_MEMORIES` |
+| Gating too aggressive | Threshold too high | Lower `GATE_REL_THRESHOLD_RETRIEVAL` (default 0.60) or raise the forced minimum via env `GATE_MIN_MEMORIES` (default 8) |
 | Deictic follow-ups losing context | Anchor bonus too weak | Check `DEICTIC_ANCHOR_PENALTY` and continuity weights |
 
 ### Fact Extraction Problems
@@ -1156,7 +1185,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Context too short | Budget too small | Increase `PROMPT_TOKEN_BUDGET` or `PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` |
+| Context too short | Budget too small | Raise `token_budget.default` (`PROMPT_TOKEN_BUDGET_DEFAULT`, 10000; API budgets are capped at it), set the `PROMPT_TOKEN_BUDGET` env override, or raise `PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` (can only lower an API budget) |
 | Important memories getting trimmed | Priority wrong | Check `token_manager.py` priority ordering |
 | Prompt dominated by one section | Per-section cap missing | Add/lower `PROMPT_MAX_*` for that section |
 
@@ -1171,7 +1200,6 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `RECENCY_DECAY_RATE` | 0.05 | Exponential decay speed (config.yaml `memory.recency_decay_rate`) |
 | `DEICTIC_THRESHOLD` | 0.25 | Acceptance threshold for follow-up queries (live config.yaml; code default 0.60) |
 | `NORMAL_THRESHOLD` | 0.15 | Acceptance threshold for normal queries (live config.yaml; code default 0.35) |
-| `COSINE_SIMILARITY_THRESHOLD` | 0.15 | Minimum cosine gate (live config.yaml; code default 0.25) |
 
 ### Gating
 | Constant | Default | Purpose |
@@ -1180,7 +1208,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `GATE_REL_THRESHOLD_RETRIEVAL` | 0.60 | Gate threshold in retrieval (bge) space — the LIVE memory-gate threshold; quantile-matched to 0.18 MiniLM |
 | `GATE_DEICTIC_MIN_RETRIEVAL` | 0.61 | Deictic follow-up floor in retrieval space (≈ 0.20 MiniLM) |
 | `GATE_COSINE_WEIGHT` | 0.85 | Weight of cosine vs truth in blended gate score (env var in gate_system.py, NOT app_config) |
-| `MIN_GATED_MEMORIES` | 8 | Forced minimum even if below threshold (env var in gate_system.py, NOT app_config) |
+| `GATE_MIN_MEMORIES` | 8 | Forced minimum even if below threshold (env var read in gate_system.py as a local `MIN_GATED_MEMORIES`, NOT app_config) |
 | `GATE_FORCED_FLOOR_MARGIN` | 0.05 | Quality floor for the forced-minimum backfill (2026-08-23): items below threshold − margin are never forced (env var in gate_system.py, NOT app_config) |
 
 ### Facts & Truth
@@ -1202,7 +1230,7 @@ The final prompt is assembled with these sections (in attention-optimized order)
 | `PROMPT_TOKEN_BUDGET_CONTEXT_FRACTION` | 0.12 | Fraction of model context window |
 | `PROMPT_MAX_RECENT` | 10 | Max recent conversations (live config.yaml `prompt_max_recent`; code default 15) |
 | `PROMPT_MAX_MEMS` | 30 | Max semantic memories (live config.yaml `prompt_max_mems`; code default 15) |
-| `PROMPT_MAX_RECENT_FACTS` | 30 | Max facts (builder default; no YAML key) |
+| `PROMPT_MAX_RECENT_FACTS` | 30 | Max facts (builder default 30; the gatherer modules default to 15 — a code-level drift; no YAML key) |
 
 ### Graph
 | Constant | Default | Purpose |

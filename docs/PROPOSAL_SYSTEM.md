@@ -1,6 +1,10 @@
 # The Proposal System — Daemon's Self-Improvement Pipeline
 
-> Status: living document. Last substantive update 2026-06-14.
+> Status: living document. Last updated 2026-10-27 (substantive content as of 2026-06-14).
+> **Deployed state: code proposals are OFF** — `config.yaml code_proposals.enabled: false`
+> since 2026-07-15 (API-cost pause; Settings toggle `PUT /api/settings/proposals`
+> also sets the per-shutdown maximum). Everything below describes the pipeline
+> when it is enabled.
 > Scope: the end-to-end "project proposer" — how Daemon proposes changes to its
 > own codebase, classifies their risk, stores and surfaces them, tracks whether
 > they shipped, and (experimentally) executes them in isolation. Covers both the
@@ -25,7 +29,7 @@ There are **two tracks**, deliberately separated:
 
 | Track | Status | What it does | Autonomy |
 |-------|--------|--------------|----------|
-| **A. Live proposer** | Production | Generates text plans (+ optional staged code), classifies risk, stores in ChromaDB, surfaces in the GUI and in chat | Human approves; no code is executed or merged |
+| **A. Live proposer** | Production-built; currently OFF (`code_proposals.enabled: false`) | Generates text plans (+ optional staged code), classifies risk, stores in ChromaDB, surfaces in the GUI and in chat | Human approves; no code is executed or merged |
 | **B. agent_branch** | Research (M1/M2/M2.5 built; M3 bridge landed) | Runs *isolated* workers that actually write code in a podman sandbox, computes their diffs trust-side, kills bad ones, ranks survivors, and (opt-in) ingests survivors into Track A's store as PENDING proposals | No merge — proves the *isolation + evaluation* substrate; survivors now surface in the GUI for human review but are never auto-applied |
 
 The two are connected in **one** direction (M3 bridge): Track B can ingest its
@@ -115,7 +119,7 @@ PENDING ──approve──▶ APPROVED ──build──▶ COMPLETED
 **Triggers (two, both in Track A):**
 1. **GUI "Generate Proposals Now"** — `gui/tabs/proposals.py:_generate_proposals_now()`.
 2. **Session shutdown hook** — `memory/shutdown_processor.py:_generate_proposals()`
-   (line ~1043), gated on `CODE_PROPOSALS_ENABLED`, fires only when the session
+   (see the `_generate_proposals` method), gated on `CODE_PROPOSALS_ENABLED`, fires only when the session
    had **≥3** conversation turns. Prefers `generate_proposals_with_context()`
    (rich pipeline context) and falls back to `generate_proposals()` (cold file
    reads).
@@ -261,12 +265,12 @@ is aware of its own pending self-improvement ideas.
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `CODE_PROPOSALS_ENABLED` | True | Master switch (also env `CODE_PROPOSALS_ENABLED`). **Deployed state currently OFF** — `config.yaml code_proposals.enabled: false` (2026-07-15 API-cost pause); the `True` here is the code-constant default. |
-| `CODE_PROPOSALS_COLLECTION` | `proposals` | ChromaDB collection |
+| `CODE_PROPOSALS_ENABLED` | False | Master switch (also env `CODE_PROPOSALS_ENABLED`; forced off in user mode). Code default False and shipped `config.yaml code_proposals.enabled: false` (2026-07-15 API-cost pause). |
+| *(collection)* | `proposals` | Not a config constant: `COLLECTION_NAME` in `memory/proposal_store.py` |
 | `CODE_PROPOSALS_DEDUP_THRESHOLD` | 0.70 | Semantic dedup cosine |
 | `CODE_PROPOSALS_KEYWORD_DEDUP_TAG_THRESHOLD` | 0.60 | Title-overlap dedup |
 | `CODE_PROPOSALS_MAX_PER_SESSION` | 5 | Cap per generation run |
-| `CODE_PROPOSALS_REQUIRE_TESTS` | True | Default `requires_tests` |
+| *(requires_tests)* | True | Not a config constant: the `CodeProposal.requires_tests` field default in `memory/code_proposal.py` |
 | `CODE_PROPOSALS_PROMPT_ENABLED` / `_PROMPT_MAX` | True / 3 | `[PROPOSED FEATURES]` surfacing |
 | `CODE_PROPOSALS_LLM_RANKING` (+ model/weights) | False | Optional LLM re-rank of generated proposals |
 | `IMPL_TRACKING_COOLDOWN` / `_GIT_DEPTH` / `_CONFIDENCE_*` | 86400 / 50 / 0.85,0.60 | Implementation detector |
@@ -508,7 +512,7 @@ export AGENT_BRANCH_SHUTDOWN_MAX=2        # cap objectives per shutdown
 python -m agent_branch.run_queue --max 2
 ```
 
-At shutdown, `shutdown_processor._maybe_spawn_agent_branch_queue()` (env-gated,
+At shutdown, `shutdown_processor._maybe_spawn_agent_branch()` (env-gated,
 default off) checks the queue + podman + an LLM key, then **spawns a detached
 `run_queue` and returns immediately** — agent_branch runs are minutes-long and must
 never block exit. The detached process drains up to N pending objectives, ingests

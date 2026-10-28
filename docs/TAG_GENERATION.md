@@ -2,9 +2,9 @@
 
 ## Overview
 
-The Tag Generation system automatically generates contextual tags for Obsidian notes (daily/weekly summaries and future .md-based memories) using LLM analysis. This improves discoverability, enables better organization, and supports future advanced filtering.
+The Tag Generation system automatically generates contextual tags for Obsidian notes (daily/weekly/monthly summaries and future .md-based memories) using LLM analysis. This improves discoverability, enables better organization, and supports future advanced filtering.
 
-**Created:** 2026-01-22
+**Created:** 2026-01-22 · **Last updated:** 2026-10-27
 **Module:** `utils/tag_generator.py`
 
 ## Features
@@ -57,6 +57,15 @@ tags: ["weekly", "daemon-generated", "programming", "ai", "productive", "learnin
 ---
 ```
 
+### Monthly Notes Generator
+- File: `utils/monthly_notes_generator.py` (`MonthlyNotesGenerator`)
+- Rolls a calendar month's daily notes into one monthly summary and tags it via
+  `generate_tags(..., note_type="monthly", ...)` with metadata `main_topic`,
+  `intensity`, `conversations`, `duration_hours`, `main_quests`
+- Honors the same `tag_generation.enabled` switch; a tag failure is logged and the
+  note is written without content tags (the heuristic fallback in
+  `TagGenerator._generate_fallback_tags` only adds a note-type tag for daily/weekly)
+
 ### Future: .md Memory Files
 - Planned migration from JSON to .md for memory storage
 - Tags will serve as a 4th filtering stage alongside semantic/keyword/temporal
@@ -98,7 +107,7 @@ tag_gen = TagGenerator()
 # Generate tags for content
 result = await tag_gen.generate_tags(
     content="Your note content here...",
-    note_type="daily",  # or "weekly", "memory"
+    note_type="daily",  # or "weekly", "monthly", "memory"
     metadata={
         'main_quest': 'Building RAG system',
         'intensity': 8,
@@ -117,21 +126,17 @@ print(f"Known: {result.known_tags}, Custom: {result.custom_tags}")
 Tag generation is automatically enabled in:
 - Daily note generation (called on startup if yesterday's note missing)
 - Weekly note generation (called on startup if last week complete)
+- Monthly note generation (startup catch-up for the last complete month)
 
 No manual intervention needed - tags are generated automatically when notes are created.
 
 ## Testing
 
-Tag generation is covered by the main suite:
-```bash
-python -m pytest tests/unit/test_daily_notes_auto_update.py -q
-```
-
-This covers:
-- Daily note tag generation
-- Weekly note tag generation
-- Tag vocabulary overview
-- LLM fallback behavior
+There is no dedicated tag-generator test file. The notes-generator tests
+(`tests/unit/test_daily_notes_auto_update.py`, `tests/unit/test_daily_note_status_guard.py`)
+construct generators with tag generation switched off and do not exercise
+`TagGenerator.generate_tags`, its validation pipeline, or the heuristic fallback;
+treat those paths as untested.
 
 ## Tag Format
 
@@ -201,7 +206,8 @@ If LLM fails:
 - `utils/tag_generator.py` - Main implementation
 - `utils/daily_notes_generator.py` - Daily note integration
 - `utils/weekly_notes_generator.py` - Weekly note integration
+- `utils/monthly_notes_generator.py` - Monthly note integration
 - `config/app_config.py` - Configuration constants
 - `config/config.yaml` - YAML configuration
-- `tests/unit/test_daily_notes_auto_update.py` - Test coverage
+- `tests/unit/test_daily_notes_auto_update.py` - Notes-generator tests (tag generation disabled in the fixtures)
 - `docs/TAG_GENERATION.md` - This documentation

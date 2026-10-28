@@ -1,5 +1,7 @@
 # Tone Detection System - Implementation Summary
 
+*Last updated: 2026-10-27*
+
 ## Overview
 
 Implemented a crisis vs. casual tone detection system that differentiates genuine crisis moments from everyday conversation, preventing "therapeutic overkill" on routine interactions.
@@ -15,7 +17,7 @@ Implemented a crisis vs. casual tone detection system that differentiates genuin
    - Context-aware escalation (checks conversation history)
 
 2. **`tests/test_tone_detection.py`** - Comprehensive test suite
-   - 30 test cases covering all scenarios
+   - Test cases covering all scenarios (see `docs/METRICS_SNAPSHOT.md` for counts)
    - The 3 previously-pending semantic tests were un-skipped 2026-07-21 (anti-amplification batch) and now run (embedder-gated)
 
 3. **Integration in `core/orchestrator.py`**
@@ -120,7 +122,7 @@ All tone detection logged to backend only (not visible to user):
 
 ## Testing Results
 
-**Main Test Suite:** 30 test cases; the 3 previously-pending semantic tests were un-skipped 2026-07-21 and now run (embedder-gated)
+**Main Test Suite:** the 3 previously-pending semantic tests were un-skipped 2026-07-21 and now run (embedder-gated)
 
 **Passing Categories:**
 - ✓ All status updates (3/3)
@@ -176,8 +178,7 @@ Fix is two-layered:
    The 0.37 floor keeps situational weak matches ("That movie made me sad",
    concern=0.34) conversational.
 
-Regression tests: `tests/unit/test_tone_borderline_fallback.py` (18 tests,
-including the tone-corroborated agentic-gate veto — see AGENTIC_SEARCH.md).
+Regression tests: `tests/unit/test_tone_borderline_fallback.py` (including the tone-corroborated agentic-gate veto — see AGENTIC_SEARCH.md).
 
 ## Arbiter Hardening (2026-08-02)
 
@@ -286,8 +287,8 @@ The system runs automatically in the orchestrator. No manual intervention needed
 
 ## Files Modified
 
-1. `utils/tone_detector.py` - New file (now ~1,127 lines: `CrisisLevel` enum, 250+ weighted keywords with composite harm scoring, semantic exemplars, observational filter)
-2. `tests/test_tone_detection.py` - New file (~515 lines)
+1. `utils/tone_detector.py` - New file (grown well beyond its first version — see `docs/METRICS_SNAPSHOT.md` for size: `CrisisLevel` enum, 250+ weighted keywords with composite harm scoring, semantic exemplars, observational filter)
+2. `tests/test_tone_detection.py` - New file
 3. `core/orchestrator.py` - Modified
    - Added tone detection before prompt prep
    - Added `_get_tone_instructions()` method (now a thin wrapper — the instruction text lives in `core/tone_instructions.py`: `get_tone_instructions()` / `get_response_instructions()`, plus per-intent style blocks via `get_intent_style_instructions()` which are injected only at intent confidence ≥0.60, suppressed during any non-CONVERSATIONAL crisis level, and intentionally absent for emotional_support/general intents)
@@ -299,7 +300,7 @@ Related (post-implementation): `core/escalation_tracker.py` tracks session-level
 ## Future Enhancements
 
 1. **Semantic detection improvements**
-   - Pre-compute exemplar embeddings at startup
+   - Pre-compute exemplar embeddings at startup (done: `gui/launch._run_model_warmup` step 6)
    - Cache embeddings for faster detection
 
 2. **User feedback loop**

@@ -1,12 +1,12 @@
 # Two-Step Generation with Thinking Blocks - Implementation Summary
 
-*Last verified: 2026-07-23*
+*Last updated: 2026-10-27*
 
 ## Overview
 Two-step generation where the LLM provides internal reasoning before delivering the final answer. The thinking block is logged for debugging but only the final answer is shown to users and stored in memory.
 
-**Four** core layers of thinking separation exist, plus six operational layers (defense in depth, 10 total — see table below):
-1. **Native API reasoning** — for Claude/DeepSeek-R1, thinking is separated at the OpenRouter API level via `extra_body={"reasoning": {"effort": "medium"}}`. Thinking arrives in `delta.reasoning_content`, not in the text response.
+**Four** core layers of thinking separation exist, plus further operational layers (defense in depth — see table below):
+1. **Native API reasoning** — for reasoning-capable models, thinking is separated at the OpenRouter API level via `extra_body["reasoning"]`, built in ONE place by `reasoning_request_config()` in `models/model_manager.py` (default `{"effort": "medium"}`; a caller may pass another effort, e.g. the agentic synthesis knob). Thinking arrives in `delta.reasoning_content`, not in the text response.
 2. **Tag-based parsing** — `<thinking>`/`<think>`/`<reasoning>`/`<reason>` tags (+ `<output>` wrappers) parsed by `ResponseParser.parse_thinking_block()` (the `<reasoning>`/`<reason>` family was added 2026-07-03 after a model dumped literal `<reasoning>` tags in the content channel)
 3. **Heuristic fallback** — `_detect_untagged_thinking()` catches chain-of-thought dumped without tags (meta-reasoning patterns, instruction echoes)
 4. **Storage boundary guard** — `ResponseParser.sanitize_for_storage()` runs inside `memory_storage.store_interaction()`; no storage path can persist thinking artifacts into memory (see "Storage Boundary Guard" section). Since 2026-07-25 the same transform also runs at the RETRIEVAL boundary (`formatter._strip_stored_thinking()`) so pre-guard historical docs can't leak into live prompts.
@@ -84,14 +84,14 @@ Both `generate_async()` (streaming) and `generate_once()` (non-streaming) now re
 
 ```python
 if self.supports_reasoning(target_model):
-    create_kwargs["extra_body"] = {
-        "reasoning": {"effort": "medium"},
-    }
+    create_kwargs["extra_body"]["reasoning"] = reasoning_request_config(
+        full_slug, disable_reasoning=disable_reasoning
+    )
 ```
 
 When enabled, OpenRouter returns thinking in `delta.reasoning_content` streaming chunks (not in the text body). The `ResponseGenerator` handles these via the `InterleavedReasoningFilter`, which emits synthetic `<thinking>`/`</thinking>` markers around suppressed reasoning chunks (see section 6).
 
-**Supported models** (`supports_reasoning()` in `model_manager.py`): all `anthropic/claude-*` models, the DeepSeek reasoning family (`deepseek-r1`, `deepseek-v4`), plus the Moonshot Kimi reasoning family (`kimi-k3`, `kimi-k2-thinking`, `kimi-k2.6`). Both `generate_async()` and `generate_once()` accept `disable_reasoning=True` to suppress the separation (used by the reasoning-only recovery retry).
+**Supported models** are registry-driven: `supports_reasoning()` answers from the per-model row in `MODEL_CAPABILITIES` (`models/model_manager.py`; the `_slug_supports_reasoning()` heuristics only answer for a slug with no row). Do not hand-list models here; the active model is `models.active` (owner-switchable). Both `generate_async()` and `generate_once()` accept `disable_reasoning=True` to suppress the separation (used by the reasoning-only recovery retry). Rows may declare `reasoning_mandatory`: such a route answers `reasoning: {enabled: false}` with HTTP 400, so `reasoning_request_config()` sends the closest legal request instead (`{"effort": "low", "exclude": True}`).
 
 ### 3. Conditional Thinking Instruction (`core/orchestrator.py`) (CHANGED 2026-04-05)
 
@@ -151,13 +151,11 @@ During streaming, `handlers.py`:
    `ResponseParser.strip_leading_empty_thinking_shell()` strips the shell from the accumulated
    buffer the moment content follows (sets thinking_complete); all four enhanced-path display
    yields also run `strip_trailing_stream_artifact` (edge `<|sep|>` no longer flashes
-   mid-stream). Tests: `tests/unit/test_stream_artifacts.py::TestEmptyShellThenContent` (6)
+   mid-stream). Tests: `tests/unit/test_stream_artifacts.py::TestEmptyShellThenContent`
 3. Also checks `ResponseParser.likely_untagged_thinking(final_output)` to suppress untagged chain-of-thought before `parse_thinking_block()` can find a clean split point
 4. Shows "Thinking..." indicator while thinking block is incomplete
 5. Once `</thinking>` arrives, switches to displaying final answer
 6. After streaming completes, re-parses to ensure clean storage
-
-**Image limitation:** When images are present in the request, native reasoning is skipped in `generate_async()` because OpenRouter may not support both extended thinking and image input simultaneously. The system falls back to tag-based and heuristic parsing layers.
 
 ### 6. Interleaved Reasoning-Stream Filter (`core/reasoning_stream_filter.py`) (NEW 2026-06)
 
@@ -180,7 +178,7 @@ Covers (tag-based parsing):
 - Thinking blocks with newlines
 - Empty responses, malformed tags
 
-Heuristic detection has dedicated test coverage in `tests/unit/test_thinking_heuristic.py` (42 test functions) covering `likely_untagged_thinking()` true positives, true negatives, length bail-outs, edge cases, and consistency with `_detect_untagged_thinking()`.
+Heuristic detection has dedicated test coverage in `tests/unit/test_thinking_heuristic.py` covering `likely_untagged_thinking()` true positives, true negatives, length bail-outs, edge cases, and consistency with `_detect_untagged_thinking()`.
 
 ## How It Works
 
@@ -194,7 +192,7 @@ System Prompt
     └─ (reasoning model) no instruction — API handles separation
     ↓
 API Call
-    ├─ (reasoning model) extra_body={"reasoning": {"effort": "medium"}}
+    ├─ (reasoning model) extra_body["reasoning"] = reasoning_request_config(...)
     └─ (other models) standard call
     ↓
 LLM Generation
@@ -239,7 +237,7 @@ The answer to 2 + 2 is 4.
 
 | Layer | Mechanism | Handles |
 |-------|-----------|---------|
-| API | `extra_body={"reasoning": {"effort": "medium"}}` | Claude, DeepSeek-R1/V4 — thinking never reaches text body |
+| API | `extra_body["reasoning"]` via `reasoning_request_config()` | Registry-declared reasoning models (`MODEL_CAPABILITIES`) — thinking never reaches text body; also requested on image turns |
 | Tags | `parse_thinking_block()` | `<thinking>`, `<think>`, `<reasoning>`, `<reason>`, `<output>` wrappers |
 | Heuristic | `_detect_untagged_thinking()` | Models that ignore tag instruction and dump reasoning as plain text |
 | Sentence | `_count_sentence_pattern_hits()` | Single-paragraph chain-of-thought without blank-line breaks |
@@ -283,7 +281,7 @@ storage did not. Result: 752/5920 conversation docs, 429/2000 corpus entries,
    literals, so conversations QUOTING the tags (e.g. discussing the leak bug)
    keep their content.
 
-Tests: `tests/unit/test_thinking_leak_storage.py` (30 tests).
+Tests: `tests/unit/test_thinking_leak_storage.py`.
 
 ## Backward Compatibility
 
@@ -297,5 +295,5 @@ Tests: `tests/unit/test_thinking_leak_storage.py` (30 tests).
 No configuration needed — feature is automatic for all non-raw mode queries.
 
 - To disable thinking blocks entirely, set `use_raw_mode=True` when calling `process_user_query()`
-- Native reasoning is auto-enabled for models where `supports_reasoning()` returns True
+- Native reasoning is auto-enabled for models where `supports_reasoning()` returns True (registry-driven)
 - Heuristic threshold (`_HEURISTIC_MIN_HITS = 2`) can be adjusted in `response_parser.py`

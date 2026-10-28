@@ -13,8 +13,8 @@ For formal notation see `FORMAL_MODEL.md`. For config constants see
 
 ## What the Pipeline Does
 
-Every user query triggers a full prompt build: up to 22 parallel async
-retrievals across memory, knowledge graph, web search, Google Calendar,
+Every user query triggers a full prompt build: a set of parallel async
+retrievals (the `tasks` dict in `build_prompt()`; several are conditional) across memory, knowledge graph, web search, Google Calendar,
 files, and profile data. Results are filtered, deduplicated, scored, compressed
 to fit a token budget, and assembled into a final prompt string with
 carefully ordered sections that exploit LLM attention patterns.
@@ -28,15 +28,15 @@ The pipeline lives in `core/prompt/` and is orchestrated by
 
 | File | Purpose |
 |------|---------|
-| `core/prompt/builder.py` | Thin orchestrator (~1,821 lines): parallel task dispatch, intent overrides, budget, eval hooks. Delegates assembly to formatter and hygiene to ContentHygiene |
-| `core/prompt/context_gatherer.py` | Mixin compositor (~380 lines): init, properties, utilities. Composes WebSearchMixin + MemoryRetrievalMixin + KnowledgeRetrievalMixin |
-| `core/prompt/gatherer_web.py` | WebSearchMixin (~226 lines): `_get_web_search_results()`, `should_trigger_web_search()` |
-| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin (~946 lines): 18 memory/summary/reflection/facts/profile/schedule retrieval methods |
-| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin (~1,285 lines): 22 knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase, visual memories, daemon self-notes, Google Calendar) |
-| `core/prompt/formatter.py` | Section formatting + prompt assembly (~1,650 lines): `_assemble_prompt()`, `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
-| `core/prompt/hygiene.py` | ContentHygiene (~345 lines): `_hygiene_and_caps()`, `_backfill_recent_conversations()` |
-| `core/prompt/summarizer.py` | LLMSummarizer (~403 lines): LLM dynamic compression of oversized items |
-| `core/prompt/proposal_filter.py` | Code proposal retrieval + filtering (~765 lines) |
+| `core/prompt/builder.py` | Thin orchestrator: parallel task dispatch, intent overrides, budget, eval hooks. Delegates assembly to formatter and hygiene to ContentHygiene |
+| `core/prompt/context_gatherer.py` | Mixin compositor: init, properties, utilities. Composes WebSearchMixin + MemoryRetrievalMixin + KnowledgeRetrievalMixin |
+| `core/prompt/gatherer_web.py` | WebSearchMixin: `_get_web_search_results()`, `should_trigger_web_search()` |
+| `core/prompt/gatherer_memory.py` | MemoryRetrievalMixin: memory/summary/reflection/facts/profile/schedule retrieval methods |
+| `core/prompt/gatherer_knowledge.py` | KnowledgeRetrievalMixin: knowledge retrieval methods (notes, docs, git, graph, threads, insights, wiki, semantic chunks, dreams, codebase, visual memories, daemon self-notes, Google Calendar) |
+| `core/prompt/formatter.py` | Section formatting + prompt assembly: `_assemble_prompt()`, `_build_feature_inventory()`, `_staleness_prefix`, `_is_multimodal_model`, `_load_upload_image` |
+| `core/prompt/hygiene.py` | ContentHygiene: `_hygiene_and_caps()`, `_backfill_recent_conversations()` |
+| `core/prompt/summarizer.py` | LLMSummarizer: LLM dynamic compression of oversized items |
+| `core/prompt/proposal_filter.py` | Code proposal retrieval + filtering |
 | `core/prompt/token_manager.py` | Budget computation, priority trimming, middle-out compression |
 
 ---
@@ -78,20 +78,23 @@ a context dict ready for formatting.
   (`personal_notes`/`reference_docs`/`narrative_state`) actually exists in the
   gathered context. Tests: `tests/unit/test_section_instructions.py`.
 
-### Step 3.5 — Response Planning (parallel with Step 4)
+### Step 3.5 — Response Planning (after the gather, from a context digest)
 
 If `RESPONSE_PLANNING_ENABLED` and `ResponsePlanner.should_plan()` passes
 (skips small-talk, crisis/elevated/CONCERN tone, disabled config — CONCERN
 added 2026-08-05: it selects the LIGHT SUPPORT mode whose instructions a
 [RESPONSE PLAN] contradicts), the planner
-runs in parallel with the retrieval tasks below via `asyncio.wait()` in
-the orchestrator's `build_full_prompt()`. The planner makes a lightweight
+runs AFTER the context gather (since 2026-09-02; it used to run in parallel
+with it and reversed speaker/addressee because it never saw the evidence).
+The orchestrator's `build_full_prompt()` gathers context first and hands
+the planner a bounded digest of it (`ResponsePlanner.build_context_digest`).
+The planner makes a lightweight
 LLM call (~200 tokens, 5s timeout) producing a `ResponsePlan` with
 key_points, tone, avoid list, and strategy. The plan is injected into
 the system prompt before `_assemble_prompt()`. If the planner times out
 or fails, the prompt proceeds without a plan.
 
-### Step 4 — Parallel Retrieval (up to 22 tasks, 30s timeout)
+### Step 4 — Parallel Retrieval (the builder's `tasks` dict, 30s timeout)
 
 All tasks execute simultaneously via `asyncio.wait()` (not `asyncio.gather`).
 Completed tasks survive a timeout — only the still-pending sections fall back
@@ -100,17 +103,17 @@ default to `[]` without affecting other sections.
 
 | Task | Method | Default Limit |
 |------|--------|---------------|
-| recent | `_get_recent_conversations()` | 15 |
-| memories | `_get_semantic_memories()` | 15 (passes `min_gated=limit` so the `GATE_MIN_MEMORIES=8` forced-minimum floor is clamped to the intent budget — lower only [2026-08-21]; incident detail in MEMORY_SYSTEM Stage 3. `tests/unit/test_gate_min_results_cap.py`); keyword anchor [2026-08-26]: a rare query proper noun (`extract_rare_proper_nouns`) absent from the ENTIRE semantic pool injects up to `KEYWORD_ANCHOR_MAX_HITS`=3 exact word-boundary corpus matches past the gate + score threshold — a rare name contributes ~nothing to a bge embedding, so "appointment with Morgan" had retrieved 30 memories with zero Morgan mentions; `tests/unit/test_keyword_anchor_retrieval.py`) |
+| recent | `_get_recent_conversations()` | 10 (shipped `memory.prompt_max_recent`; code default 15) |
+| memories | `_get_semantic_memories()` | 30 (shipped `memory.prompt_max_mems`; code default 15) (passes `min_gated=limit` so the `GATE_MIN_MEMORIES` (env, default 8) forced-minimum floor is clamped to the intent budget — lower only [2026-08-21]; incident detail in MEMORY_SYSTEM Stage 3. `tests/unit/test_gate_min_results_cap.py`); keyword anchor [2026-08-26]: a rare query proper noun (`extract_rare_proper_nouns`) absent from the ENTIRE semantic pool injects up to `KEYWORD_ANCHOR_MAX_HITS`=3 exact word-boundary corpus matches past the gate + score threshold — a rare name contributes ~nothing to a bge embedding, so "appointment with Morgan" had retrieved 30 memories with zero Morgan mentions; `tests/unit/test_keyword_anchor_retrieval.py`) |
 | user_profile | `get_user_profile_context()` | 3000 tokens |
 | summaries | `_get_summaries_separate()` | 5 recent + 5 semantic (recent side is `chroma.get_recent()` timestamp-sorted + `is_junk_summary` filter since 2026-07-25 — it was a semantic query with an EMPTY string, i.e. "nearest the null embedding", so [RECENT SUMMARIES] surfaced junk while same-day summaries sat unread) |
 | dreams | `_get_dreams()` | 3 |
-| semantic | `_get_semantic_chunks()` | 8 (dedicated 2-worker executor + non-blocking in-flight semaphore [2026-07-15] — a USB-stalled search that outlives SEM_TIMEOUT_S can't starve the shared default executor, and a saturated pool makes the turn SKIP wiki chunks instead of queuing; warmup touch at startup via `_run_model_warmup`) |
+| semantic | `_get_semantic_chunks()` | 15 (shipped `memory.prompt_max_semantic`; builder code default 8) (dedicated 2-worker executor + non-blocking in-flight semaphore [2026-07-15] — a USB-stalled search that outlives SEM_TIMEOUT_S can't starve the shared default executor, and a saturated pool makes the turn SKIP wiki chunks instead of queuing; warmup touch at startup via `_run_model_warmup`) |
 | reflections | `_get_reflections_separate()` | 5 recent + 5 semantic |
 | wiki | `_get_wiki_content()` | 3 |
 | personal_notes | `get_personal_notes()` | 5 (chunks with < `PERSONAL_NOTES_MIN_CHARS`=60 chars of real prose after stripping image embeds are dropped — image-only vault chunks embed as noise [2026-07-25]); obsidian `_keyword_search` floors a word-boundary proper-noun hit at 0.75 [2026-08-26] — whole-query word-set scoring weighed "Morgan" the same as "not", so the "Advisor: Morgan Ashdown" note lost to date-titled daily notes) |
 | reference_docs | `get_reference_docs()` | 5 (ALLOW-gated [2026-08-05]: `builder._should_include_reference_docs` — self-docs surface only on meta_conversational/technical_help/project_work intents or a self-referential query cue ("daemon", "your memory", "how do you score"…); a conversational-tone personal pain turn had pulled 15 doc chunks incl. a lecture transcript. The 2026-07-25 suppressions still always win: distress/emotional_support turns and file-upload turns drop the task entirely — Daemon's own tone docs semantically match distress language) |
-| user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session; staleness gate [2026-08-05]: `_upload_is_live` keeps an upload only if fresh (≤ `USER_UPLOADS_MAX_AGE_DAYS`=3 (7→3 on 2026-09-03)) OR relevance ≥ `USER_UPLOADS_MIN_RELEVANCE`=0.62 — months-old homework docs/photos were injected every turn, undated legacy docs must clear the relevance bar; bar recalibrated 0.5→0.62 on 2026-08-14: store rel=1/(1+2(1−cos)) in bge space, so 0.5 ≈ cosine 0.5 = any-text, 0.62 ≈ cosine 0.69, above the memory gate's 0.60) |
+| user_uploads | `get_user_uploads()` | 5 (skipped via ~ms metadata existence probe when no uploads exist — was ~0.9s/turn; negative cached 60s, positive for session; staleness gate [2026-08-05]: `_upload_is_live` keeps an upload only if fresh (≤ `USER_UPLOADS_MAX_AGE_DAYS`=3 (7→3 on 2026-09-03; the env var is read in `gatherer_knowledge.py`)) OR relevance ≥ `USER_UPLOADS_MIN_RELEVANCE`=0.62 — months-old homework docs/photos were injected every turn, undated legacy docs must clear the relevance bar; bar recalibrated 0.5→0.62 on 2026-08-14: store rel=1/(1+2(1−cos)) in bge space, so 0.5 ≈ cosine 0.5 = any-text, 0.62 ≈ cosine 0.69, above the memory gate's 0.60) |
 | git_commits | `get_git_commits()` | varies |
 | procedural_skills | `get_procedural_skills()` | 5 (over-fetched 3x, filtered by SkillActivationPolicy) |
 | proposed_features | `get_proposed_features()` | 3 |
@@ -120,7 +123,17 @@ default to `[]` without affecting other sections.
 | visual_memories | `get_visual_memories()` | varies |
 | web_search | `_get_web_search_results()` | 5 results |
 | upcoming_schedule | `get_upcoming_schedule()` | 5 events (gated by TEMPORAL_RECALL/PROJECT_WORK intent) |
-| google_calendar | `get_google_calendar_events()` | 10 events (gated by `GOOGLE_CALENDAR_ENABLED`) |
+| user_stated | `get_user_stated_evidence()` | candidate pool `USER_STATED_CANDIDATE_POOL` (factual_recall intent only; the user's own statements relevant to the question, rendered as [THE USER'S OWN STATEMENTS]) |
+| relevant_emails | `get_relevant_emails()` | `EMAIL_PASSIVE_MAX` (gated by `EMAIL_PASSIVE_CONTEXT_ENABLED`, cue-gated, distress-suppressed) |
+| daemon_self_notes | `get_daemon_self_notes()` | `DAEMON_NOTES_MAX_PER_PROMPT` (gated by `DAEMON_NOTES_ENABLED`) |
+| google_calendar | `get_google_calendar_events()` | 10 events (gated by `GOOGLE_CALENDAR_ENABLED`; shipped `internet_actions.google_calendar_enabled: true`) |
+
+Not tasks: `stated_figures` (the claim ledger's [YOUR STATED FIGURES]) and
+`day_counts` ([YOUR DAY COUNTS], dated day counts projected to today —
+`day_count_anchors.supply_lines`, added 2026-10-27) are supplied into the same
+context after the gather. `session_timeline` ([EARLIER TODAY]) and the
+session-truth scalars come from the recall-timeline probe. Which tasks launch
+depends on intent overrides, toggles, tone and the repo-audit minimizer.
 
 Per-task timing is tracked and logged for bottleneck detection. Since 2026-07-14
 the gather also emits live progress lines to the streaming UI via the
@@ -165,7 +178,11 @@ still renders either way; user uploads are unaffected. Regression:
 - **Memory top-up** (Step 6.1) — fetch extra if memories < `PROMPT_MAX_MEMS`
 - **Summaries/reflections top-up** (Step 6.2) — pull additional without gating
 
-### Step 6.9 — LLM-Compress Oversized Items
+### Step 6.9 — LLM-Compress Oversized Items (OFF by default)
+
+This step is a no-op unless `llm_compression.enabled` is true; shipped
+config has it `false` (39 runtime timeouts, zero successes in the audited
+logs — the deterministic middle-out caps handle the default path).
 
 - Items >= 3x token limit → LLM-generated summary
 - Items 1-3x limit → defer to middle-out
@@ -182,11 +199,17 @@ See "Token Budget" section below.
 
 ### Step 7.1 — Post-Budget Floors
 
-Restore critical sections that budget trimming may have removed:
+Guarantee minimum survivors of the sections budget trimming may have emptied.
+These are survival MINIMUMS, not targets (restoring to the max would undo the
+trim):
 
 - Recent conversations: minimum 5 items (`PROMPT_MIN_RECENT_FLOOR`)
-- Summaries: restore to `PROMPT_MAX_SUMMARIES` if dropped
-- Reflections: restore to `PROMPT_MAX_REFLECTIONS` if dropped
+- Recent summaries: minimum 2 (`prompt_min_summaries_floor`)
+- Recent reflections: minimum 1 (`prompt_min_reflections_floor`)
+
+The floors' top-ups run BEFORE the budget manager, so it RESERVES their tokens
+(`FLOOR_PROTECTED_SECTIONS`, bounded by `memory.prompt_floor_reserve_max_share`
+= 0.25) and its second trim pass never cuts below them.
 
 ### Step 8 — Final Assembly
 
@@ -219,7 +242,7 @@ TRUE context total for anything still outside PRIORITY_ORDER (small since the
 section is missing a metering row). Tests: `tests/unit/test_token_budget_cap.py`,
 `tests/unit/test_budget_meters_rendered_sections.py`.
 
-### Priority Ordering (10 levels)
+### Priority Ordering
 
 **2026-08-14 fix — meter the RENDERED keys:** the formatter renders the SPLIT
 summary/reflection keys, but `PRIORITY_ORDER` metered the combined
@@ -234,12 +257,15 @@ metering and the true-total log. A formatter-parity test
 (`tests/unit/test_budget_meters_rendered_sections.py`) fails loudly when a
 rendered context key lacks a PRIORITY_ORDER row.
 
+`PRIORITY_ORDER` in `core/prompt/token_manager.py` is authoritative; equal-priority
+sections are admitted in list order (small time-sensitive ones first). Current table:
+
 | Priority | Sections |
 |----------|----------|
-| 10 | stm_summary (metadata, never trimmed) |
+| 10 | stm_summary (metadata, never trimmed), budget_omitted_note (one line naming sections the budget emptied; outside the compliance total) |
 | 9 | user_profile |
-| 8 | narrative_state (capped at 500 tokens), web_search_results |
-| 7 | recent_conversations, graph_context, unresolved_threads, google_calendar, upcoming_schedule |
+| 8 | narrative_state (capped at 500 tokens), user_stated_evidence, stated_figures, day_counts, web_search_results |
+| 7 | google_calendar, unresolved_threads, recent_conversations, session_timeline, recent_window_truncated, session_turns_total, session_started_at, graph_context, relevant_emails, upcoming_schedule |
 | 6 | semantic_chunks, personal_notes, user_uploads, disambiguation_notes |
 | 5 | reference_docs, memories |
 | 4 | procedural_skills, facts |
@@ -250,7 +276,7 @@ rendered context key lacks a PRIORITY_ORDER row.
 Post-budget floors are survival MINIMUMS on the rendered keys —
 `PROMPT_MIN_RECENT_FLOOR`=5 recent conversations, `PROMPT_MIN_SUMMARIES_FLOOR`=2
 recent summaries, `PROMPT_MIN_REFLECTIONS_FLOOR`=1 recent reflections
-(restore-to-max would undo the trim).
+(restore-to-max would undo the trim), with their tokens reserved up front.
 
 ### Compression Algorithm
 
@@ -273,10 +299,22 @@ middle-out to everything before it. Query is always protected.
 ## Section Ordering in Final Prompt
 
 `PromptFormatter._assemble_prompt()` (in `formatter.py`) arranges sections to exploit LLM recency bias —
-high-attention items (user profile, time, query) placed last:
+high-attention items (user profile, time, query) placed last. The render order
+in `formatter.py` is authoritative; the list below is a guide, and sections are
+conditional (many are absent on any given turn). Sections added since the
+original numbering, in render position:
 
-1. `[RECENT CONVERSATION]` — session continuity (1-15 items)
-2. `[RELEVANT MEMORIES]` — semantic hits (1-15 items)
+- after `[RECENT CONVERSATION]`: `[EARLIER TODAY — your messages not shown above]`
+  (temporal_recall only), `[THE USER'S OWN STATEMENTS — relevant to this question]`
+  (factual_recall), `[YOUR STATED FIGURES]`, `[YOUR DAY COUNTS — dated, already
+  projected to today]` (2026-10-27)
+- after `[RELEVANT MEMORIES]`: the `[NOT SHOWN FOR SPACE]` note
+- after `[GOOGLE CALENDAR]`: `[RELEVANT EMAILS]`
+- after the `[STM]` section: disambiguation notes, then the query
+
+
+1. `[RECENT CONVERSATION]` — session continuity (shipped limit 10; code default 15)
+2. `[RELEVANT MEMORIES]` — semantic hits (shipped limit 30; code default 15)
 3. `[RECENT SUMMARIES]` — compressed recent history (1-5)
 4. `[SEMANTIC SUMMARIES]` — query-relevant compressed history (1-5)
 5. `[RECENT REFLECTIONS]` — meta insights, recent (1-5)
@@ -284,7 +322,7 @@ high-attention items (user profile, time, query) placed last:
 7. `[BACKGROUND KNOWLEDGE]` — wiki snippets (1-3)
 8. `[WEB SEARCH RESULTS]` — real-time web with `[WEB_N]` source IDs + citation instruction (if triggered, up to 8)
 9. `[RELEVANT INFORMATION]` — semantic chunks (1-8)
-10. `[DREAMS]` — synthesis insights, if enabled (up to 3; all generators currently disabled in config.yaml pending grading validation)
+10. `[DREAMS]` — synthesis insights, if enabled (up to 3; all synthesis generators are currently OFF in config.yaml — paused 2026-07-15 — so the section is normally absent)
 11. `[USER'S PERSONAL NOTES]` — Obsidian vault (1-5)
 12. `[USER UPLOADED ITEMS]` — uploaded documents (1-5)
 13. `[VISUAL MEMORIES]` — CLIP-matched image metadata (if available; **two-gated**: (1) a visual-intent gate `_query_wants_visual()` requires an explicit visual word (`show`/`see`/`pic`/`photo`/`image`/`look`) OR a recall intent (`factual_recall`/`temporal_recall`) before any photo surfaces, and (2) word-boundary entity matching (`re.search(r"\bname\b", ...)`, not raw substring) so a name can't match inside a path/identifier — e.g. `luke` no longer matches `/home/lukeh/...`; entity-gated via `extract_graph_entities()` with junk filtering and intent-proximity disambiguation; model-gated: images dropped for non-vision models). `builder.py` passes the classified `intent_type` into `get_visual_memories()`.
@@ -580,29 +618,33 @@ pipeline.
 ## Key Configuration
 
 ```python
-# Token budget
-# Token budget (active values from config/app_config.py)
+# Token budget (shipped config.yaml `token_budget`)
 PROMPT_TOKEN_BUDGET_DEFAULT = 10000   # lowered from 15000 on 2026-07-15 (preregistered experiment)
 PROMPT_TOKEN_BUDGET_LOCAL = 12000
 PROMPT_TOKEN_BUDGET_FLOOR = 8000
 PROMPT_TOKEN_BUDGET_CEILING = 16000
 # Note: builder.py import-failure fallbacks use 40000/60000
 
-# Retrieval limits
-PROMPT_MAX_RECENT = 15
-PROMPT_MAX_MEMS = 15
+# Retrieval limits — CODE DEFAULTS in core/prompt/builder.py; the shipped
+# config.yaml `memory:` section overrides prompt_max_recent (10),
+# prompt_max_mems (30) and prompt_max_semantic (15)
+PROMPT_MAX_RECENT = 15      # shipped 10
+PROMPT_MAX_MEMS = 15        # shipped 30
 PROMPT_MAX_SUMMARIES = 10
 PROMPT_MAX_REFLECTIONS = 10
 PROMPT_MAX_DREAMS = 3
-PROMPT_MAX_SEMANTIC = 10
+PROMPT_MAX_SEMANTIC = 8     # shipped 15
 PROMPT_MAX_WIKI = 3
 PROMPT_MIN_RECENT_FLOOR = 5
+PROMPT_MIN_SUMMARIES_FLOOR = 2
+PROMPT_MIN_REFLECTIONS_FLOOR = 1
+# prompt_floor_reserve_max_share = 0.25   (memory.* in config.yaml)
 
 # Compression
 NARRATIVE_STATE_MAX_TOKENS = 500
 MEMORY_ITEM_MAX_TOKENS = 512
 SEMANTIC_ITEM_MAX_TOKENS = 800
-LLM_COMPRESSION_RATIO_THRESHOLD = 3.0
+LLM_COMPRESSION_RATIO_THRESHOLD = 3.0   # only used when llm_compression.enabled (shipped false)
 
 # Skill activation (post-retrieval filter)
 SKILL_ACTIVATION_ENABLED = True
@@ -613,7 +655,7 @@ SKILL_ACTIVATION_FETCH_MULTIPLIER = 3
 SKILL_ACTIVATION_STM_BONUS = 0.10
 
 # Google Calendar
-GOOGLE_CALENDAR_ENABLED = False       # Requires OAuth2 setup
+GOOGLE_CALENDAR_ENABLED = False       # code default; shipped config.yaml sets internet_actions.google_calendar_enabled: true. Requires OAuth2 setup
 GOOGLE_CALENDAR_MAX_EVENTS = 10
 ```
 
@@ -628,4 +670,4 @@ GOOGLE_CALENDAR_MAX_EVENTS = 10
 - **Total**: 5-15s (excluding web search latency)
 
 Bottlenecks: web search (2-5s), semantic search over 40+ memories (1-2s),
-personal notes with images (1-2s), LLM compression (1-3s).
+personal notes with images (1-2s).

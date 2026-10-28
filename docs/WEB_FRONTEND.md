@@ -1,9 +1,13 @@
 # Web Frontend (FastAPI + React)
 
+**Last updated:** 2026-10-27
+
 **Status:** M1–M2 of the migration plan shipped (2026-07-14). FastAPI owns the
 process; the React SPA is the primary UI; the legacy Gradio UI survives at
 `/admin` for dev/admin tabs (Proposals, Synthesis grading, Settings, Logs,
-Debug Trace, Status/Dedup, Personality) and the first-run wizard.
+Debug Trace, Status/Dedup, Personality). The first-run wizard is now the SPA
+Setup page (`/api/setup/*`); the Gradio wizard survives only for
+`main.py wizard` / `--wizard`.
 
 ## Architecture
 
@@ -11,8 +15,10 @@ Debug Trace, Status/Dedup, Personality) and the first-run wizard.
 python main.py
   └─ build_orchestrator()                    (unchanged)
   └─ check_first_run()                       (gui/launch.py — shared)
-       ├─ first run / --legacy-gui → launch_gui()   (legacy standalone Gradio)
-       └─ else → uvicorn.run(create_app(orch))      (new default)
+       ├─ --legacy-gui / `main.py wizard` / --wizard → launch_gui()
+       │     (legacy standalone Gradio on :7860; `use_legacy_gradio_path`)
+       └─ else (including a first run) → uvicorn.run(create_app(orch))
+             a first run shows the SPA Setup page
             api/app.py:create_app
               ├─ lifespan startup: start_background_tasks() + idle monitor
               ├─ lifespan shutdown: main.run_shutdown_tasks_async()
@@ -49,10 +55,22 @@ python main.py
 | `GET /api/debug/prompt?index=-1` | one turn's full prompt as redacted TXT (Content-Disposition attachment; system prompt included only in dev mode — mirrors the Gradio download button) [2026-07-14] |
 | `GET /api/provenance?index=-1` | one turn's provenance view (provenance dict + mode/model/citations/tokens, thinking display-capped at 500 chars) [2026-07-14] |
 | `GET /api/settings` / `PUT /api/settings/{streaming,web-search,duel,tokens,temperature,summary-cadence,synthesis,proposals}` | Settings tab parity: GET snapshot + per-section apply. Thin layer over `gui/settings_core.py` — THE same functions the Gradio tab calls (no forked logic); 400 = validation error, `persisted:false` = runtime applied but YAML write failed [2026-07-14; synthesis/proposals shutdown-LLM toggles + count sliders added 2026-07-15] |
+| `GET /api/setup/status`, `POST /api/setup/{openrouter,profile,obsidian,complete}`, `POST /api/setup/key/{name}` | first-run Setup page backend (`api/routes/setup.py`, logic in `gui/setup_core.py`): status, OpenRouter key save/verify, optional keys, profile, vault path, completion |
+| `POST /api/sync-notes`, `GET /api/sync-notes/status` | start the Obsidian vault sync and poll its retained outcome (`api/state.NotesSyncState`; a finished sync is not reported failed when the initiating request disconnects) |
+| `GET /api/report/turns`, `POST /api/report/build` | report-a-problem: list turns, build a local consented diagnostic bundle (returned, never written or sent by the server) |
+| `GET /api/curation/queue`, `POST /api/curation/scan`, `POST /api/curation/{proposal_id}/{apply,dismiss,undo}`, `GET /api/curation/activity` | Curation Center backend (`api/routes/curation.py`, engine in `memory/curation/`) |
+| `POST /api/heartbeat`, `POST /api/shutdown` | SPA liveness ping and clean Quit (see "App lifecycle" below) |
 | `GET /health` | pre-existing health check, reused |
 
+**Security.** Every `/api/*` request passes `api/launch_auth.py` (`LaunchAuthMiddleware`):
+the Host header must be loopback, `api.host` (when a specific address) or an exact entry
+in `api.allowed_hosts` (shipped `[]`; no suffix or wildcard matching); writes also need
+the per-launch secret in the `X-Daemon-Launch-Token` header and a same-origin `Origin`.
+The token is generated per launch, never persisted or logged. Note: the API is still
+unauthenticated beyond that, so keep the bind address on loopback or a tailnet.
+
 Config: `api:` section in config.yaml (`host` 127.0.0.1, `port` 8000,
-`cors_origins`, `serve_frontend`, `frontend_dist_dir`) → `API_*` constants in
+`cors_origins`, `serve_frontend`, `frontend_dist_dir`, `allowed_hosts`) → `API_*` constants in
 app_config; env overrides `DAEMON_API_HOST` / `DAEMON_API_PORT`.
 
 ## Frontend (web/)
@@ -79,7 +97,8 @@ ids + source map + Sources-footer links, mirroring `[WEB_N]` — see
 _apply_web_citations(wiki_map=)`).
 
 **Views (2026-07-14):** the navbar SegmentedControl switches the main pane
-between Chat / Debug / Provenance / Settings (no react-router; the chat column
+between Chat / Debug / Provenance / Settings, plus Curation (the 🧹 entry,
+shown only in dev mode, `availability.dev_mode` in `web/src/App.tsx`) (no react-router; the chat column
 stays mounted-but-hidden so an in-flight stream keeps rendering). Debug =
 per-turn accordion (query → prompt → response, token counts, phase + retrieval
 waterfalls, full-prompt TXT download, 📋 copy button on every text block);
@@ -98,7 +117,8 @@ and the turn selector need; self-heals if the count shrinks after a server
 restart). Components: `web/src/components/debug/DebugPage.tsx`,
 `debug/ProvenancePage.tsx`, `settings/SettingsPage.tsx`.
 
-Not yet: graph view (stretch), PyInstaller packaging.
+Not yet: graph view in the SPA (the `/api/graph` endpoint exists). The frozen build
+is covered by `docs/BUILD_GUIDE.md`.
 
 ## Single-instance guard
 

@@ -9,7 +9,7 @@ Read this document to understand **how the system works as a whole**. For
 deep dives into specific subsystems, see the cross-references to companion
 docs throughout.
 
-**Last Updated**: 2026-05-27
+**Last Updated**: 2026-10-27
 
 **Related docs**:
 - `README.md` — external audience, feature highlights, getting started
@@ -71,19 +71,18 @@ system — all data stays on disk, API calls go to LLM providers only.
 ### Key Numbers
 
 ```
-Python lines:           ~182,000 (incl. tests)
-Python files:           635
-Test files:             271
-Test functions:         ~5,000
 ChromaDB collections:   14
-Prompt sections:        31 (conditional)
 Intent types:           9
-Parallel retrieval:     22 async tasks
 Memory tiers:           5
-Agentic tools:          20
+Agentic tool dispatch:  23 rows in DISPATCH_TABLE (22 offered in the loop;
+                        recall_image excluded), plus done_searching
 Gating latency:         ~200ms
-Config options:         ~380 keys (63 YAML sections)
 ```
+
+Volatile counts (Python files/lines, test files/cases, config sections/keys,
+prompt sections, parallel retrieval tasks) are not repeated here because they
+drift; see `docs/METRICS_SNAPSHOT.md` (regenerate with
+`scripts/generate_doc_metrics.py`).
 
 ### Entry Points
 
@@ -105,10 +104,10 @@ The first-run wizard asks users to choose Personal or Developer mode. This gates
 |---------|-----------|----------|
 | Chat, memory, web search, computation | Yes | Yes |
 | Obsidian daily/weekly/monthly notes | Yes (if vault configured) | Yes |
-| Synthesis pipeline | Disabled | Enabled |
-| Code proposals + prompt surfacing | Disabled | Enabled |
+| Synthesis pipeline | Forced off | Available (shipped config: OFF, Settings toggle) |
+| Code proposals + prompt surfacing | Forced off | Available (shipped `code_proposals.enabled: false`, Settings toggle) |
 | Reference docs (architecture) in context | Disabled | Enabled |
-| Auto-dedup on shutdown | Executed | Dry-run preview |
+| Auto-dedup on shutdown | Dry-run preview | Dry-run preview |
 | GUI: Debug Trace, Logs tabs | Hidden | Visible |
 | GUI: Proposals, Synthesis tabs | Hidden | Visible |
 | GUI: Memory Maintenance section | Hidden | Visible |
@@ -265,7 +264,7 @@ User types: "How's my squat progress looking?"
     │     "squat" resolves to graph entity → neighbors: powerlifting, deadlift
     │     Expanded query: "How's my squat progress looking? powerlifting deadlift"
     │
-    ├─ 4. Parallel Retrieval (22 async tasks, 30s timeout)
+    ├─ 4. Parallel Retrieval (async tasks via asyncio.wait, 30s timeout; completed results kept)
     │     Recent conversations, semantic memories, facts, summaries,
     │     reflections, wiki, personal notes, graph context, threads,
     │     proactive insights, procedural skills, Google Calendar events,
@@ -280,13 +279,15 @@ User types: "How's my squat progress looking?"
     │     continuity + structure + graph bonus − staleness penalty
     │     Intent FACTUAL_RECALL boosts truth weight to 0.30
     │
-    ├─ 7. Prompt Assembly (31 conditional sections)
-    │     Token-budgeted: priority-based trimming, middle-out compression,
-    │     LLM compression for oversized items
+    ├─ 7. Prompt Assembly (conditional sections)
+    │     Token-budgeted: priority-based trimming, middle-out compression
+    │     (LLM compression exists but is disabled: llm_compression.enabled: false)
     │     High-signal sections placed at end for transformer attention
     │     ResponsePlanner runs AFTER retrieval (Step 4) on a bounded digest of the gathered context (2026-09-02; explicit direct-communication commands are deterministically locked), plan injected into system prompt
     │
-    ├─ 8. Agentic Gate Check (core/agentic/gate.py)
+    ├─ 8. Agentic Gate (core/agentic/gate.py) — started CONCURRENTLY with step 7
+    │     (ctx.gate_task runs alongside prepare_prompt; the intent veto is
+    │     applied afterwards via gate.apply_intent_veto)
     │     4-tier: keyword heuristics → entity match → doc/note intent → LLM fallback
     │     If triggered → ReAct loop (think → tool → observe, max 5 rounds)
     │     If not → standard generation
@@ -296,13 +297,13 @@ User types: "How's my squat progress looking?"
     │     Standard streaming | Best-of-N | Duel (A vs B + judge) | Ensemble
     │     Thinking block extracted and stored separately
     │
-    ├─ 9b. Uncertainty Fallback (if enabled)
+    ├─ 9b. Uncertainty Fallback (OFF by default: uncertainty_fallback.enabled: false since 2026-08-28)
     │      UncertaintyDetector checks for "I don't know" responses (keyword regex + semantic)
     │      If uncertain → automatic retry via agentic ReAct loop with memory search hint
     │
-    ├─ 9c. Post-Answer Review Gate (if enabled)
+    ├─ 9c. Post-Answer Review Gate (LOG-ONLY since 2026-08-28)
     │      ResponsePlanner.review_answer() checks response against pre-answer plan
-    │      If review fails with confidence >= 0.90 → silent retry via agentic search (similarity-guarded)
+    │      Records the verdict in telemetry; never retries or alters the reply
     │
     ├─ 10. Post-Response State Update
     │      Store to corpus + ChromaDB with provenance metadata
@@ -675,6 +676,12 @@ lazily initialized on first access via `_get_collection(name)`.
 | User content | `obsidian_notes`, `reference_docs` | Yes | Never |
 | Derived | `summaries`, `reflections`, `procedural`, `procedural_skills`, `proposals`, `threads`, `synthesis_results` | No | Yes |
 | Visual | `visual_memories` | No | No |
+| Self-notes | `daemon_self_notes` | No | No (not in the default dedup scope) |
+
+The dedup scope is `cross_dedup.collections` (code default `facts`, `summaries`,
+`procedural_skills`, `proposals`, `reflections`); a "Yes" above means eligible,
+not scanned by default. Dedup is a dry-run preview in every mode
+(`CROSS_DEDUP_AUTO_EXECUTE = False`).
 
 Protected collections are never scanned by the cross-collection
 deduplicator. The `conversations` collection is additionally exempt
@@ -829,8 +836,10 @@ The `WikidataEntityMapper` embedding threshold was also raised from 0.60 to
 
 ### Parallel Retrieval Architecture
 
-When a prompt is being built, `builder.py` launches up to 22 async retrieval
-tasks via `asyncio.gather()` with a 30-second timeout. Each task is
+When a prompt is being built, `builder.py` launches the async retrieval
+tasks and awaits them with `asyncio.wait(timeout=30)`: results that completed
+are kept, tasks still pending at the timeout are cancelled and recorded as
+timed out (their sections stay empty), then drained. Each task is
 implemented across three gatherer mixins (composed by `context_gatherer.py`)
 and fetches from a different source or collection:
 
@@ -846,9 +855,9 @@ and fetches from a different source or collection:
 | Procedural skills | ChromaDB `procedural_skills` | 5 (over-fetched 3x) | Adaptive workflows, filtered by SkillActivationPolicy |
 | Unresolved threads | ChromaDB `threads` | 3 | Priority-ranked |
 | Proactive insights | ContextSurfacer | 2 | LLM once/session, cached |
-| Wiki content | FAISS (41M vectors, IVFPQ index) | 3 | Gated at 0.30 threshold; falls back to ChromaDB if FAISS unavailable |
+| Wiki content | FAISS (41M vectors, IVFPQ index) | 3 | Semantic-chunk gate `gating.semantic_chunks_gate_threshold` = 0.35; falls back to ChromaDB if FAISS unavailable |
 | Reference docs | ChromaDB `reference_docs` | 15 | Auto-seeded from docs/ |
-| Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at 0.45 threshold |
+| Personal notes | ChromaDB `obsidian_notes` | 5 | Gated at `obsidian.gate_threshold` = 0.60 (`PERSONAL_NOTES_GATE_THRESHOLD`) |
 | Git commits | Local git for repository status reports; otherwise ChromaDB `procedural` | 10 | Compact current records or hybrid indexed history; caller limits apply |
 | Web search | Tavily API | if triggered | Cached 72 hours |
 | Google Calendar | Calendar API (OAuth2) | 10 | 5-min module cache, read-only |
@@ -1091,10 +1100,12 @@ final_score:  0.728
 **Files**: `core/prompt/formatter.py` (`_assemble_prompt()`), `core/prompt/hygiene.py` (`ContentHygiene`),
 `core/prompt/token_manager.py`
 
-### 31 Conditional Sections
+### Conditional Sections
 
-The prompt is assembled from up to 30 in-prompt sections (31 entries in
-the eval section registry, which also counts the system prompt), ordered by transformer
+The prompt is assembled from conditional in-prompt sections (the canonical
+list is the eval section registry, `eval/section_registry.py`; the formatter
+also renders further sections such as stated figures, relevant emails,
+earlier-today notes and day counts), ordered by transformer
 attention patterns — high-signal, low-token sections are placed at the
 end for maximum attention weight:
 
@@ -1109,7 +1120,7 @@ end for maximum attention weight:
 [RECENT REFLECTIONS]               — if available
 [SEMANTIC REFLECTIONS]             — if available
 [DREAMS]                           — if enabled
-[USER'S PERSONAL NOTES]            — if available (Obsidian, gated 0.45)
+[USER'S PERSONAL NOTES]            — if available (Obsidian, gated 0.60)
 [USER UPLOADED ITEMS]              — if files uploaded
 [VISUAL MEMORIES]                  — if available (entity-gated CLIP retrieval)
 [DAEMON DOCUMENTATION]             — if available (reference docs)
@@ -1126,6 +1137,7 @@ end for maximum attention weight:
 [ACTIVE FEATURES]                  — always (compact feature inventory)
 [CODEBASE CHANGES SINCE SESSION]   — first message only (git diff)
 [TIME CONTEXT]                     — always (current datetime)
+[YOUR DAY COUNTS]                  — if the user stated dated day counts (projected to today)
 [TEMPORAL GROUNDING]               — if available (narrative context)
 [SHORT-TERM CONTEXT SUMMARY]       — if available (STM analysis)
 [CURRENT USER QUERY]               — always (same-session last exchange + query)
@@ -1159,7 +1171,7 @@ Priority  1: Wiki
 
 When the assembled prompt exceeds the budget:
 
-1. **LLM compression** — Items ≥3x over their allocation (`LLM_COMPRESSION_RATIO_THRESHOLD`)
+1. **LLM compression** (disabled by default: `llm_compression.enabled: false`) — Items ≥3x over their allocation (`LLM_COMPRESSION_RATIO_THRESHOLD`)
    get intelligent reduction via parallel async LLM calls (gpt-4o-mini,
    3s timeout per item, max 8 batch). Falls back to middle-out on timeout.
    Items >6x target tokens skip LLM entirely (middle-out handles them faster).
@@ -1174,8 +1186,15 @@ When the assembled prompt exceeds the budget:
 
 Critical sections have guaranteed minimums that survive trimming:
 - Recent conversations: min 5 (even if budget is tight)
-- Summaries: min 10 items
-- Reflections: min 10 items
+- Summaries: min 2 (`memory.prompt_min_summaries_floor`)
+- Reflections: min 1 (`memory.prompt_min_reflections_floor`)
+
+These are survival minimums, not targets: restoring to the MAX counts would
+undo the trim. The floors run before the budget, so `_manage_token_budget`
+RESERVES their tokens (`FLOOR_PROTECTED_SECTIONS` in
+`core/prompt/token_manager.py`; the reserve is bounded by
+`memory.prompt_floor_reserve_max_share` = 0.25) and the second trim pass
+never cuts below them.
 
 ### Staleness Prefixes
 
@@ -1210,7 +1229,7 @@ The thinking content is captured separately for provenance storage.
 variation (e.g., temp 0.7 vs temp 0.9), then a selector model picks the
 best. Useful for quality improvement without multiple model providers.
 
-**Duel mode**: Two different models (e.g., claude-opus-4.8 and gpt-5)
+**Duel mode**: Two different models (any two models from the registry)
 generate in parallel. A judge model reads both responses and picks the
 winner. The system prompt tells the judge to evaluate for accuracy,
 completeness, and naturalness.
@@ -1314,9 +1333,12 @@ web search and go straight to `search_memory`. Git-related queries
 ("commits", "contributors", "recent changes") route through `git_stats`
 when a `GitStatsManager` is available.
 
-### Uncertainty Fallback (Post-Generation)
+### Uncertainty Fallback (Post-Generation) — OFF by default
 
-If a standard (non-agentic) response is detected as uncertain — "I don't
+**Status**: disabled (`uncertainty_fallback.enabled: false`, since 2026-08-28:
+an 8-week telemetry audit found zero real-turn fires and zero accepted
+retries, and each fire costs a full silent agentic retry). The code and tests
+remain; flip the flag to re-enable. When enabled: if a standard (non-agentic) response is detected as uncertain — "I don't
 have information about that", "I can't recall" — the `UncertaintyDetector`
 (`core/uncertainty_detector.py`) triggers a **silent** retry via the agentic
 loop. Detection uses two layers: keyword regex (~18 patterns, confidence
@@ -1325,19 +1347,21 @@ loop. Detection uses two layers: keyword regex (~18 patterns, confidence
 hedge-stripping) skip detection. Config: `UNCERTAINTY_FALLBACK_ENABLED`,
 `UNCERTAINTY_SEMANTIC_THRESHOLD`, `UNCERTAINTY_MAX_LENGTH`.
 
-### Post-Answer Review Gate
+### Post-Answer Review Gate — LOG-ONLY
 
-After uncertainty fallback, the `ResponsePlanner` (`core/response_planner.py`)
-can review the generated answer against the pre-answer plan. If the review
-fails with high confidence (>= 0.90), the system retries via agentic search
-with the review feedback as a hint. Responses under 120 chars skip review.
-The review is a lightweight LLM call (~300 tokens, 5s timeout). Config:
+The `ResponsePlanner` (`core/response_planner.py`) can review the generated
+answer against the pre-answer plan. Since 2026-08-28 the gate is LOG-ONLY: it
+records the verdict (confidence, flagged issues) to turn telemetry but never
+retries and never changes the reply (the retry path described by the
+confidence threshold below is not taken). Responses under 120 chars skip
+review. The review is a lightweight LLM call (~300 tokens). Config:
 `RESPONSE_REVIEW_ENABLED`, `RESPONSE_REVIEW_CONFIDENCE_THRESHOLD`,
 `RESPONSE_REVIEW_TIMEOUT`.
 
 ### Silent Retry Protocol
 
-Both the uncertainty fallback and review gate follow a silent retry protocol:
+The uncertainty fallback (when enabled) follows a silent retry protocol (the
+review gate no longer retries):
 
 - **No UI feedback** during retry — no progress messages, no streaming chunks
 - **Similarity guard**: retry result only accepted if word overlap with the
@@ -1345,7 +1369,7 @@ Both the uncertainty fallback and review gate follow a silent retry protocol:
   retry is silently discarded and the original stays visible.
 - This prevents the jarring UX of showing the same response twice.
 
-### 22 Tool Definitions (21 action + done_searching; 20 offered in the loop)
+### Tool Definitions (23 dispatch rows + done_searching; 22 offered in the loop)
 
 `recall_image` has a tool definition and dispatch route but is deliberately
 excluded from the iteration tool list (visual retrieval already runs in the
@@ -1355,12 +1379,12 @@ RAG pipeline; re-offering it in the loop wasted API credits).
 |------|---------------|-------------|
 | Web Search | Tavily API | Query decomposition, 72hr cache, daily credit tracking |
 | Fetch URL | Tavily Extract API | Read web page content by URL; auto-fetch URLs in user messages; results registered in web_source_map for `[WEB_N]` citations |
-| Wolfram Alpha | LLM API | Token bucket rate limiting, MD5 result cache |
-| Code Sandbox | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
+| Wolfram Alpha (`wolfram_alpha`) | LLM API | Token bucket rate limiting, MD5 result cache |
+| Code Sandbox (`execute_python`) | E2B Firecracker microVMs | Persistent sessions (variables survive across rounds) |
 | Memory Search | ChromaDB (14 collections) + FAISS (wiki vectors) | wiki_knowledge routes through FAISS; all other collections via ChromaDB |
 | Memory Expansion | MemoryExpander | Summary drill-down via source_doc_ids, temporal neighbors. Collection-aware char limits: long-form (obsidian, reference_docs) use 3000/2000 vs default 600/300. |
 | Full Document | ReferenceDocsManager | Reassemble all chunks of an uploaded doc by title; fuzzy title matching |
-| File Read / File Grep / File List | Local filesystem | 3 separate tools, sandboxed to project directory |
+| File Read / File Grep / File List (`file_read`, `file_grep`, `file_list`) | Local filesystem | 3 separate tools, sandboxed to project directory |
 | Git Stats | GitStatsManager | Read-only local git commands: commit counts, contributors, files changed, diff stats. Keyword-based intent parsing with temporal phrase extraction. |
 | GitHub | GitHubManager | Read-only GitHub API via `gh` CLI: issues, PRs, actions, releases, workflows, labels, milestones, contributors, code search. |
 | Recall Image | VisualRetriever | Search visual memory for CLIP-matched images by text query. |
@@ -1372,6 +1396,8 @@ RAG pipeline; re-offering it in the loop wasted API credits).
 | Create Daemon Note | DaemonNotesManager | Structured self-notes for future sessions (decisions, risks, next steps). Stored in `daemon_self_notes` collection with `ground_truth: False`. |
 | Propose Action | `core/actions/` (types + executors) | Propose internet write action requiring user confirmation (email, telegram, discord, GitHub issues, calendar events). GUI shows approve/reject buttons; execution only on explicit approval. |
 | Lookup Contact | GoogleContactsManager (`core/actions/google_contacts.py`) | Resolve a person's name to an email address via People API saved + other contacts, with Gmail header-search fallback. |
+| Pattern Scan | `memory/pattern_engine.py` via the deliberation stack | Bounded longitudinal evidence scan from a frozen spec; deterministic counts, on-demand only. |
+| Email Search | Gmail/Outlook managers | Read-only header/snippet search of connected mail accounts. |
 | Done Searching | Control signal | Model declares search complete, triggers final synthesis |
 
 ### ReAct Loop Structure
@@ -1456,11 +1482,14 @@ Protocol is auto-detected from model name via `detect_protocol()`.
 
 Supported tool names (native / XML marker):
 `web_search` / `<web_search>`, `fetch_url` / `<fetch_url>`,
-`wolfram` / `<wolfram>`, `code_sandbox` / `<code_sandbox>`,
-`search_memory` / `<search_memory>`, `expand_memory` / `<expand_memory>`,
-`file_operation` / `<file_operation>`, `git_stats` / `<git_stats>`,
-`github` / `<github>`, `recall_image` / `<recall_image>`,
-`propose_action` / `<propose_action>`.
+`wolfram_alpha` / `<wolfram>`, `execute_python` / `<python>`,
+`search_memory` / `<memory>` (alias `<search_memory>`), `expand_memory` / `<expand_memory>`,
+`file_read` / `file_grep` / `file_list` (XML: `<file_read>`, `<file_grep>`, `<file_list>`),
+`git_stats` / `<git_stats>`, `github` / `<github>`,
+`recall_image` / `<recall_image>`, `propose_action` / `<propose_action>`,
+plus `pattern_scan`, `email_search`, `lookup_contact` and the rest of the
+table above. The authoritative native names are the `*_TOOL_DEFINITION`
+entries in `core/agentic/types.py`.
 
 The `propose_action` tool schema includes calendar-specific parameters
 (`summary`, `description`, `start_time`, `end_time`, `time_zone`,
@@ -2035,13 +2064,17 @@ The synthesis pipeline is Daemon's long-term value proposition — automated
 discovery of non-obvious connections between concepts from different
 domains. It runs as a "dreaming" step during session shutdown.
 
-> **Current status (2026-06-30):** Synthesis generation is **enabled** for
-> organic audit-queue accumulation, but the discovery generator is now the
-> `PooledConceptSynthesisGenerator` alone (`synthesis_pooled.enabled: true`).
-> The three original tiers (retrieval, graph walk, cross-store) are
-> **RETIRED** (`enabled: false` in `config.yaml`) — they paired
-> thin/low-prominence concepts and produced ~0 accepts. See
-> `docs/SYNTHESIS_VALIDATION.md` and `docs/grading_plan.md`.
+> **Current status (2026-10-27):** Synthesis generation is **OFF**
+> (paused 2026-07-15 for API cost; it had been on since 2026-06-15 for
+> organic audit-queue accumulation). `synthesis_pooled.enabled`,
+> `synthesis_generator.enabled`, `synthesis_retrieval.enabled` and
+> `graph_walk.enabled` are all `false` in `config.yaml`, and dreaming is
+> controlled from the Settings page (`gui/settings_core.apply_synthesis`;
+> turning it off also forces `synthesis_generator.enabled` false). When it
+> is on, the discovery generator is the `PooledConceptSynthesisGenerator`
+> alone; the three original tiers (retrieval, graph walk, cross-store) are
+> **RETIRED** — they paired thin/low-prominence concepts and produced ~0
+> accepts. See `docs/SYNTHESIS_VALIDATION.md` and `docs/grading_plan.md`.
 
 ### Candidate Generation
 
@@ -2164,7 +2197,8 @@ dreaming auto-halts to prevent accumulating miscalibrated output. Config:
 ### Benchmark Performance
 
 Tested against 72 labeled candidates (7 tiers). Current coherence judge
-model: `claude-opus-4.8` (upgraded from `gpt-4o-mini`, then `sonnet-4.5`).
+model: `claude-opus-4.8` (shipped `synthesis.coherence_model`; the code default in
+`app_config.py` is `sonnet-4.5`; upgraded from `gpt-4o-mini`, then `sonnet-4.5`).
 
 | Model | Precision | Recall | F1 |
 |-------|-----------|--------|-----|
@@ -2203,7 +2237,10 @@ See [Section 13: Per-Turn State Updates](#13-per-turn-state-updates).
 `ShutdownProcessor.process_shutdown_memory()` runs three phases:
 
 ```
-Step 1:  Block summaries — LLM compression of N-turn conversation blocks
+Step 1:  Block summaries — LLM summaries of conversation blocks that are
+         newer than the content-time watermark of the stored summaries
+         (`ShutdownProcessor.summarize_uncovered_blocks`, `memory/summary_coverage.py`;
+         at most `SUMMARY_MAX_BLOCKS_PER_SHUTDOWN` blocks per shutdown, default 1)
          Claim extraction → ClaimIndex registration
          Source doc IDs via get_ids_by_timestamp_range() (not list_all scan)
 
@@ -2225,6 +2262,7 @@ Step 5:  Procedural skill extraction — WHEN/THEN adaptive workflows
 ── Phase B (parallel via asyncio.gather) ──────────────────────────
 
 Step 6:  Code proposal generation — Self-improvement suggestions
+         (OFF by default: `code_proposals.enabled: false`; Settings toggle)
          Filtered against GOALS.md for relevance
 
 Step 7:  Implementation tracking — Lightweight file-existence check
@@ -2242,7 +2280,8 @@ Step 9:  Synthesis dreaming — NOT part of this pipeline anymore: pulled out
          `SHUTDOWN_TASK_TIMEOUT_S=60` budget can't cancel the slow
          per-candidate coherence judge). PooledConceptSynthesisGenerator
          → 7-stage filter → convergence tracking → provisional bridge
-         creation on acceptance
+         creation on acceptance (skipped while synthesis generation is OFF,
+         the shipped default)
 
 Step 10: Wiki-to-graph enrichment — Tracked wiki articles from session
          added as graph nodes, linked to existing entities via
@@ -2621,10 +2660,10 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 
 | YAML Section | Controls | Key Constants |
 |-------------|----------|--------------|
-| `daemon` | Version, data directory | `DATA_DIR`, `CORPUS_FILE` |
+| `daemon` | Version, data directory | `DEFAULT_DATA_DIR`, `CORPUS_FILE` |
 | `memory` | Retrieval limits, corpus size | `CORPUS_MAX_ENTRIES`, `PROMPT_MAX_*` |
-| `models` | Default model, max tokens | `DEFAULT_MODEL`, `DEFAULT_MAX_TOKENS` |
-| `gating` | Similarity thresholds, weights | `COSINE_SIMILARITY_THRESHOLD`, `SCORE_WEIGHTS` |
+| `models` | Default model, max tokens | `DEFAULT_MODEL_NAME`, `DEFAULT_MAX_TOKENS` |
+| `gating` | Similarity thresholds, weights | `GATE_REL_THRESHOLD_RETRIEVAL`, `SCORE_WEIGHTS` |
 | `features` | Feature toggles | `USE_STM_PASS`, `ENABLE_QUERY_REWRITE`, `ENABLE_BEST_OF` |
 | `web_search` | Tavily config, caching | `WEB_SEARCH_ENABLED`, `WEB_SEARCH_DAILY_CREDIT_LIMIT` |
 | `knowledge_graph` | Graph behavior | `KNOWLEDGE_GRAPH_ENABLED`, `GRAPH_SCORING_BOOST_CAP` |
@@ -2632,22 +2671,23 @@ SOME_CONSTANT = int(os.getenv("SOME_CONSTANT", CFG.get("key_name", default_value
 | `entity_facts` | Extraction budgets | `ENTITY_FACTS_ENABLED`, `ENTITY_FACTS_PER_TURN_CAP` |
 | `fact_verification` | Verification gate | `FACT_VERIFICATION_ENABLED` |
 | `staleness` | Staleness tracking | `STALENESS_ENABLED`, `STALENESS_WEIGHT` |
-| `escalation` | Crisis FSM | `ESCALATION_ENABLED`, `ESCALATION_THRESHOLD` |
+| `escalation_tracker` | Crisis FSM | `ESCALATION_ENABLED`, `ESCALATION_THRESHOLD` |
 | `thread_surfacing` | Thread tracking | `THREAD_SURFACING_ENABLED`, `THREAD_MAX_OPEN` |
 | `proactive_surfacing` | Insight generation | `PROACTIVE_SURFACING_ENABLED` |
 | `cross_dedup` | Deduplication | `CROSS_DEDUP_ENABLED`, `CROSS_DEDUP_DUPLICATE_THRESHOLD` |
-| `synthesis` | Filter pipeline | `SYNTHESIS_ENABLED`, `SYNTHESIS_COHERENCE_MODEL` |
-| `synthesis_generator` | Candidate generation | `SYNTHESIS_GENERATOR_ENABLED` |
+| `synthesis` | Filter pipeline (no master on/off switch; generation is gated by the generator sections) | `SYNTHESIS_COHERENCE_MODEL` |
+| `synthesis_pooled` | Primary candidate generator (OFF by default; Settings toggle) | `SYNTHESIS_POOLED_ENABLED`, `SYNTHESIS_POOLED_CANDIDATES_PER_SESSION` |
+| `synthesis_generator` | Retired cross-store generator (OFF) | `SYNTHESIS_GENERATOR_ENABLED` |
 | `synthesis_audit` | Human grading + auto-halt | `SYNTHESIS_AUDIT_ENABLED`, `SYNTHESIS_AUDIT_FP_HALT_THRESHOLD` |
 | `provenance` | Audit trail | `PROVENANCE_ENABLED` |
 | `git_stats` | Git activity queries | `GIT_STATS_ENABLED`, `GIT_STATS_TIMEOUT`, `GIT_STATS_MAX_OUTPUT_LINES` |
 | `response_planning` | Pre-answer plan + post-answer review | `RESPONSE_PLANNING_ENABLED`, `RESPONSE_REVIEW_ENABLED`, `RESPONSE_REVIEW_CONFIDENCE_THRESHOLD` |
-| `llm_compression` | Smart token compression | `LLM_COMPRESSION_ENABLED`, `LLM_COMPRESSION_MODEL`, `LLM_COMPRESSION_TIMEOUT` |
+| `llm_compression` | Smart token compression (OFF by default) | `LLM_COMPRESSION_ENABLED`, `LLM_COMPRESSION_MODEL`, `LLM_COMPRESSION_TIMEOUT` |
 | `wiki_enrichment` | Session wiki articles to graph | `WIKI_ENRICHMENT_ENABLED`, `WIKI_ENRICHMENT_MAX_PER_SESSION` |
 | `wikidata_import` | Wikidata entity resolution | `WIKIDATA_*` constants |
 | `wikidata_enrichment` | Anchored typed edges from offline Wikidata cache | `WIKIDATA_ENRICHMENT_ENABLED`, `WIKIDATA_ENRICHMENT_RELATION_WHITELIST`, `WIKIDATA_ENRICHMENT_MAX_EDGES_PER_ENTITY/RUN`, `WIKIDATA_ENRICHMENT_MAX_NEW_NODES` |
 | `graph_walk` | Biased Markov walk synthesis | `GRAPH_WALK_ENABLED`, `GRAPH_WALK_MIN_BRIDGE_EDGES` |
-| `uncertainty_fallback` | "I don't know" detection + retry | `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD` |
+| `uncertainty_fallback` | "I don't know" detection + retry (OFF by default) | `UNCERTAINTY_FALLBACK_ENABLED`, `UNCERTAINTY_SEMANTIC_THRESHOLD` |
 | `internet_actions` | Human-in-the-loop write actions + Google OAuth2 | `INTERNET_ACTIONS_ENABLED`, `GOOGLE_CALENDAR_ENABLED`, `INTERNET_ACTIONS_GOOGLE_CLIENT_ID/SECRET/TOKEN_PATH`, channel-specific settings |
 
 ### Environment Variable Overrides
@@ -2660,10 +2700,15 @@ config files.
 
 ## 27. Production Deployment
 
-### GUI Mode (Gradio)
+### Web UI Mode (FastAPI + React SPA)
 
-Default entry point. Dark theme with JetBrains Mono font, configured in
-`gui/launch.py:get_dark_theme()`. Tabs for chat, status, personality,
+Default entry point (`python main.py`): FastAPI/uvicorn on port 8000 serves
+the React SPA at `/` (a first run shows the SPA Setup page) and mounts the
+Gradio dev tabs at `/admin`. `/api` writes require the launch token and a
+same-origin request (`api/launch_auth.py`). The standalone Gradio UI
+(`python main.py --legacy-gui`, and `python main.py wizard`) runs on port
+7860. The Gradio theme (dark, JetBrains Mono) is configured in
+`gui/launch.py:get_dark_theme()`; tabs cover chat, status, personality,
 provenance, and thread management.
 
 Startup hooks run background tasks: reference docs auto-seed, narrative
@@ -2678,7 +2723,7 @@ system, different I/O layer.
 
 `docker-compose.yml` provides containerized deployment:
 - Volume mounts for persistent data (ChromaDB, corpus, config)
-- Port mapping for Gradio UI (7860)
+- Port mapping for the web UI (check `docker-compose.yml` for the mapped ports; the SPA/API serve on 8000, the standalone Gradio paths on 7860)
 - Environment variable injection for API keys
 
 ### Desktop Executable (PyInstaller)
@@ -3019,8 +3064,8 @@ retrieval time.
 Both fact extraction pipelines apply identical blocking:
 
 1. **Ephemeral predicate filter** — Predicates in `PROFILE_EPHEMERAL_RELATIONS`
-   (config list including `current_feeling`, `current_mood`, `is_feeling`,
-   `currently_doing`, etc.) are blocked before storage. In `fact_extractor.py`,
+   (config list including `current_feeling`, `current_mood`,
+   `current_activity`, `emotional_state`, etc.) are blocked before storage. In `fact_extractor.py`,
    the set is loaded once per extraction pass as a frozen set. In
    `llm_fact_extractor.py`, `_is_ephemeral_relation()` performs the same
    check per-fact.
@@ -3265,7 +3310,7 @@ Arrows indicate "calls" or "data flows to."
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ PromptBuilder                                                │
-│  ├─ ContextGatherer (22 parallel retrieval tasks)            │
+│  ├─ ContextGatherer (parallel retrieval tasks)               │
 │  │    ├─ MemoryRetriever (ChromaDB queries)                  │
 │  │    ├─ GraphMemory (BFS traversal + query expansion)       │
 │  │    ├─ WebSearchManager (Tavily API)                       │
@@ -3323,15 +3368,19 @@ Arrows indicate "calls" or "data flows to."
 
 **File**: `models/model_manager.py`
 
-`ModelManager` provides a unified interface across multiple LLM providers:
+`ModelManager` provides a unified interface across multiple LLM providers.
+The model roster is not listed here because it changes often: the registry
+is `MODEL_CAPABILITIES` (per-model reasoning/vision/tools/caching) plus
+`API_MODEL_ALIASES` in `models/model_manager.py`, and the active model is
+`models.active` in `config.yaml` (owner-switchable).
 
 ### Supported Providers
 
 | Provider | Access Via | Models |
 |----------|-----------|--------|
-| Anthropic | Direct API | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5 |
-| OpenAI | Direct API / OpenRouter | GPT-5, GPT-4o, GPT-4o-mini |
-| DeepSeek | OpenRouter | DeepSeek-R1, DeepSeek-V3 |
+| Anthropic | Direct API / OpenRouter | See `MODEL_CAPABILITIES` and `API_MODEL_ALIASES` in `models/model_manager.py` |
+| OpenAI | Direct API / OpenRouter | (same registry) |
+| DeepSeek | OpenRouter | (same registry) |
 | Google | Direct API | Gemini models |
 | Local | Transformers | Any HuggingFace model |
 
@@ -3596,7 +3645,7 @@ several tool calls. `tests/unit/test_tool_wiring_parity.py` enforces this and th
 action↔executor coverage.
 
 Related reliability fixes shipped alongside:
-- `models/model_manager.py`: `is_tool_capable()` resolves aliases *and* already-
+- `models/model_manager.py`: `supports_tools()` (backed by `MODEL_CAPABILITIES`) resolves aliases *and* already-
   resolved provider names (e.g. `deepseek/deepseek-v4-pro`), adds `deepseek-v4`;
   native reasoning is suppressed when tools are in play so reasoning models emit
   a real tool_call instead of narrating.

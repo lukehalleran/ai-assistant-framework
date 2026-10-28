@@ -1,5 +1,7 @@
 # Agentic Search System
 
+**Last updated:** 2026-10-27
+
 Operational guide for Daemon's ReAct-style agentic search loop — tool
 execution, context budgeting, protocol handling, query relaxation,
 and provenance tracking.
@@ -16,7 +18,7 @@ multi-round ReAct (Reasoning + Acting) loop where the LLM iteratively
 decides which tools to call — web search, URL fetch, memory search, Wolfram Alpha,
 Python sandbox, file access, memory expansion, git stats, GitHub API, StackExchange,
 arXiv, PubMed, Hacker News, full-document retrieval, document generation,
-daemon self-notes, contact lookup, or write-action proposals — until it has enough
+daemon self-notes, contact lookup, email search, longitudinal pattern scans, or write-action proposals — until it has enough
 context to answer. The loop is budget-enforced and streams progress
 events to the UI in real time.
 
@@ -28,8 +30,8 @@ events to the UI in real time.
 |------|---------|
 | `core/agentic/gate.py` | 4-tier agentic gate: `evaluate_agentic_gate()` → `AgenticDecision` (keyword → entity → doc/note → LLM fallback) |
 | `core/agentic/controller.py` | Main loop: session management, prompt building, model interaction, quality heuristics, nudge retry, no-reasoning decision phase, tool hints |
-| `core/agentic/tools.py` | ToolExecutor: `DISPATCH_TABLE` (21 rows — the single decision→handler routing table shared with the controller) + 18 dispatch methods (`_dispatch_api_search` is shared by stackexchange/arxiv/pubmed/hackernews) + 19 execute helpers (sandbox executes inline in its dispatch method) + `get_tool_health()` status summary + `_resolve_email_recipient()` |
-| `core/agentic/formatters.py` | AgenticFormatter: 19 pure formatting methods (context, results, prompts). Truncation is always explicit via `clip_text()` — cut previews end in `[...truncated]` so the model can't quote a preview cut as the full message (2026-07-03 "outag" confabulation fix); `format_memory_results` gives the `conversations` collection a 2000-char limit (vs 500 elsewhere) and points to `expand_memory` by doc id when even that truncates. Same markers in `gate.py`'s recent-context digest and `web_search_trigger`'s RECENT CONVERSATION block; the controller's `[RECENT CONVERSATION]` header tells the model truncated entries are previews → use search_memory first (hints use the REGISTERED tool names — `expand_memory`/`search_memory`; the old `memory_expand`/`memory_search` phrasing produced unrecognized tool calls that were silently dropped, fixed 2026-07-04). Tests: `tests/unit/test_agentic_truncation_markers.py` |
+| `core/agentic/tools.py` | ToolExecutor: `DISPATCH_TABLE` (23 rows — the single decision→handler routing table shared with the controller, incl. `pattern_scan` and `email_search`) + one `_dispatch_*` method per row (`_dispatch_api_search` is shared by stackexchange/arxiv/pubmed/hackernews) + execute helpers (sandbox executes inline in its dispatch method) + `get_tool_health()` status summary + `_resolve_email_recipient()` |
+| `core/agentic/formatters.py` | AgenticFormatter: pure formatting methods (context, results, prompts). Truncation is always explicit via `clip_text()` — cut previews end in `[...truncated]` so the model can't quote a preview cut as the full message (2026-07-03 "outag" confabulation fix); `format_memory_results` gives the `conversations` collection a 2000-char limit (vs 500 elsewhere) and points to `expand_memory` by doc id when even that truncates. Same markers in `gate.py`'s recent-context digest and `web_search_trigger`'s RECENT CONVERSATION block; the controller's `[RECENT CONVERSATION]` header tells the model truncated entries are previews → use search_memory first (hints use the REGISTERED tool names — `expand_memory`/`search_memory`; the old `memory_expand`/`memory_search` phrasing produced unrecognized tool calls that were silently dropped, fixed 2026-07-04). Tests: `tests/unit/test_agentic_truncation_markers.py` |
 | `core/agentic/types.py` | Data models: SearchDecision, ProgressEvent, SearchRound, tool schemas, LOOKUP_CONTACT_TOOL_DEFINITION |
 | `core/agentic/protocols.py` | Protocol detection, native tool parsing, XML marker parsing, nested XML support, github_available gating, contact lookup aliases |
 | `core/git_stats_manager.py` | Git stats tool: intent parsing, safe subprocess, output formatting |
@@ -106,15 +108,17 @@ misses, the enhanced (tool-less) path carries an `[ACTION HONESTY]` note
 ### Uncertainty Fallback (Post-Generation Trigger)
 
 In addition to the pre-generation gate above, the agentic loop can also
-be triggered **after** standard generation. If `UNCERTAINTY_FALLBACK_ENABLED`
-is true and the response indicates uncertainty ("I don't have information",
+be triggered **after** standard generation. This is **OFF by default**
+(`uncertainty_fallback.enabled: false` since 2026-08-28 — an 8-week telemetry
+audit found 0 accepted retries on real turns; the code and tests remain). If
+`UNCERTAINTY_FALLBACK_ENABLED` is turned on and the response indicates uncertainty ("I don't have information",
 "I can't recall"), `UncertaintyDetector` (`core/uncertainty_detector.py`)
 fires and retries via agentic search with a memory-search hint. Detection
 layers: keyword regex (~18 patterns) + semantic embedding similarity
 against 8 anchor sentences. Long responses (>max_length after hedge-stripping)
 skip detection. Config: `UNCERTAINTY_FALLBACK_ENABLED`,
-`UNCERTAINTY_SEMANTIC_THRESHOLD` (default 0.70),
-`UNCERTAINTY_MAX_LENGTH` (default 400).
+`UNCERTAINTY_SEMANTIC_THRESHOLD` (shipped `uncertainty_fallback.semantic_threshold` 0.70),
+`UNCERTAINTY_MAX_LENGTH` (shipped `uncertainty_fallback.max_length` 400).
 
 ---
 
@@ -162,9 +166,13 @@ the assessment veto-exempt; anything else drops the offer permanently.
 
 **Config** (YAML `insight_mode:` → `INSIGHT_*` constants): `enabled`,
 `max_facets` (6), `per_facet_cap` (10), `total_evidence_cap` (80),
-`evidence_snippet_chars` (280), `keyword_scan_max` (50), `expand_top_k` (3),
+`evidence_snippet_chars` (280), `external_snippet_chars` (560, per-item clip for
+external-research evidence), `keyword_scan_max` (50), `expand_top_k` (3),
 `expand_window` (2), `decompose_max_tokens` (700), `synthesis_max_tokens`
-(2600), `sweep_timeout_s` (45), `offer_enabled`, `doc_on_agreement`.
+(4200), `sweep_timeout_s` (45), `offer_enabled` (true), `doc_on_agreement`
+(true), `planner_model` (null → `response_planning.review_model` → active
+model; the deliberation planner/recovery JSON model). Values are the shipped
+`config/config.yaml` ones.
 
 Tests: `tests/unit/test_insight_gate.py`, `test_insight_sweep.py`,
 `test_insight_provenance.py`, `test_insight_assessor.py`,
@@ -260,7 +268,13 @@ After the loop exits:
   passing answer IS the final response: it is yielded directly and the second
   full-context synthesis call is skipped (~20-30s saved; the observed
   pattern was a 32s decision call discarded + 24s re-generation).
-  `final_prompt_hash` is set to the sentinel `decision-answer-reuse`.
+  The provenance receipt records the real decision-prompt hash
+  (`session.final_prompt_hash = session.decision_prompt_hash`, sha256[:16] of the
+  last iteration prompt) plus `answer_call = "decision_reuse"`, `visible_sources`
+  and `omitted_sections` (see "Provenance Tracking"). Reuse is skipped
+  (`reuse_skipped_reason`) when `initial_context` carries admitted evidence the
+  decision round never saw. (The old `"decision-answer-reuse"` sentinel was
+  replaced 2026-09-06.)
   Config: `agentic_search.reuse_decision_answer` (default true) and
   `agentic_search.decision_max_tokens` (default 1600 — applies to BOTH
   decision paths, replacing the old hardcoded 500 native / 800 XML caps, so
@@ -653,6 +667,50 @@ Config: GOOGLE_CONTACTS_ENABLED, GOOGLE_OTHER_CONTACTS_ENABLED,
         GOOGLE_GMAIL_SEARCH_ENABLED (all default true)
 ```
 
+### pattern_scan
+
+Bounded, deterministic longitudinal evidence scan over the user's own record
+(explicit before/taper/after comparisons). Absence of mention is not evidence
+of absence.
+
+```
+Parameters: spec (required, a frozen evidence spec: propositions, outcomes,
+            phases — validated as `memory.pattern_engine.LongitudinalEvidenceSpec`),
+            reason (optional)
+Execution: _dispatch_pattern_scan → run_longitudinal_scan() over USER-authored
+           corpus turns only (the assistant's responses are never counted as
+           evidence); result = [PATTERN_SCAN_RESULT] JSON + rendered manifest
+Gate: config pattern_analysis.enabled (shipped true); returns an explicit
+      DISABLED / UNAVAILABLE (no corpus manager) text instead of evidence
+Offered: always in the iteration tool list (native and XML)
+XML: <pattern_scan spec='{...}'>reason</pattern_scan>
+```
+
+See `PATTERN_ANALYSIS.md`. No progress event is emitted for this tool.
+
+### email_search
+
+Read-only search of the user's connected mailboxes (Gmail / Outlook) — headers
+and snippets only.
+
+```
+Parameters: query (optional), window_days (optional, default 7;
+            config EMAIL_DEFAULT_WINDOW_DAYS)
+Execution: _dispatch_email_search → _execute_email_search →
+           core.email.service.get_email_service() .search() / .recent();
+           counting-shaped queries ("how many emails…") fetch wide and report
+           the true in-window total; results capped at EMAIL_MAX_RESULTS
+Honesty: if no mailbox actually ran a query (e.g. revoked token) the result is an
+         "[EMAIL SEARCH FAILED …]" block naming the reason — never rendered as an
+         empty inbox; a coverage note names which providers were searched
+Offered: only when at least one provider is configured
+         (`AgenticSearchController._email_search_is_available`)
+XML: <email_search query="from Morgan" window_days="7">reason</email_search>
+Events: email_search / email_search_complete
+```
+
+See `EMAIL_INTEGRATION_DESIGN.md`.
+
 ### done_searching
 
 Signal that enough information has been gathered.
@@ -733,6 +791,8 @@ For models without native tool support. Markers embedded in text:
 <action type="send_email" recipient="..." reason="...">message</action>
 <propose_action type="send_email" recipient="..." subject="..." reason="...">body</propose_action>
 <lookup_contact name="Harper">reason</lookup_contact>
+<email_search query="from Morgan" window_days="7">reason</email_search>
+<pattern_scan spec='{"...": "..."}'>reason</pattern_scan>
 <done/>
 ```
 
@@ -925,6 +985,10 @@ Real-time UI updates via `ProgressEvent(event_type, message, round_number, metad
 | `generating_document` / `document_generated` | Document generation |
 | `saving_note` / `note_saved` | Daemon self-note creation |
 | `looking_up_contact` / `contact_found` | Contact lookup |
+| `email_search` / `email_search_complete` | Email search |
+| `round_start` | Decision-timeout fallback: the model stalled, a tool is run directly |
+| `tool_complete` / `tool_error` | Free search API (stackexchange/arxiv/pubmed/hackernews) finished / failed |
+| `note_skipped` | Self-note creation skipped (e.g. duplicate or declined) |
 | `proposing_action` | "Proposing action: {summary}" |
 | `action_proposed` | "Action proposed: {summary}" (metadata: action_id, action_type, summary) |
 | `synthesizing` | Starting final generation |
@@ -960,12 +1024,20 @@ pollute memory.
     "context_inventory": str,
     "memory_search_counts": {"summaries": 2, ...},
     "expand_count": int,
-    "final_prompt_hash": str,       # SHA-256[:16]
+    "requested_channels": {...},    # channel -> "requested" | "attempted"
+    "final_prompt_hash": str,       # SHA-256[:16]; on decision-answer reuse = decision_prompt_hash
     "total_duration_ms": float,
+    # evidence-transport receipts (2026-09-06)
+    "answer_call": "decision_reuse" | "final_synthesis" | "error_fallback",
+    "decision_prompt_hash": str,    # sha256[:16] of the last iteration prompt
+    "visible_sources": {"web_ids": [...], "sections": [...]},  # what the answering prompt rendered
+    "omitted_sections": [str],      # admitted evidence keys that never reached the answering call
+    "reuse_skipped_reason": str,
+    "seeded_base_web": bool,
 }
 ```
 
-Round actions classified by prefix: `[Memory:` -> memory_search,
+Per-round entries also carry `decision_ms` / `tool_ms` / `timed_out` when telemetry exists. Round actions classified by prefix: `[Memory:` -> memory_search,
 `[Python:` -> sandbox, `[File Read]` -> file_read, `[Git Stats]` -> git_stats, etc.
 
 ---
@@ -995,11 +1067,24 @@ The loop exits when ANY condition is met:
 ## Key Configuration
 
 ```python
-# Agentic search (YAML: agentic_search:)
+# Agentic search (YAML: agentic_search:) — shipped config/config.yaml values
 agentic_search.enabled = true       # Master switch
 agentic_search.max_rounds = 5       # Default loop limit
 agentic_search.context_budget_tokens = 8000
 agentic_search.compression_model = "sonnet-4.5"  # live config.yaml value (code fallback default: gpt-4o-mini)
+agentic_search.memory_search_limit = 7
+agentic_search.reuse_decision_answer = true       # decision-answer reuse (skips 2nd synthesis call)
+agentic_search.decision_max_tokens = 1600         # both decision paths
+agentic_search.decision_reasoning = false         # true: native-tools decision round keeps reasoning
+agentic_search.decision_reasoning_max_tokens = 6000
+agentic_search.round_timeout_s = 75               # per-round decision-LLM timeout
+agentic_search.loop_timeout_s = 120               # wall-clock for rounds 2-N, then synthesize from context
+agentic_search.fetch_fastpath = true              # + fetch_fastpath_min_chars = 400
+agentic_search.fetch_provenance_guard = true      # block model-built fetch_url URLs with text not from the user/tool results
+agentic_search.synthesis_reasoning_effort = "medium"   # low | medium | high
+agentic_search.timeout_tool_fallback             # code default true (AGENTIC_TIMEOUT_TOOL_FALLBACK, env-overridable)
+
+# Insight mode (YAML: insight_mode:) — see "Insight / Evidence-Assembly Mode"; also pattern_analysis.enabled (true)
 
 # Memory tools
 AGENTIC_MEMORY_SEARCH_LIMIT         # Results per memory search
@@ -1021,13 +1106,13 @@ GITHUB_API_MAX_OUTPUT_LINES         # Cap raw output
 GITHUB_API_REPO                     # Target repo (owner/name)
 
 # Uncertainty fallback (YAML: uncertainty_fallback:)
-UNCERTAINTY_FALLBACK_ENABLED        # Post-generation retry gate (default True)
-UNCERTAINTY_SEMANTIC_THRESHOLD      # Cosine sim threshold for semantic layer (default 0.70)
-UNCERTAINTY_MAX_LENGTH              # Max response length to check (default 400)
+UNCERTAINTY_FALLBACK_ENABLED        # Post-generation retry gate (default False; shipped false since 2026-08-28)
+UNCERTAINTY_SEMANTIC_THRESHOLD      # Cosine sim threshold for semantic layer (0.70)
+UNCERTAINTY_MAX_LENGTH              # Max response length to check (400)
 
 # Response review gate (YAML: response_planning:)
-RESPONSE_REVIEW_ENABLED             # Post-answer review against plan (default True)
-RESPONSE_REVIEW_CONFIDENCE_THRESHOLD  # Min confidence to trigger agentic retry (default 0.80)
+RESPONSE_REVIEW_ENABLED             # Post-answer review against plan (default True) — LOG-ONLY: records the verdict, never retries
+RESPONSE_REVIEW_CONFIDENCE_THRESHOLD  # Min confidence for a review flag (code default 0.80; shipped response_planning.review_confidence_threshold 0.9)
 RESPONSE_REVIEW_TIMEOUT             # Seconds before review skipped (default 5.0)
 
 # Internet actions (YAML: internet_actions:)
@@ -1106,9 +1191,11 @@ per line).
 
 <!-- registry-driven write actions + github_write [2026-05-31] -->
 
-The agentic loop dispatches **21 tools** (one `DISPATCH_TABLE` row each in
-`core/agentic/tools.py`; recall_image is wired but not offered in the iteration
-tool list, and `done_searching` is a loop signal, not a dispatch row). GitHub
+The agentic loop dispatches **23 tools** (one `DISPATCH_TABLE` row each in
+`core/agentic/tools.py`; 22 are offered in the iteration tool list —
+`recall_image` is wired but deliberately not offered — and `done_searching`
+is a loop signal, not a dispatch row; `email_search` and `propose_action` are
+offered only when a backend is configured). GitHub
 writes (`github_create_issue`, `github_comment_pr`) are **action types of the
 generic `propose_action` tool** — there is no separate `github_write` agentic
 tool; the name refers to the dedicated executor module

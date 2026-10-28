@@ -663,26 +663,9 @@ except ImportError:
 
 
 
-# Priority order for token budget management
-PRIORITY_ORDER = [
-    ("recent_conversations", 7),
-    ("semantic_chunks", 6),
-    ("personal_notes", 6),  # User's Obsidian notes - high priority
-    ("user_uploads", 6),    # User uploaded files/images - high priority
-    ("reference_docs", 5),  # Reference documents (system docs, project outlines)
-    ("git_commits", 5),     # Git commit history (procedural memory)
-    ("procedural_skills", 5),  # Reusable problem-solving patterns
-    ("proposed_features", 3),  # Code proposals (trimmed before core context)
-    ("unresolved_threads", 4),  # Open threads for proactive surfacing
-    ("proactive_insights", 3),  # Cross-domain insights from knowledge graph
-    ("memories", 5),
-    ("semantic_facts", 4),
-    ("fresh_facts", 4),
-    ("summaries", 3),
-    ("reflections", 2),
-    ("wiki", 1),
-    ("dreams", 2),
-]
+# Token-budget priority lives in core/prompt/token_manager.py PRIORITY_ORDER (the table
+# TokenManager uses). A stale, unused copy here still metered the retired summaries/
+# reflections keys and misled a doc fix; removed 2026-10-27 (class: BC-10, BC-17).
 
 
 def _is_local_repo_audit_query(query: str) -> bool:
