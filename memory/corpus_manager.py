@@ -679,7 +679,7 @@ class CorpusManager:
         into every prompt's [TEMPORAL GROUNDING] section (seen live
         2026-07-08: a 402 error persisted as the narrative for a full day).
         """
-        from models.model_manager import API_ERROR_PREFIXES
+        from models.model_manager import API_ERROR_PREFIXES  # lazy import: startup-cost
         return (text or "").lstrip().startswith(API_ERROR_PREFIXES)
 
     def save_narrative_context(self, text: str) -> bool:
@@ -691,7 +691,7 @@ class CorpusManager:
         Returns:
             True on success, False on failure.
         """
-        from config.app_config import NARRATIVE_CONTEXT_PATH
+        from config.app_config import NARRATIVE_CONTEXT_PATH  # lazy import: live-config
 
         if self._is_api_error_text(text):
             logger.warning(
@@ -726,7 +726,7 @@ class CorpusManager:
         Returns:
             The narrative context string, or empty string if not available.
         """
-        from config.app_config import NARRATIVE_CONTEXT_PATH
+        from config.app_config import NARRATIVE_CONTEXT_PATH  # lazy import: live-config
 
         try:
             narrative_path = NARRATIVE_CONTEXT_PATH

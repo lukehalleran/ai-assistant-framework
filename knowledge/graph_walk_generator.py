@@ -60,7 +60,7 @@ class GraphWalkGenerator:
         4. LLM-articulate bridges for qualifying walks
         5. Return as SynthesisCandidate objects
         """
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             GRAPH_WALK_WALKS_PER_SEED,
             GRAPH_WALK_MAX_LENGTH,
             GRAPH_WALK_MAX_CANDIDATES,
@@ -127,7 +127,7 @@ class GraphWalkGenerator:
         log-scale penalty to prevent high-degree nodes (like "states")
         from dominating seed selection.
         """
-        from config.app_config import GRAPH_WALK_HUB_DEGREE_THRESHOLD
+        from config.app_config import GRAPH_WALK_HUB_DEGREE_THRESHOLD  # lazy import: live-config
 
         candidates = []
         for nid, data in self.graph.graph.nodes(data=True):
@@ -186,7 +186,7 @@ class GraphWalkGenerator:
         inflates transition probabilities toward personal nodes by
         personal_return_bias.
         """
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             GRAPH_WALK_RESTART_PROB,
             GRAPH_WALK_PERSONAL_RETURN_BIAS,
         )
@@ -274,7 +274,7 @@ class GraphWalkGenerator:
           - Walk touches ≥ GRAPH_WALK_MIN_DOMAINS distinct domain categories
             (counts both endpoint domains + wikidata domain_category metadata)
         """
-        from config.app_config import GRAPH_WALK_MIN_PATH, GRAPH_WALK_MIN_DOMAINS
+        from config.app_config import GRAPH_WALK_MIN_PATH, GRAPH_WALK_MIN_DOMAINS  # lazy import: live-config
 
         if len(walk) < GRAPH_WALK_MIN_PATH:
             return False
@@ -329,7 +329,7 @@ class GraphWalkGenerator:
 
     def _compute_walk_distance(self, walk_path: list[str]) -> float:
         """Compute endpoint distance from actual path length."""
-        from config.app_config import GRAPH_WALK_MAX_LENGTH
+        from config.app_config import GRAPH_WALK_MAX_LENGTH  # lazy import: live-config
         normalized = len(walk_path) / GRAPH_WALK_MAX_LENGTH
         return max(0.15, min(1.0, normalized))
 
@@ -357,7 +357,7 @@ class GraphWalkGenerator:
 
     async def _articulate_and_package(self, walk: list[str], semaphore) -> Optional[object]:
         """Articulate the walk path via LLM and package as SynthesisCandidate."""
-        from config.app_config import SYNTHESIS_COHERENCE_MODEL
+        from config.app_config import SYNTHESIS_COHERENCE_MODEL  # lazy import: live-config
         from knowledge.synthesis_models import SynthesisCandidate
 
         concept_a = self._get_display_name(walk[0])

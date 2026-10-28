@@ -512,7 +512,7 @@ class ThreadExtractor:
     def _get_model_alias() -> str:
         """Get model alias from config."""
         try:
-            from config.app_config import THREAD_MODEL_ALIAS
+            from config.app_config import THREAD_MODEL_ALIAS  # lazy import: live-config
             return THREAD_MODEL_ALIAS
         except ImportError:
             return ""

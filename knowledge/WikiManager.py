@@ -1,6 +1,8 @@
 # /knowledge/WikiManager.py
 import os
 import re
+import re as _re
+import time as _t
 import logging
 from dataclasses import dataclass
 from typing import Optional, List
@@ -262,7 +264,7 @@ def _get_embedder(model_name: str):
     global _EMBEDDER
     if _EMBEDDER is None:
         try:
-            from models.model_manager import ModelManager
+            from models.model_manager import ModelManager  # lazy import: startup-cost
             _EMBEDDER = ModelManager._get_cached_embedder()
             log.debug("WikiManager using cached embedder from ModelManager")
         except (ImportError, AttributeError, RuntimeError):
@@ -387,7 +389,6 @@ class WikiManager:
             except (ValueError, TypeError):
                 max_chars = WIKI_MAX_CHARS_DEFAULT
             if max_chars and max_chars > 0 and len(extract) > max_chars:
-                import re as _re
                 clip = extract[:max_chars]
                 m = _re.search(r"[\.!?](?!.*[\.!?])", clip)
                 extract = clip if not m else clip[: m.end()]
@@ -519,7 +520,6 @@ class WikiManager:
                             max_chars = 5000
                         if max_chars and max_chars > 0 and len(extract) > max_chars:
                             # Attempt sentence-boundary clip
-                            import re as _re
                             clip = extract[:max_chars]
                             m = _re.search(r"[\.!?](?!.*[\.!?])", clip)
                             extract = clip if not m else clip[: m.end()]
@@ -559,7 +559,6 @@ class WikiManager:
 
     def resolve_and_fetch(self, query: str) -> Optional[WikiPage]:
         try:
-            import time as _t
             _t0 = _t.time()
             def _within_budget() -> bool:
                 return (_t.time() - _t0) < self.overall_budget_s

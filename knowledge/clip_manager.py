@@ -72,8 +72,8 @@ class CLIPManager:
             return
 
         try:
-            import open_clip
-            import torch
+            import open_clip  # lazy import: startup-cost, optional-dependency
+            import torch  # lazy import: startup-cost, optional-dependency
         except ImportError:
             logger.warning(
                 "[CLIPManager] open_clip_torch not installed — visual memory disabled. "
@@ -83,7 +83,7 @@ class CLIPManager:
             return
 
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 VISUAL_MEMORY_CLIP_MODEL,
                 VISUAL_MEMORY_CLIP_PRETRAINED,
             )
@@ -134,7 +134,7 @@ class CLIPManager:
             return None
 
         try:
-            import torch
+            import torch  # lazy import: startup-cost
 
             preprocessed = self._preprocess(image).unsqueeze(0).to(self._device)
             with torch.no_grad():
@@ -164,7 +164,7 @@ class CLIPManager:
             return None
 
         try:
-            import torch
+            import torch  # lazy import: startup-cost
 
             tokens = self._tokenizer([text]).to(self._device)
             with torch.no_grad():

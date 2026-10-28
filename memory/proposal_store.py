@@ -28,6 +28,7 @@ Module Contract
 """
 
 import logging
+import time as _time
 from typing import Dict, List, Optional
 
 from memory.code_proposal import CodeProposal, ProposalStatus
@@ -385,7 +386,7 @@ class ProposalStore:
 
         if threshold is None:
             try:
-                from config.app_config import CODE_PROPOSALS_DEDUP_THRESHOLD
+                from config.app_config import CODE_PROPOSALS_DEDUP_THRESHOLD  # lazy import: live-config
                 threshold = CODE_PROPOSALS_DEDUP_THRESHOLD
             except ImportError:
                 threshold = 0.70
@@ -459,7 +460,6 @@ class ProposalStore:
             return False
 
         try:
-            import time as _time
             all_items = self.chroma_store.list_all(COLLECTION_NAME)
             for item in all_items:
                 meta = item.get("metadata") or {}
