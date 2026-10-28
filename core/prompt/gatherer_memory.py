@@ -31,10 +31,12 @@ import asyncio
 import os
 import re
 import logging
+import traceback
 
 import numpy as np
 from typing import Dict, List, Any
 from datetime import datetime
+from datetime import timedelta
 
 from .formatter import (
     _as_summary_dict, _parse_bool, _detect_session_boundary, _parse_entry_timestamp,
@@ -648,6 +650,7 @@ class MemoryRetrievalMixin:
             Expanded query string (original + appended terms)
         """
         try:
+            # lazy import: live-config
             from config.app_config import (
                 KNOWLEDGE_GRAPH_ENABLED,
                 GRAPH_QUERY_EXPANSION_ENABLED,
@@ -702,6 +705,7 @@ class MemoryRetrievalMixin:
         if not getattr(self, "_distress_active", False):
             return top
         try:
+            # lazy import: live-config
             from config.app_config import (
                 VALENCE_RETRIEVAL_ENABLED,
                 VALENCE_MAX_NEGATIVE_FRACTION,
@@ -881,7 +885,6 @@ class MemoryRetrievalMixin:
 
         except Exception as e:
             logger.error(f"[CONTEXT_GATHERER] Semantic memory retrieval failed: {e}")
-            import traceback
             logger.debug(f"[CONTEXT_GATHERER] Exception traceback: {traceback.format_exc()}")
             return OutcomeList.failed(type(e).__name__)
 
@@ -1248,6 +1251,7 @@ class MemoryRetrievalMixin:
             schedule_start, schedule_end, schedule_scope, display_date,
             source_text, parser_confidence, resolution_basis, needs_confirmation.
         """
+        # lazy import: live-config
         from config.app_config import (
             SCHEDULE_EXTRACTION_ENABLED,
             SCHEDULE_PROMPT_MAX_EVENTS,
@@ -1286,7 +1290,6 @@ class MemoryRetrievalMixin:
                 return []
 
             # Expand recurring events into upcoming instances
-            from datetime import timedelta
             now = datetime.now()
             cutoff = now + timedelta(days=SCHEDULE_PROMPT_LOOKAHEAD_DAYS)
             day_to_weekday = {

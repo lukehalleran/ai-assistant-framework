@@ -56,10 +56,13 @@ Module Contract
 
 import os
 import re
+import time as _time
+import traceback
 import base64
 import json
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime, date as _date
+from datetime import datetime as _dt
 from pathlib import Path
 from utils.logging_utils import get_logger
 from utils.personal_claim_provenance import annotate_personal_claim_memory
@@ -165,6 +168,7 @@ def _staleness_prefix(item) -> str:
     2. If staleness_ratio >= STALENESS_HISTORICAL_THRESHOLD → [HISTORICAL — PARTIALLY OUTDATED]
     """
     try:
+        # lazy import: live-config
         from config.app_config import STALENESS_ENABLED, STALENESS_HISTORICAL_THRESHOLD
         if not STALENESS_ENABLED:
             return ""
@@ -336,7 +340,6 @@ def _format_session_header(
             day_label = "Yesterday"
         else:
             # Extract "N days ago" from the relative label
-            import re
             m = re.search(r'\((\d+\s+days?\s+ago)\)', rel, re.IGNORECASE)
             day_label = m.group(1).capitalize() if m else None
 
@@ -466,7 +469,6 @@ def _truncate_at_spurious_turns(text: str) -> str:
         return text
 
     try:
-        import re
 
         # First, strip any control characters (ASCII 0x00-0x1F except newline/tab)
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
@@ -767,7 +769,6 @@ class PromptFormatter:
         except Exception as e:
             logger.error(f"[FORMATTING] Error formatting memory: {e}")
             logger.error(f"[FORMATTING] Memory type: {type(mem)}, keys: {list(mem.keys()) if isinstance(mem, dict) else 'not dict'}")
-            import traceback
             logger.debug(f"[FORMATTING] Exception traceback: {traceback.format_exc()}")
             # Return a safe fallback format
             try:
@@ -1664,7 +1665,6 @@ class PromptFormatter:
                 iso_ts = meta.get("timestamp", "")
                 if iso_ts:
                     try:
-                        from datetime import datetime as _dt
                         commit_dt = _dt.fromisoformat(iso_ts)
                         now = _dt.now(tz=commit_dt.tzinfo)
                         delta_days = (now.date() - commit_dt.date()).days
@@ -1764,7 +1764,6 @@ class PromptFormatter:
                 # Relative age from created_at epoch
                 if created_at:
                     try:
-                        import time as _time
                         age_secs = _time.time() - float(created_at)
                         if age_secs < 3600:
                             age_str = f"{int(age_secs / 60)} minutes ago"
@@ -1830,6 +1829,7 @@ class PromptFormatter:
         if graph_sentences:
             graph_block = "\n".join(f"- {s}" for s in graph_sentences)
             try:
+                # lazy import: live-config
                 from config.app_config import ENABLE_GRAPH_ATTRIBUTION
                 if ENABLE_GRAPH_ATTRIBUTION:
                     sections.append(f"[KNOWLEDGE GRAPH] n={len(graph_sentences)} (derived relationships)\n{graph_block}")
@@ -1880,7 +1880,6 @@ class PromptFormatter:
                 if start and end:
                     # Format times for display
                     try:
-                        from datetime import datetime as _dt
                         s_dt = _dt.strptime(start, "%H:%M")
                         e_dt = _dt.strptime(end, "%H:%M")
                         time_str = f"{s_dt.strftime('%I:%M %p').lstrip('0')} – {e_dt.strftime('%I:%M %p').lstrip('0')}"
@@ -1931,7 +1930,6 @@ class PromptFormatter:
                 elif start and end:
                     # Format ISO datetimes to readable form
                     try:
-                        from datetime import datetime as _dt
                         s_dt = _dt.fromisoformat(start)
                         e_dt = _dt.fromisoformat(end)
                         date_str = s_dt.strftime("%Y-%m-%d (%a)")
@@ -2282,6 +2280,7 @@ class PromptFormatter:
         # --- Eval snapshot hook (gated, read-only) ---
         # Lazy import to avoid circular dependency (function lives in builder.py)
         try:
+            # lazy import: cycle
             from .builder import _maybe_capture_eval_snapshot
             _maybe_capture_eval_snapshot(context, user_input, sections, final_prompt)
         except ImportError:

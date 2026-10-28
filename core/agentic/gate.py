@@ -102,7 +102,9 @@ Module Contract
 import logging
 import os
 import re
+import traceback
 from datetime import datetime
+from datetime import timedelta
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 import re as _re_gate
@@ -1293,6 +1295,7 @@ async def evaluate_agentic_gate(
     if (not needs_computation and not needs_memory and entity_resolver is not None
             and len(_words) <= TIER2_ENTITY_MAX_WORDS):
         try:
+            # lazy import: patch-point
             from memory.graph_utils import extract_graph_entities
             matched_entities = extract_graph_entities(user_text, entity_resolver)
             matched_entities.discard("user")
@@ -1462,6 +1465,7 @@ async def evaluate_agentic_gate(
     # request works even mid-distress (therapist-doc framing is handled by
     # the synthesizer's elevated-tone tail, not by refusing the turn).
     try:
+        # lazy import: live-config
         from config.app_config import INSIGHT_MODE_ENABLED
         if INSIGHT_MODE_ENABLED:
             # lazy import: cycle (insight.detector imports gate at call time)
@@ -1496,6 +1500,7 @@ async def evaluate_agentic_gate(
     if (model_manager is not None and _explicit_action is None
             and not needs_tools and not needs_files):
         try:
+            # lazy import: patch-point
             from utils.web_search_trigger import (
                 _looks_like_pattern_candidate,
                 analyze_for_web_search_llm,
@@ -1546,7 +1551,6 @@ async def evaluate_agentic_gate(
             _mark("tier3_doc_gen")
     except Exception as e:
         logger.warning(f"[Agentic Gate] Document intent check failed: {e}")
-        import traceback
         traceback.print_exc()
 
     try:
@@ -1590,6 +1594,7 @@ async def evaluate_agentic_gate(
         # Tier 4: LLM fallback
         if model_manager is not None:
             try:
+                # lazy import: patch-point
                 from utils.web_search_trigger import analyze_for_web_search_llm
                 # Carry the prior turns so elliptical follow-ups ("check the
                 # news") resolve to topic-specific search terms instead of
@@ -1846,7 +1851,6 @@ async def evaluate_agentic_gate(
                 )
             except Exception as e:
                 logger.warning(f"[Agentic Gate] LLM trigger check failed: {e}")
-                import traceback
                 traceback.print_exc()
                 should_trigger = False
                 search_terms = []
@@ -2217,7 +2221,6 @@ def _negated_request_verb_present(text: str) -> bool:
 
 def _entry_timestamp(entry) -> Optional[object]:
     """Aware datetime of a corpus entry's ``timestamp`` (naive = local), or None."""
-    from datetime import datetime
     ts = entry.get("timestamp") if isinstance(entry, dict) else None
     try:
         if isinstance(ts, str):
@@ -2233,7 +2236,6 @@ def _card_created_by_turn(card, turn_ts) -> bool:
     """True when ``card`` was proposed at/after the prior turn began (i.e. the
     prior reply is the one that minted it — a chat "yes" then means approve
     THAT card, never a duplicate)."""
-    from datetime import timedelta
     at = getattr(card, "proposed_at", None)
     if at is None or turn_ts is None:
         return True  # unknowable → keep the conservative stand-down
@@ -2631,6 +2633,7 @@ def maybe_arm_insight_offer(query: str, tone_level: Optional[str] = None) -> boo
     note only then)."""
     global _INSIGHT_OFFERS_THIS_SESSION
     try:
+        # lazy import: live-config
         from config.app_config import INSIGHT_MODE_ENABLED, INSIGHT_OFFER_ENABLED
         if not (INSIGHT_MODE_ENABLED and INSIGHT_OFFER_ENABLED):
             return False
@@ -2858,6 +2861,7 @@ def apply_intent_veto(decision: AgenticDecision, intent_info, tone_level=None,
             and not _is_request_shaped(query) and not _proposed_terms
         ):
             try:
+                # lazy import: patch-point
                 from utils.adaptive_exemplars import get_store
                 get_store().record(
                     "web_search", "no_search", query, "gate_veto",

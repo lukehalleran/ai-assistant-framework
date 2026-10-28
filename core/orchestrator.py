@@ -67,7 +67,9 @@ Additional Contract (Agentic Search):
 import re
 import processing.gate_system as gate_system
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
+from pathlib import Path as _Path
 from typing import Dict, Any, Optional, Tuple, List, Union, Callable
 from dataclasses import dataclass, field
 from core.response_parser import ResponseParser
@@ -420,6 +422,7 @@ DEFERRED_RECEIPT_PREFIXES = ("grounding_", "storage_", "personal_claim_", "claim
 
 def _hook_turn_telemetry(ctx: PostResponseHookContext) -> None:
     """Append the per-turn telemetry JSONL record (utils/turn_telemetry.py)."""
+    # lazy import: patch-point
     from utils.turn_telemetry import record_turn
     from memory.fact_source import is_test_turn  # lazy import: layering (fact_source pulls the extractor stack)
     rec = dict(getattr(ctx.orchestrator, "_last_turn_signals", {}) or {})
@@ -722,6 +725,7 @@ class DaemonOrchestrator:
         self.stm_analyzer = None
         self.last_stm_topic = None  # Track last topic for change detection
         try:
+            # lazy import: live-config
             from config.app_config import USE_STM_PASS, STM_MODEL_NAME, STM_MIN_CONVERSATION_DEPTH
             if USE_STM_PASS and model_manager:
                 from core.stm_analyzer import STMAnalyzer
@@ -764,6 +768,7 @@ class DaemonOrchestrator:
         # Escalation Tracker - Session-level emotional momentum tracking
         self.escalation_tracker = None
         try:
+            # lazy import: live-config
             from config.app_config import (
                 ESCALATION_ENABLED,
                 ESCALATION_THRESHOLD,
@@ -793,6 +798,7 @@ class DaemonOrchestrator:
         # Runtime safety canary — log-only monitor for tone-flatline miswires
         self.safety_canary = None
         try:
+            # lazy import: live-config
             from config.app_config import CANARY_ENABLED, CANARY_CONSECUTIVE_THRESHOLD
             if CANARY_ENABLED:
                 from core.safety_canary import SafetyCanary
@@ -809,6 +815,7 @@ class DaemonOrchestrator:
         # Correction/Confirmation Detector — truth score evidence from user messages
         self.correction_detector = None
         try:
+            # lazy import: live-config
             from config.app_config import TRUTH_SCORER_ENABLED, TRUTH_SCORER_CORRECTION_DETECTION
             if TRUTH_SCORER_ENABLED and TRUTH_SCORER_CORRECTION_DETECTION:
                 self.correction_detector = CorrectionDetector()
@@ -822,6 +829,7 @@ class DaemonOrchestrator:
         self.response_planner = None
         self._current_response_plan = None
         try:
+            # lazy import: live-config
             from config.app_config import RESPONSE_PLANNING_ENABLED
             if RESPONSE_PLANNING_ENABLED:
                 from core.response_planner import ResponsePlanner
@@ -858,9 +866,8 @@ class DaemonOrchestrator:
         Actual refresh happens when daily notes are generated.
         """
         try:
+            # lazy import: live-config
             from config.app_config import NARRATIVE_CONTEXT_ENABLED, NARRATIVE_CONTEXT_PATH
-            from pathlib import Path
-            from datetime import datetime, timedelta
 
             if not NARRATIVE_CONTEXT_ENABLED:
                 return
@@ -1006,6 +1013,7 @@ class DaemonOrchestrator:
         # Detect topic changes using semantic similarity (not string matching)
         # This prevents garbage topic extraction from causing constant "topic changes"
         try:
+            # lazy import: live-config
             from config.app_config import STM_TOPIC_SIMILARITY_THRESHOLD
 
             if self.topic_manager:
@@ -1102,6 +1110,7 @@ class DaemonOrchestrator:
             # Initialize Wolfram Alpha manager if configured
             wolfram_manager = None
             try:
+                # lazy import: live-config
                 from config.app_config import WOLFRAM_ENABLED, WOLFRAM_APP_ID
                 if WOLFRAM_ENABLED and WOLFRAM_APP_ID:
                     from knowledge.wolfram_manager import WolframManager
@@ -1136,6 +1145,7 @@ class DaemonOrchestrator:
             # Initialize file access manager if configured
             file_access_manager = None
             try:
+                # lazy import: live-config
                 from config.app_config import (
                     FILE_ACCESS_ENABLED,
                     FILE_ACCESS_APPROVED_FOLDERS,
@@ -1167,6 +1177,7 @@ class DaemonOrchestrator:
             # Initialize git stats manager if configured
             git_stats_manager = None
             try:
+                # lazy import: live-config
                 from config.app_config import (
                     GIT_STATS_ENABLED,
                     GIT_STATS_TIMEOUT,
@@ -1193,6 +1204,7 @@ class DaemonOrchestrator:
             # Initialize GitHub API manager if configured
             github_manager = None
             try:
+                # lazy import: live-config
                 from config.app_config import (
                     GITHUB_API_ENABLED,
                     GITHUB_API_TIMEOUT,
@@ -1413,8 +1425,8 @@ class DaemonOrchestrator:
 
         # Load personality + operating principles (composed from separate files)
         try:
+            # lazy import: live-config
             from config.app_config import load_personality_text, load_operating_principles, PERSONALITY_CUSTOM_PATH
-            from pathlib import Path as _Path
             _personality = load_personality_text()
             _principles = load_operating_principles()
             _using_custom = _Path(PERSONALITY_CUSTOM_PATH).exists()
@@ -1487,6 +1499,7 @@ class DaemonOrchestrator:
         # the system prompt here so only the stable prefix carries cache_control;
         # the volatile tail rides uncached and can change every turn without
         # invalidating the cached prefix. Inserted once, before the first append.
+        # lazy import: live-config
         from config.app_config import PROMPT_CACHE_BREAKPOINT
         # UNIVERSAL_GROUNDING is static and domain-neutral, so it belongs in the
         # cached prefix; the DECISION_SUPPORT block is per-turn conditional and
@@ -1637,6 +1650,7 @@ class DaemonOrchestrator:
             # the intent block happens inside get_intent_style_instructions).
             _intent_style = ""
             try:
+                # lazy import: live-config
                 from config.app_config import INTENT_STYLE_INSTRUCTIONS_ENABLED
                 if INTENT_STYLE_INSTRUCTIONS_ENABLED and context.intent is not None:
                     from core.tone_instructions import get_intent_style_instructions
@@ -1689,6 +1703,7 @@ class DaemonOrchestrator:
 
             # --- Proactive thread surfacing (first message only) ---
             try:
+                # lazy import: live-config
                 from config.app_config import THREAD_SURFACING_ENABLED
                 if THREAD_SURFACING_ENABLED:
                     is_first_message = self._is_session_start()
@@ -1709,6 +1724,7 @@ class DaemonOrchestrator:
 
             # --- Codebase change awareness (first message only) ---
             try:
+                # lazy import: live-config
                 from config.app_config import SESSION_DIFF_ENABLED
                 if SESSION_DIFF_ENABLED:
                     _is_first = False
@@ -2448,6 +2464,7 @@ class DaemonOrchestrator:
         if use_agentic_search and not use_raw_mode and self.agentic_controller:
             try:
                 # Get web search decision from LLM-first trigger
+                # lazy import: patch-point
                 from utils.web_search_trigger import analyze_for_web_search_llm
 
                 # web_search_enabled was hardcoded True here (2026-09-12):
@@ -2579,6 +2596,7 @@ class DaemonOrchestrator:
         is_heavy_topic = flow.is_heavy_topic
         tone_level = flow.tone_level
         try:
+            # lazy import: live-config
             from config.app_config import DEFAULT_MAX_TOKENS, HEAVY_TOPIC_MAX_TOKENS
 
             # Heavy topics override tone-based limits
@@ -2787,6 +2805,7 @@ class DaemonOrchestrator:
                 # --- Staleness cascade for corrections ---
                 if correction_events:
                     try:
+                        # lazy import: live-config
                         from config.app_config import STALENESS_ENABLED
                         claim_index = getattr(self.memory_system, 'claim_index', None) if self.memory_system else None
                         if STALENESS_ENABLED and claim_index:
