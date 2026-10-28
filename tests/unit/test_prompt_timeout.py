@@ -24,7 +24,7 @@ class TestPromptTimeoutPartialContext:
         builder = _make_builder(monkeypatch)
         fast_done, slow_entered, slow_closed = (asyncio.Event() for _ in range(3))
 
-        async def recent(*args):
+        async def recent(*args, **_kw):
             fast_done.set()
             return RECENT
 
@@ -76,7 +76,7 @@ class TestPromptTimeoutPartialContext:
         entered, closed = asyncio.Event(), asyncio.Event()
         state_at_close = []
 
-        async def slow_recent(*args):
+        async def slow_recent(*args, **_kw):
             entered.set()
             try:
                 await asyncio.Future()

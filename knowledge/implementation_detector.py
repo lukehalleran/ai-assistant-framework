@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from utils.logging_utils import get_logger
+from config import app_config
 
 logger = get_logger("implementation_detector")
 
@@ -248,7 +249,6 @@ class ImplementationDetector:
         Check recent git commits for file overlap + keyword overlap
         with the proposal. Returns (best_score, matching_subjects).
         """
-        from config import app_config
 
         git_depth = getattr(app_config, "IMPL_TRACKING_GIT_DEPTH", 50)
 
@@ -422,7 +422,6 @@ class ImplementationDetector:
 
     def _confidence_to_status(self, confidence: float) -> str:
         """Map confidence to human-readable status."""
-        from config import app_config
 
         threshold_confirmed = getattr(
             app_config, "IMPL_TRACKING_CONFIDENCE_CONFIRMED", 0.85
@@ -466,7 +465,6 @@ class ImplementationDetector:
 
     def _should_skip_cooldown(self, proposal) -> bool:
         """True if proposal was checked within cooldown period."""
-        from config import app_config
 
         cooldown = getattr(app_config, "IMPL_TRACKING_COOLDOWN", 86400)
         last = getattr(proposal, "last_tracked_at", None)

@@ -30,6 +30,7 @@ from typing import AsyncGenerator, Optional
 
 from core.insight.provenance import render_evidence_block
 from core.insight.types import Assessment, EvidenceItem, InsightIntent
+from memory.recent_turns import recent_turns_visible_to
 from core.response_guidance import DECISION_SUPPORT_GROUNDING, UNIVERSAL_GROUNDING
 from utils.logging_utils import get_logger
 import core.reasoning_stream_filter as reasoning_stream_filter
@@ -55,7 +56,7 @@ def uses_conversational_synthesis(intent: InsightIntent) -> bool:
     ))
 
 
-def recent_conversation_context(history, corpus_manager=None) -> str:
+def recent_conversation_context(history, corpus_manager=None, current_query=None) -> str:
     """Bound the last four exchanges, preserving speaker roles and corrections.
 
     UI history is oldest-first. Corpus fallback is newest-first and uses the
@@ -73,7 +74,7 @@ def recent_conversation_context(history, corpus_manager=None) -> str:
                                 if isinstance(text, str))
     if not messages and corpus_manager is not None:
         try:
-            recent = corpus_manager.get_recent_memories(4)
+            recent = recent_turns_visible_to(corpus_manager, 4, current_query=current_query)
             if isinstance(recent, list):
                 for entry in reversed(recent):
                     user = entry.get("user_text", entry.get("query", ""))

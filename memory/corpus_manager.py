@@ -50,6 +50,12 @@ from config.app_config import CORPUS_MAX_ENTRIES
 from datetime import timedelta
 import re as _re
 from datetime import timezone
+from memory.utils import is_junk_conversation_doc
+from memory.utils import is_junk_summary
+from core.response_parser import ResponseParser
+from utils.narrative_staleness import clear as clear_stale_flag
+from utils.time_manager import format_relative_timestamp
+from utils.narrative_staleness import is_stale
 
 logger = get_logger("corpus_manager")
 
@@ -425,7 +431,6 @@ class CorpusManager:
             {timestamp, speaker, matched_term, excerpt, query_preview}
         Read-only; junk turns (API-error sentinels, box tests) are skipped.
         """
-        from memory.utils import is_junk_conversation_doc
 
         if isinstance(terms, str):
             terms = [terms]
@@ -539,8 +544,6 @@ class CorpusManager:
             }
         # Storage-time junk guard (2026-07-25): mirror the Chroma-side
         # add_summary guard so "-"/truncated fragments can't enter either store.
-        from memory.utils import is_junk_summary
-        from core.response_parser import ResponseParser
         # Endpoint artifact guard (2026-08-03): mirror the Chroma-side stray-'e' strip.
         summary["content"] = ResponseParser.strip_trailing_stream_artifact(
             str(summary.get("content", "") or "")
@@ -707,7 +710,6 @@ class CorpusManager:
             # A fresh narrative supersedes any correction-staleness flag
             # (regeneration saw the corrected conversation).
             try:
-                from utils.narrative_staleness import clear as clear_stale_flag
                 clear_stale_flag()
             except Exception:  # degrades: stale-narrative flag is not cleared, so a caution banner may linger
                 pass
@@ -751,7 +753,6 @@ class CorpusManager:
             # Prepend generation timestamp so the LLM knows how stale this is
             mtime = os.path.getmtime(narrative_path)
             gen_dt = datetime.fromtimestamp(mtime)
-            from utils.time_manager import format_relative_timestamp
             gen_label = format_relative_timestamp(gen_dt)
             content = f"[Generated: {gen_label}]\n{content}"
 
@@ -760,7 +761,6 @@ class CorpusManager:
             # the wrong detail may be in the text below and would otherwise
             # keep re-entering every prompt until the next regeneration.
             try:
-                from utils.narrative_staleness import is_stale
                 if is_stale(mtime):
                     content += (
                         "\n[CAUTION: The user corrected a factual detail after this "

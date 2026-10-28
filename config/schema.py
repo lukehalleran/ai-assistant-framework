@@ -734,6 +734,15 @@ class AppLifecycleSection(BaseModel):
     exit_when_clients_gone: Optional[bool] = None
 
 
+class ChromaKeepwarmSection(BaseModel):
+    """Startup + idle read-only touch of Chroma's hot collections (page-cache keep-warm)."""
+    model_config = ConfigDict(extra="ignore")
+    interval_s: float = Field(default=600.0, ge=0.0)  # 0 disables the idle loop
+    per_collection_timeout_s: float = Field(default=8.0, gt=0.0)
+    total_budget_s: float = Field(default=30.0, gt=0.0)
+    collections: List[str] = Field(default_factory=list)
+
+
 class EntityFactsSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -1330,6 +1339,7 @@ class DaemonConfig(BaseModel):
     internet_actions: InternetActionsSection = Field(default_factory=InternetActionsSection)
     api: ApiSection = Field(default_factory=ApiSection)
     app_lifecycle: AppLifecycleSection = Field(default_factory=AppLifecycleSection)
+    chroma_keepwarm: ChromaKeepwarmSection = Field(default_factory=ChromaKeepwarmSection)
 
 
 # =============================================================================

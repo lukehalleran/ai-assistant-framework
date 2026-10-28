@@ -36,7 +36,7 @@ from typing import Dict, List, Optional, Any
 from utils.logging_utils import get_logger
 import utils.read_time_markers as read_time_markers
 from .formatter import _dedupe_keep_order, _sanitize_embedded_headers
-from .token_manager import drop_prior_session_test_turns
+from memory.recent_turns import recent_turns_visible_to
 
 logger = get_logger("prompt_hygiene")
 
@@ -92,7 +92,8 @@ class ContentHygiene:
         self.memory_coordinator = memory_coordinator
         self.context_gatherer = context_gatherer
 
-    async def _hygiene_and_caps(self, context: Dict[str, Any], stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _hygiene_and_caps(self, context: Dict[str, Any], stm_summary: Optional[Dict[str, Any]] = None,
+                                current_query: Optional[str] = None) -> Dict[str, Any]:
         """
         Apply deduplication and caps to all context sections.
 
@@ -191,7 +192,8 @@ class ContentHygiene:
                     target_count=target_count,
                     offset=original_count,
                     embedder=None,
-                    similarity_threshold=0.90
+                    similarity_threshold=0.90,
+                    current_query=current_query,
                 )
 
                 context[section] = backfill_result
@@ -234,7 +236,8 @@ class ContentHygiene:
         target_count: int,
         offset: int,
         embedder,
-        similarity_threshold: float
+        similarity_threshold: float,
+        current_query: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Backfill recent conversations to reach target count after deduplication.
@@ -276,9 +279,8 @@ class ContentHygiene:
                     break
 
                 # Get more recent conversations from corpus
-                all_recent = drop_prior_session_test_turns(corpus_manager.get_recent_memories(
-                    count=offset + batch_size
-                ))
+                all_recent = recent_turns_visible_to(
+                    corpus_manager, offset + batch_size, current_query=current_query)
 
                 # Slice to get only the new batch
                 if len(all_recent) <= offset:

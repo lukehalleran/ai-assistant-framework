@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 import functools
 from datetime import date, datetime, timedelta
 import re
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping, Optional
 
 from memory.user_profile_schema import RESIDENCE_RELATIONS
 from utils import test_envelope
@@ -1018,6 +1018,17 @@ def is_test_turn(entry: Any) -> bool:
     if not text and isinstance(entry, Mapping):
         text = _stored_doc_authored_text(entry)
     return test_envelope.has_envelope(text)
+
+
+def probes_hidden_from_turn(current_query: Optional[str]) -> bool:
+    """True when the turn being built is a REAL turn: then NO ``[test]`` probe
+    turn is visible to it, same session or not (2026-10-28, BC-58).
+
+    ``None`` means "no turn" (a script/test caller) and hides nothing; a probe
+    current turn is not hidden from its own session's probes. One predicate for
+    ``token_manager.drop_prior_session_test_turns`` and the thread reads.
+    """
+    return current_query is not None and not is_test_turn({"query": current_query})
 
 
 def _stored_doc_authored_text(doc: Mapping) -> str:

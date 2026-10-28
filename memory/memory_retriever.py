@@ -81,6 +81,14 @@ from memory.utils import format_recent_conversations
 from memory.summary_coverage import corpus_anchor_md, corpus_content_time_raw, covers_label
 import re as _re
 import time as _time
+from memory.relation_classifier import ephemeral_ttl_hours
+from memory.stance_classifier import effective_stance
+from utils.query_checker import extract_rare_proper_nouns
+from memory.utils import is_junk_summary, is_quarantined
+from memory.utils import is_junk_conversation_doc, is_test_conversation_doc
+from memory.memory_scorer import _is_deictic_followup
+from utils.query_checker import is_meta_conversational
+from utils.query_checker import extract_temporal_window
 
 logger = get_logger("memory_retriever")
 
@@ -382,7 +390,6 @@ def _fact_ephemeral_ttl(content: str) -> float | None:
     pred = _fact_predicate(content)
     if not pred:
         return None
-    from memory.relation_classifier import ephemeral_ttl_hours
     return ephemeral_ttl_hours(pred)
 
 
@@ -402,7 +409,6 @@ def _present_fact_content(content: str, metadata: dict | None) -> str:
     renderer inherits it.
     """
     try:
-        from memory.stance_classifier import effective_stance
         stance = effective_stance(metadata)
         if stance not in ("appraisal", "inferred"):
             return content
@@ -706,7 +712,6 @@ class MemoryRetriever:
         if max_hits <= 0:
             return []
         try:
-            from utils.query_checker import extract_rare_proper_nouns
             terms = extract_rare_proper_nouns(query)
         except Exception:  # degrades: keyword-anchor memories skipped for this turn
             return []
@@ -1117,7 +1122,6 @@ class MemoryRetriever:
         while same-day summaries sat unread in the collection.
         get_recent() sorts by the timestamp metadata instead.
         """
-        from memory.utils import is_junk_summary, is_quarantined
 
         # Try ChromaDB first
         try:
@@ -1393,7 +1397,6 @@ class MemoryRetriever:
                 n_results=n_results
             )
 
-            from memory.utils import is_junk_conversation_doc, is_quarantined, is_test_conversation_doc
 
             for collection_name, results in batch_results.items():
                 if not results:
@@ -1541,7 +1544,6 @@ class MemoryRetriever:
         # lazy import: patch point (tests monkeypatch these symbols at module
         # level; call-time import sees the patch — NOT a cycle, comment was stale)
         from utils.query_checker import is_meta_conversational, _is_heavy_topic_heuristic
-        from memory.memory_scorer import _is_deictic_followup
 
         # Check for meta-conversational query — but skip when the query
         # is a retrospective temporal query ("yesterday", "last night").
@@ -1905,7 +1907,6 @@ class MemoryRetriever:
         Special handling: If this is a meta-conversational query (e.g., "do you recall"),
         route to specialized retrieval that prioritizes recent episodic memories.
         """
-        from utils.query_checker import is_meta_conversational
 
         if is_meta_conversational(query):
             logger.debug(f"[MemoryRetriever][Semantic] Detected meta-conversational query, routing to specialized retrieval: {query[:50]}...")
@@ -2032,7 +2033,6 @@ class MemoryRetriever:
         logger.debug("[MemoryRetriever] Using meta-conversational retrieval strategy")
 
         # Detect temporal window
-        from utils.query_checker import extract_temporal_window
         temporal_days = extract_temporal_window(query)
 
         if temporal_days == 0:

@@ -23,7 +23,7 @@ def _builder(monkeypatch, recent=()):
     builder = full_builder(monkeypatch, list(recent))
     g = builder.context_gatherer
     pool = list(recent)
-    g._get_recent_conversations = AsyncMock(side_effect=lambda n=len(pool): pool[:n])
+    g._get_recent_conversations = AsyncMock(side_effect=lambda n=len(pool), **_kw: pool[:n])
     g._get_semantic_memories = AsyncMock(return_value=[])
     g.get_relevant_emails = AsyncMock(return_value=[])
     g.get_graph_context = AsyncMock(return_value=[])

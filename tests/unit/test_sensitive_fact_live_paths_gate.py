@@ -62,7 +62,7 @@ def _pipeline(monkeypatch, tone):
     async def detect_tone(user_input, history):
         return tone, None
 
-    async def thread():
+    async def thread(current_query=None):
         return None
 
     monkeypatch.setattr(cp, "_extract_topics", topics)

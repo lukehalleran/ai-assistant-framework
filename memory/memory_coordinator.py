@@ -669,9 +669,9 @@ class MemoryCoordinator:
         """Delegates to MemoryStorage."""
         return await self._storage.add_reflection(text, **kwargs)
 
-    def get_thread_context(self) -> Optional[Dict]:
+    def get_thread_context(self, current_query: Optional[str] = None) -> Optional[Dict]:
         """Delegates to ThreadManager."""
-        return self.thread_manager.get_thread_context()
+        return self.thread_manager.get_thread_context(current_query=current_query)
 
     def _detect_or_create_thread(
         self, query: str, is_heavy: bool, current_topic: Optional[str] = None

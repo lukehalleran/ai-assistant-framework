@@ -88,6 +88,22 @@ import json
 import time
 
 from memory import summary_coverage as _cov
+from memory.user_profile_schema import save_category_cache
+from agent_branch.queue import ObjectiveQueue
+from memory.claim_tracker import extract_claims_from_text
+from memory.fact_verification import FactVerdict
+from memory.llm_fact_extractor import LLMFactExtractor
+from memory.user_profile_schema import canonicalize_profile_relation
+from memory.procedural_skill import ProceduralSkill, SkillCategory
+from utils.retrieval_outcome import StoreWriteError
+from memory.thread_extractor import ThreadExtractor
+from utils.retrieval_outcome import RetrievalError
+from memory.thread_store import threads_duplicate, topics_equivalent
+from knowledge.synthesis_retriever import RetrievalSynthesisGenerator
+from knowledge.graph_walk_generator import GraphWalkGenerator
+from knowledge.synthesis_generator import SynthesisGenerator
+from knowledge.wiki_enrichment import WikiGraphEnricher
+from knowledge.wikidata_enrichment import WikidataGraphEnricher
 
 logger = get_logger("shutdown_processor")
 
@@ -257,7 +273,6 @@ class ShutdownProcessor:
             # Graph save must follow wiki enrichment (Phase B).
             self._save_knowledge_graph()
             try:
-                from memory.user_profile_schema import save_category_cache
                 save_category_cache()
             except Exception as e:  # degrades: category cache not saved, relations re-categorized next session
                 logger.debug(f"[Shutdown] Category cache save failed (non-fatal): {e}")
@@ -305,7 +320,6 @@ class ShutdownProcessor:
                             "Proposals tab next session", desc)
 
             # explicit objective queue (runs only if something was queued)
-            from agent_branch.queue import ObjectiveQueue
             if ObjectiveQueue.load().pending():
                 m = os.getenv("AGENT_BRANCH_SHUTDOWN_MAX", "2")
                 _spawn(["agent_branch.run_queue", "--max", str(m)],
@@ -450,9 +464,9 @@ class ShutdownProcessor:
         # despite the fix being live. Sanitize + junk-reject here so all
         # three consumers (corpus, chroma, claim index) see clean text.
         try:
-            from core.response_parser import ResponseParser
+            from core.response_parser import ResponseParser  # lazy import: optional-dependency
             summary_text = ResponseParser.sanitize_for_storage(summary_text or "")
-            from memory.utils import is_junk_summary
+            from memory.utils import is_junk_summary  # lazy import: optional-dependency
             if is_junk_summary(summary_text):
                 logger.warning("[Shutdown] Rejected junk summary at _store_summary")
                 return False
@@ -525,7 +539,6 @@ class ShutdownProcessor:
                 try:
                     from config.app_config import STALENESS_ENABLED  # lazy import: live-config
                     if STALENESS_ENABLED:
-                        from memory.claim_tracker import extract_claims_from_text
                         entity_resolver = None
                         mc = self.memory_coordinator
                         if mc and getattr(mc, 'entity_resolver', None):
@@ -602,7 +615,6 @@ class ShutdownProcessor:
                     verifier = getattr(self._storage, 'fact_verifier', None)
                     if verifier:
                         try:
-                            from memory.fact_verification import FactVerdict
                             from memory.cross_deduplicator import CrossCollectionDeduplicator  # lazy import: startup-cost
                             s, p, o = CrossCollectionDeduplicator._extract_triple({
                                 "content": fact_content, "metadata": {},
@@ -736,7 +748,6 @@ class ShutdownProcessor:
         if not conv_tail:
             return
 
-        from memory.llm_fact_extractor import LLMFactExtractor
         llm_ex = LLMFactExtractor(
             self.model_manager,
             model_alias=model_alias,
@@ -749,7 +760,6 @@ class ShutdownProcessor:
         existing_facts = None
         if self.user_profile:
             try:
-                from memory.user_profile_schema import canonicalize_profile_relation
                 current_view = self.user_profile.get_current_view()
                 raw_facts = []
                 for cat_name, facts_list in current_view.items():
@@ -789,7 +799,6 @@ class ShutdownProcessor:
         verification_results = {}
         if verifier and triples:
             try:
-                from memory.fact_verification import FactVerdict
                 batch = [
                     {
                         "subject": t.get("subject", ""),
@@ -821,7 +830,6 @@ class ShutdownProcessor:
 
             # Apply verification verdict if available
             if fact_text in verification_results:
-                from memory.fact_verification import FactVerdict
                 vr = verification_results[fact_text]
                 if vr.verdict == FactVerdict.REJECT:
                     logger.debug(f"[Shutdown] LLM fact rejected by verifier: {fact_text[:80]}")
@@ -1050,7 +1058,6 @@ class ShutdownProcessor:
             return
 
         # Parse JSON lines
-        from memory.procedural_skill import ProceduralSkill, SkillCategory
 
         kept = 0
         failed = 0  # StoreWriteError count [F10b] -- distinct from a dedup skip
@@ -1079,7 +1086,6 @@ class ShutdownProcessor:
                 logger.debug(f"[Shutdown] Skipping invalid skill: {e}")
                 continue
 
-            from utils.retrieval_outcome import StoreWriteError
             try:
                 doc_id = await self._storage.store_skill(skill)
             except StoreWriteError:
@@ -1177,7 +1183,6 @@ class ShutdownProcessor:
                 if existing_id:
                     logger.debug(f"[Shutdown] Proposal skipped (duplicate of {existing_id}): {proposal.title}")
                     continue
-                from utils.retrieval_outcome import StoreWriteError
                 try:
                     doc_id = proposal_store.store_proposal(proposal)
                 except StoreWriteError:
@@ -1481,7 +1486,6 @@ class ShutdownProcessor:
         if len(sess_items) < 2:
             return
 
-        from memory.thread_extractor import ThreadExtractor
 
         extractor = ThreadExtractor(model_manager=self.model_manager)
 
@@ -1489,7 +1493,6 @@ class ShutdownProcessor:
         # make an independent LLM call with no dependency on the other — run them
         # concurrently, then apply their ChromaDB writes sequentially afterward.
         existing_open = []
-        from utils.retrieval_outcome import RetrievalError
         try:
             existing_open = self.thread_store.list_open_threads()
         except RetrievalError as e:
@@ -1510,7 +1513,6 @@ class ShutdownProcessor:
             return_exceptions=True,
         )
 
-        from memory.thread_store import threads_duplicate, topics_equivalent
 
         # Phase 1 result: apply resolutions
         resolved_threads = []
@@ -1580,7 +1582,6 @@ class ShutdownProcessor:
                         f"already tracked as '{twin.topic}' (refreshed)"
                     )
                     continue
-                from utils.retrieval_outcome import StoreWriteError
                 try:
                     doc_id = self.thread_store.store_thread(thread)
                 except StoreWriteError:
@@ -1650,7 +1651,6 @@ class ShutdownProcessor:
             # except below, which ends dreaming non-fatally. Dreaming never
             # runs without a readable audit.
             if SYNTHESIS_AUDIT_ENABLED:
-                from utils.retrieval_outcome import RetrievalError
                 try:
                     from memory.synthesis_memory import SynthesisMemory  # lazy import: patch-point
                     audit_mem = SynthesisMemory(self.chroma_store)
@@ -1702,7 +1702,6 @@ class ShutdownProcessor:
                 # RETIRED personal->wiki path (Tier 0/1/2), preserved behind the flags.
                 # Tier 0: Retrieval-based generator (primary)
                 if SYNTHESIS_RETRIEVAL_ENABLED:
-                    from knowledge.synthesis_retriever import RetrievalSynthesisGenerator
                     retrieval_gen = RetrievalSynthesisGenerator(
                         chroma_store=self.chroma_store,
                         model_manager=self.model_manager,
@@ -1722,7 +1721,6 @@ class ShutdownProcessor:
                 if GRAPH_WALK_ENABLED and graph_memory and entity_resolver:
                     bridge_count = graph_memory.count_bridge_edges()
                     if bridge_count >= GRAPH_WALK_MIN_BRIDGE_EDGES:
-                        from knowledge.graph_walk_generator import GraphWalkGenerator
                         walk_gen = GraphWalkGenerator(
                             graph_memory=graph_memory,
                             entity_resolver=entity_resolver,
@@ -1744,7 +1742,6 @@ class ShutdownProcessor:
 
                 # Tier 2: Cross-store random sampling (fallback)
                 if SYNTHESIS_GENERATOR_ENABLED:
-                    from knowledge.synthesis_generator import SynthesisGenerator
                     remaining = SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION - len(candidates)
                     if remaining > 0:
                         generator = SynthesisGenerator(
@@ -1794,7 +1791,6 @@ class ShutdownProcessor:
             if not graph_memory or not entity_resolver:
                 return
 
-            from knowledge.wiki_enrichment import WikiGraphEnricher
             enricher = WikiGraphEnricher(graph_memory, entity_resolver)
 
             result = await asyncio.wait_for(
@@ -1841,7 +1837,6 @@ class ShutdownProcessor:
             if not graph_memory or not entity_resolver:
                 return
 
-            from knowledge.wikidata_enrichment import WikidataGraphEnricher
             enricher = WikidataGraphEnricher(
                 graph_memory, entity_resolver, cache_path=WIKIDATA_PERSIST_PATH,
             )

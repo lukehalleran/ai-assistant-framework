@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
 from utils.logging_utils import get_logger
+from utils.safe_json import atomic_write_json
 
 logger = get_logger("skill_activation")
 
@@ -106,7 +107,6 @@ class SkillCooldownStore:
     def save(self) -> None:
         """Persist cooldown state to disk."""
         try:
-            from utils.safe_json import atomic_write_json
             atomic_write_json(self.persist_path, self._entries)
         except OSError as e:
             logger.warning(f"[SkillCooldownStore] Failed to save {self.persist_path}: {e}")

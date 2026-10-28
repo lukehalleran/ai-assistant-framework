@@ -295,9 +295,10 @@ class TopicManager:
         # Remove leading articles
         candidate = re.sub(r"^(the|a|an)\s+", "", candidate, flags=re.IGNORECASE).strip()
 
-        # Naive singularization
-        if len(candidate) > 3 and candidate.lower().endswith("s"):
-            candidate = candidate[:-1]
+        # Grammatical normalization (2026-10-28): leading function words by POS
+        # and a plural HEAD noun lemmatized by tag -- never a letter chop
+        # ("in the news" had become "In The New", "analysis" -> "analysi").
+        candidate = self._normalize_candidate_grammar(candidate)
 
         # Simplify common modifiers/temporal tails
         candidate = self._simplify_topic(candidate)
@@ -334,6 +335,41 @@ class TopicManager:
             return "general"
 
         return candidate or None
+
+    # Parts of speech that never open a topic label ("in the news", "my cats").
+    _LEADING_FUNCTION_POS = frozenset({"ADP", "DET", "PRON", "PART", "CCONJ"})
+
+    def _normalize_candidate_grammar(self, candidate: str) -> str:
+        """Strip leading function words by POS; lemmatize the head noun only
+        when spaCy tags it plural (NNS/NNPS). Uncountable/singular nouns
+        ("news", "analysis", "series" tagged NN) stay as they are. Without
+        spaCy (or on any failure) the candidate is returned UNCHANGED."""
+        nlp = _load_spacy()
+        if nlp is None or not candidate or not candidate.strip():
+            return candidate
+        try:
+            doc = nlp(candidate)
+            toks = [t for t in doc if not t.is_space]
+            start = 0
+            while start < len(toks) - 1 and toks[start].pos_ in self._LEADING_FUNCTION_POS:
+                start += 1
+            toks = toks[start:]
+            if not toks:
+                return candidate
+            parts = [t.text_with_ws for t in toks[:-1]]
+            head = toks[-1]
+            if head.tag_ in ("NNS", "NNPS") and head.lemma_ and head.lemma_.lower() != head.text.lower():
+                lemma = head.lemma_
+                if head.text[:1].isupper():
+                    lemma = lemma[:1].upper() + lemma[1:]
+                parts.append(lemma)
+            else:
+                parts.append(head.text)
+            out = "".join(parts).strip()
+            return out or candidate
+        except Exception as e:  # degrades: grammar normalization skipped, topic label keeps its raw wording
+            self.logger.debug(f"[TopicManager] grammar normalization failed: {e}")
+            return candidate
 
     def _simplify_topic(self, s: str) -> str:
         """Remove common modifiers that hurt title resolution (current/temporal)."""

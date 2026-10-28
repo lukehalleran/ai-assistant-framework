@@ -117,10 +117,20 @@ from utils.anchored_sense import math_verb_has_math_object
 from utils.test_envelope import inner_text as _test_envelope_inner
 from utils.url_detect import contains_url
 from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
-from memory.fact_source import is_test_turn as _is_test_turn
-from utils.test_envelope import has_envelope as _has_test_envelope
+from memory.recent_turns import recent_turns_visible_to
 from utils.date_coerce import to_naive_local as _to_naive_local
 from core.agentic import tool_thread
+from core.agentic.formatters import clip_text
+from utils.web_search_trigger import paid_search_block_reason
+from core.actions.registry import detect_action_intent
+from utils.web_search_trigger import requires_fresh_public_evidence
+from core.actions.registry import is_amendment_cue
+from core.insight.detector import allows_pattern_classification
+from utils.query_checker import is_note_save_request
+from utils.query_checker import is_request_shaped as _qc_request_shaped
+from core.agentic.tools import ToolExecutor
+from core.action_claim_guard import claims_calendar_state, claims_pending_card, record_claim_exemplar, split_claim_sentences
+from core.insight.detector import detect_insight_statement
 
 logger = logging.getLogger("agentic_gate")
 
@@ -795,7 +805,6 @@ def _tone_is_acute(tone_level) -> bool:
     return any(marker in _t for marker in _ACUTE_TONE_MARKERS)
 
 
-_PRIOR_TURN_PROBE_LOOKBACK = 12
 
 
 def _prior_turns(corpus_manager, n: int, user_text: str) -> list:
@@ -807,13 +816,11 @@ def _prior_turns(corpus_manager, n: int, user_text: str) -> list:
     real message was forced into send_email. A probe -> probe chain still sees
     its probe predecessor.
     """
-    if _has_test_envelope(user_text or ""):
-        return list(corpus_manager.get_recent_memories(n) or [])
-    pulled = list(corpus_manager.get_recent_memories(n + _PRIOR_TURN_PROBE_LOOKBACK) or [])
-    return [m for m in pulled if not _is_test_turn(m)][:n]
+    return recent_turns_visible_to(corpus_manager, n, current_query=user_text or "")
 
 
-def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
+def _build_recent_context(corpus_manager, max_turns: int = 2,
+                          current_query: Optional[str] = None) -> Optional[str]:
     """Build a compact recent-conversation digest for the web-search trigger.
 
     Elliptical follow-ups ("check the news", "any updates on that") carry no
@@ -825,13 +832,12 @@ def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
     if corpus_manager is None:
         return None
     try:
-        recent = corpus_manager.get_recent_memories(max_turns)
+        recent = recent_turns_visible_to(corpus_manager, max_turns, current_query=current_query)
     except Exception as e:  # degrades: web trigger loses recent-conversation context
         logger.warning(f"[Agentic Gate] recent-context build failed (non-fatal): {type(e).__name__}")
         return None
     if not recent:
         return None
-    from core.agentic.formatters import clip_text
     lines: List[str] = []
     for mem in reversed(recent):  # get_recent_memories is newest-first
         q = (mem.get('query', '') or '').strip()
@@ -914,7 +920,6 @@ async def evaluate_agentic_gate(
                 if not _redo.modes:
                     # Never force a web arm a paid search cannot serve
                     # (2026-09-12, adversarial review F3).
-                    from utils.web_search_trigger import paid_search_block_reason
                     _redo_block = paid_search_block_reason()
                     if _redo_block is None:
                         _redo.modes = ["web_search", "memory"]
@@ -974,7 +979,6 @@ async def evaluate_agentic_gate(
     # handles genuine affirmations ("yes", "go ahead") where the current
     # text carries no action pattern of its own.
     try:
-        from core.actions.registry import detect_action_intent
         _explicit_action = detect_action_intent(user_text)
     except Exception as e:  # degrades: explicit action intent reads as none this turn
         logger.warning(f"[Agentic Gate] Action-intent detection failed (non-fatal): {type(e).__name__}")
@@ -1126,7 +1130,6 @@ async def evaluate_agentic_gate(
 
     # Clear dated public-event questions must not depend on the optional
     # classifier succeeding. Share the same rule with enhanced-mode retrieval.
-    from utils.web_search_trigger import paid_search_block_reason, requires_fresh_public_evidence
     _fresh_public = requires_fresh_public_evidence(user_text)
     # A paid search that cannot run is not a web route (2026-09-12,
     # adversarial review F3). With the budget spent or the Settings toggle
@@ -1155,7 +1158,7 @@ async def evaluate_agentic_gate(
     # distills its own query from the conversation (2026-10-08, BC-58).
     if (not needs_web_search and _is_bare_lookup_imperative(user_text)
             and paid_search_block_reason() is None
-            and _build_recent_context(corpus_manager)):
+            and _build_recent_context(corpus_manager, current_query=user_text)):
         needs_web_search = True
         _mark("tier1_bare_lookup")
         logger.debug("[Agentic Gate] Tier 1: bare lookup imperative on prior exchange")
@@ -1170,7 +1173,6 @@ async def evaluate_agentic_gate(
         needs_tools = True
         _mark("tier1_action")
         try:
-            from core.actions.registry import is_amendment_cue
             if is_amendment_cue(user_text):
                 supersede_pending_cards(_explicit_action.value, "explicit amendment of the pending proposal")
         except Exception as e:  # degrades: pending card not superseded on amendment cue
@@ -1509,10 +1511,9 @@ async def evaluate_agentic_gate(
                 _pattern_decision = await analyze_for_web_search_llm(
                     query=_tier4_query_text(user_text),
                     model_manager=model_manager,
-                    conversation_context=_build_recent_context(corpus_manager),
+                    conversation_context=_build_recent_context(corpus_manager, current_query=user_text),
                 )
                 _prefetched_trigger_decision = _pattern_decision
-                from core.insight.detector import allows_pattern_classification
                 if (getattr(_pattern_decision, "needs_pattern_analysis", False) is True
                         and allows_pattern_classification(user_text)):
                     logger.info(
@@ -1543,7 +1544,7 @@ async def evaluate_agentic_gate(
 
     # ── Tier 3: Document generation + self-note intent ────────────────
     try:
-        from knowledge.document_generator import detect_document_intent
+        from knowledge.document_generator import detect_document_intent  # lazy import: startup-cost (+3.2 s incl. httpx/model_manager over gate; not loaded by main/api.app/gui.launch)
         doc_gen_intent = detect_document_intent(user_text)
         if doc_gen_intent:
             logger.warning(f"[Agentic Gate] Document generation detected: {doc_gen_intent}")
@@ -1554,7 +1555,7 @@ async def evaluate_agentic_gate(
         traceback.print_exc()
 
     try:
-        from knowledge.daemon_notes_manager import detect_self_note_intent
+        from knowledge.daemon_notes_manager import detect_self_note_intent  # lazy import: patch-point (tests/unit/test_agentic_gate.py::TestSpecialIntents::test_self_note_intent patches knowledge.daemon_notes_manager.detect_self_note_intent)
         self_note_intent = detect_self_note_intent(user_text)
         if self_note_intent:
             logger.warning(f"[Agentic Gate] Self-note detected: {self_note_intent}")
@@ -1574,7 +1575,6 @@ async def evaluate_agentic_gate(
     # wins when it also matches — this arm only fires when it didn't.
     _note_save_request = False
     if not self_note_intent:
-        from utils.query_checker import is_note_save_request
         if is_note_save_request(user_text):
             _note_save_request = True
             needs_tools = True
@@ -1604,7 +1604,7 @@ async def evaluate_agentic_gate(
                     # call (same query + context) — reuse, don't re-bill.
                     trigger_decision = _prefetched_trigger_decision
                 else:
-                    _recent_ctx = _build_recent_context(corpus_manager)
+                    _recent_ctx = _build_recent_context(corpus_manager, current_query=user_text)
                     # 2026-10-26 (BC-27, BC-58): the web trigger's web-only
                     # short-circuits (conf-0 heuristic, web toggle off) used to
                     # return before the classifier ran, so no non-web outcome
@@ -1627,7 +1627,6 @@ async def evaluate_agentic_gate(
                         conversation_context=_recent_ctx,
                         consult_for_routing=_consult_routing,
                     )
-                from core.insight.detector import allows_pattern_classification
                 if (getattr(trigger_decision, 'needs_pattern_analysis', False) is True
                         and allows_pattern_classification(user_text)
                         and _pattern_analysis_enabled()):
@@ -1708,7 +1707,6 @@ async def evaluate_agentic_gate(
                     # request signal corroborates it.
                     # lazy import: patch point (tests monkeypatch query_checker predicates)
                     from utils.query_checker import is_self_report
-                    from utils.query_checker import is_request_shaped as _qc_request_shaped
                     # Corroboration = any independent request signal: a recall
                     # cue, the gate's info-seeking/retrieval-verb shapes, OR the
                     # broader query_checker request shape (imperative family —
@@ -1788,7 +1786,7 @@ async def evaluate_agentic_gate(
                     # none configured, nothing could search anyway and this
                     # would just dead-end an ambiguous guess instead of
                     # falling through to ordinary generation.
-                    from core.email.registry import provider_coverage
+                    from core.email.registry import provider_coverage  # lazy import: patch-point (tests/unit/test_web_search_trigger_email_intent_fields.py::TestGateRoutesEmailIntentToTools patches core.email.registry.provider_coverage)
                     _email_cov = provider_coverage()
                     if _email_cov.get("searched") or _email_cov.get("failed"):
                         logger.info("[Agentic Gate] LLM detected email search intent")
@@ -2263,7 +2261,6 @@ def supersede_pending_cards(action_type_value: str, reason: str) -> int:
     saying yes. Returns the number of cards superseded; never raises."""
     n = 0
     try:
-        from core.agentic.tools import ToolExecutor
         _store = ToolExecutor._get_pending_actions_store()
         for _p in list(_store.get_all_pending()):
             if _action_type_value(_p) == str(action_type_value):
@@ -2349,7 +2346,6 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[s
         if _offer is None:
             return None, False
         try:
-            from core.agentic.tools import ToolExecutor
             _store = ToolExecutor._get_pending_actions_store()
             _turn_ts = _entry_timestamp(_prev)
             for _p in list(_store.get_all_pending()):
@@ -2376,10 +2372,6 @@ def _prior_turn_offer_action(user_text: str, corpus_manager) -> Tuple[Optional[s
             # claims_pending_card/claims_calendar_state's own verdict
             # (self-reinforcement guard, docs/BUG_CLASSES.md CM-09).
             try:
-                from core.action_claim_guard import (
-                    claims_calendar_state, claims_pending_card,
-                    record_claim_exemplar, split_claim_sentences,
-                )
                 _state_hits = claims_calendar_state(_prev_response)
                 if _state_hits:
                     record_claim_exemplar(
@@ -2644,7 +2636,6 @@ def maybe_arm_insight_offer(query: str, tone_level: Optional[str] = None) -> boo
     if _tone_is_elevated(tone_level) or _tone_is_acute(tone_level):
         return False
     try:
-        from core.insight.detector import detect_insight_statement
         if not detect_insight_statement(query):
             return False
     except Exception:  # degrades: insight-statement offer not armed this turn

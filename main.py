@@ -666,7 +666,6 @@ async def _sync_git_index(orchestrator):
     BC-81). Non-fatal; a timeout leaves the anchor unchanged so the next
     shutdown resumes (class: BC-58 — the manual-only sync was a silent no-op
     for 7 weeks after the 2026-09-03 history rewrite)."""
-    import threading
     cancel = threading.Event()
     try:
         if not (app_config.GIT_MEMORY_ENABLED and app_config.GIT_MEMORY_SYNC_ON_SHUTDOWN):

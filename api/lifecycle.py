@@ -94,6 +94,15 @@ async def watchdog_loop(state: LifecycleState, interval_s: float = WATCHDOG_INTE
             logger.warning(f"[Lifecycle] watchdog tick failed: {e}")
 
 
+def stop_chroma_keepwarm() -> None:
+    """Stop the idle Chroma keep-warm thread (lifespan shutdown). Never raises."""
+    try:
+        from memory.storage.chroma_keepwarm import stop_keepwarm  # lazy import: layering
+        stop_keepwarm()
+    except Exception as e:  # degrades: the daemon thread dies with the process
+        logger.warning(f"[Lifecycle] keep-warm stop failed: {e}")
+
+
 def is_loopback_client(host: Optional[str]) -> bool:
     try:
         ip = ipaddress.ip_address(host or "")

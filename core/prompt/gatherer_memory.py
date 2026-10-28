@@ -34,7 +34,7 @@ import logging
 import traceback
 
 import numpy as np
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 from datetime import timedelta
 
@@ -42,7 +42,7 @@ from .formatter import (
     _as_summary_dict, _parse_bool, _detect_session_boundary, _parse_entry_timestamp,
 )
 from memory.user_profile import SENSITIVE_OPEN
-from .token_manager import drop_prior_session_test_turns
+from memory.recent_turns import recent_turns_visible_to
 from utils.trigger_match import compile_keyword_matcher, has_non_negated_hit
 from utils.ordered_slice import newest_first as _ordered_newest_first
 from utils.personal_claim_provenance import annotate_personal_claim_memory
@@ -51,6 +51,9 @@ from core.action_claim_guard import (
     annotate_conversation_content,
     annotate_unverified_action_claim,
 )
+from memory.graph_utils import extract_graph_entities, rank_expansion_candidates
+from memory.valence import cap_negative_memories
+from .summarizer import LLMSummarizer
 
 
 # Explicit asks about the user's OWN recorded history — the subset of the
@@ -349,7 +352,10 @@ class MemoryRetrievalMixin:
         recall. Scores the USER text alone with the store's own embedder (the
         gate's scoring model). Never raises into the prompt build.
         """
-        if str(intent_type or "").lower() != "factual_recall" or not is_user_fact_question(query):
+        from utils.test_envelope import inner_text  # lazy import: layering (utils stays leaf)
+        # A [test] probe asks the same question as a real turn; only its visibility rule differs (BC-105).
+        asked = inner_text(query or "")
+        if str(intent_type or "").lower() != "factual_recall" or not is_user_fact_question(asked):
             return []
         try:
             mc = self.memory_coordinator
@@ -358,12 +364,11 @@ class MemoryRetrievalMixin:
             model = store.get_st_model() if store is not None and hasattr(store, "get_st_model") else None
             if corpus is None or model is None:
                 return OutcomeList(status="unavailable", reason="no_store")
-            # Recall evidence: a PRIOR-session owner [test] probe is never
-            # evidence (2026-10-18); the current session's stay so a probe can
-            # state a fact and ask about it.
-            entries = drop_prior_session_test_turns(
-                corpus.get_recent_memories(count=USER_STATED_SCAN_TURNS * 2), datetime.now())
-            cands = select_user_stated_candidates(entries, query)
+            # Recall evidence (BC-105): a REAL turn never sees a probe turn; a probe
+            # turn keeps its own session's probes so it can state a fact and ask about it.
+            entries = recent_turns_visible_to(
+                corpus, USER_STATED_SCAN_TURNS * 2, current_query=query, now=datetime.now())
+            cands = select_user_stated_candidates(entries, asked)
             if not cands:
                 return []
             cache = getattr(self, "_user_stated_emb_cache", None)
@@ -379,7 +384,7 @@ class MemoryRetrievalMixin:
                         cache[t[:500]] = v
                     while len(cache) > 2000:  # bounded; oldest-inserted first
                         cache.pop(next(iter(cache)))
-                qv = model.encode([query], normalize_embeddings=True, convert_to_numpy=True)[0]
+                qv = model.encode([asked], normalize_embeddings=True, convert_to_numpy=True)[0]
                 return [(float(np.dot(qv, cache[t[:500]])), t, ts) for t, ts in cands]
 
             scored = await asyncio.to_thread(_score)
@@ -404,7 +409,8 @@ class MemoryRetrievalMixin:
             logger.warning(f"[UserStated] evidence channel failed: {type(e).__name__}")
             return OutcomeList.failed(type(e).__name__)
 
-    async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT) -> List[Dict[str, Any]]:
+    async def _get_recent_conversations(self, limit: int = PROMPT_MAX_RECENT,
+                                        current_query: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get recent conversation memories."""
         try:
             # Get recent memories from corpus manager
@@ -414,8 +420,9 @@ class MemoryRetrievalMixin:
                 if hasattr(corpus_manager, 'get_recent_memories'):
                     # Over-fetch to the paste-aware hard cap, then pick the window
                     # (pastes don't count toward `limit`; B4 2026-10-12).
-                    _wide = drop_prior_session_test_turns(corpus_manager.get_recent_memories(
-                        count=max(limit, int(limit * RECENT_WINDOW_PASTE_MAX_MULTIPLE))))
+                    _wide = recent_turns_visible_to(
+                        corpus_manager, max(limit, int(limit * RECENT_WINDOW_PASTE_MAX_MULTIPLE)),
+                        current_query=current_query)
                     memories = paste_aware_recent_window(_wide, limit)
                     logger.debug(f"Got {len(memories or [])} recent conversations from corpus_manager (requested {limit})")
 
@@ -532,7 +539,7 @@ class MemoryRetrievalMixin:
                 total_count = len(result["recent"]) + len(result["semantic"])
                 if total_count < limit:
                     try:
-                        recent_conversations = await self._get_recent_conversations(limit)
+                        recent_conversations = await self._get_recent_conversations(limit, current_query=query or None)
                         synth = await self._synthesize_summaries_from_recent(recent_conversations)
                         if synth:
                             needed = limit - total_count
@@ -666,7 +673,6 @@ class MemoryRetrievalMixin:
             if not graph or not resolver or graph.node_count() == 0:
                 return query
 
-            from memory.graph_utils import extract_graph_entities, rank_expansion_candidates
 
             effective_max = min(max_terms, GRAPH_QUERY_EXPANSION_MAX_TERMS)
             query_entities = extract_graph_entities(query, resolver, graph_memory=graph)
@@ -713,7 +719,6 @@ class MemoryRetrievalMixin:
             )
             if not VALENCE_RETRIEVAL_ENABLED:
                 return top
-            from memory.valence import cap_negative_memories
             selected, displaced = cap_negative_memories(
                 memories,
                 limit,
@@ -1156,7 +1161,6 @@ class MemoryRetrievalMixin:
 
         try:
             # Import summarizer
-            from .summarizer import LLMSummarizer
 
             summarizer = LLMSummarizer(self.model_manager, self.memory_coordinator)
 

@@ -217,7 +217,10 @@ class TestFetchSessionProbe:
 
         out = _fetch_session_probe(memory_coordinator, 200)
         assert out == rows
-        corpus_manager.get_recent_memories.assert_called_once_with(count=200)
+        # Read through memory.recent_turns (BC-105): over-fetches so a probe run cannot shrink the window.
+        corpus_manager.get_recent_memories.assert_called_once()
+        (n,), _ = corpus_manager.get_recent_memories.call_args
+        assert n >= 200
 
     def test_no_corpus_manager_returns_empty(self):
         from core.prompt.builder import _fetch_session_probe

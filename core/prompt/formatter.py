@@ -63,6 +63,7 @@ import json
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime, date as _date
 from datetime import datetime as _dt
+from utils.date_coerce import to_naive_local
 from pathlib import Path
 from utils.logging_utils import get_logger
 from utils.personal_claim_provenance import annotate_personal_claim_memory
@@ -71,6 +72,10 @@ from core.action_claim_guard import annotate_unverified_action_claim
 import utils.read_time_markers as read_time_markers
 import utils.time_manager as _time_manager
 from utils.temporal_resolver import anchor_recalled_item, anchor_temporal_references
+from utils.time_manager import format_relative_timestamp
+from utils.file_processor import FileProcessor
+from config import app_config as cfg
+from knowledge.web_search_manager import render_numbered_web_sources
 
 logger = get_logger("prompt_formatter")
 
@@ -327,7 +332,6 @@ def _format_session_header(
     """
     suffix = _session_time_span(span)
     try:
-        from utils.time_manager import format_relative_timestamp
         # The sub-day age ("(today, 5 min ago)") is irrelevant to a session
         # header's day label: collapse it back to the bare day label.
         rel = _TODAY_AGE_RE.sub(r"(\1)", format_relative_timestamp(ts))
@@ -385,10 +389,10 @@ def _parse_entry_timestamp(mem: dict) -> Optional[datetime]:
     if not ts:
         ts = (mem.get("metadata") or {}).get("timestamp", "")
     if isinstance(ts, datetime):
-        return ts
+        return to_naive_local(ts)
     if ts:
         try:
-            return datetime.fromisoformat(str(ts))
+            return to_naive_local(datetime.fromisoformat(str(ts)))
         except (ValueError, TypeError):
             pass
     return None
@@ -434,7 +438,6 @@ def _load_upload_image(image_path: str) -> Optional[dict]:
         # Compress if image exceeds API limit (5MB)
         API_IMAGE_LIMIT = 4_500_000
         if len(file_bytes) > API_IMAGE_LIMIT:
-            from utils.file_processor import FileProcessor
             fp = FileProcessor()
             file_bytes = fp._compress_image(file_bytes, ext, API_IMAGE_LIMIT)
             # Compression may change format to JPEG
@@ -713,7 +716,6 @@ class PromptFormatter:
                 response = anchor_temporal_references(response, timestamp, _now)
 
             # Format timestamp with relative day label to prevent temporal hallucinations
-            from utils.time_manager import format_relative_timestamp
             if isinstance(timestamp, datetime):
                 datetime_str = format_relative_timestamp(timestamp)
             elif timestamp:
@@ -882,7 +884,6 @@ class PromptFormatter:
             Compact multi-line string grouped by category, or empty string.
         """
         try:
-            from config import app_config as cfg
 
             outcomes = context.get("_section_outcomes") or {}
             shown_names = set()
@@ -1253,7 +1254,6 @@ class PromptFormatter:
                 continue
             ts = u.get("timestamp", "")
             try:
-                from utils.time_manager import format_relative_timestamp
                 ts_str = (format_relative_timestamp(ts if isinstance(ts, datetime)
                                                     else datetime.fromisoformat(str(ts))) if ts else "")
             except (ValueError, TypeError):
@@ -1352,7 +1352,6 @@ class PromptFormatter:
             try:
                 # Handle WebSearchResult object
                 if hasattr(web_search, 'has_results') and web_search.has_results:
-                    from knowledge.web_search_manager import render_numbered_web_sources
                     pages = web_search.pages
                     from_cache = web_search.from_cache
                     # Shared renderer (2026-09-06): assigns stable WEB_N ids via

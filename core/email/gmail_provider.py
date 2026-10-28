@@ -113,7 +113,7 @@ class GmailProvider:
                 "detail": "Google auth not configured",
             }
 
-        if not auth.is_authenticated:
+        if not await asyncio.to_thread(lambda: auth.is_authenticated):  # BC-41: token parse off the loop
             return {
                 "available": False,
                 "detail": "No Gmail token file",
@@ -177,7 +177,7 @@ class GmailProvider:
         from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
         auth = get_google_auth()
-        if auth is None or not auth.is_authenticated:
+        if auth is None or not await asyncio.to_thread(lambda: auth.is_authenticated):  # BC-41
             logger.debug("[Gmail] Not authenticated")
             return []
 
@@ -275,7 +275,7 @@ class GmailProvider:
         from core.actions.google_auth import get_google_auth  # lazy import: cycle
 
         auth = get_google_auth()
-        if auth is None or not auth.is_authenticated:
+        if auth is None or not await asyncio.to_thread(lambda: auth.is_authenticated):  # BC-41
             logger.debug("[Gmail] Not authenticated")
             return []
 
