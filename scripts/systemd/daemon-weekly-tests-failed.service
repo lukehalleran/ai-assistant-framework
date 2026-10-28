@@ -1,0 +1,6 @@
+[Unit]
+Description=Desktop alert when the Daemon weekly test run fails
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/notify-send --urgency=critical --app-name="Daemon Tests" "Daemon weekly tests FAILED" "See %h/Daemon_v1/logs/weekly_tests/summary.jsonl and the newest report beside it"
