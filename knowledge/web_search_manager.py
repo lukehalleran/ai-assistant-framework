@@ -70,9 +70,11 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 import re as _re
 
 from utils.retrieval_outcome import OutcomeList, RetrievalError
+from utils.safe_json import CorruptStoreError, atomic_write_json, corrupt_store, load_critical_json
 
 log = logging.getLogger(__name__)
 
@@ -574,7 +576,6 @@ def assign_web_ids(
         source_id = f"WEB_{start_index + idx + 1}"
         domain = ""
         try:
-            from urllib.parse import urlparse
             domain = urlparse(page.url).netloc.replace("www.", "")
         except Exception:  # degrades: source domain label blank in web citations
             pass
@@ -866,7 +867,7 @@ class WebSearchRateLimiter:
             self.state_file = state_file
         else:
             try:
-                from config.app_config import WEB_SEARCH_CREDITS_PATH
+                from config.app_config import WEB_SEARCH_CREDITS_PATH  # lazy import: live-config
                 self.state_file = WEB_SEARCH_CREDITS_PATH
             except (ImportError, AttributeError):
                 self.state_file = os.path.join("data", "web_search_credits.json")
@@ -881,27 +882,59 @@ class WebSearchRateLimiter:
         self._load_state()
         _LIVE_RATE_LIMITERS.add(self)
 
+    def _fail_closed_for_today(self, reason: str, quarantine_path: Optional[str]) -> None:
+        """Treat today's credit budget as spent (derived counter: never raise)."""
+        self._credits_today = float(self.daily_limit)
+        self._current_date = datetime.now().strftime("%Y-%m-%d")
+        log.warning(
+            f"[WebSearch] Credit state at {self.state_file} is unreadable ({reason}); "
+            f"quarantine copy: {quarantine_path or 'none (original left in place)'}. "
+            f"Web search is paused until the date changes."
+        )
+        if quarantine_path:
+            # The bad file is copied aside; replace it with the fail-closed state so the
+            # next restart reads "spent for today" instead of quarantining it again.
+            self._save_state()
+
     def _load_state(self) -> None:
-        """Load credit state from disk."""
+        """Load credit state from disk.
+
+        Missing file -> fresh start (zero usage). An existing file that is
+        unreadable or the wrong shape fails CLOSED for today: restarting from
+        zero would let a restart overspend the daily credit budget.
+        """
         try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, "r") as f:
-                    state = json.load(f)
-                    self._credits_today = state.get("credits_today", 0.0)
-                    self._current_date = state.get("date", "")
-        except Exception as e:  # degrades: saved daily credit count lost so usage restarts from zero
-            log.debug(f"[WebSearch] Failed to load rate limit state: {e}")
+            state = load_critical_json(self.state_file, "web search credits")
+        except CorruptStoreError as e:
+            self._fail_closed_for_today(type(e.original).__name__, e.quarantine_path)
+            return
+        if state is None:
+            return
+        credits = state.get("credits_today") if isinstance(state, dict) else None
+        date = state.get("date", "") if isinstance(state, dict) else ""
+        if (not isinstance(credits, (int, float)) or isinstance(credits, bool)
+                or not isinstance(date, str)):
+            err = corrupt_store(
+                self.state_file, "web search credits",
+                ValueError("expected an object with numeric credits_today and string date"),
+            )
+            self._fail_closed_for_today("wrong shape", err.quarantine_path)
+            return
+        self._credits_today = float(credits)
+        self._current_date = date
 
     def _save_state(self) -> None:
         """Persist credit state to disk."""
         try:
-            from utils.safe_json import atomic_write_json
             atomic_write_json(self.state_file, {
                 "credits_today": self._credits_today,
                 "date": self._current_date
             })
-        except Exception as e:  # degrades: daily credit usage not persisted so a restart may overspend budget
-            log.debug(f"[WebSearch] Failed to save rate limit state: {e}")
+        except Exception as e:  # degrades: daily credit usage not persisted so a restart may overspend budget (WARNING logged; in-memory count kept)
+            log.warning(
+                f"[WebSearch] Failed to persist credit state to {self.state_file}: "
+                f"{type(e).__name__}: {e}; in-memory count kept, a restart may overspend"
+            )
 
     def _check_date_reset_locked(self) -> None:
         """Reset credits (and any outstanding reservation hold) on a new
@@ -1064,7 +1097,7 @@ class WebSearchCache:
         self._recent_max = 64
         if ttl_hours is None:
             try:
-                from config.app_config import WEB_SEARCH_CACHE_TTL_HOURS
+                from config.app_config import WEB_SEARCH_CACHE_TTL_HOURS  # lazy import: live-config
                 ttl_hours = WEB_SEARCH_CACHE_TTL_HOURS
             except (ImportError, AttributeError):
                 ttl_hours = self.TTL_HOURS
@@ -1079,7 +1112,7 @@ class WebSearchCache:
 
         if self._store is None:
             try:
-                from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore
+                from memory.storage.multi_collection_chroma_store import MultiCollectionChromaStore  # lazy import: startup-cost
                 self._store = MultiCollectionChromaStore()
             except Exception as e:
                 log.warning(f"[WebSearchCache] Failed to initialize store: {e}")
@@ -1327,7 +1360,7 @@ def drop_narration_subqueries(original: str, sub_queries: List[str]) -> List[str
     # after a narration clause ("I had coffee and couldn't focus") inherits
     # it unless it is an information request. A new sentence never inherits
     # (an imperative to the assistant is a world request).
-    from utils.web_search_trigger import (
+    from utils.web_search_trigger import (  # lazy import: startup-cost
         _ADDRESSEE_RE, _EMBEDDED_WH_RE, _INTERROGATIVE_OPENER_RE, _LOOKUP_CUE_RE,
     )
     for sentence in re.split(r"[.!?;]+", _flat(original)):
@@ -1415,7 +1448,7 @@ class WebSearchManager:
             return False
 
         try:
-            from tavily import TavilyClient
+            from tavily import TavilyClient  # lazy import: optional-dependency
             self._tavily_client = TavilyClient(api_key=self.api_key)
             log.debug("[WebSearch] Tavily client initialized")
             return True
@@ -2079,7 +2112,7 @@ class WebSearchManager:
             return []
 
         try:
-            from models.model_manager import ModelManager
+            from models.model_manager import ModelManager  # lazy import: startup-cost
             model_manager = ModelManager()
 
             # Build prompt for link selection
@@ -2171,7 +2204,7 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
 
     def _get_user_location(self) -> Optional[str]:
         try:
-            from utils.location_resolver import get_user_location
+            from utils.location_resolver import get_user_location  # lazy import: startup-cost
             return get_user_location()
         except Exception as e:  # degrades: user location unavailable so queries are not localized
             log.debug(f"[WebSearch] Location resolution failed: {e}")
@@ -2283,7 +2316,7 @@ Return ONLY the URLs (one per line), nothing else. If none are worth following, 
             )
 
         try:
-            from models.model_manager import ModelManager
+            from models.model_manager import ModelManager  # lazy import: startup-cost
             model_manager = ModelManager()
 
             location_block = ""
@@ -2476,11 +2509,11 @@ If not splitting, leave SUB_QUERIES empty."""
         if cls._broad_news_anchors is not None:
             return cls._broad_news_anchors, cls._not_news_anchors
         try:
-            from models.model_manager import ModelManager
+            from models.model_manager import ModelManager  # lazy import: startup-cost
             embedder = ModelManager._get_cached_embedder()
             if embedder is None:
                 return None, None
-            import numpy as np
+            import numpy as np  # lazy import: startup-cost
             cls._broad_news_anchors = embedder.encode(
                 cls._BROAD_NEWS_PHRASES, convert_to_numpy=True, normalize_embeddings=True
             )
@@ -2544,11 +2577,11 @@ If not splitting, leave SUB_QUERIES empty."""
         if news_embs is None:
             return False
         try:
-            from models.model_manager import ModelManager
+            from models.model_manager import ModelManager  # lazy import: startup-cost
             embedder = ModelManager._get_cached_embedder()
             if embedder is None:
                 return False
-            import numpy as np
+            import numpy as np  # lazy import: startup-cost
             q_emb = embedder.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
             max_news_sim = float(np.max(news_embs @ q_emb))
             max_not_news_sim = float(np.max(not_news_embs @ q_emb))
@@ -2583,7 +2616,7 @@ If not splitting, leave SUB_QUERIES empty."""
             f"Return one query per line. No numbering. Avoid generic queries like 'current news {date_str}'."
         )
         try:
-            from models.model_manager import ModelManager
+            from models.model_manager import ModelManager  # lazy import: startup-cost
             mm = ModelManager()
             response = await mm.generate_once(
                 prompt=prompt,

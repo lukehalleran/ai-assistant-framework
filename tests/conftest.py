@@ -188,6 +188,10 @@ def _sandbox_adaptive_exemplars(tmp_path, monkeypatch):
     if _cfg is not None:
         monkeypatch.setattr(_cfg, "TURN_TELEMETRY_PATH",
                             str(tmp_path / "turn_records.jsonl"), raising=False)
+        # A default WebSearchRateLimiter reads/writes WEB_SEARCH_CREDITS_PATH, which is cwd-relative
+        # in dev: a test run from the live checkout would rewrite the owner's daily credit count.
+        monkeypatch.setattr(_cfg, "WEB_SEARCH_CREDITS_PATH",
+                            str(tmp_path / "web_search_credits.json"), raising=False)
     yield
     _ae._store = None
 

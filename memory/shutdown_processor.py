@@ -75,7 +75,11 @@ Module Contract
 
 import os
 import asyncio
+import shutil
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from utils.logging_utils import get_logger
@@ -284,16 +288,12 @@ class ShutdownProcessor:
         if not os.getenv("AGENT_BRANCH_SHUTDOWN_ENABLED"):
             return
         try:
-            import shutil
             if shutil.which("podman") is None:
                 logger.info("[Shutdown] agent_branch: podman unavailable, skipping")
                 return
             if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")):
                 logger.info("[Shutdown] agent_branch: no LLM key, skipping")
                 return
-            import subprocess
-            import sys
-            from pathlib import Path
             Path("logs").mkdir(exist_ok=True)
 
             def _spawn(argv, logname, desc):
@@ -523,7 +523,7 @@ class ShutdownProcessor:
             # Extract and register claims in the ClaimIndex
             if doc_id and self.claim_index:
                 try:
-                    from config.app_config import STALENESS_ENABLED
+                    from config.app_config import STALENESS_ENABLED  # lazy import: live-config
                     if STALENESS_ENABLED:
                         from memory.claim_tracker import extract_claims_from_text
                         entity_resolver = None
@@ -603,7 +603,7 @@ class ShutdownProcessor:
                     if verifier:
                         try:
                             from memory.fact_verification import FactVerdict
-                            from memory.cross_deduplicator import CrossCollectionDeduplicator
+                            from memory.cross_deduplicator import CrossCollectionDeduplicator  # lazy import: startup-cost
                             s, p, o = CrossCollectionDeduplicator._extract_triple({
                                 "content": fact_content, "metadata": {},
                             })
@@ -622,10 +622,16 @@ class ShutdownProcessor:
                                             supersede_md = {"superseded_by": fact_content[:200]}
                                             supersede_md.update(vr.metadata_updates)
                                             self.chroma_store.update_metadata("facts", cand.doc_id, supersede_md)
-                                        except Exception:  # degrades: superseded fact not flagged in the facts collection, old value may resurface
-                                            pass
-                        except Exception as ve:  # degrades: superseded fact not flagged in the facts collection, old value may resurface
-                            logger.debug(f"[Shutdown] Verification failed, proceeding: {ve}")
+                                        except Exception as flag_err:  # degrades: superseded fact not flagged in the facts collection, old value may resurface (WARNING logged)
+                                            logger.warning(
+                                                f"[Shutdown] Could not flag superseded fact doc_id={cand.doc_id}: "
+                                                f"{type(flag_err).__name__}"
+                                            )
+                        except Exception as ve:  # degrades: new fact stored without verification; conflicting old facts not flagged (WARNING logged)
+                            logger.warning(
+                                f"[Shutdown] Fact verifier failed, storing without verification: "
+                                f"{type(ve).__name__}"
+                            )
 
                     # Forward source_excerpt if available in metadata
                     src_dict = {
@@ -804,6 +810,7 @@ class ShutdownProcessor:
                 logger.debug(f"[Shutdown] Batch verification failed, proceeding: {ve}")
 
         kept = 0
+        flag_failures = 0
         for t in triples:
             subj = t.get('subject')
             rel = t.get('relation')
@@ -826,8 +833,12 @@ class ShutdownProcessor:
                                 supersede_md = {"superseded_by": fact_text[:200]}
                                 supersede_md.update(vr.metadata_updates)
                                 self.chroma_store.update_metadata("facts", cand.doc_id, supersede_md)
-                            except Exception:  # degrades: superseded fact not flagged in the facts collection, old value may resurface
-                                pass
+                            except Exception as flag_err:  # degrades: superseded fact not flagged in the facts collection, old value may resurface (WARNING logged, counted in the [LLM Facts] line)
+                                flag_failures += 1
+                                logger.warning(
+                                    f"[Shutdown] Could not flag superseded fact doc_id={cand.doc_id}: "
+                                    f"{type(flag_err).__name__}"
+                                )
 
             try:
                 src_dict = {
@@ -874,7 +885,7 @@ class ShutdownProcessor:
                     # Without this, LLM-extracted triples (the richest source
                     # of entity-entity relations) never became graph edges.
                     try:
-                        from memory.memory_storage import _get_graph_enabled
+                        from memory.memory_storage import _get_graph_enabled  # lazy import: startup-cost
                         if getattr(self._storage, 'graph_memory', None) and \
                                 getattr(self._storage, 'entity_resolver', None) and \
                                 _get_graph_enabled():
@@ -885,13 +896,17 @@ class ShutdownProcessor:
                                 stance=t.get("stance", ""),
                                 capture_tone=src_dict.get("capture_tone", ""),
                             )
-                    except Exception as graph_err:  # degrades: extracted fact stored but its knowledge-graph edge is missing
-                        logger.debug(f"[Shutdown] Graph ingestion failed: {graph_err}")
+                    except Exception as graph_err:  # degrades: extracted fact stored but its knowledge-graph edge is missing (WARNING logged)
+                        logger.warning(
+                            f"[Shutdown] Graph ingestion failed for relation={rel} fact_id={result}: "
+                            f"{type(graph_err).__name__}"
+                        )
                 else:
                     logger.debug(f"[Shutdown] LLM fact skipped as duplicate: {fact_text}")
             except (AttributeError, TypeError, ValueError):
                 continue
-        logger.info(f"[LLM Facts] kept={kept} (model={model_alias})")
+        _flag_note = f" flag_failures={flag_failures}" if flag_failures else ""
+        logger.info(f"[LLM Facts] kept={kept}{_flag_note} (model={model_alias})")
 
         # Update user profile with user-scoped facts only (entity facts stay in ChromaDB only)
         if triples and self.user_profile:
@@ -946,7 +961,7 @@ class ShutdownProcessor:
         with semantic deduplication.
         """
         try:
-            from config.app_config import PROCEDURAL_SKILLS_ENABLED
+            from config.app_config import PROCEDURAL_SKILLS_ENABLED  # lazy import: live-config
             if not PROCEDURAL_SKILLS_ENABLED:
                 return
         except ImportError:
@@ -1088,7 +1103,7 @@ class ShutdownProcessor:
         (truncated excerpts + file reads only) otherwise.
         """
         try:
-            from config.app_config import CODE_PROPOSALS_ENABLED
+            from config.app_config import CODE_PROPOSALS_ENABLED  # lazy import: live-config
             if not CODE_PROPOSALS_ENABLED:
                 return
         except ImportError:
@@ -1121,11 +1136,11 @@ class ShutdownProcessor:
             return
 
         try:
-            from knowledge.proposal_generator import GoalDirectedGenerator
-            from memory.proposal_store import ProposalStore
+            from knowledge.proposal_generator import GoalDirectedGenerator  # lazy import: patch-point
+            from memory.proposal_store import ProposalStore  # lazy import: patch-point
             # Read at call time so the Settings slider applies without restart
             # (was unwired — the generator always used its class default of 5)
-            from config.app_config import CODE_PROPOSALS_MAX_PER_SESSION
+            from config.app_config import CODE_PROPOSALS_MAX_PER_SESSION  # lazy import: live-config
 
             generator = GoalDirectedGenerator(
                 model_manager=self.model_manager,
@@ -1367,13 +1382,13 @@ class ShutdownProcessor:
         ~50ms per proposal (pure os.path.exists calls, no git/LLM).
         """
         try:
-            from config.app_config import IMPL_TRACKING_ENABLED, IMPL_TRACKING_AT_SHUTDOWN
+            from config.app_config import IMPL_TRACKING_ENABLED, IMPL_TRACKING_AT_SHUTDOWN  # lazy import: live-config
 
             if not IMPL_TRACKING_ENABLED or not IMPL_TRACKING_AT_SHUTDOWN:
                 return
 
-            from knowledge.implementation_detector import ImplementationDetector
-            from memory.proposal_store import ProposalStore
+            from knowledge.implementation_detector import ImplementationDetector  # lazy import: patch-point
+            from memory.proposal_store import ProposalStore  # lazy import: patch-point
 
             chroma_store = self.chroma_store
             if not chroma_store:
@@ -1431,7 +1446,7 @@ class ShutdownProcessor:
         Phase 3: Enforce cap (THREAD_MAX_OPEN)
         """
         try:
-            from config.app_config import THREAD_SURFACING_ENABLED
+            from config.app_config import THREAD_SURFACING_ENABLED  # lazy import: live-config
             if not THREAD_SURFACING_ENABLED:
                 return
         except ImportError:
@@ -1579,8 +1594,8 @@ class ShutdownProcessor:
         # Phase 3: Enforce cap
         try:
             self.thread_store.enforce_cap()
-        except Exception as e:  # degrades: thread cap not enforced this shutdown, store may exceed its limit
-            logger.debug(f"[Shutdown] Thread cap enforcement failed: {e}")
+        except Exception as e:  # degrades: thread cap not enforced this shutdown, store may exceed its limit (WARNING logged)
+            logger.warning(f"[Shutdown] Thread cap enforcement failed: {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------
     # Synthesis dreaming (cross-domain candidate generation)
@@ -1610,7 +1625,7 @@ class ShutdownProcessor:
         dreaming instead of proceeding as if the audit were healthy.
         """
         try:
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 SYNTHESIS_GENERATOR_ENABLED,
                 SYNTHESIS_GENERATOR_CANDIDATES_PER_SESSION,
                 SYNTHESIS_POOLED_ENABLED,
@@ -1637,7 +1652,7 @@ class ShutdownProcessor:
             if SYNTHESIS_AUDIT_ENABLED:
                 from utils.retrieval_outcome import RetrievalError
                 try:
-                    from memory.synthesis_memory import SynthesisMemory
+                    from memory.synthesis_memory import SynthesisMemory  # lazy import: patch-point
                     audit_mem = SynthesisMemory(self.chroma_store)
                     audit_stats = audit_mem.get_audit_stats()
                     if audit_stats.get("auto_halt", False):
@@ -1658,8 +1673,8 @@ class ShutdownProcessor:
                     )
                     return
 
-            from knowledge.synthesis_filter import SynthesisFilter
-            from memory.synthesis_memory import SynthesisMemory
+            from knowledge.synthesis_filter import SynthesisFilter  # lazy import: patch-point
+            from memory.synthesis_memory import SynthesisMemory  # lazy import: patch-point
 
             mc = self.memory_coordinator
             graph_memory = getattr(mc, "graph_memory", None) if mc else None
@@ -1672,7 +1687,7 @@ class ShutdownProcessor:
                 # non-obvious cosine band (validated 2026-06-30: ~17% accept / ~46%
                 # MODERATE+STRONG vs ~0 for the retired personal->wiki tiers). When on,
                 # this is the ONLY generator — the lever is concept prominence.
-                from knowledge.synthesis_pooled_generator import PooledConceptSynthesisGenerator
+                from knowledge.synthesis_pooled_generator import PooledConceptSynthesisGenerator  # lazy import: startup-cost
                 pooled_gen = PooledConceptSynthesisGenerator(
                     model_manager=self.model_manager,
                     concurrency=SYNTHESIS_POOLED_LLM_CONCURRENCY,
@@ -1768,7 +1783,7 @@ class ShutdownProcessor:
     async def _run_wiki_enrichment(self):
         """Step 6.9: Enrich knowledge graph with Wikipedia articles accessed this session."""
         try:
-            from config.app_config import WIKI_ENRICHMENT_ENABLED, WIKI_ENRICHMENT_TIMEOUT_S
+            from config.app_config import WIKI_ENRICHMENT_ENABLED, WIKI_ENRICHMENT_TIMEOUT_S  # lazy import: live-config
             if not WIKI_ENRICHMENT_ENABLED:
                 return
 
@@ -1779,7 +1794,6 @@ class ShutdownProcessor:
             if not graph_memory or not entity_resolver:
                 return
 
-            import asyncio
             from knowledge.wiki_enrichment import WikiGraphEnricher
             enricher = WikiGraphEnricher(graph_memory, entity_resolver)
 
@@ -1814,7 +1828,7 @@ class ShutdownProcessor:
                 logger.debug("[Shutdown] Wikidata enrichment skipped under pytest")
                 return
 
-            from config.app_config import (
+            from config.app_config import (  # lazy import: live-config
                 WIKIDATA_ENRICHMENT_ENABLED,
                 WIKIDATA_PERSIST_PATH,
             )
@@ -1888,7 +1902,7 @@ class ShutdownProcessor:
             return
         ShutdownProcessor._dedup_ran = True
 
-        from config.app_config import (
+        from config.app_config import (  # lazy import: live-config
             CROSS_DEDUP_ENABLED, CROSS_DEDUP_ON_SHUTDOWN, CROSS_DEDUP_AUTO_EXECUTE,
         )
 
@@ -1897,7 +1911,7 @@ class ShutdownProcessor:
             return
 
         try:
-            from memory.cross_deduplicator import CrossCollectionDeduplicator
+            from memory.cross_deduplicator import CrossCollectionDeduplicator  # lazy import: startup-cost
 
             dedup = CrossCollectionDeduplicator(self.chroma_store)
 
