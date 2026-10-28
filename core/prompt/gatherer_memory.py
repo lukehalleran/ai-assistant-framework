@@ -51,6 +51,9 @@ from core.action_claim_guard import (
     annotate_conversation_content,
     annotate_unverified_action_claim,
 )
+from memory.graph_utils import extract_graph_entities, rank_expansion_candidates
+from memory.valence import cap_negative_memories
+from .summarizer import LLMSummarizer
 
 
 # Explicit asks about the user's OWN recorded history — the subset of the
@@ -666,7 +669,6 @@ class MemoryRetrievalMixin:
             if not graph or not resolver or graph.node_count() == 0:
                 return query
 
-            from memory.graph_utils import extract_graph_entities, rank_expansion_candidates
 
             effective_max = min(max_terms, GRAPH_QUERY_EXPANSION_MAX_TERMS)
             query_entities = extract_graph_entities(query, resolver, graph_memory=graph)
@@ -713,7 +715,6 @@ class MemoryRetrievalMixin:
             )
             if not VALENCE_RETRIEVAL_ENABLED:
                 return top
-            from memory.valence import cap_negative_memories
             selected, displaced = cap_negative_memories(
                 memories,
                 limit,
@@ -1156,7 +1157,6 @@ class MemoryRetrievalMixin:
 
         try:
             # Import summarizer
-            from .summarizer import LLMSummarizer
 
             summarizer = LLMSummarizer(self.model_manager, self.memory_coordinator)
 

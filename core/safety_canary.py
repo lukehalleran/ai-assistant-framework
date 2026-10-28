@@ -22,6 +22,7 @@ from enum import Enum
 from typing import List, Optional
 
 from utils.logging_utils import get_logger
+from memory.valence import negative_affect_score
 
 logger = get_logger("safety_canary")
 
@@ -65,7 +66,6 @@ class SafetyCanary:
         if not self.enabled:
             return None
         try:
-            from memory.valence import negative_affect_score
             is_negative = negative_affect_score(user_message or "") >= self.negative_threshold
             is_conversational = self._is_conversational(tone)
 
