@@ -159,7 +159,7 @@ async def test_cancelled_builder_drains_retrieval_before_resetting_shared_state(
     builder = full_builder(monkeypatch, [])
     entered, finished = asyncio.Event(), asyncio.Event()
 
-    async def slow_retrieval(*args):
+    async def slow_retrieval(*args, **_kw):
         entered.set()
         try:
             await asyncio.Future()

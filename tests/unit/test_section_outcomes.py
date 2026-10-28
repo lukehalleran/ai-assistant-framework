@@ -86,7 +86,7 @@ class TestPendingTaskRecordsTimeout:
         builder = _make_builder(monkeypatch)
         fast_done, slow_entered = asyncio.Event(), asyncio.Event()
 
-        async def recent(*args):
+        async def recent(*args, **_kw):
             fast_done.set()
             return RECENT
 

@@ -108,7 +108,8 @@ from .formatter import (
     _parse_entry_timestamp, _detect_session_boundary, SESSION_BOUNDARY_GAP_HOURS,
 )
 from .summarizer import LLMSummarizer
-from .token_manager import TokenManager, USER_PROFILE_MAX_TOKENS, drop_prior_session_test_turns
+from .token_manager import TokenManager, USER_PROFILE_MAX_TOKENS
+from memory.recent_turns import recent_turns_visible_to
 from .base import _FallbackMemoryCoordinator
 from .hygiene import ContentHygiene, _canonical_turn_key
 from memory.skill_activation import SkillActivationPolicy, SkillCooldownStore
@@ -867,7 +868,8 @@ def _apply_self_report_trim(
 # never trigger) so the builder can say so honestly and, for a recall-shaped
 # query, surface the turns the window dropped.
 
-def _fetch_session_probe(memory_coordinator, limit: int) -> List[Dict[str, Any]]:
+def _fetch_session_probe(memory_coordinator, limit: int,
+                         current_query: Optional[str] = None) -> List[Dict[str, Any]]:
     """Read up to `limit` episodic corpus entries (newest-first) directly off
     corpus_manager — the SAME call `_get_recent_conversations` makes, but
     without its "not enough? run a semantic query" fallback, which a probe
@@ -876,7 +878,7 @@ def _fetch_session_probe(memory_coordinator, limit: int) -> List[Dict[str, Any]]
     if corpus_manager is None or not hasattr(corpus_manager, "get_recent_memories"):
         return []
     try:
-        return drop_prior_session_test_turns(corpus_manager.get_recent_memories(count=limit) or [])
+        return recent_turns_visible_to(corpus_manager, limit, current_query=current_query)
     except (AttributeError, TypeError, KeyError, ValueError, IndexError) as e:
         # degrades: no session-truth honesty or [EARLIER TODAY] timeline this
         # turn; [RECENT CONVERSATION] itself still renders unchanged. Narrow
@@ -1576,7 +1578,7 @@ class UnifiedPromptBuilder:
             # Recent conversations
             if eff_max_recent > 0:
                 tasks["recent"] = asyncio.create_task(
-                    _timed_task("recent", self.context_gatherer._get_recent_conversations(eff_max_recent))
+                    _timed_task("recent", self.context_gatherer._get_recent_conversations(eff_max_recent, current_query=user_input))
                 )
 
             # Query-relevant memories (semantic search results only)
@@ -1833,7 +1835,8 @@ class UnifiedPromptBuilder:
             try:
                 from core.agentic.gate import _build_recent_context  # lazy import: cycle
                 _web_conv_ctx = _build_recent_context(
-                    getattr(self.memory_coordinator, 'corpus_manager', None)
+                    getattr(self.memory_coordinator, 'corpus_manager', None),
+                    current_query=user_input,
                 )
             except Exception as _wc_err:  # degrades: web trigger loses recent-conversation context for references
                 logger.debug(f"[BUILD_PROMPT] recent-context for web trigger failed (non-fatal): {_wc_err}")
@@ -2071,7 +2074,7 @@ class UnifiedPromptBuilder:
             # the CURRENT session holds more turns than fit it, and — for a
             # temporal_recall-shaped query — surface today's turns the
             # window dropped.
-            _session_probe = _fetch_session_probe(self.memory_coordinator, SESSION_PROBE_LIMIT) if recent_convos else []
+            _session_probe = _fetch_session_probe(self.memory_coordinator, SESSION_PROBE_LIMIT, current_query=user_input) if recent_convos else []
             _sess_truncated, _sess_total, _sess_started = (
                 _session_truth_from_probe(_session_probe, len(recent_convos))
                 if _session_probe else (False, None, None)
@@ -2190,7 +2193,7 @@ class UnifiedPromptBuilder:
 
             # Step 6: Apply hygiene and caps
             logger.debug(f"BEFORE HYGIENE_AND_CAPS: memories count = {len(context.get('memories', []))}")
-            context = await self._hygiene_and_caps(context, stm_summary=stm_summary)
+            context = await self._hygiene_and_caps(context, stm_summary=stm_summary, current_query=user_input)
 
             # Step 6.1: Top-up relevant memories if cross-effects reduced them too much.
             try:
@@ -2210,7 +2213,8 @@ class UnifiedPromptBuilder:
                 target_mems = min(max(0, int(eff_max_mems or 0)), MEMORY_TOPUP_FLOOR)
                 if len(mems) < target_mems:
                     # Pull extra recent conversations beyond the ones already shown
-                    extra_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MAX_RECENT + target_mems)
+                    extra_recent = await self.context_gatherer._get_recent_conversations(
+                        PROMPT_MAX_RECENT + target_mems, current_query=user_input)
                     needed = max(0, target_mems - len(mems))
                     # Dedup against BOTH recent_conversations AND existing memories,
                     # keyed by _canonical_turn_key so a marked copy of a turn (e.g. the
@@ -2327,7 +2331,8 @@ class UnifiedPromptBuilder:
                 if len(recent_convos) < _recent_floor:
                     needed_recent = _recent_floor - len(recent_convos)
                     try:
-                        stored_recent = await self.context_gatherer._get_recent_conversations(PROMPT_MIN_RECENT_FLOOR * 2)
+                        stored_recent = await self.context_gatherer._get_recent_conversations(
+                            PROMPT_MIN_RECENT_FLOOR * 2, current_query=user_input)
                     except Exception as e:
                         # degrades: recent-conversation floor top-up skipped, session context may thin
                         logger.warning(f"Failed to fetch recent conversations for floor: {type(e).__name__}")
@@ -2674,7 +2679,7 @@ class UnifiedPromptBuilder:
         last_resp = ""
         try:
             cm = getattr(self.memory_coordinator, "corpus_manager", None)
-            recent = drop_prior_session_test_turns(cm.get_recent_memories(count=6))[:1] if cm else []
+            recent = recent_turns_visible_to(cm, 1, current_query=user_input) if cm else []
             if recent:
                 last_resp = recent[0].get("response", "") or ""
         except Exception as e:  # degrades: continuation answers treated as ordinary turns
@@ -2688,7 +2693,7 @@ class UnifiedPromptBuilder:
         """Build lightweight context for small-talk queries."""
         try:
             # Just get recent conversations for small-talk
-            recent = await self.context_gatherer._get_recent_conversations(3)
+            recent = await self.context_gatherer._get_recent_conversations(3, current_query=user_input)
 
             # The gatherer is shared across turns and turn telemetry reads its
             # `last_web_decision`: reset it here, or this turn inherits the
@@ -2794,9 +2799,10 @@ class UnifiedPromptBuilder:
                 "codebase_changes": codebase_changes or {},
             }
 
-    async def _hygiene_and_caps(self, context: Dict[str, Any], stm_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _hygiene_and_caps(self, context: Dict[str, Any], stm_summary: Optional[Dict[str, Any]] = None,
+                                current_query: Optional[str] = None) -> Dict[str, Any]:
         """Apply deduplication and caps. Delegates to ContentHygiene."""
-        return await self._hygiene._hygiene_and_caps(context, stm_summary)
+        return await self._hygiene._hygiene_and_caps(context, stm_summary, current_query=current_query)
 
     async def _backfill_recent_conversations(
         self,
@@ -2806,12 +2812,14 @@ class UnifiedPromptBuilder:
         target_count: int,
         offset: int,
         embedder,
-        similarity_threshold: float
+        similarity_threshold: float,
+        current_query: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Backfill recent conversations. Delegates to ContentHygiene."""
         return await self._hygiene._backfill_recent_conversations(
             existing_items, seen_embeddings, seen_content,
-            target_count, offset, embedder, similarity_threshold
+            target_count, offset, embedder, similarity_threshold,
+            current_query=current_query
         )
 
     def get_token_count(self, text: str, model_name: str) -> int:

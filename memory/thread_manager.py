@@ -12,6 +12,7 @@ from typing import Dict, Optional
 from utils.logging_utils import get_logger
 import utils.query_checker as query_checker
 import utils.time_manager as time_manager
+from memory.recent_turns import recent_turns_visible_to
 
 logger = get_logger("thread_manager")
 
@@ -47,12 +48,26 @@ class ThreadManager:
     def _now_iso(self) -> str:
         return time_manager.now_iso_from(self.time_manager)
 
-    def get_thread_context(self) -> Optional[Dict]:
+    def _recent_visible(self, count: int, current_query: Optional[str]) -> list:
+        """Newest-first recent turns as the turn being built may see them.
+
+        A REAL current turn never sees ``[test]`` probe turns (2026-10-28,
+        BC-58: depth and topic of a real "Hey" were read off probe turns, so
+        the thread was "message #4 about In The New"). Same rule as
+        ``token_manager.drop_prior_session_test_turns`` via
+        ``fact_source.probes_hidden_from_turn``; ``None`` keeps the raw view.
+        """
+        return recent_turns_visible_to(self.corpus_manager, count, current_query=current_query)
+
+    def get_thread_context(self, current_query: Optional[str] = None) -> Optional[Dict]:
         """
         Retrieve thread context from the most recent conversation.
         Returns thread metadata if a thread is active, None otherwise.
+
+        ``current_query`` (2026-10-28): the turn being built; a real turn reads
+        the newest NON-probe stored turn.
         """
-        recent = self.corpus_manager.get_recent_memories(count=1)
+        recent = self._recent_visible(1, current_query)
         if not recent:
             return None
 
@@ -123,7 +138,7 @@ class ThreadManager:
         # computed ``0 + 1`` -- every continuing turn logged "thread None at
         # depth 1" (88 of 88 in the 10-20..10-26 logs).
         recent = [
-            e for e in self.corpus_manager.get_recent_memories(count=4)
+            e for e in self._recent_visible(4, query)
             if not (isinstance(e, dict) and e.get("pending_storage"))
         ][:1]
 

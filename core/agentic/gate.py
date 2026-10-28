@@ -117,8 +117,7 @@ from utils.anchored_sense import math_verb_has_math_object
 from utils.test_envelope import inner_text as _test_envelope_inner
 from utils.url_detect import contains_url
 from memory.fact_source import strip_quoted_correspondence as _strip_quoted_correspondence
-from memory.fact_source import is_test_turn as _is_test_turn
-from utils.test_envelope import has_envelope as _has_test_envelope
+from memory.recent_turns import recent_turns_visible_to
 from utils.date_coerce import to_naive_local as _to_naive_local
 from core.agentic import tool_thread
 from core.agentic.formatters import clip_text
@@ -806,7 +805,6 @@ def _tone_is_acute(tone_level) -> bool:
     return any(marker in _t for marker in _ACUTE_TONE_MARKERS)
 
 
-_PRIOR_TURN_PROBE_LOOKBACK = 12
 
 
 def _prior_turns(corpus_manager, n: int, user_text: str) -> list:
@@ -818,13 +816,11 @@ def _prior_turns(corpus_manager, n: int, user_text: str) -> list:
     real message was forced into send_email. A probe -> probe chain still sees
     its probe predecessor.
     """
-    if _has_test_envelope(user_text or ""):
-        return list(corpus_manager.get_recent_memories(n) or [])
-    pulled = list(corpus_manager.get_recent_memories(n + _PRIOR_TURN_PROBE_LOOKBACK) or [])
-    return [m for m in pulled if not _is_test_turn(m)][:n]
+    return recent_turns_visible_to(corpus_manager, n, current_query=user_text or "")
 
 
-def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
+def _build_recent_context(corpus_manager, max_turns: int = 2,
+                          current_query: Optional[str] = None) -> Optional[str]:
     """Build a compact recent-conversation digest for the web-search trigger.
 
     Elliptical follow-ups ("check the news", "any updates on that") carry no
@@ -836,7 +832,7 @@ def _build_recent_context(corpus_manager, max_turns: int = 2) -> Optional[str]:
     if corpus_manager is None:
         return None
     try:
-        recent = corpus_manager.get_recent_memories(max_turns)
+        recent = recent_turns_visible_to(corpus_manager, max_turns, current_query=current_query)
     except Exception as e:  # degrades: web trigger loses recent-conversation context
         logger.warning(f"[Agentic Gate] recent-context build failed (non-fatal): {type(e).__name__}")
         return None
@@ -1162,7 +1158,7 @@ async def evaluate_agentic_gate(
     # distills its own query from the conversation (2026-10-08, BC-58).
     if (not needs_web_search and _is_bare_lookup_imperative(user_text)
             and paid_search_block_reason() is None
-            and _build_recent_context(corpus_manager)):
+            and _build_recent_context(corpus_manager, current_query=user_text)):
         needs_web_search = True
         _mark("tier1_bare_lookup")
         logger.debug("[Agentic Gate] Tier 1: bare lookup imperative on prior exchange")
@@ -1515,7 +1511,7 @@ async def evaluate_agentic_gate(
                 _pattern_decision = await analyze_for_web_search_llm(
                     query=_tier4_query_text(user_text),
                     model_manager=model_manager,
-                    conversation_context=_build_recent_context(corpus_manager),
+                    conversation_context=_build_recent_context(corpus_manager, current_query=user_text),
                 )
                 _prefetched_trigger_decision = _pattern_decision
                 if (getattr(_pattern_decision, "needs_pattern_analysis", False) is True
@@ -1608,7 +1604,7 @@ async def evaluate_agentic_gate(
                     # call (same query + context) — reuse, don't re-bill.
                     trigger_decision = _prefetched_trigger_decision
                 else:
-                    _recent_ctx = _build_recent_context(corpus_manager)
+                    _recent_ctx = _build_recent_context(corpus_manager, current_query=user_text)
                     # 2026-10-26 (BC-27, BC-58): the web trigger's web-only
                     # short-circuits (conf-0 heuristic, web toggle off) used to
                     # return before the classifier ran, so no non-web outcome

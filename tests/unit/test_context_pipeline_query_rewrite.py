@@ -36,13 +36,13 @@ def _pipeline(enable=True, timeout=1.2, model_manager=None):
 
 
 def _stub_unrelated(cp, monkeypatch):
-    async def topics(user_input, last_exchange=None):
+    async def topics(user_input, last_exchange=None, **_kw):
         return "general", ["general"]
 
     async def tone(user_input, history):
         return ToneLevel.CONVERSATIONAL, None
 
-    async def thread():
+    async def thread(current_query=None):
         return None
 
     monkeypatch.setattr(cp, "_extract_topics", topics)

@@ -240,6 +240,7 @@ from core.best_of_handler import BestOfHandler
 from core.escalation_tracker import EscalationTracker
 from core.correction_detector import CorrectionDetector, CorrectionEvent, _MIN_CONFIDENCE as _CORRECTION_MIN_CONFIDENCE
 from memory.thread_models import DisputedResolution
+from memory.recent_turns import recent_turns_visible_to
 from memory.thread_store import _norm_keywords as _thread_norm_keywords
 from core.citation_extractor import extract_citations as _ext_extract_citations, expand_citation_range as _ext_expand_citation_range
 from core.tone_instructions import get_tone_instructions as _ext_get_tone_instructions, get_response_instructions as _ext_get_response_instructions, get_session_headers_instructions as _ext_get_session_headers_instructions
@@ -562,7 +563,7 @@ def _hook_thread_dispute(ctx: PostResponseHookContext) -> None:
         corrected = ""
         if corpus is not None:
             norm = " ".join(text.lower().split())
-            for entry in corpus.get_recent_memories(3):
+            for entry in recent_turns_visible_to(corpus, 3, current_query=text):
                 # skip this turn's own entry (stored or still pending)
                 if " ".join(str(entry.get("query") or "").lower().split()) != norm:
                     corrected = str(entry.get("response") or "")
@@ -1380,7 +1381,8 @@ class DaemonOrchestrator:
         conversation_history = None
         if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
             try:
-                conversation_history = self.memory_system.corpus_manager.get_recent_memories(5)
+                conversation_history = recent_turns_visible_to(
+                    self.memory_system.corpus_manager, 5, current_query=user_input)
             except Exception as e:
                 logger.warning(f"[Orchestrator] Could not retrieve conversation history: {e}, proceeding without context")
 

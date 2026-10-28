@@ -65,6 +65,7 @@ import utils.safe_json as safe_json
 from utils.date_coerce import to_naive_local
 from utils.test_envelope import inner_text
 from core.prompt.token_manager import drop_prior_session_test_turns
+from memory.recent_turns import recent_turns_visible_to
 
 if TYPE_CHECKING:
     from utils.topic_manager import TopicManager
@@ -431,6 +432,14 @@ class ContextPipeline:
         # Track conversation depth
         self._conversation_depth += 1
 
+        # A REAL turn never sees [test] probe turns (2026-10-28, BC-58): the
+        # newest prior turn feeds last_exchange / the planner / STM / tone, and
+        # a probe there was treated as the user's open business. A probe turn
+        # keeps its own session's probes (drop_prior_session_test_turns).
+        if conversation_history:
+            conversation_history = drop_prior_session_test_turns(
+                conversation_history, current_query=user_input)
+
         # A previous turn's rewrite must never leak into this one.
         set_turn_hint(None)
 
@@ -459,16 +468,20 @@ class ContextPipeline:
             if isinstance(first, dict):
                 last_exchange = first
 
+        # A turn that carries attachments: its demonstrative ("this", "it")
+        # points at the attachment, not at the previous topic (2026-10-28).
+        _attach_kw = {"has_attachment": True} if files else {}
+
         # Stages 1+2: Topic Extraction + Tone Detection (parallelized — independent)
         if not use_raw_mode:
             _progress_emit("🧠 Analyzing query — topics + tone…")
             (primary_topic, topics), (tone_level, emotional_context) = await asyncio.gather(
-                self._extract_topics(user_input, last_exchange=last_exchange),
+                self._extract_topics(user_input, last_exchange=last_exchange, **_attach_kw),
                 self._detect_tone(user_input, conversation_history),
             )
         else:
             primary_topic, topics = await self._extract_topics(
-                user_input, last_exchange=last_exchange
+                user_input, last_exchange=last_exchange, **_attach_kw
             )
         logger.debug(f"Stage 1 (Topics): primary={primary_topic}, all={topics}")
         if not use_raw_mode:
@@ -633,7 +646,7 @@ class ContextPipeline:
 
         # Stage 8: Thread Context
         if not use_raw_mode:
-            thread_context = await self._get_thread_context()
+            thread_context = await self._get_thread_context(current_query=user_input)
             if thread_context:
                 logger.debug(f"Stage 8 (Thread): depth={thread_context.get('thread_depth', 0)}")
 
@@ -679,6 +692,7 @@ class ContextPipeline:
         self,
         query: str,
         last_exchange: Optional[Dict[str, Any]] = None,
+        has_attachment: bool = False,
     ) -> tuple[Optional[str], List[str]]:
         """
         Stage 1: Extract topics via TopicManager.
@@ -736,6 +750,11 @@ class ContextPipeline:
                 # inherit like pronoun fragments — fresh classification of a
                 # 2-word riff mid-thread produced topic "Tactical Gear" and a
                 # gear-brand reply to a joke.
+                # An attached document is the referent of "this"/"it": the
+                # previous turn's topic is not (2026-10-28, BC-91: "make a
+                # clean version of this" + a PDF inherited the prior probe's
+                # topic). Fresh-classify instead.
+                and not has_attachment
                 and (
                     is_anaphoric_continuation(query, prior_text=prior_text)
                     or is_fragment_continuation(query)
@@ -815,14 +834,15 @@ class ContextPipeline:
             recent_memories = []
             if self.memory_system and hasattr(self.memory_system, 'corpus_manager'):
                 try:
-                    recent_memories = drop_prior_session_test_turns(
-                        self.memory_system.corpus_manager.get_recent_memories(3))
+                    recent_memories = recent_turns_visible_to(
+                        self.memory_system.corpus_manager, 3, current_query=query)
                 except Exception as e:
                     logger.warning(f"[ContextPipeline] Could not retrieve recent memories for emotional analysis: {e}")
 
             # Also use provided conversation history
             if conversation_history:
-                recent_memories = drop_prior_session_test_turns(conversation_history)[:3]
+                recent_memories = drop_prior_session_test_turns(
+                    conversation_history, current_query=query)[:3]
 
             # Over-stickiness guard: distress tone is sticky across terse turns
             # WITHIN a session, but a long gap means a new session — a calm
@@ -1255,14 +1275,16 @@ Rewritten query (just the rewritten text, no explanation):"""
                         max_count=self._stm_max_recent,
                     )
                 else:
-                    recent_memories = cm.get_recent_memories(self._stm_max_recent)
+                    recent_memories = recent_turns_visible_to(
+                        cm, self._stm_max_recent, current_query=query)
                 # Both readers are newest-first (the helper's contract). Owner
                 # [test] probes from a PRIOR session never feed the summary; the
                 # current session's own probes stay (2026-10-18, BC-58).
-                recent_memories = drop_prior_session_test_turns(recent_memories)
+                recent_memories = drop_prior_session_test_turns(
+                    recent_memories, current_query=query)
             elif conversation_history:
                 recent_memories = drop_prior_session_test_turns(
-                    conversation_history)[:self._stm_max_recent]
+                    conversation_history, current_query=query)[:self._stm_max_recent]
 
             # Get the immediately preceding assistant response. Corpus entries
             # are normally {query, response} pairs (not role/content messages),
@@ -1335,7 +1357,7 @@ Rewritten query (just the rewritten text, no explanation):"""
             logger.warning(f"Identity context retrieval failed: {e}")
             return "", None
 
-    async def _get_thread_context(self) -> Optional[Dict[str, Any]]:
+    async def _get_thread_context(self, current_query: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Stage 8: Get active thread context.
 
@@ -1349,7 +1371,7 @@ Rewritten query (just the rewritten text, no explanation):"""
 
         try:
             if hasattr(self.memory_system, 'get_thread_context'):
-                return self.memory_system.get_thread_context()
+                return self.memory_system.get_thread_context(current_query=current_query)
             return None
         except Exception as e:
             logger.warning(f"Thread context retrieval failed: {e}")

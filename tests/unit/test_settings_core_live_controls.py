@@ -259,7 +259,7 @@ class TestQueryRewriteToggleReachesPipeline:
         async def heavy(user_input, topics_):
             return False, [], None
 
-        async def thread():
+        async def thread(current_query=None):
             return None
 
         monkeypatch.setattr(cp, "_rewrite_query", fake_rewrite)

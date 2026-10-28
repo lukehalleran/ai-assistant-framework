@@ -35,7 +35,7 @@ def _pipeline(monkeypatch, analyze_stm):
     async def tone(user_input, history):
         return ToneLevel.CONVERSATIONAL, None
 
-    async def thread():
+    async def thread(current_query=None):
         return None
 
     async def heavy(user_input, topics_):

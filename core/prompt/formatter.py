@@ -63,6 +63,7 @@ import json
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime, date as _date
 from datetime import datetime as _dt
+from utils.date_coerce import to_naive_local
 from pathlib import Path
 from utils.logging_utils import get_logger
 from utils.personal_claim_provenance import annotate_personal_claim_memory
@@ -388,10 +389,10 @@ def _parse_entry_timestamp(mem: dict) -> Optional[datetime]:
     if not ts:
         ts = (mem.get("metadata") or {}).get("timestamp", "")
     if isinstance(ts, datetime):
-        return ts
+        return to_naive_local(ts)
     if ts:
         try:
-            return datetime.fromisoformat(str(ts))
+            return to_naive_local(datetime.fromisoformat(str(ts)))
         except (ValueError, TypeError):
             pass
     return None

@@ -27,7 +27,7 @@ class TestGatherRecordsSpans:
         await gate.acquire()  # held until the early task finishes
         order = []
 
-        async def recent(*args):
+        async def recent(*args, **_kw):
             await asyncio.sleep(0.15)
             gate.release()
             order.append("recent")

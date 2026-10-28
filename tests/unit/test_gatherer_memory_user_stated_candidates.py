@@ -14,6 +14,7 @@ from core.prompt.gatherer_memory import (
 )
 
 QUERY = "where do I work?"
+PROBE_QUERY = f"[test]{QUERY}[/test]"
 
 
 class _Model:
@@ -23,7 +24,7 @@ class _Model:
     def encode(self, texts, normalize_embeddings=True, convert_to_numpy=True):
         out = []
         for t in texts:
-            if t == QUERY:
+            if t in (QUERY, PROBE_QUERY):
                 out.append([1.0, 0.0])
             else:
                 c = self.cos.get(t, 0.6)
@@ -73,15 +74,26 @@ def _gatherer(entries, cos):
 
 @pytest.mark.asyncio
 async def test_a_test_question_excluded_and_test_statement_unwrapped():
+    """Inside a probe run (the current turn is itself a probe) a probe statement is unwrapped and usable."""
     q = "[test]where do I work?[/test]"
     stmt = "[test]I work at Halvorsen Marine as an operations planner.[/test]"
     inner = "I work at Halvorsen Marine as an operations planner."
     entries = [(q, _ts(timedelta(minutes=1))), (stmt, _ts(timedelta(minutes=5)))]
     cos = {"where do I work?": 0.885, inner: 0.595}
-    got = await _gatherer(entries, cos).get_user_stated_evidence(QUERY, "factual_recall")
+    got = await _gatherer(entries, cos).get_user_stated_evidence(PROBE_QUERY, "factual_recall")
     texts = [r["query"] for r in got]
     assert texts == [inner]
     assert not any("where do I work" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_a_real_turn_never_takes_a_probe_statement_as_the_users_words():
+    """BC-105 (2026-10-28): a REAL question after a probe run must not quote a probe statement as the user's own."""
+    stmt = "[test]I work at Halvorsen Marine as an operations planner.[/test]"
+    inner = "I work at Halvorsen Marine as an operations planner."
+    entries = [("[test]where do I work?[/test]", _ts(timedelta(minutes=1))), (stmt, _ts(timedelta(minutes=5)))]
+    got = await _gatherer(entries, {inner: 0.595}).get_user_stated_evidence(QUERY, "factual_recall")
+    assert got == []
 
 
 @pytest.mark.asyncio

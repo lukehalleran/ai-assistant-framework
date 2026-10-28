@@ -118,7 +118,7 @@ def _queries(entries):
 @pytest.mark.parametrize("corpus_cls", [_WindowCorpus, _LegacyCorpus])
 def test_stm_window_drops_prior_probe_keeps_current_and_real(probe, corpus_cls):
     p = _pipeline(corpus_cls(_window(probe)))
-    asyncio.run(p._analyze_stm("what did we decide?", None))
+    asyncio.run(p._analyze_stm("[test]what did we decide?[/test]", None))
     got = _queries(p.stm_analyzer.recent)
     assert probe + " current" in got          # own session's probe stays
     assert probe + " prior" not in got        # prior session's probe dropped
@@ -130,7 +130,7 @@ def test_stm_window_drops_prior_probe_keeps_current_and_real(probe, corpus_cls):
 def test_stm_history_fallback_drops_prior_probe(probe):
     p = _pipeline(None)
     p.memory_system = None
-    asyncio.run(p._analyze_stm("what did we decide?", _window(probe)))
+    asyncio.run(p._analyze_stm("[test]what did we decide?[/test]", _window(probe)))
     got = _queries(p.stm_analyzer.recent)
     assert probe + " prior" not in got
     assert probe + " current" in got
@@ -153,7 +153,7 @@ def test_tone_history_drops_prior_probe(probe, monkeypatch):
     p._floor_chain = 0
     p.memory_system = type("M", (), {"corpus_manager": _LegacyCorpus(_window(probe))})()
     p._should_reset_tone_stickiness = lambda recent: False
-    asyncio.run(p._detect_tone("hello there", None))
+    asyncio.run(p._detect_tone("[test]hello there[/test]", None))
     got = _queries(seen["history"])
     assert probe + " prior" not in got
     assert got[0] == probe + " current"

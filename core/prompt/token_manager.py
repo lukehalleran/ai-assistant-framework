@@ -57,7 +57,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils.logging_utils import get_logger
 from utils.text_budget import fit_text_to_tokens
 from .base import _parse_bool
-from memory.fact_source import is_test_turn
+from memory.fact_source import is_test_turn, probes_hidden_from_turn
 # ONE session-boundary rule (formatter owns it; builder._session_truth_from_probe
 # applies the same walk). Module-level import verified cycle-free 2026-10-15.
 from .formatter import (
@@ -304,7 +304,8 @@ def current_session_prefix_len(items: List[Any], now: datetime) -> int:
         n += 1
     return n
 
-def drop_prior_session_test_turns(items: List[Any], now: Optional[datetime] = None) -> List[Any]:
+def drop_prior_session_test_turns(items: List[Any], now: Optional[datetime] = None,
+                                  current_query: Optional[str] = None) -> List[Any]:
     """Drop owner ``[test]...[/test]`` probe turns that are NOT in the CURRENT
     session from a newest-first recent-conversation list (2026-10-18).
 
@@ -314,8 +315,16 @@ def drop_prior_session_test_turns(items: List[Any], now: Optional[datetime] = No
     stored reply later probes copied verbatim — never reaches the prompt.
     Real turns of both sessions are kept. THE predicate is
     ``memory.fact_source.is_test_turn``.
+
+    ``current_query`` is the query of the turn being built (2026-10-28, BC-58):
+    when it is given and is NOT itself a probe, the turn is a REAL one and
+    NO probe turn is visible to it, same session or not (a real "Hey" an hour
+    after six probes carried all of them as its recent conversation). A probe
+    current turn, or ``None`` (a caller outside a turn), keeps the rule above.
     """
     items = list(items or [])
+    if probes_hidden_from_turn(current_query):
+        return [e for e in items if not is_test_turn(e)]
     keep = current_session_prefix_len(items, now or datetime.now())
     return [e for i, e in enumerate(items) if i < keep or not is_test_turn(e)]
 
