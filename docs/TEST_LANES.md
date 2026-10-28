@@ -1,14 +1,14 @@
 # Test lanes — selection ledger (2026-09-09, B5/T14)
 
 Written as part of the 2026-09-09 independent-bug-audit repair plan
-(`docs/PLAN_20260909_audit_repairs.md`, batch B5), which asked for "a
+(`docs/archive/PLAN_20260909_audit_repairs.md`, batch B5), which asked for "a
 selection ledger: every `--ignore`/`-m` exclusion in
 `.github/workflows/tests.yml` and `pytest.ini`, with reason, owning
 subsystem, fast replacement coverage, and the exact bounded command that
 runs it." This is documentation only — **`.github/workflows/tests.yml`
 itself was NOT edited here** (batch B4 owns that file concurrently); a
 proposed hunk is recorded at the end of this doc's companion entry in
-`PLAN_20260909_audit_repairs.md` for Fable to merge.
+`archive/PLAN_20260909_audit_repairs.md` for Fable to merge.
 
 All commands below assume the repo root (so `python` resolves to the
 project's pyenv 3.11.8) and use the env this batch's verification runs
@@ -172,7 +172,7 @@ the details:
 - No GitHub run exists yet for contract v2, and `master` protection is not yet
   applied (see `DEVELOPMENT_WORKFLOW.md` §3a.8).
 - No assembled-turn probe lane is wired yet. The
-  [consolidated review](GENERALIZATION_CI_REVIEW_20260913.md) records the
+  [consolidated review](archive/GENERALIZATION_CI_REVIEW_20260913.md) records the
   pre-v2 CI run and the proposed probe lane.
 
 **The five repo-wide guards** (must be green before every push per
@@ -285,7 +285,11 @@ Never run the entire suite in a single process, and never traverse `data/`
 
 New test files are named by module and behaviour:
 `tests/unit/test_<module>_<behaviour>.py`. The incident date and the bug
-class (`BC-nn`) go in the module docstring, not the file name. Dated files (`test_sep*.py`, `test_oct*.py`, ...) were renamed by module and behaviour on 2026-10-16; `tests/RENAMES.tsv` maps every old path to its new one (and records the one exempt class-guard ledger anchor), `git log --follow <new path>` keeps the history, and `tests/unit/test_test_file_naming_guard.py` rejects new dated names.
+class (`BC-nn`) go in the module docstring, not the file name. Dated files (`test_sep*.py`, `test_oct*.py`, ...) were renamed by module and behaviour on 2026-10-16; `tests/RENAMES.tsv` maps every old path to its new one (and records the one exempt class-guard ledger anchor), `git log --follow <new path>` keeps the history, and `tests/unit/test_test_file_naming_guard.py` rejects new dated names. The same rule now covers every source, script and web
+file (and every directory on its path), commit subjects, branch names and PR titles: `scripts/naming_policy.py` is the one definition,
+`tests/unit/test_dated_names_guard.py` enforces it on the working tree, and CI/pre-push run its `paths --tracked` and `range` modes.
+A date is metadata (docstring, commit body, record id `CGR-YYYYMMDD-NNN`, archive folders `docs/archive/`, `docs/audits/`,
+`docs/execution/`), never a name. Archived point-in-time docs live in `docs/archive/`.
 
 ## 7. Invocation pitfalls
 

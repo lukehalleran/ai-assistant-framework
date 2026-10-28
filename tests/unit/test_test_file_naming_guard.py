@@ -21,14 +21,24 @@ class: convention drift (no docs/BUG_CLASSES.md entry fits; a draft is in the la
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
-DATED_RE = re.compile(rf"^test_(?:{_MONTHS})\d", re.I)
+# One date detector for the whole repo: scripts/naming_policy.py (2026-10-27; this guard used to carry its own regex).
+_POLICY_SPEC = importlib.util.spec_from_file_location("naming_policy", REPO_ROOT / "scripts" / "naming_policy.py")
+naming_policy = importlib.util.module_from_spec(_POLICY_SPEC)
+sys.modules["naming_policy"] = naming_policy
+_POLICY_SPEC.loader.exec_module(naming_policy)
+
+
+def is_dated(basename: str) -> bool:
+    """True when a test file's basename carries a date token (month+day, ISO or compact date)."""
+    return bool(naming_policy.date_tokens(basename))
 
 # The ONLY approved exception: it anchors records in config/bug_class_dispositions.json and
 # config/bug_class_baseline.json; re-anchoring is a separate, authorized class-guard change.
@@ -63,7 +73,7 @@ def check_naming(root: Path, *, exceptions: frozenset[str] = APPROVED_EXCEPTIONS
     problems: list[str] = []
 
     for rel in sorted(_tests_files(root)):
-        if DATED_RE.match(rel.rsplit("/", 1)[-1]) and rel not in exceptions and rel not in allowlist:
+        if is_dated(rel.rsplit("/", 1)[-1]) and rel not in exceptions and rel not in allowlist:
             problems.append(f"{rel}: date-named test file (name it test_<module>_<behaviour>.py; "
                             "put the date in the docstring)")
 
@@ -107,7 +117,7 @@ def check_naming(root: Path, *, exceptions: frozenset[str] = APPROVED_EXCEPTIONS
             base = new.rsplit("/", 1)[-1]
             if not new.startswith("tests/") or not re.fullmatch(r"test_[A-Za-z0-9_]+\.py", base):
                 problems.append(f"{RENAMES_REL}:{n}: new_path {new} is not a tests/**/test_*.py path")
-            elif DATED_RE.match(base) and new not in exceptions:
+            elif is_dated(base) and new not in exceptions:
                 problems.append(f"{RENAMES_REL}:{n}: new_path {new} is date-named")
             if (root / old).exists():
                 problems.append(f"{RENAMES_REL}:{n}: renamed row but old path {old} still exists")
@@ -153,7 +163,7 @@ def test_approved_exception_set_is_exact():
 
 def test_allowlist_is_structurally_sound():
     for rel in PRE_MIGRATION_ALLOWLIST:
-        assert rel.startswith("tests/") and DATED_RE.match(rel.rsplit("/", 1)[-1]), rel
+        assert rel.startswith("tests/") and is_dated(rel.rsplit("/", 1)[-1]), rel
         assert rel not in APPROVED_EXCEPTIONS, rel
     assert sorted(PRE_MIGRATION_ALLOWLIST) == sorted(set(PRE_MIGRATION_ALLOWLIST))
 

@@ -200,7 +200,7 @@ are verified improvements from the older sweeps, not findings to reopen wholesal
 
 ## Third layer: starter query backlog
 
-The existing [probe design](PROBE_HARNESS_DESIGN.md) is the third-prong document.
+The existing [probe design](../PROBE_HARNESS_DESIGN.md) is the third-prong document.
 The following 15 cases are **proposed synthetic fixtures**, not completed
 probes or copied private transcripts. Each needs a machine-readable case,
 seeded state, expected receipts, forbidden side effects, and counterexample.

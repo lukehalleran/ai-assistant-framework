@@ -45,7 +45,7 @@ re-explaining. The rules of the road are in §3–§5; this section is the index
 | You are asked to… | Read, in order | Then |
 |---|---|---|
 | Understand the system | `ARCHITECTURE_GUIDE.md` (concepts, request lifecycle, memory tiers) → `PROJECT_SKELETON.md` (every module, one line each) → `QUICK_REFERENCE.md` (API + constants lookup) → `FORMAL_MODEL.md` (the scoring/gating math) | the subsystem doc for the area (0.3) |
-| Fix a bug / audit a turn dump | `BUG_CLASSES.md` — run the DM detectors for the families in scope BEFORE reading code → `BUG_RETROSPECTIVE_20260715_20260904.md` (the narrative behind the classes) → `TEST_LANES.md` (which tests to run, memory caps) | the loop in §3; every fix names `class: BC-nn` |
+| Fix a bug / audit a turn dump | `BUG_CLASSES.md` — run the DM detectors for the families in scope BEFORE reading code → `archive/BUG_RETROSPECTIVE_20260715_20260904.md` (the narrative behind the classes) → `TEST_LANES.md` (which tests to run, memory caps) | the loop in §3; every fix names `class: BC-nn` |
 | Add or change a feature | `GOALS.md` → `WORKPLAN_2_hardening_executable_beta.md` (priorities: no-bugs over features) → `generalization/README.md` + `generalization/01-product-contract.md` (what must stay owner-neutral) → `FORMAL_MODEL.md` if it touches scoring | `PROMPT_BUILDING_PIPELINE.md` if it touches the prompt |
 | Verify behaviour live | `PROBE_HARNESS_DESIGN.md` (probe set + expected response shapes, the planned third prong) → `test_live_system.md` (manual CLI plan) → `eval/corpus.py` (27 labelled seed queries with expected-behaviour tags) → `tests/benchmarks/` | relay a turn (§2) and audit its debug record |
 | Ship (test, commit, push, PR) | §3a (commit discipline, runners, hooks, branch protection) → `TEST_LANES.md` | `hooks/pre-push` runs the guards + full unit pass; CI's `bug-class-gate` blocks the merge |
@@ -219,7 +219,7 @@ ones agents break):
   and its wrapped/indented form.
 - **A vocabulary miss is closed with a categorized-generic table or a
   learned channel, never a new phrase appended to a regex** (added
-  2026-09-10, round 3; `docs/GENERALIZATION_AUDIT_20260901.md` §"Remedy
+  2026-09-10, round 3; `docs/archive/GENERALIZATION_AUDIT_20260901.md` §"Remedy
   patterns"; catalogued as `docs/BUG_CLASSES.md` BC-76). Four dated batches
   (08-15, 08-27, 09-07, 09-10) closed the same class of vocabulary-drift
   incident (BC-15) by literally adding one more phrase to an existing
@@ -487,7 +487,7 @@ batch size, not in the loop.
    each scan lists the uncovered classes. A failing CI check prevents landing
    only once branch protection requires `bug-class-gate` (§3a.8). The independent verification,
    generalization findings, and third-prong probe backlog are consolidated
-   in [the 2026-09-13 review](GENERALIZATION_CI_REVIEW_20260913.md).
+   in [the 2026-09-13 review](archive/GENERALIZATION_CI_REVIEW_20260913.md).
 2. **One commit per root cause, restart immediately, then probe.** Three
    agents' work landed on one dirty tree on 2026-09-05 and the running
    Daemon predated every fix for hours. Commit as soon as a fix is green

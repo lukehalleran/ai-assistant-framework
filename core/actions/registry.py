@@ -1723,7 +1723,7 @@ def is_action_retry_request(user_text: str) -> bool:
 # out even though `offer_action_type` on the prior reply resolves cleanly.
 # Categorized as (failure predicate) x (failure subject) so a new phrasing
 # is a new table cell, never a new hand-written regex (docs/BUG_CLASSES.md
-# CM-01/CM-09; docs/GENERALIZATION_AUDIT_20260901.md remedy pattern #5).
+# CM-01/CM-09; docs/archive/GENERALIZATION_AUDIT_20260901.md remedy pattern #5).
 _FAILURE_PREDICATE_RE = (
     r"(?:failed|didn'?t\s+work|didn'?t\s+go\s+through|"
     r"never\s+(?:appeared|showed\s+up|went\s+through|arrived))"

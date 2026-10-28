@@ -46,7 +46,7 @@ this plan; everything it needs is in this file and the documents it names.
 1. **Base.** Before launch the owner commits the planning documents on
    `master`: this plan, the class-guard plan
    (`docs/execution/class_guards/PLAN_20260913_class_guard_completion.md`),
-   `docs/GENERALIZATION_CI_REVIEW_20260913.md`, `docs/PROBE_HARNESS_DESIGN.md`,
+   `docs/archive/GENERALIZATION_CI_REVIEW_20260913.md`, `docs/PROBE_HARNESS_DESIGN.md`,
    and the review's edits to `docs/DEVELOPMENT_WORKFLOW.md`,
    `docs/TEST_LANES.md`, `docs/WORKPLAN_2_hardening_executable_beta.md`,
    `docs/generalization/README.md`, and
@@ -605,7 +605,7 @@ confirms the base and scratch checkout. It is intentionally bounded to A01:
 
 ~~~text
 You own batch A01 only: F01 loopback API origin/Host/launch-token authorization.
-Read docs/PLAN_20260913_generalization_execution.md, the F01 row, the first
+Read docs/archive/PLAN_20260913_generalization_execution.md, the F01 row, the first
 bounded batch contract, and docs/generalization/06-safety-and-security.md
 G06-T02. Do not edit any file outside A01's assigned list:
 api/app.py, a small new api/launch_auth.py, tests/unit/test_api_origin_security.py,
@@ -685,8 +685,8 @@ success remain separate facts.
 ## Ready-to-paste parent brief
 
 ~~~text
-Execute docs/PLAN_20260913_generalization_execution.md as the parent session.
-Read it fully first, then docs/GENERALIZATION_CI_REVIEW_20260913.md,
+Execute docs/archive/PLAN_20260913_generalization_execution.md as the parent session.
+Read it fully first, then docs/archive/GENERALIZATION_CI_REVIEW_20260913.md,
 docs/DEVELOPMENT_WORKFLOW.md §3/§3a, docs/BUG_CLASSES.md, and the
 docs/generalization/ documents each batch names. Follow “Fresh-session start”
 exactly: stay in /home/lukeh/daemon_exec/generalization, confirm python 3.11.8

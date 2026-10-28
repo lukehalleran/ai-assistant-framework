@@ -32,7 +32,7 @@ B11 `utils.trigger_match.normalize_ws` — client input arrives line-wrapped
    pattern CM-01 (one chokepoint, docs/BUG_CLASSES.md): rather than patching
    `is_status_report`/`is_self_report`/`is_request_shaped`/
    `is_note_save_request`/`is_personal_doc_search`/`is_casual_acknowledgment`
-   one at a time (the GENERALIZATION_AUDIT_20260901.md "Remedy patterns"
+   one at a time (the archive/GENERALIZATION_AUDIT_20260901.md "Remedy patterns"
    anti-pattern this project explicitly avoids: "never clone the mechanism"),
    Sub A applies `normalize_ws` ONCE at ingress in gui/handlers.py, where the
    user's raw text enters `SubmitContext.analysis_text`/`merged_input` — every

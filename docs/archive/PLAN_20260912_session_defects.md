@@ -69,7 +69,7 @@ so "nothing was actually queued" was literally true.
    (`card|proposal|approval|approve|queue[d]|pending|propose`). Require it in
    BOTH `claims_pending_card` and `claims_calendar_state` before the template
    or literal arms may fire. This is the CATEGORIZED-GENERIC + ANCHORS remedy
-   (`docs/GENERALIZATION_AUDIT_20260901.md` §Remedy patterns), reusing an
+   (`docs/archive/GENERALIZATION_AUDIT_20260901.md` §Remedy patterns), reusing an
    existing vocabulary rather than adding one.
 2. **A2.** With A1 in place, the accumulated negative lookbehinds
    (`(?<!on\s)there`, the "confirm that"/"the queue is" carve-outs) become

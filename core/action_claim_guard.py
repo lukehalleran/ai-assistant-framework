@@ -586,7 +586,7 @@ _KIND_LABEL = {
 
 # ---------------------------------------------------------------------------
 # Categorized-generic composed claim grammar (2026-09-10, round 3, A13) —
-# docs/GENERALIZATION_AUDIT_20260901.md remedy pattern #5, closing the
+# docs/archive/GENERALIZATION_AUDIT_20260901.md remedy pattern #5, closing the
 # docs/BUG_CLASSES.md CM-01 "new regex per phrasing" class for THIS specific
 # vocabulary. A claim-narration sentence is very often (THING) + (STATE-VERB
 # /MODAL) + (STATE) — "the card should be up", "it's already scheduled" — so
@@ -1149,7 +1149,7 @@ def _clause_is_calendar_attributed(clause_text: str, surface_before: bool) -> bo
 
 # ---------------------------------------------------------------------------
 # Seeds+learned semantic channel (2026-09-10, round 3, A13) —
-# docs/GENERALIZATION_AUDIT_20260901.md remedy pattern #2. A composed
+# docs/archive/GENERALIZATION_AUDIT_20260901.md remedy pattern #2. A composed
 # grammar still cannot cover every possible phrasing; per-user LEARNED
 # exemplars (utils.adaptive_exemplars, domain "action_claim") grow from an
 # INDEPENDENT confirmation channel only (a user failure report —
@@ -1384,7 +1384,7 @@ def claims_fresh_upload(reply: str) -> bool:
 # "should be"/...) — the THING+MODAL+STATE template above requires one — it
 # narrates the event's ongoing SCHEDULE ("runs ... through December 12")
 # rather than asserting a static state. Same category-table method as
-# _compose_thing_modal_state (docs/GENERALIZATION_AUDIT_20260901.md remedy
+# _compose_thing_modal_state (docs/archive/GENERALIZATION_AUDIT_20260901.md remedy
 # #5, closing docs/BUG_CLASSES.md's CM-01 "new regex per phrasing" class):
 # THING + SCHEDULE-VERB + RANGE/CADENCE, bounded gaps that never cross a
 # sentence boundary (belt-and-suspenders — _split_sentences already scopes

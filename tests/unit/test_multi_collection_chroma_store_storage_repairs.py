@@ -1,6 +1,6 @@
 """
 Regression tests for the 2026-09-09 audit repair batch B3 — Storage
-(docs/PLAN_20260909_audit_repairs.md, docs/HANDOFF_20260909_independent_bug_audit.md
+(docs/archive/PLAN_20260909_audit_repairs.md, docs/HANDOFF_20260909_independent_bug_audit.md
 F02/F05/F08).
 
 All tests drive the DEPLOYED functions against a real ephemeral ChromaDB

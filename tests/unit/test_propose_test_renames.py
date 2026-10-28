@@ -130,7 +130,7 @@ def test_location_classes():
     for hist in (
         "docs/PLAN_20261016_x.md", "docs/HANDOFF_20260907_y.md", "docs/execution/a/b.md",
         "docs/history/z.md", "docs/audits/q.md", "docs/postmortems/r.md", "CLAUDE_CHANGELOG.md",
-        "config/bug_class_dispositions.json", "docs/INDEPENDENT_AUDIT_20260905.md",
+        "config/bug_class_dispositions.json", "docs/archive/INDEPENDENT_AUDIT_20260905.md",
         "docs/execution/codex_20260913/guard_receipt.json",
     ):
         assert cls(hist) == "historical", hist
