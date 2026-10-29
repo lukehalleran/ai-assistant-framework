@@ -86,6 +86,10 @@ SKIP_TOP_LEVEL: frozenset[str] = frozenset(
     {"data", "logs", "documents", "conversation_logs", "daemon_notes", "chroma_db", "assets"}
 )
 SKIP_SUBTREES: tuple[str, ...] = ("assets/generated",)
+# Runtime output that eval/installer scripts write INSIDE a code directory (each one gitignored; tests/unit/test_dated_names_guard.py
+# checks that).  The filesystem walk skips them -- their files are run records named by run time -- but tracked mode
+# never applies this list: a COMMITTED file there is still checked.
+RUNTIME_OUTPUT_SUBTREES: tuple[str, ...] = ("eval/runs", "eval/snapshots", "eval/phase2_output", "installer/output")
 _SKIP_ANYWHERE_NAMES = frozenset({"__pycache__", "node_modules", "dist", "build", "civenv"})
 SOURCE_SUFFIXES: frozenset[str] = frozenset({".py", ".ts", ".tsx", ".js", ".sh"})
 
@@ -95,11 +99,13 @@ def _skipped_dir_name(name: str) -> bool:
     return name in _SKIP_ANYWHERE_NAMES or name.startswith("venv") or name.startswith(".")
 
 
-def _is_skipped(relpath: str) -> bool:
+def _is_skipped(relpath: str, *, tracked: bool = False) -> bool:
     parts = relpath.split("/")
     if parts[0] in SKIP_TOP_LEVEL and len(parts) > 1:
         return True
     if any(relpath == s or relpath.startswith(s + "/") for s in SKIP_SUBTREES):
+        return True
+    if not tracked and any(relpath == s or relpath.startswith(s + "/") for s in RUNTIME_OUTPUT_SUBTREES):
         return True
     return any(_skipped_dir_name(p) for p in parts[:-1])
 
@@ -109,7 +115,7 @@ def _top(relpath: str) -> str:
 
 
 def _in_scope(relpath: str, *, tracked: bool) -> bool:
-    if _is_skipped(relpath):
+    if _is_skipped(relpath, tracked=tracked):
         return False
     top = _top(relpath)
     if "/" not in relpath:  # root-level file

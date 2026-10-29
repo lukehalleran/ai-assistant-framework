@@ -52,3 +52,44 @@ def test_the_approved_exception_matches_the_tests_guard_and_exists():
     assert np_.APPROVED_PATHS == APPROVED_EXCEPTIONS
     for rel in APPROVED_EXCEPTIONS:
         assert (REPO_ROOT / rel).is_file()
+
+
+def test_walk_skips_runtime_output_inside_code_dirs_but_not_its_neighbours(tmp_path):
+    # Incident 2026-10-28: a model-bakeoff report under gitignored eval/runs/ failed this guard on the
+    # owner's checkout while CI (no such folder) stayed green.  class: BC-66, BC-104
+    for sub in np_.RUNTIME_OUTPUT_SUBTREES:
+        (tmp_path / sub / "run_20261024_105613").mkdir(parents=True)
+        (tmp_path / sub / "run_20261024_105613" / "report.py").write_text("")
+    (tmp_path / "eval" / "sweep_oct27.py").write_text("")
+    assert {s for s, _ in np_.check_tree(tmp_path)} == {"eval/sweep_oct27.py"}
+
+
+def test_tracked_mode_still_checks_a_committed_file_under_runtime_output(tmp_path):
+    committed = f"{np_.RUNTIME_OUTPUT_SUBTREES[0]}/fix_oct27.py"
+    assert [s for s, _ in np_.check_tree(tmp_path, file_list=[committed])] == [committed]
+
+
+def _gitignored_dirs_under_code_tops():
+    out = set()
+    for line in (REPO_ROOT / ".gitignore").read_text().splitlines():
+        entry = line.strip()
+        if entry.endswith("/") and not entry.startswith(("#", "!")) and "*" not in entry:
+            entry = entry.strip("/")
+            if entry.split("/")[0] in np_.CODE_INCLUDE and "/" in entry:
+                out.add(entry)
+    return out
+
+
+def test_every_runtime_output_subtree_is_gitignored():
+    # An exclusion is justified only by the folder never being committed.
+    assert set(np_.RUNTIME_OUTPUT_SUBTREES) <= _gitignored_dirs_under_code_tops()
+
+
+def test_every_gitignored_folder_inside_a_code_dir_is_classified():
+    # A new ignored output folder must be listed deliberately (or be a by-name skip such as dist/),
+    # so the local walk and a fresh CI checkout agree.
+    unclassified = {
+        d for d in _gitignored_dirs_under_code_tops()
+        if d not in np_.RUNTIME_OUTPUT_SUBTREES and not np_._skipped_dir_name(d.rsplit("/", 1)[-1])
+    }
+    assert unclassified == set(), "classify in scripts/naming_policy.py RUNTIME_OUTPUT_SUBTREES"

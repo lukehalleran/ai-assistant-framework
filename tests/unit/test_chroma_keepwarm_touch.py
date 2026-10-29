@@ -36,6 +36,18 @@ class _Coll:
     upsert = update = delete = add
 
 
+@pytest.fixture(autouse=True)
+def _no_outstanding_workers(monkeypatch):
+    """A timed-out worker from one test must not make another test skip its collection."""
+    monkeypatch.setattr(kw, "_OUTSTANDING", {}, raising=False)
+
+
+def _join_worker(name):
+    for t in threading.enumerate():
+        if t.name == f"keepwarm-{name}":
+            t.join(2)
+
+
 def _store(names, **per):
     log = []
     colls = {n: _Coll(n, log, **per.get(n, {})) for n in names}
@@ -133,3 +145,43 @@ def test_warmup_step_uses_the_touch(monkeypatch):
         launch._run_model_warmup(orch)
     assert seen["store"] is store
     assert set(launch._TURN1_COLD_COLLECTIONS) <= set(seen["extra"])
+
+
+def test_a_late_error_from_a_timed_out_worker_is_not_charged_to_the_next_collection():
+    # Review finding 2026-10-28: the worker closure read the loop's `box`, so "a" erroring after
+    # its timeout wrote into "b"'s box and b was reported failed.
+    release = threading.Event()
+
+    class _LateFail(_Coll):
+        def query(self, **kwargs):
+            release.wait(5)
+            raise RuntimeError("late")
+
+    class _Releaser(_Coll):
+        def query(self, **kwargs):
+            release.set()
+            _join_worker("a")  # a's late error is recorded before b's result is read
+            return {}
+
+    log = []
+    colls = {"a": _LateFail("a", log), "b": _Releaser("b", log)}
+    store = SimpleNamespace(collections={"a": None, "b": None}, embedding_fn=None)
+    store._get_collection = lambda n: colls[n]
+    res = kw.touch_collections(store, ["a", "b"], per_collection_timeout_s=0.05)
+    assert res["a"] is None
+    assert res["b"] is not None
+
+
+def test_a_hung_touch_is_not_restarted_until_it_returns():
+    gate = threading.Event()
+    store, log = _store(["a", "b"], a={"block": gate})
+    try:
+        first = kw.touch_collections(store, ["a", "b"], per_collection_timeout_s=0.05)
+        second = kw.touch_collections(store, ["a", "b"], per_collection_timeout_s=0.05)
+    finally:
+        gate.set()
+    assert first["a"] is None and second["a"] is None and second["b"] is not None
+    assert [n for n, op, _ in log if op == "query"].count("a") == 1  # no second worker while the first hangs
+    _join_worker("a")
+    third = kw.touch_collections(store, ["a", "b"], per_collection_timeout_s=0.5)
+    assert third["a"] is not None

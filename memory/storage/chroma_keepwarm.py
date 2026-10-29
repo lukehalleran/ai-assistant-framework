@@ -37,6 +37,12 @@ _TURN_PATH_FILTERS = {
 }
 _FALLBACK_DIM = 384
 
+# A worker that outlives its timeout is still inside Chroma (a join cannot stop it). Until it
+# returns, later passes skip that collection, so a hung store holds at most one keep-warm
+# thread per collection instead of gaining one every pass.
+_OUTSTANDING: Dict[str, threading.Thread] = {}
+_OUTSTANDING_LOCK = threading.Lock()
+
 
 def _vector(store) -> List[float]:
     dim = _FALLBACK_DIM
@@ -73,7 +79,9 @@ def touch_collections(store, names: Optional[Iterable[str]] = None, *,
                       per_collection_timeout_s: Optional[float] = None,
                       total_budget_s: Optional[float] = None,
                       clock: Callable[[], float] = time.monotonic) -> Dict[str, Optional[float]]:
-    """Read one row from each collection. Returns {name: ms, or None when it failed/timed out/was skipped}. Never raises."""
+    """Read one row from each collection. Returns {name: ms, or None when it failed/timed out/was skipped}. Never raises.
+
+    A collection whose previous touch is still running is skipped (see ``_OUTSTANDING``)."""
     result: Dict[str, Optional[float]] = {}
     if per_collection_timeout_s is None:
         per_collection_timeout_s = float(app_config.CHROMA_KEEPWARM_COLLECTION_TIMEOUT_S)  # live read (BC-82)
@@ -91,13 +99,24 @@ def touch_collections(store, names: Optional[Iterable[str]] = None, *,
                 result[name] = None
                 logger.debug(f"[KeepWarm] {name}: skipped, total budget {total_budget_s}s spent")
                 continue
+            with _OUTSTANDING_LOCK:
+                previous = _OUTSTANDING.get(name)
+                if previous is not None and not previous.is_alive():
+                    del _OUTSTANDING[name]
+                    previous = None
+            if previous is not None:
+                result[name] = None
+                logger.debug(f"[KeepWarm] {name}: skipped, previous touch still running")
+                continue
             box: Dict[str, object] = {}
 
-            def _run(n=name):
+            # Bind THIS worker's box: a worker that errors after its timeout must not write into
+            # the box of the collection being touched at that moment.
+            def _run(n=name, b=box):
                 try:
                     _touch_one(store, n, vec)
                 except Exception as e:  # degrades: reported below, other collections still touched
-                    box["err"] = e
+                    b["err"] = e
 
             t0 = clock()
             worker = threading.Thread(target=_run, daemon=True, name=f"keepwarm-{name}")
@@ -105,6 +124,8 @@ def touch_collections(store, names: Optional[Iterable[str]] = None, *,
             worker.join(per_collection_timeout_s)
             ms = (clock() - t0) * 1000.0
             if worker.is_alive():
+                with _OUTSTANDING_LOCK:
+                    _OUTSTANDING[name] = worker
                 result[name] = None
                 logger.debug(f"[KeepWarm] {name}: timed out after {per_collection_timeout_s}s")
             elif "err" in box:
