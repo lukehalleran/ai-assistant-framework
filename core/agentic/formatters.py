@@ -6,9 +6,13 @@ Contract:
     - All methods take data in and return formatted strings
     - No side effects, no state mutation, no external dependencies
     - Extracted from AgenticSearchController to reduce god-object size
-    - Truncation is always EXPLICIT: clip_text() appends a visible
-      "[...truncated]" marker whenever content is cut, so the model never
-      mistakes a preview cut for the end of the stored document
+    - Admitted context records (recent turns, memories, summaries, notes,
+      dreams, reflections) are rendered WHOLE: they already passed the prompt
+      builder's token budget, so a second head-only clip here only hid
+      evidence from the answering call
+    - Truncation of tool output is always EXPLICIT: clip_text() appends a
+      visible "[...truncated]" marker whenever content is cut, so the model
+      never mistakes a preview cut for the end of the stored document
 """
 
 import re
@@ -91,10 +95,10 @@ class AgenticFormatter:
             assistant_msg = conv.get('response', conv.get('assistant', ''))
             if user_msg:
                 user_msg = anchor_temporal_references(user_msg, ts, now)
-                lines.append(f"[MEM_RECENT_{i}] {render_timestamp_label(ts, now)}: User: {clip_text(user_msg, 500)}")
+                lines.append(f"[MEM_RECENT_{i}] {render_timestamp_label(ts, now)}: User: {user_msg}")
                 if assistant_msg:
                     assistant_msg = anchor_temporal_references(assistant_msg, ts, now)
-                    lines.append(f"   Daemon: {clip_text(assistant_msg, 500)}")
+                    lines.append(f"   Daemon: {assistant_msg}")
         return "\n".join(lines)
 
     def format_memories(self, memories: List[Dict], now=None) -> str:
@@ -109,10 +113,10 @@ class AgenticFormatter:
             response = mem.get('response', '')
             if content:
                 content = anchor_temporal_references(content, ts, now)
-                lines.append(f"[MEM_SEMANTIC_{i}] {render_timestamp_label(ts, now)}: {clip_text(content, 400)}")
+                lines.append(f"[MEM_SEMANTIC_{i}] {render_timestamp_label(ts, now)}: {content}")
                 if response:
                     response = anchor_temporal_references(response, ts, now)
-                    lines.append(f"   Response: {clip_text(response, 400)}")
+                    lines.append(f"   Response: {response}")
         return "\n".join(lines)
 
     def format_summaries(self, summaries: List[Dict], now=None) -> str:
@@ -125,7 +129,7 @@ class AgenticFormatter:
             ts = s.get('timestamp', '')
             if content:
                 content = anchor_recalled_item(content, s, now, kind="summary")
-                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {clip_text(content, 600)}")
+                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {content}")
         return "\n".join(lines)
 
     def format_personal_notes(self, notes: List[Dict]) -> str:
@@ -135,7 +139,7 @@ class AgenticFormatter:
         lines = []
         for i, note in enumerate(notes, 1):
             title = note.get('metadata', {}).get('title', 'Untitled')
-            content = clip_text(note.get('content', ''), 500)
+            content = note.get('content', '') or ''
             tags = note.get('metadata', {}).get('tags', '')
             if content:
                 tag_str = f" [tags: {tags}]" if tags else ""
@@ -151,7 +155,7 @@ class AgenticFormatter:
             content = d.get('content', d.get('dream', ''))
             ts = d.get('timestamp', '')
             if content:
-                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {clip_text(content, 400)}")
+                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {content}")
         return "\n".join(lines)
 
     def format_reflections(self, reflections: List[Dict], now=None) -> str:
@@ -164,7 +168,7 @@ class AgenticFormatter:
             ts = r.get('timestamp', '')
             if content:
                 content = anchor_recalled_item(content, r, now, kind="reflection")
-                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {clip_text(content, 400)}")
+                lines.append(f"{i}) [{render_timestamp_label(ts, now)}] {content}")
         return "\n".join(lines)
 
     def format_search_context(
