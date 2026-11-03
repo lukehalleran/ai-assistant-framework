@@ -34,14 +34,15 @@ class PatternClassifier:
     "Does my mood track with exercise?",
     "Use my notes and outside research to test my theory",
 ])
-def test_deterministic_common_english_shapes(query):
+def test_common_english_shapes_route_only_with_the_command(query):
     intent = detect_insight_request(query)
-    assert intent is not None
-    assert intent.kind == "pattern_temporal"
+    assert intent is None or intent.kind != "pattern_temporal"
+    explicit = detect_insight_request("pattern_scan " + query)
+    assert explicit is not None and explicit.kind == "pattern_temporal"
 
 
 @pytest.mark.asyncio
-async def test_llm_fallback_owns_unusual_mixed_shape_even_with_online_source_word():
+async def test_llm_pattern_flag_without_the_command_does_not_own_the_turn():
     query = (
         "Could my late work nights and my delivery orders be connected? "
         "Use online sources and whatever you have stored to evaluate it."
@@ -56,8 +57,7 @@ async def test_llm_fallback_owns_unusual_mixed_shape_even_with_online_source_wor
     assert trigger.should_search is False
 
     gate = await evaluate_agentic_gate(query, model_manager=PatternClassifier())
-    assert gate.modes == ["insight"]
-    assert gate.insight_intent["kind"] == "pattern_temporal"
+    assert "insight" not in (gate.modes or [])
 
 
 @pytest.mark.parametrize("query", [

@@ -437,7 +437,7 @@ class TestDetectorFixes:
     def test_f17_kill_switch_disables_pattern_temporal(self, monkeypatch):
         import config.app_config as cfg
         from core.insight.detector import detect_insight_request
-        query = "How often have I mentioned my headaches in the last month?"
+        query = "pattern_scan How often have I mentioned my headaches in the last month?"
         monkeypatch.setattr(cfg, "PATTERN_ANALYSIS_ENABLED", True, raising=False)
         on = detect_insight_request(query)
         assert on is not None and on.kind == "pattern_temporal"

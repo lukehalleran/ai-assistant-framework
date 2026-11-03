@@ -323,17 +323,18 @@ class TestPatternTemporalSentenceBoundary:
         "Compare how I was before and after starting night shift",
         "Does my mood track with exercise?",
     ])
-    def test_existing_pattern_temporal_shapes_still_route(self, text):
+    def test_pattern_temporal_shapes_route_only_with_the_command(self, text):
         intent = detect_insight_request(text)
-        assert intent is not None
-        assert intent.kind == "pattern_temporal"
+        assert intent is None or intent.kind != "pattern_temporal"
+        explicit = detect_insight_request("pattern_scan " + text)
+        assert explicit is not None and explicit.kind == "pattern_temporal"
 
-    def test_more_with_longitudinal_qualifier_still_routes(self):
-        intent = detect_insight_request(
-            "I had more coffee than usual lately, has my sleep gotten worse?"
-        )
-        assert intent is not None
-        assert intent.kind == "pattern_temporal"
+    def test_more_with_longitudinal_qualifier_routes_only_with_the_command(self):
+        q = "I had more coffee than usual lately, has my sleep gotten worse?"
+        intent = detect_insight_request(q)
+        assert intent is None or intent.kind != "pattern_temporal"
+        explicit = detect_insight_request("pattern_scan " + q)
+        assert explicit is not None and explicit.kind == "pattern_temporal"
 
     def test_bare_more_across_a_question_mark_does_not_route(self):
         intent = detect_insight_request(

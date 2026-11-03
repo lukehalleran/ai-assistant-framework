@@ -197,6 +197,19 @@ _EXPLICIT_PATTERN_COMMAND_RE = re.compile(
     r"(?:^|[.!?\n]\s*)pattern_scan\b",
     re.IGNORECASE,
 )
+
+
+def is_explicit_pattern_command(text: str) -> bool:
+    """The only way a request may be owned as pattern_temporal (plan v4 Fix A, option (i)).
+
+    Judged on the user's request span (BC-58): a command line inside a pasted
+    document does not count. Idempotent on text that is already a request span.
+    """
+    if not text or not text.strip():
+        return False
+    return bool(_EXPLICIT_PATTERN_COMMAND_RE.search(request_span(text.strip()).strip()))
+
+
 _PERSONAL_RECORD_RE = re.compile(
     r"\b(?:my|our)\s+(?:history|record|data|notes?|timeline|messages?|"
     r"conversations?)\b|\beverything\s+i(?:'ve|\s+have)\s+(?:said|told\s+you|shared)\b|"
@@ -513,21 +526,15 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
     except ImportError:
         _pattern_enabled = True
 
-    explicit_command = bool(_EXPLICIT_PATTERN_COMMAND_RE.search(query))
+    explicit_command = is_explicit_pattern_command(query)
 
     # 1. Explicit assessment shapes — genuinely checked first (audit F10
     #    2026-08-31: the deliberation shape used to preempt these, routing
     #    "assess my theory against my history" away from the fail-honest
-    #    adversarial assess() machinery). Deliberation still owns requests
-    #    with deliberation-strength cues: an explicit pattern-tool command,
-    #    mixed personal+external evidence ("use my notes and outside
-    #    research to test my theory"), or an explicit time window ("am I
-    #    right my anxiety is worse over the last month" is longitudinal).
-    _deliberation_pull = _pattern_enabled and (
-        explicit_command
-        or bool(_PERSONAL_PLUS_EXTERNAL_RE.search(query))
-        or parse_window_days(query) != 0
-    )
+    #    adversarial assess() machinery). Plan v4 Fix A, option (i):
+    #    pattern_temporal is owned ONLY by the explicit pattern-tool command,
+    #    so assessment shapes are checked unless that command is present.
+    _deliberation_pull = _pattern_enabled and explicit_command
     if not _deliberation_pull:
         for pat in _ASSESS_PATTERNS:
             m = pat.search(query)
@@ -540,20 +547,20 @@ def detect_insight_request(text: str) -> Optional[InsightIntent]:
                     raw_query=query,
                 )
 
-    # Generic longitudinal deliberation owns mixed internal/external requests.
-    # The regex identifies only the operation shape; the LLM planner selects
-    # the phenomenon and evidence contract from the complete request.
-    deliberation_match = _detect_deliberation_shape(query) if _pattern_enabled else None
-    if deliberation_match and (
-        explicit_command or not _trigger_is_incidental(query, deliberation_match.start())
-    ):
+    # Generic longitudinal deliberation (LLM-planned evidence contract) is
+    # entered only on the explicit pattern-tool command (option (i)); an
+    # implicit comparison/record question is not taken over by insight mode.
+    deliberation_match = (
+        _detect_deliberation_shape(query) if (_pattern_enabled and explicit_command) else None
+    )
+    if deliberation_match and explicit_command:
         return InsightIntent(kind="pattern_temporal", theme=_clean_theme(query),
                              wants_document=False, raw_query=query,
                              window_days=parse_window_days(query))
 
-    # 1.5 Pattern-temporal shapes (before theme sweep: "my pattern with X
-    #     over time" would otherwise match nothing and "how often" nothing).
-    for pat in (_PATTERN_TEMPORAL_PATTERNS if _pattern_enabled else ()):
+    # 1.5 Pattern-temporal shapes. Option (i): these arms run only with the
+    #     explicit pattern-tool command; "how often" etc. alone is not owned.
+    for pat in (_PATTERN_TEMPORAL_PATTERNS if (_pattern_enabled and explicit_command) else ()):
         m = pat.search(query)
         if m and not _trigger_is_incidental(query, m.start()):
             theme = _clean_theme(m.groupdict().get("theme") or "")
