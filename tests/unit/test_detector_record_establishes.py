@@ -22,11 +22,12 @@ LIVE_QUERY = (
 
 
 class TestRecordEstablishesDetected:
-    def test_live_query_routes_to_pattern_temporal(self):
+    def test_live_query_is_pattern_temporal_only_with_the_command(self):
+        # Plan v4 Fix A, option (i): no implicit ownership; the explicit command still routes.
         intent = detect_insight_request(LIVE_QUERY)
-        assert intent is not None
-        assert intent.kind == "pattern_temporal"
-        assert intent.wants_document is False
+        assert intent is None or intent.kind != "pattern_temporal"
+        explicit = detect_insight_request("pattern_scan " + LIVE_QUERY)
+        assert explicit is not None and explicit.kind == "pattern_temporal"
 
     @pytest.mark.parametrize("query", [
         "What does my history actually show about my sleep?",
@@ -35,10 +36,11 @@ class TestRecordEstablishesDetected:
         "What can my record establish about my mood this month?",
         "What my corpus can establish about my energy levels?",
     ])
-    def test_paraphrases_detected(self, query):
+    def test_paraphrases_route_only_with_the_command(self, query):
         intent = detect_insight_request(query)
-        assert intent is not None, f"expected a match for: {query!r}"
-        assert intent.kind == "pattern_temporal"
+        assert intent is None or intent.kind != "pattern_temporal", query
+        explicit = detect_insight_request("pattern_scan " + query)
+        assert explicit is not None and explicit.kind == "pattern_temporal", query
 
     @pytest.mark.parametrize("query", [
         "What does the research show about caffeine and sleep?",

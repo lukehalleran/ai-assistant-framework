@@ -126,6 +126,7 @@ from core.actions.registry import detect_action_intent
 from utils.web_search_trigger import requires_fresh_public_evidence
 from core.actions.registry import is_amendment_cue
 from core.insight.detector import allows_pattern_classification
+from core.insight.detector import is_explicit_pattern_command
 from utils.query_checker import is_note_save_request
 from utils.query_checker import is_request_shaped as _qc_request_shaped
 from core.agentic.tools import ToolExecutor
@@ -1515,7 +1516,8 @@ async def evaluate_agentic_gate(
                 )
                 _prefetched_trigger_decision = _pattern_decision
                 if (getattr(_pattern_decision, "needs_pattern_analysis", False) is True
-                        and allows_pattern_classification(user_text)):
+                        and allows_pattern_classification(user_text)
+                        and is_explicit_pattern_command(user_text)):
                     logger.info(
                         "[Agentic Gate] LLM preempted mixed tools with generic "
                         "pattern-deliberation intent"
@@ -1629,6 +1631,7 @@ async def evaluate_agentic_gate(
                     )
                 if (getattr(trigger_decision, 'needs_pattern_analysis', False) is True
                         and allows_pattern_classification(user_text)
+                        and is_explicit_pattern_command(user_text)
                         and _pattern_analysis_enabled()):
                     logger.info(
                         "[Agentic Gate] LLM detected generic pattern-deliberation intent"

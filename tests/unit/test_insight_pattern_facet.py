@@ -34,11 +34,14 @@ class TestDetectorPatternShapes:
         ("Check whether my theory fits the record using PubMed", "theory"),
         ("Use my history and PubMed to decide whether my concentration changed", "history"),
     ])
-    def test_temporal_cues_route_pattern(self, q, theme_word):
+    def test_temporal_cues_route_pattern_only_with_the_command(self, q, theme_word):
+        # Plan v4 Fix A, option (i): an implicit question is not owned as pattern_temporal;
+        # the same question behind the explicit command is.
         intent = detect_insight_request(q)
-        assert intent is not None, q
-        assert intent.kind == "pattern_temporal", q
-        assert theme_word in intent.theme.lower()
+        assert intent is None or intent.kind != "pattern_temporal", q
+        explicit = detect_insight_request("pattern_scan " + q)
+        assert explicit is not None and explicit.kind == "pattern_temporal", q
+        assert theme_word in explicit.theme.lower(), q
 
     def test_bare_pattern_theme_stays_theme_sweep_or_none(self):
         # no temporal cue → NOT pattern kind (may be None or theme_sweep)
@@ -56,19 +59,20 @@ class TestDetectorPatternShapes:
         intent = detect_insight_request(q)
         assert intent is None or intent.kind != "pattern_temporal"
 
-    def test_temporal_assessment_uses_longitudinal_owner(self):
-        intent = detect_insight_request(
-            "Am I right that my anxiety is getting worse over the last month?")
-        assert intent is not None
-        assert intent.kind == "pattern_temporal"
+    def test_temporal_assessment_without_the_command_is_an_assessment(self):
+        q = "Am I right that my anxiety is getting worse over the last month?"
+        intent = detect_insight_request(q)
+        assert intent is not None and intent.kind == "insight_assessment"
+        explicit = detect_insight_request("pattern_scan " + q)
+        assert explicit is not None and explicit.kind == "pattern_temporal"
 
-    def test_personal_doc_shape_sets_wants_document(self):
-        intent = detect_insight_request(
-            "write me a summary of the trend in my sleep over the last 3 "
-            "months for my therapist")
-        assert intent is not None
-        assert intent.kind == "pattern_temporal"
-        assert intent.wants_document is True
+    def test_personal_doc_shape_is_pattern_temporal_only_with_the_command(self):
+        q = ("write me a summary of the trend in my sleep over the last 3 "
+             "months for my therapist")
+        intent = detect_insight_request(q)
+        assert intent is None or intent.kind != "pattern_temporal"
+        explicit = detect_insight_request("pattern_scan " + q)
+        assert explicit is not None and explicit.kind == "pattern_temporal"
 
 
 class TestWindowParser:

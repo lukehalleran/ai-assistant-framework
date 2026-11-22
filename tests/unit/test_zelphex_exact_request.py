@@ -214,11 +214,12 @@ RERUN_QUERY = (
 
 
 class TestRerunWordingRoutesToInsight:
-    def test_rerun_wording_detects_pattern_temporal(self):
+    def test_rerun_wording_is_pattern_temporal_only_with_the_command(self):
         intent = detect_insight_request(RERUN_QUERY)
-        assert intent is not None, "re-run wording must route to insight mode"
-        assert intent.kind == "pattern_temporal"
-        assert intent.raw_query == RERUN_QUERY
+        assert intent is None or intent.kind != "pattern_temporal"
+        explicit = detect_insight_request("pattern_scan " + RERUN_QUERY)
+        assert explicit is not None and explicit.kind == "pattern_temporal"
+        assert explicit.raw_query == "pattern_scan " + RERUN_QUERY
 
     def test_possessive_analysis_cue_is_tight(self):
         # Third-party possessives and operation-free mentions stay out.
