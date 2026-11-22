@@ -3317,6 +3317,13 @@ class AgenticSearchController:
         _final_rendered_keys = set(self._FINAL_PROMPT_DIRECT_RENDERED_KEYS)
         if session.accumulated_context and session.accumulated_context.strip():
             _final_rendered_keys.add("web_search_results")
+        # A section the ceiling ladder dropped was not rendered (BC-58): the
+        # receipt must name it as omitted, like the decision path's does.
+        _final_headers = getattr(session, "_final_prompt_section_headers", [])
+        for _prefix, _key in self._EVIDENCE_HEADER_KEYS:
+            if (_prefix in self._TRIMMABLE_PREFIXES
+                    and not any(h.startswith(_prefix) for h in _final_headers)):
+                _final_rendered_keys.discard(_key)
         session.omitted_sections = self._omitted_admitted_sections(
             initial_context, _final_rendered_keys
         )
@@ -4096,10 +4103,6 @@ What would you like to do?""")
                         "session: if a search result contradicts what was already settled "
                         "here, surface the conflict and trust the session unless the new "
                         "evidence is clearly stronger — do NOT silently override it.\n"
-                        "Entries ending in [...truncated] are PREVIEWS, not complete "
-                        "messages — never quote one as if it were the full text; use "
-                        "search_memory (conversations) to retrieve the full stored "
-                        "message first.\n"
                         f"{recent_text}"
                     )
 

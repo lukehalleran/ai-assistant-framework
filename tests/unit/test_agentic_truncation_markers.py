@@ -35,8 +35,8 @@ class TestRecentConversationTruncation:
         result = fmt.format_recent_conversations(
             [{'timestamp': 't', 'query': 'q', 'response': long_response}]
         )
-        assert TRUNCATION_MARKER in result
-        assert "x" * 500 + TRUNCATION_MARKER in result
+        assert TRUNCATION_MARKER not in result
+        assert long_response in result
 
     def test_short_response_no_marker(self):
         fmt = AgenticFormatter()
@@ -51,7 +51,8 @@ class TestRecentConversationTruncation:
         result = fmt.format_recent_conversations(
             [{'timestamp': 't', 'query': 'y' * 600, 'response': 'r'}]
         )
-        assert "y" * 500 + TRUNCATION_MARKER in result
+        assert TRUNCATION_MARKER not in result
+        assert "y" * 600 in result
 
 
 class TestMemoryResultsTruncation:

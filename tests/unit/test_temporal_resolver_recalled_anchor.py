@@ -160,18 +160,18 @@ class TestAgenticRenderers:
         assert "tonight [Sat 2026-10-17]" in out
         assert "quiz is due today\n" in out
 
-    def test_annotation_precedes_clip(self):
-        """Annotation runs BEFORE clip_text: an expression early in a long text
-        keeps its bracket intact and the (explicit) truncation marker comes
-        after it; nothing is annotated past the cut."""
+    def test_annotation_covers_the_whole_admitted_record(self):
+        """An admitted memory is rendered whole (plan v4 Fix B), so every time
+        expression in a long text is annotated, early and late, and no
+        truncation marker is added."""
         from core.agentic.formatters import TRUNCATION_MARKER
         f = _agentic_formatter()
         text = "due today " + "filler " * 120 + "and again today"
         out = f.format_memories([{"timestamp": SAT, "content": text}], now=NOW)
         assert "due today [Sat 2026-10-17] filler" in out
-        assert TRUNCATION_MARKER in out
-        assert out.index("[Sat 2026-10-17]") < out.index(TRUNCATION_MARKER)
-        assert out.count("[Sat 2026-10-17]") == 1
+        assert TRUNCATION_MARKER not in out
+        assert "and again today [Sat 2026-10-17]" in out
+        assert out.count("[Sat 2026-10-17]") == 2
 
     def test_controller_wrapper_uses_controller_clock(self, monkeypatch):
         from core.agentic.controller import AgenticSearchController
