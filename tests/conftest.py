@@ -136,13 +136,17 @@ def _sandbox_adaptive_exemplars(tmp_path, monkeypatch):
     monkeypatch.setattr(_ae, "_STORE_PATH", str(tmp_path / "adaptive_exemplars.json"))
     monkeypatch.setattr(_ae, "_store", None)  # fresh singleton per test
     # Per-text embedding caches (2026-08-21, encode_texts_cached): vectors
-    # from one test's fake embedder must not leak into the next test.
+    # from one test's fake embedder must not leak into the next test. The
+    # LLM trigger decision cache is keyed by query text: a test reusing
+    # another test's query got that test's fake decision and never called
+    # its own model (2026-11-02).
     import sys as _sys
     for _mod, _attr in (
         ("utils.tone_detector", "_exemplar_text_emb_cache"),
         ("utils.need_detector", "_need_text_emb_cache"),
         ("core.intent_classifier", "_intent_text_emb_cache"),
         ("utils.web_search_trigger", "_anchor_text_emb_cache"),
+        ("utils.web_search_trigger", "_llm_trigger_cache"),
     ):
         _m = _sys.modules.get(_mod)  # only clear if already imported
         if _m is not None:
