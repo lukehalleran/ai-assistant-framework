@@ -60,6 +60,7 @@ from .base import _parse_bool
 from memory.fact_source import is_test_turn, probes_hidden_from_turn
 # ONE session-boundary rule (formatter owns it; builder._session_truth_from_probe
 # applies the same walk). Module-level import verified cycle-free 2026-10-15.
+from .hygiene import MEMORIES_SHADOWED_BY_RECENT, _canonical_turn_key
 from .formatter import (
     _detect_session_boundary, _parse_entry_timestamp, SESSION_BOUNDARY_GAP_HOURS,
 )
@@ -529,6 +530,41 @@ class TokenManager:
             lambda value: self.get_token_count(value, model_name), head_ratio,
         )
 
+    def _readmit_shadowed_memories(self, trimmed: Dict[str, Any], kept_recent: List[Any]) -> None:
+        """Return to `memories` every memory that cross-section dedup removed as a copy of a
+        [RECENT CONVERSATION] item this budget then cut.
+
+        Dedup runs before the budget and assumes the recent copy will be shown. When the
+        prior-session cap, the section cap or the budget itself ends the recent section
+        early, a retrieved turn would otherwise reach neither section (2026-11-22,
+        LongMemEval replay: 5 evidence rounds on half A, one of them plain search's top hit).
+        The memory goes back at the position it held and is admitted by the memories pass
+        like any other. Recent conversation is admitted before memories (PRIORITY_ORDER),
+        so this runs before memories are metered. Not covered: a recent item removed by the
+        second trim pass, which runs only when the context is already over budget.
+        """
+        shadowed = trimmed.get(MEMORIES_SHADOWED_BY_RECENT)
+        if not shadowed:
+            return
+        shown = {_canonical_turn_key(i) for i in kept_recent}
+        mems = list(trimmed.get("memories") or [])
+        have = {_canonical_turn_key(m) for m in mems}
+        back = 0
+        for rec in sorted(shadowed, key=lambda r: r.get("index", 0)):
+            item = rec.get("item")
+            key = _canonical_turn_key(item)
+            if not key or key in shown or key in have:
+                continue
+            mems.insert(min(int(rec.get("index", 0)) + back, len(mems)), item)
+            have.add(key)
+            back += 1
+        if back:
+            trimmed["memories"] = mems
+            logger.info(
+                f"[TOKEN BUDGET] Re-admitted {back} memories whose recent-conversation copy was cut "
+                f"({len(kept_recent)} recent items shown)"
+            )
+
     def _manage_token_budget(
         self, context: Dict[str, Any], now: Optional[datetime] = None
     ) -> Dict[str, Any]:
@@ -710,6 +746,9 @@ class TokenManager:
                     logger.debug(f"[TOKEN BUDGET] Kept {len(kept)}/{len(val)} memories, budget={self.token_budget}, used={current_tokens}")
                 trimmed[name] = kept
                 _reserve.pop(name, None)
+                if name == "recent_conversations":
+                    # `kept` is a prefix of `val`; keys come from the uncapped originals.
+                    self._readmit_shadowed_memories(trimmed, val[:len(kept)])
             elif isinstance(val, dict):
                 # Dict-shaped sections (e.g. a raw {"pages": [...]} web
                 # result, or codebase_changes) are metered but NEVER

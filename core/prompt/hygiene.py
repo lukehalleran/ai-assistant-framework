@@ -40,6 +40,11 @@ from memory.recent_turns import recent_turns_visible_to
 
 logger = get_logger("prompt_hygiene")
 
+# Context key ('_'-prefixed: never rendered or metered): the memories cross-section
+# dedup removed because the same turn sits in recent_conversations, each with the
+# position it held. Read by TokenManager._readmit_shadowed_memories.
+MEMORIES_SHADOWED_BY_RECENT = "_memories_shadowed_by_recent"
+
 
 def _canonical_turn_key(item: Any) -> str:
     """Canonical dedup key for a conversation-shaped item, regardless of source shape.
@@ -143,6 +148,11 @@ class ContentHygiene:
         # Previously used embedding-based O(n^2) cosine similarity which added 300-500ms.
         # String dedup catches the vast majority of exact/near-exact duplicates at ~0 cost.
         seen_content = set()
+        # A memory removed below as a copy of a [RECENT CONVERSATION] item is
+        # remembered here: the token budget may still cut that recent item, and
+        # the turn must then return to memories (TokenManager re-admits it).
+        recent_keys: set = set()
+        shadowed_by_recent: List[Dict[str, Any]] = []
 
         cross_dedup_sections = [
             "recent_conversations", "memories", "personal_notes"
@@ -174,6 +184,8 @@ class ContentHygiene:
                     deduplicated.append(item)
                 else:
                     logger.debug(f"CROSS-SECTION DEDUP: Skipped duplicate in {section} (key: {dedup_key[:80]}...)")
+                    if section == "memories" and dedup_key and dedup_key in recent_keys:
+                        shadowed_by_recent.append({"index": len(deduplicated), "item": item})
 
             original_count = len(items)
             if len(deduplicated) < original_count:
@@ -197,6 +209,11 @@ class ContentHygiene:
                 )
 
                 context[section] = backfill_result
+
+            if section == "recent_conversations":
+                recent_keys = {k for k in (_canonical_turn_key(i) for i in context.get(section) or []) if k}
+
+        context[MEMORIES_SHADOWED_BY_RECENT] = shadowed_by_recent
 
         # Stitch semantic chunks by title
         semantic_chunks = context.get("semantic_chunks", [])
